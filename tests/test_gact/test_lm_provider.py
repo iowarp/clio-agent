@@ -117,15 +117,17 @@ def test_auth_provider_returns_interactive_argonne_instructions(
         popen_calls.append(cmd)
         return object()
 
-    monkeypatch.setattr("clio_agent.gact.app.importlib.util.find_spec", _find_spec)
+    # The auth_provider handler moved to routes/providers.py (#714); patch the
+    # module-level importlib/subprocess/shutil it resolves there.
+    monkeypatch.setattr("clio_agent.gact.routes.providers.importlib.util.find_spec", _find_spec)
     monkeypatch.setattr(
         argonne_auth,
         "check_auth_status",
         lambda: (_ for _ in ()).throw(AssertionError("auth button must not probe token status")),
     )
-    monkeypatch.setattr("clio_agent.gact.app.subprocess.Popen", _popen)
+    monkeypatch.setattr("clio_agent.gact.routes.providers.subprocess.Popen", _popen)
     if os.name != "nt":
-        monkeypatch.setattr("clio_agent.gact.app.shutil.which", lambda name: None)
+        monkeypatch.setattr("clio_agent.gact.routes.providers.shutil.which", lambda name: None)
 
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:

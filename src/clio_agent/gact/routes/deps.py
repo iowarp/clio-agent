@@ -467,6 +467,33 @@ class _CompactExactEvidenceIndex(Protocol):
     def __call__(self, transcript: str) -> str: ...
 
 
+class _InstallToolRuntimeHooks(Protocol):
+    """Callable seam re-installing the tool-runtime permission/observer hooks.
+
+    ``_install_tool_runtime_hooks`` (in :mod:`clio_agent.gact.app`) re-binds the
+    pending permission gate + tool observer that the live agent reads off
+    ``app.state`` after a provider swap rebuilds the agent. The LM-provider bind
+    route (``PUT /v1/providers/lm``) calls it once the new agent is wired; it stays
+    single-sourced in ``gact.app`` (the construction lifecycle reuses it) and
+    travels here so the moved route does not import back into ``gact.app``.
+    """
+
+    def __call__(self, app: "FastAPI") -> None: ...
+
+
+class _ClearSessionModelRefs(Protocol):
+    """Callable seam clearing stale per-session model refs after a provider swap.
+
+    ``_clear_session_model_refs`` (in :mod:`clio_agent.gact.app`) drops any
+    per-session GACT ``ModelRef`` overrides so the next turn runs through the
+    freshly-bound global LM instead of failing with a per-session override error.
+    The LM-provider bind route calls it after swapping the agent; it stays
+    single-sourced in ``gact.app`` and travels here.
+    """
+
+    def __call__(self, app: "FastAPI") -> None: ...
+
+
 @dataclass(frozen=True)
 class GactDeps:
     """Cross-concern seams the extracted route factories need beyond ``app.state``.
@@ -505,3 +532,5 @@ class GactDeps:
     agent_not_available_error: _AgentNotAvailableError
     ask_user_resume_text: _AskUserResumeText
     compact_exact_evidence_index: _CompactExactEvidenceIndex
+    install_tool_runtime_hooks: _InstallToolRuntimeHooks
+    clear_session_model_refs: _ClearSessionModelRefs
