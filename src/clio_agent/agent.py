@@ -192,7 +192,7 @@ class ClioAgent(dspy.Module):
     def __init__(
         self,
         verbose: bool = False,
-        data_dir: str = ".clio_agent",
+        data_dir: str = ".clio/agent",
         arc: ARCMemory | None = None,
     ):
         """Initialize ClioAgent with planner, chat, tool execution, and runtime storage.

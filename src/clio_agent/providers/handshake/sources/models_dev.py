@@ -44,11 +44,13 @@ _FETCH_TIMEOUT_S = 6.0
 
 
 def _data_dir() -> Path:
-    """Return the clio data dir, honouring ``XDG_DATA_HOME`` like the rest of clio."""
-    base = os.environ.get("XDG_DATA_HOME", "").strip()
-    if base:
-        return Path(base) / "clio-agent"
-    return Path.home() / ".local" / "share" / "clio-agent"
+    """Per-user clio-agent data dir for shared caches: ``~/.clio/agent`` (OS-correct).
+
+    The model catalog is global (shared across workspaces), so it lives in the per-user
+    clio home, not a workspace ``.clio/agent``."""
+    from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
+
+    return paths.user_agent_dir()
 
 
 def default_cache_path() -> Path:

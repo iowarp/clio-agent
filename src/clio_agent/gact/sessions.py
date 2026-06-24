@@ -69,17 +69,20 @@ def _utcnow_iso() -> str:
 
 
 def _default_store_path() -> Path:
-    """Default on-disk location for the registry.
+    """Default on-disk location for the registry: ``<cwd>/.clio/agent/sessions.json``.
 
-    Honours ``XDG_CONFIG_HOME`` when set; otherwise uses
-    ``~/.config/clio-agent/sessions.json``. The directory is created
-    lazily on first write.
+    Per-workspace: the registry — and the messages / semantic traces / context-file
+    metadata derived from its parent directory — all live under the workspace
+    ``.clio/agent`` root alongside ARC. ``CLIO_SESSIONS_PATH`` overrides the full path.
+    The directory is created lazily on first write.
     """
 
-    base = os.environ.get("XDG_CONFIG_HOME")
-    if base:
-        return Path(base) / "clio-agent" / "sessions.json"
-    return Path.home() / ".config" / "clio-agent" / "sessions.json"
+    override = os.environ.get("CLIO_SESSIONS_PATH", "").strip()
+    if override:
+        return Path(override).expanduser()
+    from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
+
+    return paths.workspace_agent_dir() / "sessions.json"
 
 
 @dataclass

@@ -126,7 +126,7 @@ def test_gact_process_arc_is_stable_across_rebuild(tmp_path, monkeypatch):
     import clio_agent.gact.app as app_mod
 
     # _process_arc constructs the ARC at the cwd-relative default data_dir; chdir into
-    # tmp + pin the local store so the test is hermetic (no .clio_agent leak into cwd).
+    # tmp + pin the local store so the test is hermetic (no .clio/agent leak into cwd).
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("CLIO_ARC_STORE", "local")
 

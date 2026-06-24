@@ -861,7 +861,7 @@ def _process_arc(app: "FastAPI") -> Any:
     from clio_agent.arc.memory import ARCMemory  # noqa: PLC0415
     from clio_agent.arc.storage import make_arc_store  # noqa: PLC0415
 
-    data_dir = ".clio_agent/arc"
+    data_dir = ".clio/agent/arc"
     arc = ARCMemory(data_dir=data_dir, cache_capacity=1000, store=make_arc_store(data_dir=data_dir))
     _set_app_arc(app, arc)
     return arc
@@ -21867,7 +21867,7 @@ def build_app(
         "build",
         "dist",
         ".egg-info",
-        ".clio_agent",  # ARC's local persistence
+        ".clio/agent",  # ARC's local persistence
     }
 
     @app.get("/v1/workspaces/{wid}/files")

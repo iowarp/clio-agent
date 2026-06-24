@@ -79,7 +79,7 @@ class ARCMemory:
     metrics, and context with O(log N) fallback to disk.
 
     Args:
-        data_dir: Directory for persistent storage (default: ".clio_agent/arc")
+        data_dir: Directory for persistent storage (default: ".clio/agent/arc")
         cache_capacity: Maximum cache entries (default: 1000)
 
     Examples:
@@ -93,7 +93,7 @@ class ARCMemory:
 
     def __init__(
         self,
-        data_dir: str = ".clio_agent/arc",
+        data_dir: str = ".clio/agent/arc",
         cache_capacity: Optional[int] = None,
         store: "ARCStore | None" = None,
     ):
