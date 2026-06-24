@@ -156,10 +156,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, AsyncIterator, Iterator, Literal, Optional
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from clio_agent import conf
@@ -1936,15 +1936,6 @@ def _append_session_workflow_state_context(
     return _append_accumulated_workflow_state_context(prompt, state)
 
 
-def _active_lm_supports_vision(app: "FastAPI") -> bool:
-    """Return whether the active provider transport can carry image parts."""
-
-    cfg = _effective_lm_config(app)
-    if "supports_vision" in cfg:
-        return bool(cfg.get("supports_vision"))
-    return str(cfg.get("provider") or "") in {"openai", "anthropic"}
-
-
 def _agent_accepts_images(agent: Any) -> bool:
     """Return whether agent.forward can receive native image inputs."""
 
@@ -1958,38 +1949,6 @@ def _agent_accepts_images(agent: Any) -> bool:
     if "images" in params:
         return True
     return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
-
-
-def _image_part_error(
-    *,
-    session_id: str,
-    image_count: int,
-    provider: Mapping[str, Any],
-) -> ErrorEnvelope:
-    provider_id = str(provider.get("provider") or provider.get("provider_id") or "")
-    model_id = str(provider.get("model") or provider.get("model_id") or "")
-    return ErrorEnvelope(
-        error=ErrorInfo(
-            error="unsupported_multimodal_image",
-            message=(
-                "The active LM provider cannot receive image message parts. "
-                "Switch to a vision-capable direct provider or remove the image."
-            ),
-            details={
-                "session_id": session_id,
-                "image_part_count": image_count,
-                "provider": provider_id,
-                "model": model_id,
-                "supports_vision": False,
-                "recovery_actions": [
-                    "switch_to_openai_or_anthropic",
-                    "remove_image_part",
-                    "attach_image_as_context_file_for_tool_inspection",
-                ],
-            },
-            recoverable=True,
-        )
-    )
 
 
 def _user_message_parts(
@@ -2437,8 +2396,15 @@ from clio_agent.gact.providers.auth import (  # noqa: E402,F401
     _resolve_argonne_runtime_api_key,
 )
 from clio_agent.gact.providers.config import (  # noqa: E402,F401
+    _active_lm_model_ref,
+    _active_lm_supports_vision,
     _effective_lm_config,
+    _image_part_error,
+    _model_ref_dict,
+    _model_ref_is_empty,
+    _model_ref_matches_active,
     _provider_runtime_kind,
+    _unsupported_model_ref_error,
 )
 from clio_agent.gact.providers.lmstudio import (  # noqa: E402,F401
     _lm_studio_api_root,
@@ -2472,6 +2438,9 @@ from clio_agent.gact.routes.mcp import (  # noqa: E402
 )
 from clio_agent.gact.routes.memory import (  # noqa: E402
     register_memory_routes,
+)
+from clio_agent.gact.routes.messages import (  # noqa: E402
+    register_messages_routes,
 )
 from clio_agent.gact.routes.misc import (  # noqa: E402
     register_misc_routes,
@@ -2841,50 +2810,6 @@ def _tool_calls_from_handoff_rows(rows: list[dict[str, Any]]) -> list[dict[str, 
     return tool_rows
 
 
-def _model_ref_dict(value: Any) -> dict[str, str]:
-    """Normalize a GACT ModelRef-like value to its wire keys."""
-
-    if value is None:
-        raw: Mapping[str, Any] = {}
-    elif isinstance(value, Mapping):
-        raw = value
-    elif hasattr(value, "model_dump"):
-        raw = value.model_dump(exclude_none=True)
-    else:
-        raw = {
-            "provider_id": getattr(value, "provider_id", ""),
-            "model_id": getattr(value, "model_id", ""),
-            "variant": getattr(value, "variant", ""),
-        }
-    return {
-        "provider_id": str(raw.get("provider_id") or raw.get("provider") or ""),
-        "model_id": str(raw.get("model_id") or raw.get("model") or ""),
-        "variant": str(raw.get("variant") or ""),
-    }
-
-
-def _model_ref_is_empty(value: Any) -> bool:
-    """Return true when a model ref carries no selection."""
-
-    ref = _model_ref_dict(value)
-    return not any(ref.values())
-
-
-def _active_lm_model_ref(app: "FastAPI") -> dict[str, str]:
-    """Return the active global LM as a GACT ModelRef-shaped dict."""
-
-    cfg = _effective_lm_config(app)
-    provider = str(cfg.get("provider") or "")
-    model = str(cfg.get("model") or "")
-    return {"provider_id": provider, "model_id": model, "variant": ""}
-
-
-def _model_ref_matches_active(value: Any, app: "FastAPI") -> bool:
-    """Return true when a requested model ref exactly matches the active LM."""
-
-    return _model_ref_dict(value) == _active_lm_model_ref(app)
-
-
 def _clear_session_model_refs(app: "FastAPI") -> None:
     """Clear per-session model refs after a global LM provider swap.
 
@@ -2901,39 +2826,6 @@ def _clear_session_model_refs(app: "FastAPI") -> None:
     for sess in sessions.list():
         if not _model_ref_is_empty(sess.model):
             sessions.update(sess.id, model={})
-
-
-def _unsupported_model_ref_error(
-    *,
-    session_id: str,
-    source: str,
-    model_ref: Any,
-    active_model: Mapping[str, str],
-) -> ErrorEnvelope:
-    """Build a structured error for currently unsupported model refs."""
-
-    return ErrorEnvelope(
-        error=ErrorInfo(
-            error="not_implemented",
-            message=(
-                f"{source} model overrides are not implemented for a model "
-                "that differs from the active global LM."
-            ),
-            details={
-                "session_id": session_id,
-                "source": source,
-                "model": _model_ref_dict(model_ref),
-                "active_model": dict(active_model),
-                "recovery_actions": [
-                    "put_global_lm_provider",
-                    "clear_session_model",
-                    "retry",
-                    "exit",
-                ],
-            },
-            recoverable=True,
-        )
-    )
 
 
 # --------------------------------------------------------------------------- #
@@ -5534,8 +5426,6 @@ from clio_agent.gact.types import (
     LMProviderRequest,
     Message,
     Part,
-    PostMessageRequest,
-    PostMessageResponse,
     Session,
     UserQuestion,
     UserQuestionOption,
@@ -6704,60 +6594,12 @@ def build_app(
     # app, deps).
 
     # ---- GET /v1/sessions/{sid}/messages/search (BBB27) ---------------
-
-    @app.get("/v1/sessions/{sid}/messages/search")
-    async def search_messages(sid: str, q: str = "") -> dict[str, Any]:
-        """Case-insensitive substring search across stored messages.
-
-        Returns ``{matches: [{message_id, part_id, snippet, score}]}``.
-        Score is a crude recency-biased ranking: newer hits score
-        higher (+0.01 per message index) so identical snippets
-        surface in turn order.
-        """
-
-        sess = app.state.sessions.get(sid)
-        if sess is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        details={"session_id": sid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        needle = q.strip().lower()
-        if not needle:
-            return {"matches": []}
-
-        matches: list[dict[str, Any]] = []
-        rows = app.state.messages.get(sid, [])
-        for idx, m in enumerate(rows):
-            for part in m.parts:
-                text = (part.text or "").lower()
-                i = text.find(needle)
-                if i < 0:
-                    continue
-                # 60-char snippet window centered on the hit.
-                start = max(0, i - 30)
-                end = min(len(part.text), i + len(needle) + 30)
-                snippet = part.text[start:end]
-                if start > 0:
-                    snippet = "…" + snippet
-                if end < len(part.text):
-                    snippet = snippet + "…"
-                matches.append(
-                    {
-                        "message_id": m.id,
-                        "part_id": part.id,
-                        "snippet": snippet,
-                        "score": 1.0 + (idx * 0.01),
-                    }
-                )
-        matches.sort(key=lambda r: r["score"], reverse=True)
-        return {"matches": matches}
+    # The message ledger surface -- search, the turn-entry POST, the
+    # list/get reads and the message-delete routes -- is owned by
+    # routes/messages.py and registered below via register_messages_routes(
+    # app, deps); the destructive-action guard, ledger replace,
+    # background-turn entrypoint, active-model ref + override error, and
+    # the agent-not-available error all travel on ``deps``.
 
     # ---- Ask-user and retry protocol (#333) --------------------------
     # The user-question ledger (list/create/answer/cancel) + the turn
@@ -6800,212 +6642,10 @@ def build_app(
     # routes/sessions.py and registered below via register_sessions_routes(
     # app, deps); the cancellation-attempt summary travels on ``deps``.
 
-    # ---- POST /v1/sessions/{sid}/messages (BBB9) ---------------------
-    # Non-streaming turn: 1 request, 1 response body containing both
-    # the stored user message + the assistant's reply. Streaming
-    # (SSE on /v1/sessions/{sid}/events) lands in BBB10.
-
-    @app.post("/v1/sessions/{sid}/messages", response_model=PostMessageResponse)
-    async def post_message(
-        sid: str, req: PostMessageRequest, background_tasks: BackgroundTasks
-    ) -> PostMessageResponse:
-        """Accept a user message and ack immediately. The agent turn
-        runs in the background; clients consume progress via the SSE
-        channel (message.created, message.part.delta, ..., message.completed).
-
-        Returning early matters: real LM turns can run for minutes
-        (DSPy ReAct loops × 5-15s per Claude call). Holding the POST
-        connection open for the whole turn means TUI timeouts, broken
-        streaming UX, and no way to surface progress to the user.
-        """
-
-        sess = app.state.sessions.get(sid)
-        if sess is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        details={"session_id": sid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        lm_status = getattr(app.state, "lm_config_status", {}) or {}
-        if lm_status.get("state") == "configuring":
-            raise HTTPException(
-                status_code=503,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="provider_configuring",
-                        message=(
-                            "LM provider configuration is still in progress; retry after it "
-                            "finishes."
-                        ),
-                        details={
-                            "session_id": sid,
-                            "operation_id": lm_status.get("operation_id", ""),
-                            "provider": lm_status.get("provider", ""),
-                            "model": lm_status.get("model", ""),
-                            "recovery_actions": ["wait", "check_lm_provider_status", "retry"],
-                        },
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        if app.state.agent is None:
-            raise HTTPException(
-                status_code=503,
-                detail=_agent_not_available_error(app, sid).model_dump(exclude_none=True),
-            )
-
-        if (
-            req.model is not None
-            and not _model_ref_is_empty(req.model)
-            and not _model_ref_matches_active(req.model, app)
-        ):
-            active_model = _active_lm_model_ref(app)
-            raise HTTPException(
-                status_code=501,
-                detail=_unsupported_model_ref_error(
-                    session_id=sid,
-                    source="per_message",
-                    model_ref=req.model,
-                    active_model=active_model,
-                ).model_dump(exclude_none=True),
-            )
-
-        if not _model_ref_is_empty(sess.model) and not _model_ref_matches_active(sess.model, app):
-            active_model = _active_lm_model_ref(app)
-            if active_model.get("model_id"):
-                app.state.sessions.update(sid, model={})
-                sess = app.state.sessions.get(sid) or sess
-            else:
-                raise HTTPException(
-                    status_code=501,
-                    detail=_unsupported_model_ref_error(
-                        session_id=sid,
-                        source="session",
-                        model_ref=sess.model,
-                        active_model=active_model,
-                    ).model_dump(exclude_none=True),
-                )
-
-        user_text = req.extract_text()
-        turn_agent_id = req.extract_agent_id().strip()
-        image_parts = req.image_parts()
-        if image_parts and not _active_lm_supports_vision(app):
-            raise HTTPException(
-                status_code=501,
-                detail=_image_part_error(
-                    session_id=sid,
-                    image_count=len(image_parts),
-                    provider=_effective_lm_config(app),
-                ).model_dump(exclude_none=True),
-            )
-        if not user_text and not image_parts:
-            raise HTTPException(
-                status_code=422,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=(
-                            "request body carried no text: expected "
-                            "parts[] containing a text part or legacy "
-                            "top-level text field"
-                        ),
-                        details={"session_id": sid},
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        # Persist + publish the user message synchronously so by the
-        # time the ack returns, GET /messages reflects it. Then mark
-        # the session running, then schedule the turn in the
-        # background and return.
-        user_msg = _start_background_user_turn(
-            sid,
-            sess,
-            user_text,
-            request_parts=req.parts,
-            metadata=req.metadata,
-            prev_status="idle",
-            turn_agent_id=turn_agent_id,
-        )
-        # background_tasks parameter is unused but kept on the
-        # signature so existing callers (and FastAPI's docs) don't
-        # change shape.
-        del background_tasks
-
-        return PostMessageResponse(
-            message_id=user_msg.id,
-            accepted_at=user_msg.created_at,
-        )
-
-    @app.get("/v1/sessions/{sid}/messages")
-    async def list_messages(sid: str) -> dict[str, Any]:
-        """List messages in a session.
-
-        Today: in-memory log populated by POST /messages; returns
-        empty when the session exists but has no turns yet. The v0.1
-        wire shape (no pagination header, bare array) is what every
-        v0.1 backend does; v0.2 clients accept both.
-        """
-
-        sess = app.state.sessions.get(sid)
-        if sess is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        details={"session_id": sid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        # TUI (and SPEC §6.4) expect newest-first with an optional
-        # cursor for older pages. We store chronologically so reverse
-        # at read time.
-        rows = list(reversed(app.state.messages.get(sid, [])))
-        return {
-            "messages": [m.model_dump(exclude_none=True) for m in rows],
-            "next_cursor": None,
-        }
-
-    @app.get("/v1/sessions/{sid}/messages/{message_id}")
-    async def get_message(sid: str, message_id: str) -> dict[str, Any]:
-        """SPEC §6.3 drill-down for one stored message."""
-
-        if app.state.sessions.get(sid) is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        details={"session_id": sid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        for msg in app.state.messages.get(sid, []):
-            if msg.id == message_id:
-                return msg.model_dump(exclude_none=True)
-        raise HTTPException(
-            status_code=404,
-            detail=ErrorEnvelope(
-                error=ErrorInfo(
-                    error="not_found",
-                    message=f"message not found: {message_id}",
-                    details={"session_id": sid, "message_id": message_id},
-                    recoverable=False,
-                )
-            ).model_dump(exclude_none=True),
-        )
+    # ---- POST /v1/sessions/{sid}/messages (BBB9) + reads (BBB10) -----
+    # The turn-entry POST, the list/get reads and the message-delete
+    # routes are owned by routes/messages.py and registered below via
+    # register_messages_routes(app, deps) (see the search pointer above).
 
     # ---- /v1/agents catalog (BBB10) + dynamic registry (#19) ---------
 
@@ -7539,6 +7179,15 @@ def build_app(
     # replace, workspace mirror + delete cascade, model-ref errors, evidence
     # index and resume text travel on ``deps``.
     register_sessions_routes(app, deps)
+
+    # ---- /v1/sessions/{sid}/messages + /v1/messages (BBB9/BBB10/BBB27) ---
+    # The session message ledger -- the turn-entry POST, the list/get reads,
+    # substring search and both message-delete routes -- is owned by
+    # routes/messages.py. The turn-entry POST kicks a background turn through
+    # ``deps.start_background_user_turn``; the destructive-action guard, ledger
+    # replace, active-model ref + override error and the agent-not-available
+    # error travel on ``deps``.
+    register_messages_routes(app, deps)
 
     # ---- /v1/workspaces (CLIO-BBBBBBBBBB-WS) -------------------------
     # Workspace store CRUD + file listing/reading are owned by
@@ -8471,110 +8120,12 @@ def build_app(
     # runtime/permission_policies.py (shared with the build_app startup load).
     register_permissions_routes(app, deps)
 
-    # ---- DELETE /v1/messages/{id} ------------------------------------
-    #
-    # gact-tui's "delete this message" gesture (used in the search
-    # palette + the per-message context menu) historically hit the
-    # global route. Prefer the session-scoped route so destructive
-    # message deletion cannot accidentally cross session boundaries.
-    # Publishes message.deleted so SSE subscribers can redraw without
-    # polling.
-
-    def _delete_message_from_session(sid: str, message_id: str) -> bool:
-        msgs = app.state.messages.get(sid, [])
-        for i, message in enumerate(msgs):
-            if message.id != message_id:
-                continue
-            sess = app.state.sessions.get(sid)
-            _guard_direct_destructive_action(
-                app,
-                session_id=sid,
-                workspace_id=getattr(sess, "workspace_id", ""),
-                tool_name="gact.message.delete",
-                args={"message_id": message_id, "session_id": sid},
-                summary=f"delete message {message_id} from session {sid}",
-                reason="user_requested_message_delete",
-            )
-            msgs.pop(i)
-            _replace_session_messages(app, sid, msgs)
-            if sess is not None:
-                app.state.sessions.update(sid, message_count=len(msgs))
-            app.state.bus.publish(
-                Event(
-                    type="message.deleted",
-                    session_id=sid,
-                    payload={"message_id": message_id, "session_id": sid},
-                )
-            )
-            return True
-        return False
-
-    def _message_not_found(message_id: str, *, session_id: str = "") -> HTTPException:
-        details = {"message_id": message_id}
-        if session_id:
-            details["session_id"] = session_id
-        return HTTPException(
-            status_code=404,
-            detail=ErrorEnvelope(
-                error=ErrorInfo(
-                    error="not_found",
-                    message=f"message not found: {message_id}",
-                    details=details,
-                    recoverable=False,
-                )
-            ).model_dump(exclude_none=True),
-        )
-
-    @app.delete("/v1/sessions/{sid}/messages/{message_id}")
-    async def delete_session_message(sid: str, message_id: str) -> Response:
-        if app.state.sessions.get(sid) is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        details={"session_id": sid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        if _delete_message_from_session(sid, message_id):
-            return Response(status_code=204)
-        raise _message_not_found(message_id, session_id=sid)
-
-    @app.delete("/v1/messages/{message_id}")
-    async def delete_message(message_id: str, session_id: str = "") -> Response:
-        if session_id:
-            if app.state.sessions.get(session_id) is None:
-                raise HTTPException(
-                    status_code=404,
-                    detail=ErrorEnvelope(
-                        error=ErrorInfo(
-                            error="internal_error",
-                            message=f"session not found: {session_id}",
-                            details={"session_id": session_id},
-                            recoverable=False,
-                        )
-                    ).model_dump(exclude_none=True),
-                )
-            if _delete_message_from_session(session_id, message_id):
-                return Response(status_code=204)
-            raise _message_not_found(message_id, session_id=session_id)
-        for sid in list(app.state.messages):
-            if _delete_message_from_session(sid, message_id):
-                return Response(status_code=204)
-        raise HTTPException(
-            status_code=404,
-            detail=ErrorEnvelope(
-                error=ErrorInfo(
-                    error="not_found",
-                    message=f"message not found: {message_id}",
-                    details={"message_id": message_id},
-                    recoverable=False,
-                )
-            ).model_dump(exclude_none=True),
-        )
+    # ---- DELETE /v1/sessions/{sid}/messages/{id} + /v1/messages/{id} -
+    # Both message-delete routes (session-scoped + the global, optionally
+    # session-hinted variant gact-tui historically hit) are owned by
+    # routes/messages.py and registered below via register_messages_routes(
+    # app, deps); the destructive-action guard + ledger replace travel on
+    # ``deps`` and both publish message.deleted for SSE subscribers.
 
     def _make_stub(cap: str):
         # Use a Request param so FastAPI doesn't try to validate
