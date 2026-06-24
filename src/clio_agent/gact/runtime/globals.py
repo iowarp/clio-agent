@@ -162,6 +162,15 @@ def _resolve_tool_session(app: "FastAPI") -> tuple[str, Any | None]:
     return "", None
 
 
+def _session_agent_id(sess: Any) -> str:
+    """Return the active session agent id from dict or object refs."""
+
+    agent = getattr(sess, "agent", None)
+    if isinstance(agent, Mapping):
+        return str(agent.get("id") or "").strip()
+    return str(getattr(agent, "id", "") or "").strip()
+
+
 def _format_sse(event: "Event") -> bytes:
     """Render an Event as the SSE wire format (SPEC §7.2)::
 
