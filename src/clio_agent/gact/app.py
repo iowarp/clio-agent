@@ -5018,168 +5018,19 @@ def _dynamic_child_expert_tools(base_agent: Any, agent_def: "AgentDef") -> list[
 # ---- ARC live-context-plane helpers (used by _RetainingReAct) ----
 
 
-def _arc_obs_value(value: Any) -> Any:
-    """Coerce a tool observation into a msgpack-serializable segment payload.
-
-    Preserves JSON-native types (so the ARC render matches what stock dspy would
-    have rendered) and stringifies anything exotic so a segment write never fails.
-    """
-    if value is None or isinstance(value, (str, int, float, bool, dict, list)):
-        return value
-    return str(value)
-
-
-def _autocompact_threshold() -> float:
-    """The configurable 90%-style auto-compaction trigger fraction (0..1].
-
-    Env ``CLIO_AUTOCOMPACT_PCT`` overrides; default 0.85 (the design recommends
-    compacting below 0.90 so the summary is built from fuller context).
-    """
-    raw = os.environ.get("CLIO_AUTOCOMPACT_PCT", "").strip()
-    try:
-        v = float(raw) if raw else 0.85
-    except ValueError:
-        return 0.85
-    return v if 0.0 < v <= 1.0 else 0.85
-
-
-def _last_prompt_tokens() -> int:
-    """The LAST LM call's prompt-token count (0 if it cannot be determined).
-
-    Each send is the full prompt, so this single value IS current window fullness
-    (not a running sum). Primary source is the provider-exact ``prompt_tokens`` from
-    ``dspy.track_usage()``. Some providers (e.g. the ALCF/Argonne vLLM endpoint)
-    report ``prompt_tokens: 0`` — in that case we fall back to a client-side
-    ``litellm.token_counter`` over the LAST call's actual messages
-    (``lm.history[-1]['messages']``). Approximate for non-tiktoken local models, but
-    non-zero and monotonic with context growth, which is what the threshold needs.
-    """
-    import dspy  # noqa: PLC0415
-
-    lm = getattr(dspy.settings, "lm", None)
-    model = str(getattr(lm, "model", "") or "")
-
-    # 1. Provider-exact prompt_tokens from the usage tracker.
-    tracker = getattr(dspy.settings, "usage_tracker", None)
-    data = getattr(tracker, "usage_data", None) if tracker is not None else None
-    if data:
-        try:
-            entries = data.get(model)
-            if not entries:  # fall back to the most-recently-populated model
-                for v in reversed(list(data.values())):
-                    if v:
-                        entries = v
-                        break
-            pt = int(entries[-1].get("prompt_tokens", 0) or 0) if entries else 0
-            if pt > 0:
-                return pt
-        except Exception:  # noqa: BLE001
-            pass
-
-    # 2. Provider didn't report prompt_tokens: count the last call's real messages.
-    try:
-        history = getattr(lm, "history", None)
-        messages = history[-1].get("messages") if history else None
-        if messages:
-            import litellm  # noqa: PLC0415
-
-            return int(litellm.token_counter(model=model, messages=messages))
-    except Exception:  # noqa: BLE001
-        pass
-    return 0
-
-
-# ARC segment kind -> Claude-Code-``/context``-style category for the per-agent breakdown.
-_CONTEXT_CATEGORY: dict[str, str] = {
-    "system": "system",
-    "user": "messages",
-    "tool_def": "tools",
-    "thought": "reasoning",
-    "tool_call": "tool_calls",
-    "observation": "observations",
-    "summary": "summary",
-    "lm_io": "io",
-    "extract_io": "io",
-    "answer": "io",
-}
-
-
-def _bucket_context_categories(
-    tokens_by_kind: dict[str, int], used_tokens: int, live_tokens: int
-) -> dict[str, int]:
-    """Bucket ARC's per-kind token attribution into ``/context``-style categories, plus a
-    ``framing`` entry = ``used_tokens - live_tokens`` (the system-prompt + tool-schema
-    overhead the model sees but ARC does not store/edit), when the model-grounded
-    ``used_tokens`` is known and exceeds the ARC-attributed ``live_tokens``."""
-    cats: dict[str, int] = {}
-    for kind, toks in tokens_by_kind.items():
-        cat = _CONTEXT_CATEGORY.get(kind, "other")
-        cats[cat] = cats.get(cat, 0) + int(toks)
-    if used_tokens > 0 and (used_tokens - live_tokens) > 0:
-        cats["framing"] = used_tokens - live_tokens
-    return {k: v for k, v in cats.items() if v}
-
-
-def _estimate_text_tokens(text: str) -> int:
-    """Best-effort token count for a piece of text via the active model's tokenizer
-    (``litellm.token_counter``), falling back to a ~4-chars/token heuristic."""
-    if not text:
-        return 0
-    try:
-        import dspy  # noqa: PLC0415
-        import litellm  # noqa: PLC0415
-
-        model = str(getattr(getattr(dspy.settings, "lm", None), "model", "") or "")
-        if model:
-            return int(litellm.token_counter(model=model, text=text))
-    except Exception:  # noqa: BLE001
-        pass
-    return max(1, len(text) // 4)
-
-
-def _resolve_expert_context_window(cfg: Any) -> int:
-    """Resolve the expert model's context window (the auto-compaction denominator).
-
-    Ladder: (1) handshake-discovered ``chosen_context``/``context_window`` on the
-    config; (2) ``litellm.get_model_info`` max input tokens; (3) the ``context``
-    field in ``model_limits.json``. Returns 0 when unknown (auto-compaction stays
-    off; dspy's reactive truncation remains the backstop).
-    """
-    for attr in ("chosen_context", "context_window"):
-        v = getattr(cfg, attr, None)
-        if v:
-            return int(v)
-    model = str(getattr(cfg, "model", "") or "")
-    if not model:
-        return 0
-    try:
-        import litellm  # noqa: PLC0415
-
-        info = litellm.get_model_info(model) or {}
-        v = info.get("max_input_tokens") or info.get("max_tokens")
-        if v:
-            return int(v)
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        import json  # noqa: PLC0415
-        from pathlib import Path  # noqa: PLC0415
-
-        limits_path = (
-            Path(__file__).resolve().parents[1]
-            / "providers"
-            / "handshake"
-            / "sources"
-            / "data"
-            / "model_limits.json"
-        )
-        entry = json.loads(limits_path.read_text()).get(model) or {}
-        v = entry.get("context")
-        if v:
-            return int(v)
-    except Exception:  # noqa: BLE001
-        pass
-    return 0
+# Token / context-window leaf machinery moved to gact/runtime/context_tokens.py
+# (#714 decomposition step 2). Re-exported here so existing
+# ``from clio_agent.gact.app import <name>`` callers + the import-seam guardrail
+# stay green; the expert forward (step 4) imports these from the new module.
+from clio_agent.gact.runtime.context_tokens import (  # noqa: E402,F401
+    _CONTEXT_CATEGORY,
+    _arc_obs_value,
+    _autocompact_threshold,
+    _bucket_context_categories,
+    _estimate_text_tokens,
+    _last_prompt_tokens,
+    _resolve_expert_context_window,
+)
 
 
 def _summarize_segments_llm(segments: list[Any]) -> str:
