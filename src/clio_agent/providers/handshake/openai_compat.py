@@ -216,7 +216,8 @@ class OpenAICompatHandshake(ProviderHandshake):
           ``top_provider.max_completion_tokens`` for the active route).
         """
         model_id = str(raw.get("id", "")).strip()
-        top = raw.get("top_provider") if isinstance(raw.get("top_provider"), dict) else {}
+        _tp = raw.get("top_provider")
+        top: dict[str, Any] = _tp if isinstance(_tp, dict) else {}
         context_window = _first_positive_int(
             raw.get("max_model_len"),  # vLLM
             raw.get("context_length"),  # OpenRouter (top-level)

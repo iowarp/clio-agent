@@ -26,6 +26,7 @@ Pure + deterministic so it unit-tests without a provider.
 from __future__ import annotations
 
 import re
+from typing import Any
 
 # ``[[ ## <field> ## ]]`` section markers (ChatAdapter). Tolerant of extra spaces.
 _SECTION = re.compile(r"\[\[\s*##\s*([A-Za-z0-9_]+)\s*##\s*\]\]")
@@ -97,7 +98,7 @@ def extract_delta(chunk: object) -> tuple[str, str]:
     Handles litellm ``ModelResponseStream`` objects and plain dicts; returns
     empty strings for any chunk that carries no delta text. Never raises."""
 
-    def _get(obj: object, key: str) -> object:
+    def _get(obj: object, key: str) -> Any:
         value = getattr(obj, key, None)
         if value is None and isinstance(obj, dict):
             value = obj.get(key)
