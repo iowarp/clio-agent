@@ -23,7 +23,14 @@ from typing import TYPE_CHECKING, Any, Protocol
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
-    from clio_agent.gact.types import AgentDef, Message, Part, Session
+    from clio_agent.gact.types import (
+        AgentDef,
+        ErrorEnvelope,
+        Message,
+        Part,
+        Session,
+        UserQuestion,
+    )
     from clio_agent.prompts import PromptRegistry
 
 
@@ -329,6 +336,137 @@ class _StartBackgroundUserTurn(Protocol):
     ) -> "Message": ...
 
 
+class _RemoveWorkspaceSessionMirror(Protocol):
+    """Callable seam dropping one mirrored session row from its workspace store.
+
+    ``_remove_workspace_session_mirror`` (in :mod:`clio_agent.gact.app`) deletes a
+    session's mirrored copy from the workspace-local store that owns it. Session
+    deletion mirrors the removal before dropping the canonical row; it reaches the
+    mirror through ``deps`` rather than importing back into ``gact.app``.
+    """
+
+    def __call__(self, app: "FastAPI", session_id: str) -> None: ...
+
+
+class _DeleteSessionContextFiles(Protocol):
+    """Callable seam dropping a session's context-file ledger (memory + disk).
+
+    ``_delete_session_context_files`` (in :mod:`clio_agent.gact.app`) removes a
+    session's context-file ledger from ``app.state.context_files`` and the on-disk
+    ledger. Session deletion calls it after dropping the session row; it stays
+    single-sourced in ``gact.app`` and travels here.
+    """
+
+    def __call__(self, app: "FastAPI", session_id: str) -> None: ...
+
+
+class _ReleaseSessionArc(Protocol):
+    """Callable seam releasing a closed session's hot ARC footprint.
+
+    ``_release_session_arc`` (in :mod:`clio_agent.gact.app`) best-effort flushes
+    and evicts a deleted session's live ARC working set. Session deletion calls it
+    last; it stays single-sourced in ``gact.app`` and travels here.
+    """
+
+    def __call__(self, app: "FastAPI", session_id: str) -> None: ...
+
+
+class _ReplaceSessionMessages(Protocol):
+    """Callable seam replacing one session's message ledger (memory + disk).
+
+    ``_replace_session_messages`` (in :mod:`clio_agent.gact.app`) overwrites a
+    session's stored messages in ``app.state.messages`` + the message store and
+    mirrors the result into the owning workspace store. The rollback (undo/rewind),
+    fork, compact and import session routes all rewrite the ledger through it, and
+    the message-delete route in ``gact.app`` shares it; it stays single-sourced
+    there and travels here.
+    """
+
+    def __call__(self, app: "FastAPI", session_id: str, messages: "list[Message]") -> None: ...
+
+
+class _CancellationAttemptSummary(Protocol):
+    """Callable seam projecting a cancellation attempt into its wire summary.
+
+    ``_cancellation_attempt_summary`` (in :mod:`clio_agent.gact.app`) reduces the
+    in-memory cancellation-attempt record to the bounded summary published on
+    ``session.status_changed``. The turn engine reuses it when settling a cancelled
+    envelope, so it stays single-sourced in ``gact.app`` and travels here for the
+    session-cancel route.
+    """
+
+    def __call__(self, attempt: "Mapping[str, Any] | None") -> dict[str, Any]: ...
+
+
+class _ActiveLmModelRef(Protocol):
+    """Callable seam returning the active global LM as a ModelRef-shaped dict.
+
+    ``_active_lm_model_ref`` (in :mod:`clio_agent.gact.app`) projects the effective
+    LM config into the ``{provider_id, model_id, variant}`` shape the retry route
+    compares a requested override against. It reads the provider-bind config that
+    stays in ``gact.app``, so it travels here.
+    """
+
+    def __call__(self, app: "FastAPI") -> dict[str, str]: ...
+
+
+class _UnsupportedModelRefError(Protocol):
+    """Callable seam building the typed error for an unsupported model override.
+
+    ``_unsupported_model_ref_error`` (in :mod:`clio_agent.gact.app`) assembles the
+    structured ``not_implemented`` envelope returned when a retry requests a
+    model/provider that differs from the active global LM. The retry route and the
+    POST-message turn path both raise it; it stays single-sourced in ``gact.app``
+    and travels here.
+    """
+
+    def __call__(
+        self,
+        *,
+        session_id: str,
+        source: str,
+        model_ref: Any,
+        active_model: Mapping[str, str],
+    ) -> "ErrorEnvelope": ...
+
+
+class _AgentNotAvailableError(Protocol):
+    """Callable seam building the typed error when no executable agent is ready.
+
+    ``_agent_not_available_error`` (in :mod:`clio_agent.gact.app`) inspects the
+    agent-construction task/state to return a starting/failed/not-configured
+    envelope. The retry route and the POST-message turn path both raise it; it
+    stays single-sourced in ``gact.app`` and travels here.
+    """
+
+    def __call__(self, app: "FastAPI", sid: str) -> "ErrorEnvelope": ...
+
+
+class _AskUserResumeText(Protocol):
+    """Callable seam rendering the resume-turn user text for an answered question.
+
+    ``_ask_user_resume_text`` (in :mod:`clio_agent.gact.app`) formats an answered
+    :class:`UserQuestion` into the user-turn text that resumes the orchestrator. The
+    question-answer route uses it to stage the resume turn; it stays single-sourced
+    in ``gact.app`` and travels here.
+    """
+
+    def __call__(self, question: "UserQuestion") -> str: ...
+
+
+class _CompactExactEvidenceIndex(Protocol):
+    """Callable seam building the deterministic evidence index for a compaction.
+
+    ``_compact_exact_evidence_index`` (in :mod:`clio_agent.gact.app`) extracts the
+    exact scientific identifiers/metrics from a transcript so they survive LM
+    compaction. The compact route appends it to the LM summary, and the live
+    display path in ``gact.app`` reuses it; it stays single-sourced there and
+    travels here.
+    """
+
+    def __call__(self, transcript: str) -> str: ...
+
+
 @dataclass(frozen=True)
 class GactDeps:
     """Cross-concern seams the extracted route factories need beyond ``app.state``.
@@ -357,3 +495,13 @@ class GactDeps:
     blueprint_runner_for_agent: _BlueprintRunnerForAgent
     resolve_runtime_dynamic_agent: _ResolveRuntimeDynamicAgent
     start_background_user_turn: _StartBackgroundUserTurn
+    remove_workspace_session_mirror: _RemoveWorkspaceSessionMirror
+    delete_session_context_files: _DeleteSessionContextFiles
+    release_session_arc: _ReleaseSessionArc
+    replace_session_messages: _ReplaceSessionMessages
+    cancellation_attempt_summary: _CancellationAttemptSummary
+    active_lm_model_ref: _ActiveLmModelRef
+    unsupported_model_ref_error: _UnsupportedModelRefError
+    agent_not_available_error: _AgentNotAvailableError
+    ask_user_resume_text: _AskUserResumeText
+    compact_exact_evidence_index: _CompactExactEvidenceIndex
