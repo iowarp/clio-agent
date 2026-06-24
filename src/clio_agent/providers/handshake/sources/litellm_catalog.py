@@ -46,7 +46,9 @@ def _get_model_info(candidate: str) -> dict[str, Any] | None:
     except Exception:
         # get_model_info raises for unmapped ids — a clean miss, try the next.
         return None
-    return info if isinstance(info, dict) else None
+    # get_model_info returns a ModelInfo TypedDict; coerce to a plain dict for the
+    # declared dict[str, Any] | None return (a clean miss is None).
+    return dict(info) if isinstance(info, dict) else None
 
 
 def lookup_litellm(model_id: str) -> tuple[int | None, int | None]:

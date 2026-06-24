@@ -330,7 +330,7 @@ class ClaudeCodeLLM(CustomLLM):
             "Claude Code provider does not support live streaming; use non-streaming completion"
         )
 
-    async def astreaming(
+    async def astreaming(  # type: ignore[override]  # base annotates a coroutine-returning-iterator; this async generator satisfies litellm's runtime streaming contract
         self,
         model: str,
         messages: list,
@@ -376,8 +376,11 @@ class ClaudeCodeLLM(CustomLLM):
         )
         choice = response.choices[0]
         usage = getattr(response, "usage", None)
+        # A completion (non-stream) choice carries ``.message``; guard defensively
+        # since the union also admits StreamingChoices (``.delta``) in the stubs.
+        message = getattr(choice, "message", None)
         chunk: GenericStreamingChunk = {
-            "text": choice.message.content or "",
+            "text": getattr(message, "content", "") or "",
             "is_finished": True,
             "finish_reason": choice.finish_reason or "stop",
             "index": 0,

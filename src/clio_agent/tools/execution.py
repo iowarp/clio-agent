@@ -122,12 +122,12 @@ def notify_tool_observer(
         return
     try:
         if result is None:
-            observer(name, dict(args), phase, error)  # type: ignore[misc]
+            observer(name, dict(args), phase, error)  # type: ignore[misc, call-arg]
         else:
             try:
-                observer(name, dict(args), phase, error, result)  # type: ignore[misc]
+                observer(name, dict(args), phase, error, result)  # type: ignore[misc, call-arg]
             except TypeError:
-                observer(name, dict(args), phase, error)  # type: ignore[misc]
+                observer(name, dict(args), phase, error)  # type: ignore[misc, call-arg]
     except Exception:
         pass
 
