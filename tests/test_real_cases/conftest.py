@@ -37,7 +37,14 @@ from typing import Any, Generator
 import httpx
 import pytest
 
-from . import clio_sut  # noqa: F401  — subclassing SUT registers it for agent-test
+# The real-cases tier drives live provider runs through the `agent-test` harness,
+# an unpublished local checkout that isn't installed in CI (and the tier needs a
+# live provider anyway). Skip the whole directory cleanly when it's absent so
+# pytest collection doesn't error — locally, where agent-test is installed, the
+# tier collects and runs as before.
+pytest.importorskip("agent_test")
+
+from . import clio_sut  # noqa: F401,E402  — subclassing SUT registers it for agent-test
 
 # --------------------------------------------------------------------------- #
 # Committed server-harness config (was /tmp shell env). Each is env-overridable
