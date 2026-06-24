@@ -38,14 +38,18 @@ Design (ARC unification — one log):
 
 from __future__ import annotations
 
-import dataclasses
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Iterator, Optional
 
 from clio_agent.arc.schema import Conversation, Invocation, Message
-from clio_agent.arc.segments import SegmentStore
+
+# ``_encode_safe`` lives in ``segments.py`` (the lowest write chokepoint, so the generic
+# segment write path can coerce content without a circular import) and is re-exported
+# here so the event path (:func:`build_event_content`) and existing importers of
+# ``clio_agent.arc.live._encode_safe`` keep their surface unchanged.
+from clio_agent.arc.segments import SegmentStore, _encode_safe
 
 # Reserved scope that holds ARC's ONE persisted semantic-event log. It is its OWN
 # scope, so an expert/working-set render (which renders a specific expert scope)
@@ -53,63 +57,6 @@ from clio_agent.arc.segments import SegmentStore
 # log can never leak into a model prompt. Defined here (the observer's substrate) and
 # re-exported by ``arc.memory`` (the writer) so both share one constant.
 EVENTS_SCOPE = "_events"
-
-
-def _encode_safe(value: Any) -> Any:
-    """Recursively coerce ``value`` to a plain msgpack/JSON-native form so ARC can
-    ALWAYS persist it, regardless of which emit site produced it.
-
-    ARC's durable record (``semantic_event`` segments) is encoded with msgspec/msgpack
-    (strict: it throws on any type it doesn't natively understand). Emit sites can put
-    arbitrary objects in an event's ``payload`` / ``actor`` / ``provider`` — e.g.
-    litellm/openai usage objects (``Usage`` / ``CompletionTokensDetailsWrapper`` /
-    ``PromptTokensDetailsWrapper``), pydantic models, dataclasses, sets/tuples. Without
-    coercion the encode throws and the event is DROPPED from ARC (the "trace ⊋ ARC"
-    bypass). This makes the persisted content encode-safe for ANY payload, not a
-    one-off for a single litellm type:
-
-    * native scalars (``str`` / ``int`` / ``float`` / ``bool`` / ``None``) pass through;
-    * ``dict`` -> recurse over values (keys coerced to ``str``);
-    * ``list`` / ``tuple`` / ``set`` -> recurse into a ``list``;
-    * pydantic ``BaseModel`` (``model_dump`` / legacy ``dict``) -> coerce its dict;
-    * dataclass instance -> coerce ``dataclasses.asdict``;
-    * objects exposing ``_asdict`` (namedtuple-ish) or ``model_dump`` -> coerce that;
-    * objects with ``__dict__`` -> coerce their attribute dict;
-    * anything else (or a coercion that itself raises) -> ``str(value)``.
-
-    The result round-trips through encode/decode and stays lean (no live objects, just
-    plain containers/scalars).
-    """
-    # Fast path: msgpack-native scalars.
-    if value is None or isinstance(value, (str, bool, int, float)):
-        return value
-    if isinstance(value, dict):
-        return {str(k): _encode_safe(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return [_encode_safe(v) for v in value]
-    # Pydantic BaseModel (v2 model_dump / v1 dict) — duck-typed so arc/ never imports it.
-    dump = getattr(value, "model_dump", None)
-    if callable(dump):
-        try:
-            return _encode_safe(dump())
-        except Exception:  # noqa: BLE001 - fall through to the next coercion strategy
-            pass
-    if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        try:
-            return _encode_safe(dataclasses.asdict(value))
-        except Exception:  # noqa: BLE001 - fall through to the next coercion strategy
-            pass
-    asdict = getattr(value, "_asdict", None)
-    if callable(asdict):
-        try:
-            return _encode_safe(asdict())
-        except Exception:  # noqa: BLE001 - fall through to the next coercion strategy
-            pass
-    obj_dict = getattr(value, "__dict__", None)
-    if isinstance(obj_dict, dict) and obj_dict:
-        return _encode_safe(obj_dict)
-    # Last resort: a stable string form (never throws on a foreign object).
-    return str(value)
 
 
 def build_event_content(event: Any) -> Optional[dict[str, Any]]:

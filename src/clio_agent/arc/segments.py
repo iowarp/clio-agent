@@ -27,6 +27,7 @@ The KV-surgery backend (future work) swaps in behind the same ``apply`` interfac
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import threading
 from typing import Any, Callable, Optional
@@ -43,8 +44,88 @@ from clio_agent.arc.schema import (
     segment_text,
 )
 from clio_agent.arc.storage import ARCStore
+from clio_agent.runtime import trace
 
 logger = logging.getLogger(__name__)
+
+
+def _encode_safe(value: Any) -> Any:
+    """Recursively coerce ``value`` to a plain msgpack/JSON-native form so ARC can
+    ALWAYS persist it, regardless of which emit site produced it.
+
+    ARC's durable record (``Segment`` content) is encoded with msgspec/msgpack (strict:
+    it throws on any type it doesn't natively understand). Emit sites can put arbitrary
+    objects in a segment's ``content`` — a tool_call's nested ``args``, an observation
+    value, an event's ``payload`` / ``actor`` / ``provider`` (e.g. litellm/openai usage
+    objects ``Usage`` / ``CompletionTokensDetailsWrapper`` / ``PromptTokensDetailsWrapper``,
+    pydantic models, dataclasses, sets/tuples). Without coercion the encode throws and the
+    write is DROPPED (or, worse, durably wedges the scope). This makes the persisted
+    content encode-safe for ANY value, not a one-off for a single litellm type:
+
+    * native scalars (``str`` / ``int`` / ``float`` / ``bool`` / ``None``) pass through;
+    * ``dict`` -> recurse over values (keys coerced to ``str``);
+    * ``list`` / ``tuple`` / ``set`` -> recurse into a ``list``;
+    * pydantic ``BaseModel`` (``model_dump`` / legacy ``dict``) -> coerce its dict;
+    * dataclass instance -> coerce ``dataclasses.asdict``;
+    * objects exposing ``_asdict`` (namedtuple-ish) or ``model_dump`` -> coerce that;
+    * objects with ``__dict__`` -> coerce their attribute dict;
+    * anything else (or a coercion that itself raises) -> ``str(value)``.
+
+    The result round-trips through encode/decode and stays lean (no live objects, just
+    plain containers/scalars). This lives in ``segments.py`` (the lowest write chokepoint)
+    and is re-exported by ``arc.live`` for back-compat with the event path.
+    """
+    # Fast path: msgpack-native scalars.
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _encode_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_encode_safe(v) for v in value]
+    # Pydantic BaseModel (v2 model_dump / v1 dict) — duck-typed so arc/ never imports it.
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        try:
+            return _encode_safe(dump())
+        except Exception:  # noqa: BLE001 - fall through to the next coercion strategy
+            pass
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        try:
+            return _encode_safe(dataclasses.asdict(value))
+        except Exception:  # noqa: BLE001 - fall through to the next coercion strategy
+            pass
+    asdict = getattr(value, "_asdict", None)
+    if callable(asdict):
+        try:
+            return _encode_safe(asdict())
+        except Exception:  # noqa: BLE001 - fall through to the next coercion strategy
+            pass
+    obj_dict = getattr(value, "__dict__", None)
+    if isinstance(obj_dict, dict) and obj_dict:
+        return _encode_safe(obj_dict)
+    # Last resort: a stable string form (never throws on a foreign object).
+    return str(value)
+
+
+def _coerce_content(content: dict[str, Any]) -> dict[str, Any]:
+    """Make any segment ``content`` dict encode-safe at the ONE write chokepoint.
+
+    Every Segment-creating write path (append/insert/summarize/replace, AND the
+    observer's ``_events`` log) routes its raw ``content`` through here BEFORE the
+    Segment is constructed, so ARC's strict msgspec/msgpack encode can NEVER throw on
+    an exotic value an emit site happened to put in the content (a tool_call's nested
+    ``args``, an observation value, a litellm usage object, a pydantic model, a
+    dataclass, a set/tuple). :func:`clio_agent.arc.live._encode_safe` recursively
+    coerces any non-native value to a plain serializable form and is itself guarded so
+    it can never raise; on a ``dict`` it returns a ``dict``, so the content shape is
+    preserved. This is the single guarantee that no segment write can durably wedge a
+    scope's persistence with un-encodable content.
+    """
+    coerced = _encode_safe(content)
+    # _encode_safe(dict) -> dict; the isinstance guard keeps the declared dict contract
+    # even for a degenerate non-dict input (which the write surface never produces).
+    return coerced if isinstance(coerced, dict) else {"value": coerced}
+
 
 # op_logger(op, session_id, scope, *, logical_time, step, position,
 #           segments_written, segments_tombstoned, derived_from) -> event dict | None
@@ -150,6 +231,13 @@ class SegmentIndex:
         if sd is None:
             return []
         return [sd[lt] for lt in sd.irange(lt_min, lt_max)]
+
+    def remove(self, session_id: str, scope: str, seg: Segment) -> None:
+        """Forget a single segment (mirrors a non-poisoning drop of an un-encodable
+        segment from the scan, so the locator stays consistent with the scope list)."""
+        sd = self._by_scope.get((session_id, scope))
+        if sd is not None and sd.get(seg.logical_time) == seg.id:
+            del sd[seg.logical_time]
 
     def drop_session(self, session_id: str) -> None:
         """Forget a session's scopes (mirrors SegmentStore.release)."""
@@ -260,8 +348,55 @@ class SegmentStore:
             )
         return self._scopes[key]
 
-    def _persist(self, session_id: str, scope: str) -> None:
+    def _persist(
+        self, session_id: str, scope: str, *, just_written: list[Segment] | None = None
+    ) -> None:
+        """Encode + put the whole scope record. NON-POISONING: a single segment that
+        still fails to encode (despite the :func:`_coerce_content` chokepoint) is REMOVED
+        from the in-memory list and logged via ``runtime.trace`` (never silently), so it
+        can NEVER durably wedge the scope's future persists — one bad write must not break
+        the whole scope. ``just_written`` is the segment(s) the current op produced; they
+        are the prime suspects and are dropped first."""
         segs = self._scopes[(session_id, scope)]
+        try:
+            self._put_scope(session_id, scope, segs)
+            return
+        except Exception:  # noqa: BLE001 - encode/put failed; isolate the offender below
+            pass
+        # Drop the just-written segment(s) first (the most likely offender), then any
+        # other segment that fails to encode in isolation, so the rest of the scope
+        # persists cleanly and never re-throws on the next op.
+        suspects = list(just_written or [])
+        dropped: list[str] = []
+        for seg in suspects:
+            if seg in segs and not self._segment_encodes(seg):
+                segs.remove(seg)
+                self._index_remove(session_id, scope, seg)
+                dropped.append(seg.id)
+        try:
+            self._put_scope(session_id, scope, segs)
+        except Exception:  # noqa: BLE001 - a non-just-written segment is also bad; isolate it
+            survivors = [s for s in segs if self._segment_encodes(s)]
+            for seg in segs:
+                if seg not in survivors:
+                    self._index_remove(session_id, scope, seg)
+                    dropped.append(seg.id)
+            segs[:] = survivors
+            self._put_scope(session_id, scope, segs)
+        if dropped:
+            trace.event(
+                "SEGMENT-DROP",
+                "scope=%s session=%s dropped=%d ids=%s (un-encodable content removed; "
+                "scope persisted without it, no durable wedge)",
+                scope,
+                session_id,
+                len(dropped),
+                dropped,
+            )
+
+    def _put_scope(self, session_id: str, scope: str, segs: list[Segment]) -> None:
+        """Encode the scope's segments and put the record (with the live search_text
+        companion). Raises if ``encode_segments`` / ``store.put`` rejects any segment."""
         # search_text: the live render flattened to plain text, so semantic discovery
         # (Thread D) can find this scope by content. Empty -> None drops the companion.
         live_text = "\n".join(segment_text(s) for s in self._live_sorted(segs))
@@ -271,6 +406,20 @@ class SegmentStore:
             encode_segments(segs),
             search_text=live_text or None,
         )
+
+    @staticmethod
+    def _segment_encodes(seg: Segment) -> bool:
+        """Whether a single segment survives the strict msgpack encode in isolation."""
+        try:
+            encode_segments([seg])
+            return True
+        except Exception:  # noqa: BLE001 - this segment is the un-encodable offender
+            return False
+
+    def _index_remove(self, session_id: str, scope: str, seg: Segment) -> None:
+        """Drop a dropped segment from the per-scope locator so the index stays in sync
+        with the scan (the parallel-consistency invariant)."""
+        self._index.remove(session_id, scope, seg)
 
     def _new_lt(self) -> int:
         """Issue the next monotonic logical tick. Guarded by its OWN tiny lock so the
@@ -311,6 +460,7 @@ class SegmentStore:
         cached prefix. Returns the new Segment. The ``turn_id`` / ``expert_span_id``
         / ``run_span_id`` are optional trajectory-correlation span ids (default ``""``)
         stamped on the new segment so every write in a turn is correlated."""
+        content = _coerce_content(content)
         with self._lock_for(session_id, scope):
             segs = self._segs(session_id, scope)
             order = (max((s.order for s in segs), default=0.0)) + 1.0
@@ -370,6 +520,7 @@ class SegmentStore:
         midpoint of neighbours (gap allocation, no renumber). Breaks the prefix
         from here forward. ``turn_id`` / ``expert_span_id`` / ``run_span_id`` are
         optional correlation span ids stamped on the new segment."""
+        content = _coerce_content(content)
         with self._lock_for(session_id, scope):
             segs = self._segs(session_id, scope)
             live = self._live_sorted(segs)
@@ -472,6 +623,7 @@ class SegmentStore:
         call). context-compaction = ``summarize(all live ids)``. ``turn_id`` /
         ``expert_span_id`` / ``run_span_id`` are optional correlation span ids
         stamped on the summary segment."""
+        summary_content = _coerce_content(summary_content)
         with self._lock_for(session_id, scope):
             segs = self._segs(session_id, scope)
             target = set(ids)
@@ -566,6 +718,7 @@ class SegmentStore:
         stays in the same turn/expert/run); pass them to override. Returns the new
         Segment, or ``None`` if ``target_id`` matched no live segment.
         """
+        content = _coerce_content(content)
         with self._lock_for(session_id, scope):
             segs = self._segs(session_id, scope)
             original = next((s for s in segs if s.id == target_id and s.status == "live"), None)
@@ -687,7 +840,7 @@ class SegmentStore:
                     lt,
                     exc_info=True,
                 )
-        self._persist(session_id, scope)
+        self._persist(session_id, scope, just_written=written)
         logger.debug(
             "segments: persisted op=%s scope=%s lt=%d written=%d tombstoned=%d",
             op,
@@ -884,7 +1037,9 @@ class SegmentStore:
             self._loaded.discard(key)
             self._index.drop_scope(session_id, scope)
             self._store.delete("segments", self._record_name(session_id, scope))
-            logger.debug("segments: drop_scope session=%s scope=%s dropped=%d", session_id, scope, count)
+            logger.debug(
+                "segments: drop_scope session=%s scope=%s dropped=%d", session_id, scope, count
+            )
             return count
 
     def release(self, session_id: str) -> int:
