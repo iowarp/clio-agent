@@ -1104,8 +1104,14 @@ class ARCMemory:
         """
         try:
             self.on_semantic_event(event)
-        except Exception:  # noqa: BLE001 - persistence is best-effort; never break a turn
-            pass
+        except Exception as exc:  # noqa: BLE001 - never break a turn, but NEVER swallow silently
+            trace.event(
+                "ARC-EVENTS",
+                "FAILED to persist event etype=%r sid=%r: %r",
+                getattr(event, "event_type", ""),
+                getattr(event, "session_id", ""),
+                exc,
+            )
         sink = self._highway_sink
         if sink is None:
             return {}
@@ -1146,10 +1152,18 @@ class ARCMemory:
         reason = self._event_skip_reason(etype, sid)
         if reason:
             if trace.HF_ON:
-                trace.hot("ARC-EVENTS", "skip %s etype=%r sid=%r", reason, etype, sid)
+                trace.hot(
+                    "ARC-EVENTS", "skip %s etype=%r sid=%r arc=%#x", reason, etype, sid, id(self)
+                )
             return
         if trace.HF_ON:
-            trace.hot("ARC-EVENTS", "persist etype=%r sid=%r", etype, sid)
+            trace.hot(
+                "ARC-EVENTS",
+                "persist etype=%r sid=%r arc=%#x",
+                etype,
+                sid,
+                id(self),
+            )
         self._append_event_segment(event, etype, sid)
 
     def _append_event_segment(self, event: Any, etype: str, sid: str) -> None:

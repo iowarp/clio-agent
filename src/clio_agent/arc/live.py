@@ -38,6 +38,7 @@ Design (ARC unification — one log):
 
 from __future__ import annotations
 
+import dataclasses
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -53,6 +54,64 @@ from clio_agent.arc.segments import SegmentStore
 # re-exported by ``arc.memory`` (the writer) so both share one constant.
 EVENTS_SCOPE = "_events"
 
+
+def _encode_safe(value: Any) -> Any:
+    """Recursively coerce ``value`` to a plain msgpack/JSON-native form so ARC can
+    ALWAYS persist it, regardless of which emit site produced it.
+
+    ARC's durable record (``semantic_event`` segments) is encoded with msgspec/msgpack
+    (strict: it throws on any type it doesn't natively understand). Emit sites can put
+    arbitrary objects in an event's ``payload`` / ``actor`` / ``provider`` — e.g.
+    litellm/openai usage objects (``Usage`` / ``CompletionTokensDetailsWrapper`` /
+    ``PromptTokensDetailsWrapper``), pydantic models, dataclasses, sets/tuples. Without
+    coercion the encode throws and the event is DROPPED from ARC (the "trace ⊋ ARC"
+    bypass). This makes the persisted content encode-safe for ANY payload, not a
+    one-off for a single litellm type:
+
+    * native scalars (``str`` / ``int`` / ``float`` / ``bool`` / ``None``) pass through;
+    * ``dict`` -> recurse over values (keys coerced to ``str``);
+    * ``list`` / ``tuple`` / ``set`` -> recurse into a ``list``;
+    * pydantic ``BaseModel`` (``model_dump`` / legacy ``dict``) -> coerce its dict;
+    * dataclass instance -> coerce ``dataclasses.asdict``;
+    * objects exposing ``_asdict`` (namedtuple-ish) or ``model_dump`` -> coerce that;
+    * objects with ``__dict__`` -> coerce their attribute dict;
+    * anything else (or a coercion that itself raises) -> ``str(value)``.
+
+    The result round-trips through encode/decode and stays lean (no live objects, just
+    plain containers/scalars).
+    """
+    # Fast path: msgpack-native scalars.
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _encode_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_encode_safe(v) for v in value]
+    # Pydantic BaseModel (v2 model_dump / v1 dict) — duck-typed so arc/ never imports it.
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        try:
+            return _encode_safe(dump())
+        except Exception:  # noqa: BLE001 - fall through to the next coercion strategy
+            pass
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        try:
+            return _encode_safe(dataclasses.asdict(value))
+        except Exception:  # noqa: BLE001 - fall through to the next coercion strategy
+            pass
+    asdict = getattr(value, "_asdict", None)
+    if callable(asdict):
+        try:
+            return _encode_safe(asdict())
+        except Exception:  # noqa: BLE001 - fall through to the next coercion strategy
+            pass
+    obj_dict = getattr(value, "__dict__", None)
+    if isinstance(obj_dict, dict) and obj_dict:
+        return _encode_safe(obj_dict)
+    # Last resort: a stable string form (never throws on a foreign object).
+    return str(value)
+
+
 def build_event_content(event: Any) -> Optional[dict[str, Any]]:
     """Canonical content dict for ONE ``semantic_event`` segment, or ``None`` for an
     untyped event. THE single builder shared by the production writer
@@ -65,6 +124,12 @@ def build_event_content(event: Any) -> Optional[dict[str, Any]]:
     configurable choice, never imposed here. The read-time reducer :func:`_apply`
     consumes ``event_type`` / ``payload`` / ``actor`` / ``provider`` / ``status`` /
     ``occurred_at`` / ``trace_id``; ``summary`` / ``subject`` are kept for completeness.
+
+    The structured fields (``actor`` / ``subject`` / ``payload`` / ``provider``) are run
+    through :func:`_encode_safe`, which recursively coerces any non-native value (litellm
+    usage objects, pydantic models, dataclasses, sets/tuples, …) to a plain serializable
+    form. This guarantees ARC's strict msgpack encode NEVER throws on an exotic payload
+    from ANY emit site, so no semantic event is ever silently dropped from ARC.
     """
     etype = str(getattr(event, "event_type", "") or "")
     if not etype:
@@ -73,13 +138,14 @@ def build_event_content(event: Any) -> Optional[dict[str, Any]]:
         "event_type": etype,
         "status": str(getattr(event, "status", "") or ""),
         "summary": str(getattr(event, "summary", "") or ""),
-        "actor": getattr(event, "actor", {}) or {},
-        "subject": getattr(event, "subject", {}) or {},
-        "payload": getattr(event, "payload", {}) or {},
-        "provider": getattr(event, "provider", {}) or {},
+        "actor": _encode_safe(getattr(event, "actor", {}) or {}),
+        "subject": _encode_safe(getattr(event, "subject", {}) or {}),
+        "payload": _encode_safe(getattr(event, "payload", {}) or {}),
+        "provider": _encode_safe(getattr(event, "provider", {}) or {}),
         "occurred_at": str(getattr(event, "occurred_at", "") or ""),
         "trace_id": str(getattr(event, "trace_id", "") or ""),
     }
+
 
 _NO_TURN = "_no_turn"
 
@@ -139,7 +205,9 @@ class _MemoryStore:
     def __init__(self) -> None:
         self._data: dict[tuple[str, str], bytes] = {}
 
-    def put(self, kind: str, name: str, data: bytes, *, tier: str = "warm", search_text: Any = None) -> None:
+    def put(
+        self, kind: str, name: str, data: bytes, *, tier: str = "warm", search_text: Any = None
+    ) -> None:
         self._data[(kind, name)] = data
 
     def get(self, kind: str, name: str) -> Optional[bytes]:
@@ -162,7 +230,9 @@ class _MemoryStore:
     def supports_search(self) -> bool:
         return False
 
-    def search(self, kind: str, query_text: str, *, name_prefix: str = "", k: int = 10) -> list[tuple[str, float]]:
+    def search(
+        self, kind: str, query_text: str, *, name_prefix: str = "", k: int = 10
+    ) -> list[tuple[str, float]]:
         return []
 
 
