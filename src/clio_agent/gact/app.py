@@ -23,125 +23,27 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-
-# Diagnostic: SIGUSR1 dumps all thread tracebacks to stderr (for wedge debugging).
-import faulthandler as _faulthandler  # noqa: E402
 import fnmatch
 import inspect
 import json
 import logging
 import os
 import re
-import signal as _signal  # noqa: E402
-import sys
 import threading
 import time
 import uuid
 
-_MEMPROF_STATE: dict[str, Any] = {"prev": None, "n": 0}
-
-
-def _memprof_dump(signum: Any, frame: Any) -> None:
-    """SIGUSR1 handler (when ``debug.memprof`` is on): dump a tracemalloc
-    snapshot of the top allocations + a gc type histogram, for heap attribution.
-
-    Writes to ``CLIO_DEBUG_MEMPROF_OUT.<n>.txt`` if set (numbered so successive
-    SIGUSR1s can be diffed), else to stderr. Best-effort; never raises.
-    """
-    try:
-        import collections
-        import gc
-        import tracemalloc
-
-        snap = tracemalloc.take_snapshot()
-        cur, peak = tracemalloc.get_traced_memory()
-        try:
-            with open(f"/proc/{os.getpid()}/status") as _f:
-                rss = next(
-                    (int(line.split()[1]) / 1024 for line in _f if line.startswith("VmRSS")),
-                    -1.0,
-                )
-        except OSError:
-            rss = -1.0
-        lines = [
-            f"pid={os.getpid()} RSS={rss:.1f}MB "
-            f"traced_current={cur / 1e6:.1f}MB traced_peak={peak / 1e6:.1f}MB",
-            "=== top 30 allocations by line ===",
-        ]
-        for stat in snap.statistics("lineno")[:30]:
-            fr = stat.traceback[0]
-            lines.append(
-                f"{stat.size / 1e6:8.2f}MB count={stat.count:<8} {fr.filename}:{fr.lineno}"
-            )
-        prev = _MEMPROF_STATE["prev"]
-        if prev is not None:
-            lines.append("=== top 25 GROWTH since previous snapshot ===")
-            for diff in snap.compare_to(prev, "lineno")[:25]:
-                fr = diff.traceback[0]
-                lines.append(
-                    f"{diff.size_diff / 1e6:+8.2f}MB (count {diff.count_diff:+d}) "
-                    f"{fr.filename}:{fr.lineno}"
-                )
-        lines.append("=== gc object type histogram (top 25) ===")
-        hist = collections.Counter(type(o).__name__ for o in gc.get_objects())
-        lines.extend(f"{count:>9}  {name}" for name, count in hist.most_common(25))
-        _MEMPROF_STATE["prev"] = snap
-        _MEMPROF_STATE["n"] += 1
-
-        report = "\n".join(lines) + "\n"
-        out = os.environ.get("CLIO_DEBUG_MEMPROF_OUT", "").strip()
-        if out:
-            with open(f"{out}.{_MEMPROF_STATE['n']}.txt", "w", encoding="utf-8") as fh:
-                fh.write(report)
-        else:
-            sys.stderr.write("\n=== CLIO MEMPROF SNAPSHOT ===\n" + report)
-            sys.stderr.flush()
-    except Exception:  # noqa: BLE001 - diagnostics must never crash the server
-        pass
-
-
-def _install_sigusr1_diagnostic() -> None:
-    """Install the SIGUSR1 diagnostic handler.
-
-    Default: ``faulthandler`` thread-traceback dump (wedge debugging). When
-    ``debug.memprof`` (env ``CLIO_DEBUG_MEMPROF``) is on, SIGUSR1 instead dumps a
-    tracemalloc heap snapshot (heap attribution) — the in-core replacement for
-    ad-hoc sitecustomize profiling, and it does not fight faulthandler.
-
-    SIGUSR1 and ``faulthandler.register`` are POSIX-only — on Windows neither
-    exists and merely referencing them raises ``AttributeError`` (not the
-    ``ValueError``/``OSError`` guarded below), which would crash server import.
-    This diagnostic is therefore a no-op on platforms without SIGUSR1.
-    """
-    if not hasattr(_signal, "SIGUSR1"):
-        return
-    memprof = False
-    try:
-        from clio_agent import conf
-
-        memprof = conf.resolve(
-            "debug.memprof", env="CLIO_DEBUG_MEMPROF", default=False, cast=conf.as_bool
-        )
-    except Exception:  # noqa: BLE001 - config must never block server import
-        memprof = False
-    if memprof:
-        try:
-            import tracemalloc
-
-            frames = int(os.environ.get("CLIO_DEBUG_MEMPROF_FRAMES", "20") or "20")
-            tracemalloc.start(frames)
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            _signal.signal(_signal.SIGUSR1, _memprof_dump)
-        except (ValueError, OSError):
-            pass
-    else:
-        try:
-            _faulthandler.register(_signal.SIGUSR1, all_threads=True)
-        except (ValueError, OSError):
-            pass
-
+# Process diagnostics (SIGUSR1 wedge/heap dump) extracted to gact/diagnostics.py
+# (#714 decomposition). Imported + re-exported here; ``_install_sigusr1_diagnostic``
+# is invoked at app import below so the handler is wired exactly as before, while
+# the single source of truth (and the side-effect-free module) lives in
+# diagnostics.py. ``_memprof_dump`` / ``_MEMPROF_STATE`` are re-exported so existing
+# ``from clio_agent.gact.app import <name>`` callers keep resolving.
+from clio_agent.gact.diagnostics import (  # noqa: E402,F401
+    _MEMPROF_STATE,
+    _install_sigusr1_diagnostic,
+    _memprof_dump,
+)
 
 _install_sigusr1_diagnostic()
 
@@ -232,123 +134,6 @@ from clio_agent.gact.runtime.globals import (  # noqa: E402, F401
     _wire_arc_op_logger,
     _with_ui_safe_semantic_fields,
 )
-
-
-def _prediction_summary(pred: Any) -> dict[str, Any]:
-    summary = {
-        "selected_expert": str(getattr(pred, "selected_expert", "") or ""),
-        "route_source": str(getattr(pred, "route_source", "") or ""),
-        "route_reason": str(
-            getattr(pred, "route_reason", "") or getattr(pred, "routing_rationale", "") or ""
-        ),
-        "answer": str(getattr(pred, "answer", "") or ""),
-        "expert_handoffs": _jsonish(getattr(pred, "expert_handoffs", None) or []),
-        "tools_called": _jsonish(getattr(pred, "tools_called", None) or []),
-        "file_diffs": _jsonish(getattr(pred, "file_diffs", None) or []),
-        "error_info": _jsonish(getattr(pred, "error_info", None)),
-    }
-    # Full capture (durable trace): the dspy ReAct trajectory and the extract's
-    # chain-of-thought reasoning. These are in SENSITIVE_KEYS, so the SSE
-    # projection strips them while the canonical trace keeps them for debugging
-    # and (later) re-extract repair. Only attach when present to keep the
-    # routing/predict payloads lean.
-    trajectory = getattr(pred, "trajectory", None)
-    if trajectory:
-        summary["trajectory"] = _jsonish(trajectory)
-    reasoning = getattr(pred, "reasoning", None)
-    if reasoning:
-        summary["reasoning"] = str(reasoning)
-    return summary
-
-
-def _coerce_ask_user_action(pred: Any) -> dict[str, Any]:
-    """Extract an ask-user planner action from a prediction-like object."""
-
-    candidates = [
-        getattr(pred, "ask_user", None),
-        getattr(pred, "user_question", None),
-        getattr(pred, "action", None),
-    ]
-    action_json = getattr(pred, "action_json", None)
-    if isinstance(action_json, str) and action_json.strip():
-        try:
-            candidates.append(json.loads(action_json))
-        except json.JSONDecodeError:
-            pass
-    for raw in candidates:
-        if raw is None:
-            continue
-        if isinstance(raw, str):
-            try:
-                raw = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-        if not isinstance(raw, Mapping):
-            continue
-        action = str(raw.get("action") or raw.get("type") or "").strip().lower()
-        if action and action not in {"ask_user", "question", "user_question"}:
-            continue
-        question = str(raw.get("question") or raw.get("prompt") or "").strip()
-        if not question:
-            continue
-        choices_raw = raw.get("choices") or raw.get("options") or []
-        choices = choices_raw if isinstance(choices_raw, list) else []
-        return {
-            "question": question,
-            "choices": [c for c in choices if isinstance(c, Mapping)],
-            "allow_freeform": bool(raw.get("allow_freeform", True)),
-            "kind": str(raw.get("kind") or "").strip(),
-            "reason": str(raw.get("reason") or raw.get("category") or "").strip(),
-            "caller": raw.get("caller") if isinstance(raw.get("caller"), Mapping) else {},
-            "metadata": raw.get("metadata") if isinstance(raw.get("metadata"), Mapping) else {},
-        }
-    return {}
-
-
-def _ask_user_options_from_action(action: Mapping[str, Any]) -> list["UserQuestionOption"]:
-    options: list[UserQuestionOption] = []
-    for idx, choice in enumerate(action.get("choices", []) or []):
-        if not isinstance(choice, Mapping):
-            continue
-        label = str(choice.get("label") or choice.get("title") or choice.get("id") or "").strip()
-        value = str(choice.get("value") or choice.get("id") or label).strip()
-        description = str(choice.get("description") or "").strip()
-        if not label:
-            continue
-        options.append(
-            UserQuestionOption(
-                label=label,
-                value=value or f"choice_{idx + 1}",
-                description=description,
-            )
-        )
-    return options
-
-
-def _ask_user_resume_text(question: "UserQuestion") -> str:
-    selected = ", ".join(question.selected_options)
-    answer = question.answer.strip()
-    lines = [
-        "[Answer to agent question]",
-        f"Question: {question.prompt}",
-    ]
-    if selected:
-        lines.append(f"Selected option(s): {selected}")
-    if answer:
-        lines.append(f"Answer: {answer}")
-    return "\n".join(lines)
-
-
-def _format_subagent_input(spawn_input: Any) -> str:
-    """Format a materialized nanoagent input without a raw Python-dict look."""
-
-    if isinstance(spawn_input, str):
-        return spawn_input
-    try:
-        return "Subagent input:\n" + json.dumps(spawn_input, indent=2, sort_keys=True)
-    except (TypeError, ValueError):
-        return f"Subagent input:\n{spawn_input}"
-
 
 _EXECUTABLE_SESSION_AGENT_IDS = {
     "",
@@ -635,230 +420,28 @@ def _keyword_routed_user_agent(app: "FastAPI", text: str) -> "AgentDef | None":
     return matches[0][2]
 
 
-# --- re-export shim (#714): pure workflow_state merge/normalize helpers ---
-# Definitions live in clio_agent.gact.workflow_state.merge. Imported here so
-# they remain resolvable as clio_agent.gact.app.<name> for the rest of this
-# module and existing test seams. (behavior-preserving extraction)
-# Delegation + workflow-state derivation cluster extracted to
-# gact/delegation.py (#714 decomposition). Re-exported here so existing
-# importers (tests, gact/turn.py, agents/builders.py) keep working through the
-# stable app.py shim while the single source of truth lives in delegation.py.
-from clio_agent.gact.delegation import (  # noqa: E402,F401
-    _append_accumulated_workflow_state_context,
-    _append_nested_workflow_state,
-    _append_session_workflow_state_context,
-    _bubbled_child_evidence_output_summary,
-    _coerce_expert_handoff_rows,
-    _compact_dynamic_delegation_output,
-    _compact_exact_evidence_index,
-    _compact_workflow_state_blocks,
-    _delegated_expert_agent_id,
-    _delegated_expert_prompt,
-    _dynamic_parent_resume_prompt,
-    _expert_handoff_summary,
-    _failed_child_delegation_output_summary,
-    _failed_child_delegation_workflow_state,
-    _iter_delegation_return_rows,
-    _json_objects_from_text,
-    _latest_completed_artifact_output_summary,
-    _latest_completed_child_output_summary,
-    _latest_delegation_output_summary,
-    _latest_final_child_output_summary,
-    _latest_parent_resumed_output_summary,
-    _looks_like_truncated_user_facing_tail,
-    _merge_workflow_state_from_value,
-    _should_execute_delegated_handoff,
-    _state_path_value,
-    _state_predicate_hit,
-    _strip_embedded_workflow_state_evidence,
-    _user_facing_dynamic_evidence_summary,
-    _workflow_state_from_handoff_rows,
-    _workflow_state_from_outputs,
-    _workflow_state_has_existing_staged_path,
-    _workflow_state_payload,
+# --------------------------------------------------------------------------- #
+# Extracted-module re-export shims (#714 decomposition)                         #
+#                                                                               #
+# The cohesive helper clusters below were carved OUT of this module into        #
+# sibling modules (the single source of truth for each). They are re-imported   #
+# here so existing ``from clio_agent.gact.app import <name>`` callers (tests,   #
+# gact/turn.py, routes/deps.py, agents/builders.py) + the ``test_import_seams`` #
+# guardrail keep resolving them through this stable shim. None of these sibling #
+# modules import this 24k-line module, so the graph stays acyclic. The imports  #
+# are isort-sorted; each per-module comment annotates the run it heads.         #
+# (behavior-preserving extraction)                                              #
+# --------------------------------------------------------------------------- #
+# gact/_params.py -- user-agent generation-parameter parsing.
+from clio_agent.gact._params import (  # noqa: E402,F401
+    _user_agent_bool_param,
+    _user_agent_float_param,
+    _user_agent_int_param,
+    _user_agent_param,
 )
 
-# Evidence-grounding + tool-result / trajectory-evidence cluster extracted to
-# gact/evidence.py (#714 decomposition). Re-exported here so existing importers
-# (tests, gact/turn.py, agents/builders.py) keep resolving these as
-# clio_agent.gact.app.<name> through the stable app.py shim while the single
-# source of truth lives in evidence.py. (behavior-preserving extraction)
-from clio_agent.gact.evidence import (  # noqa: E402,F401
-    _bounded_tool_call_result,
-    _dynamic_agent_runtime_provenance,
-    _extract_tools_called_from_trajectory,
-    _ground_fabricated_local_artifact_paths,
-    _is_bounded_tool_result,
-    _is_empty_dynamic_agent_answer_error,
-    _is_remote_artifact_ref,
-    _propose_edit_diffs_from_pred,
-    _tool_agent_empty_answer_fallback,
-    _tool_result_is_error,
-    _tool_result_preview,
-    _verified_local_artifact_paths_by_ext,
-)
-from clio_agent.gact.workflow_state.merge import (  # noqa: E402,F401
-    _TRAJECTORY_TOOL_ARGS_KEYS,
-    _TRAJECTORY_TOOL_NAME_KEYS,
-    _TRAJECTORY_TOOL_RESULT_KEYS,
-    _UNICODE_PATH_HYPHENS,
-    _merge_inferred_workflow_state,
-    _merge_non_empty_mapping,
-    _merge_workflow_state_mapping,
-    _normalize_pathlike_text,
-    _normalize_workflow_state_scalar,
-    _normalize_workflow_state_section,
-    _trajectory_key_index,
-    _value_has_semantic_content,
-    _workflow_status_rank,
-)
-
-
-def _agent_accepts_images(agent: Any) -> bool:
-    """Return whether agent.forward can receive native image inputs."""
-
-    forward = getattr(agent, "forward", None)
-    if not callable(forward):
-        return False
-    try:
-        params = inspect.signature(forward).parameters
-    except (TypeError, ValueError):
-        return False
-    if "images" in params:
-        return True
-    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
-
-
-def _user_message_parts(
-    *,
-    request_parts: list["Part"],
-    user_text: str,
-) -> list["Part"]:
-    """Return transcript parts for a user turn, preserving image parts."""
-
-    if not request_parts:
-        return [Part(id=_new_part_id(), type="text", text=user_text)]
-    parts: list[Part] = []
-    has_text = False
-    for part in request_parts:
-        if part.type not in {"text", "image"}:
-            continue
-        metadata = dict(part.metadata)
-        if part.type == "image":
-            metadata.setdefault("clio_multimodal", "preserved")
-        copied = part.model_copy(
-            update={
-                "id": part.id or _new_part_id(),
-                "metadata": metadata,
-            }
-        )
-        if copied.type == "text" and copied.text:
-            has_text = True
-        parts.append(copied)
-    if not has_text and user_text:
-        parts.insert(0, Part(id=_new_part_id(), type="text", text=user_text))
-    return parts or [Part(id=_new_part_id(), type="text", text=user_text)]
-
-
-def _image_part_summaries(parts: list["Part"]) -> list[dict[str, Any]]:
-    """Return bounded metadata for image parts without logging raw base64."""
-
-    rows: list[dict[str, Any]] = []
-    for index, part in enumerate(parts):
-        if part.type != "image":
-            continue
-        rows.append(
-            {
-                "index": index,
-                "id": part.id,
-                "media_type": part.media_type or part.metadata.get("media_type", ""),
-                "has_data": bool(part.data),
-                "data_length": len(part.data or ""),
-                "url": part.url,
-                "metadata": {
-                    key: value
-                    for key, value in part.metadata.items()
-                    if key not in {"data", "base64", "file"}
-                },
-            }
-        )
-    return rows
-
-
-def _dspy_images_from_parts(parts: list["Part"]) -> list[Any]:
-    """Convert GACT image parts to DSPy image inputs for native vision models."""
-
-    images: list[Any] = []
-    for part in parts:
-        if part.type != "image":
-            continue
-        try:
-            import dspy  # noqa: PLC0415
-
-            if part.url:
-                images.append(dspy.Image(part.url))
-                continue
-            if part.data:
-                data = part.data
-                if data.startswith("data:"):
-                    images.append(dspy.Image(data))
-                    continue
-                media_type = part.media_type or part.metadata.get("media_type") or "image/png"
-                images.append(dspy.Image(f"data:{media_type};base64,{data}"))
-        except Exception:
-            continue
-    return images
-
-
-def _user_agent_param(agent_def: "AgentDef", name: str) -> Any:
-    """Return one user-agent generation parameter, if present."""
-    params = agent_def.parameters if isinstance(agent_def.parameters, Mapping) else {}
-    return params.get(name)
-
-
-def _user_agent_int_param(agent_def: "AgentDef", name: str, default: int) -> int:
-    """Parse an integer user-agent parameter with an explicit error."""
-    value = _user_agent_param(agent_def, name)
-    if value in (None, ""):
-        return default
-    try:
-        return int(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"user agent parameter {name!r} must be an integer") from exc
-
-
-def _user_agent_bool_param(agent_def: "AgentDef", name: str, default: bool = False) -> bool:
-    """Parse a boolean user-agent parameter."""
-
-    value = _user_agent_param(agent_def, name)
-    if value in (None, ""):
-        return default
-    if isinstance(value, bool):
-        return value
-    normalized = str(value).strip().lower()
-    if normalized in {"1", "true", "yes", "on", "allow", "allowed"}:
-        return True
-    if normalized in {"0", "false", "no", "off", "deny", "denied"}:
-        return False
-    return default
-
-
-def _user_agent_float_param(agent_def: "AgentDef", name: str, default: float) -> float:
-    """Parse a float user-agent parameter with an explicit error."""
-    value = _user_agent_param(agent_def, name)
-    if value in (None, ""):
-        return default
-    try:
-        return float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"user agent parameter {name!r} must be a number") from exc
-
-
-# Expert runtime engine extracted to gact/agents/runtime.py (#714 decomposition
-# step 4). Re-exported here so existing ``from clio_agent.gact.app import <name>``
-# callers + the import-seam guardrail stay green; the kept turn-handler dispatch
-# wrappers below (``_blueprint_runner_for_agent`` / ``_run_*``) reach the builders
-# through these shims.
+# gact/agents/builders.py + agents/runtime.py -- expert/blueprint runtime engine;
+# the kept turn-handler dispatch wrappers below reach the builders through these.
 from clio_agent.gact.agents.builders import (  # noqa: E402,F401
     _active_base_agent_tool_executor,
     _adapter_tool_intent_from_exception,
@@ -896,6 +479,88 @@ from clio_agent.gact.agents.runtime import (  # noqa: E402,F401
     _prediction_structured_metadata,
     _retaining_react_cls,
     _summarize_segments_llm,
+)
+
+# gact/delegation.py -- delegation + workflow-state derivation cluster.
+from clio_agent.gact.delegation import (  # noqa: E402,F401
+    _append_accumulated_workflow_state_context,
+    _append_nested_workflow_state,
+    _append_session_workflow_state_context,
+    _bubbled_child_evidence_output_summary,
+    _coerce_expert_handoff_rows,
+    _compact_dynamic_delegation_output,
+    _compact_exact_evidence_index,
+    _compact_workflow_state_blocks,
+    _delegated_expert_agent_id,
+    _delegated_expert_prompt,
+    _dynamic_parent_resume_prompt,
+    _expert_handoff_summary,
+    _failed_child_delegation_output_summary,
+    _failed_child_delegation_workflow_state,
+    _iter_delegation_return_rows,
+    _json_objects_from_text,
+    _latest_completed_artifact_output_summary,
+    _latest_completed_child_output_summary,
+    _latest_delegation_output_summary,
+    _latest_final_child_output_summary,
+    _latest_parent_resumed_output_summary,
+    _looks_like_truncated_user_facing_tail,
+    _merge_workflow_state_from_value,
+    _should_execute_delegated_handoff,
+    _state_path_value,
+    _state_predicate_hit,
+    _strip_embedded_workflow_state_evidence,
+    _user_facing_dynamic_evidence_summary,
+    _workflow_state_from_handoff_rows,
+    _workflow_state_from_outputs,
+    _workflow_state_has_existing_staged_path,
+    _workflow_state_payload,
+)
+
+# gact/evidence.py -- evidence-grounding + tool-result / trajectory-evidence.
+from clio_agent.gact.evidence import (  # noqa: E402,F401
+    _bounded_tool_call_result,
+    _dynamic_agent_runtime_provenance,
+    _extract_tools_called_from_trajectory,
+    _ground_fabricated_local_artifact_paths,
+    _is_bounded_tool_result,
+    _is_empty_dynamic_agent_answer_error,
+    _is_remote_artifact_ref,
+    _propose_edit_diffs_from_pred,
+    _tool_agent_empty_answer_fallback,
+    _tool_result_is_error,
+    _tool_result_preview,
+    _verified_local_artifact_paths_by_ext,
+)
+
+# gact/messaging.py -- message / multimodal + ask-user + trace-summary helpers.
+from clio_agent.gact.messaging import (  # noqa: E402,F401
+    _agent_accepts_images,
+    _ask_user_options_from_action,
+    _ask_user_resume_text,
+    _coerce_ask_user_action,
+    _dspy_images_from_parts,
+    _format_subagent_input,
+    _image_part_summaries,
+    _prediction_summary,
+    _user_message_parts,
+)
+
+# gact/workflow_state/merge.py -- pure workflow_state merge/normalize helpers.
+from clio_agent.gact.workflow_state.merge import (  # noqa: E402,F401
+    _TRAJECTORY_TOOL_ARGS_KEYS,
+    _TRAJECTORY_TOOL_NAME_KEYS,
+    _TRAJECTORY_TOOL_RESULT_KEYS,
+    _UNICODE_PATH_HYPHENS,
+    _merge_inferred_workflow_state,
+    _merge_non_empty_mapping,
+    _merge_workflow_state_mapping,
+    _normalize_pathlike_text,
+    _normalize_workflow_state_scalar,
+    _normalize_workflow_state_section,
+    _trajectory_key_index,
+    _value_has_semantic_content,
+    _workflow_status_rank,
 )
 
 
@@ -3951,8 +3616,6 @@ from clio_agent.gact.types import (
     Message,
     Part,
     Session,
-    UserQuestion,
-    UserQuestionOption,
 )
 from clio_agent.gact.workspaces import (
     WorkspaceStore,
