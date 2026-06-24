@@ -6,24 +6,38 @@
 # subcommands mirror `gact agent *`: they let you manage the backing
 # server process without hunting PIDs.
 #
-#   clio                 ensure server is up, then attach the TUI
-#   clio web | --web     ensure server is up, then open the web UI in a browser
+#   clio                      ensure server is up, then attach the TUI
+#   clio web | --web [--dev]  ensure server is up, then open the web UI in a browser.
+#                             default serves the installed bundle; --dev builds and
+#                             serves your working checkout (CLIO_WEB_SRC) instead.
+#   clio desktop | --desktop [--dev]  launch the desktop app. default runs the
+#                             installed binary (CLIO_DESKTOP_BIN); --dev runs the
+#                             Tauri dev shell from your working checkout.
 #   clio start           start the server (no TUI)
 #   clio stop            stop the server
 #   clio restart         stop then start
 #   clio status | ps     PID / port / health
 #   clio logs [N]        tail the server + gact stderr logs
+#   clio update          update clio-agent to the latest PyPI release (uv pip -U)
 #   clio doctor          check prerequisites and install layout
 #   clio report          print a diagnostics bundle for GitHub issues
 #   clio completion SH   print shell completion (bash|zsh)
 #   clio uninstall [...] run the uninstaller
 #   clio help            this text
 #
+# On launch, clio prints a one-line hint when a newer clio-agent is on PyPI
+# (throttled to ~once/day; set CLIO_NO_UPDATE_CHECK=1 to disable).
+#
 # Environment overrides:
 #   CLIO_PREFIX   install root      (default: $HOME/.local/share/clio)
 #   CLIO_PORT     server port       (default: 17800)
 #   CLIO_BIN_DIR  launcher location (default: $HOME/.local/bin)
 #   CLIO_LOG      server log path   (default: $CLIO_PREFIX/clio-server.log)
+#   CLIO_NO_UPDATE_CHECK  set to 1 to skip the on-launch PyPI update check
+#   CLIO_WEB_DIR  built web dist to serve (overrides the installed bundle)
+#   CLIO_WEB_SRC  gact-tui/apps checkout for `--dev` builds (auto-detected if unset)
+#   CLIO_WEB_NO_BUILD  set to 1 to skip the `--dev` rebuild and serve the last dist
+#   CLIO_DESKTOP_BIN   installed desktop app binary for `clio --desktop`
 set -euo pipefail
 
 CLIO_PREFIX="${CLIO_PREFIX:-$HOME/.local/share/clio}"
@@ -41,6 +55,8 @@ SERVER_BIN="$CLIO_PREFIX/clio-agent/.venv/bin/clio-agent-gact"
 GACT_BIN="$CLIO_PREFIX/gact"
 CLIO_BRAND_ROOT="$CLIO_PREFIX/clio-agent/branding"
 WEB_DIR="$CLIO_PREFIX/clio-agent/web"
+CLIO_VENV="$CLIO_PREFIX/clio-agent/.venv"
+UPDATE_STAMP="$CLIO_PREFIX/.update-checked"
 
 GREEN='\033[0;32m'; YELLOW='\033[0;33m'; RED='\033[0;31m'; RESET='\033[0m'
 say()  { printf "${GREEN}==>${RESET} %s\n" "$*"; }
@@ -62,6 +78,30 @@ serving_web() {
   curl -sS -m 1 "http://127.0.0.1:$CLIO_PORT/" 2>/dev/null | grep -qiE "<html|<!doctype html"
 }
 
+# update_check prints a one-line hint when the installed clio-agent is behind
+# the latest PyPI release. Best-effort: throttled to ~once/day via a stamp file,
+# bounded by a short curl timeout, and silent on any failure (offline, no venv).
+# Set CLIO_NO_UPDATE_CHECK=1 to disable. Synchronous + fast so it never corrupts
+# the TUI display, but a no-op on all but ~one launch per day.
+update_check() {
+  [[ "${CLIO_NO_UPDATE_CHECK:-0}" = "1" ]] && return 0
+  if [[ -f "$UPDATE_STAMP" ]]; then
+    local age=$(( $(date +%s) - $(stat -c %Y "$UPDATE_STAMP" 2>/dev/null || echo 0) ))
+    [[ "$age" -lt 86400 ]] && return 0
+  fi
+  local installed latest first
+  installed="$("$CLIO_VENV/bin/python" -c 'import importlib.metadata as m; print(m.version("clio-agent"))' 2>/dev/null)" || return 0
+  latest="$(curl -sS -m 4 https://pypi.org/pypi/clio-agent/json 2>/dev/null \
+    | "$CLIO_VENV/bin/python" -c 'import sys,json; print(json.load(sys.stdin)["info"]["version"])' 2>/dev/null)" || return 0
+  [[ -z "$installed" || -z "$latest" ]] && return 0
+  touch "$UPDATE_STAMP" 2>/dev/null || true
+  if [[ "$installed" != "$latest" ]]; then
+    # "behind" when installed sorts before latest under version ordering.
+    first="$(printf '%s\n%s\n' "$installed" "$latest" | sort -V | head -1)"
+    [[ "$first" = "$installed" ]] && warn "clio-agent update available: $installed -> $latest  (run: clio update)"
+  fi
+}
+
 # open_url launches the default browser cross-platform (best-effort, backgrounded).
 open_url() {
   local url="$1"
@@ -69,6 +109,21 @@ open_url() {
   elif command -v open >/dev/null 2>&1; then open "$url" >/dev/null 2>&1 &
   elif command -v explorer.exe >/dev/null 2>&1; then explorer.exe "$url" >/dev/null 2>&1 &
   else warn "open $url in your browser"; fi
+}
+
+# resolve_web_src echoes the gact-tui/apps checkout used by `--dev` builds,
+# honoring $CLIO_WEB_SRC first, then a few common locations. Echoes nothing and
+# returns 1 when none is found (the caller prints actionable guidance).
+resolve_web_src() {
+  local cand
+  if [[ -n "${CLIO_WEB_SRC:-}" && -f "$CLIO_WEB_SRC/web/package.json" ]]; then
+    printf '%s\n' "$CLIO_WEB_SRC"; return 0
+  fi
+  for cand in "$HOME/gact-tui/apps" "$HOME/clio/apps" \
+              "$HOME/src/gact-tui/apps" "$HOME/projects/gact-tui/apps"; do
+    [[ -f "$cand/web/package.json" ]] && { printf '%s\n' "$cand"; return 0; }
+  done
+  return 1
 }
 
 # server_pid echoes a live server PID (from the pidfile, validated) or
@@ -245,6 +300,7 @@ main() {
   case "$cmd" in
     ""|attach)
       shift || true
+      update_check
       start_server
       # stdout stays on the terminal so the TUI renders; gact stderr is
       # captured to a log so Go panics survive for bug reports.
@@ -256,6 +312,25 @@ main() {
       ;;
     web|--web)
       shift || true
+      local web_dev=0 arg
+      for arg in "$@"; do [[ "$arg" == "--dev" ]] && web_dev=1; done
+      if (( web_dev )); then
+        # --dev: build + serve the web app from your working checkout instead of
+        # the installed bundle, so `clio --web --dev` shows what you're building.
+        local src
+        if ! src="$(resolve_web_src)"; then
+          err "clio --web --dev: set CLIO_WEB_SRC to your gact-tui/apps checkout (none auto-detected)"
+          return 1
+        fi
+        command -v pnpm >/dev/null 2>&1 || { err "clio --web --dev needs pnpm on PATH to build the web"; return 1; }
+        if [[ "${CLIO_WEB_NO_BUILD:-0}" != 1 ]]; then
+          say "building dev web bundle from $src (set CLIO_WEB_NO_BUILD=1 to skip)"
+          ( cd "$src" && pnpm --filter @clio/web build ) || { err "dev web build failed"; return 1; }
+        fi
+        export CLIO_WEB_DIR="$src/web/dist"
+        [[ -f "$CLIO_WEB_DIR/index.html" ]] || { err "no built web at $CLIO_WEB_DIR (run without CLIO_WEB_NO_BUILD)"; return 1; }
+        say "serving DEV web bundle from $CLIO_WEB_DIR"
+      fi
       if [[ ! -f "$WEB_DIR/index.html" && -z "${CLIO_WEB_DIR:-}" ]]; then
         err "web bundle not found at $WEB_DIR"
         err "reinstall CLIO with the web bundle, or set CLIO_WEB_DIR to a built web dist"
@@ -263,8 +338,9 @@ main() {
       fi
       export CLIO_WEB_DIR="${CLIO_WEB_DIR:-$WEB_DIR}"
       # The web mount is wired at server startup, so a server already running
-      # WITHOUT the web bundle must be restarted to pick it up.
-      if health && ! serving_web; then
+      # WITHOUT the web bundle (or serving a DIFFERENT bundle, e.g. switching to
+      # --dev) must be restarted to pick up this CLIO_WEB_DIR.
+      if health && { ! serving_web || (( web_dev )); }; then
         say "restarting server in web mode"
         stop_server
       fi
@@ -273,9 +349,49 @@ main() {
       say "CLIO web UI: $url"
       open_url "$url"
       ;;
-    start)        start_server ;;
+    desktop|--desktop)
+      shift || true
+      local dt_dev=0 arg
+      for arg in "$@"; do [[ "$arg" == "--dev" ]] && dt_dev=1; done
+      start_server
+      if (( dt_dev )); then
+        local src
+        if ! src="$(resolve_web_src)"; then
+          err "clio --desktop --dev: set CLIO_WEB_SRC to your gact-tui/apps checkout (none auto-detected)"
+          return 1
+        fi
+        command -v pnpm >/dev/null 2>&1 || { err "clio --desktop --dev needs pnpm on PATH"; return 1; }
+        say "launching desktop dev shell (tauri dev) from $src against :$CLIO_PORT"
+        exec env GACT_BACKEND="http://127.0.0.1:$CLIO_PORT" \
+          sh -c "cd '$src' && pnpm --filter @clio/desktop tauri:dev"
+      fi
+      local dt_bin="${CLIO_DESKTOP_BIN:-}"
+      if [[ -z "$dt_bin" || ! -x "$dt_bin" ]]; then
+        err "clio --desktop: no installed desktop app found"
+        err "set CLIO_DESKTOP_BIN to the built binary, or use 'clio --desktop --dev' for the Tauri dev shell"
+        return 1
+      fi
+      say "launching desktop app: $dt_bin"
+      exec "$dt_bin"
+      ;;
+    start)        update_check; start_server ;;
     stop)         stop_server ;;
     restart)      stop_server; start_server ;;
+    update)
+      shift || true
+      local uv_bin
+      uv_bin="$(command -v uv 2>/dev/null || true)"
+      [[ -z "$uv_bin" && -x "$CLIO_VENV/bin/uv" ]] && uv_bin="$CLIO_VENV/bin/uv"
+      say "updating clio-agent to the latest PyPI release"
+      if health; then say "stopping the running server first"; stop_server; fi
+      if [[ -n "$uv_bin" ]]; then
+        "$uv_bin" pip install --python "$CLIO_VENV/bin/python" -U clio-agent || { err "update failed"; return 1; }
+      else
+        "$CLIO_VENV/bin/python" -m pip install -U clio-agent || { err "update failed (no uv; pip fallback also failed)"; return 1; }
+      fi
+      rm -f "$UPDATE_STAMP" 2>/dev/null || true
+      say "updated — run 'clio' to start the new version"
+      ;;
     status|ps)    status_server ;;
     logs)         shift || true; show_logs "${1:-40}" ;;
     doctor)       doctor ;;
