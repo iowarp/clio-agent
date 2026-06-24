@@ -303,10 +303,13 @@ async def _call_enabled_external_mcp_tool(
 
     spec = info.get("spec", {})
     if spec.get("transport") == "stdio":
-        transport = StdioTransport(
-            command=spec["command"],
-            args=spec.get("args") or [],
-        )
+        from clio_agent.tools.mcp_config import pdeathsig_wrapped_command  # noqa: PLC0415
+
+        # Reap this external MCP child if the clio server dies hard (SIGKILL/OOM/
+        # crash) -- there is no parent-death link otherwise, so it would orphan to
+        # init. Mirrors transport_for() for the configured/clio-kit servers.
+        cmd, cmd_args = pdeathsig_wrapped_command(spec["command"], spec.get("args") or [])
+        transport = StdioTransport(command=cmd, args=cmd_args)
     elif spec.get("transport") in {"http", "streamable-http"}:
         transport = StreamableHttpTransport(url=spec["url"])  # type: ignore[assignment]
     else:
