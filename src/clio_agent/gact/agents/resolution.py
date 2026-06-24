@@ -87,6 +87,38 @@ def _merge_agent_def_rows(rows: list["AgentDef"]) -> list["AgentDef"]:
     return list(merged.values())
 
 
+def _agent_overlay_patchable_fields() -> set[str]:
+    """Expert fields a session agent overlay (the REST overlay API) may patch.
+
+    This is the conservative set surfaced by ``/v1/sessions/{sid}/agent-overlay``:
+    it deliberately omits the blueprint-runtime structural fields (``module``,
+    ``signature``, ``structured_outputs``, ``fanout``) that
+    :func:`_runtime_apply_session_agent_overlay` accepts when assembling the live
+    runtime graph. Shared single-source by the overlay-validation +
+    overlay-apply paths in :mod:`clio_agent.gact.routes.agents` and
+    :mod:`clio_agent.gact.app`.
+    """
+
+    return {
+        "title",
+        "description",
+        "system_prompt",
+        "prompt_id",
+        "prompt_profile",
+        "default_provider",
+        "default_model",
+        "parent_id",
+        "tier",
+        "specialization",
+        "keywords",
+        "tools",
+        "skills",
+        "commands",
+        "parameters",
+        "enabled",
+    }
+
+
 def _resolve_dynamic_agent(
     app: "FastAPI",
     agent_id: str,

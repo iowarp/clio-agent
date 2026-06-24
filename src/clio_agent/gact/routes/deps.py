@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
+    from clio_agent.gact.types import AgentDef
     from clio_agent.prompts import PromptRegistry
 
 
@@ -183,6 +184,65 @@ class _MirrorWorkspaceSession(Protocol):
     def __call__(self, app: "FastAPI", session_id: str) -> None: ...
 
 
+class _AgentRows(Protocol):
+    """Callable seam resolving the effective agent catalog for a session/workspace.
+
+    ``_agent_rows`` (in :mod:`clio_agent.gact.app`) merges the active Agent
+    Blueprint graph, expert packs, and the built-in/user/skill registry into the
+    rows ``GET /v1/agents`` renders, applying the session overlay + prompt
+    registry. It is also reached by the prompt render-context builder that stays
+    in ``build_app``, so it stays single-sourced there and travels here for the
+    agent list/detail routes.
+    """
+
+    def __call__(self, session_id: str = ..., workspace_id: str = ...) -> "list[AgentDef]": ...
+
+
+class _AgentWithCapabilityRefs(Protocol):
+    """Callable seam attaching normalized capability metadata to an ``AgentDef``.
+
+    ``_agent_with_capability_refs`` (in :mod:`clio_agent.gact.app`) projects an
+    agent's tools/skills/commands (plus the ``main`` backend-command set) into the
+    ``capability_refs`` the TUI renders. It has callers that remain in the
+    blueprint-row resolution closures, so it stays single-sourced in ``build_app``
+    and travels here for the agent create/update routes.
+    """
+
+    def __call__(self, agent_def: "AgentDef") -> "AgentDef": ...
+
+
+class _BaseSessionAgentBlueprintRows(Protocol):
+    """Callable seam loading a session's *un-overlaid* active blueprint rows.
+
+    ``_base_session_agent_blueprint_rows`` (in :mod:`clio_agent.gact.app`) loads
+    the Agent Blueprint graph a session has activated (by id or on-disk path)
+    before any session overlay is applied. The overlay validation + export routes
+    re-resolve this base, and so does the live blueprint-row resolver that stays
+    in ``build_app``; it stays single-sourced there and travels here.
+    """
+
+    def __call__(self, session_id: str = ..., workspace_id: str = ...) -> "list[AgentDef]": ...
+
+
+class _ApplyAgentOverlayRows(Protocol):
+    """Callable seam applying a session overlay patch onto base blueprint rows.
+
+    ``_apply_agent_overlay_rows`` (in :mod:`clio_agent.gact.app`) layers an
+    overlay's per-agent field patches onto the base rows, recording the applied
+    fields in each row's metadata. The overlay validation + export routes apply it
+    to preview the effective hierarchy, and ``_apply_session_agent_overlay`` in
+    ``build_app`` reuses it; it stays single-sourced there and travels here.
+    """
+
+    def __call__(
+        self,
+        rows: "list[AgentDef]",
+        overlay: Mapping[str, Any],
+        *,
+        session_id: str = ...,
+    ) -> "list[AgentDef]": ...
+
+
 @dataclass(frozen=True)
 class GactDeps:
     """Cross-concern seams the extracted route factories need beyond ``app.state``.
@@ -202,3 +262,7 @@ class GactDeps:
     active_session_agent_blueprint_id: _ActiveSessionAgentBlueprintId
     agent_blueprint_activation_metadata: _AgentBlueprintActivationMetadata
     mirror_workspace_session: _MirrorWorkspaceSession
+    agent_rows: _AgentRows
+    agent_with_capability_refs: _AgentWithCapabilityRefs
+    base_session_agent_blueprint_rows: _BaseSessionAgentBlueprintRows
+    apply_agent_overlay_rows: _ApplyAgentOverlayRows
