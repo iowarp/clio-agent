@@ -2495,8 +2495,36 @@ from clio_agent.gact.routes.prompts import (  # noqa: E402
 from clio_agent.gact.routes.schedules import (  # noqa: E402
     register_schedules_routes,
 )
+from clio_agent.gact.routes.system import (  # noqa: E402
+    register_system_routes,
+)
 from clio_agent.gact.routes.workspaces import (  # noqa: E402
     register_workspaces_routes,
+)
+
+# Capability + metrics catalogs (the stream-fallback reason catalog, the
+# capability-gap rows, and the latency-stat percentile helper) moved to
+# gact/runtime/capabilities.py (#714 decomposition) so the read-only system
+# routes (routes/system.py) and the message-turn streaming path here share one
+# source. The turn path reads ``_STREAM_FALLBACK_REASON_DEFINITIONS`` via
+# ``_stream_fallback_payload`` below; re-exported so existing
+# ``from clio_agent.gact.app import <name>`` callers stay green.
+from clio_agent.gact.runtime.capabilities import (  # noqa: E402,F401
+    _CAPABILITY_GAP_DEFINITIONS,
+    _STREAM_FALLBACK_REASON_DEFINITIONS,
+    _capability_gap_metadata,
+    _latency_stat,
+    _stream_fallback_reason_capabilities,
+)
+
+# Server-wide wire + limit constants (contract/backend version, inline-context
+# byte cap) moved to gact/runtime/constants.py (#714 decomposition) so the route
+# modules read them without importing back into app.py. Re-exported so existing
+# ``from clio_agent.gact.app import <name>`` callers stay green.
+from clio_agent.gact.runtime.constants import (  # noqa: E402,F401
+    _CTX_MAX_BYTES,
+    CONTRACT_VERSION,
+    GACT_BACKEND_VERSION,
 )
 
 # Token / context-window leaf machinery moved to gact/runtime/context_tokens.py
@@ -6911,177 +6939,6 @@ class _StreamingOutputError(RuntimeError):
     """Raised when live streaming fails after user-visible output was emitted."""
 
 
-_STREAM_FALLBACK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
-    "stream_disabled_guided_output": {
-        "category": "runtime_configuration",
-        "synthetic_posthoc": True,
-        "live_streaming": False,
-        "recovery_actions": ["continue_without_live_streaming"],
-        "description": (
-            "Guided/structured output is enabled; live streaming is disabled "
-            "because the constrained response streams as reasoning_content-only "
-            "deltas. The blocking path recovers it via the completion fallback."
-        ),
-    },
-    "stream_disabled_live_streaming": {
-        "category": "runtime_configuration",
-        "synthetic_posthoc": True,
-        "live_streaming": False,
-        "recovery_actions": ["continue_without_live_streaming"],
-        "description": (
-            "Live streaming is disabled by configuration "
-            "(runtime.live_streaming / CLIO_LIVE_STREAMING=0); the blocking path "
-            "runs instead so reasoning_content-channel answers are recovered and "
-            "no streamify task group can fail. Opt-out for reasoning models whose "
-            "provider streams the answer on the reasoning channel."
-        ),
-    },
-    "streaming_dependency_unavailable": {
-        "category": "runtime_configuration",
-        "synthetic_posthoc": True,
-        "live_streaming": False,
-        "recovery_actions": ["reconfigure", "retry", "continue_without_live_streaming"],
-        "description": "DSPy/LiteLLM streaming dependencies were unavailable.",
-    },
-    "agent_not_available": {
-        "category": "runtime_configuration",
-        "synthetic_posthoc": True,
-        "live_streaming": False,
-        "recovery_actions": ["reconfigure", "retry", "exit"],
-        "description": "No executable agent was configured for the session.",
-    },
-    "agent_not_streamable": {
-        "category": "capability_gap",
-        "synthetic_posthoc": True,
-        "live_streaming": False,
-        "recovery_actions": ["continue_without_live_streaming", "reconfigure"],
-        "description": "The selected agent is not a DSPy module and cannot emit provider-token deltas.",
-    },
-    "stream_setup_failed": {
-        "category": "streaming_incompatibility",
-        "synthetic_posthoc": True,
-        "live_streaming": False,
-        "recovery_actions": ["retry", "reconfigure", "continue_without_live_streaming"],
-        "description": "DSPy stream listener setup failed before user-visible output.",
-    },
-    "stream_failed_before_output": {
-        "category": "provider_streaming_error",
-        "synthetic_posthoc": True,
-        "live_streaming": False,
-        "recovery_actions": ["retry", "reconfigure", "continue_without_live_streaming"],
-        "description": "The live provider stream failed before emitting user-visible output.",
-    },
-    "stream_no_prediction": {
-        "category": "streaming_contract_violation",
-        "synthetic_posthoc": True,
-        "live_streaming": False,
-        "recovery_actions": ["retry", "reconfigure", "exit"],
-        "description": "DSPy streaming ended without a final prediction.",
-    },
-    "stream_completed_without_chunks": {
-        "category": "provider_streaming_limitation",
-        "synthetic_posthoc": True,
-        "live_streaming": False,
-        "recovery_actions": ["continue_without_live_streaming", "reconfigure", "retry"],
-        "description": "DSPy streaming returned a final prediction but no visible token chunks.",
-    },
-    "provider_streaming_unsupported": {
-        "category": "provider_streaming_limitation",
-        "synthetic_posthoc": True,
-        "live_streaming": False,
-        "recovery_actions": ["continue_without_live_streaming", "reconfigure"],
-        "description": "The configured provider does not expose a live streaming contract.",
-    },
-    "sync_execution_path": {
-        "category": "non_streamed_execution",
-        "synthetic_posthoc": True,
-        "live_streaming": False,
-        "recovery_actions": ["continue_without_live_streaming", "reconfigure"],
-        "description": "The turn completed through the synchronous execution path.",
-    },
-    "dynamic_prompt_stream_unavailable": {
-        "category": "capability_gap",
-        "synthetic_posthoc": True,
-        "live_streaming": False,
-        "recovery_actions": ["continue_without_live_streaming", "reconfigure"],
-        "description": "A registered prompt-only agent could not use live streaming.",
-    },
-    "dynamic_tool_stream_unavailable": {
-        "category": "capability_gap",
-        "synthetic_posthoc": True,
-        "live_streaming": False,
-        "recovery_actions": ["continue_without_live_streaming", "reconfigure"],
-        "description": "A registered tool agent could not use live streaming.",
-    },
-}
-
-
-def _stream_fallback_reason_capabilities() -> dict[str, dict[str, Any]]:
-    """Return the audited stream fallback reason catalog for capability metadata."""
-
-    return {
-        reason: {
-            key: list(value) if isinstance(value, list) else value for key, value in details.items()
-        }
-        for reason, details in _STREAM_FALLBACK_REASON_DEFINITIONS.items()
-    }
-
-
-_CAPABILITY_GAP_DEFINITIONS: dict[str, dict[str, Any]] = {
-    "voice": {
-        "status": "unsupported",
-        "advertised": False,
-        "category": "future_capability",
-        "description": (
-            "Voice input/output is reserved for future CLIO work and is not "
-            "wired to audio capture, transcription, or playback today."
-        ),
-        "client_behavior": "render_disabled",
-        "recovery_actions": ["use_text_input", "hide_or_disable_voice_controls"],
-        "related_endpoints": ["/v1/sessions/{sid}/voice/transcribe"],
-    },
-    "lsp": {
-        "status": "unsupported",
-        "advertised": False,
-        "category": "future_capability",
-        "description": (
-            "Language-server integration is outside the current CLIO GACT "
-            "surface; file and diff workflows are available instead."
-        ),
-        "client_behavior": "render_disabled",
-        "recovery_actions": ["use_files_and_diffs", "hide_or_disable_lsp_controls"],
-        "related_endpoints": ["/v1/lsp/*"],
-    },
-    "optimizer_command": {
-        "status": "unavailable",
-        "advertised": True,
-        "category": "deferred_command",
-        "description": (
-            "The /optimize slash command is kept visible as future CLIO "
-            "direction, but optimizer command execution is not wired yet."
-        ),
-        "client_behavior": "render_disabled",
-        "recovery_actions": [
-            "render_optimize_disabled",
-            "retry_after_optimizer_support_lands",
-        ],
-        "related_commands": ["/optimize"],
-        "related_endpoints": ["/v1/sessions/{sid}/commands/optimize"],
-    },
-}
-
-
-def _capability_gap_metadata() -> dict[str, dict[str, Any]]:
-    """Return CLIO capability gaps as client-renderable metadata."""
-
-    return {
-        name: {
-            key: list(value) if isinstance(value, list) else value for key, value in details.items()
-        }
-        for name, details in _CAPABILITY_GAP_DEFINITIONS.items()
-    }
-
-
 def _stream_fallback_payload(reason: str, message: str = "") -> dict[str, Any]:
     """Build structured metadata for a batch text delivery path."""
 
@@ -7230,28 +7087,6 @@ def _stream_response_prefix(field_name: str, previous_field_name: str) -> str:
 # *a* progress event within its window (default 900s), so a 1s throttle keeps a
 # deep-reasoning turn alive without flooding the bus with one event per token.
 _REASONING_HEARTBEAT_S = 1.0
-
-
-def _latency_stat(samples: list[float]) -> Any:
-    """Build a ``MetricsLatencyStat`` (count/p50/p95/max) from latency samples.
-
-    Nearest-rank percentiles over the positive samples; empty -> all-zero stat.
-    Used to populate ``GET /v1/metrics.latencies`` from real recorded tool-call
-    durations (iowarp/clio-agent#655) so the TUI's live-profiling gate sees a
-    non-empty signal on a real backend instead of always ``{}``."""
-    from clio_agent.gact.types import MetricsLatencyStat  # noqa: PLC0415
-
-    vals = sorted(float(s) for s in samples if isinstance(s, (int, float)) and s > 0)
-    if not vals:
-        return MetricsLatencyStat()
-
-    def pct(p: float) -> float:
-        if len(vals) == 1:
-            return vals[0]
-        idx = min(len(vals) - 1, int(round((p / 100.0) * (len(vals) - 1))))
-        return vals[idx]
-
-    return MetricsLatencyStat(count=len(vals), p50_ms=pct(50), p95_ms=pct(95), max_ms=vals[-1])
 
 
 def _describe_stream_exc(exc: BaseException) -> str:
@@ -7910,14 +7745,6 @@ def _context_file_turn_provenance(app: "FastAPI", sid: str, *, status: str) -> d
     }
 
 
-_CTX_MAX_BYTES = conf.resolve(
-    "limits.context_inline_bytes",
-    env="CLIO_CTX_MAX_BYTES",
-    default=32 * 1024,  # 32 KB cap per attached file
-    cast=conf.as_int,
-)
-
-
 # Core no longer bundles in-process scientific format servers, so it ships no
 # built-in binary context inspectors. Structured inspection of attached binary
 # files (parquet/hdf5/...) is the job of declared MCP tools the active pack
@@ -8084,37 +7911,23 @@ from clio_agent.gact.types import (
     AgentCapabilityRef,
     AgentDef,
     AnswerUserQuestionRequest,
-    AuthInfo,
-    BackendInfo,
-    CacheStats,
-    Capabilities,
-    CapabilityFlags,
     CreateSessionRequest,
     CreateUserQuestionRequest,
     ErrorEnvelope,
     ErrorInfo,
-    GlobalMemoryStats,
-    HealthResponse,
-    Integration,
     ListSessionsResponse,
     ListToolsResponse,
     LMProviderInfo,
     LMProviderPreset,
     LMProviderRequest,
-    MemoryStats,
     Message,
-    Metrics,
-    MetricsMessages,
-    MetricsSessions,
     ModelRef,
     Part,
     PostMessageRequest,
     PostMessageResponse,
     RetryTurnRequest,
     Session,
-    SessionMemoryStats,
     Tokens,
-    TransportFlags,
     TurnAttempt,
     UpdateSessionRequest,
     UserQuestion,
@@ -8143,11 +7956,6 @@ class AgentLike(Protocol):
         ...
 
 
-# Version pins. Keep in sync with the gact-tui SPEC.md version bump
-# history; bump EMULATOR_VERSION-equivalent here only when the
-# *module's* behaviour changes, not every spec revision.
-CONTRACT_VERSION = "0.2"
-GACT_BACKEND_VERSION = "0.1.0"  # version of this clio_agent.gact module
 
 
 @asynccontextmanager
@@ -8635,274 +8443,12 @@ def build_app(
     # iowarp/clio-agent#22: shared session tokens.
     app.state.shared_tokens = {}
 
-    @app.get("/v1/health", response_model=HealthResponse)
-    async def health() -> HealthResponse | JSONResponse:
-        """SPEC §3.4 — per-subsystem status feeds the TUI's /doctor
-        modal (v0.2 `integration_health`). We report on whatever is
-        actually wired in this build: the API itself, the session
-        store, the agent (real vs fake vs not-wired), and ARC.
-
-        overall_status collapses the rows to the worst case:
-        ready > degraded > unavailable.
-        """
-
-        uptime = int(time.time() - app.state.started_at)
-        rows: list[Integration] = [
-            Integration(
-                name="api",
-                status="ready",
-                detail=f"clio-agent-gact {GACT_BACKEND_VERSION}",
-            ),
-            Integration(
-                name="sessions",
-                status="ready",
-                detail=f"{len(app.state.sessions.list())} session(s) registered",
-            ),
-        ]
-
-        agent = app.state.agent
-        if agent is None:
-            rows.append(
-                Integration(
-                    name="agent",
-                    status="unavailable",
-                    detail="no ClioAgent wired; POST /messages will 503",
-                )
-            )
-        else:
-            # Heuristic: the production ClioAgent is a class that
-            # imports DSPy under the hood and exposes it via
-            # `agent.__class__.__module__`. The smoke/test fakes
-            # live under 'gact_smoke_server' or '__main__'. Label
-            # them so the /doctor modal is honest about what's
-            # running.
-            mod = type(agent).__module__
-            is_fake = "smoke" in mod or mod == "__main__" or "test" in mod.lower()
-            rows.append(
-                Integration(
-                    name="agent",
-                    status="degraded" if is_fake else "ready",
-                    detail=(
-                        f"{type(agent).__name__} (fake — dev harness)"
-                        if is_fake
-                        else f"{type(agent).__name__} wired"
-                    ),
-                )
-            )
-
-        if app.state.arc is None:
-            rows.append(
-                Integration(
-                    name="memory",
-                    status="degraded",
-                    detail="memory layer not wired; /v1/memory/stats returns zeros",
-                )
-            )
-        else:
-            try:
-                stats = app.state.arc.get_cache_stats()
-                hr = stats.get("hit_rate", 0.0)
-                rows.append(
-                    Integration(
-                        name="memory",
-                        status="ready",
-                        detail=f"cache {int(hr * 100)}% hit rate",
-                    )
-                )
-            except Exception as exc:
-                rows.append(
-                    Integration(
-                        name="memory",
-                        status="unavailable",
-                        detail=f"memory cache stats raised: {exc!r}",
-                    )
-                )
-
-        # LM row drives the TUI's "configure provider on connect"
-        # decision. ``configured`` mirrors what GET /v1/providers/lm
-        # reports — agent present + last-known config from PUT.
-        cfg = _effective_lm_config(app)
-        lm_config_status = getattr(app.state, "lm_config_status", {}) or {}
-        if lm_config_status.get("state") == "configuring":
-            rows.append(
-                Integration(
-                    name="lm",
-                    status="degraded",
-                    detail=(
-                        "configuring "
-                        f"{lm_config_status.get('provider', '?')}/"
-                        f"{lm_config_status.get('model', '?')}"
-                    ),
-                )
-            )
-        elif lm_config_status.get("state") == "error":
-            rows.append(
-                Integration(
-                    name="lm",
-                    status="unavailable",
-                    detail=str(
-                        lm_config_status.get("message") or "LM provider configuration failed"
-                    ),
-                )
-            )
-        elif app.state.agent is not None and cfg:
-            detail = f"{cfg.get('provider', '?')}/{cfg.get('model', '?')}"
-            lm_status: Literal["ready", "degraded", "unavailable"] = "ready"
-            if cfg.get("provider") == "argonne":
-                try:
-                    from clio_agent.providers import argonne_auth  # noqa: PLC0415
-
-                    if not argonne_auth.tokens_exist():
-                        lm_status = "unavailable"
-                        detail += " (ALCF Globus token missing)"
-                    else:
-                        lm_status = "degraded"
-                        detail += " (ALCF Globus token stored; validate before use)"
-                except Exception as exc:
-                    lm_status = "unavailable"
-                    detail += f" (ALCF auth check failed: {exc})"
-            rows.append(
-                Integration(
-                    name="lm",
-                    status=lm_status,
-                    detail=detail,
-                )
-            )
-        elif app.state.agent is not None:
-            # Agent wired by env at boot; lm_config wasn't recorded
-            # but we know an LM is configured.
-            rows.append(
-                Integration(
-                    name="lm",
-                    status="ready",
-                    detail="configured from env at boot",
-                )
-            )
-        else:
-            rows.append(
-                Integration(
-                    name="lm",
-                    status="unavailable",
-                    detail=(
-                        "no LM configured; PUT /v1/providers/lm or set CLIO_LM_PROVIDER and restart"
-                    ),
-                )
-            )
-
-        # Worst-status wins.
-        statuses = {r.status for r in rows}
-        if "unavailable" in statuses:
-            overall = "unavailable"
-        elif "degraded" in statuses:
-            overall = "degraded"
-        else:
-            overall = "ready"
-
-        response = HealthResponse(
-            healthy=overall != "unavailable",
-            uptime_s=uptime,
-            overall_status=overall,  # type: ignore[arg-type]  # narrowed by branches above
-            integrations=rows,
-        )
-        if overall == "unavailable":
-            return JSONResponse(
-                status_code=503,
-                content=response.model_dump(mode="json", exclude_none=True),
-            )
-        return response
-
-    @app.get("/v1/capabilities", response_model=Capabilities)
-    async def capabilities() -> Capabilities:
-        return Capabilities(
-            contract_version=CONTRACT_VERSION,
-            backend=BackendInfo(
-                name="clio-agent-gact",
-                version=GACT_BACKEND_VERSION,
-                vendor="iowarp",
-                homepage="https://github.com/iowarp/clio-agent",
-            ),
-            capabilities=CapabilityFlags(
-                # v0.1 baseline — flipped on as each surface lands.
-                # Honest reporting lets the TUI disable UI for
-                # capabilities we don't actually provide.
-                sessions=True,  # BBB8 — /v1/sessions CRUD
-                workspaces=True,  # CLIO-WS — /v1/workspaces CRUD
-                metrics=True,  # BBB15 — /v1/metrics returns SPEC §6.16 envelope
-                session_branching=True,  # BBB26 — POST /sessions/{sid}/fork
-                search_messages=True,  # BBB27 — GET /sessions/{sid}/messages/search
-                cost_tracking=True,  # BBB24 — Message.tokens + Session.cost_usd rollup
-                files=True,  # BBB22 — /v1/sessions/{sid}/context/files CRUD
-                diffs=True,  # BBB21 — file_diff parts + /diffs/apply,reject
-                permissions=True,  # BBB23 — /v1/permissions + permission.* events
-                subagents=True,  # BBB25 — nanoagent subsessions + subagent.* events
-                session_export=True,  # #16 — /v1/sessions/{sid}/export + import
-                session_summary=True,  # POST /v1/sessions/{sid}/summarize — user-facing TLDR
-                attachments_upload=True,  # POST /v1/sessions/{sid}/attachments — base64 byte upload
-                multimodal_image_parts=True,  # #528 — preserve image parts + provider gate
-                mcp=True,  # #13 — /v1/mcp/servers exposes the gateway namespaces
-                providers=True,  # #15 — /v1/providers catalogs the LM presets
-                commands=True,  # #14 — /v1/commands + dispatch
-                thinking_blocks=True,  # #17 — DSPy reasoning trace as thinking Parts
-                session_tasks=True,  # #18 — per-session todo CRUD
-                plan_mode=True,  # session.mode=plan blocks destructive tools
-                edit_modes=True,  # session.edit_mode toggles diff/whole/patch
-                agent_write=True,  # #19 — POST/PUT/DELETE /v1/agents
-                hooks=True,  # #20 — pre/post_tool + pre/post_message hooks
-                scheduled_sessions=True,  # #21 — cron schedules
-                session_sharing=True,  # #22 — share tokens
-                skills_extraction=True,  # #23 — POST /v1/agents/extract
-                # v0.2 additions — advertised when the scaffold
-                # actually emits them. Turned on piecewise as the
-                # follow-on items land.
-                agent_routing=True,  # BBB10 — /v1/agents?tier= + tier-2 catalog
-                memory=True,  # BBB11 — /v1/memory/stats backed by ARC
-                structured_errors=True,  # always — we return the envelope for every error
-                integration_health=True,  # /v1/health above carries it
-                tool_telemetry=True,  # BBB18 — tool.call.started/completed events
-                x_clio_cancellation="best_effort",
-                x_clio_executor_cancellation=False,
-                x_clio_text_streaming="best_effort_live",
-                x_clio_synthetic_posthoc_streaming=False,
-                x_clio_stream_fallback_reasons=_stream_fallback_reason_capabilities(),
-                x_clio_direct_delete_permissions=True,
-                x_clio_prompt_registry=True,
-                x_clio_expert_packs=True,
-                x_clio_agent_blueprints=True,
-                x_clio_user_questions=True,
-                x_clio_retry_attempts=True,
-                x_clio_context_frames=True,
-                x_clio_semantic_events=True,
-                x_clio_semantic_trace_backend=getattr(
-                    app.state.semantic_trace_backend,
-                    "name",
-                    "",
-                ),
-                x_clio_semantic_trace_detail=app.state.semantic_trace_detail_level,
-                x_clio_hook_backend=str(
-                    (getattr(app.state, "runtime_hook_registry_metadata", {}) or {}).get(
-                        "backend", ""
-                    )
-                ),
-                x_clio_hook_events=dict(
-                    (getattr(app.state, "runtime_hook_registry_metadata", {}) or {}).get(
-                        "handler_counts", {}
-                    )
-                ),
-                x_clio_capability_gaps=_capability_gap_metadata(),
-            ),
-            transports=TransportFlags(events_sse=True, events_websocket=False),
-            auth=AuthInfo(schemes=["trust_socket"], current="trust_socket"),
-        )
-
-    @app.get("/v1/capability-gaps")
-    async def capability_gaps() -> dict[str, Any]:
-        """Return intentionally unsupported or future CLIO capability rows.
-
-        This keeps "not supported yet" affordances visible as ideas without
-        making clients infer support from missing routes or failed commands.
-        """
-
-        return {"capability_gaps": _capability_gap_metadata()}
+    # ---- /v1/health + /v1/capabilities + /v1/capability-gaps + /v1/metrics ----
+    # + /v1/memory/stats: the read-only system/observability surface is owned by
+    # routes/system.py and registered below via register_system_routes(app, deps)
+    # once ``deps`` is built. The static capability/metrics catalogs they project
+    # live in runtime/capabilities.py (shared with the message-turn streaming
+    # path here); the wire/limit constants live in runtime/constants.py.
 
     # ---- 501 stubs for the rest of the surface ---------------------------
     # Every route in the v0.2 contract that we haven't wired yet
@@ -12821,143 +12367,6 @@ def build_app(
     async def list_tools() -> ListToolsResponse:
         return ListToolsResponse(tools=_builtin_tools())
 
-    def _estimate_message_context_tokens(message: Message) -> int:
-        explicit = (
-            int(getattr(message.tokens, "input", 0) or 0)
-            + int(getattr(message.tokens, "output", 0) or 0)
-            + int(getattr(message.tokens, "cache_read", 0) or 0)
-            + int(getattr(message.tokens, "cache_write", 0) or 0)
-        )
-        if explicit > 0:
-            return explicit
-        chars = 0
-        for part in message.parts:
-            chars += len(part.text or "")
-            chars += len(str(getattr(part, "thinking", "") or ""))
-            chars += len(part.path or "")
-            chars += len(part.unified_diff or "")
-            chars += len(part.new_content or "")
-        return max(1, chars // 4) if chars else 0
-
-    def _estimate_context_file_tokens(row: Mapping[str, Any]) -> int:
-        size = row.get("size")
-        try:
-            raw_size = int(size or 0)
-        except (TypeError, ValueError):
-            raw_size = 0
-        # Context-file injection caps inlined bodies at _CTX_MAX_BYTES.
-        retained_bytes = min(max(raw_size, 0), _CTX_MAX_BYTES)
-        return retained_bytes // 4
-
-    def _context_pressure_state(
-        tokens_retained: int,
-        tokens_budget: int,
-    ) -> tuple[float, Literal["empty", "normal", "warning", "critical"], bool]:
-        if tokens_budget <= 0:
-            return 0.0, "empty" if tokens_retained == 0 else "normal", False
-        pressure = min(1.0, tokens_retained / tokens_budget)
-        if tokens_retained <= 0:
-            return 0.0, "empty", False
-        if pressure >= 0.9:
-            return pressure, "critical", True
-        if pressure >= 0.75:
-            return pressure, "warning", True
-        return pressure, "normal", False
-
-    # ---- /v1/memory/stats (BBB11) ------------------------------------
-    # Returns cache counters + per-session context retention + global
-    # ARC totals. When ARC isn't wired (tests, smoke-boot scenarios)
-    # returns zeros per SPEC §6.19 ("zeros are a valid signal").
-
-    @app.get(
-        "/v1/memory/stats",
-        response_model=MemoryStats,
-        response_model_by_alias=True,
-    )
-    async def memory_stats(session_id: Optional[str] = None) -> MemoryStats:
-        if app.state.arc is not None:
-            raw = app.state.arc.get_cache_stats()
-            cache = CacheStats(
-                hits=int(raw.get("hits", 0)),
-                misses=int(raw.get("misses", 0)),
-                hit_rate=float(raw.get("hit_rate", 0.0)),
-                capacity=int(raw.get("capacity", 0)),
-            )
-            # ARC tracks conversation + invocation counts via the
-            # index sizes it reports alongside the cache. Future: if
-            # the numbers start diverging from what operators expect
-            # we can call dedicated getters; for now the index sizes
-            # are a good-faith approximation.
-            global_stats = GlobalMemoryStats(
-                conversations_total=int(raw.get("conv_index_size", 0)),
-                invocations_total=int(raw.get("inv_index_size", 0)),
-            )
-        else:
-            cache = CacheStats()
-            global_stats = GlobalMemoryStats()
-
-        session_block: Optional[SessionMemoryStats] = None
-        metadata: dict[str, Any] = {
-            "retained_context_source": "visible_gact_transcript",
-            "token_estimate": "message_tokens_or_chars_div_4",
-        }
-        if session_id:
-            sess_rec = app.state.sessions.get(session_id)
-            if sess_rec is not None:
-                messages = list(app.state.messages.get(session_id, []))
-                context_files = list((app.state.context_files.get(session_id, {}) or {}).values())
-                context_files_by_mode: dict[str, int] = {"edit": 0, "pin": 0, "read": 0}
-                for row in context_files:
-                    mode = str(row.get("mode") or "read")
-                    context_files_by_mode[mode] = context_files_by_mode.get(mode, 0) + 1
-                transcript_tokens = sum(_estimate_message_context_tokens(m) for m in messages)
-                context_file_tokens = sum(
-                    _estimate_context_file_tokens(row) for row in context_files
-                )
-                tokens_retained = transcript_tokens + context_file_tokens
-                tokens_budget = 4000
-                pressure, threshold_state, compact_recommended = _context_pressure_state(
-                    tokens_retained,
-                    tokens_budget,
-                )
-                compact_summaries = sum(
-                    1
-                    for m in messages
-                    if m.metadata.get("synthetic") == "compact_summary"
-                    or any(p.metadata.get("synthetic") == "compact_summary" for p in m.parts)
-                )
-                session_block = SessionMemoryStats(
-                    session_id=session_id,
-                    messages_retained=len(messages),
-                    tokens_retained=tokens_retained,
-                    tokens_budget=tokens_budget,
-                    profiles_attached=0,
-                    context_files_attached=len(context_files),
-                    context_files_by_mode=context_files_by_mode,
-                    compact_summaries=compact_summaries,
-                    token_pressure=pressure,
-                    threshold_state=threshold_state,
-                    compaction_recommended=compact_recommended,
-                )
-                metadata["session"] = {
-                    "transcript_tokens": transcript_tokens,
-                    "context_file_tokens": context_file_tokens,
-                    "recorded_lifetime_tokens": sess_rec.tokens_input + sess_rec.tokens_output,
-                }
-            else:
-                # Unknown session: return an empty block rather than
-                # a 404. The TUI's footer chip handles zero stats
-                # gracefully; a 404 would spam the logs on every
-                # mis-timed fetch.
-                session_block = SessionMemoryStats(session_id=session_id)
-
-        return MemoryStats(
-            cache=cache,
-            session=session_block,
-            global_=global_stats,  # type: ignore[call-arg]  # Pydantic alias "global"
-            metadata=metadata,
-        )
-
     # ---- /v1/sessions/{sid}/events SSE (BBB13) -----------------------
 
     @app.get("/v1/sessions/{sid}/events")
@@ -13049,79 +12458,6 @@ def build_app(
             },
         )
 
-    # ---- /v1/metrics (BBB15) -----------------------------------------
-
-    @app.get("/v1/metrics", response_model=Metrics)
-    async def metrics() -> Metrics:
-        """Aggregate runtime metrics — SPEC §6.16.
-
-        Today: counters synthesised from the session + in-memory
-        message logs. ARC-backed per-expert latency/success-rate
-        rollups come in when we reshape `ARCMemory.get_metrics()`
-        into this envelope (tracked in the v0.3 roadmap); for now
-        the endpoint returns the wire-compatible skeleton with zero
-        tokens/cost/latencies so the TUI's Metrics tab renders
-        rather than falling back to a permanent "n/a".
-        """
-
-        uptime = max(0, int(time.time() - app.state.started_at))
-
-        all_sessions = app.state.sessions.list()
-        by_status: dict[str, int] = {}
-        active = 0
-        for s in all_sessions:
-            by_status[s.status] = by_status.get(s.status, 0) + 1
-            if s.status in {"running", "idle"}:
-                active += 1
-
-        message_total = 0
-        role_counts: dict[str, int] = {}
-        # iowarp/clio-agent#655: aggregate real tool-call latencies (recorded as
-        # duration_ms on each message's tools_called metadata) into the metrics
-        # envelope, keyed per tool plus an overall "tool_call" bucket, so the
-        # endpoint reports live timing instead of an always-empty {}.
-        latency_samples: dict[str, list[float]] = {}
-        for rows in app.state.messages.values():
-            message_total += len(rows)
-            for m in rows:
-                role_counts[m.role] = role_counts.get(m.role, 0) + 1
-                for call in (getattr(m, "metadata", None) or {}).get("tools_called") or []:
-                    if not isinstance(call, dict):
-                        continue
-                    dur = call.get("duration_ms")
-                    if not isinstance(dur, (int, float)) or dur <= 0:
-                        continue
-                    name = str(call.get("name") or call.get("tool") or "tool")
-                    latency_samples.setdefault(f"tool:{name}", []).append(float(dur))
-                    latency_samples.setdefault("tool_call", []).append(float(dur))
-        latencies = {key: _latency_stat(vals) for key, vals in latency_samples.items()}
-
-        # CLIO-BBBBBBBBBB24: tokens + cost rollup across every
-        # session's cumulative counters.
-        from clio_agent.gact.types import MetricsCost, MetricsTokens
-
-        tokens_input = sum(s.tokens_input for s in all_sessions)
-        tokens_output = sum(s.tokens_output for s in all_sessions)
-        cost_total = sum(s.cost_usd for s in all_sessions)
-
-        return Metrics(
-            uptime_s=uptime,
-            sessions=MetricsSessions(
-                total=len(all_sessions),
-                active=active,
-                by_status=by_status,
-            ),
-            messages=MetricsMessages(
-                total=message_total,
-                by_role=role_counts,
-            ),
-            tokens=MetricsTokens(
-                input_total=tokens_input,
-                output_total=tokens_output,
-            ),
-            cost=MetricsCost(total_usd=cost_total),
-            latencies=latencies,
-        )
 
     # Cross-concern seam (#714): built once and threaded to every extracted
     # ``register_<concern>_routes(app, deps)`` factory so moved handlers reach
@@ -13211,6 +12547,14 @@ def build_app(
     # delete route reaches the destructive-action guard through ``deps`` and the
     # scheduler tick task owns the actual firing of due schedules.
     register_schedules_routes(app, deps)
+
+    # ---- /v1/health + /v1/capabilities + /v1/capability-gaps + /v1/metrics ----
+    # + /v1/memory/stats: the read-only system/observability surface is owned by
+    # routes/system.py. The static capability/metrics catalogs it projects live in
+    # runtime/capabilities.py (shared with the message-turn streaming path here);
+    # the wire/limit constants live in runtime/constants.py. It needs no
+    # cross-concern seam from ``deps``.
+    register_system_routes(app, deps)
 
     # ---- /v1/providers/lm (CLIO-BBBBBBBBBB-D) ------------------------
 
