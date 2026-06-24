@@ -2480,6 +2480,9 @@ from clio_agent.gact.routes.permissions import (  # noqa: E402
 from clio_agent.gact.routes.prompts import (  # noqa: E402
     register_prompts_routes,
 )
+from clio_agent.gact.routes.schedules import (  # noqa: E402
+    register_schedules_routes,
+)
 from clio_agent.gact.routes.workspaces import (  # noqa: E402
     register_workspaces_routes,
 )
@@ -11820,95 +11823,9 @@ def build_app(
         return {"event": event}
 
     # ---- /v1/sessions/{sid}/schedules (#21) --------------------------
-
-    @app.get("/v1/sessions/{sid}/schedules")
-    async def list_schedules(sid: str) -> dict[str, Any]:
-        if app.state.sessions.get(sid) is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        rows = [s.to_wire() for s in app.state.schedules.list(session_id=sid)]
-        return {"schedules": rows}
-
-    @app.post("/v1/sessions/{sid}/schedules")
-    async def add_schedule(sid: str, request: Request) -> dict[str, Any]:
-        if app.state.sessions.get(sid) is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        cron = (body.get("cron") or "").strip()
-        question = (body.get("question") or "").strip()
-        if not cron or not question:
-            raise HTTPException(
-                status_code=422,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message="missing required fields: cron + question",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        sch = app.state.schedules.add(session_id=sid, cron=cron, question=question)
-        return sch.to_wire()
-
-    @app.delete("/v1/schedules/{schedule_id}")
-    async def delete_schedule(schedule_id: str) -> Response:
-        sch = app.state.schedules.get(schedule_id)
-        if sch is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"schedule not found: {schedule_id}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        sess = app.state.sessions.get(sch.session_id)
-        _guard_direct_destructive_action(
-            app,
-            session_id=sch.session_id,
-            workspace_id=getattr(sess, "workspace_id", ""),
-            tool_name="gact.schedule.delete",
-            args={"schedule_id": schedule_id, "session_id": sch.session_id},
-            summary=f"delete schedule {schedule_id}",
-            reason="user_requested_schedule_delete",
-        )
-        existed = app.state.schedules.delete(schedule_id)
-        if not existed:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"schedule not found: {schedule_id}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        return Response(status_code=204)
+    # Scheduled-turn CRUD (list/add/delete) is owned by routes/schedules.py and
+    # registered below via register_schedules_routes(app, deps) once ``deps`` is
+    # built; the scheduler tick task (above) owns the actual firing.
 
     # ---- /v1/sessions/{sid}/share + /v1/shared/{token} (#22) ---------
 
@@ -15574,6 +15491,12 @@ def build_app(
     # the agent-run path live in runtime/memory_search.py (single source); the
     # error/audit/policy + bounded-projection helpers are private to that module.
     register_memory_routes(app, deps)
+
+    # ---- /v1/sessions/{sid}/schedules + /v1/schedules/{id} (#21) -----
+    # Scheduled-turn CRUD (list/add/delete) is owned by routes/schedules.py; the
+    # delete route reaches the destructive-action guard through ``deps`` and the
+    # scheduler tick task owns the actual firing of due schedules.
+    register_schedules_routes(app, deps)
 
     # ---- /v1/providers/lm (CLIO-BBBBBBBBBB-D) ------------------------
 
