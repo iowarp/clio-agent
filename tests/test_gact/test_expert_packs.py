@@ -1496,7 +1496,7 @@ def test_prompt_agent_empty_answer_with_children_enters_repair_path(
     monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object())
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
     monkeypatch.setattr(
-        "clio_agent.gact.app._runtime_dynamic_agent_children_context",
+        "clio_agent.gact.agents.builders._runtime_dynamic_agent_children_context",
         lambda *args, **kwargs: "Declared child experts available for synchronous delegation:\n- mass_spec",
     )
 

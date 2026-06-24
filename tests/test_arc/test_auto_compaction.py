@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import dspy
 
+import clio_agent.gact.agents.runtime as agent_runtime
 import clio_agent.gact.app as app
 
 from .conftest import live_plane_context, make_react_agent
@@ -25,8 +26,11 @@ def _populate(arc, scope=SCOPE):
 
 
 def _patch(monkeypatch, *, prompt_tokens, summary="COMPACT_SUMMARY"):
-    monkeypatch.setattr(app, "_last_prompt_tokens", lambda: prompt_tokens)
-    monkeypatch.setattr(app, "_summarize_segments_llm", lambda segs: summary)
+    # The auto-compactor (_RetainingReAct._maybe_autocompact) resolves these helpers
+    # from its own module (gact.agents.runtime, #714 step 4), so patch the owner there
+    # rather than the gact.app re-export shim -- a setattr on app would not intercept.
+    monkeypatch.setattr(agent_runtime, "_last_prompt_tokens", lambda: prompt_tokens)
+    monkeypatch.setattr(agent_runtime, "_summarize_segments_llm", lambda segs: summary)
 
 
 def test_fires_over_threshold(arc, monkeypatch):

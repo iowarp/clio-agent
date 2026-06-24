@@ -1169,14 +1169,14 @@ def test_blueprint_compiler_selects_declared_dspy_module_kind(
     monkeypatch.setattr(dspy, "ChainOfThought", FakeChainOfThought)
     monkeypatch.setattr(dspy, "ReAct", FakeReAct)
     monkeypatch.setattr(
-        "clio_agent.gact.app._dynamic_agent_lm_config",
+        "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
         lambda base_agent, agent_def: SimpleNamespace(provider="openai", model="gpt-5-mini"),
     )
     monkeypatch.setattr(
-        "clio_agent.gact.app._dynamic_agent_tools", lambda base_agent, agent_def: [scoped_tool]
+        "clio_agent.gact.agents.builders._dynamic_agent_tools", lambda base_agent, agent_def: [scoped_tool]
     )
     monkeypatch.setattr(
-        "clio_agent.gact.app._dynamic_child_expert_tools",
+        "clio_agent.gact.agents.builders._dynamic_child_expert_tools",
         lambda base_agent, agent_def: [child_tool],
     )
 
@@ -1270,7 +1270,7 @@ def test_blueprint_module_allows_handoff_only_root_output(monkeypatch: pytest.Mo
     monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object())
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
     monkeypatch.setattr(
-        "clio_agent.gact.app._dynamic_agent_lm_config",
+        "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
         lambda base_agent, agent_def: SimpleNamespace(provider="argonne", model="gpt-oss-120b"),
     )
 
@@ -1307,11 +1307,11 @@ def test_blueprint_module_empty_answer_with_children_enters_repair_path(
     monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object())
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
     monkeypatch.setattr(
-        "clio_agent.gact.app._dynamic_agent_lm_config",
+        "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
         lambda base_agent, agent_def: SimpleNamespace(provider="argonne", model="gpt-oss-120b"),
     )
     monkeypatch.setattr(
-        "clio_agent.gact.app._runtime_dynamic_agent_children_context",
+        "clio_agent.gact.agents.builders._runtime_dynamic_agent_children_context",
         lambda app, agent_def, session_id="": "Declared child experts available:\n- reference",
     )
 
@@ -1361,14 +1361,14 @@ def test_blueprint_react_empty_answer_preserves_tool_trajectory(
     monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object())
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
     monkeypatch.setattr(
-        "clio_agent.gact.app._dynamic_agent_lm_config",
+        "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
         lambda base_agent, agent_def: SimpleNamespace(provider="argonne", model="gpt-oss-120b"),
     )
     monkeypatch.setattr(
-        "clio_agent.gact.app._dynamic_agent_tools", lambda base_agent, agent_def: []
+        "clio_agent.gact.agents.builders._dynamic_agent_tools", lambda base_agent, agent_def: []
     )
     monkeypatch.setattr(
-        "clio_agent.gact.app._dynamic_child_expert_tools",
+        "clio_agent.gact.agents.builders._dynamic_child_expert_tools",
         lambda base_agent, agent_def: [],
     )
 

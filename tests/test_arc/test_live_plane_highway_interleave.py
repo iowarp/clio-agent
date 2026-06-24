@@ -18,7 +18,7 @@ import dspy
 import pytest
 from dspy.utils.dummies import DummyLM
 
-import clio_agent.gact.app as app
+import clio_agent.gact.agents.runtime as agent_runtime
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.gact import context as ctx
 
@@ -37,13 +37,16 @@ def test_forward_writes_arc_and_emits_highway_in_one_run(
     # call them. (The full sink path is covered by test_trajectory_retention.)
     step_events: list[dict] = []
     lifecycle_events: list[str] = []
+    # The retaining forward resolves the highway emitters from its own module
+    # (gact.agents.runtime, #714 step 4), so patch the owner there rather than the
+    # gact.app re-export shim -- a setattr on app would not intercept the call.
     monkeypatch.setattr(
-        app,
+        agent_runtime,
         "_emit_react_step_event",
         lambda **kw: step_events.append(kw),
     )
     monkeypatch.setattr(
-        app,
+        agent_runtime,
         "_emit_expert_lifecycle_event",
         lambda event_type, **kw: lifecycle_events.append(event_type),
     )
