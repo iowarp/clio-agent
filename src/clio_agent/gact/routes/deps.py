@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
-    from clio_agent.gact.types import AgentDef
+    from clio_agent.gact.types import AgentDef, Message
     from clio_agent.prompts import PromptRegistry
 
 
@@ -243,6 +243,65 @@ class _ApplyAgentOverlayRows(Protocol):
     ) -> "list[AgentDef]": ...
 
 
+class _AppendSessionMessage(Protocol):
+    """Callable seam appending one message to a session's ledger (memory + disk).
+
+    ``_append_session_message`` (in :mod:`clio_agent.gact.app`) appends a message
+    to ``app.state.messages`` + the message store and mirrors it into the owning
+    workspace store. It is the message-ledger primitive shared across the
+    sessions/messages concerns and the command-dispatch route (which materializes
+    a synthetic result message); it stays single-sourced in ``gact.app`` and
+    travels here so the command route does not import back into it.
+    """
+
+    def __call__(self, app: "FastAPI", session_id: str, message: "Message") -> None: ...
+
+
+class _DeleteSessionMessages(Protocol):
+    """Callable seam dropping a session's message ledger (memory + disk).
+
+    ``_delete_session_messages`` (in :mod:`clio_agent.gact.app`) removes a
+    session's messages from ``app.state.messages`` + the message store and mirrors
+    the deletion into the owning workspace store. The ``/clear`` command dispatch
+    path calls it; it stays single-sourced in ``gact.app`` and travels here.
+    """
+
+    def __call__(self, app: "FastAPI", session_id: str) -> None: ...
+
+
+class _ResolveRuntimeDynamicAgent(Protocol):
+    """Callable seam resolving an agent id to its overlay-aware runtime definition.
+
+    ``_resolve_runtime_dynamic_agent`` (the ``build_app`` closure in
+    :mod:`clio_agent.gact.app`) layers a session's blueprint-overlay rows on top of
+    the base registry resolver, so it returns the *effective* agent a session sees.
+    The command-dispatch route + the planner-command-row filter need this exact
+    overlay-aware resolution (not the un-overlaid base resolver in
+    :mod:`clio_agent.gact.agents.resolution`), so it travels here.
+    """
+
+    def __call__(
+        self,
+        agent_id: str,
+        *,
+        session_id: str = ...,
+        workspace_id: str = ...,
+    ) -> "AgentDef | None": ...
+
+
+class _BlueprintRunnerForAgent(Protocol):
+    """Callable seam selecting the runtime executor for an agent definition.
+
+    ``_blueprint_runner_for_agent`` (in :mod:`clio_agent.gact.app`) returns the
+    blueprint/tool/prompt runner that executes a user-/agent-invocable command's
+    target agent through DSPy. It couples to the agent-run machinery that still
+    lives in ``gact.app``, so the command-dispatch route reaches it through
+    ``deps`` rather than importing back into ``gact.app``.
+    """
+
+    def __call__(self, agent_def: "AgentDef") -> Any: ...
+
+
 @dataclass(frozen=True)
 class GactDeps:
     """Cross-concern seams the extracted route factories need beyond ``app.state``.
@@ -266,3 +325,7 @@ class GactDeps:
     agent_with_capability_refs: _AgentWithCapabilityRefs
     base_session_agent_blueprint_rows: _BaseSessionAgentBlueprintRows
     apply_agent_overlay_rows: _ApplyAgentOverlayRows
+    append_session_message: _AppendSessionMessage
+    delete_session_messages: _DeleteSessionMessages
+    blueprint_runner_for_agent: _BlueprintRunnerForAgent
+    resolve_runtime_dynamic_agent: _ResolveRuntimeDynamicAgent
