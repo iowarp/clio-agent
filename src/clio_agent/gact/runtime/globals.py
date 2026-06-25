@@ -265,17 +265,21 @@ def _with_ui_safe_semantic_fields(
     summary: str,
     payload: Optional[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Return payload enriched with short UI-safe summary fields."""
+    """Return the payload unchanged — clio does NOT author UI captions.
 
-    enriched = dict(payload or {})
-    clean_summary = str(summary or "").strip()
-    if clean_summary:
-        enriched.setdefault("ui_summary", clean_summary)
-    elif event_type:
-        enriched.setdefault("ui_summary", f"{event_type} {status}".strip())
-    if event_type.endswith(".completed") or status in {"completed", "failed", "error"}:
-        enriched.setdefault("result_summary", enriched.get("ui_summary", ""))
-    return enriched
+    This used to inject ``ui_summary`` (a copy of the envelope ``summary``) and
+    ``result_summary`` (a third copy) into every event payload. That is lossy
+    compaction substituting a clio-authored label for the real content, and it
+    breaks the absolute-observability contract owed to the scientist: the stream
+    must carry what the agent actually did, not clio's caption of it. The event's
+    one-line ``summary`` already rides the envelope; the consumer (TUI) decides
+    how to fold the FULL content — clio transmits, it does not editorialize.
+
+    Kept as an identity passthrough so the (many) emit call sites need no change;
+    ``event_type``/``status``/``summary`` are accepted and ignored.
+    """
+    del event_type, status, summary  # intentionally unused — no captions authored
+    return dict(payload or {})
 
 
 def _llm_provider_payload(app: "FastAPI", agent_id: str = "") -> dict[str, Any]:
@@ -681,36 +685,42 @@ def _emit_arc_op(
     # write, never an ARC input.
     emitted = sink.emit(event)
     # The durable event is detail_level="off" (lean trace), so SemanticEventSink skips
-    # the bus. Publish a REDACTED arc.op frame explicitly so the TUI sees live
-    # insertions/deletions/compactions. Allow-list ids/kinds/token_count only —
-    # never the segment content/args/text. Observability: never break an op.
-    try:
-        bus = getattr(app.state, "bus", None)
-        if bus is not None:
-            bus.publish(
-                Event(
-                    type="arc.op",
-                    session_id=session_id,
-                    payload={
-                        "op": op,
-                        "scope": scope,
-                        "logical_time": logical_time,
-                        "step": step,
-                        "position": position,
-                        "segments_written": [
-                            {
-                                "id": s.get("id"),
-                                "kind": s.get("kind"),
-                                "token_count": s.get("token_count"),
-                            }
-                            for s in (segments_written or [])
-                        ],
-                        "segments_tombstoned": segments_tombstoned or [],
-                    },
+    # the bus. Every op is captured FULL on the trace above. The SERVED UI wire only
+    # wants CONTEXT MUTATIONS — when clio edits the agent's own context (compaction /
+    # eviction / replace) — which is real observability ("context compacted here").
+    # Plain ``append`` is per-segment write-log bookkeeping (the bulk: ~190 frames on a
+    # single EarthScope turn) the UI does not render, so it stays OFF the served wire
+    # (still on the durable trace). Allow-list ids/kinds/token_count only — never the
+    # segment content/args/text. Observability: never break an op.
+    mutates_context = op != "append" or bool(segments_tombstoned)
+    if mutates_context:
+        try:
+            bus = getattr(app.state, "bus", None)
+            if bus is not None:
+                bus.publish(
+                    Event(
+                        type="arc.op",
+                        session_id=session_id,
+                        payload={
+                            "op": op,
+                            "scope": scope,
+                            "logical_time": logical_time,
+                            "step": step,
+                            "position": position,
+                            "segments_written": [
+                                {
+                                    "id": s.get("id"),
+                                    "kind": s.get("kind"),
+                                    "token_count": s.get("token_count"),
+                                }
+                                for s in (segments_written or [])
+                            ],
+                            "segments_tombstoned": segments_tombstoned or [],
+                        },
+                    )
                 )
-            )
-    except Exception as exc:  # noqa: BLE001 - SSE streaming is observability, never fatal
-        trace.event("ARC-OP", "arc.op bus publish failed: %r", exc)
+        except Exception as exc:  # noqa: BLE001 - SSE streaming is observability, never fatal
+            trace.event("ARC-OP", "arc.op bus publish failed: %r", exc)
     return emitted
 
 

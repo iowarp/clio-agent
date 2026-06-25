@@ -1091,7 +1091,19 @@ def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
         namespace[name] = dspy.InputField(desc=desc)
     for name, desc, field_type in outputs:
         annotations[name] = field_type
-        namespace[name] = dspy.OutputField(desc=desc)
+        if name == "answer":
+            # WS4: `answer` is OPTIONAL. On a routing turn the deliverable is the
+            # reasoning + the typed next_expert/next_task decision, not a prose
+            # answer -- forcing a required `answer` made models emit a content-free
+            # placeholder ("(Awaiting child expert evidence…)") just to satisfy the
+            # schema, which then leaked to the UI. A Pydantic field default ("") lets
+            # a model legitimately omit it (the lenient adapter honors field defaults
+            # per .claude/CLAUDE.md) instead of hard-failing or fabricating filler.
+            # The finish-round deliverable still flows: the synthesizing expert writes
+            # a real answer, and downstream readers already tolerate an empty one.
+            namespace[name] = dspy.OutputField(desc=desc, default="")
+        else:
+            namespace[name] = dspy.OutputField(desc=desc)
     namespace["__annotations__"] = annotations
     return type(
         f"{agent_def.id.title().replace('-', '').replace('_', '')}BlueprintSignature",

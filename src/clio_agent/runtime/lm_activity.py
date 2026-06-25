@@ -70,8 +70,18 @@ def note_lm_answer_delta(text: str) -> None:
     if not emitter:
         return
     loop, emit_coro = emitter
+    # Attribute this delta to the expert whose LM call produced it. The tap runs in
+    # the executor thread where the expert's react scope contextvar is set, so the
+    # author is known here; the chat publisher splits parts when it changes (WS3).
+    agent_id = ""
     try:
-        asyncio.run_coroutine_threadsafe(emit_coro(text), loop)
+        from clio_agent.gact.context import active_react_scope  # noqa: PLC0415
+
+        agent_id = active_react_scope()
+    except Exception:  # noqa: BLE001 - scope unavailable off-turn (CLI/optimizer)
+        agent_id = ""
+    try:
+        asyncio.run_coroutine_threadsafe(emit_coro(text, agent_id or None), loop)
     except Exception:  # noqa: BLE001 - live streaming is best-effort, never break the call
         pass
 

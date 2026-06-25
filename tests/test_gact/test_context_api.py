@@ -209,9 +209,11 @@ def test_search_context_404_503(tmp_path):
     assert client2.get(f"/v1/sessions/{sid}/context/search", params={"q": "x"}).status_code == 503
 
 
-def test_context_op_publishes_redacted_arc_op_frame(tmp_path, monkeypatch):
-    """An applied op publishes an arc.op SSE frame to the bus, redacted to
-    ids/kinds/token_count (never content)."""
+def test_context_op_append_does_not_publish_arc_op_frame(tmp_path, monkeypatch):
+    """WS1: ``arc.op`` segment bookkeeping is substrate, not served UI -- a plain
+    ``append`` does NOT ride the SSE bus (the TUI reads context via GET
+    /context/state), and no segment content can leak there. The durable trace + ARC
+    still capture the op in full."""
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))
     app = build_app(sessions_path=tmp_path / "sessions.json", arc=arc)
     client = TestClient(app)
@@ -223,7 +225,7 @@ def test_context_op_publishes_redacted_arc_op_frame(tmp_path, monkeypatch):
         app.state.bus, "publish", lambda ev: (published.append(ev), original(ev))[1]
     )
 
-    client.post(
+    resp = client.post(
         f"/v1/sessions/{sid}/context/ops",
         json={
             "op": "append",
@@ -233,10 +235,14 @@ def test_context_op_publishes_redacted_arc_op_frame(tmp_path, monkeypatch):
             "token_count": 3,
         },
     )
+    assert resp.status_code == 200, resp.text
+    # The append is NOT published as an arc.op frame on the served bus...
     arc_ops = [e for e in published if getattr(e, "type", None) == "arc.op"]
-    assert arc_ops, "expected an arc.op frame on the bus"
-    payload = arc_ops[-1].payload
-    assert payload["op"] == "append" and payload["scope"] == SCOPE
-    assert "SECRET_CONTENT" not in str(payload)  # content redacted
-    for s in payload["segments_written"]:
-        assert set(s.keys()) <= {"id", "kind", "token_count"}
+    assert arc_ops == []
+    # ...and no segment content leaks onto the bus at all.
+    assert all("SECRET_CONTENT" not in str(getattr(e, "payload", "")) for e in published)
+    # The op still actually landed (visible via the on-demand context state).
+    state = client.get(
+        f"/v1/sessions/{sid}/context/state", params={"scope": SCOPE}
+    ).json()
+    assert any(seg.get("kind") == "observation" for seg in state["segments"])

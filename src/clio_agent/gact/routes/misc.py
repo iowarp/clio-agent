@@ -23,6 +23,7 @@ helpers are concern-private and live here.
 from __future__ import annotations
 
 import asyncio
+import os
 import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
@@ -35,6 +36,31 @@ from clio_agent.gact.events import Event, heartbeat_payload
 from clio_agent.gact.runtime.constants import GACT_BACKEND_VERSION
 from clio_agent.gact.runtime.globals import _format_sse
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Session
+
+# Connection-preamble events (server.connected / session.snapshot) carry this
+# fixed id instead of a monotonic timeline id: it sorts before every real event
+# (which start at 1) and is re-sent on every (re)connect, so the served wire never
+# inverts the preamble against a replayed lower-id event.
+_PREAMBLE_EVENT_ID = 0
+
+
+def _sse_wire_tap(sid: str, frame: bytes) -> None:
+    """Append the EXACT bytes written to one SSE connection to a debug file.
+
+    Opt-in via ``CLIO_SSE_WIRE_TAP`` (a file path). This records the literal
+    wire — byte-for-byte what every subscribed client (the TUI included)
+    receives, since :func:`_format_sse` is deterministic and the bus fans the
+    same Event objects to all subscribers. Used to get a 1-1 replica of the UI
+    stream for ordering/quality debugging. Best-effort: never breaks the feed.
+    """
+    path = os.environ.get("CLIO_SSE_WIRE_TAP")
+    if not path:
+        return
+    try:
+        with open(path, "ab") as fh:
+            fh.write(frame)
+    except OSError:
+        pass
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -350,12 +376,25 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
             sess_snapshot = app.state.sessions.get(sid)
             # Initial server.connected event so clients can flip
             # their UI from "connecting" to "live" immediately.
+            #
+            # The preamble (server.connected + session.snapshot) is CONNECTION meta,
+            # not part of the session's event timeline. Event() assigns a monotonic id
+            # at construction (events.py `_event_id_counter`), so constructing them here
+            # would grab the NEXT ids — landing AFTER any already-buffered event (e.g.
+            # an `lm.provider.changed` from bind) that the replay below then re-sends
+            # with a LOWER id. Delivered out of id order (2, 3, 1 …), a sort-by-id TUI
+            # hoists the replayed event above the preamble ("backwards messages"). Pin
+            # the preamble to id 0 (< every real id, always re-sent on reconnect) so the
+            # served wire stays monotonic: 0, 0, <timeline ids ascending>.
             connected = Event(
                 type="server.connected",
                 session_id=sid,
                 payload={"server_version": GACT_BACKEND_VERSION},
             )
-            yield _format_sse(connected)
+            connected.id = _PREAMBLE_EVENT_ID
+            _frame = _format_sse(connected)
+            _sse_wire_tap(sid, _frame)
+            yield _frame
             if sess_snapshot is not None:
                 snapshot = Event(
                     type="session.snapshot",
@@ -367,7 +406,10 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                         "authoritative": True,
                     },
                 )
-                yield _format_sse(snapshot)
+                snapshot.id = _PREAMBLE_EVENT_ID
+                _frame = _format_sse(snapshot)
+                _sse_wire_tap(sid, _frame)
+                yield _frame
 
             try:
                 last_event_id = int(request.headers.get("last-event-id", "0"))
@@ -392,7 +434,9 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                 heartbeat_task = asyncio.create_task(_heartbeat())
 
                 async for event in sub:
-                    yield _format_sse(event)
+                    _frame = _format_sse(event)
+                    _sse_wire_tap(sid, _frame)
+                    yield _frame
             except asyncio.CancelledError:
                 # Client disconnected. Cleanup happens in `finally`.
                 pass

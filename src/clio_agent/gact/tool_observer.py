@@ -115,7 +115,7 @@ def _ensure_live_assistant_message(app: "FastAPI", sid: str) -> str:
                 created_at=now,
                 updated_at=now,
                 parts=[],
-            ).model_dump(exclude_none=True),
+            ).to_wire(),
         )
     )
     return msg_id
@@ -140,7 +140,7 @@ def _append_live_assistant_part(app: "FastAPI", sid: str, part: Part) -> None:
                 # Real runtime parts (tool calls/results, routing) emitted live during
                 # the turn (#711); not provider-token text, but emitted in real time.
                 "stream_source": str(part.metadata.get("stream_source") or "live"),
-                "part": part.model_dump(exclude_none=True),
+                "part": part.to_wire(),
             },
         )
     )
@@ -353,6 +353,9 @@ def _make_tool_observer(app: "FastAPI"):
                 }
             ok = completion_error is None
             result_summary = f"Tool {name} {'completed' if ok else 'failed'}."
+            # Served payload = the tool-response atom's FACTS (ok/duration/cached/result/
+            # error). No ui_summary/result_summary captions — clio transmits, it does not
+            # author UI labels; the envelope ``summary`` below is the one short caption.
             payload = {
                 "call_id": call_id,
                 "tool": name,
@@ -360,8 +363,6 @@ def _make_tool_observer(app: "FastAPI"):
                 "duration_ms": duration_ms,
                 "cached": False,
                 "telemetry_source": "live_observer",
-                "ui_summary": result_summary,
-                "result_summary": result_summary,
                 **({"error": completion_error} if completion_error else {}),
                 **({"result": _bounded_tool_call_result(result)} if result is not None else {}),
                 **cancellation_metadata,
