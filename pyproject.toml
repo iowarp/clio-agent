@@ -98,6 +98,16 @@ argonne = [
     "globus-sdk>=3.0.0",
 ]
 
+claude-code = [
+    # Optional Claude Agent SDK transport (claude_code_transport="sdk"): a
+    # persistent in-process Claude Code CLI session instead of one `claude -p`
+    # spawn per LM call (kills the per-call cold-start, #715). Auth is the user's
+    # Claude Code OAuth login (no API key). The default "exec" transport needs only
+    # the `claude` CLI on PATH, so this is opt-in. See
+    # src/clio_agent/providers/claude_code_litellm.py.
+    "claude-agent-sdk>=0.2.0",
+]
+
 dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
@@ -107,7 +117,7 @@ dev = [
 ]
 
 all = [
-    "clio-agent[optimizers,tools,adios,iowarp,argonne,dev]",
+    "clio-agent[optimizers,tools,adios,iowarp,argonne,claude-code,dev]",
 ]
 
 [project.urls]

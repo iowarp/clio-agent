@@ -77,6 +77,14 @@ MODEL_PROFILES: dict[str, dict[str, Any]] = {
         "parallel": 1,
         "turn_timeout_s": 1900.0,
     },
+    # Claude Code (OAuth/subscription) via the `claude -p` CLI. A fresh process is
+    # spawned per LM call (~10-15s cold start, #715), so a full multi-turn EarthScope
+    # run needs a generous, progress-aware turn budget to reach completion. temp 0 for
+    # the routing-dominated pipeline (same rationale as the other non-reasoning cells).
+    "haiku": {
+        "temperature": 0.0,
+        "turn_timeout_s": 3600.0,
+    },
 }
 
 

@@ -154,6 +154,7 @@ def test_custom_llm_completion_strips_internal_model_marker() -> None:
 
 
 def test_custom_llm_rejects_unknown_transport() -> None:
+    # "exec" and "sdk" are both valid; only a genuinely unknown transport is rejected.
     with pytest.raises(ClaudeCodeExecError, match="unknown claude_code transport"):
         ClaudeCodeLLM().completion(
             model="claude_code/cc-sonnet",
@@ -165,8 +166,33 @@ def test_custom_llm_rejects_unknown_transport() -> None:
             encoding=None,
             api_key=None,
             logging_obj=None,
-            optional_params={"claude_code_transport": "sdk"},
+            optional_params={"claude_code_transport": "bogus"},
         )
+
+
+def test_custom_llm_sdk_transport_routes_to_run_sdk(monkeypatch) -> None:
+    """transport='sdk' dispatches to the Agent SDK path (not `claude -p` exec)."""
+    seen: dict = {}
+
+    def _fake_sdk(*, prompt, model, timeout, cwd):
+        seen["model"] = model
+        return "sdk says hi", {"input_tokens": 2, "output_tokens": 3}
+
+    monkeypatch.setattr(claude_code_litellm, "_run_sdk", _fake_sdk)
+    resp = ClaudeCodeLLM().completion(
+        model="claude_code/cc-haiku",
+        messages=[{"role": "user", "content": "hi"}],
+        api_base="",
+        custom_prompt_dict={},
+        model_response=MagicMock(),
+        print_verbose=None,
+        encoding=None,
+        api_key=None,
+        logging_obj=None,
+        optional_params={"claude_code_transport": "sdk"},
+    )
+    assert seen["model"] == "haiku"  # provider strips the claude_code/cc- prefixes
+    assert resp.choices[0].message.content == "sdk says hi"
 
 
 def test_custom_llm_streaming_fails_explicitly() -> None:

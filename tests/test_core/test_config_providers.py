@@ -146,12 +146,15 @@ class TestLMProviderConfig:
         assert config.api_base == "claude-code://exec"
         assert config.model == "sonnet"
         assert config.api_key == ""
-        assert config.claude_code_transport == "exec"
+        assert config.claude_code_transport == "sdk"  # sdk is the default (best config)
 
     def test_invalid_claude_code_transport_rejected(self):
-        """Invalid Claude Code transport should fail during config construction."""
+        """Invalid Claude Code transport should fail during config construction.
+
+        'exec' and 'sdk' are both valid now; only a genuinely unknown value is rejected.
+        """
         with pytest.raises(ValueError, match="claude_code_transport"):
-            LMProviderConfig(provider="claude_code", claude_code_transport="sdk")  # type: ignore[arg-type]
+            LMProviderConfig(provider="claude_code", claude_code_transport="bogus")  # type: ignore[arg-type]
 
 
 class TestLoadConfigFromEnv:
@@ -399,7 +402,7 @@ class TestCreateLM:
         config = LMProviderConfig(provider="claude_code", model="sonnet")
         lm = create_lm(config)
         assert lm.model == "claude_code/cc-sonnet"
-        assert lm.kwargs["claude_code_transport"] == "exec"
+        assert lm.kwargs["claude_code_transport"] == "sdk"  # sdk is the default
 
     def test_claude_code_model_marker_is_not_doubled(self):
         """Claude Code should accept already-prefixed config values idempotently."""

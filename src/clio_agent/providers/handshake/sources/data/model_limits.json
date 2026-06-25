@@ -62,6 +62,11 @@
   "context": 1048576,
   "source": "seed"
  },
+ "haiku": {
+  "context": 200000,
+  "provider": "claude_code",
+  "source": "seed"
+ },
  "ibm/granite-4-h-tiny": {
   "context": 1048576,
   "provider": "lm_studio",
@@ -166,6 +171,11 @@
   "source": "live",
   "updated_at": "2026-06-10T03:55:34.111784+00:00"
  },
+ "opus": {
+  "context": 1000000,
+  "provider": "claude_code",
+  "source": "seed"
+ },
  "qwen2.5:0.5b": {
   "context": 32768,
   "provider": "ollama",
@@ -207,6 +217,11 @@
   "provider": "lm_studio",
   "source": "live",
   "updated_at": "2026-06-10T03:04:43.976697+00:00"
+ },
+ "sonnet": {
+  "context": 1000000,
+  "provider": "claude_code",
+  "source": "seed"
  },
  "text-embedding-nomic-embed-text-v1.5": {
   "context": 2048,
