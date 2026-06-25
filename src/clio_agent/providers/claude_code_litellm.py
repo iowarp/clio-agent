@@ -29,7 +29,10 @@ except ImportError as e:  # pragma: no cover - litellm is a hard dep
 
 
 CLAUDE_BINARY_NAME = "claude"
-DEFAULT_TRANSPORT = "exec"
+# Default to the Claude Agent SDK transport (persistent CLI session, no per-call
+# spawn, cleaner prompt isolation). "exec" (one `claude -p` per call) is the explicit
+# opt-out via claude_code_transport / CLIO_CLAUDE_CODE_TRANSPORT.
+DEFAULT_TRANSPORT = "sdk"
 _ALLOWED_MESSAGE_ROLES = {"system", "developer", "user", "assistant", "tool"}
 
 
@@ -175,6 +178,75 @@ def _run_exec(
     return text, usage
 
 
+def _run_sdk(
+    *,
+    prompt: str,
+    model: str,
+    timeout: float | None = 180.0,
+    cwd: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """Run one completion via the Claude Agent SDK (persistent CLI, no per-call spawn).
+
+    Bare-model transport, mirroring :func:`_run_exec`: Claude Code's own tools are
+    disabled and ``max_turns=1``, so the SDK does NOT run its own agentic loop —
+    clio's ReAct loop + MCP gateway drive tools. ``setting_sources=[]`` keeps the
+    user's ``~/.claude`` settings / CLAUDE.md out of the request so the model sees
+    only clio's transcript (the exec path inherits them; this is cleaner). Returns
+    ``(text, usage)`` in the same shape as :func:`_run_exec`.
+    """
+    import asyncio  # noqa: PLC0415
+
+    try:
+        from claude_agent_sdk import (  # noqa: PLC0415
+            AssistantMessage,
+            ClaudeAgentOptions,
+            ResultMessage,
+            TextBlock,
+            query,
+        )
+    except ImportError as exc:
+        raise ClaudeCodeCLIUnavailableError(
+            "claude_code_transport='sdk' requires the claude-agent-sdk package "
+            "(`uv pip install claude-agent-sdk`)."
+        ) from exc
+
+    options = ClaudeAgentOptions(
+        model=model,
+        max_turns=1,
+        allowed_tools=[],
+        permission_mode="bypassPermissions",
+        setting_sources=[],
+        cwd=str(cwd) if cwd else None,
+    )
+
+    async def _collect() -> tuple[str, dict[str, Any]]:
+        parts: list[str] = []
+        usage: dict[str, Any] = {}
+        async for msg in query(prompt=prompt, options=options):
+            if isinstance(msg, AssistantMessage):
+                parts.extend(b.text for b in msg.content if isinstance(b, TextBlock))
+            elif isinstance(msg, ResultMessage):
+                u = getattr(msg, "usage", None)
+                if isinstance(u, dict):
+                    usage = u
+        return "".join(parts).strip(), usage
+
+    async def _main() -> tuple[str, dict[str, Any]]:
+        if timeout:
+            return await asyncio.wait_for(_collect(), timeout=timeout)
+        return await _collect()
+
+    try:
+        text, usage = asyncio.run(_main())
+    except asyncio.TimeoutError as exc:
+        raise ClaudeCodeExecError(
+            f"claude agent sdk timed out after {timeout}s (model={model})"
+        ) from exc
+    if not text:
+        raise ClaudeCodeExecError(f"claude agent sdk returned empty content (model={model})")
+    return text, usage
+
+
 def _build_model_response(
     *,
     text: str,
@@ -238,17 +310,14 @@ class ClaudeCodeLLM(CustomLLM):
             or os.environ.get("CLIO_CLAUDE_CODE_TRANSPORT")
             or DEFAULT_TRANSPORT
         )
-        if transport != "exec":
+        if transport not in ("exec", "sdk"):
             raise ClaudeCodeExecError(
-                f"unknown claude_code transport {transport!r} (expected 'exec')"
+                f"unknown claude_code transport {transport!r} (expected 'exec' or 'sdk')"
             )
         timeout_s = float(timeout) if timeout else 180.0
-        text, usage = _run_exec(
-            prompt=prompt,
-            model=clean_model,
-            timeout=timeout_s,
-            cwd=params.get("claude_code_cwd", os.getcwd()),
-        )
+        cwd = params.get("claude_code_cwd", os.getcwd())
+        runner = _run_sdk if transport == "sdk" else _run_exec
+        text, usage = runner(prompt=prompt, model=clean_model, timeout=timeout_s, cwd=cwd)
         return _build_model_response(text=text, model=clean_model, usage_payload=usage)
 
     async def acompletion(

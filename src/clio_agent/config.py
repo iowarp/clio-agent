@@ -238,7 +238,14 @@ class LMProviderConfig:
     presence_penalty: float | None = None
     environment: str = "dev"
     codex_transport: Literal["exec", "sdk"] = "exec"
-    claude_code_transport: Literal["exec"] = "exec"
+    # "sdk" (DEFAULT — the best config): the in-process Claude Agent SDK with a
+    #   persistent CLI session — no per-call spawn, streaming-capable, and
+    #   setting_sources=[] keeps the user's ~/.claude/CLAUDE.md out of the prompt
+    #   (faster + cleaner than exec). Needs the claude-agent-sdk package (the
+    #   `claude-code` extra).
+    # "exec": one `claude -p` subprocess per LM call — needs only the `claude` CLI on
+    #   PATH, but pays ~10-15s cold start every call (#715). Explicit opt-out.
+    claude_code_transport: Literal["exec", "sdk"] = "sdk"
     # Reasoning/thinking budget. Mapped per-provider in create_lm:
     #   anthropic → thinking={"type":"enabled","budget_tokens":N}
     #   openai/openai-compat → reasoning_effort bucketed from N
@@ -301,9 +308,10 @@ class LMProviderConfig:
             raise ValueError(
                 f"codex_transport must be 'exec' or 'sdk' (got {self.codex_transport!r})"
             )
-        if self.claude_code_transport != "exec":
+        if self.claude_code_transport not in {"exec", "sdk"}:
             raise ValueError(
-                f"claude_code_transport must be 'exec' (got {self.claude_code_transport!r})"
+                f"claude_code_transport must be 'exec' or 'sdk' "
+                f"(got {self.claude_code_transport!r})"
             )
 
     def _apply_model_profile_defaults(self) -> None:
