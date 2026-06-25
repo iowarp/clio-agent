@@ -76,6 +76,28 @@ def _coerce_expert_handoff_rows(value: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _expert_handoff_fields(handoff: Mapping[str, Any]) -> dict[str, str]:
+    """Return the structured handoff fields for an ``expert_handoff`` Part.
+
+    Mirrors the keys :func:`_expert_handoff_summary` reads so the message Part can
+    carry the delegation as typed fields (``parent_agent`` / ``child_agent`` /
+    ``stage`` / ``status``) instead of forcing a client to parse the prose label.
+    The generating party is the parent, so callers set ``Part.agent_id`` to
+    ``parent_agent``.
+    """
+
+    child = str(handoff.get("agent_id") or handoff.get("expert") or "").strip()
+    parent = str(handoff.get("parent_id") or handoff.get("parent") or "").strip()
+    status = str(handoff.get("status") or "observed").strip()
+    stage = str(handoff.get("stage") or handoff.get("dispatch_target") or "").strip()
+    return {
+        "parent_agent": parent,
+        "child_agent": child,
+        "stage": stage,
+        "status": status,
+    }
+
+
 def _expert_handoff_summary(handoff: Mapping[str, Any]) -> str:
     """Return a compact user-facing summary for an expert handoff part."""
 

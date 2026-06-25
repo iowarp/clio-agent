@@ -466,6 +466,7 @@ from clio_agent.gact.delegation import (  # noqa: E402,F401
     _delegated_expert_agent_id,
     _delegated_expert_prompt,
     _dynamic_parent_resume_prompt,
+    _expert_handoff_fields,
     _expert_handoff_summary,
     _failed_child_delegation_output_summary,
     _failed_child_delegation_workflow_state,

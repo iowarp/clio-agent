@@ -141,6 +141,7 @@ async def _run_turn_in_background(
         _enrich_with_context_files,
         _enrich_with_requested_memory_search,
         _estimate_cost_usd,
+        _expert_handoff_fields,
         _expert_handoff_summary,
         _extend_session_messages,
         _extract_tools_called,
@@ -207,6 +208,10 @@ async def _run_turn_in_background(
     agent_runtime: dict[str, Any] = {}
     dynamic_agent_used: "AgentDef | None" = None
     execution_path = ""
+    # The expert/agent generating this turn's assistant parts. Set once the active
+    # agent is resolved inside the forward try-block; pre-seeded so the final
+    # part-assembly always has a value even when forward errors early.
+    invocation_agent_id = ""
     tools_called: list[dict[str, Any]] = []
     expert_handoffs: list[dict[str, Any]] = []
     prompt_resolution: dict[str, Any] = {}
@@ -462,6 +467,7 @@ async def _run_turn_in_background(
             text_part = Part(
                 id=streamed_assistant_part_id,
                 type="text",
+                agent_id=active_agent_id or invocation_agent_id or "main",
                 text="",
                 metadata={"stream_source": "live"},
             )
@@ -803,7 +809,12 @@ async def _run_turn_in_background(
                 Part(
                     id=f"live_handoff_{uuid.uuid4().hex[:12]}",
                     type="expert_handoff",
-                    text=_expert_handoff_summary(started_row),
+                    agent_id=parent_agent.id,
+                    parent_agent=parent_agent.id,
+                    child_agent=target.id,
+                    stage=str(started_row.get("stage") or ""),
+                    status=str(started_row.get("status") or ""),
+                    text=f"{parent_agent.id} -> {target.id}",
                     metadata={**started_row, "stream_source": "live"},
                 ),
             )
@@ -982,7 +993,12 @@ async def _run_turn_in_background(
                     Part(
                         id=f"live_handoff_{uuid.uuid4().hex[:12]}",
                         type="expert_handoff",
-                        text=_expert_handoff_summary(completed_row),
+                        agent_id=parent_agent.id,
+                        parent_agent=parent_agent.id,
+                        child_agent=target.id,
+                        stage=str(completed_row.get("stage") or ""),
+                        status=str(completed_row.get("status") or ""),
+                        text=f"{parent_agent.id} <- {target.id}",
                         metadata={**completed_row, "stream_source": "live"},
                     ),
                 )
@@ -1019,7 +1035,12 @@ async def _run_turn_in_background(
                     Part(
                         id=f"live_handoff_{uuid.uuid4().hex[:12]}",
                         type="expert_handoff",
-                        text=_expert_handoff_summary(resumed_row),
+                        agent_id=parent_agent.id,
+                        parent_agent=str(parent_agent.parent_id or ""),
+                        child_agent=parent_agent.id,
+                        stage=str(resumed_row.get("stage") or ""),
+                        status=str(resumed_row.get("status") or ""),
+                        text=f"{parent_agent.id} resumed (from {target.id})",
                         metadata={**resumed_row, "stream_source": "live"},
                     ),
                 )
@@ -1101,7 +1122,12 @@ async def _run_turn_in_background(
                     Part(
                         id=f"live_handoff_{uuid.uuid4().hex[:12]}",
                         type="expert_handoff",
-                        text=_expert_handoff_summary(failed_row),
+                        agent_id=parent_agent.id,
+                        parent_agent=parent_agent.id,
+                        child_agent=target.id,
+                        stage=str(failed_row.get("stage") or ""),
+                        status=str(failed_row.get("status") or ""),
+                        text=f"{parent_agent.id} -> {target.id} (failed)",
                         metadata={**failed_row, "stream_source": "live"},
                     ),
                 )
@@ -1990,6 +2016,9 @@ async def _run_turn_in_background(
             Part(
                 id=_new_part_id(),
                 type="routing_decision",
+                # The decision is MADE by the orchestrator; ``selected_agent`` is the
+                # CHOSEN expert.
+                agent_id=invocation_agent_id or "main",
                 metadata={
                     k: v
                     for k, v in {
@@ -2006,22 +2035,47 @@ async def _run_turn_in_background(
             )
         )
     for handoff in [] if live_has_expert_handoff else expert_handoffs:
+        handoff_fields = _expert_handoff_fields(handoff)
         assistant_parts.append(
             Part(
                 id=_new_part_id(),
                 type="expert_handoff",
+                # The parent (decider) generates the handoff; structured fields are
+                # the contract, ``text`` is a short label only.
+                agent_id=handoff_fields["parent_agent"] or selected_agent or invocation_agent_id,
+                parent_agent=handoff_fields["parent_agent"],
+                child_agent=handoff_fields["child_agent"],
+                stage=handoff_fields["stage"],
+                status=handoff_fields["status"],
                 metadata=handoff,
                 text=_expert_handoff_summary(handoff),
             )
         )
+    # The expert that produced this turn's thinking/answer/diff parts: the routed
+    # expert when one was selected, else the active orchestrator.
+    responder_agent_id = selected_agent or invocation_agent_id or "main"
     if thinking_text:
         # iowarp/clio-agent#17: surface DSPy reasoning as a
         # thinking Part so the TUI can collapse + render it
         # gated on capabilities.thinking_blocks.
-        assistant_parts.append(Part(id=_new_part_id(), type="thinking", text=thinking_text))
+        assistant_parts.append(
+            Part(
+                id=_new_part_id(),
+                type="thinking",
+                agent_id=responder_agent_id,
+                text=thinking_text,
+            )
+        )
     assistant_parts.extend(final_live_parts)
     if answer_text and streamed_assistant_part_id is None:
-        assistant_parts.append(Part(id=_new_part_id(), type="text", text=answer_text))
+        assistant_parts.append(
+            Part(
+                id=_new_part_id(),
+                type="text",
+                agent_id=responder_agent_id,
+                text=answer_text,
+            )
+        )
     for row in proposed_diffs:
         if isinstance(row, dict):
             getf = row.get
@@ -2046,6 +2100,7 @@ async def _run_turn_in_background(
         diff_part = Part(
             id=_new_part_id(),
             type="file_diff",
+            agent_id=responder_agent_id,
             path=path,
             unified_diff=udiff,
             new_content=new_content,
@@ -2167,6 +2222,7 @@ async def _run_turn_in_background(
                 assistant_parts[i] = Part(
                     id=streamed_assistant_part_id,
                     type="text",
+                    agent_id=p.agent_id or responder_agent_id,
                     text=answer_text,
                     metadata=p.metadata,
                 )
@@ -2265,7 +2321,11 @@ async def _run_turn_in_background(
             role="assistant",
             created_at=_iso_from_epoch(sub_now),
             updated_at=_iso_from_epoch(sub_now),
-            parts=[Part(id=_new_part_id(), type="text", text=answer)] if answer else [],
+            parts=(
+                [Part(id=_new_part_id(), type="text", agent_id=str(agent_id), text=answer)]
+                if answer
+                else []
+            ),
             stop_reason="end_turn",
             metadata={"tools_called": tools_called} if tools_called else {},
         )

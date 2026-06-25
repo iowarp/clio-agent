@@ -555,6 +555,13 @@ class Part(BaseModel):
     type: str
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    # Per-part expert attribution (CLIO extension). Lets a client attribute every
+    # turn/part to its source without parsing prose or inferring from metadata.
+    agent_id: str = ""
+    """The expert/agent that GENERATED this part (e.g. 'geospatial'), so a client
+    can attribute every turn/part to its source without inference. Empty for
+    user-authored parts."""
+
     # text / error (v0.1 error part shape)
     text: str = ""
 
@@ -579,6 +586,16 @@ class Part(BaseModel):
     # are user-neutral per CLAUDE.md Rule 3 (no DSPy terms in user-
     # facing payload).
     execution_path: str = ""
+
+    # expert_handoff (CLIO extension). Structured mirror of the delegation row so
+    # a client consumes the handoff from typed fields instead of parsing the
+    # bespoke ``text`` summary. ``parent_agent`` made the delegation, ``child_agent``
+    # received it, ``stage`` is the delegation lifecycle phase (e.g.
+    # ``delegate.started`` / ``delegate.completed`` / ``parent.resumed`` /
+    # ``delegate.failed``); the handoff status reuses the shared ``status`` field.
+    parent_agent: str = ""
+    child_agent: str = ""
+    stage: str = ""
 
     # tool_call / tool_result. CLIO emits these as live SSE parts when
     # MCP tools start/finish so clients can show progress before the
