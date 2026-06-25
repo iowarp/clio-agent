@@ -149,9 +149,12 @@ class TestLMProviderConfig:
         assert config.claude_code_transport == "sdk"  # sdk is the default (best config)
 
     def test_invalid_claude_code_transport_rejected(self):
-        """Invalid Claude Code transport should fail during config construction."""
+        """Invalid Claude Code transport should fail during config construction.
+
+        'exec' and 'sdk' are both valid now; only a genuinely unknown value is rejected.
+        """
         with pytest.raises(ValueError, match="claude_code_transport"):
-            LMProviderConfig(provider="claude_code", claude_code_transport="sdk")  # type: ignore[arg-type]
+            LMProviderConfig(provider="claude_code", claude_code_transport="bogus")  # type: ignore[arg-type]
 
 
 class TestLoadConfigFromEnv:
