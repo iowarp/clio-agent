@@ -113,9 +113,8 @@ async def _run_turn_in_background(
         _EXECUTABLE_SESSION_AGENT_IDS,
         _agent_definition_uses_blueprint_runtime,
         _agent_forward_compat,
+        _append_accumulated_workflow_state_context,
         _append_live_assistant_part,
-        _append_nested_workflow_state,
-        _append_prediction_workflow_state,
         _append_session_message,
         _append_session_workflow_state_context,
         _ask_user_options_from_action,
@@ -161,6 +160,7 @@ async def _run_turn_in_background(
         _merge_workflow_state_mapping,
         _pop_stream_fallback,
         _prediction_summary,
+        _prediction_workflow_state,
         _propose_edit_diffs_from_pred,
         _reasoning_records_from_history_slice,
         _record_context_frame,
@@ -187,7 +187,6 @@ async def _run_turn_in_background(
         _user_facing_dynamic_evidence_summary,
         _workflow_state_from_handoff_rows,
         _workflow_state_from_outputs,
-        _workflow_state_payload,
     )
 
     bus: EventBus = app.state.bus
@@ -828,20 +827,17 @@ async def _run_turn_in_background(
                 pred_child = await _run_dynamic_agent_sync(target, prompt)
                 duration_ms = int((time.perf_counter() - started_at) * 1000)
                 local_output = str(getattr(pred_child, "answer", "") or "").strip()
-                local_output = _append_prediction_workflow_state(local_output, pred_child)
                 local_tools_called = _extract_tools_called(pred_child)
-                local_workflow_state = _workflow_state_from_outputs([local_output])
+                # Seed local state from the child's typed workflow_state output
+                # field (structural twin of the removed prose append), then merge
+                # any tool-row state. The state rides the completed_row's
+                # ``local_workflow_state`` / ``workflow_state`` Mapping below; it is
+                # NOT serialized into local_output text anymore.
+                local_workflow_state = _prediction_workflow_state(pred_child)
                 for tool_row in local_tools_called:
                     row_state = tool_row.get("workflow_state")
                     if isinstance(row_state, Mapping):
                         _merge_workflow_state_mapping(local_workflow_state, row_state)
-                if local_workflow_state:
-                    local_state_block = _workflow_state_payload(local_workflow_state)
-                    if local_state_block not in local_output:
-                        local_output = (
-                            f"{local_output.rstrip()}\n\n"
-                            f"CLIO local typed workflow state:\n{local_state_block}"
-                        )
                 local_output_summary = _compact_dynamic_delegation_output(local_output)
                 nested: list[dict[str, Any]] = []
                 if target.source == "expert_pack":
@@ -851,7 +847,9 @@ async def _run_turn_in_background(
                         source_text=prompt,
                     )
                 raw_answer = str(getattr(pred_child, "answer", "") or "").strip()
-                output = _append_prediction_workflow_state(raw_answer, pred_child)
+                # The child's typed workflow_state is carried structurally on the
+                # completed_row below (NOT serialized into output text).
+                output = raw_answer
                 if not nested:
                     child_rows = _coerce_expert_handoff_rows(
                         getattr(pred_child, "expert_handoffs", None)
@@ -877,7 +875,7 @@ async def _run_turn_in_background(
                         or _latest_delegation_output_summary(nested)
                     )
                     if fallback:
-                        output = _append_prediction_workflow_state(fallback, pred_child)
+                        output = fallback
                 if nested and (
                     _user_agent_bool_param(
                         target,
@@ -901,9 +899,9 @@ async def _run_turn_in_background(
                         )
                         or output
                     )
-                output = _append_prediction_workflow_state(output, pred_child)
-                if nested:
-                    output = _append_nested_workflow_state(output, nested)
+                # Nested child typed state is merged into the structured
+                # ``workflow_state`` carrier below (via _workflow_state_from_handoff_rows);
+                # it is NOT appended to output text anymore.
                 child_tools_called = _extract_tools_called(pred_child)
                 if isinstance(ledger, dict):
                     session_rows = ledger.get(sid)
@@ -916,13 +914,17 @@ async def _run_turn_in_background(
                                 if isinstance(row, Mapping)
                             ],
                         )
-                workflow_state = _workflow_state_from_outputs([prompt, output])
-                # Seed from this expert's own authoritative typed emission. The
-                # output text can be reassigned to child-evidence summaries that
-                # drop the expert's typed workflow_state block, so re-parsing
-                # `output` alone can lose the expert's own state sections. Merging
-                # local_workflow_state guarantees an expert's typed state bubbles
-                # to its parent for continuation routing. Generic for all packs.
+                # The prompt may carry prior accumulated typed state (injected via
+                # _append_accumulated_workflow_state_context); parse it so prior
+                # state still bubbles. The child's OWN typed state comes from its
+                # structured workflow_state field via local_workflow_state (the
+                # structural twin of the removed prose append) -- never re-parsed
+                # out of `output` text, which no longer carries a state block.
+                workflow_state = _workflow_state_from_outputs([prompt])
+                # Seed from this expert's own authoritative typed emission so its
+                # state bubbles to the parent for continuation routing, even when
+                # `output` was reassigned to a child-evidence summary. Generic for
+                # all packs.
                 if local_workflow_state:
                     _merge_workflow_state_mapping(workflow_state, local_workflow_state)
                 if nested:
@@ -934,13 +936,6 @@ async def _run_turn_in_background(
                     row_state = tool_row.get("workflow_state")
                     if isinstance(row_state, Mapping):
                         _merge_workflow_state_mapping(workflow_state, row_state)
-                if workflow_state:
-                    state_block = _workflow_state_payload(workflow_state)
-                    if state_block not in output:
-                        output = (
-                            f"{output.rstrip()}\n\n"
-                            f"CLIO durable typed workflow state:\n{state_block}"
-                        )
                 output_summary = _compact_dynamic_delegation_output(output)
                 completed_row = {
                     **row,
@@ -1076,7 +1071,6 @@ async def _run_turn_in_background(
                         parent_agent_id=parent_agent.id,
                         error=error_name,
                         message=error_message,
-                        workflow_state=workflow_state,
                     )
                 )
                 failed_row = {
@@ -1205,9 +1199,15 @@ async def _run_turn_in_background(
             # is the parent's ORIGINAL input, captured before earlier children ran -- so a
             # later child (e.g. the resolver) otherwise never sees the ranked list it is
             # documented to consume, and falls back to inventing candidate ids.
-            current_evidence = _append_prediction_workflow_state(
-                str(getattr(latest_pred, "answer", "") or ""), latest_pred
-            ).strip()
+            # State travels STRUCTURALLY: read the parent's typed workflow_state field
+            # and inject it via the clean structured prompt formatter, rather than
+            # appending a prose state block to the parent's answer.
+            current_evidence = str(getattr(latest_pred, "answer", "") or "").strip()
+            parent_state = _prediction_workflow_state(latest_pred)
+            if parent_state:
+                current_evidence = _append_accumulated_workflow_state_context(
+                    current_evidence, parent_state
+                ).strip()
             executed_rows = await _execute_delegated_experts(
                 parent_agent,
                 requested_rows,

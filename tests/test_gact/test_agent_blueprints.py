@@ -26,6 +26,7 @@ from clio_agent.gact.agent_blueprints import (
 from clio_agent.gact.app import (
     _active_base_agent_tool_executor,
     _append_prediction_workflow_state,
+    _append_session_workflow_state_context,
     _blueprint_fanout_config,
     _blueprint_module_kind,
     _blueprint_runtime_signature,
@@ -38,8 +39,10 @@ from clio_agent.gact.app import (
     _compact_dynamic_delegation_output,
     _dynamic_agent_tools,
     _dynamic_child_expert_tools,
+    _dynamic_parent_resume_prompt,
     _extract_tools_called_from_trajectory,
     _failed_child_delegation_output_summary,
+    _failed_child_delegation_workflow_state,
     _fallback_answer_from_delegation,
     _gact_app_context,
     _gact_turn_timeout_s,
@@ -47,6 +50,7 @@ from clio_agent.gact.app import (
     _latest_final_child_output_summary,
     _merge_tool_call_rows,
     _prediction_structured_metadata,
+    _prediction_workflow_state,
     _recording_blueprint_tool,
     _run_blueprint_dspy_agent,
     _runtime_dynamic_agent_children_context,
@@ -54,6 +58,7 @@ from clio_agent.gact.app import (
     _tool_calls_from_handoff_rows,
     _user_agent_bool_param,
     _user_facing_dynamic_evidence_summary,
+    _workflow_state_from_handoff_rows,
     _workflow_state_from_outputs,
     build_app,
 )
@@ -1462,25 +1467,111 @@ def test_merge_tool_call_rows_deduplicates_matching_call_id_with_result_evidence
     assert rows[0]["call_id"] == "call_same"
 
 
-def test_failed_child_delegation_output_summary_is_parent_parseable() -> None:
-    state = {
-        "delegation": {
-            "status": "failed",
-            "failed_child": "earthscope_station_catalog",
-        },
-        "acquisition": {"status": "blocked", "analysis_ready": False},
-    }
-
+def test_failed_child_delegation_output_summary_is_clean_prose() -> None:
+    # The failure summary is human-readable prose ONLY: the typed workflow_state is
+    # carried STRUCTURALLY on the failed delegation row's ``workflow_state`` field
+    # (asserted in test_failed_child_delegation_state_rides_structured_row), not
+    # serialized into this answer text.
     summary = _failed_child_delegation_output_summary(
         child_agent_id="earthscope_station_catalog",
         parent_agent_id="ndp_dataset_discovery",
         error="AuthenticationError",
         message="token inactive",
-        workflow_state=state,
     )
 
     assert "Child expert 'earthscope_station_catalog' failed" in summary
-    assert _workflow_state_from_outputs([summary])["acquisition"]["status"] == "blocked"
+    assert "AuthenticationError" in summary
+    # No prose state block pollutes the summary anymore.
+    assert "workflow state" not in summary.casefold()
+    assert "workflow_state" not in summary
+    assert _workflow_state_from_outputs([summary]) == {}
+
+
+def test_failed_child_delegation_state_rides_structured_row() -> None:
+    # The structural twin: the typed failure state is built by
+    # _failed_child_delegation_workflow_state and stored on the failed row's
+    # ``workflow_state`` field, where the parent reads it for continuation routing.
+    state = _failed_child_delegation_workflow_state(
+        prompt="acquire GNSS data near 32.7,-117.1",
+        child_agent_id="earthscope_station_catalog",
+        parent_agent_id="ndp_dataset_discovery",
+        error="AuthenticationError",
+        message="token inactive",
+        tools_called=[],
+    )
+
+    assert state["delegation"]["status"] == "failed"
+    assert state["delegation"]["failed_child"] == "earthscope_station_catalog"
+    # The parent reads this structured field via _workflow_state_from_handoff_rows.
+    failed_row = {"stage": "delegate.failed", "workflow_state": state}
+    assert (
+        _workflow_state_from_handoff_rows([failed_row])["delegation"]["status"] == "failed"
+    )
+
+
+def test_completed_child_state_is_structural_not_prose_in_continuation() -> None:
+    # End-to-end answer-cleanliness invariant for UI issue #1: after a child
+    # completes with a non-empty typed workflow_state, (a) the user-/parent-facing
+    # OUTPUT text carries NO "typed workflow state" prose block, yet (b) the
+    # parent's continuation context still carries that state STRUCTURALLY.
+    child_state = {
+        "acquisition": {
+            "status": "staged",
+            "analysis_ready": True,
+            "local_path": "/workspace/.clio/artifacts/P472.CI.LY_.20.csv",
+        },
+        "station_catalog": {"station_ids": ["P472", "SIO5"]},
+    }
+    # The child's compact deliverable is clean human prose -- the carrier of the
+    # typed state is the completed row's structured ``workflow_state`` field.
+    clean_answer = "Staged GNSS CSV for station P472 near the requested center."
+    output_summary = _compact_dynamic_delegation_output(clean_answer)
+    completed_row = {
+        "agent_id": "earthscope_station_catalog",
+        "stage": "delegate.completed",
+        "status": "completed",
+        "output_summary": output_summary,
+        "workflow_state": child_state,
+    }
+
+    # (a) No prose state block in the user-/parent-facing output text.
+    assert "typed workflow state" not in output_summary.casefold()
+    assert "CLIO" not in output_summary
+    assert _workflow_state_from_outputs([clean_answer]) == {}
+
+    # (b1) The structural carrier (the row's workflow_state field) holds the state,
+    # readable by the parent's handoff-row reader.
+    recovered = _workflow_state_from_handoff_rows([completed_row])
+    assert recovered["acquisition"]["status"] == "staged"
+    assert recovered["station_catalog"]["station_ids"] == ["P472", "SIO5"]
+
+    # (b2) The parent's continuation PROMPT injects that state structurally (read
+    # from the row's typed field, NOT re-parsed from prose).
+    resume_prompt = _dynamic_parent_resume_prompt(
+        "acquire GNSS data near San Diego",
+        SimpleNamespace(id="ndp_dataset_discovery"),
+        [completed_row],
+    )
+    assert '"status": "staged"' in resume_prompt
+    assert "P472" in resume_prompt
+    # The clean human result still appears for the orchestrator's grounding.
+    assert "Staged GNSS CSV for station P472" in resume_prompt
+
+
+def test_session_workflow_state_context_injects_ledger_state_structurally() -> None:
+    # _append_session_workflow_state_context (the structured ledger -> parent
+    # prompt injection) is the KEEP path: it reads tool_call_ledger rows'
+    # structured ``workflow_state`` fields and injects them into a child prompt.
+    ledger_rows = [
+        {"name": "stage_csv", "workflow_state": {"acquisition": {"status": "staged"}}},
+    ]
+    app = SimpleNamespace(state=SimpleNamespace(tool_call_ledger={"sess-1": ledger_rows}))
+
+    enriched = _append_session_workflow_state_context(app, "sess-1", "find more stations")
+
+    assert "find more stations" in enriched
+    assert '"status": "staged"' in enriched
+    assert _workflow_state_from_outputs([enriched])["acquisition"]["status"] == "staged"
 
 
 def test_nested_handoff_tool_calls_preserve_child_result_evidence() -> None:
@@ -1555,6 +1646,7 @@ def test_generated_child_expert_tool_runs_declared_child_and_returns_compact_evi
             artifacts="",
             errors="",
             delegation='{"return_to":"root"}',
+            workflow_state={"profile": {"status": "ready", "rows": 1024}},
         )
 
     monkeypatch.setattr(
@@ -1589,8 +1681,14 @@ def test_generated_child_expert_tool_runs_declared_child_and_returns_compact_evi
     assert payload["structured"] == {
         "evidence": '[{"claim":"supported"}]',
         "delegation": '{"return_to":"root"}',
+        "workflow_state": {"profile": {"status": "ready", "rows": 1024}},
     }
     assert "child analysis answer" in payload["output_summary"]
+    # The child's typed workflow_state rides the structured payload field, NOT the
+    # output text (answer-cleanliness): no prose state block in output_summary.
+    assert payload["workflow_state"] == {"profile": {"status": "ready", "rows": 1024}}
+    assert "typed workflow state" not in payload["output_summary"].casefold()
+    assert "workflow_state" not in payload["output_summary"]
 
 
 def test_recording_blueprint_tool_captures_context_local_tool_result() -> None:
@@ -2223,9 +2321,11 @@ def test_prediction_structured_metadata_omits_empty_values() -> None:
     }
 
 
-def test_prediction_workflow_state_output_is_parent_visible() -> None:
-    output = _append_prediction_workflow_state(
-        "metadata staged",
+def test_prediction_workflow_state_read_structurally() -> None:
+    # The typed workflow_state output field is read STRUCTURALLY (not serialized
+    # into the answer text + re-parsed). _prediction_workflow_state returns the
+    # typed field as a plain Mapping for the structured carrier.
+    state = _prediction_workflow_state(
         SimpleNamespace(
             workflow_state={
                 "acquisition": {
@@ -2236,10 +2336,39 @@ def test_prediction_workflow_state_output_is_parent_visible() -> None:
         ),
     )
 
-    state = _workflow_state_from_outputs([output])
-
     assert state["acquisition"]["status"] == "metadata_only"
     assert state["acquisition"]["analysis_ready"] is False
+
+
+def test_append_prediction_workflow_state_no_longer_pollutes_answer() -> None:
+    # The legacy appender is now an identity passthrough: the typed state must NOT
+    # appear in the answer text. State flows via _prediction_workflow_state instead.
+    answer = _append_prediction_workflow_state(
+        "metadata staged",
+        SimpleNamespace(workflow_state={"acquisition": {"status": "metadata_only"}}),
+    )
+
+    assert answer == "metadata staged"
+    assert "workflow state" not in answer.casefold()
+    assert "workflow_state" not in answer
+    assert _workflow_state_from_outputs([answer]) == {}
+
+
+def test_prediction_workflow_state_accepts_json_string_and_wrapped_mapping() -> None:
+    # A typed field may arrive as a JSON string or already wrapped in
+    # {"workflow_state": ...}; both normalize to the inner section mapping.
+    from_string = _prediction_workflow_state(
+        SimpleNamespace(workflow_state='{"workflow_state": {"profile": {"status": "ready"}}}')
+    )
+    assert from_string["profile"]["status"] == "ready"
+
+    from_wrapped = _prediction_workflow_state(
+        SimpleNamespace(workflow_state={"workflow_state": {"artifact": {"status": "ready"}}})
+    )
+    assert from_wrapped["artifact"]["status"] == "ready"
+
+    assert _prediction_workflow_state(SimpleNamespace(workflow_state="")) == {}
+    assert _prediction_workflow_state(SimpleNamespace(workflow_state=None)) == {}
 
 
 def test_fallback_answer_from_delegation_uses_latest_completed_parent_resume() -> None:
