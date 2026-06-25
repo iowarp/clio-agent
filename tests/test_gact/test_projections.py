@@ -65,14 +65,17 @@ def test_project_full_keeps_everything_unredacted():
     assert payload["reasoning"].startswith("long chain")
 
 
-def test_project_sse_redacts_sensitive_but_keeps_envelope():
+def test_project_sse_keeps_content_redacts_only_secrets():
     out = project_sse(_handoff_event())
     # Envelope (ids/type) always present and unredacted.
     assert out["event_type"] == "expert.response.completed"
     assert out["trace_id"] == "trace_t1"
-    # Sensitive bodies redacted in the SSE projection.
-    assert str(out["payload"]["reasoning"]).startswith("[redacted]")
-    assert str(out["payload"]["trajectory"]).startswith("[redacted]")
+    # Content (reasoning/trajectory/answer) is the user's OWN session trajectory — it
+    # is NOT redacted on the SSE stream. CLIO does not redact its own trajectory; the
+    # full content flows to the live UI (only genuine secrets are hidden).
+    assert "[redacted]" not in str(out["payload"]["reasoning"])
+    assert "[redacted]" not in str(out["payload"]["trajectory"])
+    assert out["payload"]["answer"].startswith("71 stations")
 
 
 def test_project_sse_keeps_expert_output_full_but_redacts_secrets():
@@ -94,10 +97,10 @@ def test_project_sse_keeps_expert_output_full_but_redacts_secrets():
     assert str(out["payload"]["api_key"]).startswith("[redacted]")
 
 
-def test_project_sse_keeps_reasoning_only_for_allowlisted_events():
-    # `reasoning` is the model's chain-of-thought. It must reach the live UI on the
-    # canonical step event, but STAY redacted on raw/streamed events. The allow-list
-    # is event-scoped (not a global un-redaction) so this distinction holds.
+def test_project_sse_keeps_reasoning_on_every_event():
+    # `reasoning` is the model's chain-of-thought — content from the user's own
+    # session, NOT a secret. It now reaches the live UI on EVERY event type (the UI
+    # can show the expert's thoughts); it is no longer redacted to a length heartbeat.
     def _ev(event_type):
         return SemanticEvent(
             event_type=event_type,
@@ -107,19 +110,34 @@ def test_project_sse_keeps_reasoning_only_for_allowlisted_events():
             payload={"reasoning": "deep chain of thought " * 20},
         )
 
-    # Allowed: the canonical step + the expert extract.
-    assert "[redacted]" not in str(project_sse(_ev("react.step.completed"))["payload"]["reasoning"])
-    assert "[redacted]" not in str(
-        project_sse(_ev("expert.extract.completed"))["payload"]["reasoning"]
-    )
-    # Redacted everywhere else (raw LM I/O / streamed token deltas / generic events).
-    assert str(project_sse(_ev("lm.call"))["payload"]["reasoning"]).startswith("[redacted]")
-    assert str(project_sse(_ev("lm.token.delta"))["payload"]["reasoning"]).startswith("[redacted]")
-    assert str(project_sse(_ev("expert.response.completed"))["payload"]["reasoning"]).startswith(
-        "[redacted]"
-    )
+    for et in (
+        "react.step.completed",
+        "expert.extract.completed",
+        "lm.call",
+        "lm.token.delta",
+        "expert.response.completed",
+        "llm.response.completed",
+    ):
+        assert "[redacted]" not in str(project_sse(_ev(et))["payload"]["reasoning"]), et
+
+
+def test_project_sse_redacts_genuine_secrets_on_every_event():
+    # Genuine credentials are never session content — they stay redacted on SSE.
+    def _ev(event_type):
+        return SemanticEvent(
+            event_type=event_type,
+            session_id="s1",
+            trace_id="trace_t1",
+            turn_id="t1",
+            payload={"api_key": "sk-should-be-hidden", "password": "hunter2"},
+        )
+
+    for et in ("react.step.completed", "lm.call", "llm.response.completed"):
+        out = project_sse(_ev(et))["payload"]
+        assert str(out["api_key"]).startswith("[redacted]"), et
+        assert str(out["password"]).startswith("[redacted]"), et
     # Full capture is always unredacted regardless of event type.
-    assert "[redacted]" not in str(project_full(_ev("lm.call"))["payload"]["reasoning"])
+    assert "[redacted]" not in str(project_full(_ev("lm.call"))["payload"]["api_key"])
 
 
 def test_project_history_is_deferred():

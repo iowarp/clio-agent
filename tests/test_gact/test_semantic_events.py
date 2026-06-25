@@ -96,21 +96,22 @@ def test_semantic_events_stream_and_trace_file(tmp_path: Path, monkeypatch) -> N
     # the SSE detail_level; redaction is an SSE-only projection (asserted below).
     request_row = next(row for row in rows if row["event_type"] == "llm.request.started")
     assert request_row["payload"]["input"] == "analyze this"
-    # ...while the live SSE stream for the same event stays redacted at "semantic".
+    # ...and the live SSE stream carries the SAME content unredacted: the user's own
+    # session trajectory is not hidden from the user (only genuine secrets are).
     sse_request = next(
         e.payload for e in semantic_events if e.payload["event_type"] == "llm.request.started"
     )
-    assert str(sse_request["payload"]["input"]).startswith("[redacted]")
+    assert sse_request["payload"]["input"] == "analyze this"
 
-    # turn.completed embeds the full final assistant message in the DURABLE trace
-    # (messages store is derivable from the trace) but strips it from SSE.
+    # turn.completed embeds the full final assistant message — present in BOTH the
+    # durable trace and the SSE stream (content, not a secret).
     completed_row = next(row for row in rows if row["event_type"] == "turn.completed")
     assert isinstance(completed_row["payload"]["final_message"], dict)
     assert completed_row["payload"]["final_message"]["id"]
     sse_completed = next(
         e.payload for e in semantic_events if e.payload["event_type"] == "turn.completed"
     )
-    assert str(sse_completed["payload"]["final_message"]).startswith("[redacted]")
+    assert "[redacted]" not in str(sse_completed["payload"]["final_message"])
 
 
 def test_full_debug_trace_includes_llm_payload(tmp_path: Path, monkeypatch) -> None:
@@ -264,15 +265,17 @@ def test_artifact_and_builtin_command_semantic_events(tmp_path: Path, monkeypatc
     artifact = next(e for e in semantic if e["event_type"] == "artifact.proposed")
     command = next(e for e in semantic if e["event_type"] == "command.invocation.completed")
     assert artifact["subject"]["path"] == "result.txt"
-    assert artifact["payload"]["new_content"].startswith("[redacted]")
+    # The proposed file content is session content (what the diff will write) — it
+    # flows on SSE unredacted so the UI can render the diff; not a secret.
+    assert "[redacted]" not in str(artifact["payload"]["new_content"])
     assert command["subject"]["command"] == "/cache-stats"
 
 
 def test_lm_token_delta_projection_contract():
     """#693: the live LM-stream highway. One lm.token.delta event must feed every
-    consumer correctly via the existing projections: the answer delta reaches SSE
-    (live UI), while chain-of-thought is redacted to a heartbeat on SSE but kept
-    verbatim on the durable/full projection (trace + ARC)."""
+    consumer correctly via the existing projections: both the answer delta AND the
+    chain-of-thought reach SSE (live UI) unredacted — CLIO does not hide the user's
+    own reasoning — and are kept verbatim on the durable/full projection (trace + ARC)."""
     from clio_agent.gact.semantic_events import (
         LM_TOKEN_DELTA,
         SemanticEvent,
@@ -299,11 +302,10 @@ def test_lm_token_delta_projection_contract():
     assert sse["session_id"] == "sess_x" and sse["turn_id"] == "turn_x"
     assert sse["actor"].get("agent_id") == "synthesis"
 
-    # Answer delta survives to the live UI; reasoning is redacted to a heartbeat.
+    # Both the answer delta AND the reasoning survive to the live UI unredacted.
     assert sse["payload"]["delta"] == "Hello "
     assert sse["payload"]["field"] == "answer"
-    assert sse["payload"]["reasoning"] != "let me think..."
-    assert "redacted" in str(sse["payload"]["reasoning"]).lower()
+    assert sse["payload"]["reasoning"] == "let me think..."
 
     # The durable/full view (trace + ARC) keeps both verbatim.
     assert full["payload"]["delta"] == "Hello "

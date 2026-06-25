@@ -26,37 +26,25 @@ SCHEMA_VERSION = "clio.semantic_event.v1"
 DEFAULT_DETAIL_LEVEL = "semantic"
 DETAIL_LEVELS = {"off", "metadata", "semantic", "full_debug"}
 REDACTED_VALUE = "[redacted]"
+# CLIO does NOT redact its own trajectory from the user's own session: the SSE
+# stream carries the full content (the user's text, the model's reasoning, tool
+# results, prompts, answers) so a generic client renders the real session — same
+# principle as the durable trace/ARC ("the highway carries the full trajectory").
+# Only GENUINE SECRETS — credentials that are never session content — are redacted
+# in the SSE/hook projection. Everything else (content, formerly in this set:
+# text, input, question, prompt, reasoning, reasoning_content, rendered_*, result,
+# response, content, args, arguments, raw, trajectory, transcript, final_message,
+# new_content, output) now passes through.
 SENSITIVE_KEYS = {
     "api_key",
-    "args",
-    "arguments",
-    "content",
-    "input",
-    "new_content",
-    # NOTE: ``output`` is NOT redacted on SSE — it is the expert's extract report
-    # (expert.extract.completed) and delegation/fanout result, which the TUI renders
-    # in full. It is content, not a secret. Genuine secrets below stay redacted.
+    "access_token",
+    "authorization",
+    "bearer_token",
+    "client_secret",
     "password",
-    "prompt",
-    "question",
-    "raw",
-    "reasoning",
-    "reasoning_content",
-    "rendered_context",
-    "rendered_prompt",
-    "rendered_system_prompt",
-    "response",
-    "result",
+    "refresh_token",
     "secret",
-    "text",
     "token",
-    "trajectory",
-    "transcript",
-    "user_input",
-    # Full final assistant message embedded in turn.completed for the durable
-    # trace (so the messages store is derivable from the trace); stripped from
-    # the SSE projection where the message already streams via message.* events.
-    "final_message",
 }
 
 # Per-EVENT SSE allow-list: keys that are normally redacted (in SENSITIVE_KEYS)
