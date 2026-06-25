@@ -12,14 +12,19 @@ the only tool execution layer.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import json
+import logging
 import os
 import shutil
 import subprocess
+import threading
 import time
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 try:
     from litellm import CustomLLM
@@ -178,51 +183,68 @@ def _run_exec(
     return text, usage
 
 
-def _run_sdk(
-    *,
-    prompt: str,
-    model: str,
-    timeout: float | None = 180.0,
-    cwd: str | None = None,
-) -> tuple[str, dict[str, Any]]:
-    """Run one completion via the Claude Agent SDK (persistent CLI, no per-call spawn).
+class _SdkSession:
+    """Process-wide persistent Claude Agent SDK session (#715).
+
+    One ``ClaudeSDKClient`` CLI connection is opened once and reused across every LM
+    call, so calls after the first avoid the ~10-15s cold start that the ``exec`` path
+    (and a fresh ``query()``) pays. All SDK I/O runs on a single dedicated asyncio loop
+    in a daemon thread; clio's worker threads submit coroutines via
+    ``run_coroutine_threadsafe`` and block on the result, so concurrent calls are
+    serialized onto the one connection (the client handles one query/receive cycle at a
+    time). The connection is opened lazily and rebuilt when the bound model/cwd changes.
 
     Bare-model transport, mirroring :func:`_run_exec`: Claude Code's own tools are
-    disabled and ``max_turns=1``, so the SDK does NOT run its own agentic loop —
-    clio's ReAct loop + MCP gateway drive tools. ``setting_sources=[]`` keeps the
-    user's ``~/.claude`` settings / CLAUDE.md out of the request so the model sees
-    only clio's transcript (the exec path inherits them; this is cleaner). Returns
-    ``(text, usage)`` in the same shape as :func:`_run_exec`.
+    disabled, ``max_turns=1``, and ``setting_sources=[]`` so the model sees only clio's
+    transcript (no ``~/.claude`` CLAUDE.md/settings) and clio's ReAct loop drives tools.
     """
-    import asyncio  # noqa: PLC0415
 
-    try:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._loop: Any = None
+        self._thread: threading.Thread | None = None
+        self._client: Any = None
+        self._model: str | None = None
+        self._cwd: str | None = None
+
+    def _ensure_loop(self) -> None:
+        if self._loop is not None:
+            return
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, name="claude-sdk-loop", daemon=True)
+        thread.start()
+        self._loop, self._thread = loop, thread
+        atexit.register(self.close)
+
+    def _submit(self, coro: Any, timeout: float | None) -> Any:
+        return asyncio.run_coroutine_threadsafe(coro, self._loop).result(timeout=timeout)
+
+    async def _aconnect(self, model: str, cwd: str | None) -> Any:
+        from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient  # noqa: PLC0415
+
+        options = ClaudeAgentOptions(
+            model=model,
+            max_turns=1,
+            allowed_tools=[],
+            permission_mode="bypassPermissions",
+            setting_sources=[],
+            cwd=cwd,
+        )
+        client = ClaudeSDKClient(options=options)
+        await client.connect()
+        return client
+
+    async def _aquery(self, prompt: str) -> tuple[str, dict[str, Any]]:
         from claude_agent_sdk import (  # noqa: PLC0415
             AssistantMessage,
-            ClaudeAgentOptions,
             ResultMessage,
             TextBlock,
-            query,
         )
-    except ImportError as exc:
-        raise ClaudeCodeCLIUnavailableError(
-            "claude_code_transport='sdk' requires the claude-agent-sdk package "
-            "(`uv pip install claude-agent-sdk`)."
-        ) from exc
 
-    options = ClaudeAgentOptions(
-        model=model,
-        max_turns=1,
-        allowed_tools=[],
-        permission_mode="bypassPermissions",
-        setting_sources=[],
-        cwd=str(cwd) if cwd else None,
-    )
-
-    async def _collect() -> tuple[str, dict[str, Any]]:
+        await self._client.query(prompt, session_id=uuid.uuid4().hex)
         parts: list[str] = []
         usage: dict[str, Any] = {}
-        async for msg in query(prompt=prompt, options=options):
+        async for msg in self._client.receive_response():
             if isinstance(msg, AssistantMessage):
                 parts.extend(b.text for b in msg.content if isinstance(b, TextBlock))
             elif isinstance(msg, ResultMessage):
@@ -231,20 +253,69 @@ def _run_sdk(
                     usage = u
         return "".join(parts).strip(), usage
 
-    async def _main() -> tuple[str, dict[str, Any]]:
-        if timeout:
-            return await asyncio.wait_for(_collect(), timeout=timeout)
-        return await _collect()
+    def _reset_client(self) -> None:
+        if self._client is None:
+            return
+        try:
+            self._submit(self._client.disconnect(), timeout=15.0)
+        except Exception:  # noqa: BLE001 - best-effort teardown; never block the caller
+            logger.warning("claude sdk client disconnect failed", exc_info=True)
+        self._client = self._model = self._cwd = None
 
-    try:
-        text, usage = asyncio.run(_main())
-    except asyncio.TimeoutError as exc:
-        raise ClaudeCodeExecError(
-            f"claude agent sdk timed out after {timeout}s (model={model})"
-        ) from exc
-    if not text:
-        raise ClaudeCodeExecError(f"claude agent sdk returned empty content (model={model})")
-    return text, usage
+    def complete(
+        self, *, prompt: str, model: str, timeout: float | None, cwd: str | None
+    ) -> tuple[str, dict[str, Any]]:
+        try:
+            import claude_agent_sdk  # noqa: F401,PLC0415
+        except ImportError as exc:
+            raise ClaudeCodeCLIUnavailableError(
+                "claude_code_transport='sdk' requires the claude-agent-sdk package "
+                "(install the 'claude-code' extra)."
+            ) from exc
+
+        with self._lock:
+            self._ensure_loop()
+            if self._client is None or self._model != model or self._cwd != cwd:
+                self._reset_client()
+                self._client = self._submit(self._aconnect(model, cwd), timeout=60.0)
+                self._model, self._cwd = model, cwd
+            try:
+                text, usage = self._submit(self._aquery(prompt), timeout=timeout)
+            except TimeoutError as exc:
+                # A timed-out call leaves the connection mid-cycle; drop it so the
+                # next call reconnects cleanly.
+                self._reset_client()
+                raise ClaudeCodeExecError(
+                    f"claude agent sdk timed out after {timeout}s (model={model})"
+                ) from exc
+        if not text:
+            raise ClaudeCodeExecError(f"claude agent sdk returned empty content (model={model})")
+        return text, usage
+
+    def close(self) -> None:
+        with self._lock:
+            self._reset_client()
+            if self._loop is not None:
+                self._loop.call_soon_threadsafe(self._loop.stop)
+                self._loop = None
+
+
+_SDK_SESSION = _SdkSession()
+
+
+def _run_sdk(
+    *,
+    prompt: str,
+    model: str,
+    timeout: float | None = 180.0,
+    cwd: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """Run one completion via the persistent Claude Agent SDK session (#715).
+
+    Delegates to the process-wide :data:`_SDK_SESSION`, which reuses one CLI connection
+    across calls. Returns ``(text, usage)`` in the same shape as :func:`_run_exec`.
+    """
+    return _SDK_SESSION.complete(prompt=prompt, model=model, timeout=timeout, cwd=cwd)
 
 
 def _build_model_response(
