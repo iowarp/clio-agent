@@ -27,6 +27,7 @@ import logging
 import os
 import socket
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Iterator
@@ -287,68 +288,100 @@ def _runtime_alive(port: int) -> bool:
 
 @contextlib.contextmanager
 def _runtime_spawn_lock() -> "Iterator[None]":
-    """Host-global advisory lock serialising the spawn decision across processes.
+    """Host-global advisory lock serialising the spawn + refcount decisions.
 
     Without this, two clio-agent processes that both observe "no runtime" would both
-    run ``clio_run start`` and the loser would FATAL on the already-bound port. The
-    lock lives at a fixed host path (NOT per-workspace) so it coordinates every
-    clio-agent on the machine.
+    run ``clio_run start`` and the loser would FATAL on the already-bound port; it also
+    serialises a client's release (last-one-out stop) against another client attaching.
+    The lock lives at a fixed host path (NOT per-workspace) so it coordinates every
+    clio-agent on the machine. ``filelock`` is cross-platform (fcntl on POSIX, msvcrt
+    on Windows) so the coordination holds on Linux, macOS, and Windows.
     """
-    import fcntl  # noqa: PLC0415 - POSIX-only; the CTE backend is Linux-only
+    from filelock import FileLock  # noqa: PLC0415
 
     lock_dir = Path.home() / ".clio"
     lock_dir.mkdir(parents=True, exist_ok=True)
-    lock_path = lock_dir / "clio-runtime.lock"
-    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+    lock = FileLock(str(lock_dir / "clio-runtime.lock"))
+    with lock:
         yield
-    finally:
-        with contextlib.suppress(OSError):
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        os.close(fd)
+
+
+def _dynamic_library_env_var() -> str:
+    """The OS env var the standalone launcher uses to find clio-core's shared libs."""
+    if sys.platform == "darwin":
+        return "DYLD_LIBRARY_PATH"
+    if sys.platform.startswith("win"):
+        return "PATH"  # Windows resolves DLLs via PATH
+    return "LD_LIBRARY_PATH"
+
+
+def _runtime_launcher_path(iowarp_core: object) -> Optional[str]:
+    """Absolute path to the ``clio_run`` launcher (``.exe`` on Windows), or None."""
+    bin_dir = iowarp_core.get_bin_dir()  # type: ignore[attr-defined]
+    names = ("clio_run.exe", "clio_run") if sys.platform.startswith("win") else ("clio_run",)
+    for name in names:
+        candidate = os.path.join(bin_dir, name)
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def _detached_popen_kwargs() -> "dict[str, object]":
+    """Popen kwargs that detach the daemon so it outlives the spawning process.
+
+    POSIX: a new session (``setsid``) → own session/group leader. Windows: a detached
+    process in a new process group so a Ctrl-C / parent exit does not propagate to it.
+    """
+    if sys.platform.startswith("win"):
+        flags = 0
+        flags |= getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+        flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+        return {"creationflags": flags, "close_fds": True}
+    return {"start_new_session": True, "close_fds": True}
 
 
 def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str) -> None:
     """Launch the standalone clio-core runtime daemon (``clio_run start``), detached.
 
-    Detached (``start_new_session=True``) so it outlives the spawning process and
-    becomes the shared instance every client attaches to. ``LD_LIBRARY_PATH`` is set
-    to the iowarp_core lib dir (the in-process path relies on RTLD_GLOBAL preload,
-    which the standalone binary does not get); ``CLIO_SERVER_CONF`` points the daemon
-    at the same config the clients use so it composes the matching storage tiers.
+    Detached so it outlives the spawning process and becomes the shared instance every
+    client attaches to. The OS dynamic-library path env var is set to the iowarp_core
+    lib dir (the in-process path relies on an RTLD_GLOBAL preload the standalone binary
+    does not get); ``CLIO_SERVER_CONF`` points the daemon at the same config the clients
+    use so it composes the matching storage tiers. Cross-platform: launcher name, lib
+    env var, and detach flags are resolved per-OS (clio-core deploys identically on all
+    three).
     """
-    bin_dir = iowarp_core.get_bin_dir()  # type: ignore[attr-defined]
-    lib_dir = iowarp_core.get_lib_dir()  # type: ignore[attr-defined]
-    exe = os.path.join(bin_dir, "clio_run")
-    if not os.path.exists(exe):
+    exe = _runtime_launcher_path(iowarp_core)
+    if exe is None:
         raise RuntimeError(
-            f"clio-core runtime launcher not found at {exe!r}; cannot spawn the shared "
-            "clio-core daemon (set CLIO_ARC_STORE=local to use the LocalFS backend)."
+            f"clio-core runtime launcher (clio_run) not found in "
+            f"{iowarp_core.get_bin_dir()!r}; cannot spawn the shared clio-core daemon "  # type: ignore[attr-defined]
+            "(set CLIO_ARC_STORE=local to use the LocalFS backend)."
         )
+    lib_dir = iowarp_core.get_lib_dir()  # type: ignore[attr-defined]
     env = os.environ.copy()
-    env["LD_LIBRARY_PATH"] = lib_dir + os.pathsep + env.get("LD_LIBRARY_PATH", "")
+    lib_var = _dynamic_library_env_var()
+    env[lib_var] = lib_dir + os.pathsep + env.get(lib_var, "")
     env.setdefault("CTP_LOG_LEVEL", log_level)
     if config_path:
         env["CLIO_SERVER_CONF"] = config_path
     log_path = Path.home() / ".clio" / "clio-runtime.log"
     log_fh = open(log_path, "ab")  # noqa: SIM115 - handed to the detached child
     try:
-        proc = subprocess.Popen(  # noqa: S603 - fixed launcher path, not user input
+        proc = subprocess.Popen(  # type: ignore[call-overload]  # noqa: S603 - fixed launcher path
             [exe, "start"],
             env=env,
             stdin=subprocess.DEVNULL,
             stdout=log_fh,
             stderr=log_fh,
-            start_new_session=True,
-            close_fds=True,
+            **_detached_popen_kwargs(),
         )
     finally:
         log_fh.close()
     proc_pid = proc.pid
-    starttime = _proc_starttime(proc_pid)
+    ctime = _proc_create_time(proc_pid)
     _daemon_pidfile().write_text(
-        f"{proc_pid} {starttime if starttime is not None else ''}", encoding="utf-8"
+        f"{proc_pid} {ctime if ctime is not None else ''}", encoding="utf-8"
     )
     logger.info(
         "spawned shared clio-core runtime daemon: %s start (pid %s, log: %s)",
@@ -382,37 +415,38 @@ def _daemon_pidfile() -> Path:
     return Path.home() / ".clio" / "clio-runtime.pid"
 
 
-def _proc_starttime(pid: int) -> Optional[int]:
-    """Process start-time (clock ticks since boot) from ``/proc/<pid>/stat``, or None.
+def _proc_create_time(pid: int) -> Optional[float]:
+    """Process creation time (epoch seconds) via psutil, or None if no such process.
 
-    Used to defeat PID reuse: a recycled PID gets a different start-time, so a stale
-    registry entry won't be mistaken for a live client.
+    Used to defeat PID reuse: a recycled PID gets a different creation time, so a stale
+    registry entry won't be mistaken for a live client. psutil makes this portable
+    across Linux/macOS/Windows (no ``/proc`` dependency).
     """
     try:
-        with open(f"/proc/{pid}/stat", "rb") as fh:
-            data = fh.read()
-    except OSError:
+        import psutil  # noqa: PLC0415
+
+        return float(psutil.Process(pid).create_time())
+    except Exception:  # noqa: BLE001 - NoSuchProcess/AccessDenied/import => "unknown"
         return None
-    # comm (field 2) is parenthesised and may contain spaces/parens; split AFTER the
-    # last ')'. Then field 22 (starttime) is index 19 of the remainder (fields 3..).
-    rparen = data.rfind(b")")
-    if rparen == -1:
-        return None
-    rest = data[rparen + 2 :].split()
+
+
+def _pid_alive(pid: int, recorded_create_time: Optional[float]) -> bool:
+    """True if ``pid`` is alive AND (when known) its creation time matches the record.
+
+    Matching creation time within ~1s tolerance defeats PID reuse; when the recorded
+    value is absent we fall back to bare existence.
+    """
     try:
-        return int(rest[19])
-    except (IndexError, ValueError):
-        return None
+        import psutil  # noqa: PLC0415
 
-
-def _pid_alive(pid: int, recorded_starttime: Optional[int]) -> bool:
-    """True if ``pid`` is alive AND (when known) its start-time matches the record."""
-    current = _proc_starttime(pid)
-    if current is None:
-        return False  # no such process
-    if recorded_starttime is None:
-        return True  # start-time wasn't captured; fall back to bare existence
-    return current == recorded_starttime
+        if not psutil.pid_exists(pid):
+            return False
+    except Exception:  # noqa: BLE001 - psutil missing => treat as conservatively alive
+        return _proc_create_time(pid) is not None
+    if recorded_create_time is None:
+        return True  # creation time wasn't captured; bare existence is enough
+    current = _proc_create_time(pid)
+    return current is not None and abs(current - recorded_create_time) < 1.0
 
 
 def _register_client() -> None:
@@ -420,10 +454,8 @@ def _register_client() -> None:
     global _client_registered
     reg = _client_registry_dir()
     reg.mkdir(parents=True, exist_ok=True)
-    starttime = _proc_starttime(os.getpid())
-    (reg / str(os.getpid())).write_text(
-        "" if starttime is None else str(starttime), encoding="utf-8"
-    )
+    ctime = _proc_create_time(os.getpid())
+    (reg / str(os.getpid())).write_text("" if ctime is None else repr(ctime), encoding="utf-8")
     _client_registered = True
 
 
@@ -446,7 +478,7 @@ def _live_client_pids() -> "list[int]":
         pid = int(entry.name)
         try:
             raw = entry.read_text(encoding="utf-8").strip()
-            recorded: Optional[int] = int(raw) if raw else None
+            recorded: Optional[float] = float(raw) if raw else None
         except (OSError, ValueError):
             recorded = None
         if _pid_alive(pid, recorded):
@@ -458,10 +490,12 @@ def _live_client_pids() -> "list[int]":
 
 
 def _kill_daemon_pidfile() -> None:
-    """Fallback teardown: SIGTERM->SIGKILL the daemon recorded in the pidfile.
+    """Fallback teardown: terminate->kill the daemon recorded in the pidfile.
 
     Best-effort and PID-reuse-guarded; used only if the clean ``clio_run stop`` path
     fails or we (a non-spawner) have no IPC route. Absent pidfile == nothing to do.
+    psutil's terminate()/kill() are cross-platform (SIGTERM/SIGKILL on POSIX,
+    TerminateProcess on Windows).
     """
     pidfile = _daemon_pidfile()
     try:
@@ -474,23 +508,25 @@ def _kill_daemon_pidfile() -> None:
         pid = int(parts[0])
     except ValueError:
         return
-    recorded = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+    recorded: Optional[float] = None
+    if len(parts) > 1:
+        with contextlib.suppress(ValueError):
+            recorded = float(parts[1])
     if not _pid_alive(pid, recorded):
         with contextlib.suppress(OSError):
             pidfile.unlink()
         return
-    import signal  # noqa: PLC0415
+    try:
+        import psutil  # noqa: PLC0415
 
-    with contextlib.suppress(OSError):
-        os.kill(pid, signal.SIGTERM)
-    deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline:
-        if not _pid_alive(pid, recorded):
-            break
-        time.sleep(0.1)
-    if _pid_alive(pid, recorded):
-        with contextlib.suppress(OSError):
-            os.kill(pid, signal.SIGKILL)
+        proc = psutil.Process(pid)
+        proc.terminate()
+        try:
+            proc.wait(timeout=5.0)
+        except psutil.TimeoutExpired:
+            proc.kill()
+    except Exception:  # noqa: BLE001 - process already gone / no permission: best-effort
+        pass
     with contextlib.suppress(OSError):
         pidfile.unlink()
 

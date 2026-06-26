@@ -145,14 +145,14 @@ def _isolate_clio_home(monkeypatch, tmp_path):
     monkeypatch.setattr(storage, "_client_registered", False)
 
 
-def test_proc_starttime_and_pid_alive():
+def test_proc_create_time_and_pid_alive():
     pid = os.getpid()
-    st = storage._proc_starttime(pid)
-    assert isinstance(st, int)
-    assert storage._pid_alive(pid, st) is True
-    assert storage._pid_alive(pid, st + 1) is False  # start-time mismatch => PID reused
-    assert storage._proc_starttime(2_000_000_000) is None  # no such pid
-    assert storage._pid_alive(2_000_000_000, 123) is False
+    ct = storage._proc_create_time(pid)
+    assert isinstance(ct, float)
+    assert storage._pid_alive(pid, ct) is True
+    assert storage._pid_alive(pid, ct + 100.0) is False  # create-time mismatch => reused
+    assert storage._proc_create_time(2_000_000_000) is None  # no such pid
+    assert storage._pid_alive(2_000_000_000, 123.0) is False
 
 
 def test_register_then_live_then_deregister(monkeypatch, tmp_path):
@@ -167,14 +167,14 @@ def test_live_pids_prunes_dead_and_reused(monkeypatch, tmp_path):
     _isolate_clio_home(monkeypatch, tmp_path)
     reg = storage._client_registry_dir()
     reg.mkdir(parents=True)
-    (reg / "2000000001").write_text("123", encoding="utf-8")  # dead pid
-    # our pid but a wrong start-time == PID-reuse impostor
+    (reg / "2000000001").write_text("123.0", encoding="utf-8")  # dead pid
+    # our pid but a wrong create-time == PID-reuse impostor
     (reg / str(os.getpid())).write_text(
-        str(storage._proc_starttime(os.getpid()) + 7), encoding="utf-8"
+        repr(storage._proc_create_time(os.getpid()) + 100.0), encoding="utf-8"
     )
     assert storage._live_client_pids() == []
     assert not (reg / "2000000001").exists()  # pruned
-    assert not (reg / str(os.getpid())).exists()  # pruned (start-time mismatch)
+    assert not (reg / str(os.getpid())).exists()  # pruned (create-time mismatch)
 
 
 def test_release_keeps_daemon_when_another_client_alive(monkeypatch, tmp_path):
@@ -184,7 +184,7 @@ def test_release_keeps_daemon_when_another_client_alive(monkeypatch, tmp_path):
     storage._register_client()  # us
     ppid = os.getppid()  # a second, genuinely-alive client
     reg = storage._client_registry_dir()
-    (reg / str(ppid)).write_text(str(storage._proc_starttime(ppid)), encoding="utf-8")
+    (reg / str(ppid)).write_text(repr(storage._proc_create_time(ppid)), encoding="utf-8")
     storage.release_runtime_client("", "error")
     assert calls == []  # another client attached -> daemon NOT stopped
     assert os.getpid() not in storage._live_client_pids()  # but we deregistered
