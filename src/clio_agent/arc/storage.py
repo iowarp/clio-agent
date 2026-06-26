@@ -21,8 +21,11 @@ See PLAN.md v0.3.0 Task 2 for requirements.
 """
 
 import base64
+import contextlib
 import logging
 import os
+import socket
+import subprocess
 import threading
 import time
 from collections.abc import Iterator
@@ -209,19 +212,187 @@ class LocalFSStore:
         return scored[:k]
 
 
+# --------------------------------------------------------------------------- #
+# clio-core shared-runtime lifecycle (connect-or-spawn)
+#
+# clio-core's chimaera runtime is a host-global singleton: ONE runtime binds the
+# RPC port (default 9413) and serves many clients. ``chimaera_init(kClient, True)``
+# would self-start an *embedded* runtime that dies with the calling process and
+# holds the port exclusively, so a second clio-agent process FATALs ("already
+# running on <port>"). Instead clio-core runs as a SHARED standalone daemon: spawn
+# it once (``clio_run start``) iff none is up, then every client attaches with
+# ``chimaera_init(kClient, False)``. This realises the user's directive: "multiple
+# clients connect to the same instance of clio-core — if no clio-core: spawn();
+# connect()."
+# --------------------------------------------------------------------------- #
+
+_DEFAULT_RUNTIME_PORT = 9413
+_RUNTIME_START_TIMEOUT_S = 30.0
+
+
+def _read_yaml_port(path: str) -> Optional[int]:
+    """Return ``networking.port`` from a clio-core YAML config, or None if absent."""
+    p = Path(path)
+    if not p.is_file():
+        return None
+    try:
+        import yaml  # noqa: PLC0415
+
+        data = yaml.safe_load(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - a parse miss falls through to the default port
+        return None
+    if isinstance(data, dict):
+        net = data.get("networking")
+        if isinstance(net, dict) and isinstance(net.get("port"), int):
+            return int(net["port"])
+    return None
+
+
+def _resolve_runtime_port(config_path: str) -> int:
+    """Resolve the chimaera RPC port so liveness probes match what the daemon binds.
+
+    Honours the ``CLIO_CORE_PORT`` override, then mirrors clio-core's config lookup
+    order (``$CLIO_SERVER_CONF`` / ``$CHI_SERVER_CONF``, the passed ``config_path``,
+    ``~/.clio/clio.yaml``), defaulting to :data:`_DEFAULT_RUNTIME_PORT`.
+    """
+    override = os.environ.get("CLIO_CORE_PORT", "").strip()
+    if override:
+        try:
+            return int(override)
+        except ValueError:
+            logger.warning("ignoring non-integer CLIO_CORE_PORT=%r", override)
+    candidates = [
+        os.environ.get("CLIO_SERVER_CONF", "").strip(),
+        os.environ.get("CHI_SERVER_CONF", "").strip(),
+        config_path,
+        str(Path.home() / ".clio" / "clio.yaml"),
+    ]
+    for cand in candidates:
+        if cand:
+            port = _read_yaml_port(cand)
+            if port is not None:
+                return port
+    return _DEFAULT_RUNTIME_PORT
+
+
+def _runtime_alive(port: int) -> bool:
+    """True if a clio-core runtime is accepting connections on ``127.0.0.1:port``."""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+@contextlib.contextmanager
+def _runtime_spawn_lock() -> "Iterator[None]":
+    """Host-global advisory lock serialising the spawn decision across processes.
+
+    Without this, two clio-agent processes that both observe "no runtime" would both
+    run ``clio_run start`` and the loser would FATAL on the already-bound port. The
+    lock lives at a fixed host path (NOT per-workspace) so it coordinates every
+    clio-agent on the machine.
+    """
+    import fcntl  # noqa: PLC0415 - POSIX-only; the CTE backend is Linux-only
+
+    lock_dir = Path.home() / ".clio"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / "clio-runtime.lock"
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str) -> None:
+    """Launch the standalone clio-core runtime daemon (``clio_run start``), detached.
+
+    Detached (``start_new_session=True``) so it outlives the spawning process and
+    becomes the shared instance every client attaches to. ``LD_LIBRARY_PATH`` is set
+    to the iowarp_core lib dir (the in-process path relies on RTLD_GLOBAL preload,
+    which the standalone binary does not get); ``CLIO_SERVER_CONF`` points the daemon
+    at the same config the clients use so it composes the matching storage tiers.
+    """
+    bin_dir = iowarp_core.get_bin_dir()  # type: ignore[attr-defined]
+    lib_dir = iowarp_core.get_lib_dir()  # type: ignore[attr-defined]
+    exe = os.path.join(bin_dir, "clio_run")
+    if not os.path.exists(exe):
+        raise RuntimeError(
+            f"clio-core runtime launcher not found at {exe!r}; cannot spawn the shared "
+            "clio-core daemon (set CLIO_ARC_STORE=local to use the LocalFS backend)."
+        )
+    env = os.environ.copy()
+    env["LD_LIBRARY_PATH"] = lib_dir + os.pathsep + env.get("LD_LIBRARY_PATH", "")
+    env.setdefault("CTP_LOG_LEVEL", log_level)
+    if config_path:
+        env["CLIO_SERVER_CONF"] = config_path
+    log_path = Path.home() / ".clio" / "clio-runtime.log"
+    log_fh = open(log_path, "ab")  # noqa: SIM115 - handed to the detached child
+    try:
+        subprocess.Popen(  # noqa: S603 - fixed launcher path, not user input
+            [exe, "start"],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=log_fh,
+            stderr=log_fh,
+            start_new_session=True,
+            close_fds=True,
+        )
+    finally:
+        log_fh.close()
+    logger.info("spawned shared clio-core runtime daemon: %s start (log: %s)", exe, log_path)
+
+
+def _ensure_runtime_daemon(iowarp_core: object, config_path: str, log_level: str) -> None:
+    """Connect-or-spawn: ensure a shared clio-core daemon is listening.
+
+    Fast path: a runtime is already up -> return (the caller connects to it). Else
+    take the host-global lock, re-check, and spawn the daemon, waiting until it binds
+    the RPC port. FAIL LOUD if it never comes up.
+    """
+    port = _resolve_runtime_port(config_path)
+    if _runtime_alive(port):
+        return
+    with _runtime_spawn_lock():
+        if _runtime_alive(port):  # another process won the race and spawned it
+            return
+        _spawn_runtime_daemon(iowarp_core, config_path, log_level)
+        deadline = time.monotonic() + _RUNTIME_START_TIMEOUT_S
+        while time.monotonic() < deadline:
+            if _runtime_alive(port):
+                return
+            time.sleep(0.25)
+    if not _runtime_alive(port):
+        raise RuntimeError(
+            f"spawned the clio-core runtime daemon but it never bound port {port} within "
+            f"{_RUNTIME_START_TIMEOUT_S:.0f}s; see ~/.clio/clio-runtime.log."
+        )
+
+
 class CTEStore:
-    """ARCStore backed by the in-process clio-core CTE runtime.
+    """ARCStore backed by a **shared** clio-core CTE runtime (connect-or-spawn).
 
     Maps ``(kind, name)`` -> ``(CTE tag, CTE blob)``. msgpack payloads are
     base64-wrapped because CTE's ``GetBlob`` UTF-8-decodes in the C++ binding and
-    raises on non-UTF-8 bytes. The runtime is **embedded in this process**
-    (``chimaera_init(..., default_with_runtime=True)`` self-starts it) and dies with
-    the interpreter — there is NO external ``clio_run`` daemon.
+    raises on non-UTF-8 bytes.
 
-    DURABILITY: the default CTE config is a single DRAM tier (shared memory), so
-    data lives only while the process is up. Cross-restart durability needs a
-    ``file`` bdev + WAL replay in the CTE config (a follow-up). For durable storage
-    today, select the LocalFS backend (``CLIO_ARC_STORE=local``).
+    RUNTIME MODEL: clio-core's chimaera runtime is a host-global singleton — one
+    runtime binds the RPC port (default 9413) and serves many clients. This store
+    runs it as a **standalone daemon** that outlives any single client: on first
+    use it spawns the daemon (``clio_run start``) iff none is listening, then every
+    process attaches as a pure client (``chimaera_init(kClient, default_with_runtime
+    =False)``). Multiple clio-agent processes (e.g. two gact servers) therefore
+    share ONE clio-core instance instead of each trying to self-start an embedded
+    runtime and FATAL-ing on the already-bound port. See ``_ensure_runtime``.
+
+    DURABILITY: the default CTE config is a DRAM hot tier spilling to a file cold
+    tier (:func:`default_cte_config_path`). Cross-restart blob-data recovery is WIP
+    upstream; for guaranteed disk durability today, select the LocalFS backend
+    (``CLIO_ARC_STORE=local``).
     """
 
     _initialized = False  # process-global init guard (the runtime inits exactly once)
@@ -249,7 +420,15 @@ class CTEStore:
 
     @classmethod
     def _ensure_runtime(cls, config_path: str, log_level: str, settle_s: float) -> None:
-        """Boot the embedded CTE runtime exactly once per process."""
+        """Attach this process to the shared clio-core runtime (connect-or-spawn).
+
+        Connect-or-spawn: if no clio-core daemon is listening on the configured RPC
+        port, spawn one (``clio_run start``, serialized across processes by a file
+        lock); then attach as a pure client (``chimaera_init(kClient, default_with
+        _runtime=False)``). Runs exactly once per process (``_initialized`` guard).
+        Spawning a standalone daemon — rather than ``default_with_runtime=True`` —
+        is what lets multiple clio-agent processes share ONE clio-core instance.
+        """
         with cls._init_lock:
             if cls._initialized:
                 return
@@ -257,8 +436,12 @@ class CTEStore:
             # Import order is load-bearing: iowarp_core does the RTLD_GLOBAL .so
             # preload + seeds ~/.clio/clio.yaml; it MUST precede clio_cte_core_ext.
             # isort:skip keeps ruff from reordering these alphabetically.
-            import iowarp_core  # noqa: F401, PLC0415  # isort:skip
+            import iowarp_core  # noqa: PLC0415  # isort:skip
             import clio_cte_core_ext as cte  # noqa: PLC0415  # isort:skip
+
+            # Ensure a shared runtime daemon exists BEFORE connecting (a pure client
+            # cannot init against a runtime that is not up).
+            _ensure_runtime_daemon(iowarp_core, config_path, log_level)
 
             # Do NOT redirect fd 2 (no os.dup2 on stderr) here. Under pytest's
             # fd-level capture that clobbers the captured fd and can SILENTLY ABORT
@@ -266,11 +449,14 @@ class CTEStore:
             # ambient CTE shared-memory state. CTP_LOG_LEVEL quiets the C++ logging;
             # a one-time startup banner on stderr is an acceptable trade for never
             # crashing the host process.
-            cte.chimaera_init(cte.ChimaeraMode.kClient, True)  # True => embedded runtime
-            time.sleep(settle_s)  # let the co-process spin up
+            #
+            # default_with_runtime=False => CLIENT ONLY: attach to the shared daemon,
+            # never self-start an embedded (process-bound, port-exclusive) runtime.
+            cte.chimaera_init(cte.ChimaeraMode.kClient, False)
+            time.sleep(settle_s)  # let the client handshake settle
             cte.initialize_cte(config_path, cte.PoolQuery.Dynamic())  # "" => ~/.clio/clio.yaml
             cls._initialized = True
-            logger.info("CTE embedded runtime initialized (no external daemon)")
+            logger.info("CTE client attached to shared clio-core runtime")
 
     # ---- ARCStore Protocol ----
 
