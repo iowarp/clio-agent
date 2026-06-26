@@ -30,7 +30,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.gact import context as _ctx
-from clio_agent.gact.delegation import _expert_handoff_summary
+from clio_agent.gact.delegation import _expert_handoff_fields
 from clio_agent.gact.events import Event
 from clio_agent.gact.evidence import (
     _bounded_tool_call_result,
@@ -208,6 +208,9 @@ def _emit_live_tool_route_context(app: "FastAPI", sid: str, tool_name: str) -> N
         Part(
             id=f"live_route_{public_agent}",
             type="routing_decision",
+            # The routing decision is MADE by the orchestrator; ``selected_agent``
+            # below is the CHOSEN expert.
+            agent_id="main",
             selected_agent=public_agent,
             rationale=f"Agent planner selected {public_agent} for tool {tool_name}.",
             confidence=0.0,
@@ -232,6 +235,7 @@ def _emit_live_tool_route_context(app: "FastAPI", sid: str, tool_name: str) -> N
             "depth": 1,
             "output_summary": f"Preparing {tool_name}.",
         }
+        handoff_fields = _expert_handoff_fields(row)
         _append_live_assistant_part_once(
             app,
             sid,
@@ -239,7 +243,14 @@ def _emit_live_tool_route_context(app: "FastAPI", sid: str, tool_name: str) -> N
             Part(
                 id=f"live_handoff_{public_agent}_{owner}",
                 type="expert_handoff",
-                text=_expert_handoff_summary(row),
+                # Structured fields are the contract; ``text`` is a short label only.
+                # The parent (decider) generates the handoff.
+                agent_id=public_agent,
+                parent_agent=handoff_fields["parent_agent"],
+                child_agent=handoff_fields["child_agent"],
+                stage=handoff_fields["stage"],
+                status=handoff_fields["status"],
+                text=f"{public_agent} -> {owner}",
                 metadata={**row, "stream_source": "live", "route_source": "live_tool_observer"},
             ),
         )
@@ -268,6 +279,9 @@ def _make_tool_observer(app: "FastAPI"):
         sid, _current = _resolve_tool_session(app)
         if not sid:
             return
+        # The expert that OWNS (runs) this tool, for per-part attribution. Empty
+        # when CLIO can't resolve a routed owner (e.g. an orchestrator-level tool).
+        _public_agent, tool_owner = _agent_tool_owner(app, name)
         if phase == "started":
             call_id = f"call_{uuid.uuid4().hex[:12]}"
             # Stash the per-thread call_id so the completion event
@@ -312,6 +326,7 @@ def _make_tool_observer(app: "FastAPI"):
                 Part(
                     id=f"live_{call_id}_call",
                     type="tool_call",
+                    agent_id=tool_owner,
                     call_id=call_id,
                     tool_name=name,
                     input=dict(args),
@@ -408,6 +423,7 @@ def _make_tool_observer(app: "FastAPI"):
                 Part(
                     id=f"live_{call_id}_result",
                     type="tool_result",
+                    agent_id=tool_owner,
                     call_id=call_id,
                     tool_name=name,
                     is_error=not ok,
@@ -417,6 +433,7 @@ def _make_tool_observer(app: "FastAPI"):
                         Part(
                             id=f"live_{call_id}_result_text",
                             type="text",
+                            agent_id=tool_owner,
                             text=result_text,
                         )
                     ],

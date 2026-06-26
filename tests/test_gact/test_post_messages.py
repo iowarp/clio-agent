@@ -163,7 +163,12 @@ def test_post_message_happy_path(client: TestClient, fake_agent: FakeClioAgent) 
     assert rd["rationale"] == "matched coding keywords"
     assert rd["metadata"]["route_source"] == "dspy"
     assert rd["metadata"]["route_reason"] == "planner selected code expert"
+    # routing_decision is attributed to the orchestrator (the decider), while the
+    # answer text part carries the responding expert's agent_id so a client can
+    # attribute every part to its source without inference.
+    assert rd["agent_id"] == "main"
     assert a["parts"][1]["text"] == "hello from fake"
+    assert a["parts"][1]["agent_id"] == "code_expert"
 
     # User message persisted under the session.
     msgs = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]

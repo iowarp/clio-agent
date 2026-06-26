@@ -693,6 +693,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                     Part(
                         id=f"part_cmd_{uuid.uuid4().hex[:10]}",
                         type="text",
+                        agent_id=agent_id,
                         metadata={
                             "synthetic": "command_result",
                             "command": cmd_id,
@@ -830,6 +831,8 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                 Part(
                     id=f"part_cmd_{uuid.uuid4().hex[:10]}",
                     type="text",
+                    # Built-in commands are executed by the orchestrator itself.
+                    agent_id="main",
                     metadata={"synthetic": "command_result", "command": cmd_id},
                     text=f"[{cmd_id}] {body_text}",
                 )

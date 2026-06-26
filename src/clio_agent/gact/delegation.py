@@ -76,6 +76,28 @@ def _coerce_expert_handoff_rows(value: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _expert_handoff_fields(handoff: Mapping[str, Any]) -> dict[str, str]:
+    """Return the structured handoff fields for an ``expert_handoff`` Part.
+
+    Mirrors the keys :func:`_expert_handoff_summary` reads so the message Part can
+    carry the delegation as typed fields (``parent_agent`` / ``child_agent`` /
+    ``stage`` / ``status``) instead of forcing a client to parse the prose label.
+    The generating party is the parent, so callers set ``Part.agent_id`` to
+    ``parent_agent``.
+    """
+
+    child = str(handoff.get("agent_id") or handoff.get("expert") or "").strip()
+    parent = str(handoff.get("parent_id") or handoff.get("parent") or "").strip()
+    status = str(handoff.get("status") or "observed").strip()
+    stage = str(handoff.get("stage") or handoff.get("dispatch_target") or "").strip()
+    return {
+        "parent_agent": parent,
+        "child_agent": child,
+        "stage": stage,
+        "status": status,
+    }
+
+
 def _expert_handoff_summary(handoff: Mapping[str, Any]) -> str:
     """Return a compact user-facing summary for an expert handoff part."""
 
@@ -533,33 +555,6 @@ def _compact_dynamic_delegation_output(output: str, *, limit: int = 2200) -> str
     return "\n\n".join(pieces)
 
 
-def _append_nested_workflow_state(output: str, rows: list[dict[str, Any]]) -> str:
-    """Append typed state found in nested completed child rows to a parent return."""
-
-    outputs = [
-        str(row.get("output_summary") or row.get("summary") or "").strip()
-        for row in _iter_delegation_return_rows(rows)
-        if str(row.get("output_summary") or row.get("summary") or "").strip()
-    ]
-    # ``_tool_calls_from_handoff_rows`` belongs to the tool-call-row evidence
-    # cluster that still lives in ``app.py``; import it lazily to keep this
-    # module free of an app.py top-level import (cycle-break pattern).
-    from clio_agent.gact.app import _tool_calls_from_handoff_rows  # noqa: PLC0415
-
-    state = _workflow_state_from_outputs(outputs)
-    _merge_workflow_state_mapping(state, _workflow_state_from_handoff_rows(rows))
-    for tool_row in _tool_calls_from_handoff_rows(rows):
-        row_state = tool_row.get("workflow_state")
-        if isinstance(row_state, Mapping):
-            _merge_workflow_state_mapping(state, row_state)
-    if not state:
-        return output
-    block = _workflow_state_payload(state)
-    if block in output:
-        return output
-    return f"{output.rstrip()}\n\nCLIO merged nested typed workflow state:\n{block}"
-
-
 # ------------------------------------------------------------------------- #
 # Workflow-state derivation from outputs + handoff rows #
 # ------------------------------------------------------------------------- #
@@ -814,14 +809,17 @@ def _failed_child_delegation_output_summary(
     parent_agent_id: str,
     error: str,
     message: str,
-    workflow_state: Mapping[str, Any],
 ) -> str:
-    """Return compact parent-consumable text for a failed child expert."""
+    """Return compact parent-consumable text for a failed child expert.
+
+    The failure's typed ``workflow_state`` is carried STRUCTURALLY on the failed
+    delegation row's ``workflow_state`` field (see the caller); it is NOT
+    serialized into this human-readable summary text anymore.
+    """
 
     return (
         f"Child expert {child_agent_id!r} failed while delegated from "
-        f"{parent_agent_id!r}: {error}. {message}\n\n"
-        f"CLIO durable typed workflow state:\n{_workflow_state_payload(workflow_state)}"
+        f"{parent_agent_id!r}: {error}. {message}"
     )
 
 

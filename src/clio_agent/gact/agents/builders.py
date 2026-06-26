@@ -1147,15 +1147,13 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
     import dspy  # noqa: PLC0415
 
     from clio_agent.gact.app import (  # noqa: PLC0415
-        _append_prediction_workflow_state,
         _append_session_workflow_state_context,
         _blueprint_runner_for_agent,
         _compact_dynamic_delegation_output,
         _extract_tools_called,
         _merge_tool_call_rows,
+        _prediction_workflow_state,
         _run_dynamic_agent_compat,
-        _workflow_state_from_outputs,
-        _workflow_state_payload,
     )
 
     def delegate_child(question: str) -> str:
@@ -1224,7 +1222,6 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
             )
             raise
         output = str(getattr(pred, "answer", "") or "").strip()
-        output = _append_prediction_workflow_state(output, pred)
         tools_called = _extract_tools_called(pred)
         if isinstance(ledger, dict):
             session_rows = ledger.get(session_id)
@@ -1233,15 +1230,14 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
                     tools_called,
                     [dict(row) for row in session_rows[ledger_start:] if isinstance(row, Mapping)],
                 )
-        workflow_state = _workflow_state_from_outputs([output])
+        # Seed from the child's typed workflow_state output field (structural twin
+        # of the removed prose append); merge tool-row state. State rides the
+        # payload's ``workflow_state`` Mapping below, NOT the output text.
+        workflow_state = _prediction_workflow_state(pred)
         for tool_row in tools_called:
             row_state = tool_row.get("workflow_state")
             if isinstance(row_state, Mapping):
                 _merge_workflow_state_mapping(workflow_state, row_state)
-        if workflow_state:
-            state_block = _workflow_state_payload(workflow_state)
-            if state_block not in output:
-                output = f"{output.rstrip()}\n\nCLIO durable typed workflow state:\n{state_block}"
         compact_output = _compact_dynamic_delegation_output(output)
         payload = {
             "agent_id": child.id,
@@ -1485,7 +1481,6 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
 
     from clio_agent.config import create_chat_adapter, create_lm  # noqa: PLC0415
     from clio_agent.gact.app import (  # noqa: PLC0415
-        _append_prediction_workflow_state,
         _cancelled_error_info,
         _coerce_expert_handoff_rows,
         _extract_tools_called_from_trajectory,
@@ -1843,7 +1838,9 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     tools_called = _merge_tool_call_rows(tools_called, blueprint_tool_rows)
                 if not answer:
                     answer = _tool_agent_empty_answer_fallback(getattr(result, "trajectory", None))
-            answer = _append_prediction_workflow_state(answer, result)
+            # The typed workflow_state output rides the Prediction's structured
+            # ``workflow_state`` field below -- it is NOT serialized into ``answer``
+            # text (that polluted the user-facing answer; consumers read the field).
             handoff_rows = _coerce_expert_handoff_rows(getattr(result, "expert_handoffs", None))
             if not answer and not handoff_rows:
                 return dspy.Prediction(

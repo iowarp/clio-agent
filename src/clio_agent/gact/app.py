@@ -456,7 +456,6 @@ from clio_agent.gact.agents.runtime import (  # noqa: E402,F401
 # gact/delegation.py -- delegation + workflow-state derivation cluster.
 from clio_agent.gact.delegation import (  # noqa: E402,F401
     _append_accumulated_workflow_state_context,
-    _append_nested_workflow_state,
     _append_session_workflow_state_context,
     _bubbled_child_evidence_output_summary,
     _coerce_expert_handoff_rows,
@@ -466,6 +465,7 @@ from clio_agent.gact.delegation import (  # noqa: E402,F401
     _delegated_expert_agent_id,
     _delegated_expert_prompt,
     _dynamic_parent_resume_prompt,
+    _expert_handoff_fields,
     _expert_handoff_summary,
     _failed_child_delegation_output_summary,
     _failed_child_delegation_workflow_state,
@@ -536,33 +536,54 @@ from clio_agent.gact.workflow_state.merge import (  # noqa: E402,F401
 )
 
 
-def _append_prediction_workflow_state(output: str, result: Any) -> str:
-    """Append a blueprint prediction's first-class workflow_state output."""
+def _prediction_workflow_state(result: Any) -> dict[str, Any]:
+    """Return a prediction's first-class typed ``workflow_state`` as a Mapping.
+
+    ``workflow_state`` is the ONE load-bearing structured output on the dynamic
+    expert signature. This is the STRUCTURED twin of the (now removed) prose
+    append: instead of serializing the typed field into the answer text and
+    re-parsing it back out (which polluted the user-facing answer), callers read
+    the typed field directly via this helper and carry it on the structured
+    carrier (the completed/handoff/ledger row's ``workflow_state`` Mapping).
+
+    A typed ``workflow_state`` field may arrive as a Pydantic model (when a pack
+    declares it as a nested object signature field), a JSON string, or a plain
+    dict. Each is normalized to a plain ``{section: ...}`` mapping. Generic for
+    all packs.
+    """
 
     raw_state = getattr(result, "workflow_state", None)
     if raw_state in (None, ""):
-        return output
+        return {}
     if isinstance(raw_state, str):
         text = raw_state.strip()
         if not text:
-            return output
-        block = text
-    else:
-        # A typed workflow_state output field may arrive as a Pydantic model
-        # (when a pack declares it as a nested object signature field) or as a
-        # plain dict. Normalize any model to JSON-able structures so the nested
-        # object survives serialization and downstream parsing instead of being
-        # stringified into an unparseable repr. This is generic for all packs.
-        normalized_state = _jsonish(raw_state)
-        payload = (
-            normalized_state
-            if isinstance(normalized_state, Mapping) and "workflow_state" in normalized_state
-            else {"workflow_state": normalized_state}
-        )
-        block = json.dumps(payload, sort_keys=True, default=str)
-    if block in output:
-        return output
-    return f"{output.rstrip()}\n\nCLIO typed workflow state:\n{block}".strip()
+            return {}
+        return _workflow_state_from_outputs([text])
+    normalized_state = _jsonish(raw_state)
+    if isinstance(normalized_state, Mapping):
+        inner = normalized_state.get("workflow_state")
+        if isinstance(inner, Mapping):
+            return dict(inner)
+        return dict(normalized_state)
+    return {}
+
+
+def _append_prediction_workflow_state(output: str, result: Any) -> str:
+    """Return ``output`` unchanged; typed ``workflow_state`` flows structurally.
+
+    Historically this appended a ``CLIO typed workflow state:\\n{JSON}`` block to
+    the answer/output text so the parent could re-parse the child's typed state
+    out of prose. That polluted the user-facing answer and was redundant: the
+    same ``workflow_state`` field is carried STRUCTURALLY on every Prediction and
+    on every completed/handoff/ledger row. The prose channel is removed; use
+    :func:`_prediction_workflow_state` to read the typed field structurally.
+
+    The function is retained as an identity passthrough so existing call sites
+    (which interleave it with output reassignment) stay correct without churn.
+    """
+
+    return output
 
 
 def _fallback_answer_from_delegation(handoffs: list[dict[str, Any]]) -> str:

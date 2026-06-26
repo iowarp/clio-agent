@@ -113,9 +113,8 @@ async def _run_turn_in_background(
         _EXECUTABLE_SESSION_AGENT_IDS,
         _agent_definition_uses_blueprint_runtime,
         _agent_forward_compat,
+        _append_accumulated_workflow_state_context,
         _append_live_assistant_part,
-        _append_nested_workflow_state,
-        _append_prediction_workflow_state,
         _append_session_message,
         _append_session_workflow_state_context,
         _ask_user_options_from_action,
@@ -141,6 +140,7 @@ async def _run_turn_in_background(
         _enrich_with_context_files,
         _enrich_with_requested_memory_search,
         _estimate_cost_usd,
+        _expert_handoff_fields,
         _expert_handoff_summary,
         _extend_session_messages,
         _extract_tools_called,
@@ -160,6 +160,7 @@ async def _run_turn_in_background(
         _merge_workflow_state_mapping,
         _pop_stream_fallback,
         _prediction_summary,
+        _prediction_workflow_state,
         _propose_edit_diffs_from_pred,
         _reasoning_records_from_history_slice,
         _record_context_frame,
@@ -186,7 +187,6 @@ async def _run_turn_in_background(
         _user_facing_dynamic_evidence_summary,
         _workflow_state_from_handoff_rows,
         _workflow_state_from_outputs,
-        _workflow_state_payload,
     )
 
     bus: EventBus = app.state.bus
@@ -207,6 +207,10 @@ async def _run_turn_in_background(
     agent_runtime: dict[str, Any] = {}
     dynamic_agent_used: "AgentDef | None" = None
     execution_path = ""
+    # The expert/agent generating this turn's assistant parts. Set once the active
+    # agent is resolved inside the forward try-block; pre-seeded so the final
+    # part-assembly always has a value even when forward errors early.
+    invocation_agent_id = ""
     tools_called: list[dict[str, Any]] = []
     expert_handoffs: list[dict[str, Any]] = []
     prompt_resolution: dict[str, Any] = {}
@@ -462,6 +466,7 @@ async def _run_turn_in_background(
             text_part = Part(
                 id=streamed_assistant_part_id,
                 type="text",
+                agent_id=active_agent_id or invocation_agent_id or "main",
                 text="",
                 metadata={"stream_source": "live"},
             )
@@ -803,7 +808,12 @@ async def _run_turn_in_background(
                 Part(
                     id=f"live_handoff_{uuid.uuid4().hex[:12]}",
                     type="expert_handoff",
-                    text=_expert_handoff_summary(started_row),
+                    agent_id=parent_agent.id,
+                    parent_agent=parent_agent.id,
+                    child_agent=target.id,
+                    stage=str(started_row.get("stage") or ""),
+                    status=str(started_row.get("status") or ""),
+                    text=f"{parent_agent.id} -> {target.id}",
                     metadata={**started_row, "stream_source": "live"},
                 ),
             )
@@ -817,20 +827,17 @@ async def _run_turn_in_background(
                 pred_child = await _run_dynamic_agent_sync(target, prompt)
                 duration_ms = int((time.perf_counter() - started_at) * 1000)
                 local_output = str(getattr(pred_child, "answer", "") or "").strip()
-                local_output = _append_prediction_workflow_state(local_output, pred_child)
                 local_tools_called = _extract_tools_called(pred_child)
-                local_workflow_state = _workflow_state_from_outputs([local_output])
+                # Seed local state from the child's typed workflow_state output
+                # field (structural twin of the removed prose append), then merge
+                # any tool-row state. The state rides the completed_row's
+                # ``local_workflow_state`` / ``workflow_state`` Mapping below; it is
+                # NOT serialized into local_output text anymore.
+                local_workflow_state = _prediction_workflow_state(pred_child)
                 for tool_row in local_tools_called:
                     row_state = tool_row.get("workflow_state")
                     if isinstance(row_state, Mapping):
                         _merge_workflow_state_mapping(local_workflow_state, row_state)
-                if local_workflow_state:
-                    local_state_block = _workflow_state_payload(local_workflow_state)
-                    if local_state_block not in local_output:
-                        local_output = (
-                            f"{local_output.rstrip()}\n\n"
-                            f"CLIO local typed workflow state:\n{local_state_block}"
-                        )
                 local_output_summary = _compact_dynamic_delegation_output(local_output)
                 nested: list[dict[str, Any]] = []
                 if target.source == "expert_pack":
@@ -840,7 +847,9 @@ async def _run_turn_in_background(
                         source_text=prompt,
                     )
                 raw_answer = str(getattr(pred_child, "answer", "") or "").strip()
-                output = _append_prediction_workflow_state(raw_answer, pred_child)
+                # The child's typed workflow_state is carried structurally on the
+                # completed_row below (NOT serialized into output text).
+                output = raw_answer
                 if not nested:
                     child_rows = _coerce_expert_handoff_rows(
                         getattr(pred_child, "expert_handoffs", None)
@@ -866,7 +875,7 @@ async def _run_turn_in_background(
                         or _latest_delegation_output_summary(nested)
                     )
                     if fallback:
-                        output = _append_prediction_workflow_state(fallback, pred_child)
+                        output = fallback
                 if nested and (
                     _user_agent_bool_param(
                         target,
@@ -890,9 +899,9 @@ async def _run_turn_in_background(
                         )
                         or output
                     )
-                output = _append_prediction_workflow_state(output, pred_child)
-                if nested:
-                    output = _append_nested_workflow_state(output, nested)
+                # Nested child typed state is merged into the structured
+                # ``workflow_state`` carrier below (via _workflow_state_from_handoff_rows);
+                # it is NOT appended to output text anymore.
                 child_tools_called = _extract_tools_called(pred_child)
                 if isinstance(ledger, dict):
                     session_rows = ledger.get(sid)
@@ -905,13 +914,17 @@ async def _run_turn_in_background(
                                 if isinstance(row, Mapping)
                             ],
                         )
-                workflow_state = _workflow_state_from_outputs([prompt, output])
-                # Seed from this expert's own authoritative typed emission. The
-                # output text can be reassigned to child-evidence summaries that
-                # drop the expert's typed workflow_state block, so re-parsing
-                # `output` alone can lose the expert's own state sections. Merging
-                # local_workflow_state guarantees an expert's typed state bubbles
-                # to its parent for continuation routing. Generic for all packs.
+                # The prompt may carry prior accumulated typed state (injected via
+                # _append_accumulated_workflow_state_context); parse it so prior
+                # state still bubbles. The child's OWN typed state comes from its
+                # structured workflow_state field via local_workflow_state (the
+                # structural twin of the removed prose append) -- never re-parsed
+                # out of `output` text, which no longer carries a state block.
+                workflow_state = _workflow_state_from_outputs([prompt])
+                # Seed from this expert's own authoritative typed emission so its
+                # state bubbles to the parent for continuation routing, even when
+                # `output` was reassigned to a child-evidence summary. Generic for
+                # all packs.
                 if local_workflow_state:
                     _merge_workflow_state_mapping(workflow_state, local_workflow_state)
                 if nested:
@@ -923,13 +936,6 @@ async def _run_turn_in_background(
                     row_state = tool_row.get("workflow_state")
                     if isinstance(row_state, Mapping):
                         _merge_workflow_state_mapping(workflow_state, row_state)
-                if workflow_state:
-                    state_block = _workflow_state_payload(workflow_state)
-                    if state_block not in output:
-                        output = (
-                            f"{output.rstrip()}\n\n"
-                            f"CLIO durable typed workflow state:\n{state_block}"
-                        )
                 output_summary = _compact_dynamic_delegation_output(output)
                 completed_row = {
                     **row,
@@ -982,7 +988,12 @@ async def _run_turn_in_background(
                     Part(
                         id=f"live_handoff_{uuid.uuid4().hex[:12]}",
                         type="expert_handoff",
-                        text=_expert_handoff_summary(completed_row),
+                        agent_id=parent_agent.id,
+                        parent_agent=parent_agent.id,
+                        child_agent=target.id,
+                        stage=str(completed_row.get("stage") or ""),
+                        status=str(completed_row.get("status") or ""),
+                        text=f"{parent_agent.id} <- {target.id}",
                         metadata={**completed_row, "stream_source": "live"},
                     ),
                 )
@@ -1019,7 +1030,12 @@ async def _run_turn_in_background(
                     Part(
                         id=f"live_handoff_{uuid.uuid4().hex[:12]}",
                         type="expert_handoff",
-                        text=_expert_handoff_summary(resumed_row),
+                        agent_id=parent_agent.id,
+                        parent_agent=str(parent_agent.parent_id or ""),
+                        child_agent=parent_agent.id,
+                        stage=str(resumed_row.get("stage") or ""),
+                        status=str(resumed_row.get("status") or ""),
+                        text=f"{parent_agent.id} resumed (from {target.id})",
                         metadata={**resumed_row, "stream_source": "live"},
                     ),
                 )
@@ -1055,7 +1071,6 @@ async def _run_turn_in_background(
                         parent_agent_id=parent_agent.id,
                         error=error_name,
                         message=error_message,
-                        workflow_state=workflow_state,
                     )
                 )
                 failed_row = {
@@ -1101,7 +1116,12 @@ async def _run_turn_in_background(
                     Part(
                         id=f"live_handoff_{uuid.uuid4().hex[:12]}",
                         type="expert_handoff",
-                        text=_expert_handoff_summary(failed_row),
+                        agent_id=parent_agent.id,
+                        parent_agent=parent_agent.id,
+                        child_agent=target.id,
+                        stage=str(failed_row.get("stage") or ""),
+                        status=str(failed_row.get("status") or ""),
+                        text=f"{parent_agent.id} -> {target.id} (failed)",
                         metadata={**failed_row, "stream_source": "live"},
                     ),
                 )
@@ -1179,9 +1199,15 @@ async def _run_turn_in_background(
             # is the parent's ORIGINAL input, captured before earlier children ran -- so a
             # later child (e.g. the resolver) otherwise never sees the ranked list it is
             # documented to consume, and falls back to inventing candidate ids.
-            current_evidence = _append_prediction_workflow_state(
-                str(getattr(latest_pred, "answer", "") or ""), latest_pred
-            ).strip()
+            # State travels STRUCTURALLY: read the parent's typed workflow_state field
+            # and inject it via the clean structured prompt formatter, rather than
+            # appending a prose state block to the parent's answer.
+            current_evidence = str(getattr(latest_pred, "answer", "") or "").strip()
+            parent_state = _prediction_workflow_state(latest_pred)
+            if parent_state:
+                current_evidence = _append_accumulated_workflow_state_context(
+                    current_evidence, parent_state
+                ).strip()
             executed_rows = await _execute_delegated_experts(
                 parent_agent,
                 requested_rows,
@@ -1990,6 +2016,9 @@ async def _run_turn_in_background(
             Part(
                 id=_new_part_id(),
                 type="routing_decision",
+                # The decision is MADE by the orchestrator; ``selected_agent`` is the
+                # CHOSEN expert.
+                agent_id=invocation_agent_id or "main",
                 metadata={
                     k: v
                     for k, v in {
@@ -2006,22 +2035,47 @@ async def _run_turn_in_background(
             )
         )
     for handoff in [] if live_has_expert_handoff else expert_handoffs:
+        handoff_fields = _expert_handoff_fields(handoff)
         assistant_parts.append(
             Part(
                 id=_new_part_id(),
                 type="expert_handoff",
+                # The parent (decider) generates the handoff; structured fields are
+                # the contract, ``text`` is a short label only.
+                agent_id=handoff_fields["parent_agent"] or selected_agent or invocation_agent_id,
+                parent_agent=handoff_fields["parent_agent"],
+                child_agent=handoff_fields["child_agent"],
+                stage=handoff_fields["stage"],
+                status=handoff_fields["status"],
                 metadata=handoff,
                 text=_expert_handoff_summary(handoff),
             )
         )
+    # The expert that produced this turn's thinking/answer/diff parts: the routed
+    # expert when one was selected, else the active orchestrator.
+    responder_agent_id = selected_agent or invocation_agent_id or "main"
     if thinking_text:
         # iowarp/clio-agent#17: surface DSPy reasoning as a
         # thinking Part so the TUI can collapse + render it
         # gated on capabilities.thinking_blocks.
-        assistant_parts.append(Part(id=_new_part_id(), type="thinking", text=thinking_text))
+        assistant_parts.append(
+            Part(
+                id=_new_part_id(),
+                type="thinking",
+                agent_id=responder_agent_id,
+                text=thinking_text,
+            )
+        )
     assistant_parts.extend(final_live_parts)
     if answer_text and streamed_assistant_part_id is None:
-        assistant_parts.append(Part(id=_new_part_id(), type="text", text=answer_text))
+        assistant_parts.append(
+            Part(
+                id=_new_part_id(),
+                type="text",
+                agent_id=responder_agent_id,
+                text=answer_text,
+            )
+        )
     for row in proposed_diffs:
         if isinstance(row, dict):
             getf = row.get
@@ -2046,6 +2100,7 @@ async def _run_turn_in_background(
         diff_part = Part(
             id=_new_part_id(),
             type="file_diff",
+            agent_id=responder_agent_id,
             path=path,
             unified_diff=udiff,
             new_content=new_content,
@@ -2167,6 +2222,7 @@ async def _run_turn_in_background(
                 assistant_parts[i] = Part(
                     id=streamed_assistant_part_id,
                     type="text",
+                    agent_id=p.agent_id or responder_agent_id,
                     text=answer_text,
                     metadata=p.metadata,
                 )
@@ -2265,7 +2321,11 @@ async def _run_turn_in_background(
             role="assistant",
             created_at=_iso_from_epoch(sub_now),
             updated_at=_iso_from_epoch(sub_now),
-            parts=[Part(id=_new_part_id(), type="text", text=answer)] if answer else [],
+            parts=(
+                [Part(id=_new_part_id(), type="text", agent_id=str(agent_id), text=answer)]
+                if answer
+                else []
+            ),
             stop_reason="end_turn",
             metadata={"tools_called": tools_called} if tools_called else {},
         )
