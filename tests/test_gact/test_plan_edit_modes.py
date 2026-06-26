@@ -192,6 +192,7 @@ def test_real_agent_propose_edit_trace_becomes_applicable_diff(
                 {
                     "id": diff_parts[0]["id"],
                     "type": "file_diff",
+                    "agent_id": "data",
                     "metadata": {},
                     "text": "",
                     "selected_agent": "",
@@ -199,6 +200,9 @@ def test_real_agent_propose_edit_trace_becomes_applicable_diff(
                     "confidence": 0.0,
                     "heuristic": False,
                     "execution_path": "",
+                    "parent_agent": "",
+                    "child_agent": "",
+                    "stage": "",
                     "call_id": "",
                     "tool_name": "",
                     "input": {},

@@ -232,7 +232,10 @@ def _record_context_frame(
         },
     }
     app.state.context_frames.setdefault(sid, []).append(frame)
-    app.state.bus.publish(Event(type="context.frame.created", session_id=sid, payload=frame))
+    # NOT on the served UI wire: the context frame ("what the agent saw" — included
+    # messages, token estimates) is observability the TUI surfaces on demand, not a
+    # ReAct atom it renders inline. It stays queryable via
+    # GET /v1/sessions/{sid}/context/frames[/{frame_id}] (routes/diffs.py).
     return frame
 
 
@@ -256,7 +259,8 @@ def _finalize_context_frame(
             frame.setdefault("metadata", {})["turn_error"] = error_info.model_dump(
                 exclude_none=True
             )
-        app.state.bus.publish(Event(type="context.frame.completed", session_id=sid, payload=frame))
+        # Not on the served UI wire (see _create/_record context frame above) — the
+        # finalized frame is read on demand via the context/frames endpoint.
         break
 
 

@@ -324,8 +324,11 @@ def test_live_observed_tool_call_is_not_reemitted_post_turn(tmp_path: Path) -> N
     assert [e.payload["tool"] for e in completed] == ["hdf5_list_datasets"]
     assert started[0].payload["telemetry_source"] == "live_observer"
     assert completed[0].payload["telemetry_source"] == "live_observer"
-    assert completed[0].payload["ui_summary"] == "Tool hdf5_list_datasets completed."
-    assert completed[0].payload["result_summary"] == "Tool hdf5_list_datasets completed."
+    # WS1: clio transmits, it does not author UI captions -- the tool-response payload
+    # carries the FACTS (ok/duration_ms/cached/result), not ui_summary/result_summary.
+    assert "ui_summary" not in completed[0].payload
+    assert "result_summary" not in completed[0].payload
+    assert completed[0].payload["ok"] is True
     assert assistant["metadata"]["tools_called"][0]["name"] == "hdf5_list_datasets"
     assert assistant["metadata"]["tools_called"][0]["args"] == {"filepath": "x.h5"}
     assert assistant["metadata"]["tools_called"][0]["telemetry_source"] == "live_observer"

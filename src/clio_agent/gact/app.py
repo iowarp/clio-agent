@@ -1380,7 +1380,7 @@ async def _scheduler_tick(app: "FastAPI") -> None:
                     Event(
                         type="message.created",
                         session_id=sch.session_id,
-                        payload=user_msg.model_dump(exclude_none=True),
+                        payload=user_msg.to_wire(),
                     )
                 )
                 app.state.schedules.mark_fired(sch.id)

@@ -624,6 +624,29 @@ class Part(BaseModel):
     lines_added: int = 0
     lines_removed: int = 0
 
+    def to_wire(self) -> dict[str, Any]:
+        """Project this part to its on-the-wire dict, dropping unused fields.
+
+        The Part shape carries one set of fields per ``type`` (text, tool_call,
+        file_diff, expert_handoff, routing_decision, …) but a single instance only
+        populates the handful relevant to its own type; the rest sit at their
+        zero-value defaults. ``model_dump(exclude_none=True)`` does NOT drop those
+        (the defaults are ``""``/``0``/``[]``/``False``, not ``None``), so every
+        part historically shipped ~30 mostly-empty keys. ``exclude_defaults``
+        realizes the documented "omitempty" contract: only fields the part actually
+        set survive. The identity + authorship triple (``id``/``type``/``agent_id``)
+        is force-kept so a client can always attribute a part without inference,
+        even when a value coincides with its default.
+        """
+
+        wire = self.model_dump(exclude_defaults=True)
+        wire["id"] = self.id
+        wire["type"] = self.type
+        wire["agent_id"] = self.agent_id
+        if self.content:
+            wire["content"] = [child.to_wire() for child in self.content]
+        return wire
+
 
 class ContextFile(BaseModel):
     """SPEC §6.9 — a file pinned into a session's context."""
@@ -669,6 +692,19 @@ class Message(BaseModel):
     stop_reason: str = ""
     error_info: Optional[ErrorInfo] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    def to_wire(self) -> dict[str, Any]:
+        """Project this message to its on-the-wire dict with slimmed parts.
+
+        The message envelope (tokens/cost/stop_reason/metadata) keeps its
+        ``exclude_none`` shape so existing readers see the same top-level keys;
+        only the nested ``parts`` are projected through :meth:`Part.to_wire` so
+        they drop their unused per-type fields.
+        """
+
+        wire = self.model_dump(exclude_none=True)
+        wire["parts"] = [part.to_wire() for part in self.parts]
+        return wire
 
 
 class PostMessageRequest(BaseModel):

@@ -433,12 +433,58 @@ async def _run_turn_in_background(
     streamed_assistant_part_id: Optional[str] = None
     streamed_assistant_buffer: list[str] = []
     streamed_assistant_msg_id: Optional[str] = None
+    # Per-expert live authorship (WS3): the live text stream is split into one part
+    # per generating expert so a child's streamed output is authored to the child,
+    # not frozen to "main". ``streamed_last_agent`` is the author of the currently
+    # open part; ``streamed_part_text`` accumulates each part's own text so it can be
+    # finalized on close; ``closed_streamed_part_ids`` marks parts already completed
+    # live (so the finalize loop neither re-adds nor re-completes them).
+    streamed_last_agent: Optional[str] = None
+    streamed_live_part_ids: set[str] = set()
+    streamed_part_text: dict[str, list[str]] = {}
+    closed_streamed_part_ids: set[str] = set()
 
-    async def _emit_chunk(text: str) -> None:
-        nonlocal streamed_assistant_part_id, streamed_assistant_msg_id
+    def _live_parts_store() -> dict[str, list[Part]]:
+        live_parts = getattr(app.state, "live_assistant_parts", None)
+        if live_parts is None:
+            live_parts = {}
+            app.state.live_assistant_parts = live_parts
+        return live_parts
+
+    def _close_streamed_part(part_id: str) -> None:
+        """Finalize an open live text part: persist its accumulated text onto the
+        Part and emit ``message.part.completed`` so a client can replace the
+        buffered deltas with the clean text. Idempotent per part."""
+        if part_id in closed_streamed_part_ids:
+            return
+        closed_streamed_part_ids.add(part_id)
+        buffered = "".join(streamed_part_text.get(part_id, []))
+        for part in _live_parts_store().get(sid, []):
+            if part.id == part_id and part.type == "text":
+                part.text = buffered
+                break
+        bus.publish(
+            Event(
+                type="message.part.completed",
+                session_id=sid,
+                payload={
+                    "turn_id": turn_id,
+                    "message_id": streamed_assistant_msg_id,
+                    "part_id": part_id,
+                    "stream_source": "live",
+                    "final_text": buffered,
+                },
+            )
+        )
+
+    async def _emit_chunk(text: str, agent_id: Optional[str] = None) -> None:
+        nonlocal streamed_assistant_part_id, streamed_assistant_msg_id, streamed_last_agent
+        # The generating expert (passed by the LM token tap from its react scope);
+        # falls back to the turn's selected/invocation agent for the chat path.
+        chunk_agent = agent_id or active_agent_id or invocation_agent_id or "main"
         if streamed_assistant_msg_id is None:
-            # Lazily invent ids the moment the first chunk arrives;
-            # the final assistant message will reuse them.
+            # Lazily invent the message id the moment the first chunk arrives;
+            # the final assistant message will reuse it.
             live_ids = getattr(app.state, "live_assistant_message_ids", {}) or {}
             streamed_assistant_msg_id = str(live_ids.get(sid) or "")
             created_live_msg = bool(streamed_assistant_msg_id)
@@ -446,7 +492,6 @@ async def _run_turn_in_background(
                 streamed_assistant_msg_id = _new_message_id("asst")
                 live_ids[sid] = streamed_assistant_msg_id
                 app.state.live_assistant_message_ids = live_ids
-            streamed_assistant_part_id = _new_part_id()
             if not created_live_msg:
                 bus.publish(
                     Event(
@@ -460,21 +505,27 @@ async def _run_turn_in_background(
                             created_at=_iso_from_epoch(time.time()),
                             updated_at=_iso_from_epoch(time.time()),
                             parts=[],
-                        ).model_dump(exclude_none=True),
+                        ).to_wire(),
                     )
                 )
+        # Open a fresh part whenever none is open or the generating expert changed,
+        # closing the prior one so each expert's streamed text is its own authored
+        # part instead of being mashed into a single "main"-frozen part.
+        if streamed_assistant_part_id is None or chunk_agent != streamed_last_agent:
+            if streamed_assistant_part_id is not None:
+                _close_streamed_part(streamed_assistant_part_id)
+            streamed_assistant_part_id = _new_part_id()
+            streamed_last_agent = chunk_agent
+            streamed_live_part_ids.add(streamed_assistant_part_id)
+            streamed_part_text[streamed_assistant_part_id] = []
             text_part = Part(
                 id=streamed_assistant_part_id,
                 type="text",
-                agent_id=active_agent_id or invocation_agent_id or "main",
+                agent_id=chunk_agent,
                 text="",
                 metadata={"stream_source": "live"},
             )
-            live_parts = getattr(app.state, "live_assistant_parts", None)
-            if live_parts is None:
-                live_parts = {}
-                app.state.live_assistant_parts = live_parts
-            live_parts.setdefault(sid, []).append(text_part)
+            _live_parts_store().setdefault(sid, []).append(text_part)
             bus.publish(
                 Event(
                     type="message.part.added",
@@ -483,11 +534,12 @@ async def _run_turn_in_background(
                         "turn_id": turn_id,
                         "message_id": streamed_assistant_msg_id,
                         "stream_source": "live",
-                        "part": text_part.model_dump(exclude_none=True),
+                        "part": text_part.to_wire(),
                     },
                 )
             )
         streamed_assistant_buffer.append(text)
+        streamed_part_text[streamed_assistant_part_id].append(text)
         bus.publish(
             Event(
                 type="message.part.delta",
@@ -661,6 +713,19 @@ async def _run_turn_in_background(
             },
             payload=_prediction_summary(_pred),
         )
+        # WS2: capture a TERMINAL CoT/predict expert's reasoning + answer in its own
+        # ARC scope. Delegating rounds are written by the settle loop's
+        # _arc_write_orchestrator_route (route per round); ReAct leaves self-write.
+        # The remaining gap -- synthesis and every expert's `finish` round (an answer,
+        # no delegation, no tool loop) -- is filled here, where `app` is reliably bound
+        # and `_pred` carries the full reasoning + answer.
+        if _agent_definition_uses_blueprint_runtime(agent_def):
+            _kind = _blueprint_module_kind(agent_def)
+            if _kind and _kind != "react":
+                _next = str(getattr(_pred, "next_expert", "") or "").strip()
+                _declared = _runtime_declared_child_ids(app, agent_def.id, session_id=sid)
+                if _next not in _declared:  # terminal round (finish/empty/non-route)
+                    _arc_write_terminal_expert(app, sid, agent_def.id, _pred, turn_id)
         return _pred
 
     async def _execute_delegated_experts(
@@ -1183,6 +1248,16 @@ async def _run_turn_in_background(
                 or next_expert not in declared_child_ids
             ):
                 break
+            # WS2: stream this orchestrator's routing decision (its reasoning + the
+            # delegation) into its OWN ARC scope so ARC internally holds the complete
+            # spine -- the ReAct *leaves* already write thought/tool_call/observation,
+            # but the predict/CoT orchestrators (main/data/analysis/synthesis) wrote
+            # nothing to their scope, so it was empty. Captured here on the MAIN loop
+            # (where ``app.state.arc`` is reliably bound and ``latest_pred`` carries the
+            # reasoning), not in the streamed executor forward (no app contextvar).
+            _arc_write_orchestrator_route(
+                app, sid, parent_agent.id, latest_pred, next_expert, next_task, turn_id
+            )
             requested_rows = [
                 {
                     "delegate_to": next_expert,
@@ -1983,6 +2058,17 @@ async def _run_turn_in_background(
         if p.type == "routing_decision" and p.selected_agent
     }
     live_has_expert_handoff = any(p.type == "expert_handoff" for p in final_live_parts)
+    # Delegation atoms already streamed live as expert_handoff parts (delegate.started/
+    # completed/parent_resumed). The finalize pass rebuilds the same handoffs from the
+    # expert_handoffs rows for the PERSISTED message; suppress re-publishing those on
+    # the bus when a live equivalent already went out, so the UI sees each delegation
+    # lifecycle transition once (single-source, Principle 6). Keyed by the lifecycle
+    # signature, not the (fresh) part id.
+    live_handoff_sigs = {
+        (p.stage, p.parent_agent, p.child_agent)
+        for p in live_assistant_parts
+        if p.type == "expert_handoff"
+    }
     live_tool_calls = {
         p.call_id: p for p in live_assistant_parts if p.type == "tool_call" and p.call_id
     }
@@ -2054,6 +2140,20 @@ async def _run_turn_in_background(
     # The expert that produced this turn's thinking/answer/diff parts: the routed
     # expert when one was selected, else the active orchestrator.
     responder_agent_id = selected_agent or invocation_agent_id or "main"
+    # Reconcile the per-expert live streamed parts (WS3) with the canonical answer.
+    # Earlier experts' parts were already closed live (text persisted + completed).
+    # The still-open part (the last streamer) becomes the canonical answer part when
+    # its author is the responding expert; otherwise it's closed as-is and the
+    # canonical answer lands as its own authored part below.
+    reuse_streamed_part_id: Optional[str] = None
+    if (
+        streamed_assistant_part_id is not None
+        and streamed_assistant_part_id not in closed_streamed_part_ids
+    ):
+        if answer_text and streamed_last_agent == responder_agent_id:
+            reuse_streamed_part_id = streamed_assistant_part_id
+        else:
+            _close_streamed_part(streamed_assistant_part_id)
     if thinking_text:
         # iowarp/clio-agent#17: surface DSPy reasoning as a
         # thinking Part so the TUI can collapse + render it
@@ -2067,7 +2167,7 @@ async def _run_turn_in_background(
             )
         )
     assistant_parts.extend(final_live_parts)
-    if answer_text and streamed_assistant_part_id is None:
+    if answer_text and reuse_streamed_part_id is None:
         assistant_parts.append(
             Part(
                 id=_new_part_id(),
@@ -2213,14 +2313,15 @@ async def _run_turn_in_background(
     live_ids = getattr(app.state, "live_assistant_message_ids", {}) or {}
     live_assistant_msg_id = str(live_ids.get(sid) or "")
     asst_id = streamed_assistant_msg_id or live_assistant_msg_id or _new_message_id("asst")
-    if streamed_assistant_part_id is not None and answer_text:
-        # Replace the routing/text/diff parts list's text part
-        # with a stub carrying the streamed part_id, so the final
-        # message references the same id the deltas used.
+    if reuse_streamed_part_id is not None and answer_text:
+        # Replace the reused (still-open, responder-authored) live part with a stub
+        # carrying its streamed part_id + the canonical answer, so the final message
+        # references the same id the deltas used. Match by id (not "first text part")
+        # so per-expert child text parts streamed earlier are left untouched.
         for i, p in enumerate(assistant_parts):
-            if p.type == "text":
+            if p.type == "text" and p.id == reuse_streamed_part_id:
                 assistant_parts[i] = Part(
-                    id=streamed_assistant_part_id,
+                    id=reuse_streamed_part_id,
                     type="text",
                     agent_id=p.agent_id or responder_agent_id,
                     text=answer_text,
@@ -2411,7 +2512,7 @@ async def _run_turn_in_background(
                     created_at=assistant_msg.created_at,
                     updated_at=assistant_msg.updated_at,
                     parts=[],
-                ).model_dump(exclude_none=True),
+                ).to_wire(),
             )
         )
     # Stream live text parts via message.part.delta. When a turn only has
@@ -2425,8 +2526,19 @@ async def _run_turn_in_background(
             and part.type != "text"
         ):
             continue
+        # Per-expert child text parts were already streamed AND completed live
+        # (WS3); skip them here so they are neither re-added nor re-completed.
+        if part.type == "text" and part.id in closed_streamed_part_ids:
+            continue
+        # Delegation handoffs already streamed live: keep them in the persisted
+        # message but don't re-publish on the bus (single-source, Principle 6).
+        if (
+            part.type == "expert_handoff"
+            and (part.stage, part.parent_agent, part.child_agent) in live_handoff_sigs
+        ):
+            continue
         if part.type == "text" and part.text:
-            if part.id == streamed_assistant_part_id:
+            if part.id == reuse_streamed_part_id:
                 # Real streaming already pumped deltas — but those
                 # carry raw LM output that includes ChatAdapter format
                 # markers ([[ ## answer ## ]] etc). The final ``part.text``
@@ -2461,7 +2573,7 @@ async def _run_turn_in_background(
                         "turn_id": turn_id,
                         "message_id": assistant_msg.id,
                         "stream_source": "batch",
-                        "part": delivered.model_dump(exclude_none=True),
+                        "part": delivered.to_wire(),
                     },
                 )
             )
@@ -2488,7 +2600,7 @@ async def _run_turn_in_background(
                         "turn_id": turn_id,
                         "message_id": assistant_msg.id,
                         "stream_source": str(part.metadata.get("stream_source") or "batch"),
-                        "part": part.model_dump(exclude_none=True),
+                        "part": part.to_wire(),
                     },
                 )
             )
@@ -2643,6 +2755,118 @@ async def _run_turn_in_background(
             app.state.cancel_events.pop(sid, None)
 
 
+def _arc_write_terminal_expert(
+    app: "FastAPI",
+    sid: str,
+    scope: str,
+    pred: Any,
+    turn_id: str,
+) -> None:
+    """WS2: append a TERMINAL CoT/predict expert's reasoning (``thought``) + final
+    answer (``answer`` kind) to its OWN ARC scope.
+
+    ReAct leaves already stream their own thought/tool_call/observation, and a
+    *delegating* orchestrator's per-round reasoning + route is written by
+    :func:`_arc_write_orchestrator_route` from the settle loop. The remaining gap is
+    the expert that produces an answer WITHOUT delegating and WITHOUT a tool loop --
+    the synthesis stage, and every orchestrator's own ``finish`` round. Without this,
+    those scopes stay empty in ARC even though the answer reached the wire (Principle
+    1: ARC must hold the complete trajectory). Best-effort; never breaks a turn."""
+
+    arc = getattr(getattr(app, "state", None), "arc", None)
+    if arc is None or not sid or not scope:
+        return
+    reasoning = str(getattr(pred, "reasoning", "") or "").strip()
+    answer = str(getattr(pred, "answer", "") or "").strip()
+    if not reasoning and not answer:
+        return
+    expert_span_id = f"{turn_id}:{scope}" if turn_id else scope
+    try:
+        step = 0
+        if reasoning:
+            arc.append_segment(
+                sid,
+                scope,
+                "thought",
+                {"text": reasoning},
+                step=step,
+                token_count=max(1, len(reasoning) // 4),
+                turn_id=turn_id,
+                expert_span_id=expert_span_id,
+            )
+            step += 1
+        if answer:
+            # The deliverable rides the dedicated ``answer`` kind (an expert/turn final
+            # message) -- substrate-complete but outside the working-set/prompt render,
+            # so it never re-enters a downstream prompt.
+            arc.append_segment(
+                sid,
+                scope,
+                "answer",
+                {"text": answer},
+                step=step,
+                token_count=max(1, len(answer) // 4),
+                turn_id=turn_id,
+                expert_span_id=expert_span_id,
+            )
+    except Exception:  # noqa: BLE001 - ARC capture is best-effort, never break a turn
+        if trace.HF_ON:
+            trace.hot("ARC-TERMINAL-WRITE-FAIL", "%s", scope)
+
+
+def _arc_write_orchestrator_route(
+    app: "FastAPI",
+    sid: str,
+    scope: str,
+    pred: Any,
+    next_expert: str,
+    next_task: str,
+    turn_id: str,
+) -> None:
+    """WS2: append an orchestrator's reasoning (thought) + delegation (tool_call) to
+    its OWN ARC scope, so a predict/CoT orchestrator's working-set trajectory is no
+    longer empty (the ReAct leaves already cover themselves). Best-effort; never
+    breaks a turn."""
+
+    arc = getattr(getattr(app, "state", None), "arc", None)
+    if arc is None or not sid or not scope:
+        return
+    expert_span_id = f"{turn_id}:{scope}" if turn_id else scope
+    try:
+        import json as _json  # noqa: PLC0415
+
+        step = 0
+        reasoning = str(getattr(pred, "reasoning", "") or "").strip()
+        if reasoning:
+            arc.append_segment(
+                sid,
+                scope,
+                "thought",
+                {"text": reasoning},
+                step=step,
+                token_count=max(1, len(reasoning) // 4),
+                turn_id=turn_id,
+                expert_span_id=expert_span_id,
+            )
+            step += 1
+        # A delegation IS a call to a child expert (the ReAct path already models
+        # children as tools), so it rides the ``tool_call`` kind.
+        delegation = {"name": next_expert, "args": {"task": next_task}}
+        arc.append_segment(
+            sid,
+            scope,
+            "tool_call",
+            delegation,
+            step=step,
+            token_count=max(1, len(_json.dumps(delegation, default=str)) // 4),
+            turn_id=turn_id,
+            expert_span_id=expert_span_id,
+        )
+    except Exception:  # noqa: BLE001 - ARC capture is best-effort, never break a turn
+        if trace.HF_ON:
+            trace.hot("ARC-ROUTE-WRITE-FAIL", "%s", scope)
+
+
 def _start_background_user_turn(
     app: "FastAPI",
     sid: str,
@@ -2727,7 +2951,7 @@ def _start_background_user_turn(
         Event(
             type="message.created",
             session_id=sid,
-            payload=user_msg.model_dump(exclude_none=True),
+            payload=user_msg.to_wire(),
         )
     )
 

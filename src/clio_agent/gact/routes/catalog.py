@@ -724,7 +724,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                 Event(
                     type="message.created",
                     session_id=sid,
-                    payload=sys_msg.model_dump(exclude_none=True),
+                    payload=sys_msg.to_wire(),
                 )
             )
             return {
@@ -861,7 +861,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
             Event(
                 type="message.created",
                 session_id=sid,
-                payload=sys_msg.model_dump(exclude_none=True),
+                payload=sys_msg.to_wire(),
             )
         )
 

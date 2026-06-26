@@ -49,7 +49,7 @@ from clio_agent.arc.schema import (
     encode_variant_record,
 )
 from clio_agent.arc.segments import OpLogger, SegmentStore
-from clio_agent.arc.storage import ARCStore, LocalFSStore
+from clio_agent.arc.storage import ARCStore, make_arc_store
 from clio_agent.runtime import trace
 
 # ``EVENTS_SCOPE`` (the reserved scope holding ARC's ONE persisted semantic-event log)
@@ -102,18 +102,23 @@ class ARCMemory:
         Args:
             data_dir: Directory path for persistent storage
             cache_capacity: Maximum number of cached items
-            store: Optional ARCStore for record persistence. Defaults to a
-                local-filesystem store rooted at ``data_dir``; inject a
-                clio-core CTE-backed store here to relocate persistence without
-                changing any call site.
+            store: Optional ARCStore for record persistence. When ``None`` the
+                backend is chosen by :func:`make_arc_store` — clio-core CTE by
+                default, LocalFS only on explicit ``CLIO_ARC_STORE=local``. Pass a
+                store to override the factory (e.g. tests injecting a specific backend).
         """
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
         # Persistence seam: every record kind is read/written through an
         # ARCStore, so ARC never touches the filesystem directly. The LSM tree
-        # (below) remains a separate high-throughput subsystem.
-        self._store: ARCStore = store if store is not None else LocalFSStore(self.data_dir)
+        # (below) remains a separate high-throughput subsystem. The backend is
+        # chosen by the factory (default clio-core CTE; LocalFS only on explicit
+        # CLIO_ARC_STORE=local), NOT hardcoded -- a hardcoded LocalFS here is what
+        # silently kept ARC off clio-core regardless of config.
+        self._store: ARCStore = (
+            store if store is not None else make_arc_store(data_dir=self.data_dir)
+        )
 
         # Live context plane: the ordered, scoped, mutable segment store the gact
         # ReAct loop reads its prompt from each iteration. It also holds ARC's ONE

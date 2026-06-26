@@ -75,9 +75,12 @@ def test_context_frame_recorded_for_successful_turn(client: TestClient) -> None:
 
     fetched = client.get(f"/v1/sessions/{sid}/context/frames/{frame['id']}").json()
     assert fetched["frame"]["id"] == frame["id"]
+    # WS1: context frames are substrate the UI does not render live -- they are
+    # recorded + queryable on demand (asserted above via GET /context/frames), but
+    # the per-frame created/completed events do NOT ride the served SSE bus.
     history_types = [event.type for event in client.app.state.bus._history.get(sid, [])]
-    assert "context.frame.created" in history_types
-    assert "context.frame.completed" in history_types
+    assert "context.frame.created" not in history_types
+    assert "context.frame.completed" not in history_types
 
 
 def test_context_frame_includes_attached_context_file(

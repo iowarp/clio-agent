@@ -32,16 +32,18 @@ def test_factory_unknown_backend_raises():
         make_arc_store(backend="bogus")
 
 
-def test_factory_cte_falls_back_on_init_failure(tmp_path, monkeypatch):
-    """CTE binding/runtime unavailable -> LocalFSStore + RuntimeWarning, never crash
-    (CLAUDE.md graceful-degradation chain)."""
+def test_factory_cte_raises_on_init_failure(tmp_path, monkeypatch):
+    """CTE binding/runtime unavailable -> RAISE (fail-loud), NEVER silently degrade to
+    LocalFS ([[deliberate-config-fail-loud]]). A silent fallback would mask a broken
+    clio-core deploy and obscure that ARC dropped off clio-core. LocalFS is opt-in only
+    (backend="local" / CLIO_ARC_STORE=local)."""
+
     def boom(*a, **k):
         raise ImportError("clio_cte_core_ext not built")
 
     monkeypatch.setattr(storage, "CTEStore", boom)
-    with pytest.warns(RuntimeWarning, match="CTE store unavailable"):
-        store = make_arc_store(backend="cte", data_dir=str(tmp_path))
-    assert isinstance(store, LocalFSStore)
+    with pytest.raises(RuntimeError, match="clio-core CTE backend"):
+        make_arc_store(backend="cte", data_dir=str(tmp_path))
 
 
 # ---- integration: real in-process CTE runtime ----

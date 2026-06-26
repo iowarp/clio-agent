@@ -58,6 +58,58 @@ SSE_KEEP_KEYS_BY_EVENT: dict[str, frozenset[str]] = {
     "expert.extract.completed": frozenset({"reasoning"}),
 }
 
+# UI/SSE serving allow-list: the ONLY semantic-event types that reach the live
+# bus (GET /v1/sessions/{sid}/events) — the ReAct trajectory the TUI renders.
+# Everything else (turn/agent/llm/hook lifecycle, lm.call, the tool.call mirror,
+# memory/permission bookkeeping) is captured FULL on the durable trace + ARC but
+# is substrate the UI does not render, so it stays off the served wire. This is
+# the serving layer (order/cleanliness), NOT a capture filter: project_full and
+# ARC always see every event. Any FAILED/ERROR event passes regardless (errors
+# are first-class and never summarized away). See the four ReAct atoms:
+#   a) delegation  = blueprint.delegation.* + the orchestrator's reasoning
+#                    (carried on expert.response.completed for CoT orchestrators)
+#   b) tool call   } react.step.completed (thought + tool_name + tool_args
+#   c) tool result }                       + observation), for ReAct leaves
+#   d) extract     = expert.extract.completed (output + structured workflow_state)
+SSE_UI_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        "react.step.completed",
+        "expert.extract.completed",
+        "expert.response.completed",
+        "expert.lifecycle.started",
+        # The delegation atom rides one of two prefixes depending on the runtime:
+        # ``blueprint.delegation.*`` for Agent Blueprint experts and the plain
+        # ``delegation.*`` for expert-pack / prompt-agent delegations. Both are the
+        # SAME atom and both must reach the UI (``.failed`` also passes via the
+        # always-status gate, but is listed for explicitness).
+        "blueprint.delegation.started",
+        "blueprint.delegation.completed",
+        "blueprint.delegation.parent_resumed",
+        "blueprint.delegation.failed",
+        "delegation.started",
+        "delegation.completed",
+        "delegation.parent_resumed",
+        "delegation.failed",
+        # Memory search is an agent ACTION the user opts into (a retrieval step in
+        # the trajectory), not lifecycle bookkeeping -- surface its result live.
+        "memory.search.completed",
+    }
+)
+
+# Statuses that ALWAYS reach the UI wire regardless of event_type — a failure or
+# cancellation must never be filtered out of the served stream.
+_SSE_ALWAYS_STATUSES: frozenset[str] = frozenset({"failed", "error", "cancelled"})
+
+
+def event_reaches_ui(event_type: str, status: str = "") -> bool:
+    """True when a semantic event should be published to the live UI bus.
+
+    The atom allow-list plus an unconditional pass for failure/cancellation
+    statuses. Capture (durable trace + ARC) is unaffected — this gates serving
+    only.
+    """
+    return event_type in SSE_UI_EVENT_TYPES or (status or "").strip().lower() in _SSE_ALWAYS_STATUSES
+
 # The "body" fields of a SemanticEvent — these carry the rich, potentially
 # sensitive payloads that are captured in FULL durably but projected/redacted
 # for SSE and hooks. The envelope fields (ids, status, summary, timestamps) are
@@ -515,13 +567,18 @@ class SemanticEventSink:
         full = project_full(event)
         # SSE + hooks get projected (redacted) views; SSE honors "off".
         if event.detail_level != "off":
-            self.bus.publish(
-                Event(
-                    type="semantic.event",
-                    session_id=event.session_id,
-                    payload=project_sse(event),
+            # Serving gate: only the ReAct atoms (and any failure) reach the live
+            # UI bus. The rest is substrate captured FULL above (trace + ARC) but
+            # not rendered by the UI, so it stays off the served wire. Hooks still
+            # see EVERY event (user observability code), independent of this gate.
+            if event_reaches_ui(event.event_type, event.status):
+                self.bus.publish(
+                    Event(
+                        type="semantic.event",
+                        session_id=event.session_id,
+                        payload=project_sse(event),
+                    )
                 )
-            )
             try:
                 from clio_agent.runtime.hooks import fire as _fire_hook
 
