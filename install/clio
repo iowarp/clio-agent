@@ -53,7 +53,11 @@ SERVER_LOG="${CLIO_LOG:-$CLIO_PREFIX/clio-server.log}"
 GACT_LOG="$CLIO_PREFIX/gact-stderr.log"
 SERVER_BIN="$CLIO_PREFIX/clio-agent/.venv/bin/clio-agent-gact"
 GACT_BIN="$CLIO_PREFIX/gact"
-CLIO_BRAND_ROOT="$CLIO_PREFIX/clio-agent/branding"
+# The Go TUI is brand-neutral and white-labels purely from GACT_BRAND_NAME at
+# runtime (it no longer reads a brand root / brand.json — web+desktop read that
+# at build time via apps/brand.config.local.json). This drives the splash
+# wordmark + OS window title; override by exporting GACT_BRAND_NAME yourself.
+CLIO_BRAND_NAME="${GACT_BRAND_NAME:-CLIO}"
 WEB_DIR="$CLIO_PREFIX/clio-agent/web"
 CLIO_VENV="$CLIO_PREFIX/clio-agent/.venv"
 UPDATE_STAMP="$CLIO_PREFIX/.update-checked"
@@ -330,14 +334,12 @@ main() {
         trap 'stop_server' EXIT
         env \
           GACT_BACKEND="http://127.0.0.1:$CLIO_PORT" \
-          GACT_BRAND="${GACT_BRAND:-clio}" \
-          GACT_BRAND_ROOT="${GACT_BRAND_ROOT:-$CLIO_BRAND_ROOT}" \
+          GACT_BRAND_NAME="$CLIO_BRAND_NAME" \
           "$GACT_BIN" "$@" 2>"$GACT_LOG" || true
       else
         exec env \
           GACT_BACKEND="http://127.0.0.1:$CLIO_PORT" \
-          GACT_BRAND="${GACT_BRAND:-clio}" \
-          GACT_BRAND_ROOT="${GACT_BRAND_ROOT:-$CLIO_BRAND_ROOT}" \
+          GACT_BRAND_NAME="$CLIO_BRAND_NAME" \
           "$GACT_BIN" "$@" 2>"$GACT_LOG"
       fi
       ;;

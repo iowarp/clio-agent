@@ -7,5 +7,43 @@
   "accent": "#ea7b2a",
   "themeTokens": {
     "--color-accent": "#ea7b2a"
-  }
+  },
+  "backendRepository": {
+    "label": "github.com/iowarp/clio-agent",
+    "url": "https://github.com/iowarp/clio-agent",
+    "detail": "CLIO backend"
+  },
+  "backend": {
+    "mode": "managed",
+    "sidecarName": "clio-agent",
+    "attachPort": 17800,
+    "attachPortEnv": "CLIO_PORT",
+    "attachUrlEnv": "CLIO_GACT_URL",
+    "install": {
+      "ref": "develop",
+      "refEnv": "CLIO_REF",
+      "forceEnv": "CLIO_FORCE",
+      "windowsUrl": "https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1",
+      "unixUrl": "https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh",
+      "repoLabel": "github.com/iowarp/clio-agent"
+    }
+  },
+  "starterPrompts": [
+    {
+      "eyebrow": "EarthScope",
+      "label": "What recent ground motion is EarthScope's GNSS network showing around Los Angeles? Pull a real station time series, plot it, and tell me how much to trust the data."
+    },
+    {
+      "eyebrow": "NDP",
+      "label": "Find current California wildfire feature data through NDP and summarize the active records with sources."
+    },
+    {
+      "eyebrow": "Weather",
+      "label": "Profile CIMIS Station 80 Fresno hourly weather data and produce a temperature, humidity, and wind summary."
+    },
+    {
+      "eyebrow": "Workspace",
+      "label": "Inspect the files in this workspace, identify generated artifacts, and explain what evidence is ready to present."
+    }
+  ]
 }
