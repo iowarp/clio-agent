@@ -25,16 +25,13 @@ esac
 
 mkdir -p "$(dirname "$OUT")"
 
-PKG="github.com/JaimeCernuda/gact-tui/tui/internal/config"
-ldflags=(
-  "-s"
-  "-w"
-  "-X" "${PKG}.DefaultBrand=clio"
-  "-X" "${PKG}.builtinBrandName=CLIO"
-  "-X" "${PKG}.builtinBrandTag=CLIO"
-  "-X" "${PKG}.builtinBrandGlyph=C"
-  "-X" "${PKG}.builtinBrandAccent=#ea7b2a"
-)
+# gact-tui is brand-neutral and the Go TUI no longer bakes a brand at build time:
+# the old `-X internal/config.DefaultBrand=…/builtinBrand*` ldflags were removed
+# upstream (the brand symbols no longer exist; `-X` against a missing symbol is a
+# silent no-op). The TUI is now white-labeled purely at runtime — the `clio`
+# launcher exports `GACT_BRAND_NAME=CLIO` (see install/clio), which drives the
+# window title + splash wordmark. So this build stays a plain, stripped build.
+ldflags=("-s" "-w")
 
 (
   cd "$GACT_ROOT/tui"
