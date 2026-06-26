@@ -459,9 +459,7 @@ from clio_agent.gact.delegation import (  # noqa: E402,F401
     _append_session_workflow_state_context,
     _bubbled_child_evidence_output_summary,
     _coerce_expert_handoff_rows,
-    _compact_dynamic_delegation_output,
     _compact_exact_evidence_index,
-    _compact_workflow_state_blocks,
     _delegated_expert_agent_id,
     _delegated_expert_prompt,
     _dynamic_parent_resume_prompt,
@@ -476,13 +474,11 @@ from clio_agent.gact.delegation import (  # noqa: E402,F401
     _latest_delegation_output_summary,
     _latest_final_child_output_summary,
     _latest_parent_resumed_output_summary,
-    _looks_like_truncated_user_facing_tail,
     _merge_workflow_state_from_value,
     _should_execute_delegated_handoff,
     _state_path_value,
     _state_predicate_hit,
     _strip_embedded_workflow_state_evidence,
-    _user_facing_dynamic_evidence_summary,
     _workflow_state_from_handoff_rows,
     _workflow_state_from_outputs,
     _workflow_state_has_existing_staged_path,
@@ -594,7 +590,7 @@ def _fallback_answer_from_delegation(handoffs: list[dict[str, Any]]) -> str:
             continue
         if str(row.get("status") or "") not in {"", "completed"}:
             continue
-        text = str(row.get("output_summary") or "").strip()
+        text = str(row.get("output") or row.get("output_summary") or "").strip()
         if text:
             return text
     return ""

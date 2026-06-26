@@ -36,7 +36,6 @@ from clio_agent.gact.app import (
     _build_fanout_tool,
     _builtin_agents,
     _coerce_fanout_child_ids,
-    _compact_dynamic_delegation_output,
     _dynamic_agent_tools,
     _dynamic_child_expert_tools,
     _dynamic_parent_resume_prompt,
@@ -57,7 +56,6 @@ from clio_agent.gact.app import (
     _should_execute_delegated_handoff,
     _tool_calls_from_handoff_rows,
     _user_agent_bool_param,
-    _user_facing_dynamic_evidence_summary,
     _workflow_state_from_handoff_rows,
     _workflow_state_from_outputs,
     build_app,
@@ -792,62 +790,6 @@ def test_ground_fabricated_local_artifact_path_keeps_honest_blocked_prose() -> N
     assert grounded == answer
 
 
-def test_compact_dynamic_delegation_output_retains_reconciled_workflow_state(
-    tmp_path: Path,
-) -> None:
-    staged_path = tmp_path / "BRAN.CI.LY_.30.csv"
-    staged_path.write_text("time,east,north,up\n1,0,0,0\n", encoding="utf-8")
-    output = "\n".join(
-        [
-            "Early child state.",
-            json.dumps(
-                {
-                    "workflow_state": {
-                        "acquisition": {
-                            "status": "blocked",
-                            "analysis_ready": False,
-                            "local_path": str(staged_path),
-                            "required_columns": ["time", "east", "north", "up"],
-                            "source_url": "https://example.test/BRAN.CI.LY_.30.csv",
-                        },
-                        "resource_candidate": {
-                            "status": "missing",
-                            "resource_name": "BRAN.CI.LY_.30.csv",
-                        },
-                    }
-                }
-            ),
-            "Later child state.",
-            json.dumps(
-                {
-                    "workflow_state": {
-                        "acquisition": {
-                            "status": "staged",
-                            "analysis_ready": True,
-                            "local_path": str(staged_path),
-                            "required_columns": ["time", "east", "north", "up"],
-                            "source_url": "https://example.test/BRAN.CI.LY_.30.csv",
-                        },
-                        "resource_candidate": {
-                            "status": "selected",
-                            "resource_name": "BRAN.CI.LY_.30.csv",
-                        },
-                    }
-                }
-            ),
-            *[f"filler line {index}" for index in range(220)],
-        ]
-    )
-
-    compacted = _compact_dynamic_delegation_output(output, limit=800)
-
-    assert '"status": "staged"' in compacted
-    assert '"analysis_ready": true' in compacted
-    assert '"status": "selected"' in compacted
-    assert '"status": "blocked"' not in compacted
-    assert '"status": "missing"' not in compacted
-
-
 def test_workflow_state_merge_preserves_non_empty_tool_provenance(tmp_path: Path) -> None:
     staged_csv = tmp_path / "MTA1.CI.LY_.30.csv"
     staged_csv.write_text("time,east,north,up\n2026-01-01,0,0,0\n", encoding="utf-8")
@@ -990,14 +932,14 @@ def test_strict_depth_bubble_prefers_resumed_child_subtree_over_parent_draft() -
             "parent_id": "main",
             "status": "completed",
             "stage": "delegate.completed",
-            "output_summary": '{"workflow_state":{"geospatial":{"status":"resolved"}}}',
+            "output": '{"workflow_state":{"geospatial":{"status":"resolved"}}}',
             "children": [
                 {
                     "agent_id": "ndp_dataset_discovery",
                     "parent_id": "geospatial",
                     "status": "completed",
                     "stage": "delegate.completed",
-                    "output_summary": (
+                    "output": (
                         '{"workflow_state":{"acquisition":{"status":"metadata_only",'
                         '"analysis_ready":false,"blocker":"station metadata only"}}}'
                     ),
@@ -1007,9 +949,7 @@ def test_strict_depth_bubble_prefers_resumed_child_subtree_over_parent_draft() -
                     "parent_id": "main",
                     "status": "completed",
                     "stage": "parent.resumed",
-                    "output_summary": (
-                        "No station-specific GNSS time-series CSV has been staged yet."
-                    ),
+                    "output": ("No station-specific GNSS time-series CSV has been staged yet."),
                 },
             ],
         },
@@ -1017,7 +957,7 @@ def test_strict_depth_bubble_prefers_resumed_child_subtree_over_parent_draft() -
             "agent_id": "main",
             "status": "completed",
             "stage": "parent.resumed",
-            "output_summary": '{"workflow_state":{"geospatial":{"status":"resolved"}}}',
+            "output": '{"workflow_state":{"geospatial":{"status":"resolved"}}}',
         },
     ]
 
@@ -1041,83 +981,6 @@ def test_skipped_delegated_handoff_does_not_execute_even_with_delegate_target() 
     )
 
 
-def test_compacted_delegation_output_retains_parseable_workflow_state() -> None:
-    workflow_state = {
-        "workflow_state": {
-            "acquisition": {
-                "analysis_ready": True,
-                "local_path": "/workspace/.clio/artifacts/ndp-staging/P475.CI.LY_.20.csv",
-                "required_columns": ["time", "east", "north", "up"],
-                "source_url": "https://ds2.example.test/raw_csv/P475.CI.LY_.20.csv",
-                "status": "staged",
-            },
-            "resource_candidate": {
-                "resource_name": "P475.CI.LY_.20.csv",
-                "resource_url": "https://ds2.example.test/raw_csv/P475.CI.LY_.20.csv",
-                "status": "selected",
-            },
-        }
-    }
-    output = (
-        "Selected GNSS station P475 for the requested region.\n"
-        + ("long model prose that should not decide routing\n" * 120)
-        + "\nCLIO inferred typed tool state:\n"
-        + json.dumps(workflow_state)
-    )
-
-    compacted = _compact_dynamic_delegation_output(output, limit=900)
-    state = _workflow_state_from_outputs([compacted])
-
-    assert "Retained typed workflow state" in compacted
-    assert state["acquisition"]["status"] == "staged"
-    assert state["acquisition"]["analysis_ready"] is True
-    assert state["acquisition"]["local_path"].endswith("P475.CI.LY_.20.csv")
-
-
-def test_user_facing_child_evidence_summary_removes_retained_scaffolding() -> None:
-    compacted = (
-        "**Region & Station**\n"
-        "- Station MTA1 is 0.71 km from the requested center.\n"
-        "- No blocker remains; the staged resource is a valid GNSS CSV.\n\n"
-        "**Ev\n\n"
-        "[...delegation output truncated; exact evidence retained below...]\n\n"
-        "[exact retained evidence index]\n"
-        "Paths:\n"
-        "- /tmp/MTA1.CI.LY_.30.csv\n\n"
-        "Retained typed workflow state:\n"
-        '{"workflow_state": {"acquisition": {"status": "staged"}}}'
-    )
-
-    visible = _user_facing_dynamic_evidence_summary(compacted)
-
-    assert "[exact retained evidence index]" not in visible
-    assert "Retained typed workflow state" not in visible
-    assert "**Ev" not in visible
-    assert "Station MTA1" in visible
-    assert "valid GNSS CSV" in visible
-
-
-def test_user_facing_summary_removes_clio_typed_state_blocks() -> None:
-    output = (
-        "**Synthesis**\n\n"
-        "- Staged CSV: `/tmp/MTA1.CI.LY_.30.csv`\n"
-        "- Generated plot: `/tmp/MTA1.CI.LY_.30_timeseries.png`\n\n"
-        "The acquisition is analysis-ready and the plot was generated.\n\n"
-        "CLIO typed workflow state:\n"
-        '{"workflow_state":{"acquisition":{"status":"staged"}}}\n\n'
-        "CLIO inferred typed tool state from tool observations:\n"
-        '{"workflow_state":{"artifact":{"status":"ready"}}}'
-    )
-
-    visible = _user_facing_dynamic_evidence_summary(output)
-
-    assert "Staged CSV" in visible
-    assert "Generated plot" in visible
-    assert "CLIO typed workflow state" not in visible
-    assert "CLIO inferred typed tool state" not in visible
-    assert "workflow_state" not in visible
-
-
 def test_latest_final_child_output_prefers_synthesis_summary() -> None:
     output = _latest_final_child_output_summary(
         [
@@ -1125,13 +988,13 @@ def test_latest_final_child_output_prefers_synthesis_summary() -> None:
                 "agent_id": "visualization",
                 "stage": "delegate.completed",
                 "status": "completed",
-                "output_summary": "PNG artifact: /workspace/plot.png",
+                "output": "PNG artifact: /workspace/plot.png",
             },
             {
                 "agent_id": "synthesis",
                 "stage": "delegate.completed",
                 "status": "completed",
-                "output_summary": "Final synthesized answer with cited data and caveats.",
+                "output": "Final synthesized answer with cited data and caveats.",
             },
         ]
     )
@@ -1178,7 +1041,8 @@ def test_blueprint_compiler_selects_declared_dspy_module_kind(
         lambda base_agent, agent_def: SimpleNamespace(provider="openai", model="gpt-5-mini"),
     )
     monkeypatch.setattr(
-        "clio_agent.gact.agents.builders._dynamic_agent_tools", lambda base_agent, agent_def: [scoped_tool]
+        "clio_agent.gact.agents.builders._dynamic_agent_tools",
+        lambda base_agent, agent_def: [scoped_tool],
     )
     monkeypatch.setattr(
         "clio_agent.gact.agents.builders._dynamic_child_expert_tools",
@@ -1504,9 +1368,7 @@ def test_failed_child_delegation_state_rides_structured_row() -> None:
     assert state["delegation"]["failed_child"] == "earthscope_station_catalog"
     # The parent reads this structured field via _workflow_state_from_handoff_rows.
     failed_row = {"stage": "delegate.failed", "workflow_state": state}
-    assert (
-        _workflow_state_from_handoff_rows([failed_row])["delegation"]["status"] == "failed"
-    )
+    assert _workflow_state_from_handoff_rows([failed_row])["delegation"]["status"] == "failed"
 
 
 def test_completed_child_state_is_structural_not_prose_in_continuation() -> None:
@@ -1522,21 +1384,22 @@ def test_completed_child_state_is_structural_not_prose_in_continuation() -> None
         },
         "station_catalog": {"station_ids": ["P472", "SIO5"]},
     }
-    # The child's compact deliverable is clean human prose -- the carrier of the
-    # typed state is the completed row's structured ``workflow_state`` field.
+    # The child's GENUINE deliverable is clean human prose, flowed verbatim -- the
+    # carrier of the typed state is the completed row's structured
+    # ``workflow_state`` field.
     clean_answer = "Staged GNSS CSV for station P472 near the requested center."
-    output_summary = _compact_dynamic_delegation_output(clean_answer)
+    output = clean_answer
     completed_row = {
         "agent_id": "earthscope_station_catalog",
         "stage": "delegate.completed",
         "status": "completed",
-        "output_summary": output_summary,
+        "output": output,
         "workflow_state": child_state,
     }
 
     # (a) No prose state block in the user-/parent-facing output text.
-    assert "typed workflow state" not in output_summary.casefold()
-    assert "CLIO" not in output_summary
+    assert "typed workflow state" not in output.casefold()
+    assert "CLIO" not in output
     assert _workflow_state_from_outputs([clean_answer]) == {}
 
     # (b1) The structural carrier (the row's workflow_state field) holds the state,
@@ -1677,18 +1540,18 @@ def test_generated_child_expert_tool_runs_declared_child_and_returns_compact_evi
     assert payload["agent_id"] == "analysis"
     assert payload["parent_id"] == "root"
     assert payload["status"] == "completed"
-    assert payload["return_payload"] == "compact_result"
     assert payload["structured"] == {
         "evidence": '[{"claim":"supported"}]',
         "delegation": '{"return_to":"root"}',
         "workflow_state": {"profile": {"status": "ready", "rows": 1024}},
     }
-    assert "child analysis answer" in payload["output_summary"]
+    # The child's GENUINE output flows verbatim under ``output`` (no compaction).
+    assert "child analysis answer" in payload["output"]
     # The child's typed workflow_state rides the structured payload field, NOT the
-    # output text (answer-cleanliness): no prose state block in output_summary.
+    # output text (answer-cleanliness): no prose state block in output.
     assert payload["workflow_state"] == {"profile": {"status": "ready", "rows": 1024}}
-    assert "typed workflow state" not in payload["output_summary"].casefold()
-    assert "workflow_state" not in payload["output_summary"]
+    assert "typed workflow state" not in payload["output"].casefold()
+    assert "workflow_state" not in payload["output"]
 
 
 def test_recording_blueprint_tool_captures_context_local_tool_result() -> None:
@@ -2180,7 +2043,7 @@ def test_generated_child_expert_tool_emits_semantic_delegation_events(
         "blueprint.delegation.completed",
     ]
     assert emitted[0]["blueprint"]["agent_blueprint_id"] == "genomics"
-    assert emitted[1]["payload"]["return_payload"] == "compact_result"
+    assert emitted[1]["payload"]["output"] == "delegated answer"
 
 
 def test_blueprint_fanout_tool_enforces_bounds_and_emits_events(
@@ -2375,10 +2238,10 @@ def test_fallback_answer_from_delegation_uses_latest_completed_parent_resume() -
     assert (
         _fallback_answer_from_delegation(
             [
-                {"stage": "parent.resumed", "status": "completed", "output_summary": "first"},
-                {"stage": "delegate.completed", "status": "completed", "output_summary": "child"},
-                {"stage": "parent.resumed", "status": "failed", "output_summary": "bad"},
-                {"stage": "parent.resumed", "status": "completed", "output_summary": "final"},
+                {"stage": "parent.resumed", "status": "completed", "output": "first"},
+                {"stage": "delegate.completed", "status": "completed", "output": "child"},
+                {"stage": "parent.resumed", "status": "failed", "output": "bad"},
+                {"stage": "parent.resumed", "status": "completed", "output": "final"},
             ]
         )
         == "final"

@@ -466,12 +466,14 @@ Run the pack.
 
     assert data_pack["active_expert_pack_id"] == "data-semantics"
     assert writer_pack["active_expert_pack_id"] == "wtfp-writer"
-    assert client.get(f"/v1/sessions/{sid_data}/expert-pack").json()[
-        "active_expert_pack_id"
-    ] == "data-semantics"
+    assert (
+        client.get(f"/v1/sessions/{sid_data}/expert-pack").json()["active_expert_pack_id"]
+        == "data-semantics"
+    )
 
     data_agents = {
-        row["id"] for row in client.get("/v1/agents", params={"session_id": sid_data}).json()["agents"]
+        row["id"]
+        for row in client.get("/v1/agents", params={"session_id": sid_data}).json()["agents"]
     }
     writer_agents = {
         row["id"]
@@ -594,10 +596,16 @@ Prompt.
     ).json()["id"]
 
     packs_a = {
-        row["id"] for row in client.get("/v1/expert-packs", params={"workspace_id": wid_a}).json()["expert_packs"]
+        row["id"]
+        for row in client.get("/v1/expert-packs", params={"workspace_id": wid_a}).json()[
+            "expert_packs"
+        ]
     }
     packs_b = {
-        row["id"] for row in client.get("/v1/expert-packs", params={"workspace_id": wid_b}).json()["expert_packs"]
+        row["id"]
+        for row in client.get("/v1/expert-packs", params={"workspace_id": wid_b}).json()[
+            "expert_packs"
+        ]
     }
 
     assert "a-pack" in packs_a
@@ -774,7 +782,10 @@ def test_expert_pack_agent_executes_delegated_child_expert(
     def fake_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
         del base_agent
         calls.append((agent_def.id, question, session_id))
-        if agent_def.id == "root_review" and len([row for row in calls if row[0] == "root_review"]) == 1:
+        if (
+            agent_def.id == "root_review"
+            and len([row for row in calls if row[0] == "root_review"]) == 1
+        ):
             return type(
                 "Pred",
                 (),
@@ -857,6 +868,7 @@ Inspect schemas.
         ("root_review", calls[2][1], sid),
     ]
     assert "Returned child expert results" in calls[2][1]
+
     def iter_handoffs(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         found: list[dict[str, Any]] = []
         stack = list(rows)
@@ -877,7 +889,7 @@ Inspect schemas.
     assert handoff["delegation_lifecycle"] == "sync"
     assert handoff["return_to"] == "root_review"
     assert handoff["execution_mode"] == "prompt_agent"
-    assert handoff["output_summary"] == "SCHEMA_OK"
+    assert handoff["output"] == "SCHEMA_OK"
     resumed = next(row for row in handoffs if row.get("stage") == "parent.resumed")
     assert resumed["agent_id"] == "root_review"
     assert resumed["resumed_from"] == "schema_review"
@@ -890,9 +902,7 @@ Inspect schemas.
     assert "delegation.started" in semantic_types
     assert "delegation.completed" in semantic_types
     assert "delegation.parent_resumed" in semantic_types
-    completed = next(
-        event for event in semantic if event["event_type"] == "delegation.completed"
-    )
+    completed = next(event for event in semantic if event["event_type"] == "delegation.completed")
     resumed_event = next(
         event for event in semantic if event["event_type"] == "delegation.parent_resumed"
     )
@@ -1059,6 +1069,7 @@ Produce artifacts.
         "visualization",
         "root_review",
     ]
+
     def iter_handoffs(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         found: list[dict[str, Any]] = []
         stack = list(rows)
@@ -1074,15 +1085,14 @@ Produce artifacts.
     visualization = next(
         row
         for row in handoffs
-        if row.get("agent_id") == "visualization"
-        and row.get("stage") == "delegate.completed"
+        if row.get("agent_id") == "visualization" and row.get("stage") == "delegate.completed"
     )
     # The parent routes to visualization via its typed next_expert after reading
     # schema_review's returned evidence, so the executed handoff is tagged
     # agent_next_expert (the deterministic continuation-contract injection that
     # used to tag this delegation_continuation_contract was removed).
     assert visualization["source"] == "agent_next_expert"
-    assert visualization["output_summary"] == "FINAL_ARTIFACT: /tmp/schema.png"
+    assert visualization["output"] == "FINAL_ARTIFACT: /tmp/schema.png"
     assert assistant["parts"][-1]["text"] == "ROOT_FINAL"
 
 
@@ -1391,6 +1401,7 @@ Analyze recovered data.
         "fallback_analysis",
         "root_review",
     ]
+
     def iter_handoffs(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         found: list[dict[str, Any]] = []
         stack = list(rows)
@@ -1411,13 +1422,12 @@ Analyze recovered data.
     analysis = next(
         row
         for row in handoffs
-        if row.get("agent_id") == "fallback_analysis"
-        and row.get("stage") == "delegate.completed"
+        if row.get("agent_id") == "fallback_analysis" and row.get("stage") == "delegate.completed"
     )
     assert data["status"] == "completed"
     # The nested ndp_catalog staging-limit evidence survives data's empty resume
     # and bubbles up as data's completed output.
-    assert "staging limit" in data["output_summary"]
+    assert "staging limit" in data["output"]
     # root routes to fallback_analysis via its typed next_expert after reading
     # data's bubbled blocker, so the executed handoff is tagged agent_next_expert
     # (the deterministic agent_blueprint_continuation_policy auto-injection was
@@ -1497,7 +1507,8 @@ def test_prompt_agent_empty_answer_with_children_enters_repair_path(
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
     monkeypatch.setattr(
         "clio_agent.gact.agents.builders._runtime_dynamic_agent_children_context",
-        lambda *args, **kwargs: "Declared child experts available for synchronous delegation:\n- mass_spec",
+        lambda *args,
+        **kwargs: "Declared child experts available for synchronous delegation:\n- mass_spec",
     )
 
     agent_def = AgentDef(
@@ -1519,8 +1530,6 @@ def test_prompt_agent_empty_answer_with_children_enters_repair_path(
     assert pred.answer == ""
     assert pred.expert_handoffs == []
     assert "handoff repair" in pred.routing_rationale
-
-
 
 
 def test_tool_agent_empty_answer_without_observation_still_fails(
@@ -1785,6 +1794,7 @@ Review quality.
         assistant = complete_turn(client, sid, "review the CIF")
 
     assert calls == ["root_review", "structure", "quality", "structure", "root_review"]
+
     def iter_handoffs(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         found: list[dict[str, Any]] = []
         stack = list(rows)
@@ -2007,7 +2017,7 @@ Plot SAC artifacts.
         if row.get("agent_id") == "waveform_visualization"
         and row.get("stage") == "delegate.completed"
     ]
-    assert [row["output_summary"] for row in visualization_completed] == [
+    assert [row["output"] for row in visualization_completed] == [
         (
             "I cannot create the PNG yet because I do not have a SAC file. "
             "We need to obtain waveform data before plotting."
@@ -2015,8 +2025,7 @@ Plot SAC artifacts.
         "PNG_DONE /tmp/waveform.png",
     ]
     assert not any(
-        row.get("agent_id") == "waveform_visualization"
-        and row.get("stage") == "delegate.skipped"
+        row.get("agent_id") == "waveform_visualization" and row.get("stage") == "delegate.skipped"
         for row in handoffs
     )
 
@@ -2046,7 +2055,10 @@ def test_pack_continuation_policy_executes_declared_child_when_contract_text_mis
     def fake_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
         del base_agent, session_id
         calls.append((agent_def.id, question))
-        if agent_def.id == "root_review" and len([row for row in calls if row[0] == "root_review"]) == 1:
+        if (
+            agent_def.id == "root_review"
+            and len([row for row in calls if row[0] == "root_review"]) == 1
+        ):
             return type(
                 "Pred",
                 (),
@@ -2071,7 +2083,10 @@ def test_pack_continuation_policy_executes_declared_child_when_contract_text_mis
         # root_review resumes after schema_review's resource_too_large return and
         # routes to visualization via its typed next_expert (the pack-defined
         # continuation policy is surfaced to the orchestrator, which decides).
-        if agent_def.id == "root_review" and len([row for row in calls if row[0] == "root_review"]) == 2:
+        if (
+            agent_def.id == "root_review"
+            and len([row for row in calls if row[0] == "root_review"]) == 2
+        ):
             assert "resource_too_large" in question
             return type(
                 "Pred",
@@ -2178,14 +2193,13 @@ Produce artifacts.
     visualization = next(
         row
         for row in handoffs
-        if row.get("agent_id") == "visualization"
-        and row.get("stage") == "delegate.completed"
+        if row.get("agent_id") == "visualization" and row.get("stage") == "delegate.completed"
     )
     # The orchestrator routes to visualization via its typed next_expert, so the
     # executed handoff is tagged agent_next_expert (the deterministic
     # agent_blueprint_continuation_policy auto-injection was removed).
     assert visualization["source"] == "agent_next_expert"
-    assert visualization["output_summary"] == "FINAL_ARTIFACT: /tmp/schema.png"
+    assert visualization["output"] == "FINAL_ARTIFACT: /tmp/schema.png"
     assert assistant["parts"][-1]["text"] == "ROOT_FINAL"
 
 
@@ -2355,7 +2369,9 @@ def test_delegated_child_tool_telemetry_stays_on_active_parent_turn(
             )()
         if agent_def.id == "schema_review":
             notify_global_tool_observer("csv_schema_inspect", {"path": "data.csv"}, "started", None)
-            notify_global_tool_observer("csv_schema_inspect", {"path": "data.csv"}, "completed", None)
+            notify_global_tool_observer(
+                "csv_schema_inspect", {"path": "data.csv"}, "completed", None
+            )
             return type(
                 "Pred",
                 (),

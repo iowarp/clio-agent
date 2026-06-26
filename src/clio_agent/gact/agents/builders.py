@@ -1161,7 +1161,6 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
     from clio_agent.gact.app import (  # noqa: PLC0415
         _append_session_workflow_state_context,
         _blueprint_runner_for_agent,
-        _compact_dynamic_delegation_output,
         _extract_tools_called,
         _merge_tool_call_rows,
         _prediction_workflow_state,
@@ -1250,15 +1249,13 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
             row_state = tool_row.get("workflow_state")
             if isinstance(row_state, Mapping):
                 _merge_workflow_state_mapping(workflow_state, row_state)
-        compact_output = _compact_dynamic_delegation_output(output)
         payload = {
             "agent_id": child.id,
             "parent_id": parent.id,
             "status": "completed",
             "stage": "delegate.completed",
             "return_to": parent.id,
-            "return_payload": "compact_result",
-            "output_summary": compact_output,
+            "output": output,
             "workflow_state": workflow_state,
             "tools_called": tools_called,
             "structured": _prediction_structured_metadata(pred),
@@ -1277,10 +1274,10 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
                 "parent_expert": parent.id,
                 "child_expert": child.id,
             },
-            # Canonical trace carries the FULL child output; the tool's RETURN
-            # value (json.dumps(payload) below) keeps the compact output_summary
-            # for the parent prompt.
-            payload={**payload, "output": output},
+            # The child's GENUINE output (the typed dspy.extract deliverable)
+            # flows verbatim to the parent and to the canonical trace — no
+            # heuristic compaction.
+            payload=dict(payload),
         )
         return json.dumps(payload, sort_keys=True, default=str)
 
@@ -1309,7 +1306,6 @@ def _build_fanout_tool(base_agent: Any, parent: "AgentDef", children: list["Agen
 
     from clio_agent.gact.app import (  # noqa: PLC0415
         _blueprint_runner_for_agent,
-        _compact_dynamic_delegation_output,
         _run_dynamic_agent_compat,
     )
 
@@ -1357,12 +1353,9 @@ def _build_fanout_tool(base_agent: Any, parent: "AgentDef", children: list["Agen
                     {
                         "agent_id": child.id,
                         "status": "completed",
-                        # FULL output for the canonical trace; output_summary is the
-                        # compact projection for the parent.
+                        # The child's GENUINE output flows verbatim to the parent
+                        # and the canonical trace — no heuristic compaction.
                         "output": str(getattr(pred, "answer", "") or ""),
-                        "output_summary": _compact_dynamic_delegation_output(
-                            str(getattr(pred, "answer", "") or "")
-                        ),
                         "structured": _prediction_structured_metadata(pred),
                     }
                 )

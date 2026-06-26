@@ -41,7 +41,6 @@ import time
 import uuid
 from collections.abc import Mapping
 from datetime import datetime, timezone
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.gact import context as _ctx
@@ -127,7 +126,6 @@ async def _run_turn_in_background(
         _cancelled_error_info,
         _coerce_ask_user_action,
         _coerce_expert_handoff_rows,
-        _compact_dynamic_delegation_output,
         _compile_session_conversation_history,
         _context_file_turn_provenance,
         _current_lm_model_id,
@@ -184,7 +182,6 @@ async def _run_turn_in_background(
         _usage_from_history_slice,
         _user_agent_bool_param,
         _user_agent_int_param,
-        _user_facing_dynamic_evidence_summary,
         _workflow_state_from_handoff_rows,
         _workflow_state_from_outputs,
     )
@@ -891,19 +888,17 @@ async def _run_turn_in_background(
             try:
                 pred_child = await _run_dynamic_agent_sync(target, prompt)
                 duration_ms = int((time.perf_counter() - started_at) * 1000)
-                local_output = str(getattr(pred_child, "answer", "") or "").strip()
                 local_tools_called = _extract_tools_called(pred_child)
                 # Seed local state from the child's typed workflow_state output
                 # field (structural twin of the removed prose append), then merge
                 # any tool-row state. The state rides the completed_row's
-                # ``local_workflow_state`` / ``workflow_state`` Mapping below; it is
-                # NOT serialized into local_output text anymore.
+                # ``workflow_state`` Mapping below; it is never serialized into the
+                # output text.
                 local_workflow_state = _prediction_workflow_state(pred_child)
                 for tool_row in local_tools_called:
                     row_state = tool_row.get("workflow_state")
                     if isinstance(row_state, Mapping):
                         _merge_workflow_state_mapping(local_workflow_state, row_state)
-                local_output_summary = _compact_dynamic_delegation_output(local_output)
                 nested: list[dict[str, Any]] = []
                 if target.source == "expert_pack":
                     pred_child, nested = await _settle_dynamic_agent_delegations(
@@ -1001,7 +996,6 @@ async def _run_turn_in_background(
                     row_state = tool_row.get("workflow_state")
                     if isinstance(row_state, Mapping):
                         _merge_workflow_state_mapping(workflow_state, row_state)
-                output_summary = _compact_dynamic_delegation_output(output)
                 completed_row = {
                     **row,
                     "agent_id": target.id,
@@ -1015,22 +1009,19 @@ async def _run_turn_in_background(
                     "stage": "delegate.completed",
                     "delegation_lifecycle": "sync",
                     "return_to": parent_agent.id,
-                    "return_payload": "compact_result",
                     "depth": depth,
                     "duration_ms": duration_ms,
                     "execution_mode": execution_mode,
                     "input": prompt,
-                    "output_summary": output_summary,
-                    "return_output_summary": output_summary,
-                    "local_output_summary": local_output_summary,
+                    "output": output,
                     "workflow_state": workflow_state,
-                    "local_workflow_state": local_workflow_state,
                     "tools_called": child_tools_called,
                     "children": nested,
                 }
-                # Canonical trace carries the FULL child output (never capped);
-                # completed_row keeps only output_summary because it flows into the
-                # parent resume prompt + live Part (projections, must stay compact).
+                # completed_row carries the child's GENUINE output (the typed
+                # dspy.extract deliverable) verbatim — no heuristic compaction.
+                # It flows to the parent resume prompt + live Part; capture
+                # (trace/ARC) carries the same full output.
                 _emit_semantic_event(
                     app,
                     sid,
@@ -1045,7 +1036,7 @@ async def _run_turn_in_background(
                         "provider_id": target.default_provider,
                         "model_id": target.default_model,
                     },
-                    payload={**completed_row, "output": output},
+                    payload=dict(completed_row),
                 )
                 _append_live_assistant_part(
                     app,
@@ -1071,10 +1062,8 @@ async def _run_turn_in_background(
                     "stage": "parent.resumed",
                     "delegation_lifecycle": "sync",
                     "resumed_from": target.id,
-                    "return_payload": "compact_result",
                     "depth": depth,
-                    "output_summary": output_summary,
-                    "return_output_summary": output_summary,
+                    "output": output,
                     "workflow_state": workflow_state,
                 }
                 _emit_semantic_event(
@@ -1130,13 +1119,11 @@ async def _run_turn_in_background(
                     message=error_message,
                     tools_called=child_tools_called,
                 )
-                output_summary = _compact_dynamic_delegation_output(
-                    _failed_child_delegation_output_summary(
-                        child_agent_id=target.id,
-                        parent_agent_id=parent_agent.id,
-                        error=error_name,
-                        message=error_message,
-                    )
+                output = _failed_child_delegation_output_summary(
+                    child_agent_id=target.id,
+                    parent_agent_id=parent_agent.id,
+                    error=error_name,
+                    message=error_message,
                 )
                 failed_row = {
                     **row,
@@ -1154,7 +1141,7 @@ async def _run_turn_in_background(
                     "execution_mode": execution_mode,
                     "error": error_name,
                     "message": error_message,
-                    "output_summary": output_summary,
+                    "output": output,
                     "workflow_state": workflow_state,
                     "tools_called": child_tools_called,
                 }
@@ -1301,7 +1288,7 @@ async def _run_turn_in_background(
                 if cid:
                     completed_child_ids.add(cid)
                     completed_child_outputs[cid] = str(
-                        row.get("output_summary") or row.get("summary") or ""
+                        row.get("output") or row.get("output_summary") or row.get("summary") or ""
                     ).strip()
             if not completed_this_round:
                 # Child could not run (unavailable / cycle / error). Stop instead of
@@ -1314,16 +1301,8 @@ async def _run_turn_in_background(
             )
             latest_pred = await _run_dynamic_agent_sync(parent_agent, resume_prompt)
 
-        final_answer = str(getattr(latest_pred, "answer", "") or "").strip()
-        visible_answer = _user_facing_dynamic_evidence_summary(final_answer)
-        if visible_answer and visible_answer != final_answer:
-            latest_pred = SimpleNamespace(
-                answer=visible_answer,
-                selected_expert=parent_agent.id,
-                routing_rationale="removed retained evidence scaffolding from final dynamic answer",
-                next_expert="finish",
-                expert_handoffs=[],
-            )
+        # The genuine final answer flows to the parent verbatim; the heuristic
+        # evidence-scaffolding scrubber has been removed.
         return latest_pred, all_rows
 
     try:

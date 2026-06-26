@@ -105,7 +105,9 @@ def _expert_handoff_summary(handoff: Mapping[str, Any]) -> str:
     parent = str(handoff.get("parent_id") or handoff.get("parent") or "").strip()
     status = str(handoff.get("status") or "observed")
     stage = str(handoff.get("stage") or handoff.get("dispatch_target") or "").strip()
-    output = str(handoff.get("output_summary") or handoff.get("summary") or "").strip()
+    output = str(
+        handoff.get("output") or handoff.get("output_summary") or handoff.get("summary") or ""
+    ).strip()
     route = f"{parent} -> {agent}" if parent else agent
     bits = [route, status]
     if stage:
@@ -139,10 +141,7 @@ def _dynamic_parent_resume_prompt(
             completed_ids.append(agent_id)
         status = str(row.get("status") or "")
         summary = str(
-            row.get("return_output_summary")
-            or row.get("output_summary")
-            or row.get("summary")
-            or ""
+            row.get("output") or row.get("output_summary") or row.get("summary") or ""
         ).strip()
         children = row.get("children")
         child_note = ""
@@ -228,7 +227,9 @@ def _latest_parent_resumed_output_summary(
             str(row.get("agent_id") or "") == parent_id
             and str(row.get("stage") or "") == "parent.resumed"
         ):
-            summary = str(row.get("output_summary") or row.get("summary") or "").strip()
+            summary = str(
+                row.get("output") or row.get("output_summary") or row.get("summary") or ""
+            ).strip()
             if summary:
                 latest = summary
         children = row.get("children")
@@ -242,7 +243,9 @@ def _latest_delegation_output_summary(rows: list[dict[str, Any]]) -> str:
 
     latest = ""
     for row in _iter_delegation_return_rows(rows):
-        summary = str(row.get("output_summary") or row.get("summary") or "").strip()
+        summary = str(
+            row.get("output") or row.get("output_summary") or row.get("summary") or ""
+        ).strip()
         if summary:
             latest = summary
     return latest
@@ -259,7 +262,9 @@ def _latest_completed_artifact_output_summary(rows: list[dict[str, Any]]) -> str
             "",
             "completed",
         }:
-            summary = str(row.get("output_summary") or row.get("summary") or "").strip()
+            summary = str(
+                row.get("output") or row.get("output_summary") or row.get("summary") or ""
+            ).strip()
             if re.search(r"(?im)^\s*(?:FINAL_ARTIFACT|ARTIFACT)\s*:", summary):
                 latest = summary
         children = row.get("children")
@@ -284,7 +289,9 @@ def _latest_completed_child_output_summary(
             and str(row.get("status") or "") in {"", "completed"}
             and str(row.get("agent_id") or row.get("delegate_to") or "").strip() in target_ids
         ):
-            summary = str(row.get("output_summary") or row.get("summary") or "").strip()
+            summary = str(
+                row.get("output") or row.get("output_summary") or row.get("summary") or ""
+            ).strip()
             if summary:
                 latest = summary
     return latest
@@ -429,130 +436,6 @@ def _strip_embedded_workflow_state_evidence(text: str) -> str:
         skipping_state_list = False
         retained.append(raw_line)
     return "\n".join(retained).strip()
-
-
-def _user_facing_dynamic_evidence_summary(output: str) -> str:
-    """Remove machine-retained evidence scaffolding from a user-facing fallback answer."""
-
-    text = output.strip()
-    if not text:
-        return ""
-    marker_positions = [
-        index
-        for marker in (
-            "[...delegation output truncated; exact evidence retained below...]",
-            "[exact retained evidence index]",
-            "Retained typed workflow state:",
-            "Retained delegation continuation contracts:",
-            "Retained numeric/trace evidence:",
-            "CLIO typed workflow state:",
-            "CLIO merged nested typed workflow state:",
-            "CLIO inferred typed tool state:",
-            "CLIO inferred typed tool state from tool observations:",
-        )
-        if (index := text.find(marker)) >= 0
-    ]
-    if not marker_positions:
-        return text
-    visible = text[: min(marker_positions)].rstrip()
-    lines = visible.splitlines()
-    while lines and _looks_like_truncated_user_facing_tail(lines[-1]):
-        lines.pop()
-    return "\n".join(lines).rstrip()
-
-
-def _looks_like_truncated_user_facing_tail(line: str) -> bool:
-    """Return whether a line is likely an unfinished fragment before compact evidence."""
-
-    stripped = line.strip()
-    if not stripped:
-        return True
-    if stripped in {"**Ev", "Ev", "**Evidence", "Evidence"}:
-        return True
-    if stripped.startswith("**") and not stripped.endswith("**") and len(stripped) <= 40:
-        return True
-    if stripped.endswith(("**", "`")):
-        return False
-    return False
-
-
-def _compact_workflow_state_blocks(text: str, *, limit: int = 8) -> list[str]:
-    """Return reconciled typed state before output head/tail truncation."""
-
-    state = _workflow_state_from_outputs([text])
-    if not state:
-        return []
-    block = json.dumps({"workflow_state": state}, sort_keys=True, default=str)
-    return [block][:limit]
-
-
-def _compact_dynamic_delegation_output(output: str, *, limit: int = 2200) -> str:
-    """Compact child output while retaining exact evidence needed by parents."""
-
-    raw_text = output.strip()
-    state_blocks = _compact_workflow_state_blocks(raw_text)
-    text = raw_text
-    display_text = _strip_embedded_workflow_state_evidence(text)
-    has_scan_limited_state = any(
-        token in block
-        for block in state_blocks
-        for token in ('"scan_limited": true', '"profile_limited": true')
-    )
-    if has_scan_limited_state:
-        return "Retained typed workflow state:\n" + "\n".join(state_blocks)
-    if len(text) <= limit:
-        if state_blocks and state_blocks[0] not in display_text:
-            return f"{display_text.rstrip()}\n\nRetained typed workflow state:\n{state_blocks[0]}"
-        return display_text
-    evidence_index = _compact_exact_evidence_index(display_text)
-    stat_lines: list[str] = []
-    stat_terms = (
-        "trace",
-        "npts",
-        "delta",
-        "sampling",
-        "min",
-        "max",
-        "mean",
-        "std",
-        "peak",
-        "duration",
-        "start time",
-        "end time",
-        "network",
-        "station",
-        "channel",
-    )
-    for raw_line in display_text.splitlines():
-        line = " ".join(raw_line.strip().split())
-        if not line:
-            continue
-        lowered = line.lower()
-        if any(term in lowered for term in stat_terms):
-            if line not in stat_lines:
-                stat_lines.append(line)
-        if len(stat_lines) >= 24:
-            break
-    retained_blocks: list[str] = []
-    if evidence_index:
-        retained_blocks.append(evidence_index)
-    if state_blocks:
-        retained_blocks.append("Retained typed workflow state:\n" + "\n".join(state_blocks))
-    if stat_lines:
-        retained_blocks.append(
-            "Retained numeric/trace evidence:\n" + "\n".join(f"- {line}" for line in stat_lines)
-        )
-    retained = "\n\n".join(retained_blocks)
-    head_limit = max(800, limit // 2)
-    tail_limit = max(500, limit - head_limit - len(retained) - 120)
-    head = display_text[:head_limit].rstrip()
-    tail = display_text[-tail_limit:].lstrip() if tail_limit > 0 else ""
-    pieces = [head, "[...delegation output truncated; exact evidence retained below...]"]
-    if retained:
-        pieces.append(retained)
-    if tail:
-        pieces.append("[tail]\n" + tail)
-    return "\n\n".join(pieces)
 
 
 # ------------------------------------------------------------------------- #
