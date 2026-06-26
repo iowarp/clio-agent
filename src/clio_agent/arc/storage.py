@@ -25,7 +25,6 @@ import logging
 import os
 import threading
 import time
-import warnings
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Dict, Optional, Protocol, runtime_checkable
@@ -360,6 +359,71 @@ class CTEStore:
         return out
 
 
+# Default clio-core CTE config: a self-managed DRAM↔disk hierarchy on the OS data
+# dir. The DRAM tier (score 1.0) is the hot working set; the file tier (score 0.0)
+# is the cold spill target. ``restart``/``metadata_log_path``/``transaction_log_capacity``
+# are declared so the backend is ready for clio-core's cross-restart data recovery
+# when it lands upstream (today that recovery is WIP, so durability rides the file
+# trace + rebuild-on-reload — a permanent warm-up step, not a stopgap).
+_DEFAULT_CTE_CONFIG_TEMPLATE = """\
+runtime:
+  num_threads: 4
+  conf_dir: {conf_dir}
+compose:
+  - mod_name: clio_bdev
+    pool_name: "ram::chi_default_bdev"
+    pool_query: local
+    pool_id: "301.0"
+    bdev_type: ram
+    capacity: "0g"
+  - mod_name: clio_cte_core
+    pool_name: cte_main
+    pool_query: local
+    pool_id: "512.0"
+    restart: true
+    storage:
+      - path: "ram::cte_ram_tier"
+        bdev_type: "ram"
+        capacity_limit: "0g"
+        score: 1.0
+      - path: "{file_tier}"
+        bdev_type: "file"
+        capacity_limit: "{file_capacity}"
+        score: 0.0
+    dpe:
+      dpe_type: "max_bw"
+    performance:
+      metadata_log_path: {metadata_log}
+      transaction_log_capacity: "32MB"
+"""
+
+
+def default_cte_config_path() -> str:
+    """Seed (if absent) and return the default clio-core CTE config path.
+
+    Lives under the OS data dir (:func:`clio_agent.paths.user_data_dir` ``/cte``) and
+    declares a DRAM hot tier + a file cold tier, so ARC's clio-core backend is a
+    self-managed memory↔disk hierarchy by default — no LocalFS, no manual config.
+    """
+    from clio_agent import paths  # noqa: PLC0415 - avoid import cycle
+
+    cte_dir = paths.user_data_dir() / "cte"
+    cte_dir.mkdir(parents=True, exist_ok=True)
+    cfg = cte_dir / "cte.yaml"
+    if not cfg.is_file():
+        capacity = os.environ.get("CLIO_ARC_CTE_FILE_CAPACITY", "50GB").strip() or "50GB"
+        cfg.write_text(
+            _DEFAULT_CTE_CONFIG_TEMPLATE.format(
+                conf_dir=cte_dir / "conf",
+                file_tier=cte_dir / "storage.bin",
+                file_capacity=capacity,
+                metadata_log=cte_dir / "metadata.log",
+            ),
+            encoding="utf-8",
+        )
+    return str(cfg)
+
+
 def make_arc_store(
     *,
     backend: Optional[str] = None,
@@ -373,10 +437,12 @@ def make_arc_store(
         2. env ``CLIO_ARC_STORE`` ("cte" | "local")
         3. default ``"cte"`` (clio-core CTE, in-process; the gold-standard backend)
 
-    Graceful degradation (CLAUDE.md): if the CTE binding is absent or the runtime
-    fails to init, fall back to ``LocalFSStore`` with a warning — never crash.
-    Note: the default CTE config is DRAM-only (not durable across restarts); use
-    ``CLIO_ARC_STORE=local`` for disk-durable storage until a file tier is wired.
+    FAIL LOUD ([[deliberate-config-fail-loud]]): the backend is a deliberate choice,
+    not a silent default. When ``"cte"`` is selected (explicitly or by default) and the
+    binding is absent or the runtime fails to init, this RAISES — it does NOT silently
+    degrade to ``LocalFSStore`` (which would mask a misconfigured deploy and obscure
+    that ARC is no longer on clio-core). ``LocalFSStore`` is used ONLY when ``"local"``
+    is selected explicitly (``CLIO_ARC_STORE=local`` or ``backend="local"``).
     """
     choice = (backend or os.environ.get("CLIO_ARC_STORE", "cte")).strip().lower()
     if choice == "local":
@@ -385,20 +451,18 @@ def make_arc_store(
         cfg = config_path or os.environ.get("CLIO_ARC_STORE_CONFIG", "")
         if not cfg:
             # Prefer a per-workspace clio-core config under ``.clio/core`` if present;
-            # otherwise "" lets clio-core use its global ``~/.clio/clio.yaml`` default.
+            # otherwise seed/use the default DRAM↔disk hierarchy on the OS data dir.
             from clio_agent import paths  # noqa: PLC0415 - avoid import cycle
 
             ws_cfg = paths.workspace_core_dir() / "cte.yaml"
-            if ws_cfg.is_file():
-                cfg = str(ws_cfg)
+            cfg = str(ws_cfg) if ws_cfg.is_file() else default_cte_config_path()
         try:
             return CTEStore(config_path=cfg)
-        except Exception as exc:  # noqa: BLE001 - binding absent or init failure
-            warnings.warn(
-                f"CTE store unavailable ({exc}); falling back to LocalFSStore",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            logger.warning("CTE store unavailable (%s); using LocalFSStore", exc)
-            return LocalFSStore(data_dir)
+        except Exception as exc:  # noqa: BLE001 - re-raise as a loud, actionable error
+            raise RuntimeError(
+                "ARC is configured for the clio-core CTE backend but it failed to "
+                f"initialize ({exc}). This is a hard error, not a silent fallback: fix "
+                "the clio-core install/config, or set CLIO_ARC_STORE=local to "
+                "deliberately use the LocalFS backend."
+            ) from exc
     raise ValueError(f"unknown CLIO_ARC_STORE {choice!r}; expected 'cte' or 'local'")

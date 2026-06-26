@@ -85,6 +85,21 @@ def user_cache_dir() -> Path:
     return Path(platformdirs.user_cache_dir(_APP, appauthor=False))
 
 
+def user_data_dir() -> Path:
+    """OS-correct per-user DATA dir for clio-agent durable artifacts.
+
+    This is where backing-store data (the clio-core CTE file tier / config) lives —
+    distinct from config (:func:`user_config_dir`) and regenerable cache
+    (:func:`user_cache_dir`). Linux ``~/.local/share/clio-agent`` (honors
+    ``XDG_DATA_HOME``), macOS ``~/Library/Application Support/clio-agent``, Windows
+    ``%LOCALAPPDATA%\\clio-agent``. Overridable with ``CLIO_USER_DIR`` (``/data``).
+    """
+    override = _user_override()
+    if override is not None:
+        return override / "data"
+    return Path(platformdirs.user_data_dir(_APP, appauthor=False))
+
+
 def workspace_clio(cwd: "str | Path | None" = None) -> Path:
     """The workspace clio root: ``<cwd>/.clio``."""
     return (Path(cwd) if cwd is not None else Path.cwd()) / ".clio"
