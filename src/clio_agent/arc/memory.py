@@ -102,10 +102,10 @@ class ARCMemory:
         Args:
             data_dir: Directory path for persistent storage
             cache_capacity: Maximum number of cached items
-            store: Optional ARCStore for record persistence. Defaults to a
-                local-filesystem store rooted at ``data_dir``; inject a
-                clio-core CTE-backed store here to relocate persistence without
-                changing any call site.
+            store: Optional ARCStore for record persistence. When ``None`` the
+                backend is chosen by :func:`make_arc_store` — clio-core CTE by
+                default, LocalFS only on explicit ``CLIO_ARC_STORE=local``. Pass a
+                store to override the factory (e.g. tests injecting a specific backend).
         """
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
