@@ -54,6 +54,15 @@ dependencies = [
     # if the runtime is unavailable, and durability/fault-tolerance (replication,
     # erasure coding) come from the CTE config. CLIO_ARC_STORE=local opts out.
     "iowarp-core>=2.1.0",
+    # Cross-platform process lifecycle for the shared clio-core runtime daemon
+    # (connect-or-spawn + last-one-out release). clio-core deploys identically on
+    # Linux/macOS/Windows (per upstream), so only the host-side primitives differ:
+    # filelock = host-global spawn/refcount lock (fcntl on POSIX, msvcrt on Windows);
+    # psutil = OS-portable process liveness, create-time (PID-reuse guard), and
+    # terminate/kill. Replaces Linux-only fcntl / /proc / os.kill so the kill
+    # semantics hold on all three OSes.
+    "filelock>=3.12.0",
+    "psutil>=5.9.0",
     # gact backend (clio_agent.gact.app) — shipped product surface, not optional
     "fastapi>=0.104.0",
     "uvicorn>=0.24.0",
