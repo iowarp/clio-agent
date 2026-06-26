@@ -318,8 +318,11 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         # cursor for older pages. We store chronologically so reverse
         # at read time.
         rows = list(reversed(app.state.messages.get(sid, [])))
+        # #731: serialize via ``to_wire`` (not ``model_dump(exclude_none)``) so the
+        # reloaded parts are byte-for-byte the slim, arrival-ordered shape the live
+        # SSE stream delivered — a reloaded conversation matches what streamed.
         return {
-            "messages": [m.model_dump(exclude_none=True) for m in rows],
+            "messages": [m.to_wire() for m in rows],
             "next_cursor": None,
         }
 
@@ -331,7 +334,7 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
             raise _session_not_found(sid)
         for msg in app.state.messages.get(sid, []):
             if msg.id == message_id:
-                return msg.model_dump(exclude_none=True)
+                return msg.to_wire()  # #731: slim, arrival-ordered parts (matches SSE)
         raise HTTPException(
             status_code=404,
             detail=ErrorEnvelope(

@@ -212,6 +212,7 @@ def _retaining_react_cls() -> Any:
                     # the step. Reset to the expert span at the step boundary.
                     step_span_id = uuid.uuid4().hex[:16]
                     step_token = _ctx.set_parent_span(step_span_id)
+                    thought_token = None
                     try:
                         try:
                             pred = self._call_with_potential_trajectory_truncation(
@@ -229,6 +230,13 @@ def _retaining_react_cls() -> Any:
                         trajectory[f"thought_{idx}"] = pred.next_thought
                         trajectory[f"tool_name_{idx}"] = pred.next_tool_name
                         trajectory[f"tool_args_{idx}"] = pred.next_tool_args
+                        # Carry this step's reasoning to the tool observer (it runs
+                        # synchronously on this thread) so the ``tool_call`` part it
+                        # emits carries the thought: one LLM turn = thought + the
+                        # tool call, a single ordered event (#732).
+                        thought_token = _ctx.set_step_thought(
+                            str(pred.next_thought or ""), str(step_reasoning or "")
+                        )
                         # ARC live-plane writes: thought + tool_call are known now;
                         # the observation is written after the tool runs. No-op when
                         # ARC is disabled (arc is None). Each write is correlation-
@@ -297,6 +305,8 @@ def _retaining_react_cls() -> Any:
                         if pred.next_tool_name == "finish":
                             break
                     finally:
+                        if thought_token is not None:
+                            _ctx.reset(thought_token)
                         _ctx.reset(step_token)
 
                 # Publish BEFORE extract: a failed extract still exposes the trajectory.

@@ -893,7 +893,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             "version": "1",
             "session": Session(**sess.to_wire()).model_dump(exclude_none=True),
             "workspace": (Workspace(**ws.to_wire()).model_dump(exclude_none=True) if ws else None),
-            "messages": [m.model_dump(exclude_none=True) for m in msgs],
+            "messages": [m.to_wire() for m in msgs],  # #731: slim, arrival-ordered parts
             "context_files": [dict(row) for row in app.state.context_files.get(sid, {}).values()],
         }
 

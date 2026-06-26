@@ -69,6 +69,12 @@ class RuntimeContext:
     turn: TurnContext = field(default_factory=TurnContext)
     # ---- expert / react-loop layer (formerly the REACT_* + BLUEPRINT vars) ----
     react_scope: str = ""  # _ACTIVE_REACT_SCOPE
+    # The current ReAct step's reasoning, set by the react loop BEFORE it invokes
+    # the step's tool so the tool observer (which runs synchronously on the react
+    # thread) can stamp it onto the ``tool_call`` part — one LLM turn = thought +
+    # the tool call, as a single ordered event (#732). Reset at the step boundary.
+    step_thought: str = ""  # the model's next_thought for this step
+    step_reasoning: str = ""  # the raw reasoning channel for this step
     react_session: str = ""  # _ACTIVE_REACT_SESSION
     react_context_window: int = 0  # _ACTIVE_REACT_CONTEXT_WINDOW
     blueprint_tool_rows: list[dict[str, Any]] | None = None  # _ACTIVE_BLUEPRINT_TOOL_ROWS
@@ -128,6 +134,16 @@ def active_tool_session_id() -> str:
 def active_react_scope() -> str:
     """``_ACTIVE_REACT_SCOPE.get()``."""
     return _RUNTIME.get().react_scope
+
+
+def active_step_thought() -> str:
+    """The current ReAct step's ``next_thought`` (for the ``tool_call`` part)."""
+    return _RUNTIME.get().step_thought
+
+
+def active_step_reasoning() -> str:
+    """The current ReAct step's raw reasoning channel."""
+    return _RUNTIME.get().step_reasoning
 
 
 def active_react_session() -> str:
@@ -266,6 +282,13 @@ def set_react_scope(scope: str) -> contextvars.Token[RuntimeContext]:
     """Set ``react_scope`` (``_ACTIVE_REACT_SCOPE.set``)."""
     cur = _RUNTIME.get()
     return _RUNTIME.set(replace(cur, react_scope=scope))
+
+
+def set_step_thought(thought: str, reasoning: str = "") -> contextvars.Token[RuntimeContext]:
+    """Set this step's ``step_thought``/``step_reasoning`` so the tool observer can
+    stamp the model's reasoning onto the ``tool_call`` part it emits (#732)."""
+    cur = _RUNTIME.get()
+    return _RUNTIME.set(replace(cur, step_thought=thought, step_reasoning=reasoning))
 
 
 def set_react_session(session: str) -> contextvars.Token[RuntimeContext]:

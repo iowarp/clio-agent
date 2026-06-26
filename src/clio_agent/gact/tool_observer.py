@@ -282,6 +282,11 @@ def _make_tool_observer(app: "FastAPI"):
         # The expert that OWNS (runs) this tool, for per-part attribution. Empty
         # when CLIO can't resolve a routed owner (e.g. an orchestrator-level tool).
         _public_agent, tool_owner = _agent_tool_owner(app, name)
+        # Attribute the tool_call/tool_result to the expert that INVOKED the tool
+        # (the active ReAct scope, e.g. ``geospatial``), NOT the tool's owning
+        # server/group (``geo``/``ndp``) — #732. Falls back to the owner when no
+        # react scope is active (an orchestrator-level / chat-path tool call).
+        invoking_expert = _ctx.active_react_scope() or tool_owner
         if phase == "started":
             call_id = f"call_{uuid.uuid4().hex[:12]}"
             # Stash the per-thread call_id so the completion event
@@ -326,9 +331,12 @@ def _make_tool_observer(app: "FastAPI"):
                 Part(
                     id=f"live_{call_id}_call",
                     type="tool_call",
-                    agent_id=tool_owner,
+                    agent_id=invoking_expert,
                     call_id=call_id,
                     tool_name=name,
+                    # The step's reasoning rides the tool_call part (#732): the
+                    # model's text and the action it chose are one ordered event.
+                    thought=_ctx.active_step_thought(),
                     input=dict(args),
                     metadata={"stream_source": "live", "telemetry_source": "live_observer"},
                 ),
@@ -424,7 +432,7 @@ def _make_tool_observer(app: "FastAPI"):
                 Part(
                     id=f"live_{call_id}_result",
                     type="tool_result",
-                    agent_id=tool_owner,
+                    agent_id=invoking_expert,
                     call_id=call_id,
                     tool_name=name,
                     is_error=not ok,
@@ -434,7 +442,7 @@ def _make_tool_observer(app: "FastAPI"):
                         Part(
                             id=f"live_{call_id}_result_text",
                             type="text",
-                            agent_id=tool_owner,
+                            agent_id=invoking_expert,
                             text=result_text,
                         )
                     ],

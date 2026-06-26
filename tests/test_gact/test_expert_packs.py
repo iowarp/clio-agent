@@ -912,8 +912,15 @@ Inspect schemas.
     assert resumed_event["actor"]["agent_id"] == "root_review"
     assert resumed_event["subject"]["agent_id"] == "schema_review"
     assert resumed_event["payload"]["resumed_from"] == "schema_review"
-    assert assistant["parts"][1]["type"] == "expert_handoff"
-    assert assistant["parts"][1]["metadata"]["status"] == "completed"
+    # #731: the persisted message is the live spine in chronological arrival order,
+    # so the delegate.started handoff is RETAINED (previously the text-only rebuild
+    # dropped it and kept only the completed handoff) and precedes delegate.completed.
+    handoff_stages = [
+        p.get("stage", "") for p in assistant["parts"] if p["type"] == "expert_handoff"
+    ]
+    assert "delegate.started" in handoff_stages
+    assert "delegate.completed" in handoff_stages
+    assert handoff_stages.index("delegate.started") < handoff_stages.index("delegate.completed")
     assert assistant["parts"][-1]["text"] == "ROOT_FINAL"
 
 
