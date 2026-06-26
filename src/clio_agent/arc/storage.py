@@ -20,6 +20,7 @@ Graceful Degradation:
 See PLAN.md v0.3.0 Task 2 for requirements.
 """
 
+import atexit
 import base64
 import contextlib
 import logging
@@ -333,7 +334,7 @@ def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str)
     log_path = Path.home() / ".clio" / "clio-runtime.log"
     log_fh = open(log_path, "ab")  # noqa: SIM115 - handed to the detached child
     try:
-        subprocess.Popen(  # noqa: S603 - fixed launcher path, not user input
+        proc = subprocess.Popen(  # noqa: S603 - fixed launcher path, not user input
             [exe, "start"],
             env=env,
             stdin=subprocess.DEVNULL,
@@ -344,21 +345,222 @@ def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str)
         )
     finally:
         log_fh.close()
-    logger.info("spawned shared clio-core runtime daemon: %s start (log: %s)", exe, log_path)
+    proc_pid = proc.pid
+    starttime = _proc_starttime(proc_pid)
+    _daemon_pidfile().write_text(
+        f"{proc_pid} {starttime if starttime is not None else ''}", encoding="utf-8"
+    )
+    logger.info(
+        "spawned shared clio-core runtime daemon: %s start (pid %s, log: %s)",
+        exe,
+        proc_pid,
+        log_path,
+    )
+
+
+# ---- client refcount: "last one out turns off the lights" -------------------
+#
+# The shared daemon must be released when the LAST client detaches (Jaime: "I leave
+# the TUI, everything gets released" — permanence rides the storage tier on disk,
+# NOT a warm process). Each clio-agent process registers its PID under
+# ``~/.clio/clio-runtime.clients/``; on graceful shutdown it deregisters and, if no
+# LIVE client remains, stops the daemon. Crash-safety: a SIGKILLed client cannot
+# deregister, so its stale PID file is pruned by liveness check (``/proc`` start-time
+# guards against PID reuse) on the next register/release — the daemon is at most one
+# reusable warm instance, never a growing leak.
+
+_client_registered = False  # process-level: are WE in the registry?
+_active_config_path = ""  # stashed so atexit/shutdown can stop the right daemon
+_active_log_level = "error"
+
+
+def _client_registry_dir() -> Path:
+    return Path.home() / ".clio" / "clio-runtime.clients"
+
+
+def _daemon_pidfile() -> Path:
+    return Path.home() / ".clio" / "clio-runtime.pid"
+
+
+def _proc_starttime(pid: int) -> Optional[int]:
+    """Process start-time (clock ticks since boot) from ``/proc/<pid>/stat``, or None.
+
+    Used to defeat PID reuse: a recycled PID gets a different start-time, so a stale
+    registry entry won't be mistaken for a live client.
+    """
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as fh:
+            data = fh.read()
+    except OSError:
+        return None
+    # comm (field 2) is parenthesised and may contain spaces/parens; split AFTER the
+    # last ')'. Then field 22 (starttime) is index 19 of the remainder (fields 3..).
+    rparen = data.rfind(b")")
+    if rparen == -1:
+        return None
+    rest = data[rparen + 2 :].split()
+    try:
+        return int(rest[19])
+    except (IndexError, ValueError):
+        return None
+
+
+def _pid_alive(pid: int, recorded_starttime: Optional[int]) -> bool:
+    """True if ``pid`` is alive AND (when known) its start-time matches the record."""
+    current = _proc_starttime(pid)
+    if current is None:
+        return False  # no such process
+    if recorded_starttime is None:
+        return True  # start-time wasn't captured; fall back to bare existence
+    return current == recorded_starttime
+
+
+def _register_client() -> None:
+    """Mark this process as an attached client (idempotent within the process)."""
+    global _client_registered
+    reg = _client_registry_dir()
+    reg.mkdir(parents=True, exist_ok=True)
+    starttime = _proc_starttime(os.getpid())
+    (reg / str(os.getpid())).write_text(
+        "" if starttime is None else str(starttime), encoding="utf-8"
+    )
+    _client_registered = True
+
+
+def _deregister_client() -> None:
+    global _client_registered
+    with contextlib.suppress(OSError):
+        (_client_registry_dir() / str(os.getpid())).unlink()
+    _client_registered = False
+
+
+def _live_client_pids() -> "list[int]":
+    """Return live client PIDs, pruning stale (dead / PID-reused / garbled) entries."""
+    reg = _client_registry_dir()
+    if not reg.is_dir():
+        return []
+    live: list[int] = []
+    for entry in reg.iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        try:
+            raw = entry.read_text(encoding="utf-8").strip()
+            recorded: Optional[int] = int(raw) if raw else None
+        except (OSError, ValueError):
+            recorded = None
+        if _pid_alive(pid, recorded):
+            live.append(pid)
+        else:
+            with contextlib.suppress(OSError):
+                entry.unlink()
+    return live
+
+
+def _kill_daemon_pidfile() -> None:
+    """Fallback teardown: SIGTERM->SIGKILL the daemon recorded in the pidfile.
+
+    Best-effort and PID-reuse-guarded; used only if the clean ``clio_run stop`` path
+    fails or we (a non-spawner) have no IPC route. Absent pidfile == nothing to do.
+    """
+    pidfile = _daemon_pidfile()
+    try:
+        parts = pidfile.read_text(encoding="utf-8").split()
+    except OSError:
+        return
+    if not parts:
+        return
+    try:
+        pid = int(parts[0])
+    except ValueError:
+        return
+    recorded = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+    if not _pid_alive(pid, recorded):
+        with contextlib.suppress(OSError):
+            pidfile.unlink()
+        return
+    import signal  # noqa: PLC0415
+
+    with contextlib.suppress(OSError):
+        os.kill(pid, signal.SIGTERM)
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if not _pid_alive(pid, recorded):
+            break
+        time.sleep(0.1)
+    if _pid_alive(pid, recorded):
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGKILL)
+    with contextlib.suppress(OSError):
+        pidfile.unlink()
+
+
+def _stop_runtime_daemon(config_path: str, log_level: str) -> None:
+    """Stop the shared daemon cleanly (``clio_run stop``), with a kill fallback."""
+    stopped = False
+    try:
+        import iowarp_core  # noqa: PLC0415
+
+        exe = os.path.join(iowarp_core.get_bin_dir(), "clio_run")  # type: ignore[attr-defined]
+        if os.path.exists(exe):
+            env = os.environ.copy()
+            env["LD_LIBRARY_PATH"] = (
+                iowarp_core.get_lib_dir() + os.pathsep + env.get("LD_LIBRARY_PATH", "")  # type: ignore[attr-defined]
+            )
+            env.setdefault("CTP_LOG_LEVEL", log_level)
+            if config_path:
+                env["CLIO_SERVER_CONF"] = config_path
+            subprocess.run(  # noqa: S603 - fixed launcher path
+                [exe, "stop"],
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=20,
+                check=False,
+            )
+            stopped = True
+    except (subprocess.TimeoutExpired, OSError, ImportError):
+        stopped = False
+    # Confirm the port actually freed; fall back to a direct kill if not.
+    if not stopped or _runtime_alive(_resolve_runtime_port(config_path)):
+        _kill_daemon_pidfile()
+    with contextlib.suppress(OSError):
+        _daemon_pidfile().unlink()
+    logger.info("released last clio-core client -> stopped shared runtime daemon")
+
+
+def release_runtime_client(config_path: str = "", log_level: str = "error") -> None:
+    """Deregister this process; stop the shared daemon iff it was the last live client.
+
+    Idempotent and safe to call from multiple shutdown paths (gact lifespan + atexit).
+    Serialised by the host-global lock so a concurrent client that is just attaching
+    (which registers under the same lock) is never stopped out from under.
+    """
+    global _client_registered
+    if not _client_registered:
+        return
+    with _runtime_spawn_lock():
+        if not _client_registered:
+            return
+        _deregister_client()
+        if not _live_client_pids():
+            _stop_runtime_daemon(config_path or _active_config_path, log_level)
 
 
 def _ensure_runtime_daemon(iowarp_core: object, config_path: str, log_level: str) -> None:
-    """Connect-or-spawn: ensure a shared clio-core daemon is listening.
+    """Connect-or-spawn + register: ensure a shared daemon is up and count this client.
 
-    Fast path: a runtime is already up -> return (the caller connects to it). Else
-    take the host-global lock, re-check, and spawn the daemon, waiting until it binds
-    the RPC port. FAIL LOUD if it never comes up.
+    All under the host-global lock so the spawn decision AND the client registration
+    are atomic w.r.t. a concurrent client's release (last-one-out stop). Registers
+    THIS process as an attached client before returning, so no concurrent release can
+    stop the daemon we are about to connect to. FAIL LOUD if a spawned daemon never
+    binds the RPC port.
     """
     port = _resolve_runtime_port(config_path)
-    if _runtime_alive(port):
-        return
     with _runtime_spawn_lock():
-        if _runtime_alive(port):  # another process won the race and spawned it
+        _register_client()  # prunes nothing here; release-side prunes. We are now live.
+        if _runtime_alive(port):
             return
         _spawn_runtime_daemon(iowarp_core, config_path, log_level)
         deadline = time.monotonic() + _RUNTIME_START_TIMEOUT_S
@@ -366,7 +568,6 @@ def _ensure_runtime_daemon(iowarp_core: object, config_path: str, log_level: str
             if _runtime_alive(port):
                 return
             time.sleep(0.25)
-    if not _runtime_alive(port):
         raise RuntimeError(
             f"spawned the clio-core runtime daemon but it never bound port {port} within "
             f"{_RUNTIME_START_TIMEOUT_S:.0f}s; see ~/.clio/clio-runtime.log."
@@ -410,13 +611,23 @@ class CTEStore:
 
         self._cte = cte
         self._client = cte.get_cte_client()
+        self._config_path = config_path
+        self._log_level = log_level
         logger.info(
-            "CTEStore active: clio-core CTE is the ARC backend (in-process runtime). "
-            "The DEFAULT config is DRAM-only (not durable across restarts); durable + "
-            "fault-tolerant tiers (file bdev, replication, erasure coding) are configured "
-            "in the CTE config via CLIO_ARC_STORE_CONFIG. Use CLIO_ARC_STORE=local for "
-            "disk durability today."
+            "CTEStore active: clio-core CTE is the ARC backend (shared daemon runtime). "
+            "The DEFAULT config is a DRAM hot tier + file cold tier; durable + "
+            "fault-tolerant tiers (replication, erasure coding) are configured in the "
+            "CTE config via CLIO_ARC_STORE_CONFIG. Use CLIO_ARC_STORE=local for disk "
+            "durability today."
         )
+
+    def release(self) -> None:
+        """Detach this process from the shared runtime; stop it if we were the last.
+
+        Wired into the gact server's lifespan shutdown so leaving the TUI releases the
+        whole runtime. Idempotent; a no-op if another client is still attached.
+        """
+        release_runtime_client(self._config_path, self._log_level)
 
     @classmethod
     def _ensure_runtime(cls, config_path: str, log_level: str, settle_s: float) -> None:
@@ -456,6 +667,15 @@ class CTEStore:
             time.sleep(settle_s)  # let the client handshake settle
             cte.initialize_cte(config_path, cte.PoolQuery.Dynamic())  # "" => ~/.clio/clio.yaml
             cls._initialized = True
+
+            # Stash for the release path, and register an atexit fallback so a clean
+            # Python exit (legacy agent, tests, scripts) still does last-one-out. The
+            # gact server calls release_runtime_client() from its lifespan shutdown for
+            # the SIGTERM / TUI-leave path (where atexit does not run).
+            global _active_config_path, _active_log_level
+            _active_config_path = config_path
+            _active_log_level = log_level
+            atexit.register(release_runtime_client, config_path, log_level)
             logger.info("CTE client attached to shared clio-core runtime")
 
     # ---- ARCStore Protocol ----
