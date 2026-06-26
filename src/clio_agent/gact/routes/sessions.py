@@ -607,9 +607,8 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 "reason": "session has no messages to compact",
             }
 
-        # Build a transcript blob. Keep enough per-part evidence for scientific
-        # identifiers and metrics to survive compaction, while still bounding
-        # pathological tool output.
+        # Build a transcript blob from the full ledger parts — no deterministic
+        # truncation; the LLM downstream is what compacts.
         # ledger entries are Pydantic Message models (see types.py); use
         # attribute access + model_dump() defensively for dict-shaped
         # entries the older code paths still produce.
@@ -620,35 +619,16 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 return o.get(name, default)
             return default
 
-        per_part_limit = 6000
-        transcript_limit = 60000
+        # Pass the FULL transcript through to the LLM — clio must not heuristically
+        # truncate content a model sees; the LLM is what compacts (that is allowed).
         chunks: list[str] = []
-        transcript_chars = 0
         for m in ledger[-50:]:  # last 50 messages should be enough context
             role = (_attr(m, "role", "user") or "user").upper()
             for p in _attr(m, "parts", []) or []:
-                txt = _attr(p, "text", "") or ""
-                if len(txt) > per_part_limit:
-                    head_limit = per_part_limit // 2
-                    tail_limit = per_part_limit - head_limit
-                    txt = (
-                        txt[:head_limit]
-                        + "\n[...part truncated for compaction...]\n"
-                        + txt[-tail_limit:]
-                    )
-                txt = txt.strip()
+                txt = (_attr(p, "text", "") or "").strip()
                 if not txt:
                     continue
-                chunk = f"{role}: {txt}"
-                remaining = transcript_limit - transcript_chars
-                if remaining <= 0:
-                    break
-                if len(chunk) > remaining:
-                    chunk = chunk[:remaining] + "\n[...transcript truncated for compaction...]"
-                chunks.append(chunk)
-                transcript_chars += len(chunk)
-            if transcript_chars >= transcript_limit:
-                break
+                chunks.append(f"{role}: {txt}")
         transcript = "\n".join(chunks)
         if not transcript.strip():
             return {
@@ -843,8 +823,6 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             "archived_count": len(ledger),
             "summary_chars": len((summary or "")),
             "transcript_chars": len(transcript),
-            "transcript_limit": transcript_limit,
-            "per_part_limit": per_part_limit,
             "focus": focus,
             "arc_status": arc_status,
             "metadata": {

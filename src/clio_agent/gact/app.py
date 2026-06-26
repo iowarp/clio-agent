@@ -243,8 +243,6 @@ from clio_agent.gact.enrichment import (  # noqa: E402,F401
     _record_context_frame,
 )
 from clio_agent.gact.session_store import (  # noqa: E402,F401
-    _HISTORY_MAX_CHARS_PER_MESSAGE,
-    _HISTORY_MAX_MESSAGES,
     _append_session_message,
     _compile_session_conversation_history,
     _delete_session_context_files,
@@ -478,7 +476,6 @@ from clio_agent.gact.delegation import (  # noqa: E402,F401
     _should_execute_delegated_handoff,
     _state_path_value,
     _state_predicate_hit,
-    _strip_embedded_workflow_state_evidence,
     _workflow_state_from_handoff_rows,
     _workflow_state_from_outputs,
     _workflow_state_has_existing_staged_path,

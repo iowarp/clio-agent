@@ -21,11 +21,9 @@ footprint) and ``_compile_session_conversation_history`` (prepend a compact
 transcript of prior turns to the current prompt for multi-turn continuity).
 
 The module imports only leaves (stdlib + :mod:`clio_agent.gact.messages` for the
-durable store, :mod:`clio_agent.gact.workspace_scope` for the storage-root
-resolver, and :mod:`clio_agent.gact.runtime.memory_search` for the message
-excerpt formatter); it never imports :mod:`clio_agent.gact.app` at module top.
-``app`` is always passed explicitly so handlers never close over ``build_app``
-locals.
+durable store and :mod:`clio_agent.gact.workspace_scope` for the storage-root
+resolver); it never imports :mod:`clio_agent.gact.app` at module top. ``app`` is
+always passed explicitly so handlers never close over ``build_app`` locals.
 """
 
 from __future__ import annotations
@@ -38,7 +36,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.messages import MessageStore
-from clio_agent.gact.runtime.memory_search import _message_text_excerpt
 from clio_agent.gact.workspace_scope import resolve_workspace_storage_root
 from clio_agent.runtime import trace
 
@@ -220,10 +217,6 @@ def _remove_workspace_session_mirror(app: "FastAPI", session_id: str) -> None:
 # Multi-turn conversation continuity #
 # ------------------------------------------------------------------------- #
 
-# Multi-turn continuity: how many prior messages to carry and how much of each.
-_HISTORY_MAX_MESSAGES = 6
-_HISTORY_MAX_CHARS_PER_MESSAGE = 1200
-
 
 def _compile_session_conversation_history(
     app: "FastAPI", session_id: str, current_prompt: str
@@ -243,8 +236,14 @@ def _compile_session_conversation_history(
     if not prior:
         return current_prompt
     lines: list[str] = []
-    for message in prior[-_HISTORY_MAX_MESSAGES:]:
-        text = _message_text_excerpt(message, max_chars=_HISTORY_MAX_CHARS_PER_MESSAGE)
+    for message in prior:
+        # Carry the FULL prior message text verbatim — clio must not heuristically
+        # truncate content the orchestrator sees; only an LLM may reduce content.
+        text = "\n".join(
+            part.text.strip()
+            for part in message.parts
+            if part.type in {"text", "thinking", "error"} and part.text.strip()
+        ).strip()
         if not text:
             continue
         speaker = "User" if message.role == "user" else "Assistant"

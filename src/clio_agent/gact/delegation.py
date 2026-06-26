@@ -401,43 +401,6 @@ def _compact_exact_evidence_index(transcript: str) -> str:
     return "[exact retained evidence index]\n" + "\n\n".join(sections)
 
 
-def _strip_embedded_workflow_state_evidence(text: str) -> str:
-    """Remove raw machine-state blocks before building human evidence snippets."""
-
-    if not text:
-        return ""
-    retained: list[str] = []
-    skipping_state_list = False
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        lowered = line.casefold()
-        if not line:
-            skipping_state_list = False
-            retained.append(raw_line)
-            continue
-        if "workflow_state" in lowered:
-            skipping_state_list = True
-            continue
-        if (
-            skipping_state_list
-            and line.startswith(("-", "{"))
-            and any(
-                token in lowered
-                for token in (
-                    '"acquisition"',
-                    '"resource_candidate"',
-                    '"profile"',
-                    '"artifact"',
-                    '"visualization"',
-                )
-            )
-        ):
-            continue
-        skipping_state_list = False
-        retained.append(raw_line)
-    return "\n".join(retained).strip()
-
-
 # ------------------------------------------------------------------------- #
 # Workflow-state derivation from outputs + handoff rows #
 # ------------------------------------------------------------------------- #
@@ -576,14 +539,13 @@ def _delegated_expert_prompt(row: Mapping[str, Any], fallback: str) -> str:
         if value:
             if not fallback or fallback in value:
                 return value
-            evidence = fallback
-            if len(evidence) > 2500:
-                evidence = f"{evidence[:2500].rstrip()}..."
+            # Pass the FULL parent evidence — clio must not heuristically truncate
+            # content a child expert sees; only an LLM may reduce content.
             return "\n\n".join(
                 (
                     value,
                     "Parent evidence available for this delegated task:",
-                    evidence,
+                    fallback,
                 )
             )
     return fallback

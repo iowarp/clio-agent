@@ -28,9 +28,8 @@ LM reference reader in :mod:`clio_agent.gact.providers.config`) is imported lazi
 inside :func:`_dynamic_agent_runtime_provenance` to keep this module free of any
 provider-package import at module top. It never imports :mod:`clio_agent.gact.app`.
 
-Note: the evidence-index helpers (``_compact_exact_evidence_index``,
-``_strip_embedded_workflow_state_evidence``) live with their tightly coupled
-callers in :mod:`clio_agent.gact.delegation`; they are deliberately not
+Note: the evidence-index helper (``_compact_exact_evidence_index``) lives with its
+tightly coupled callers in :mod:`clio_agent.gact.delegation`; it is deliberately not
 duplicated here.
 """
 
