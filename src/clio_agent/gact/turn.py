@@ -2164,18 +2164,6 @@ async def _run_turn_in_background(
             reuse_streamed_part_id = streamed_assistant_part_id
         else:
             _close_streamed_part(streamed_assistant_part_id)
-    if thinking_text:
-        # iowarp/clio-agent#17: surface DSPy reasoning as a
-        # thinking Part so the TUI can collapse + render it
-        # gated on capabilities.thinking_blocks.
-        assistant_parts.append(
-            Part(
-                id=_new_part_id(),
-                type="thinking",
-                agent_id=responder_agent_id,
-                text=thinking_text,
-            )
-        )
     assistant_parts.extend(live_assistant_parts)
     # #733 fallback: a TERMINAL expert whose answer did NOT stream live (a
     # non-streaming provider / blocking path leaves its WS3 text part empty) gets its
@@ -2198,6 +2186,20 @@ async def _run_turn_in_background(
                 agent_id=fb_expert,
                 text=fb_answer,
                 metadata={"stream_source": "expert_answer"},
+            )
+        )
+    if thinking_text:
+        # iowarp/clio-agent#17: surface DSPy reasoning as a thinking Part so the TUI
+        # can collapse + render it (gated on capabilities.thinking_blocks). Appended
+        # AFTER the live spine — the responder's wrap-up reasoning is produced at the
+        # END of the turn and published at finalize, so its persisted ``sequence``
+        # must follow the spine, not be hoisted above it (#731: no reorder on reload).
+        assistant_parts.append(
+            Part(
+                id=_new_part_id(),
+                type="thinking",
+                agent_id=responder_agent_id,
+                text=thinking_text,
             )
         )
     # The canonical turn answer is the last terminal expert's deliverable; only append
