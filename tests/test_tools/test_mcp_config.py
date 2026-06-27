@@ -109,19 +109,61 @@ def test_resolve_expert_servers_select_and_local():
 
 
 def test_transport_for():
-    stdio = transport_for(spec_from_declaration("ndp", "uvx clio-kit run ndp"))
+    import shutil
+
+    # The launcher is resolved to an ABSOLUTE path (``sh`` is universally on PATH).
+    stdio = transport_for(spec_from_declaration("ndp", "sh -c true"))
     assert not isinstance(stdio, str)
+    assert stdio.command == shutil.which("sh")
     assert transport_for(spec_from_declaration("n", "https://h/mcp")) == "https://h/mcp"
 
 
-def test_transport_for_stdio_cwd():
+def test_transport_for_stdio_cwd(tmp_path):
     """stdio transports spawn in the given cwd; http transports ignore it."""
-    stdio = transport_for(spec_from_declaration("ndp", "uvx clio-kit run ndp"), cwd="/work/space")
-    assert getattr(stdio, "cwd", None) == "/work/space"
+    work = tmp_path / "ws"
+    work.mkdir()
+    stdio = transport_for(spec_from_declaration("ndp", "sh -c true"), cwd=str(work))
+    assert getattr(stdio, "cwd", None) == str(work)
     # Default (no cwd) keeps the spawning process's directory.
-    default = transport_for(spec_from_declaration("ndp", "uvx clio-kit run ndp"))
+    default = transport_for(spec_from_declaration("ndp", "sh -c true"))
     assert getattr(default, "cwd", None) is None
     # http ignores cwd entirely.
-    assert transport_for(spec_from_declaration("n", "https://h/mcp"), cwd="/work/space") == (
+    assert transport_for(spec_from_declaration("n", "https://h/mcp"), cwd=str(work)) == (
         "https://h/mcp"
     )
+
+
+def test_transport_for_resolves_relative_launcher_to_absolute(tmp_path):
+    """Regression for the cwd-bound spawn bug (gact-tui default-deploy ``os error 2``).
+
+    A *relative* launcher (``uvx``/``sh``) combined with a set ``cwd`` makes the OS
+    resolve the executable relative to that cwd (``<cwd>/sh``), which does not exist
+    -> the subprocess dies with ``No such file or directory (os error 2)``, the proxy
+    connection drops, and the expert fails downstream as opaque "tools unavailable".
+    Resolving to an absolute path up front (while still spawning IN ``cwd``) fixes it.
+    """
+    import os
+    import shutil
+
+    work = tmp_path / "ws"
+    work.mkdir()
+    stdio = transport_for(spec_from_declaration("ndp", "sh -c true"), cwd=str(work))
+    assert os.path.isabs(stdio.command)
+    assert stdio.command == shutil.which("sh")
+    assert stdio.cwd == str(work)  # still spawns in the workspace
+
+
+def test_transport_for_missing_cwd_fails_loud():
+    """A nonexistent working directory raises a precise MCPSpawnError, never os error 2."""
+    from clio_agent.tools.mcp_config import MCPSpawnError
+
+    with pytest.raises(MCPSpawnError, match="working directory"):
+        transport_for(spec_from_declaration("geo", "sh -c true"), cwd="/no/such/dir/xyz123")
+
+
+def test_transport_for_unresolved_command_fails_loud():
+    """An unresolvable launcher raises a precise MCPSpawnError naming the command."""
+    from clio_agent.tools.mcp_config import MCPSpawnError
+
+    with pytest.raises(MCPSpawnError, match="not found on PATH"):
+        transport_for(spec_from_declaration("geo", "definitely-not-a-real-binary-xyz123 run"))
