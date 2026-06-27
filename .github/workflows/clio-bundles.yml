@@ -159,12 +159,18 @@ jobs:
             variant: bundled
             bundle-args: "--bundles deb,rpm"
         exclude:
-          # The bundled variant embeds a host-built Python runtime; on an arm64
-          # runner that runtime is arm64, so a cross-built x86 .dmg would ship the
-          # wrong-arch runtime. Ship Intel macOS as the lite variant only until an
-          # x86 runtime cross-build exists (tracked in the packaging-parity issue).
+          # The bundled variant embeds a host-built Python runtime, which installs
+          # clio-agent + its core dep clio-core (iowarp-core). clio-core ships
+          # platform wheels (no sdist), and upstream has NO wheel for Intel macOS
+          # (x86_64-apple-darwin) nor Windows on ARM (aarch64-pc-windows-msvc), so
+          # `uv pip install clio-agent` cannot resolve a runtime on those hosts and
+          # the bundled build would fail. Ship both as the LITE variant only until
+          # clio-core publishes wheels for them; the bundles can be regenerated then.
+          # (Tracked in the packaging-parity issue.)
           - variant: bundled
             target: x86_64-apple-darwin
+          - variant: bundled
+            target: aarch64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
         with:
