@@ -88,6 +88,35 @@ if TYPE_CHECKING:
     from clio_agent.gact.types import AgentDef  # noqa: F401
 
 
+def _dedup_cross_agent_text(parts: list[Part]) -> list[Part]:
+    """Drop a ``text`` part that verbatim-duplicates an earlier one by another author.
+
+    iowarp/clio-agent#736: after a terminal child (e.g. ``synthesis``) returns its
+    deliverable, the resumed orchestrator (``main``) frequently re-emits that child's
+    answer **verbatim** as its own ``text`` part, so the final brief lands twice in the
+    persisted transcript — once child-authored, once parent-authored. This drops the
+    later, cross-agent byte-identical copy and keeps the original (child-authored) part.
+
+    Narrow by design: only a ``text`` part whose *stripped* content exactly matches an
+    EARLIER ``text`` part authored by a DIFFERENT ``agent_id`` is removed. The
+    orchestrator's own distinct wrap-up (its ``thinking`` part — different type and
+    content) and any legitimate same-author repetition are left untouched. Arrival
+    order of the surviving parts is preserved.
+    """
+    seen_author_by_text: dict[str, str] = {}
+    kept: list[Part] = []
+    for part in parts:
+        if part.type == "text":
+            normalized = (part.text or "").strip()
+            if normalized:
+                prior_author = seen_author_by_text.get(normalized)
+                if prior_author is not None and prior_author != part.agent_id:
+                    continue
+                seen_author_by_text.setdefault(normalized, part.agent_id)
+        kept.append(part)
+    return kept
+
+
 async def _run_turn_in_background(
     app: "FastAPI",
     sid: str,
@@ -710,6 +739,25 @@ async def _run_turn_in_background(
             },
             payload=_prediction_summary(_pred),
         )
+        # #733: remember each TERMINAL expert's answer so the FINALIZE pass can emit
+        # it as an ordered transcript ``text`` part IFF the expert's answer did not
+        # already stream live (WS3). The dedup must happen at finalize (after the
+        # per-expert streamed text parts close), not here — the streamed part is
+        # still open/empty at this point, so an emit-time check would miss it and a
+        # streaming provider would get the answer twice. Skip delegating rounds (the
+        # deliverable is the delegation, not an answer).
+        _expert_id = str(getattr(agent_def, "id", "") or "")
+        _answer_text = str(getattr(_pred, "answer", "") or "").strip()
+        _next_expert = str(getattr(_pred, "next_expert", "") or "").strip()
+        _is_terminal = _next_expert not in _runtime_declared_child_ids(
+            app, _expert_id, session_id=sid
+        )
+        if _answer_text and _is_terminal:
+            _ta = getattr(app.state, "expert_terminal_answers", None)
+            if _ta is None:
+                _ta = {}
+                app.state.expert_terminal_answers = _ta
+            _ta.setdefault(sid, []).append((_expert_id, _answer_text))
         # WS2: capture a TERMINAL CoT/predict expert's reasoning + answer in its own
         # ARC scope. Delegating rounds are written by the settle loop's
         # _arc_write_orchestrator_route (route per round); ReAct leaves self-write.
@@ -875,6 +923,8 @@ async def _run_turn_in_background(
                     child_agent=target.id,
                     stage=str(started_row.get("stage") or ""),
                     status=str(started_row.get("status") or ""),
+                    # The orchestrator's reasoning rides the delegation atom (#732).
+                    thought=str(started_row.get("thought") or ""),
                     text=f"{parent_agent.id} -> {target.id}",
                     metadata={**started_row, "stream_source": "live"},
                 ),
@@ -1250,6 +1300,11 @@ async def _run_turn_in_background(
                     "delegate_to": next_expert,
                     "agent_id": next_expert,
                     "question": next_task or source_text,
+                    # The orchestrator's reasoning that produced THIS delegation —
+                    # carried onto the delegate.started handoff part as its thought
+                    # so a delegation turn renders as text + the delegation, one
+                    # ordered event, just like a tool turn (#732).
+                    "thought": str(getattr(latest_pred, "reasoning", "") or ""),
                     "status": "requested",
                     "execute": True,
                     "source": "agent_next_expert",
@@ -2030,13 +2085,18 @@ async def _run_turn_in_background(
 
     live_parts_by_session = getattr(app.state, "live_assistant_parts", {}) or {}
     live_assistant_parts = list(live_parts_by_session.get(sid, []))
-    final_live_parts = [part for part in live_assistant_parts if part.type == "text"]
+    # #731: the PERSISTED assistant message is the live spine IN ARRIVAL ORDER —
+    # every part type (routing_decision / expert_handoff / tool_call / tool_result /
+    # text), NOT a text-only subset regrouped by type. This single-sources the live
+    # stream and the reloaded message (Principle 6) and retains the delegate.started
+    # handoffs the old text-only rebuild silently dropped. The dedup sets below scan
+    # ALL live parts so the finalize pass never re-adds a part that already streamed.
     live_routing_agents = {
         p.selected_agent
-        for p in final_live_parts
+        for p in live_assistant_parts
         if p.type == "routing_decision" and p.selected_agent
     }
-    live_has_expert_handoff = any(p.type == "expert_handoff" for p in final_live_parts)
+    live_has_expert_handoff = any(p.type == "expert_handoff" for p in live_assistant_parts)
     # Delegation atoms already streamed live as expert_handoff parts (delegate.started/
     # completed/parent_resumed). The finalize pass rebuilds the same handoffs from the
     # expert_handoffs rows for the PERSISTED message; suppress re-publishing those on
@@ -2133,10 +2193,36 @@ async def _run_turn_in_background(
             reuse_streamed_part_id = streamed_assistant_part_id
         else:
             _close_streamed_part(streamed_assistant_part_id)
+    assistant_parts.extend(live_assistant_parts)
+    # #733 fallback: a TERMINAL expert whose answer did NOT stream live (a
+    # non-streaming provider / blocking path leaves its WS3 text part empty) gets its
+    # answer emitted as an authored text part now. When WS3 DID stream the answer the
+    # expert already has a non-empty text part (closed by this point), so this adds
+    # nothing — no duplicate. Author = the expert; this is its deliverable.
+    answered_agents = {
+        p.agent_id for p in assistant_parts if p.type == "text" and (p.text or "").strip()
+    }
+    for fb_expert, fb_answer in (getattr(app.state, "expert_terminal_answers", {}) or {}).get(
+        sid, []
+    ):
+        if fb_expert in answered_agents:
+            continue
+        answered_agents.add(fb_expert)
+        assistant_parts.append(
+            Part(
+                id=_new_part_id(),
+                type="text",
+                agent_id=fb_expert,
+                text=fb_answer,
+                metadata={"stream_source": "expert_answer"},
+            )
+        )
     if thinking_text:
-        # iowarp/clio-agent#17: surface DSPy reasoning as a
-        # thinking Part so the TUI can collapse + render it
-        # gated on capabilities.thinking_blocks.
+        # iowarp/clio-agent#17: surface DSPy reasoning as a thinking Part so the TUI
+        # can collapse + render it (gated on capabilities.thinking_blocks). Appended
+        # AFTER the live spine — the responder's wrap-up reasoning is produced at the
+        # END of the turn and published at finalize, so its persisted ``sequence``
+        # must follow the spine, not be hoisted above it (#731: no reorder on reload).
         assistant_parts.append(
             Part(
                 id=_new_part_id(),
@@ -2145,8 +2231,13 @@ async def _run_turn_in_background(
                 text=thinking_text,
             )
         )
-    assistant_parts.extend(final_live_parts)
-    if answer_text and reuse_streamed_part_id is None:
+    # The canonical turn answer is the last terminal expert's deliverable; only append
+    # a main-authored copy when it is NOT already present as an authored text part
+    # (the WS3 stream or the #733 fallback above) — otherwise it duplicates.
+    answer_already_present = bool(answer_text) and any(
+        p.type == "text" and (p.text or "").strip() == answer_text.strip() for p in assistant_parts
+    )
+    if answer_text and reuse_streamed_part_id is None and not answer_already_present:
         assistant_parts.append(
             Part(
                 id=_new_part_id(),
@@ -2307,6 +2398,17 @@ async def _run_turn_in_background(
                     metadata=p.metadata,
                 )
                 break
+    # #736: drop the resumed orchestrator's verbatim echo of a terminal child's answer
+    # from the authored (persisted/reloaded) transcript, keeping the child-authored
+    # original. Serving-layer dedup — the live stream still carries main's echo (it
+    # genuinely streamed) and the client dedups it defensively. See helper docstring.
+    assistant_parts = _dedup_cross_agent_text(assistant_parts)
+    # #731: stamp a monotonic 1-based arrival-order key on every persisted part so a
+    # reloaded conversation can be restored to the exact order it streamed even if a
+    # client re-sorts. The list is already in arrival order; ``sequence`` makes the
+    # ordering explicit and survives the slim ``to_wire`` projection.
+    for _seq, _part in enumerate(assistant_parts, start=1):
+        _part.sequence = _seq
     assistant_msg = Message(
         id=asst_id,
         # Correlate the assistant reply to the user-turn that produced it (#711).
@@ -2637,6 +2739,7 @@ async def _run_turn_in_background(
     getattr(app.state, "live_assistant_message_ids", {}).pop(sid, None)
     getattr(app.state, "live_assistant_parts", {}).pop(sid, None)
     getattr(app.state, "live_assistant_part_keys", {}).pop(sid, None)
+    getattr(app.state, "expert_terminal_answers", {}).pop(sid, None)
     _update_retry_attempt(
         retry_status,
         metadata_patch={

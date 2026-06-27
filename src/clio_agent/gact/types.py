@@ -562,6 +562,13 @@ class Part(BaseModel):
     can attribute every turn/part to its source without inference. Empty for
     user-authored parts."""
 
+    # Monotonic arrival/wire order key within a turn (#731). Assigned when the
+    # persisted assistant message is assembled so a reloaded conversation can be
+    # restored to the exact order it streamed — even if a client re-sorts the
+    # parts list. 1-based; ``0`` means "unsequenced" (a live part, ordered by the
+    # SSE event id instead). Force-kept on the wire only when set (>0).
+    sequence: int = 0
+
     # text / error (v0.1 error part shape)
     text: str = ""
 
@@ -602,6 +609,14 @@ class Part(BaseModel):
     # final assistant message metadata is attached.
     call_id: str = ""
     tool_name: str = ""
+    # The model's reasoning for THIS turn, carried on the action part itself
+    # (#732): one LLM turn = text (thought, maybe thinking) + the action it
+    # chose, as a single ordered event. Populated on ``tool_call`` (the step
+    # thought) and on ``expert_handoff`` (the orchestrator's delegation
+    # reasoning) so a client renders ``text -> action`` straight from wire order
+    # with no join against the telemetry channel. The tool RESPONSE is a separate
+    # ``tool_result`` event (the call->response gap can be large).
+    thought: str = ""
     input: dict[str, Any] = Field(default_factory=dict)
     content: list["Part"] = Field(default_factory=list)
     is_error: bool = False
