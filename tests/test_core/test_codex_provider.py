@@ -283,6 +283,80 @@ class TestCodexLLM:
 
 
 # ---------------------------------------------------------------------
+# streaming (#708): clio/DSPy request streaming by default — the handler
+# MUST return a real (async) iterator, never a bare coroutine (which
+# triggered "'coroutine' object is not an iterator" before any output).
+# ---------------------------------------------------------------------
+
+
+def _stream_kwargs(**overrides):
+    base = {
+        "model": "codex/gpt-5",
+        "messages": [{"role": "user", "content": "hi"}],
+        "api_base": "",
+        "custom_prompt_dict": {},
+        "model_response": None,
+        "print_verbose": lambda *_: None,
+        "encoding": None,
+        "api_key": None,
+        "logging_obj": None,
+        "optional_params": {},
+    }
+    base.update(overrides)
+    return base
+
+
+class TestCodexStreaming:
+    def test_streaming_returns_iterator_not_coroutine(self):
+        import inspect
+
+        handler = CodexLLM()
+        with patch(
+            "clio_agent.providers.codex_litellm._run_exec",
+            return_value="answer text",
+        ):
+            stream = handler.streaming(**_stream_kwargs())
+            # The #708 regression: a real generator, NOT a coroutine.
+            assert inspect.isgenerator(stream)
+            assert not inspect.iscoroutine(stream)
+            chunks = list(stream)
+        assert len(chunks) == 1
+        chunk = chunks[0]
+        assert chunk["text"] == "answer text"
+        assert chunk["is_finished"] is True
+        assert chunk["finish_reason"] == "stop"
+        assert chunk["index"] == 0
+
+    async def test_astreaming_is_async_generator_not_coroutine(self):
+        import inspect
+
+        handler = CodexLLM()
+        with patch(
+            "clio_agent.providers.codex_litellm._run_exec",
+            return_value="async answer",
+        ):
+            astream = handler.astreaming(**_stream_kwargs())
+            # The #708 regression: a real async generator, NOT a coroutine
+            # object that returns one.
+            assert inspect.isasyncgen(astream)
+            assert not inspect.iscoroutine(astream)
+            chunks = [c async for c in astream]
+        assert len(chunks) == 1
+        assert chunks[0]["text"] == "async answer"
+        assert chunks[0]["is_finished"] is True
+        assert chunks[0]["finish_reason"] == "stop"
+
+    def test_streaming_strips_codex_prefix(self):
+        handler = CodexLLM()
+        with patch(
+            "clio_agent.providers.codex_litellm._run_exec",
+            return_value="ok",
+        ) as run_mock:
+            list(handler.streaming(**_stream_kwargs(model="codex/cdx-gpt-5.5")))
+        assert run_mock.call_args.kwargs["model"] == "gpt-5.5"
+
+
+# ---------------------------------------------------------------------
 # registration
 # ---------------------------------------------------------------------
 
