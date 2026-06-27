@@ -24,9 +24,14 @@ Design notes
   / OpenAI key — ``codex login`` writes a token to ``~/.codex/`` and
   the CLI uses it. We just shell out.
 
-- **No streaming.** DSPy's ``Predict`` doesn't need streaming; we
-  return a non-streaming ``ModelResponse``. ``streaming()`` /
-  ``astreaming()`` raise ``NotImplementedError`` for now.
+- **Streaming = one terminal chunk.** Codex ``exec`` produces the whole
+  answer at once, so there is nothing to stream incrementally — but clio /
+  DSPy issue streaming requests by default, so ``streaming()`` /
+  ``astreaming()`` MUST return a real (async) iterator. We run the
+  completion and yield it as a single final ``GenericStreamingChunk``.
+  (Returning a bare coroutine instead is what produced the
+  ``'coroutine' object is not an iterator`` mid-stream fallback crash in
+  iowarp/clio-agent#708, before any visible output.)
 
 - **Registration is lazy + idempotent.** ``ensure_registered()`` is
   called from ``config.create_lm()`` / ``create_planner_lm()`` only when
@@ -36,6 +41,7 @@ Design notes
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
@@ -43,12 +49,19 @@ import subprocess
 import tempfile
 import time
 import uuid
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
 
 try:
     from litellm import CustomLLM
-    from litellm.types.utils import Choices, Message, ModelResponse, Usage
+    from litellm.types.utils import (
+        Choices,
+        GenericStreamingChunk,
+        Message,
+        ModelResponse,
+        Usage,
+    )
 except ImportError as e:  # pragma: no cover - litellm is a hard dep
     raise ImportError("litellm must be installed to use the Codex provider") from e
 
@@ -337,25 +350,20 @@ def _build_model_response(
 class CodexLLM(CustomLLM):
     """LiteLLM custom handler that routes ``codex/<model>`` to ``codex exec``."""
 
-    def completion(
+    def _complete_text(
         self,
+        *,
         model: str,
         messages: list,
-        api_base: str,
-        custom_prompt_dict: dict,
-        model_response: ModelResponse,
-        print_verbose: Any,
-        encoding: Any,
-        api_key: Any,
-        logging_obj: Any,
-        optional_params: dict,
-        acompletion: Any = None,
-        litellm_params: Any = None,
-        logger_fn: Any = None,
-        headers: dict | None = None,
+        optional_params: dict | None,
         timeout: Any = None,
-        client: Any = None,
-    ) -> ModelResponse:
+    ) -> str:
+        """Run one Codex turn and return the assistant text.
+
+        Shared by ``completion``/``acompletion`` and ``streaming``/
+        ``astreaming`` so every entry point dispatches the transport
+        identically (the only difference is how the result is wrapped).
+        """
         # LiteLLM passes the model with the `codex/` prefix stripped
         # already. We also strip the leading `cdx-` namespace marker
         # so the actual model id flows clean to `codex exec`.
@@ -379,26 +387,57 @@ class CodexLLM(CustomLLM):
         )
         timeout_s = float(timeout) if timeout else 120.0
         if transport == "sdk":
-            text = _run_sdk(
-                prompt=prompt,
-                model=clean_model,
-                sandbox=sandbox,
-                cwd=cwd,
-                timeout=timeout_s,
+            return _run_sdk(
+                prompt=prompt, model=clean_model, sandbox=sandbox, cwd=cwd, timeout=timeout_s
             )
-        elif transport == "exec":
-            text = _run_exec(
-                prompt=prompt,
-                model=clean_model,
-                sandbox=sandbox,
-                cwd=cwd,
-                timeout=timeout_s,
+        if transport == "exec":
+            return _run_exec(
+                prompt=prompt, model=clean_model, sandbox=sandbox, cwd=cwd, timeout=timeout_s
             )
-        else:
-            raise CodexExecError(
-                f"unknown codex transport {transport!r} (expected 'exec' or 'sdk')"
-            )
-        return _build_model_response(text=text, model=clean_model)
+        raise CodexExecError(f"unknown codex transport {transport!r} (expected 'exec' or 'sdk')")
+
+    @staticmethod
+    def _final_stream_chunk(text: str) -> GenericStreamingChunk:
+        """The whole Codex answer as a single terminal streaming chunk.
+
+        Codex ``exec`` has no incremental output, so streaming is one chunk
+        with ``is_finished=True``. Returning a proper ``GenericStreamingChunk``
+        from an iterator (not a coroutine) is what avoids #708.
+        """
+        return GenericStreamingChunk(
+            text=text,
+            tool_use=None,
+            is_finished=True,
+            finish_reason="stop",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            index=0,
+        )
+
+    def completion(
+        self,
+        model: str,
+        messages: list,
+        api_base: str,
+        custom_prompt_dict: dict,
+        model_response: ModelResponse,
+        print_verbose: Any,
+        encoding: Any,
+        api_key: Any,
+        logging_obj: Any,
+        optional_params: dict,
+        acompletion: Any = None,
+        litellm_params: Any = None,
+        logger_fn: Any = None,
+        headers: dict | None = None,
+        timeout: Any = None,
+        client: Any = None,
+    ) -> ModelResponse:
+        text = self._complete_text(
+            model=model, messages=messages, optional_params=optional_params, timeout=timeout
+        )
+        return _build_model_response(
+            text=text, model=model.removeprefix("codex/").removeprefix("cdx-")
+        )
 
     async def acompletion(
         self,
@@ -419,27 +458,77 @@ class CodexLLM(CustomLLM):
         timeout: Any = None,
         client: Any = None,
     ) -> ModelResponse:
-        # The exec transport is inherently blocking. For now we just
-        # call the sync path; the SDK transport (sprint #52) gets real
-        # async via ``AsyncCodex``.
-        return self.completion(
+        # The exec/SDK transports are blocking; run off the event loop so we
+        # don't stall the server while Codex thinks.
+        text = await asyncio.to_thread(
+            self._complete_text,
             model=model,
             messages=messages,
-            api_base=api_base,
-            custom_prompt_dict=custom_prompt_dict,
-            model_response=model_response,
-            print_verbose=print_verbose,
-            encoding=encoding,
-            api_key=api_key,
-            logging_obj=logging_obj,
             optional_params=optional_params,
-            acompletion=acompletion,
-            litellm_params=litellm_params,
-            logger_fn=logger_fn,
-            headers=headers,
             timeout=timeout,
-            client=client,
         )
+        return _build_model_response(
+            text=text, model=model.removeprefix("codex/").removeprefix("cdx-")
+        )
+
+    def streaming(
+        self,
+        model: str,
+        messages: list,
+        api_base: str,
+        custom_prompt_dict: dict,
+        model_response: ModelResponse,
+        print_verbose: Any,
+        encoding: Any,
+        api_key: Any,
+        logging_obj: Any,
+        optional_params: dict,
+        acompletion: Any = None,
+        litellm_params: Any = None,
+        logger_fn: Any = None,
+        headers: dict | None = None,
+        timeout: Any = None,
+        client: Any = None,
+    ) -> Iterator[GenericStreamingChunk]:
+        # #708: clio/DSPy request streaming by default. Codex has no
+        # incremental output, so emit the full answer as one terminal chunk
+        # from a real generator (NOT a coroutine).
+        text = self._complete_text(
+            model=model, messages=messages, optional_params=optional_params, timeout=timeout
+        )
+        yield self._final_stream_chunk(text)
+
+    async def astreaming(  # type: ignore[override]
+        self,
+        model: str,
+        messages: list,
+        api_base: str,
+        custom_prompt_dict: dict,
+        model_response: ModelResponse,
+        print_verbose: Any,
+        encoding: Any,
+        api_key: Any,
+        logging_obj: Any,
+        optional_params: dict,
+        acompletion: Any = None,
+        litellm_params: Any = None,
+        logger_fn: Any = None,
+        headers: dict | None = None,
+        timeout: Any = None,
+        client: Any = None,
+    ) -> AsyncIterator[GenericStreamingChunk]:
+        # #708: must be an async GENERATOR (real async iterator), not a
+        # coroutine that returns one — the latter is exactly what produced
+        # "'coroutine' object is not an iterator" mid-stream. Run the
+        # blocking transport off the event loop, then yield one final chunk.
+        text = await asyncio.to_thread(
+            self._complete_text,
+            model=model,
+            messages=messages,
+            optional_params=optional_params,
+            timeout=timeout,
+        )
+        yield self._final_stream_chunk(text)
 
 
 # Module-level state guards against re-appending to
