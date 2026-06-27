@@ -16,6 +16,7 @@ from typing import Any, Iterator, Optional, Protocol
 import dspy
 from fastmcp import Client
 
+from clio_agent import conf
 from clio_agent.errors import CancellationError
 from clio_agent.tools.file_policy import FileAccessPolicy
 
@@ -293,15 +294,25 @@ def create_sync_tool_executor(
     server: Any,
     *,
     timeout: float = 30.0,
-    setup_timeout: float = 10.0,
+    setup_timeout: float | None = None,
     tool_timeouts: Mapping[str, float] | None = None,
     client_factory: ClientFactory | None = None,
 ) -> SyncToolExecutor:
     """Create a sync executor for CLI and deterministic expert call sites."""
+    effective_setup_timeout = (
+        conf.resolve(
+            "tools.mcp.setup_timeout_s",
+            env="CLIO_MCP_SETUP_TIMEOUT_S",
+            default=10.0,
+            cast=conf.as_float,
+        )
+        if setup_timeout is None
+        else setup_timeout
+    )
     return SyncMCPToolExecutor(
         server,
         timeout=timeout,
-        setup_timeout=setup_timeout,
+        setup_timeout=effective_setup_timeout,
         tool_timeouts=tool_timeouts,
         client_factory=client_factory,
     )

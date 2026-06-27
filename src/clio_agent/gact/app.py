@@ -172,6 +172,27 @@ def _keyword_user_agent_routing_enabled() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _gact_cors_origins() -> list[str]:
+    """Return trusted browser origins for the GACT API.
+
+    The config file is the primary surface; the environment variable remains a
+    compatibility fallback for older launch scripts.
+    """
+
+    try:
+        raw = conf.resolve(
+            "gact.cors.origins",
+            env="CLIO_GACT_CORS_ORIGINS",
+            default=[],
+            cast=conf.as_csv,
+        )
+    except (TypeError, ValueError):
+        return []
+    if raw == ["*"]:
+        return ["*"]
+    return [origin for origin in raw if origin]
+
+
 def _agent_not_available_error(app: "FastAPI", sid: str) -> "ErrorEnvelope":
     """Return a typed error when no executable CLIO agent is ready for a turn."""
 
@@ -1445,16 +1466,9 @@ def build_app(
     # CLIO's default auth scheme is trust_socket, which is safe for local
     # non-browser clients but must not grant arbitrary browser origins access
     # to a localhost agent. Operators can enable trusted web origins with
-    # CLIO_GACT_CORS_ORIGINS (comma-separated origins or "*").
-    cors_origins_env = os.environ.get("CLIO_GACT_CORS_ORIGINS", "").strip()
-    if cors_origins_env:
-        allow_origins: list[str] = (
-            ["*"]
-            if cors_origins_env == "*"
-            else [o.strip() for o in cors_origins_env.split(",") if o.strip()]
-        )
-    else:
-        allow_origins = []
+    # ``gact.cors.origins`` in .clio/config.yaml; CLIO_GACT_CORS_ORIGINS remains
+    # a compatibility fallback.
+    allow_origins = _gact_cors_origins()
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allow_origins,

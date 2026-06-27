@@ -810,7 +810,7 @@ class CTEStore:
 _DEFAULT_CTE_CONFIG_TEMPLATE = """\
 runtime:
   num_threads: 4
-  conf_dir: {conf_dir}
+  conf_dir: "{conf_dir}"
 compose:
   - mod_name: clio_bdev
     pool_name: "ram::chi_default_bdev"
@@ -835,9 +835,45 @@ compose:
     dpe:
       dpe_type: "max_bw"
     performance:
-      metadata_log_path: {metadata_log}
+      metadata_log_path: "{metadata_log}"
       transaction_log_capacity: "32MB"
 """
+
+
+def _cte_yaml_path(path: Path) -> str:
+    """Return a clio-core YAML-safe path string."""
+    return path.as_posix()
+
+
+def _default_cte_dir() -> Path:
+    """Return the default clio-core CTE artifact directory."""
+    from clio_agent import conf, paths  # noqa: PLC0415 - avoid import cycle
+
+    configured = conf.resolve(
+        "arc.cte.dir",
+        env="CLIO_ARC_CTE_DIR",
+        default="",
+        cast=conf.as_str,
+    ).strip()
+    if configured:
+        return Path(configured).expanduser()
+
+    return paths.user_data_dir() / "cte"
+
+
+def _default_cte_file_capacity() -> str:
+    """Return the default clio-core CTE file-tier capacity."""
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle
+
+    return (
+        conf.resolve(
+            "arc.cte.file_capacity",
+            env="CLIO_ARC_CTE_FILE_CAPACITY",
+            default="50GB",
+            cast=conf.as_str,
+        ).strip()
+        or "50GB"
+    )
 
 
 def default_cte_config_path() -> str:
@@ -847,19 +883,17 @@ def default_cte_config_path() -> str:
     declares a DRAM hot tier + a file cold tier, so ARC's clio-core backend is a
     self-managed memory↔disk hierarchy by default — no LocalFS, no manual config.
     """
-    from clio_agent import paths  # noqa: PLC0415 - avoid import cycle
-
-    cte_dir = paths.user_data_dir() / "cte"
+    cte_dir = _default_cte_dir()
     cte_dir.mkdir(parents=True, exist_ok=True)
     cfg = cte_dir / "cte.yaml"
     if not cfg.is_file():
-        capacity = os.environ.get("CLIO_ARC_CTE_FILE_CAPACITY", "50GB").strip() or "50GB"
+        capacity = _default_cte_file_capacity()
         cfg.write_text(
             _DEFAULT_CTE_CONFIG_TEMPLATE.format(
-                conf_dir=cte_dir / "conf",
-                file_tier=cte_dir / "storage.bin",
+                conf_dir=_cte_yaml_path(cte_dir / "conf"),
+                file_tier=_cte_yaml_path(cte_dir / "storage.bin"),
                 file_capacity=capacity,
-                metadata_log=cte_dir / "metadata.log",
+                metadata_log=_cte_yaml_path(cte_dir / "metadata.log"),
             ),
             encoding="utf-8",
         )

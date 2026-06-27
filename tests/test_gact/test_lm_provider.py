@@ -662,6 +662,61 @@ def test_put_lm_provider_accepts_codex_sdk_transport(tmp_path: Path, monkeypatch
     assert os.environ["CLIO_CODEX_TRANSPORT"] == "sdk"
 
 
+def test_put_lm_provider_accepts_claude_code_exec_transport(tmp_path: Path, monkeypatch) -> None:
+    """Claude Code runtime config must apply transport to claude_code_transport."""
+    monkeypatch.delenv("CLIO_CLAUDE_CODE_TRANSPORT", raising=False)
+    captured: dict[str, Any] = {}
+
+    class _StubAgent:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.arc = type(
+                "ARC",
+                (),
+                {
+                    "get_cache_stats": lambda self: {
+                        "hits": 0,
+                        "misses": 0,
+                        "hit_rate": 0.0,
+                        "capacity": 10,
+                    }
+                },
+            )()
+
+        def forward(self, *args: Any, **kwargs: Any) -> Any:
+            return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
+
+    monkeypatch.setattr("clio_agent.agent.ClioAgent", _StubAgent)
+
+    def _stub_create_lm(cfg: Any) -> Any:
+        captured["cfg"] = cfg
+        return type("FakeLM", (), {"history": []})()
+
+    monkeypatch.setattr("clio_agent.config.create_lm", _stub_create_lm)
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        resp = c.put(
+            "/v1/providers/lm",
+            json={
+                "provider": "claude_code",
+                "api_base": "claude-code://exec",
+                "model": "haiku",
+                "transport": "exec",
+            },
+        )
+        body = resp.json()
+        get_body = c.get("/v1/providers/lm").json()
+
+    assert resp.status_code == 200, resp.text
+    assert body["transport"] == "exec"
+    assert get_body["transport"] == "exec"
+    assert captured["cfg"].provider == "claude_code"
+    assert captured["cfg"].api_key == "x"
+    assert captured["cfg"].claude_code_transport == "exec"
+    assert app.state.lm_config["transport"] == "exec"
+    assert os.environ["CLIO_CLAUDE_CODE_TRANSPORT"] == "exec"
+
+
 def test_put_lm_provider_applies_lm_studio_context_length(tmp_path: Path, monkeypatch) -> None:
     """LM Studio context length is a model-load setting, not a chat completion param."""
 

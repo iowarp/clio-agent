@@ -21,6 +21,72 @@ from clio_agent.arc.storage import LocalFSStore, make_arc_store
 # ---- unit: factory selection + graceful degradation (no binding needed) ----
 
 
+def test_cte_yaml_path_uses_yaml_safe_separators():
+    path = storage._cte_yaml_path(
+        storage.Path("C:/Users/jaime/AppData/Local/clio-agent/cte/storage.bin")
+    )
+    assert path == "C:/Users/jaime/AppData/Local/clio-agent/cte/storage.bin"
+    assert "\\" not in path
+
+
+def test_default_cte_dir_honors_explicit_override(monkeypatch):
+    from clio_agent import conf
+
+    store = conf.ConfigStore(
+        home=storage.Path("C:/test-home"),
+        cwd=storage.Path("C:/test-cwd"),
+        env={"CLIO_ARC_CTE_DIR": "D:/custom-clio/cte"},
+    )
+    monkeypatch.setattr(conf, "_STORE", store)
+    assert storage._default_cte_dir() == storage.Path("D:/custom-clio/cte")
+
+
+def test_default_cte_dir_file_config_wins_over_env(monkeypatch, tmp_path):
+    monkeypatch.delenv("CLIO_ARC_CTE_DIR", raising=False)
+    monkeypatch.setenv("CLIO_ARC_CTE_DIR", "C:/env-clio/cte")
+
+    from clio_agent import conf
+
+    store = conf.ConfigStore(
+        home=tmp_path / "home",
+        cwd=tmp_path / "cwd",
+        env={"CLIO_ARC_CTE_DIR": "C:/env-clio/cte"},
+    )
+    config_path = tmp_path / "cwd" / ".clio" / "config.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("arc:\n  cte:\n    dir: D:/config-clio/cte\n", encoding="utf-8")
+    monkeypatch.setattr(conf, "_STORE", store)
+    assert storage._default_cte_dir() == storage.Path("D:/config-clio/cte")
+
+
+def test_default_cte_file_capacity_file_config_wins_over_env(monkeypatch, tmp_path):
+    from clio_agent import conf
+
+    store = conf.ConfigStore(
+        home=tmp_path / "home",
+        cwd=tmp_path / "cwd",
+        env={"CLIO_ARC_CTE_FILE_CAPACITY": "1GB"},
+    )
+    config_path = tmp_path / "cwd" / ".clio" / "config.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("arc:\n  cte:\n    file_capacity: 10GB\n", encoding="utf-8")
+    monkeypatch.setattr(conf, "_STORE", store)
+    assert storage._default_cte_file_capacity() == "10GB"
+
+
+def test_default_cte_dir_falls_back_to_user_data(monkeypatch, tmp_path):
+    from clio_agent import conf
+
+    store = conf.ConfigStore(home=tmp_path / "home", cwd=tmp_path / "cwd", env={})
+    monkeypatch.setattr(conf, "_STORE", store)
+    monkeypatch.setattr(storage.sys, "platform", "linux")
+
+    from clio_agent import paths
+
+    monkeypatch.setattr(paths, "user_data_dir", lambda: tmp_path / "data")
+    assert storage._default_cte_dir() == tmp_path / "data" / "cte"
+
+
 def test_factory_local(tmp_path):
     store = make_arc_store(backend="local", data_dir=str(tmp_path))
     assert isinstance(store, LocalFSStore)

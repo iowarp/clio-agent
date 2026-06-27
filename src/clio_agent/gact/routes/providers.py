@@ -683,6 +683,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             "CLIO_LM_MODEL",
             "CLIO_LM_API_KEY",
             "CLIO_CODEX_TRANSPORT",
+            "CLIO_CLAUDE_CODE_TRANSPORT",
         )
         env_before = {key: os.environ.get(key) for key in env_keys}
         dspy_settings_before: dict[str, Any] | None = None
@@ -717,6 +718,10 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 os.environ["CLIO_CODEX_TRANSPORT"] = cfg.codex_transport
             else:
                 os.environ.pop("CLIO_CODEX_TRANSPORT", None)
+            if req.provider == "claude_code":
+                os.environ["CLIO_CLAUDE_CODE_TRANSPORT"] = cfg.claude_code_transport
+            else:
+                os.environ.pop("CLIO_CLAUDE_CODE_TRANSPORT", None)
 
         def _apply_lm_studio_load_config() -> None:
             """Apply LM Studio load-time options before wiring DSPy."""
@@ -906,6 +911,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 presence_penalty=req.presence_penalty,
                 thinking_budget=req.thinking_budget,
                 codex_transport=req.transport or "exec",
+                claude_code_transport=req.transport or "exec",
             )
             # Per-provider handshake: discover connectivity + per-model config and
             # fold it into cfg — context-aware max_tokens (replacing the static ALCF
@@ -1033,6 +1039,13 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         # path stays unobserved).
         _set_app_arc(app, agent.arc)
         deps.install_tool_runtime_hooks(app)
+        transport = (
+            cfg.codex_transport
+            if req.provider == "codex"
+            else cfg.claude_code_transport
+            if req.provider == "claude_code"
+            else None
+        )
         app.state.lm_config = {
             "provider": req.provider,
             "api_base": req.api_base,
@@ -1042,7 +1055,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             "context_length": req.context_length,
             "thinking_budget": req.thinking_budget,
             "turn_timeout_s": req.turn_timeout_s,
-            "transport": cfg.codex_transport if req.provider == "codex" else None,
+            "transport": transport,
         }
         deps.clear_session_model_refs(app)
         # Publish so live SSE subscribers see the swap (TUI updates
@@ -1058,7 +1071,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                     "temperature": req.temperature,
                     "max_tokens": req.max_tokens,
                     "context_length": req.context_length,
-                    "transport": cfg.codex_transport if req.provider == "codex" else None,
+                    "transport": transport,
                 },
             )
         )
@@ -1071,7 +1084,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             max_tokens=req.max_tokens,
             context_length=req.context_length,
             thinking_budget=req.thinking_budget,
-            transport=cfg.codex_transport if req.provider == "codex" else None,
+            transport=transport,
             presets=_lm_presets_with_status(),
         )
 
