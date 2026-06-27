@@ -710,13 +710,13 @@ async def _run_turn_in_background(
             },
             payload=_prediction_summary(_pred),
         )
-        # #733: surface each terminal expert's answer as an ORDERED transcript
-        # ``text`` part authored by that expert, so no-tool experts (synthesis,
-        # pure-reasoning leaves) are not blank — their deliverable rode ONLY the
-        # expert.response.completed semantic event before, never the transcript.
-        # Appended to the live spine so it persists in arrival order (#731). Skip
-        # delegating rounds (the deliverable is the delegation, not an answer) and
-        # skip when the expert already streamed its answer live (chat/WS3 path).
+        # #733: remember each TERMINAL expert's answer so the FINALIZE pass can emit
+        # it as an ordered transcript ``text`` part IFF the expert's answer did not
+        # already stream live (WS3). The dedup must happen at finalize (after the
+        # per-expert streamed text parts close), not here — the streamed part is
+        # still open/empty at this point, so an emit-time check would miss it and a
+        # streaming provider would get the answer twice. Skip delegating rounds (the
+        # deliverable is the delegation, not an answer).
         _expert_id = str(getattr(agent_def, "id", "") or "")
         _answer_text = str(getattr(_pred, "answer", "") or "").strip()
         _next_expert = str(getattr(_pred, "next_expert", "") or "").strip()
@@ -724,25 +724,11 @@ async def _run_turn_in_background(
             app, _expert_id, session_id=sid
         )
         if _answer_text and _is_terminal:
-            _live_now = (getattr(app.state, "live_assistant_parts", {}) or {}).get(sid, [])
-            _streamed_already = any(
-                p.type == "text"
-                and str(getattr(p, "agent_id", "") or "") == _expert_id
-                and (p.text or "").strip()
-                for p in _live_now
-            )
-            if not _streamed_already:
-                _append_live_assistant_part(
-                    app,
-                    sid,
-                    Part(
-                        id=f"live_answer_{_expert_id}_{uuid.uuid4().hex[:8]}",
-                        type="text",
-                        agent_id=_expert_id,
-                        text=_answer_text,
-                        metadata={"stream_source": "expert_answer"},
-                    ),
-                )
+            _ta = getattr(app.state, "expert_terminal_answers", None)
+            if _ta is None:
+                _ta = {}
+                app.state.expert_terminal_answers = _ta
+            _ta.setdefault(sid, []).append((_expert_id, _answer_text))
         # WS2: capture a TERMINAL CoT/predict expert's reasoning + answer in its own
         # ARC scope. Delegating rounds are written by the settle loop's
         # _arc_write_orchestrator_route (route per round); ReAct leaves self-write.
@@ -2082,12 +2068,6 @@ async def _run_turn_in_background(
         if p.type == "routing_decision" and p.selected_agent
     }
     live_has_expert_handoff = any(p.type == "expert_handoff" for p in live_assistant_parts)
-    # The canonical turn answer may already be on the spine as a per-expert answer
-    # part (#733, e.g. synthesis); don't append it a second time below.
-    answer_already_live = bool(answer_text) and any(
-        p.type == "text" and (p.text or "").strip() == answer_text.strip()
-        for p in live_assistant_parts
-    )
     # Delegation atoms already streamed live as expert_handoff parts (delegate.started/
     # completed/parent_resumed). The finalize pass rebuilds the same handoffs from the
     # expert_handoffs rows for the PERSISTED message; suppress re-publishing those on
@@ -2197,7 +2177,36 @@ async def _run_turn_in_background(
             )
         )
     assistant_parts.extend(live_assistant_parts)
-    if answer_text and reuse_streamed_part_id is None and not answer_already_live:
+    # #733 fallback: a TERMINAL expert whose answer did NOT stream live (a
+    # non-streaming provider / blocking path leaves its WS3 text part empty) gets its
+    # answer emitted as an authored text part now. When WS3 DID stream the answer the
+    # expert already has a non-empty text part (closed by this point), so this adds
+    # nothing — no duplicate. Author = the expert; this is its deliverable.
+    answered_agents = {
+        p.agent_id for p in assistant_parts if p.type == "text" and (p.text or "").strip()
+    }
+    for fb_expert, fb_answer in (getattr(app.state, "expert_terminal_answers", {}) or {}).get(
+        sid, []
+    ):
+        if fb_expert in answered_agents:
+            continue
+        answered_agents.add(fb_expert)
+        assistant_parts.append(
+            Part(
+                id=_new_part_id(),
+                type="text",
+                agent_id=fb_expert,
+                text=fb_answer,
+                metadata={"stream_source": "expert_answer"},
+            )
+        )
+    # The canonical turn answer is the last terminal expert's deliverable; only append
+    # a main-authored copy when it is NOT already present as an authored text part
+    # (the WS3 stream or the #733 fallback above) — otherwise it duplicates.
+    answer_already_present = bool(answer_text) and any(
+        p.type == "text" and (p.text or "").strip() == answer_text.strip() for p in assistant_parts
+    )
+    if answer_text and reuse_streamed_part_id is None and not answer_already_present:
         assistant_parts.append(
             Part(
                 id=_new_part_id(),
@@ -2694,6 +2703,7 @@ async def _run_turn_in_background(
     getattr(app.state, "live_assistant_message_ids", {}).pop(sid, None)
     getattr(app.state, "live_assistant_parts", {}).pop(sid, None)
     getattr(app.state, "live_assistant_part_keys", {}).pop(sid, None)
+    getattr(app.state, "expert_terminal_answers", {}).pop(sid, None)
     _update_retry_attempt(
         retry_status,
         metadata_patch={
