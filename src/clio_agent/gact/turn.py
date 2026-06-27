@@ -88,6 +88,35 @@ if TYPE_CHECKING:
     from clio_agent.gact.types import AgentDef  # noqa: F401
 
 
+def _dedup_cross_agent_text(parts: list[Part]) -> list[Part]:
+    """Drop a ``text`` part that verbatim-duplicates an earlier one by another author.
+
+    iowarp/clio-agent#736: after a terminal child (e.g. ``synthesis``) returns its
+    deliverable, the resumed orchestrator (``main``) frequently re-emits that child's
+    answer **verbatim** as its own ``text`` part, so the final brief lands twice in the
+    persisted transcript — once child-authored, once parent-authored. This drops the
+    later, cross-agent byte-identical copy and keeps the original (child-authored) part.
+
+    Narrow by design: only a ``text`` part whose *stripped* content exactly matches an
+    EARLIER ``text`` part authored by a DIFFERENT ``agent_id`` is removed. The
+    orchestrator's own distinct wrap-up (its ``thinking`` part — different type and
+    content) and any legitimate same-author repetition are left untouched. Arrival
+    order of the surviving parts is preserved.
+    """
+    seen_author_by_text: dict[str, str] = {}
+    kept: list[Part] = []
+    for part in parts:
+        if part.type == "text":
+            normalized = (part.text or "").strip()
+            if normalized:
+                prior_author = seen_author_by_text.get(normalized)
+                if prior_author is not None and prior_author != part.agent_id:
+                    continue
+                seen_author_by_text.setdefault(normalized, part.agent_id)
+        kept.append(part)
+    return kept
+
+
 async def _run_turn_in_background(
     app: "FastAPI",
     sid: str,
@@ -2369,6 +2398,11 @@ async def _run_turn_in_background(
                     metadata=p.metadata,
                 )
                 break
+    # #736: drop the resumed orchestrator's verbatim echo of a terminal child's answer
+    # from the authored (persisted/reloaded) transcript, keeping the child-authored
+    # original. Serving-layer dedup — the live stream still carries main's echo (it
+    # genuinely streamed) and the client dedups it defensively. See helper docstring.
+    assistant_parts = _dedup_cross_agent_text(assistant_parts)
     # #731: stamp a monotonic 1-based arrival-order key on every persisted part so a
     # reloaded conversation can be restored to the exact order it streamed even if a
     # client re-sorts. The list is already in arrival order; ``sequence`` makes the
