@@ -226,8 +226,6 @@ jobs:
         shell: bash
         env:
           GACT_BRAND_ROOT: ${{ github.workspace }}/branding
-          TAURI_SIGNING_PRIVATE_KEY: ""
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: |
           set -euo pipefail
           brand="${{ github.workspace }}/branding/clio/tauri.clio.conf.json"

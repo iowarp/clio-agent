@@ -399,7 +399,7 @@ wheels = [
 
 [[package]]
 name = "clio-agent"
-version = "0.5.11"
+version = "0.5.13"
 source = { editable = "." }
 dependencies = [
     { name = "dspy" },

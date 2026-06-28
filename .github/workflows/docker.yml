@@ -8,8 +8,6 @@ on:
       - "branding/**"
       - "external/gact-tui/**"
       - ".github/workflows/docker.yml"
-    tags:
-      - "v*"
   pull_request:
     paths:
       - "docker/**"
