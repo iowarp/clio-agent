@@ -1,6 +1,6 @@
 [project]
 name = "clio-agent"
-version = "0.5.13"
+version = "0.5.14"
 description = "CLIO Agent — Autonomous AI agent framework for scientific data management. Part of the IOWarp platform."
 authors = [
     { name = "Jaime Cernuda", email = "jcernudagarcia@illinoistech.edu" },

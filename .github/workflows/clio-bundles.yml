@@ -133,7 +133,9 @@ jobs:
           # built on this arm64 runner, so it is the correct arch.
           - target: aarch64-pc-windows-msvc
             os: windows-11-arm
-            bundle-args: "--bundles msi,nsis"
+            # The hosted Windows ARM runner's WiX downloader currently fails
+            # before MSI generation with no TLS backend. NSIS builds natively.
+            bundle-args: "--bundles nsis"
           - target: aarch64-apple-darwin
             os: macos-14
             bundle-args: "--bundles dmg --target aarch64-apple-darwin"
@@ -229,15 +231,44 @@ jobs:
         run: |
           set -euo pipefail
           brand="${{ github.workspace }}/branding/clio/tauri.clio.conf.json"
+          cfg="$RUNNER_TEMP/tauri.release.conf.json"
           # The tauri CLI rejects multiple --config flags, so for the bundled
           # variant we deep-merge the bundled config + the CLIO branding overlay
           # into a single config (branding wins on conflicts) and pass it once.
-          if [ "${{ matrix.variant }}" = "bundled" ]; then
-            cfg="$RUNNER_TEMP/tauri.merged.conf.json"
-            jq -s '.[0] * .[1]' desktop/src-tauri/tauri.bundled.conf.json "$brand" > "$cfg"
-          else
-            cfg="$brand"
-          fi
+          node - "${{ matrix.variant }}" "$brand" "$cfg" <<'NODE'
+          const fs = require("node:fs");
+          const [variant, brandPath, outputPath] = process.argv.slice(2);
+
+          const isObject = (value) =>
+            value !== null && typeof value === "object" && !Array.isArray(value);
+          const merge = (base, overlay) => {
+            if (!isObject(base) || !isObject(overlay)) {
+              return overlay;
+            }
+            const out = { ...base };
+            for (const [key, value] of Object.entries(overlay)) {
+              out[key] = key in out ? merge(out[key], value) : value;
+            }
+            return out;
+          };
+
+          const brand = JSON.parse(fs.readFileSync(brandPath, "utf8"));
+          const config =
+            variant === "bundled"
+              ? merge(
+                  JSON.parse(
+                    fs.readFileSync("desktop/src-tauri/tauri.bundled.conf.json", "utf8"),
+                  ),
+                  brand,
+                )
+              : brand;
+          config.bundle ??= {};
+          config.bundle.createUpdaterArtifacts = false;
+          if (config.plugins?.updater) {
+            delete config.plugins.updater.pubkey;
+          }
+          fs.writeFileSync(outputPath, `${JSON.stringify(config, null, 2)}\n`);
+          NODE
           pnpm --filter @clio/desktop tauri build --config "$cfg" ${{ matrix.bundle-args }}
       - name: Stage artifacts
         shell: bash
