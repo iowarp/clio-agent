@@ -26,37 +26,25 @@ SCHEMA_VERSION = "clio.semantic_event.v1"
 DEFAULT_DETAIL_LEVEL = "semantic"
 DETAIL_LEVELS = {"off", "metadata", "semantic", "full_debug"}
 REDACTED_VALUE = "[redacted]"
+# CLIO does NOT redact its own trajectory from the user's own session: the SSE
+# stream carries the full content (the user's text, the model's reasoning, tool
+# results, prompts, answers) so a generic client renders the real session — same
+# principle as the durable trace/ARC ("the highway carries the full trajectory").
+# Only GENUINE SECRETS — credentials that are never session content — are redacted
+# in the SSE/hook projection. Everything else (content, formerly in this set:
+# text, input, question, prompt, reasoning, reasoning_content, rendered_*, result,
+# response, content, args, arguments, raw, trajectory, transcript, final_message,
+# new_content, output) now passes through.
 SENSITIVE_KEYS = {
     "api_key",
-    "args",
-    "arguments",
-    "content",
-    "input",
-    "new_content",
-    # NOTE: ``output`` is NOT redacted on SSE — it is the expert's extract report
-    # (expert.extract.completed) and delegation/fanout result, which the TUI renders
-    # in full. It is content, not a secret. Genuine secrets below stay redacted.
+    "access_token",
+    "authorization",
+    "bearer_token",
+    "client_secret",
     "password",
-    "prompt",
-    "question",
-    "raw",
-    "reasoning",
-    "reasoning_content",
-    "rendered_context",
-    "rendered_prompt",
-    "rendered_system_prompt",
-    "response",
-    "result",
+    "refresh_token",
     "secret",
-    "text",
     "token",
-    "trajectory",
-    "transcript",
-    "user_input",
-    # Full final assistant message embedded in turn.completed for the durable
-    # trace (so the messages store is derivable from the trace); stripped from
-    # the SSE projection where the message already streams via message.* events.
-    "final_message",
 }
 
 # Per-EVENT SSE allow-list: keys that are normally redacted (in SENSITIVE_KEYS)
@@ -69,6 +57,58 @@ SSE_KEEP_KEYS_BY_EVENT: dict[str, frozenset[str]] = {
     "react.step.completed": frozenset({"reasoning"}),
     "expert.extract.completed": frozenset({"reasoning"}),
 }
+
+# UI/SSE serving allow-list: the ONLY semantic-event types that reach the live
+# bus (GET /v1/sessions/{sid}/events) — the ReAct trajectory the TUI renders.
+# Everything else (turn/agent/llm/hook lifecycle, lm.call, the tool.call mirror,
+# memory/permission bookkeeping) is captured FULL on the durable trace + ARC but
+# is substrate the UI does not render, so it stays off the served wire. This is
+# the serving layer (order/cleanliness), NOT a capture filter: project_full and
+# ARC always see every event. Any FAILED/ERROR event passes regardless (errors
+# are first-class and never summarized away). See the four ReAct atoms:
+#   a) delegation  = blueprint.delegation.* + the orchestrator's reasoning
+#                    (carried on expert.response.completed for CoT orchestrators)
+#   b) tool call   } react.step.completed (thought + tool_name + tool_args
+#   c) tool result }                       + observation), for ReAct leaves
+#   d) extract     = expert.extract.completed (output + structured workflow_state)
+SSE_UI_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        "react.step.completed",
+        "expert.extract.completed",
+        "expert.response.completed",
+        "expert.lifecycle.started",
+        # The delegation atom rides one of two prefixes depending on the runtime:
+        # ``blueprint.delegation.*`` for Agent Blueprint experts and the plain
+        # ``delegation.*`` for expert-pack / prompt-agent delegations. Both are the
+        # SAME atom and both must reach the UI (``.failed`` also passes via the
+        # always-status gate, but is listed for explicitness).
+        "blueprint.delegation.started",
+        "blueprint.delegation.completed",
+        "blueprint.delegation.parent_resumed",
+        "blueprint.delegation.failed",
+        "delegation.started",
+        "delegation.completed",
+        "delegation.parent_resumed",
+        "delegation.failed",
+        # Memory search is an agent ACTION the user opts into (a retrieval step in
+        # the trajectory), not lifecycle bookkeeping -- surface its result live.
+        "memory.search.completed",
+    }
+)
+
+# Statuses that ALWAYS reach the UI wire regardless of event_type — a failure or
+# cancellation must never be filtered out of the served stream.
+_SSE_ALWAYS_STATUSES: frozenset[str] = frozenset({"failed", "error", "cancelled"})
+
+
+def event_reaches_ui(event_type: str, status: str = "") -> bool:
+    """True when a semantic event should be published to the live UI bus.
+
+    The atom allow-list plus an unconditional pass for failure/cancellation
+    statuses. Capture (durable trace + ARC) is unaffected — this gates serving
+    only.
+    """
+    return event_type in SSE_UI_EVENT_TYPES or (status or "").strip().lower() in _SSE_ALWAYS_STATUSES
 
 # The "body" fields of a SemanticEvent — these carry the rich, potentially
 # sensitive payloads that are captured in FULL durably but projected/redacted
@@ -339,8 +379,10 @@ def _trace_writer_loop() -> None:
                 with path.open("a", encoding="utf-8") as f:
                     f.write(line)
                     f.write("\n")
-            except Exception:  # noqa: BLE001 - a write error must not kill the writer
-                pass
+            except Exception as exc:  # noqa: BLE001 - a write error must not kill the writer
+                from clio_agent.runtime import trace  # noqa: PLC0415
+
+                trace.event("TRACE-WRITE", "durable trace write failed (event dropped): %r", exc)
         finally:
             _TRACE_WRITE_QUEUE.task_done()
 
@@ -518,19 +560,25 @@ class SemanticEventSink:
         for consumer in self.live_consumers:
             try:
                 consumer(event)  # raw SemanticEvent, pre-projection (ARC folds this)
-            except Exception:
-                # Live consumers are observability side-effects; never crash a turn.
-                pass
+            except Exception as exc:  # noqa: BLE001 - never crash a turn, but never silent
+                from clio_agent.runtime import trace  # noqa: PLC0415
+
+                trace.event("HIGHWAY-CONSUMER", "live consumer raised (event dropped): %r", exc)
         full = project_full(event)
         # SSE + hooks get projected (redacted) views; SSE honors "off".
         if event.detail_level != "off":
-            self.bus.publish(
-                Event(
-                    type="semantic.event",
-                    session_id=event.session_id,
-                    payload=project_sse(event),
+            # Serving gate: only the ReAct atoms (and any failure) reach the live
+            # UI bus. The rest is substrate captured FULL above (trace + ARC) but
+            # not rendered by the UI, so it stays off the served wire. Hooks still
+            # see EVERY event (user observability code), independent of this gate.
+            if event_reaches_ui(event.event_type, event.status):
+                self.bus.publish(
+                    Event(
+                        type="semantic.event",
+                        session_id=event.session_id,
+                        payload=project_sse(event),
+                    )
                 )
-            )
             try:
                 from clio_agent.runtime.hooks import fire as _fire_hook
 

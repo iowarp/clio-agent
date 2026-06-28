@@ -96,8 +96,9 @@ def default_prompt_sources(*, cwd: Optional[Path] = None, config_dir: Optional[P
 
     cwd = cwd or Path(os.getcwd())
     if config_dir is None:
-        base = os.environ.get("XDG_CONFIG_HOME")
-        config_dir = Path(base) / "clio-agent" if base else Path.home() / ".config" / "clio-agent"
+        from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
+
+        config_dir = paths.user_config_dir()
     return [
         PromptSource("global", config_dir / "prompts"),
         PromptSource("workspace", cwd / ".clio" / "prompts"),

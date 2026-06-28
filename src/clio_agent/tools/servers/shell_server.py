@@ -10,6 +10,7 @@ normal user approval path.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -24,7 +25,10 @@ shell_server = FastMCP("shell")
 
 # Operational caps — resolved file → env → default (see clio_agent.conf).
 _DEFAULT_TIMEOUT_S = conf.resolve(
-    "limits.shell_default_timeout_s", env="CLIO_SHELL_DEFAULT_TIMEOUT_S", default=5.0, cast=conf.as_float
+    "limits.shell_default_timeout_s",
+    env="CLIO_SHELL_DEFAULT_TIMEOUT_S",
+    default=5.0,
+    cast=conf.as_float,
 )
 _MAX_TIMEOUT_S = conf.resolve(
     "limits.shell_max_timeout_s", env="CLIO_SHELL_MAX_TIMEOUT_S", default=30.0, cast=conf.as_float
@@ -36,10 +40,19 @@ _DEFAULT_MAX_OUTPUT_BYTES = conf.resolve(
     cast=conf.as_int,
 )
 _MAX_OUTPUT_BYTES = conf.resolve(
-    "limits.shell_max_output_bytes", env="CLIO_SHELL_MAX_OUTPUT_BYTES", default=128 * 1024, cast=conf.as_int
+    "limits.shell_max_output_bytes",
+    env="CLIO_SHELL_MAX_OUTPUT_BYTES",
+    default=128 * 1024,
+    cast=conf.as_int,
 )
 _MAX_COMMAND_CHARS = conf.resolve(
-    "limits.shell_max_command_chars", env="CLIO_SHELL_MAX_COMMAND_CHARS", default=4000, cast=conf.as_int
+    "limits.shell_max_command_chars",
+    env="CLIO_SHELL_MAX_COMMAND_CHARS",
+    default=4000,
+    cast=conf.as_int,
+)
+_WINDOWS_BASH_PATH = re.compile(
+    r"(?P<drive>[A-Za-z]):[\\/](?P<rest>[^\"'`\s|&;<>()]+(?:[\\/][^\"'`\s|&;<>()]+)*)"
 )
 
 
@@ -82,12 +95,44 @@ def _resolve_cwd(cwd: str | None) -> Path:
     return resolved
 
 
+def _windows_bash_path(path_match: re.Match[str]) -> str:
+    """Translate a Windows drive path to the WSL mount path bash expects."""
+
+    drive = path_match.group("drive").lower()
+    rest = path_match.group("rest").replace("\\", "/")
+    return f"/mnt/{drive}/{rest}"
+
+
+def _translate_windows_paths_for_bash(command: str) -> str:
+    """Translate embedded Windows absolute paths before sending to WSL bash."""
+
+    return _WINDOWS_BASH_PATH.sub(_windows_bash_path, command)
+
+
+def _windows_shell_backend() -> str:
+    """Return the configured Windows shell backend."""
+
+    backend = conf.resolve(
+        "tools.shell.windows_backend",
+        env="CLIO_WINDOWS_SHELL_BACKEND",
+        default="powershell",
+        cast=conf.as_str,
+    )
+    normalized = backend.strip().lower()
+    return normalized if normalized in {"powershell", "bash", "cmd"} else "powershell"
+
+
 def _shell_argv(command: str) -> list[str]:
     """Return a platform-appropriate shell invocation."""
 
     if os.name == "nt":
+        backend = _windows_shell_backend()
+        if backend == "bash":
+            bash = shutil.which("bash.exe") or shutil.which("bash")
+            if bash:
+                return [bash, "-lc", _translate_windows_paths_for_bash(command)]
         powershell = shutil.which("pwsh.exe") or shutil.which("powershell.exe")
-        if powershell:
+        if powershell and backend != "cmd":
             return [
                 powershell,
                 "-NoLogo",

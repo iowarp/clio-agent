@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from clio_agent import conf
 from clio_agent.errors import CancellationError
 from clio_agent.tools.execution import (
     AsyncMCPToolExecutor,
@@ -108,6 +109,13 @@ class StructuredErrorClient(FakeClient):
         )
 
 
+@pytest.fixture(autouse=True)
+def reload_conf() -> None:
+    conf.reload()
+    yield
+    conf.reload()
+
+
 @pytest.mark.asyncio
 async def test_async_mcp_tool_executor_uses_explicit_async_lifecycle():
     """Async executor should call tools without creating a sync bridge thread."""
@@ -176,6 +184,51 @@ def test_sync_mcp_tool_executor_closes_client_and_loop():
     assert executor.closed is True
     assert fake_client.exited is True
     assert not thread.is_alive()
+
+
+def test_sync_tool_executor_setup_timeout_uses_config_file(monkeypatch, tmp_path):
+    """Factory setup timeout resolves through config before env/default."""
+    monkeypatch.chdir(tmp_path)
+    config_dir = tmp_path / ".clio"
+    config_dir.mkdir()
+    (config_dir / "config.yaml").write_text(
+        "tools:\n  mcp:\n    setup_timeout_s: 42\n",
+        encoding="utf-8",
+    )
+    conf.reload()
+    fake_client = FakeClient()
+    executor = create_sync_tool_executor(
+        object(), timeout=1.0, client_factory=lambda _: fake_client
+    )
+
+    try:
+        assert executor._setup_timeout == 42.0
+    finally:
+        executor.close()
+
+
+def test_sync_tool_executor_explicit_setup_timeout_wins_over_config(monkeypatch, tmp_path):
+    """Callers can still override setup timeout directly."""
+    monkeypatch.chdir(tmp_path)
+    config_dir = tmp_path / ".clio"
+    config_dir.mkdir()
+    (config_dir / "config.yaml").write_text(
+        "tools:\n  mcp:\n    setup_timeout_s: 42\n",
+        encoding="utf-8",
+    )
+    conf.reload()
+    fake_client = FakeClient()
+    executor = create_sync_tool_executor(
+        object(),
+        timeout=1.0,
+        setup_timeout=3.0,
+        client_factory=lambda _: fake_client,
+    )
+
+    try:
+        assert executor._setup_timeout == 3.0
+    finally:
+        executor.close()
 
 
 def test_sync_mcp_tool_executor_timeout_cancels_tool_call():

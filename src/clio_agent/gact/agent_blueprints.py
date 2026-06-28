@@ -73,8 +73,9 @@ class AgentBlueprintDefinition:
 
 
 def agent_blueprint_roots(home: Path, cwd: Path) -> list[tuple[Path, str]]:
-    base = os.environ.get("XDG_CONFIG_HOME")
-    config_root = Path(base) / "clio-agent" if base else home / ".config" / "clio-agent"
+    from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
+
+    config_root = paths.user_config_dir_for(home, os.environ)
     return [
         (config_root / "agent-blueprints", "global"),
         (cwd / ".clio" / "agent-blueprints", "workspace"),
@@ -874,8 +875,9 @@ def read_install_metadata(root: Path) -> dict[str, str]:
 
 
 def _install_root(*, home: Path, cwd: Path, scope: str) -> Path:
-    base = os.environ.get("XDG_CONFIG_HOME")
-    config_root = Path(base) / "clio-agent" if base else home / ".config" / "clio-agent"
+    from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
+
+    config_root = paths.user_config_dir_for(home, os.environ)
     if scope == "global":
         return config_root / "agent-blueprints"
     if scope == "workspace":

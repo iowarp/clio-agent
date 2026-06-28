@@ -106,6 +106,8 @@ def test_run_exec_invokes_claude_with_tools_disabled() -> None:
     assert "--tools" in argv
     assert argv[argv.index("--tools") + 1] == ""
     assert run_mock.call_args.kwargs["input"] == "hello"
+    assert run_mock.call_args.kwargs["encoding"] == "utf-8"
+    assert run_mock.call_args.kwargs["errors"] == "replace"
     assert run_mock.call_args.kwargs["cwd"] == "/tmp"
 
 
@@ -154,6 +156,7 @@ def test_custom_llm_completion_strips_internal_model_marker() -> None:
 
 
 def test_custom_llm_rejects_unknown_transport() -> None:
+    # "exec" and "sdk" are both valid; only a genuinely unknown transport is rejected.
     with pytest.raises(ClaudeCodeExecError, match="unknown claude_code transport"):
         ClaudeCodeLLM().completion(
             model="claude_code/cc-sonnet",
@@ -165,8 +168,33 @@ def test_custom_llm_rejects_unknown_transport() -> None:
             encoding=None,
             api_key=None,
             logging_obj=None,
-            optional_params={"claude_code_transport": "sdk"},
+            optional_params={"claude_code_transport": "bogus"},
         )
+
+
+def test_custom_llm_sdk_transport_routes_to_run_sdk(monkeypatch) -> None:
+    """transport='sdk' dispatches to the Agent SDK path (not `claude -p` exec)."""
+    seen: dict = {}
+
+    def _fake_sdk(*, prompt, model, timeout, cwd):
+        seen["model"] = model
+        return "sdk says hi", {"input_tokens": 2, "output_tokens": 3}
+
+    monkeypatch.setattr(claude_code_litellm, "_run_sdk", _fake_sdk)
+    resp = ClaudeCodeLLM().completion(
+        model="claude_code/cc-haiku",
+        messages=[{"role": "user", "content": "hi"}],
+        api_base="",
+        custom_prompt_dict={},
+        model_response=MagicMock(),
+        print_verbose=None,
+        encoding=None,
+        api_key=None,
+        logging_obj=None,
+        optional_params={"claude_code_transport": "sdk"},
+    )
+    assert seen["model"] == "haiku"  # provider strips the claude_code/cc- prefixes
+    assert resp.choices[0].message.content == "sdk says hi"
 
 
 def test_custom_llm_streaming_fails_explicitly() -> None:
@@ -187,9 +215,19 @@ def test_custom_llm_streaming_fails_explicitly() -> None:
         )
 
 
-async def test_custom_llm_astreaming_fails_explicitly_with_coroutine_shape() -> None:
-    with pytest.raises(ClaudeCodeExecError, match="does not support live streaming"):
-        await ClaudeCodeLLM().astreaming(
+async def test_custom_llm_astreaming_emits_single_terminal_chunk(monkeypatch) -> None:
+    # Claude Code (`claude -p`) has no token stream — astreaming must emit the
+    # completed exec result as ONE terminal chunk rather than raising, so litellm's
+    # streaming path completes instead of leaving the coroutine unawaited and the
+    # turn empty (regression #254/#715; behaviour set in fdeeeca).
+    monkeypatch.setattr(
+        claude_code_litellm,
+        "_run_exec",
+        lambda **_kwargs: ("hello from claude", {"input_tokens": 3, "output_tokens": 2}),
+    )
+    chunks = [
+        chunk
+        async for chunk in ClaudeCodeLLM().astreaming(
             model="claude_code/cc-sonnet",
             messages=[{"role": "user", "content": "hi"}],
             api_base="",
@@ -201,6 +239,12 @@ async def test_custom_llm_astreaming_fails_explicitly_with_coroutine_shape() -> 
             logging_obj=None,
             optional_params={"claude_code_transport": "exec"},
         )
+    ]
+
+    assert len(chunks) == 1
+    assert chunks[0]["text"] == "hello from claude"
+    assert chunks[0]["is_finished"] is True
+    assert chunks[0]["finish_reason"] == "stop"
 
 
 def test_registers_once() -> None:

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import subprocess
 import time
 from dataclasses import dataclass
@@ -36,7 +37,19 @@ from typing import Any, Generator
 import httpx
 import pytest
 
-from . import clio_sut  # noqa: F401  — subclassing SUT registers it for agent-test
+# The real-cases tier drives live provider runs through the `agent-test` harness —
+# an unpublished local checkout that isn't installed in CI (and the tier needs a
+# live provider anyway). When it's absent, tell pytest to skip collecting this
+# directory via ``collect_ignore_glob`` instead of ``importorskip`` (which raises
+# ``Skipped`` during the initial-conftest load phase and is treated as a fatal
+# error there, not a skip). The conftest still imports cleanly so collection of
+# the rest of the suite is unaffected; locally, where agent-test is installed, the
+# tier collects and runs as before.
+try:
+    from . import clio_sut  # noqa: F401  — subclassing SUT registers it for agent-test
+except ImportError:
+    clio_sut = None  # type: ignore[assignment]
+    collect_ignore_glob = ["*.py"]
 
 # --------------------------------------------------------------------------- #
 # Committed server-harness config (was /tmp shell env). Each is env-overridable
@@ -108,6 +121,35 @@ def _kill_port(port: int) -> None:
             except (ProcessLookupError, PermissionError):
                 pass
     time.sleep(2)
+
+
+def _reap_process_group(process: "subprocess.Popen[bytes]", *, timeout: float = 10.0) -> None:
+    """Terminate the server AND every process it spawned (its MCP stdio children).
+
+    The server is launched with ``start_new_session=True`` so it leads its own
+    process group; signalling the whole group (``killpg`` on the negative PID)
+    reaps the uvx/MCP subprocess children too, instead of orphaning them to init.
+    Plain ``process.terminate()`` signalled only the top PID and leaked the MCP
+    children across cells — the recurring gact/MCP process pile-up. SIGTERM first
+    (graceful), then SIGKILL if it doesn't exit; falls back to a per-process
+    signal if the group is already gone.
+    """
+    if process.poll() is not None:
+        return
+    try:
+        pgid = os.getpgid(process.pid)
+    except ProcessLookupError:
+        return
+    for sig, wait_s in ((signal.SIGTERM, timeout), (signal.SIGKILL, 5.0)):
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            return
+        try:
+            process.wait(timeout=wait_s)
+            return
+        except subprocess.TimeoutExpired:
+            continue
 
 
 def _wait_healthy(url: str, deadline: float) -> bool:
@@ -185,6 +227,11 @@ def gact_server(request: pytest.FixtureRequest) -> Generator[GactServer, None, N
         env=env,
         stdout=log_fh,
         stderr=subprocess.STDOUT,
+        # Own session/process group so teardown can group-kill the server AND every
+        # MCP stdio child it spawns (uvx geo/pandas/plot/ndp). Without this, teardown
+        # signalled only the top PID and orphaned the MCP children to init — the
+        # cross-cell process leak that piled up gact + MCP servers on the box.
+        start_new_session=True,
     )
 
     # The SUT connects to CLIO_GACT_URL; point it at this fixture's server.
@@ -194,7 +241,7 @@ def gact_server(request: pytest.FixtureRequest) -> Generator[GactServer, None, N
 
     healthy = _wait_healthy(GACT_URL, time.monotonic() + SERVER_HEALTH_TIMEOUT_S)
     if not healthy:
-        process.kill()
+        _reap_process_group(process)
         log_fh.close()
         _kill_port(GACT_PORT)
         if prev_url is None:
@@ -215,13 +262,10 @@ def gact_server(request: pytest.FixtureRequest) -> Generator[GactServer, None, N
             process=process,
         )
     finally:
-        # Kill the server so any lingering executor work (best-effort cancellation
-        # on timeout) can't bleed into the next cell's bind.
-        process.terminate()
-        try:
-            process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            process.kill()
+        # Kill the server AND its MCP child process group so neither lingering
+        # executor work nor an orphaned uvx/MCP subprocess bleeds into the next
+        # cell's bind (or piles up on the box).
+        _reap_process_group(process)
         log_fh.close()
         _kill_port(GACT_PORT)
         if prev_url is None:

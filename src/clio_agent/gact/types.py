@@ -15,6 +15,8 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from clio_agent.arc.schema import SegmentKind
+
 # ---------------------------------------------------------------------------
 # §3 — health + capabilities
 # ---------------------------------------------------------------------------
@@ -216,6 +218,98 @@ class SessionContextPolicy(BaseModel):
     requires_user_consent: bool = True
     notes: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ContextStateResponse(BaseModel):
+    """GET /v1/sessions/{sid}/context/state — the ARC live context plane for a scope.
+
+    Two token readings, both model-window-relative (``window_tokens`` from the model's
+    resolved context window):
+
+    * ``live_tokens`` / ``pct_used`` — the **segment-store attribution** (sum of
+      per-segment ``token_count`` over the live render). This is what the editable
+      blocks (``categories`` below, mutated via ``/context/ops``) add up to.
+    * ``used_tokens`` / ``used_pct`` — the **model-grounded** reading: the LAST LM call's
+      real prompt tokens (provider ``prompt_tokens`` → ``litellm.token_counter`` fallback,
+      the same source the in-turn auto-compactor uses). ``null`` between turns / when
+      unknown. This is the true "how full is the window" number for the active expert.
+
+    ``autocompact_pct`` is the fraction at which auto-compaction triggers (so a UI can draw
+    the line). ``categories`` buckets ``tokens_by_kind`` into Claude-Code-``/context``-style
+    groups, plus a ``framing`` entry = ``used_tokens − live_tokens`` (the system-prompt +
+    tool-schema overhead the model sees but ARC does not store/edit), when both are known.
+    """
+
+    session_id: str
+    scope: str
+    as_of: Optional[int] = None
+    window_tokens: int = 0
+    live_tokens: int = 0
+    pct_used: Optional[float] = None
+    used_tokens: Optional[int] = None
+    used_pct: Optional[float] = None
+    autocompact_pct: Optional[float] = None
+    live_block_count: int = 0
+    tokens_by_kind: dict[str, int] = Field(default_factory=dict)
+    categories: dict[str, int] = Field(default_factory=dict)
+    segments: list[dict[str, Any]] = Field(default_factory=list)
+    render_text: str = ""
+    render_keys: dict[str, Any] = Field(default_factory=dict)
+
+
+class ContextOpRequest(BaseModel):
+    """POST /v1/sessions/{sid}/context/ops — apply one live-context operation.
+
+    Only the fields relevant to ``op`` are used (append/insert: ``kind`` +
+    ``content`` [+ ``position`` for insert]; delete: ``ids``; summarize: ``ids`` +
+    ``summary_content``).
+    """
+
+    op: Literal["append", "insert", "delete", "summarize"]
+    scope: str
+    kind: Optional[SegmentKind] = None
+    content: Optional[dict[str, Any]] = None
+    position: Optional[int] = None
+    ids: Optional[list[str]] = None
+    summary_content: Optional[dict[str, Any]] = None
+    step: int = -1
+    token_count: int = 0
+    trace_ref: str = ""
+
+
+class ContextOpResponse(BaseModel):
+    """Result of a context op plus a fresh state snapshot so the TUI updates
+    without a second GET."""
+
+    session_id: str
+    scope: str
+    op: str
+    applied: bool = True
+    result: Optional[dict[str, Any]] = None
+    tombstoned_count: Optional[int] = None
+    live_block_count: int = 0
+    tokens_by_kind: dict[str, int] = Field(default_factory=dict)
+    pct_used: Optional[float] = None
+
+
+class ContextSearchHit(BaseModel):
+    """One ranked scope from a context discovery search."""
+
+    scope: str
+    score: float
+
+
+class ContextSearchResponse(BaseModel):
+    """GET /v1/sessions/{sid}/context/search — semantic discovery over scopes.
+
+    'which expert/scope knows about X'. ``semantic`` is True for real BM25 (the CTE
+    backend) and False for the naive word-overlap fallback (LocalFS).
+    """
+
+    session_id: str
+    query: str
+    semantic: bool = False
+    hits: list[ContextSearchHit] = Field(default_factory=list)
 
 
 class GlobalMemoryStats(BaseModel):
@@ -461,6 +555,20 @@ class Part(BaseModel):
     type: str
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    # Per-part expert attribution (CLIO extension). Lets a client attribute every
+    # turn/part to its source without parsing prose or inferring from metadata.
+    agent_id: str = ""
+    """The expert/agent that GENERATED this part (e.g. 'geospatial'), so a client
+    can attribute every turn/part to its source without inference. Empty for
+    user-authored parts."""
+
+    # Monotonic arrival/wire order key within a turn (#731). Assigned when the
+    # persisted assistant message is assembled so a reloaded conversation can be
+    # restored to the exact order it streamed — even if a client re-sorts the
+    # parts list. 1-based; ``0`` means "unsequenced" (a live part, ordered by the
+    # SSE event id instead). Force-kept on the wire only when set (>0).
+    sequence: int = 0
+
     # text / error (v0.1 error part shape)
     text: str = ""
 
@@ -486,11 +594,29 @@ class Part(BaseModel):
     # facing payload).
     execution_path: str = ""
 
+    # expert_handoff (CLIO extension). Structured mirror of the delegation row so
+    # a client consumes the handoff from typed fields instead of parsing the
+    # bespoke ``text`` summary. ``parent_agent`` made the delegation, ``child_agent``
+    # received it, ``stage`` is the delegation lifecycle phase (e.g.
+    # ``delegate.started`` / ``delegate.completed`` / ``parent.resumed`` /
+    # ``delegate.failed``); the handoff status reuses the shared ``status`` field.
+    parent_agent: str = ""
+    child_agent: str = ""
+    stage: str = ""
+
     # tool_call / tool_result. CLIO emits these as live SSE parts when
     # MCP tools start/finish so clients can show progress before the
     # final assistant message metadata is attached.
     call_id: str = ""
     tool_name: str = ""
+    # The model's reasoning for THIS turn, carried on the action part itself
+    # (#732): one LLM turn = text (thought, maybe thinking) + the action it
+    # chose, as a single ordered event. Populated on ``tool_call`` (the step
+    # thought) and on ``expert_handoff`` (the orchestrator's delegation
+    # reasoning) so a client renders ``text -> action`` straight from wire order
+    # with no join against the telemetry channel. The tool RESPONSE is a separate
+    # ``tool_result`` event (the call->response gap can be large).
+    thought: str = ""
     input: dict[str, Any] = Field(default_factory=dict)
     content: list["Part"] = Field(default_factory=list)
     is_error: bool = False
@@ -512,6 +638,29 @@ class Part(BaseModel):
     edit_mode: str = ""
     lines_added: int = 0
     lines_removed: int = 0
+
+    def to_wire(self) -> dict[str, Any]:
+        """Project this part to its on-the-wire dict, dropping unused fields.
+
+        The Part shape carries one set of fields per ``type`` (text, tool_call,
+        file_diff, expert_handoff, routing_decision, …) but a single instance only
+        populates the handful relevant to its own type; the rest sit at their
+        zero-value defaults. ``model_dump(exclude_none=True)`` does NOT drop those
+        (the defaults are ``""``/``0``/``[]``/``False``, not ``None``), so every
+        part historically shipped ~30 mostly-empty keys. ``exclude_defaults``
+        realizes the documented "omitempty" contract: only fields the part actually
+        set survive. The identity + authorship triple (``id``/``type``/``agent_id``)
+        is force-kept so a client can always attribute a part without inference,
+        even when a value coincides with its default.
+        """
+
+        wire = self.model_dump(exclude_defaults=True)
+        wire["id"] = self.id
+        wire["type"] = self.type
+        wire["agent_id"] = self.agent_id
+        if self.content:
+            wire["content"] = [child.to_wire() for child in self.content]
+        return wire
 
 
 class ContextFile(BaseModel):
@@ -558,6 +707,19 @@ class Message(BaseModel):
     stop_reason: str = ""
     error_info: Optional[ErrorInfo] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    def to_wire(self) -> dict[str, Any]:
+        """Project this message to its on-the-wire dict with slimmed parts.
+
+        The message envelope (tokens/cost/stop_reason/metadata) keeps its
+        ``exclude_none`` shape so existing readers see the same top-level keys;
+        only the nested ``parts`` are projected through :meth:`Part.to_wire` so
+        they drop their unused per-type fields.
+        """
+
+        wire = self.model_dump(exclude_none=True)
+        wire["parts"] = [part.to_wire() for part in self.parts]
+        return wire
 
 
 class PostMessageRequest(BaseModel):

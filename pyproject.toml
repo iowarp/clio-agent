@@ -47,7 +47,22 @@ dependencies = [
     "sortedcontainers>=2.4.0",
     "lru-dict>=1.3.0",
     "msgspec>=0.18.0",
+    "platformdirs>=4.0.0",
     "matplotlib>=3.8.0",
+    # ARC default store backend: clio-core CTE (in-process, no daemon). Shipped by
+    # default so CTE works out of the box; make_arc_store falls back to local files
+    # if the runtime is unavailable, and durability/fault-tolerance (replication,
+    # erasure coding) come from the CTE config. CLIO_ARC_STORE=local opts out.
+    "iowarp-core>=2.1.0",
+    # Cross-platform process lifecycle for the shared clio-core runtime daemon
+    # (connect-or-spawn + last-one-out release). clio-core deploys identically on
+    # Linux/macOS/Windows (per upstream), so only the host-side primitives differ:
+    # filelock = host-global spawn/refcount lock (fcntl on POSIX, msvcrt on Windows);
+    # psutil = OS-portable process liveness, create-time (PID-reuse guard), and
+    # terminate/kill. Replaces Linux-only fcntl / /proc / os.kill so the kill
+    # semantics hold on all three OSes.
+    "filelock>=3.12.0",
+    "psutil>=5.9.0",
     # gact backend (clio_agent.gact.app) — shipped product surface, not optional
     "fastapi>=0.104.0",
     "uvicorn>=0.24.0",
@@ -80,7 +95,9 @@ adios = [
 #   uv pip install "openai-codex @ git+https://github.com/openai/codex.git@79f044ed34c60af815feef12e8e665f35d54871e#subdirectory=sdk/python"
 
 iowarp = [
-    "pyzmq>=25.0.0",             # ZeroMQ Python bindings for IOWarp CTE runtime
+    # clio-core CTE is now a CORE dependency (the default ARC backend), so this
+    # extra is redundant — kept as an explicit opt-in alias and for [all].
+    "iowarp-core>=2.1.0",
 ]
 
 argonne = [
@@ -88,6 +105,16 @@ argonne = [
     # Optional: only needed when CLIO_LM_PROVIDER=argonne. See
     # src/clio_agent/providers/argonne_auth.py.
     "globus-sdk>=3.0.0",
+]
+
+claude-code = [
+    # Optional Claude Agent SDK transport (claude_code_transport="sdk"): a
+    # persistent in-process Claude Code CLI session instead of one `claude -p`
+    # spawn per LM call (kills the per-call cold-start, #715). Auth is the user's
+    # Claude Code OAuth login (no API key). The default "exec" transport needs only
+    # the `claude` CLI on PATH, so this is opt-in. See
+    # src/clio_agent/providers/claude_code_litellm.py.
+    "claude-agent-sdk>=0.2.0",
 ]
 
 dev = [
@@ -99,7 +126,7 @@ dev = [
 ]
 
 all = [
-    "clio-agent[optimizers,tools,adios,iowarp,argonne,dev]",
+    "clio-agent[optimizers,tools,adios,iowarp,argonne,claude-code,dev]",
 ]
 
 [project.urls]

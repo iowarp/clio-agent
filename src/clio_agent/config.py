@@ -238,7 +238,14 @@ class LMProviderConfig:
     presence_penalty: float | None = None
     environment: str = "dev"
     codex_transport: Literal["exec", "sdk"] = "exec"
-    claude_code_transport: Literal["exec"] = "exec"
+    # "sdk" (DEFAULT — the best config): the in-process Claude Agent SDK with a
+    #   persistent CLI session — no per-call spawn, streaming-capable, and
+    #   setting_sources=[] keeps the user's ~/.claude/CLAUDE.md out of the prompt
+    #   (faster + cleaner than exec). Needs the claude-agent-sdk package (the
+    #   `claude-code` extra).
+    # "exec": one `claude -p` subprocess per LM call — needs only the `claude` CLI on
+    #   PATH, but pays ~10-15s cold start every call (#715). Explicit opt-out.
+    claude_code_transport: Literal["exec", "sdk"] = "sdk"
     # Reasoning/thinking budget. Mapped per-provider in create_lm:
     #   anthropic → thinking={"type":"enabled","budget_tokens":N}
     #   openai/openai-compat → reasoning_effort bucketed from N
@@ -301,9 +308,10 @@ class LMProviderConfig:
             raise ValueError(
                 f"codex_transport must be 'exec' or 'sdk' (got {self.codex_transport!r})"
             )
-        if self.claude_code_transport != "exec":
+        if self.claude_code_transport not in {"exec", "sdk"}:
             raise ValueError(
-                f"claude_code_transport must be 'exec' (got {self.claude_code_transport!r})"
+                f"claude_code_transport must be 'exec' or 'sdk' "
+                f"(got {self.claude_code_transport!r})"
             )
 
     def _apply_model_profile_defaults(self) -> None:
@@ -956,33 +964,35 @@ def _io_logging_lm_cls() -> Any:
             or None. Lazily imports app to avoid an import cycle; resolves the
             turn-scoped contextvars copied into the executor running this call."""
             try:
-                from clio_agent.gact.app import (  # noqa: PLC0415
-                    _ACTIVE_GACT_APP,
-                    _ACTIVE_GACT_SESSION_ID,
-                    _ACTIVE_GACT_TRACE_ID,
-                    _ACTIVE_GACT_TURN_ID,
-                    _emit_semantic_event,
+                from clio_agent.gact.context import (  # noqa: PLC0415
+                    active_app,
+                    active_session_id,
+                    active_trace_id,
+                    active_turn_id,
                 )
+                from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
             except Exception:  # noqa: BLE001 - app may be unavailable (CLI/optimizer paths)
                 return None
-            app = _ACTIVE_GACT_APP.get()
-            sid = _ACTIVE_GACT_SESSION_ID.get()
+            app = active_app()
+            sid = active_session_id()
             if app is None or not sid:
                 return None
             return (
                 app,
                 sid,
-                _ACTIVE_GACT_TURN_ID.get(),
-                _ACTIVE_GACT_TRACE_ID.get(),
+                active_turn_id(),
+                active_trace_id(),
                 _emit_semantic_event,
             )
 
         def _clio_log_last_call(self) -> None:
             try:
-                target = self._clio_trace_target()
-                # No active GACT turn -> nothing to emit (CLI/optimizer paths).
-                if target is None:
-                    return
+                # ONE capture per call. Read ``history[-1]`` exactly once here and
+                # stash the reasoning-channel text on the instance so the ReAct loop
+                # reuses THIS read (``app._active_lm_last_reasoning``) instead of a
+                # second independent ``history[-1]`` read. Done before the trace gate
+                # so the stash is populated for every call (the loop runs inside a
+                # GACT turn; a non-turn call simply emits no ``lm.call``).
                 history = getattr(self, "history", None) or []
                 if not history or not isinstance(history[-1], dict):
                     return
@@ -1013,6 +1023,13 @@ def _io_logging_lm_cls() -> Any:
                         if not isinstance(ch0, dict)
                         else ch0.get("finish_reason")
                     ) or ""
+                # Stash the reasoning from this single read so the react step reuses it.
+                self._clio_last_reasoning = str(reasoning or "").strip()
+                # No active GACT turn -> nothing to emit (CLI/optimizer paths). The
+                # stash above is still set so a synchronous loop can read it.
+                target = self._clio_trace_target()
+                if target is None:
+                    return
                 record = {
                     "model": entry.get("model"),
                     "messages": entry.get("messages") or entry.get("prompt"),
@@ -1030,25 +1047,30 @@ def _io_logging_lm_cls() -> Any:
                 # can't reach), captured on the failure path too. detail_level="off"
                 # keeps it off SSE/UI. (Legacy CLIO_LOG_LM_IO JSONL mirror removed --
                 # the canonical trace is the single recorder.)
-                if target is not None:
-                    app, sid, turn_id, trace_id, emit = target
-                    try:
-                        emit(
-                            app,
-                            sid,
-                            "lm.call",
-                            turn_id=turn_id,
-                            trace_id=trace_id,
-                            status="completed",
-                            summary=f"LM call ({record['finish_reason'] or 'ok'}).",
-                            provider={"model_id": str(record["model"] or "")},
-                            payload=record,
-                            detail_level="off",
-                        )
-                    except Exception:  # noqa: BLE001 - capture must never fail a call
-                        pass
-            except Exception:  # noqa: BLE001 - logging is best-effort, never fail a call
-                pass
+                app, sid, turn_id, trace_id, emit = target
+                try:
+                    emit(
+                        app,
+                        sid,
+                        "lm.call",
+                        turn_id=turn_id,
+                        trace_id=trace_id,
+                        status="completed",
+                        summary=f"LM call ({record['finish_reason'] or 'ok'}).",
+                        provider={"model_id": str(record["model"] or "")},
+                        payload=record,
+                        detail_level="off",
+                    )
+                except Exception as exc:  # noqa: BLE001 - capture must never fail a call
+                    # NEVER silent: surfaces e.g. the ARC-as-source fail-loud RuntimeError
+                    # (no ARC reachable) without breaking the call.
+                    from clio_agent.runtime import trace  # noqa: PLC0415
+
+                    trace.event("LM-CALL-CAPTURE", "lm.call capture/emit failed: %r", exc)
+            except Exception as exc:  # noqa: BLE001 - logging is best-effort, never fail a call
+                from clio_agent.runtime import trace  # noqa: PLC0415
+
+                trace.event("LM-CALL-CAPTURE", "lm.call logging failed: %r", exc)
 
     _IO_LOGGING_LM_CLS = IOLoggingLM
     return _IO_LOGGING_LM_CLS

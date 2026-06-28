@@ -188,24 +188,16 @@ def test_real_agent_propose_edit_trace_becomes_applicable_diff(
             ).json()["id"]
             msg = complete_turn(c, sid, "propose the edit")
             diff_parts = [part for part in msg["parts"] if part["type"] == "file_diff"]
+            # #731: parts serialize via the slim ``to_wire`` projection (omitempty —
+            # only fields the part set survive, plus the id/type/agent_id triple and
+            # the monotonic ``sequence`` ordering key), identical to the live SSE
+            # shape so a reloaded conversation matches what streamed.
             assert diff_parts == [
                 {
                     "id": diff_parts[0]["id"],
                     "type": "file_diff",
-                    "metadata": {},
-                    "text": "",
-                    "selected_agent": "",
-                    "rationale": "",
-                    "confidence": 0.0,
-                    "heuristic": False,
-                    "execution_path": "",
-                    "call_id": "",
-                    "tool_name": "",
-                    "input": {},
-                    "content": [],
-                    "is_error": False,
-                    "cached": False,
-                    "duration_ms": 0.0,
+                    "agent_id": "data",
+                    "sequence": diff_parts[0]["sequence"],
                     "path": str(target),
                     "unified_diff": proposed["unified_diff"],
                     "new_content": proposed["new_content"],
@@ -249,7 +241,7 @@ def test_apply_edit_uses_shared_policy_writer(
         target.write_text(new_content, encoding="utf-8")
         return {"path": str(target), "size_bytes": target.stat().st_size, "ok": True}
 
-    monkeypatch.setattr("clio_agent.gact.app.write_text_with_policy", spy_writer)
+    monkeypatch.setattr("clio_agent.gact.enrichment.write_text_with_policy", spy_writer)
 
     target = workspace / "x.txt"
     result = _apply_edit_to_disk(

@@ -274,10 +274,15 @@ async def test_bare_list_payload_is_parsed() -> None:
 
 @pytest.mark.asyncio
 async def test_noop_makes_zero_network_calls() -> None:
-    """NoOpHandshake never touches the client across every phase."""
+    """NoOpHandshake never touches the client across every phase.
+
+    Connectivity is now ``OK`` (a local CLI is always reachable) and discovery
+    returns the provider's registry-declared candidate models — but still with
+    zero network traffic on the probe client.
+    """
     ctx = HandshakeContext(
-        provider_id="claude_code-prov",
-        provider_kind="claude_code",
+        provider_id="codex",
+        provider_kind="codex",
         api_base="",
         allow_external_sources=False,
     )
@@ -285,11 +290,12 @@ async def test_noop_makes_zero_network_calls() -> None:
     handshake = NoOpHandshake(provider=object())
 
     conn = await handshake.check_connectivity(client, ctx)
-    assert conn.connectivity is ConnectivityState.SKIPPED
+    assert conn.connectivity is ConnectivityState.OK
     assert conn.auth is AuthState.NOT_REQUIRED
 
     models = await handshake.discover_models(client, ctx)
-    assert models == []
+    # The codex registry catalog declares candidate model ids.
+    assert {m["id"] for m in models} >= {"gpt-5.5", "gpt-5.1"}
 
     profile = await handshake.discover_model_config(client, ctx, {"id": "x"})
     assert profile.id == "x"
@@ -298,8 +304,23 @@ async def test_noop_makes_zero_network_calls() -> None:
 
 
 @pytest.mark.asyncio
-async def test_noop_full_handshake_skipped_no_models() -> None:
-    """A full ``handshake()`` over NoOp is SKIPPED/NOT_REQUIRED with no models."""
+async def test_noop_discover_models_unknown_provider_is_empty() -> None:
+    """An unregistered provider id yields no models (no crash)."""
+    ctx = HandshakeContext(
+        provider_id="not-a-real-provider",
+        provider_kind="codex",
+        api_base="",
+        allow_external_sources=False,
+    )
+    handshake = NoOpHandshake(provider=object())
+    assert await handshake.discover_models(FakeAsyncClient(), ctx) == []
+
+
+@pytest.mark.asyncio
+async def test_noop_full_handshake_ok_with_enriched_context() -> None:
+    """A full ``handshake()`` over NoOp is OK, lists registry models, and the base
+    enrichment fills each model's context window from the offline source cascade —
+    all without a single HTTP call to the provider (iowarp/clio-agent#740)."""
 
     class _NoNetClient(FakeAsyncClient):
         async def get(self, url: str, headers: dict[str, str] | None = None) -> FakeResponse:
@@ -309,15 +330,19 @@ async def test_noop_full_handshake_skipped_no_models() -> None:
     handshake._open_client = _const_client(_NoNetClient())  # type: ignore[method-assign]
 
     ctx = HandshakeContext(
-        provider_id="codex-prov",
+        provider_id="codex",
         provider_kind="codex",
         api_base="",
-        allow_external_sources=False,
+        allow_external_sources=True,
     )
     report = await handshake.handshake(ctx)
-    assert report.connectivity is ConnectivityState.SKIPPED
+    assert report.connectivity is ConnectivityState.OK
     assert report.auth is AuthState.NOT_REQUIRED
-    assert report.models == ()
+    by_id = {m.id: m for m in report.models}
+    assert {"gpt-5.5", "gpt-5.5-codex", "gpt-5.1"} <= set(by_id)
+    # Every candidate model carries a resolved context window (no None leaks).
+    for model in report.models:
+        assert model.context_window and model.context_window > 0
 
 
 def _const_client(client: Any) -> Any:

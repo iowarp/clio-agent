@@ -29,6 +29,8 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import shutil
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -39,6 +41,7 @@ import yaml
 __all__ = [
     "MCPServerSpec",
     "MCPConfigError",
+    "MCPSpawnError",
     "BUILTIN_SERVER_NAMES",
     "expand_env",
     "spec_from_declaration",
@@ -57,6 +60,20 @@ _URL_PREFIXES = ("http://", "https://")
 
 class MCPConfigError(ValueError):
     """A declaration could not be parsed (recorded on the spec, not raised)."""
+
+
+class MCPSpawnError(RuntimeError):
+    """A stdio MCP server cannot be spawned — raised loudly, never swallowed.
+
+    Raised by :func:`transport_for` at mount time when a precondition for spawning
+    the subprocess is already known to be unmet: the launcher command is not on
+    PATH, or the working directory does not exist. Surfacing this precise cause is
+    the whole point. Otherwise the subprocess dies post-spawn with a bare
+    ``No such file or directory (os error 2)``, the proxy connection drops,
+    ``list_tools`` returns an empty namespace, and the expert fails three layers
+    downstream as an opaque ``_UnsupportedSessionAgent`` / "tools unavailable" — the
+    exact undiagnosable chain the gact-tui team hit on a default deployment.
+    """
 
 
 @dataclass(frozen=True)
@@ -313,13 +330,36 @@ def load_mcp_servers(
     for pack_id, servers in dict(pack_servers).items():
         if isinstance(servers, Mapping):
             merged.update(specs_from_mapping(servers, source=f"pack:{pack_id}", env=env))
-    config_home = Path(lookup.get("XDG_CONFIG_HOME") or (home / ".config"))
-    for name, value in _read_mcp_yaml(config_home / "clio-agent" / "mcp.yaml").items():
+    from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
+
+    user_mcp = paths.user_config_dir_for(home, lookup) / "mcp.yaml"
+    for name, value in _read_mcp_yaml(user_mcp).items():
         merged[name] = spec_from_declaration(name, value, source="user", env=env)
     for name, value in _read_mcp_yaml(cwd / ".clio" / "mcp.yaml").items():
         merged[name] = spec_from_declaration(name, value, source="workspace", env=env)
 
     return {n: replace(s, name=n) for n, s in merged.items()}
+
+
+def pdeathsig_wrapped_command(command: str, args: Sequence[str]) -> tuple[str, list[str]]:
+    """Make an MCP stdio child die with the clio server, even on a hard kill.
+
+    FastMCP / the mcp SDK spawn stdio MCP servers as plain subprocesses with no
+    parent-death link, so a SIGKILL / OOM / crash of the clio server orphans them
+    to init -- the recurring ``uvx`` MCP-server pile-up. On Linux we prepend
+    ``setpriv --pdeathsig SIGKILL --`` so the kernel reaps the child the instant
+    its parent (the spawning clio process) dies. This is defense-in-depth on top of
+    the process-group group-kill used for *graceful* shutdown; both enforce the same
+    invariant -- no orphaned MCP children. A no-op where ``setpriv`` is unavailable
+    (non-Linux / minimal images), where the process-group teardown still applies.
+    """
+    arg_list = list(args)
+    if sys.platform != "linux":
+        return command, arg_list
+    setpriv = shutil.which("setpriv")
+    if not setpriv:
+        return command, arg_list
+    return setpriv, ["--pdeathsig", "SIGKILL", "--", command, *arg_list]
 
 
 def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
@@ -332,6 +372,26 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
     if spec.transport == "stdio":
         from fastmcp.client.transports import StdioTransport  # noqa: PLC0415
 
+        # Fail-loud preflight (iowarp/clio-agent MCP spawn diagnosability): catch the
+        # two preconditions that otherwise make the subprocess die post-spawn with a
+        # bare ``os error 2`` and surface them precisely instead. A missing ``cwd`` is
+        # the prime default-deployment culprit: the workspace dir is passed both as the
+        # subprocess working directory (chdir target) and as ``CLIO_KIT_ARTIFACTS``, so
+        # if it does not exist the spawn fails with ENOENT.
+        if cwd is not None and not os.path.isdir(cwd):
+            raise MCPSpawnError(
+                f"MCP server {spec.name!r}: working directory {cwd!r} does not exist, so "
+                f"the stdio subprocess cannot start (chdir/artifacts-root ENOENT). "
+                f"source={spec.source or 'unknown'}"
+            )
+        resolved = shutil.which(spec.command) if spec.command else None
+        if not resolved:
+            raise MCPSpawnError(
+                f"MCP server {spec.name!r}: launcher command {spec.command!r} not found on "
+                f"PATH (cannot spawn the stdio subprocess). Ensure it is installed and on "
+                f"PATH for the clio-agent process. source={spec.source or 'unknown'}"
+            )
+
         env: dict[str, str] | None = dict(spec.env) or None
         if cwd:
             # Pin clio-kit's artifacts root to the workspace so staged resources
@@ -343,7 +403,7 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
             # subprocess keeps PATH etc. now that we hand it an explicit env.
             env = {**os.environ, **(dict(spec.env)), "CLIO_KIT_ARTIFACTS": cwd}
         return StdioTransport(
-            command=spec.command,
+            command=resolved,
             args=list(spec.args),
             env=env,
             cwd=cwd,

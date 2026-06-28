@@ -1,6 +1,6 @@
 """Additional ARC Memory tests for coverage of uncovered paths.
 
-Covers: _maybe_evict_index, get_invocation (cache miss path), get_session_invocations,
+Covers: index lifecycle (no cap; release eviction), get_invocation (cache miss path), get_session_invocations,
 store_metrics, get_metrics (with/without period, cache miss), store_context, get_context
 (cache miss), cache_tool_result, get_cached_tool_result, store_dataset_profile,
 get_dataset_profile (disk fallback), get_session_profiles, store_procedural_memory,
@@ -54,25 +54,33 @@ def _inv(trace_id, session_id="s1", agent_id="data"):
     )
 
 
-class TestMaybeEvictIndex:
-    """Test _maybe_evict_index."""
+class TestIndexLifecycle:
+    """The conversation/invocation B-tree indexes have NO size cap — an arbitrary
+    ceiling would silently fail large workloads (entries falling off the end). Memory is
+    bounded by LIFECYCLE instead: ``release_session`` evicts a session's branches on
+    end/delete, and the index is rebuildable from the durable record on restart."""
 
-    def test_no_eviction_under_limit(self, arc):
-        """Index below limit should not evict."""
-        arc._index_max_entries = 100
-        for i in range(50):
+    def test_no_size_cap_keeps_every_entry_findable(self, arc):
+        """Storing far more than any old ceiling keeps EVERY entry — nothing is dropped."""
+        for i in range(500):
             arc._conv_index.insert((f"s{i}", float(i)), {"session_id": f"s{i}"})
-        arc._maybe_evict_index(arc._conv_index)
-        assert len(arc._conv_index) == 50
+            arc._inv_index.insert((f"s{i}", float(i)), {"trace_id": f"t{i}"})
+        assert len(arc._conv_index) == 500
+        assert len(arc._inv_index) == 500
 
-    def test_eviction_over_limit(self, arc):
-        """Index over limit should evict oldest entries."""
-        arc._index_max_entries = 10
-        for i in range(20):
-            arc._conv_index.insert((f"s{i}", float(i)), {"session_id": f"s{i}"})
-        arc._maybe_evict_index(arc._conv_index)
-        # Should have ~90% of max = 9
-        assert len(arc._conv_index) <= 10
+    def test_release_session_evicts_only_that_sessions_branches(self, arc):
+        """Lifecycle eviction: releasing a session drops ITS index branches; others stay."""
+        for i in range(5):
+            arc._conv_index.insert(("keep", float(i)), {"session_id": "keep"})
+            arc._conv_index.insert(("drop", float(i)), {"session_id": "drop"})
+            arc._inv_index.insert(("drop", float(i)), {"trace_id": f"t{i}"})
+
+        arc.release_session("drop")
+
+        conv_keys = list(arc._conv_index.keys())
+        assert all(k[0] != "drop" for k in conv_keys), "released session's branch survived"
+        assert any(k[0] == "keep" for k in conv_keys), "other session was wrongly evicted"
+        assert all(k[0] != "drop" for k in arc._inv_index.keys())
 
 
 class TestGetInvocation:

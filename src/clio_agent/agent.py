@@ -44,6 +44,7 @@ from clio_agent.arc.schema import (
     NanoagentSpawn,
     RoutingDecision,
 )
+from clio_agent.arc.storage import make_arc_store
 from clio_agent.config import (
     create_chat_adapter,
     create_lm,
@@ -188,18 +189,43 @@ class ClioAgent(dspy.Module):
         >>> print(result.selected_expert)  # "chat", "utility", or tool-owner metadata
     """
 
-    def __init__(self, verbose: bool = False, data_dir: str = ".clio_agent"):
+    def __init__(
+        self,
+        verbose: bool = False,
+        data_dir: str = ".clio/agent",
+        arc: ARCMemory | None = None,
+    ):
         """Initialize ClioAgent with planner, chat, tool execution, and runtime storage.
 
         Args:
             verbose: If True, print reasoning and decisions
             data_dir: Base directory for ClioAgent data storage
+            arc: An EXISTING ARCMemory to reuse. ARC is a per-clio-agent keystone:
+                exactly ONE per process (one ARC per clio-agent, the gact server owns
+                its lifecycle). When the LM bind rebuilds the agent it MUST inject the
+                same ARC here so ``app.state.arc`` stays the SAME object across binds —
+                otherwise a fresh ARC's empty ``_events`` strands every event the prior
+                ARC already recorded onto the shared durable trace (the trace ⊋ ARC
+                split). ``None`` mints a fresh ARC (the standalone CLI / test path that
+                owns no server-level ARC).
         """
         super().__init__()
         self.verbose = verbose
 
-        # Initialize ARC Memory
-        self.arc = ARCMemory(data_dir=f"{data_dir}/arc", cache_capacity=1000)
+        # ARC Memory: reuse the injected one (the gact server owns the single per-process
+        # ARC and re-injects it on every bind) or mint one. The persistence backend comes
+        # from the factory: clio-core CTE by default (the gold-standard, in-process tiered
+        # store), LocalFSStore via CLIO_ARC_STORE=local. Falls back to LocalFS if the CTE
+        # binding/runtime is unavailable.
+        self.arc = (
+            arc
+            if arc is not None
+            else ARCMemory(
+                data_dir=f"{data_dir}/arc",
+                cache_capacity=1000,
+                store=make_arc_store(data_dir=f"{data_dir}/arc"),
+            )
+        )
         self.context_retriever = ContextRetriever(self.arc)
 
         # Initialize LSM Tree for metrics

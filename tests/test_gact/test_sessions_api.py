@@ -21,7 +21,10 @@ from clio_agent.gact.types import Message, Part, Tokens
 
 @pytest.fixture()
 def client(tmp_path: Path) -> TestClient:
-    return TestClient(build_app(sessions_path=tmp_path / "sessions.json"))
+    # These are session-CRUD tests that never drive a turn (so no semantic events
+    # are emitted) and one asserts the arc-absent policy (``arc_wired is False``).
+    # Pin ``arc=None`` so the suite-wide default-ARC test fixture leaves it unwired.
+    return TestClient(build_app(sessions_path=tmp_path / "sessions.json", arc=None))
 
 
 def _seed_text_message(client: TestClient, sid: str, text: str) -> None:
@@ -58,6 +61,24 @@ def _seed_text_messages(client: TestClient, sid: str, messages: list[tuple[str, 
         )
     client.app.state.messages[sid] = seeded
     client.app.state.message_store.replace_session(sid, seeded)
+
+
+def test_messages_includes_inflight_live_assistant_projection(client: TestClient) -> None:
+    sid = client.post("/v1/sessions", json={"title": "live reload"}).json()["id"]
+    _seed_text_message(client, sid, "start long turn")
+    client.app.state.live_assistant_message_ids[sid] = "msg_live_asst"
+    client.app.state.live_assistant_parts[sid] = [
+        Part(id="part_live", type="text", text="live assistant evidence", agent_id="main")
+    ]
+
+    resp = client.get(f"/v1/sessions/{sid}/messages")
+
+    assert resp.status_code == 200
+    messages = resp.json()["messages"]
+    assert [m["role"] for m in messages] == ["assistant", "user"]
+    assert messages[0]["id"] == "msg_live_asst"
+    assert messages[0]["parts"][0]["text"] == "live assistant evidence"
+    assert messages[0]["metadata"] == {"live": True, "status": "running"}
 
 
 def test_session_context_policy_reports_current_compartment_semantics(
@@ -218,9 +239,7 @@ def test_compact_retries_transient_provider_errors(tmp_path: Path) -> None:
         detail = c.get(f"/v1/sessions/{sid}/memory/events/{body['event_id']}").json()
         assert detail["event"]["id"] == body["event_id"]
         compact_events = [
-            e
-            for e in c.app.state.bus._history.get(sid, [])
-            if e.type == "session.compacted"
+            e for e in c.app.state.bus._history.get(sid, []) if e.type == "session.compacted"
         ]
         assert compact_events[-1].payload["event_id"] == body["event_id"]
 

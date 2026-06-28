@@ -46,9 +46,23 @@ class FakeARC:
             "conv_index_size": conv_index_size,
             "inv_index_size": inv_index_size,
         }
+        self._highway_sink: Any = None
 
     def get_cache_stats(self) -> dict[str, Any]:
         return dict(self._stats)
+
+    def set_highway_sink(self, sink: Any) -> None:
+        # ARC-as-source: gact wires the highway-derive sink onto the arc via
+        # _set_app_arc so a recorded event fans out to the trace/SSE/hooks.
+        self._highway_sink = sink
+
+    def record_semantic_event(self, event: Any) -> Any:
+        # Mirror ARCMemory.record_semantic_event: persist (a no-op for this
+        # stats-only stub) then DERIVE the highway. ARC is the source; the fail-loud
+        # _emit_semantic_event requires every event to enter through this method.
+        if self._highway_sink is not None:
+            return self._highway_sink(event)
+        return {}
 
 
 class FakeAgent:
@@ -619,9 +633,7 @@ def test_memory_tool_search_denies_cross_session_without_intent(
     assert resp.status_code == 403
     body = resp.json()
     assert body["error"]["error"] == "memory_policy_denied"
-    assert body["error"]["details"]["policy_decision"] == (
-        "deny_cross_session_requires_intent"
-    )
+    assert body["error"]["details"]["policy_decision"] == ("deny_cross_session_requires_intent")
     audit = client_with_arc.app.state.memory_tool_audit[-1]
     assert audit["status"] == "denied"
 

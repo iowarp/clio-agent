@@ -163,7 +163,12 @@ def test_post_message_happy_path(client: TestClient, fake_agent: FakeClioAgent) 
     assert rd["rationale"] == "matched coding keywords"
     assert rd["metadata"]["route_source"] == "dspy"
     assert rd["metadata"]["route_reason"] == "planner selected code expert"
+    # routing_decision is attributed to the orchestrator (the decider), while the
+    # answer text part carries the responding expert's agent_id so a client can
+    # attribute every part to its source without inference.
+    assert rd["agent_id"] == "main"
     assert a["parts"][1]["text"] == "hello from fake"
+    assert a["parts"][1]["agent_id"] == "code_expert"
 
     # User message persisted under the session.
     msgs = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
@@ -1166,12 +1171,20 @@ def test_post_message_tool_user_agent_executes_registered_agent(
     assert calls == [("tool_reviewer", "hi", sid)]
     assert assistant["stop_reason"] == "end_turn"
     assert assistant.get("error_info") is None
+    # #731: the persisted message is the live spine in ARRIVAL ORDER — the
+    # tool_call / tool_result parts the observer emitted are retained (previously
+    # only ``text`` parts survived, regrouping by type and dropping tool parts).
     assert [part["type"] for part in assistant["parts"]] == [
         "routing_decision",
+        "tool_call",
+        "tool_result",
         "text",
     ]
+    # #731: every persisted part carries a monotonic 1-based arrival-order key.
+    assert [part["sequence"] for part in assistant["parts"]] == [1, 2, 3, 4]
     assert assistant["parts"][0]["selected_agent"] == "tool_reviewer"
-    assert assistant["parts"][1]["text"] == "TOOL_USER_AGENT_OK"
+    assert assistant["parts"][1]["tool_name"] == "fs_read_file"
+    assert assistant["parts"][-1]["text"] == "TOOL_USER_AGENT_OK"
     assert assistant["metadata"]["stream_source"] == "batch"
     assert assistant["metadata"]["stream_fallback"]["reason"] == ("dynamic_tool_stream_unavailable")
     assert assistant["metadata"]["tools_called"][0]["name"] == "fs_read_file"
@@ -1558,3 +1571,91 @@ def test_post_message_without_routing_emits_text_only(
         a = complete_turn(c, sid, "hi")
         types = [p["type"] for p in a["parts"]]
         assert types == ["text"], f"got parts {types}, want just [text]"
+
+
+def test_tool_call_part_carries_thought_and_invoking_expert(tmp_path: Path) -> None:
+    """#732: the live tool_call part is one ordered event = the model's reasoning
+    (``thought``) + the action, authored by the INVOKING expert (the active ReAct
+    scope, e.g. ``geospatial``) rather than the tool's owning server (``geo``).
+    The tool RESPONSE is a separate ``tool_result`` event, same ``call_id``,
+    likewise authored by the invoking expert."""
+
+    from clio_agent.gact import context as ctx
+    from clio_agent.gact.app import _make_tool_observer
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=FakeClioAgent(answer="x"))
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={}).json()["id"]
+        observe = _make_tool_observer(app)
+        sid_tok = ctx.set_tool_session_id(sid)
+        scope_tok = ctx.set_react_scope("geospatial")
+        thought_tok = ctx.set_step_thought("Resolve Los Angeles to coordinates.", "raw cot")
+        try:
+            observe("geo_geocode", {"query": "Los Angeles"}, "started", None)
+            observe("geo_geocode", {"query": "Los Angeles"}, "completed", None, {"lat": 34.0})
+        finally:
+            ctx.reset(thought_tok)
+            ctx.reset(scope_tok)
+            ctx.reset(sid_tok)
+
+        parts = app.state.live_assistant_parts[sid]
+        call = next(p for p in parts if p.type == "tool_call")
+        result = next(p for p in parts if p.type == "tool_result")
+        # authored by the invoking expert, NOT the tool owner
+        assert call.agent_id == "geospatial"
+        assert result.agent_id == "geospatial"
+        assert result.call_id == call.call_id
+        # the step thought rides the tool_call part (one ordered event)...
+        assert call.thought == "Resolve Los Angeles to coordinates."
+        # ...and survives the slim on-the-wire projection
+        wire = call.to_wire()
+        assert wire["thought"] == "Resolve Los Angeles to coordinates."
+        assert wire["agent_id"] == "geospatial"
+
+
+def test_dedup_cross_agent_text_drops_verbatim_echo() -> None:
+    """#736: when the resumed orchestrator (``main``) re-emits a terminal child's
+    answer verbatim, the later cross-agent byte-identical ``text`` part is dropped
+    from the authored transcript and the original child-authored part is kept."""
+
+    from clio_agent.gact.turn import _dedup_cross_agent_text
+    from clio_agent.gact.types import Part
+
+    answer = "## Region\n\nLos Angeles. Strain-rate estimation complete."
+    parts = [
+        Part(id="p1", type="text", agent_id="synthesis", text=answer),
+        Part(id="p2", type="expert_handoff", agent_id="main"),
+        # main reprints synthesis's answer verbatim (the #736 dup)
+        Part(id="p3", type="text", agent_id="main", text=answer),
+        # main's own distinct closing wrap-up — must survive
+        Part(id="p4", type="thinking", agent_id="main", text="All stages complete."),
+    ]
+
+    kept = _dedup_cross_agent_text(parts)
+
+    kept_ids = [p.id for p in kept]
+    assert kept_ids == ["p1", "p2", "p4"]
+    # the surviving answer is the child-authored original
+    answer_parts = [p for p in kept if p.type == "text" and p.text.strip() == answer.strip()]
+    assert len(answer_parts) == 1
+    assert answer_parts[0].agent_id == "synthesis"
+
+
+def test_dedup_cross_agent_text_keeps_same_author_repeat() -> None:
+    """The dedup is cross-agent only: a single author legitimately repeating text
+    (and whitespace-only / empty parts) is left untouched — only a DIFFERENT author's
+    verbatim echo of an earlier part is removed."""
+
+    from clio_agent.gact.turn import _dedup_cross_agent_text
+    from clio_agent.gact.types import Part
+
+    parts = [
+        Part(id="a1", type="text", agent_id="data", text="status: ok"),
+        Part(id="a2", type="text", agent_id="data", text="status: ok"),  # same author
+        Part(id="a3", type="text", agent_id="analysis", text=""),  # empty: ignored
+        Part(id="a4", type="text", agent_id="analysis", text="   "),  # blank: ignored
+    ]
+
+    kept = _dedup_cross_agent_text(parts)
+
+    assert [p.id for p in kept] == ["a1", "a2", "a3", "a4"]

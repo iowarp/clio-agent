@@ -12,7 +12,9 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
+from clio_agent.config import LMProviderConfig
 from clio_agent.gact.app import build_app
+from clio_agent.gact.providers.config import _effective_lm_config
 
 
 def _wait_lm_provider_ready(c: TestClient, timeout_s: float = 5.0) -> dict[str, Any]:
@@ -37,6 +39,28 @@ def test_get_lm_provider_unconfigured(tmp_path: Path) -> None:
         assert "openrouter" in ids
         assert "lm_studio" in ids
         assert "codex" in ids
+
+
+def test_effective_lm_config_reports_claude_code_transport() -> None:
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            lm_config={},
+            agent=SimpleNamespace(
+                _provider_config=LMProviderConfig(
+                    provider="claude_code",
+                    api_base="claude-code://exec",
+                    model="haiku",
+                    api_key="x",
+                    claude_code_transport="exec",
+                )
+            ),
+        )
+    )
+
+    cfg = _effective_lm_config(app)  # type: ignore[arg-type]
+
+    assert cfg["provider"] == "claude_code"
+    assert cfg["transport"] == "exec"
 
 
 def test_get_lm_provider_reports_argonne_auth_required(tmp_path: Path, monkeypatch) -> None:
@@ -117,15 +141,17 @@ def test_auth_provider_returns_interactive_argonne_instructions(
         popen_calls.append(cmd)
         return object()
 
-    monkeypatch.setattr("clio_agent.gact.app.importlib.util.find_spec", _find_spec)
+    # The auth_provider handler moved to routes/providers.py (#714); patch the
+    # module-level importlib/subprocess/shutil it resolves there.
+    monkeypatch.setattr("clio_agent.gact.routes.providers.importlib.util.find_spec", _find_spec)
     monkeypatch.setattr(
         argonne_auth,
         "check_auth_status",
         lambda: (_ for _ in ()).throw(AssertionError("auth button must not probe token status")),
     )
-    monkeypatch.setattr("clio_agent.gact.app.subprocess.Popen", _popen)
+    monkeypatch.setattr("clio_agent.gact.routes.providers.subprocess.Popen", _popen)
     if os.name != "nt":
-        monkeypatch.setattr("clio_agent.gact.app.shutil.which", lambda name: None)
+        monkeypatch.setattr("clio_agent.gact.routes.providers.shutil.which", lambda name: None)
 
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
@@ -658,6 +684,61 @@ def test_put_lm_provider_accepts_codex_sdk_transport(tmp_path: Path, monkeypatch
     assert captured["cfg"].codex_transport == "sdk"
     assert app.state.lm_config["transport"] == "sdk"
     assert os.environ["CLIO_CODEX_TRANSPORT"] == "sdk"
+
+
+def test_put_lm_provider_accepts_claude_code_exec_transport(tmp_path: Path, monkeypatch) -> None:
+    """Claude Code runtime config must apply transport to claude_code_transport."""
+    monkeypatch.delenv("CLIO_CLAUDE_CODE_TRANSPORT", raising=False)
+    captured: dict[str, Any] = {}
+
+    class _StubAgent:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.arc = type(
+                "ARC",
+                (),
+                {
+                    "get_cache_stats": lambda self: {
+                        "hits": 0,
+                        "misses": 0,
+                        "hit_rate": 0.0,
+                        "capacity": 10,
+                    }
+                },
+            )()
+
+        def forward(self, *args: Any, **kwargs: Any) -> Any:
+            return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
+
+    monkeypatch.setattr("clio_agent.agent.ClioAgent", _StubAgent)
+
+    def _stub_create_lm(cfg: Any) -> Any:
+        captured["cfg"] = cfg
+        return type("FakeLM", (), {"history": []})()
+
+    monkeypatch.setattr("clio_agent.config.create_lm", _stub_create_lm)
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        resp = c.put(
+            "/v1/providers/lm",
+            json={
+                "provider": "claude_code",
+                "api_base": "claude-code://exec",
+                "model": "haiku",
+                "transport": "exec",
+            },
+        )
+        body = resp.json()
+        get_body = c.get("/v1/providers/lm").json()
+
+    assert resp.status_code == 200, resp.text
+    assert body["transport"] == "exec"
+    assert get_body["transport"] == "exec"
+    assert captured["cfg"].provider == "claude_code"
+    assert captured["cfg"].api_key == "x"
+    assert captured["cfg"].claude_code_transport == "exec"
+    assert app.state.lm_config["transport"] == "exec"
+    assert os.environ["CLIO_CLAUDE_CODE_TRANSPORT"] == "exec"
 
 
 def test_put_lm_provider_applies_lm_studio_context_length(tmp_path: Path, monkeypatch) -> None:

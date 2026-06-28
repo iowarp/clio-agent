@@ -17,11 +17,12 @@ See docs/ARC_MEMORY_LAYER.md for architecture details.
 
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, cast
 
+from clio_agent import conf
 from clio_agent.arc.cache import LRUCache
 from clio_agent.arc.index import BTreeIndex
-from clio_agent.arc.live import LiveRuntimeContext
+from clio_agent.arc.live import EVENTS_SCOPE, LiveRuntimeContext, build_event_content
 from clio_agent.arc.lsm import LSMTree
 from clio_agent.arc.schema import (
     Context,
@@ -30,6 +31,7 @@ from clio_agent.arc.schema import (
     Invocation,
     Metrics,
     ProceduralMemory,
+    SegmentKind,
     VariantRecord,
     decode_context,
     decode_conversation,
@@ -46,7 +48,28 @@ from clio_agent.arc.schema import (
     encode_procedural_memory,
     encode_variant_record,
 )
-from clio_agent.arc.storage import ARCStore, LocalFSStore
+from clio_agent.arc.segments import OpLogger, SegmentStore
+from clio_agent.arc.storage import ARCStore, make_arc_store
+from clio_agent.runtime import trace
+
+# ``EVENTS_SCOPE`` (the reserved scope holding ARC's ONE persisted semantic-event log)
+# is defined in ``arc.live`` (the observer that projects over it) and imported above so
+# the writer (this module) and the reader share one constant. The import re-exports it
+# as ``clio_agent.arc.memory.EVENTS_SCOPE`` for back-compat importers. It is its OWN
+# scope, so an expert/working-set render never sees it; combined with ``semantic_event``
+# not being a working-set kind nor part of the dspy trajectory projection, the persisted
+# log can never leak into a model prompt.
+
+# Event types NOT persisted as ``semantic_event`` segments.
+#   * ``lm.token.delta`` — the high-volume transient live-token stream (~1840/turn)
+#     that rides the highway only; persisting one segment apiece would bloat ARC for
+#     zero record value.
+# (``arc.op`` is NOT here: it is the DERIVED write-log of a segment mutation and no
+# longer enters ``record_semantic_event`` at all — the gact op-logger derives it
+# DIRECTLY to the durable trace + SSE bus. With no path back into ARC's record, the
+# old recursion (record -> op-logger -> arc.op -> record) cannot form, so neither the
+# skip entry nor the thread-local re-entrancy guard is needed.)
+_EVENT_LOG_SKIP: frozenset[str] = frozenset({"lm.token.delta"})
 
 
 class ARCMemory:
@@ -56,7 +79,7 @@ class ARCMemory:
     metrics, and context with O(log N) fallback to disk.
 
     Args:
-        data_dir: Directory for persistent storage (default: ".clio_agent/arc")
+        data_dir: Directory for persistent storage (default: ".clio/agent/arc")
         cache_capacity: Maximum cache entries (default: 1000)
 
     Examples:
@@ -70,8 +93,8 @@ class ARCMemory:
 
     def __init__(
         self,
-        data_dir: str = ".clio_agent/arc",
-        cache_capacity: int = 1000,
+        data_dir: str = ".clio/agent/arc",
+        cache_capacity: Optional[int] = None,
         store: "ARCStore | None" = None,
     ):
         """Initialize ARC memory system.
@@ -79,38 +102,88 @@ class ARCMemory:
         Args:
             data_dir: Directory path for persistent storage
             cache_capacity: Maximum number of cached items
-            store: Optional ARCStore for record persistence. Defaults to a
-                local-filesystem store rooted at ``data_dir``; inject a
-                clio-core CTE-backed store here to relocate persistence without
-                changing any call site.
+            store: Optional ARCStore for record persistence. When ``None`` the
+                backend is chosen by :func:`make_arc_store` — clio-core CTE by
+                default, LocalFS only on explicit ``CLIO_ARC_STORE=local``. Pass a
+                store to override the factory (e.g. tests injecting a specific backend).
         """
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
         # Persistence seam: every record kind is read/written through an
         # ARCStore, so ARC never touches the filesystem directly. The LSM tree
-        # (below) remains a separate high-throughput subsystem.
-        self._store: ARCStore = store if store is not None else LocalFSStore(self.data_dir)
+        # (below) remains a separate high-throughput subsystem. The backend is
+        # chosen by the factory (default clio-core CTE; LocalFS only on explicit
+        # CLIO_ARC_STORE=local), NOT hardcoded -- a hardcoded LocalFS here is what
+        # silently kept ARC off clio-core regardless of config.
+        self._store: ARCStore = (
+            store if store is not None else make_arc_store(data_dir=self.data_dir)
+        )
 
-        # Live runtime context: folds the canonical semantic-event stream into
-        # per-session state so Invocation/Conversation are projections of the
-        # trace, not post-hoc rebuilds. Fed via on_semantic_event (registered as
-        # a sink live_consumer). Lean + released by the session lifecycle below.
-        self._live = LiveRuntimeContext()
+        # Live context plane: the ordered, scoped, mutable segment store the gact
+        # ReAct loop reads its prompt from each iteration. It also holds ARC's ONE
+        # persisted semantic-event log (the reserved ``_events`` scope). The op_logger
+        # that mirrors each op into the durable Trace is injected later by the gact app
+        # via set_segment_op_logger (keeps arc/ free of any gact/ import).
+        self._segments = SegmentStore(self._store)
 
-        # Cache layer (hot data)
-        self._cache = LRUCache(capacity=cache_capacity)
+        # Live runtime context: PROJECTS the canonical semantic-event stream into
+        # per-session turn records so Invocation/Conversation are projections of the
+        # trace, not post-hoc rebuilds. It has NO private store and NO separate folded
+        # copy -- it is a pure READER over the ONE ``_events`` log persisted into the
+        # segment buffer above by ``_record_event_segment`` (one ``semantic_event``
+        # segment per recorded event). Released by the session lifecycle below.
+        self._live = LiveRuntimeContext(self._segments)
 
-        # Index layers (O(log N) retrieval)
-        # Keys are (session_id, timestamp) tuples
+        # ARC-as-source highway sink: the closure (injected by gact via
+        # ``set_highway_sink``) that DERIVES the data highway (durable trace / SSE /
+        # hooks) from a recorded semantic event. ARC records the event FIRST
+        # (persist + observer fold), THEN calls this to fan out — so ARC is the
+        # source and the highway is a projection of ARC's record. Kept as an injected
+        # callable so ``arc/`` never imports ``gact/``. ``None`` until wired (tests /
+        # memory-only deployments) -> ``record_semantic_event`` returns ``{}``.
+        self._highway_sink: Optional[Callable[[Any], Any]] = None
+
+        # Cache layer (hot data). A hot LRU — a miss re-reads from the store, so a size
+        # bound loses NO data — but it must be configurable (conf, file→env→default) so
+        # smaller-RAM deployments can tune it. An explicit ``cache_capacity`` arg wins.
+        capacity = (
+            cache_capacity
+            if cache_capacity is not None
+            else conf.resolve(
+                "arc.cache_capacity",
+                env="CLIO_ARC_CACHE_CAPACITY",
+                default=1000,
+                cast=conf.as_int,
+            )
+        )
+        self._cache = LRUCache(capacity=capacity)
+
+        # Index layers (O(log N) retrieval), keyed by (session_id, timestamp). NO size
+        # cap: an arbitrary ceiling would silently fail large workloads (entries falling
+        # off the end). Memory is bounded by LIFECYCLE instead — ``release_session``
+        # evicts a session's branches on end/delete, and the index is rebuildable from the
+        # durable record (trace / stored blobs / clio-core) on restart.
         self._conv_index = BTreeIndex()  # Conversation index
         self._inv_index = BTreeIndex()  # Invocation index
 
-        # LSM tree for high-throughput metrics
+        # LSM tree for high-throughput metrics. Flush/compaction thresholds are storage
+        # mechanics (data persists to SSTables; compaction merges, never drops) — kept,
+        # but conf-driven rather than hardcoded.
         self._lsm = LSMTree(
             data_dir=str(self.data_dir / "lsm"),
-            memtable_size=1000,
-            compaction_threshold=5,
+            memtable_size=conf.resolve(
+                "arc.lsm_memtable_size",
+                env="CLIO_ARC_LSM_MEMTABLE_SIZE",
+                default=1000,
+                cast=conf.as_int,
+            ),
+            compaction_threshold=conf.resolve(
+                "arc.lsm_compaction_threshold",
+                env="CLIO_ARC_LSM_COMPACTION_THRESHOLD",
+                default=5,
+                cast=conf.as_int,
+            ),
         )
 
         # Thread safety
@@ -119,34 +192,6 @@ class ARCMemory:
         # Performance tracking
         self._disk_reads = 0
         self._disk_writes = 0
-
-        # Index eviction configuration
-        self._index_max_entries = 10000  # Maximum entries per index before eviction
-
-    def _maybe_evict_index(self, index: BTreeIndex) -> None:
-        """Evict old entries from index if it exceeds maximum size.
-
-        Implements LRU-style eviction by removing oldest (first) entries
-        when index grows beyond configured limit. This prevents unbounded
-        memory growth in the B-tree indexes.
-
-        Args:
-            index: BTreeIndex instance to potentially evict from
-
-        Examples:
-            >>> arc = ARCMemory()
-            >>> arc._maybe_evict_index(arc._conv_index)
-        """
-        if len(index) > self._index_max_entries:
-            # Get all keys in sorted order
-            all_keys = list(index.keys())
-
-            # Calculate how many entries to remove (remove 10% to reduce churn)
-            entries_to_remove = len(all_keys) - int(self._index_max_entries * 0.9)
-
-            # Remove oldest entries (first in the sorted order)
-            for key in all_keys[:entries_to_remove]:
-                index.delete(key)
 
     def store_conversation(self, conversation: Conversation) -> None:
         """Store conversation in cache and index.
@@ -187,9 +232,6 @@ class ARCMemory:
             encoded = encode_conversation(conversation)
             self._store.put("conversations", session_id, encoded)
             self._disk_writes += 1
-
-            # Evict old index entries if necessary
-            self._maybe_evict_index(self._conv_index)
 
     def get_conversation(self, session_id: str) -> Optional[Conversation]:
         """Retrieve conversation (cache-first).
@@ -309,9 +351,6 @@ class ARCMemory:
                     "status": invocation.status,
                 },
             )
-
-            # Evict old index entries if necessary
-            self._maybe_evict_index(self._inv_index)
 
     def get_invocation(self, invocation_id: str) -> Optional[Invocation]:
         """Get specific invocation.
@@ -1041,16 +1080,132 @@ class ARCMemory:
 
     # ---- Live runtime context (trace fold) ----
 
-    def on_semantic_event(self, event: Any) -> None:
-        """Fold one RAW semantic event into the live runtime context.
+    def set_highway_sink(self, sink: "Callable[[Any], Any] | None") -> None:
+        """Inject the highway-derive sink (called by gact at the arc choke point).
 
-        Registered as a ``live_consumer`` on the SemanticEventSink so ARC sees
-        the same events the durable trace captures. Best-effort by construction.
+        ``sink`` fans a recorded semantic event out to the data highway (durable
+        trace / SSE / hooks). ARC calls it LAST in :meth:`record_semantic_event`,
+        AFTER persisting + folding the event, so the highway is a projection of
+        ARC's record rather than a parallel consumer. Kept injected so ``arc/``
+        never imports ``gact/``.
         """
-        self._live.fold(event)
+        self._highway_sink = sink
 
-    def get_live_context(self, session_id: str, *, max_turns: int = 5) -> Dict[str, Any]:
-        """Compact live summary of an open session's recent turns (or empty)."""
+    def record_semantic_event(self, event: Any) -> Any:
+        """ARC-as-source entry: record a semantic event, THEN derive the highway.
+
+        This is the inversion point. Every semantic event flows through ARC FIRST
+        so ARC holds everything, and the data highway is DERIVED from ARC's record:
+
+        1. ``on_semantic_event(event)`` — persist the event as one ``semantic_event``
+           segment under the reserved ``_events`` scope (ARC's complete, freeze-anytime
+           record AND the single substrate the live observer projects over).
+        2. ``self._highway_sink(event)`` — derive the highway (durable trace / SSE /
+           hooks). Returns the sink's value (the projected event dict) so callers
+           that expected ``sink.emit(event)``'s return are unaffected; ``{}`` when
+           no sink is wired.
+
+        Each step is guarded so an observability record can never break a turn.
+        """
+        try:
+            self.on_semantic_event(event)
+        except Exception as exc:  # noqa: BLE001 - never break a turn, but NEVER swallow silently
+            trace.event(
+                "ARC-EVENTS",
+                "FAILED to persist event etype=%r sid=%r: %r",
+                getattr(event, "event_type", ""),
+                getattr(event, "session_id", ""),
+                exc,
+            )
+        sink = self._highway_sink
+        if sink is None:
+            return {}
+        return sink(event)
+
+    def _event_skip_reason(self, etype: str, sid: str) -> str:
+        """ONE decision for whether to persist an event to the ``_events`` log.
+
+        Returns the skip reason (``""`` => persist). Collapses every drop into one
+        place so a dropped event is a single explainable line, not a scattered set of
+        silent early-returns:
+
+        * ``"no-event-type"`` — malformed event with no type (anomaly).
+        * ``"skip-listed"``   — a derived/high-volume highway-only type (lm.token.delta).
+        * ``"no-session-id"`` — an EXPECTED category: some top-level events are
+          session-less (no session to file them under). Not an error.
+        """
+        if not etype:
+            return "no-event-type"
+        if etype in _EVENT_LOG_SKIP:
+            return "skip-listed"
+        if not sid:
+            return "no-session-id"
+        return ""
+
+    def _record_event_segment(self, event: Any) -> None:
+        """Persist one semantic event as a ``semantic_event`` segment (append-only).
+
+        ONE skip decision (:meth:`_event_skip_reason`) gates the persist; every
+        persist/skip is logged via ``runtime.trace`` (HF_ON-guarded ``ARC-EVENTS`` hot
+        tag) so a dropped event is one ``CLIO_DEBUG=high`` line. Builds a lean content
+        dict from the SemanticEvent's fields (large text capped), correlated by the
+        event's trajectory span ids, and appends ONE segment under the reserved
+        ``_events`` scope. Never rendered into a prompt (own scope + non-working-set
+        kind)."""
+        etype = str(getattr(event, "event_type", "") or "")
+        sid = str(getattr(event, "session_id", "") or "")
+        reason = self._event_skip_reason(etype, sid)
+        if reason:
+            if trace.HF_ON:
+                trace.hot(
+                    "ARC-EVENTS", "skip %s etype=%r sid=%r arc=%#x", reason, etype, sid, id(self)
+                )
+            return
+        if trace.HF_ON:
+            trace.hot(
+                "ARC-EVENTS",
+                "persist etype=%r sid=%r arc=%#x",
+                etype,
+                sid,
+                id(self),
+            )
+        self._append_event_segment(event, etype, sid)
+
+    def _append_event_segment(self, event: Any, etype: str, sid: str) -> None:
+        """Build (via the shared :func:`~clio_agent.arc.live.build_event_content`) +
+        append the lean ``semantic_event`` segment. ONE builder is shared with the
+        standalone observer so the persisted log is identical regardless of path."""
+        content = build_event_content(event)
+        if content is None:
+            return
+        self._segments.append(
+            sid,
+            EVENTS_SCOPE,
+            cast(SegmentKind, "semantic_event"),
+            content,
+            step=-1,
+            turn_id=str(getattr(event, "turn_id", "") or ""),
+            expert_span_id=str(getattr(event, "expert_span_id", "") or ""),
+        )
+
+    def on_semantic_event(self, event: Any) -> None:
+        """Persist one RAW semantic event as the single ``_events`` log record.
+
+        Registered as a ``live_consumer`` on the SemanticEventSink so ARC sees the
+        same events the durable trace captures. The persisted ``semantic_event``
+        segments under ``_events`` are the ONE log: the live observer
+        (:class:`LiveRuntimeContext`) projects its view / Conversation / Invocation
+        records directly over them — there is no separate folded copy. Best-effort by
+        construction.
+        """
+        self._record_event_segment(event)
+
+    def get_live_context(
+        self, session_id: str, *, max_turns: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Live summary of an open session's turns (or empty). ``max_turns`` is an
+        OPTIONAL recent-window the caller may pass (its own configurable budget);
+        ``None`` (default) returns every turn — no hardcoded cap."""
         return self._live.view(session_id, max_turns=max_turns)
 
     def project_live_conversation(self, session_id: str, *, user_id: str = "") -> Any:
@@ -1060,6 +1215,196 @@ class ARCMemory:
     def project_live_invocations(self, session_id: str) -> List[Invocation]:
         """Project the live fold of a session into per-expert Invocations."""
         return self._live.project_invocations(session_id)
+
+    # ---- Live context plane (the segment store the ReAct loop reads from) ----
+
+    def set_segment_op_logger(self, op_logger: "OpLogger | None") -> None:
+        """Inject the durable-Trace op logger into the segment store.
+
+        Called by the gact app once both the app handle and ARC exist, so each
+        applied context op is mirrored to the Trace. Keeps ``arc/`` free of any
+        ``gact/`` import.
+        """
+        self._segments.set_op_logger(op_logger)
+
+    def append_segment(
+        self,
+        session_id: str,
+        scope: str,
+        kind: str,
+        content: Dict[str, Any],
+        *,
+        step: int = -1,
+        trace_ref: str = "",
+        token_count: int = 0,
+        turn_id: str = "",
+        expert_span_id: str = "",
+        run_span_id: str = "",
+    ) -> Any:
+        """Append one segment to a scope's live context (append = insert at end).
+
+        ``turn_id`` / ``expert_span_id`` / ``run_span_id`` are optional
+        trajectory-correlation span ids stamped on the new segment (default ``""``)."""
+        return self._segments.append(
+            session_id,
+            scope,
+            cast(SegmentKind, kind),
+            content,
+            step=step,
+            trace_ref=trace_ref,
+            token_count=token_count,
+            turn_id=turn_id,
+            expert_span_id=expert_span_id,
+            run_span_id=run_span_id,
+        )
+
+    def insert_segment(
+        self,
+        session_id: str,
+        scope: str,
+        position: int,
+        kind: str,
+        content: Dict[str, Any],
+        *,
+        step: int = -1,
+        trace_ref: str = "",
+        token_count: int = 0,
+        turn_id: str = "",
+        expert_span_id: str = "",
+        run_span_id: str = "",
+    ) -> Any:
+        """Insert one segment at a render position in a scope's live context.
+
+        ``turn_id`` / ``expert_span_id`` / ``run_span_id`` are optional
+        correlation span ids stamped on the new segment (default ``""``)."""
+        return self._segments.insert(
+            session_id,
+            scope,
+            position,
+            cast(SegmentKind, kind),
+            content,
+            step=step,
+            trace_ref=trace_ref,
+            token_count=token_count,
+            turn_id=turn_id,
+            expert_span_id=expert_span_id,
+            run_span_id=run_span_id,
+        )
+
+    def delete_segments(self, session_id: str, scope: str, ids: List[str]) -> int:
+        """Tombstone segments by id (skipped by render, kept for replay)."""
+        return self._segments.delete(session_id, scope, ids)
+
+    def summarize_segments(
+        self,
+        session_id: str,
+        scope: str,
+        ids: List[str],
+        summary_content: Dict[str, Any],
+        *,
+        trace_ref: str = "",
+        token_count: int = 0,
+        turn_id: str = "",
+        expert_span_id: str = "",
+        run_span_id: str = "",
+    ) -> Any:
+        """Replace a range of segments with one summary (= context-compaction over all).
+
+        ``turn_id`` / ``expert_span_id`` / ``run_span_id`` are optional correlation
+        span ids stamped on the summary segment (default ``""``)."""
+        return self._segments.summarize(
+            session_id,
+            scope,
+            ids,
+            summary_content,
+            trace_ref=trace_ref,
+            token_count=token_count,
+            turn_id=turn_id,
+            expert_span_id=expert_span_id,
+            run_span_id=run_span_id,
+        )
+
+    def replace_segment(
+        self,
+        session_id: str,
+        scope: str,
+        target_id: str,
+        content: Dict[str, Any],
+        *,
+        kind: Optional[str] = None,
+        trace_ref: str = "",
+        token_count: int = 0,
+        turn_id: str = "",
+        expert_span_id: str = "",
+        run_span_id: str = "",
+    ) -> Any:
+        """Replace a live segment's content in place (1:1 supersede at the same render
+        slot; the original is tombstoned + recoverable as-of-T).
+
+        ``kind`` defaults to the original's kind; the correlation span ids default to
+        the ORIGINAL's (a pure content edit stays in the same turn/expert/run). Returns
+        the new Segment, or ``None`` if ``target_id`` matched no live segment."""
+        return self._segments.replace(
+            session_id,
+            scope,
+            target_id,
+            content,
+            kind=cast(Optional[SegmentKind], kind),
+            trace_ref=trace_ref,
+            token_count=token_count,
+            turn_id=turn_id,
+            expert_span_id=expert_span_id,
+            run_span_id=run_span_id,
+        )
+
+    def apply_segment_op(self, op: str, session_id: str, scope: str, **kwargs: Any) -> Any:
+        """Stable dispatch over the five ops — the KV-backend swap seam."""
+        return self._segments.apply(op, session_id, scope, **kwargs)
+
+    def render_segments(self, session_id: str, scope: str, *, as_of: Optional[int] = None) -> Any:
+        """Ordered LIVE segments for a scope (the decisive read; as-of-T optional)."""
+        return self._segments.render(session_id, scope, as_of=as_of)
+
+    def render_working_set(
+        self, session_id: str, scope: str, *, as_of: Optional[int] = None
+    ) -> Any:
+        """Ordered LIVE WORKING-SET segments — the kinds the prompt + the compaction/
+        reset paths operate on (excludes ``lm_io`` / ``extract_io`` / ``answer``). The
+        target of the per-turn reset and auto-compaction, NOT a new prompt source; see
+        :meth:`SegmentStore.render_working_set`."""
+        return self._segments.render_working_set(session_id, scope, as_of=as_of)
+
+    def render_segments_keys(
+        self, session_id: str, scope: str, *, as_of: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """The live segments projected into dspy's trajectory dict (what the
+        ``_format_trajectory`` override reads)."""
+        return self._segments.render_keys(session_id, scope, as_of=as_of)
+
+    def render_segment_text(
+        self, session_id: str, scope: str, *, as_of: Optional[int] = None
+    ) -> str:
+        """The live segments flattened to text (inspection / byte-equality)."""
+        return self._segments.render_text(session_id, scope, as_of=as_of)
+
+    def segment_tokens_by_kind(self, session_id: str, scope: str) -> Dict[str, int]:
+        """Per-kind token attribution for a scope's live segments (compaction targeting)."""
+        return self._segments.tokens_by_kind(session_id, scope)
+
+    def list_segment_scopes(self, session_id: str, scope_prefix: str = "") -> List[str]:
+        """Scopes that have context in this session (for discovery / a scope picker)."""
+        return self._segments.scan_scopes(session_id, scope_prefix)
+
+    def search_segment_scopes(
+        self, session_id: str, query_text: str, *, scope_prefix: str = "", k: int = 10
+    ) -> List[Any]:
+        """Semantic discovery: rank a session's scopes by content relevance to
+        ``query_text`` — "which expert/scope knows about X" (BM25 on CTE)."""
+        return self._segments.search_scopes(session_id, query_text, scope_prefix=scope_prefix, k=k)
+
+    def segment_search_is_semantic(self) -> bool:
+        """Whether scope search uses real BM25 (CTE backend) vs the naive fallback."""
+        return self._segments.supports_search()
 
     def release_session(self, session_id: str) -> Dict[str, int]:
         """Release a session's hot footprint from cache and indexes.
@@ -1094,9 +1439,18 @@ class ARCMemory:
             evicted_index = self._conv_index.delete_session(session_id)
             evicted_index += self._inv_index.delete_session(session_id)
 
-        # Outside the lock: LiveRuntimeContext has its own lock.
+        # Outside the lock: LiveRuntimeContext and SegmentStore have their own locks.
+        # The observer's release ERASES the reserved ``_events`` scope (the single
+        # persisted raw semantic-event stream it projects over) so an idle server
+        # returns to baseline; the durable trace keeps the full history.
         live = self._live.release(session_id)
-        return {"cache": evicted_cache, "index": evicted_index, "live": live}
+        segments = self._segments.release(session_id)
+        return {
+            "cache": evicted_cache,
+            "index": evicted_index,
+            "live": live,
+            "segments": segments,
+        }
 
     def flush_and_release(self) -> None:
         """Release ALL in-memory state to return to baseline (tests/memprof).
@@ -1115,7 +1469,11 @@ class ARCMemory:
             self._cache.clear()
             self._conv_index.clear()
             self._inv_index.clear()
+        # The observer's clear ERASES the reserved ``_events`` scope across every
+        # session (the single persisted semantic-event stream it projects over); the
+        # durable trace retains the full history, so an idle server returns to baseline.
         self._live.clear()
+        self._segments.clear()
 
     def clear_cache(self) -> None:
         """Clear in-memory cache (preserves disk storage).
@@ -1145,8 +1503,11 @@ class ARCMemory:
             self._conv_index.clear()
             self._inv_index.clear()
 
-            # Clear disk storage
+            # Clear disk storage (wipes the "segments" kind too, since it's in ARC_KINDS)
             self._store.clear()
+
+            # Drop the in-memory segment plane (store already cleared above)
+            self._segments.clear()
 
             # Reset counters
             self._disk_reads = 0

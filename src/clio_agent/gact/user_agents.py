@@ -11,7 +11,6 @@ the result of GET /v1/agents back into POST /v1/agents to clone.
 
 from __future__ import annotations
 
-import os
 import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -19,10 +18,9 @@ from typing import Any, Optional
 
 
 def _default_store_path() -> Path:
-    base = os.environ.get("XDG_CONFIG_HOME")
-    if base:
-        return Path(base) / "clio-agent" / "agents.json"
-    return Path.home() / ".config" / "clio-agent" / "agents.json"
+    from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
+
+    return paths.user_config_dir() / "agents.json"
 
 
 @dataclass
