@@ -133,9 +133,10 @@ jobs:
           # built on this arm64 runner, so it is the correct arch.
           - target: aarch64-pc-windows-msvc
             os: windows-11-arm
-            # The hosted Windows ARM runner's WiX downloader currently fails
-            # before MSI generation with no TLS backend. NSIS builds natively.
-            bundle-args: "--bundles nsis"
+            # The hosted Windows ARM runner's Tauri bundler cannot fetch WiX or
+            # NSIS over HTTPS because cargo-tauri reports no TLS backend there.
+            # Build the native app and publish the raw executable instead.
+            bundle-args: "--no-bundle"
           - target: aarch64-apple-darwin
             os: macos-14
             bundle-args: "--bundles dmg --target aarch64-apple-darwin"
@@ -280,16 +281,26 @@ jobs:
           if [ -d "external/gact-tui/apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle" ]; then
             root="external/gact-tui/apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle"
           fi
-          find "$root" -type f \( -iname '*.exe' -o -iname '*.msi' -o -iname '*.dmg' -o -iname '*.deb' -o -iname '*.AppImage' -o -iname '*.rpm' \) -print0 |
-            while IFS= read -r -d '' f; do
-              base="$(basename "$f")"
-              if [ "${{ matrix.variant }}" = "bundled" ]; then
-                ext="${base##*.}"
+          if [ -d "$root" ]; then
+            find "$root" -type f \( -iname '*.exe' -o -iname '*.msi' -o -iname '*.dmg' -o -iname '*.deb' -o -iname '*.AppImage' -o -iname '*.rpm' \) -print0 |
+              while IFS= read -r -d '' f; do
+                base="$(basename "$f")"
+                if [ "${{ matrix.variant }}" = "bundled" ]; then
+                  ext="${base##*.}"
+                  stem="${base%.*}"
+                  base="${stem}-bundled.${ext}"
+                fi
+                cp "$f" "$stage/$base"
+              done
+          else
+            root="external/gact-tui/apps/desktop/src-tauri/target/release"
+            find "$root" -maxdepth 1 -type f -iname '*.exe' -print0 |
+              while IFS= read -r -d '' f; do
+                base="$(basename "$f")"
                 stem="${base%.*}"
-                base="${stem}-bundled.${ext}"
-              fi
-              cp "$f" "$stage/$base"
-            done
+                cp "$f" "$stage/${stem}-${{ matrix.target }}.${base##*.}"
+              done
+          fi
           # Cross-platform checksum: Linux has both, macOS has only `shasum`,
           # Windows git-bash has only `sha256sum`. Prefer sha256sum, else shasum.
           if command -v sha256sum >/dev/null 2>&1; then SUM="sha256sum"; else SUM="shasum -a 256"; fi
