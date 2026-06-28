@@ -189,7 +189,11 @@ def test_cancel_reports_best_effort_for_executor_thread(tmp_path: Path) -> None:
         assistant = None
         while _time.monotonic() < deadline:
             msgs = c.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-            assistants = [m for m in msgs if m["role"] == "assistant"]
+            assistants = [
+                m
+                for m in msgs
+                if m["role"] == "assistant" and not m.get("metadata", {}).get("live")
+            ]
             if assistants:
                 assistant = assistants[0]
                 break
@@ -248,7 +252,11 @@ def test_late_tool_completion_after_cancel_is_not_reported_as_success(
         assistant = None
         while _time.monotonic() < deadline:
             msgs = c.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-            assistants = [m for m in msgs if m["role"] == "assistant"]
+            assistants = [
+                m
+                for m in msgs
+                if m["role"] == "assistant" and m.get("error_info", {}).get("error") == "cancelled"
+            ]
             if assistants:
                 assistant = assistants[0]
                 break

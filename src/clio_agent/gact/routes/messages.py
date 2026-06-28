@@ -142,6 +142,7 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
             created_at=now,
             updated_at=now,
             parts=live_parts,
+            metadata={"live": True, "status": "running"},
         )
 
     # ---- GET /v1/sessions/{sid}/messages/search (BBB27) ---------------

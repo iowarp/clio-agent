@@ -78,6 +78,7 @@ def test_messages_includes_inflight_live_assistant_projection(client: TestClient
     assert [m["role"] for m in messages] == ["assistant", "user"]
     assert messages[0]["id"] == "msg_live_asst"
     assert messages[0]["parts"][0]["text"] == "live assistant evidence"
+    assert messages[0]["metadata"] == {"live": True, "status": "running"}
 
 
 def test_session_context_policy_reports_current_compartment_semantics(

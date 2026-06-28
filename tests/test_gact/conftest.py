@@ -104,7 +104,11 @@ def complete_turn(
         # (i.e. one index lower).
         for i, m in enumerate(msgs):
             if m.get("id") == user_id:
-                if i > 0 and msgs[i - 1]["role"] == "assistant":
+                if (
+                    i > 0
+                    and msgs[i - 1]["role"] == "assistant"
+                    and not msgs[i - 1].get("metadata", {}).get("live")
+                ):
                     return msgs[i - 1]
                 break
         time.sleep(poll_interval)
