@@ -63,6 +63,23 @@ def _seed_text_messages(client: TestClient, sid: str, messages: list[tuple[str, 
     client.app.state.message_store.replace_session(sid, seeded)
 
 
+def test_messages_includes_inflight_live_assistant_projection(client: TestClient) -> None:
+    sid = client.post("/v1/sessions", json={"title": "live reload"}).json()["id"]
+    _seed_text_message(client, sid, "start long turn")
+    client.app.state.live_assistant_message_ids[sid] = "msg_live_asst"
+    client.app.state.live_assistant_parts[sid] = [
+        Part(id="part_live", type="text", text="live assistant evidence", agent_id="main")
+    ]
+
+    resp = client.get(f"/v1/sessions/{sid}/messages")
+
+    assert resp.status_code == 200
+    messages = resp.json()["messages"]
+    assert [m["role"] for m in messages] == ["assistant", "user"]
+    assert messages[0]["id"] == "msg_live_asst"
+    assert messages[0]["parts"][0]["text"] == "live assistant evidence"
+
+
 def test_session_context_policy_reports_current_compartment_semantics(
     client: TestClient,
 ) -> None:

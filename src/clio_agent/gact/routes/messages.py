@@ -29,6 +29,7 @@ unsupported-override error, and the agent-not-available error) travel on
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Response
@@ -44,6 +45,7 @@ from clio_agent.gact.providers.config import (
 from clio_agent.gact.types import (
     ErrorEnvelope,
     ErrorInfo,
+    Message,
     PostMessageRequest,
     PostMessageResponse,
 )
@@ -120,6 +122,27 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
             return True
         return False
+
+    def _live_assistant_message(sid: str) -> Message | None:
+        """Return the in-flight assistant projection for reload parity."""
+
+        live_ids = getattr(app.state, "live_assistant_message_ids", {}) or {}
+        msg_id = str(live_ids.get(sid) or "")
+        if not msg_id:
+            return None
+        live_parts = list((getattr(app.state, "live_assistant_parts", {}) or {}).get(sid, []))
+        if not live_parts:
+            return None
+        now = datetime.now(timezone.utc).isoformat()
+        return Message(
+            id=msg_id,
+            turn_id=str(getattr(live_parts[0], "turn_id", "") or ""),
+            session_id=sid,
+            role="assistant",
+            created_at=now,
+            updated_at=now,
+            parts=live_parts,
+        )
 
     # ---- GET /v1/sessions/{sid}/messages/search (BBB27) ---------------
 
@@ -317,7 +340,13 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         # TUI (and SPEC §6.4) expect newest-first with an optional
         # cursor for older pages. We store chronologically so reverse
         # at read time.
-        rows = list(reversed(app.state.messages.get(sid, [])))
+        chronological_rows = list(app.state.messages.get(sid, []))
+        live_assistant = _live_assistant_message(sid)
+        if live_assistant is not None:
+            stored_ids = {m.id for m in chronological_rows}
+            if live_assistant.id not in stored_ids:
+                chronological_rows.append(live_assistant)
+        rows = list(reversed(chronological_rows))
         # #731: serialize via ``to_wire`` (not ``model_dump(exclude_none)``) so the
         # reloaded parts are byte-for-byte the slim, arrival-ordered shape the live
         # SSE stream delivered — a reloaded conversation matches what streamed.

@@ -43,11 +43,11 @@ from clio_agent.gact.diagnostics import (  # noqa: E402,F401
 
 _install_sigusr1_diagnostic()
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Literal, Optional
+from typing import Any, AsyncIterator, Literal, Optional, cast
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -180,11 +180,11 @@ def _gact_cors_origins() -> list[str]:
     """
 
     try:
-        raw = conf.resolve(
+        raw: list[str] = conf.resolve(
             "gact.cors.origins",
             env="CLIO_GACT_CORS_ORIGINS",
             default=[],
-            cast=conf.as_csv,
+            cast=cast(Callable[[Any], list[str]], conf.as_csv),
         )
     except (TypeError, ValueError):
         return []

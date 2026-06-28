@@ -83,8 +83,12 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
             value = getattr(provider_config, key, None)
             if value is not None:
                 cfg[key] = value
-    if not cfg.get("transport") and getattr(provider_config, "provider", "") == "codex":
-        cfg["transport"] = getattr(provider_config, "codex_transport", None)
+    if not cfg.get("transport"):
+        provider = getattr(provider_config, "provider", "")
+        if provider == "codex":
+            cfg["transport"] = getattr(provider_config, "codex_transport", None)
+        elif provider == "claude_code":
+            cfg["transport"] = getattr(provider_config, "claude_code_transport", None)
     return cfg
 
 

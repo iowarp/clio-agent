@@ -109,6 +109,7 @@ def _dynamic_agent_lm_config(base_agent: Any, agent_def: "AgentDef") -> Any:
         planner_temperature=base_config.planner_temperature,
         planner_max_tokens=base_config.planner_max_tokens,
         codex_transport=base_config.codex_transport,
+        claude_code_transport=base_config.claude_code_transport,
         thinking_budget=_user_agent_int_param(
             agent_def,
             "thinking_budget",

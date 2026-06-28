@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from clio_agent.gact.app import (
     _build_prompt_user_agent_module,
     _build_stream_listeners,
+    _dynamic_agent_lm_config,
     _pop_stream_fallback,
     _record_stream_fallback,
     _stream_fallback_reason_capabilities,
@@ -323,6 +324,33 @@ async def test_dynamic_agent_module_carries_non_streaming_provider_config(
     assert result is None
     fallback = _pop_stream_fallback(app, "sid")
     assert fallback["reason"] == "provider_streaming_unsupported"
+
+
+def test_dynamic_agent_lm_config_preserves_claude_code_transport() -> None:
+    from clio_agent.config import LMProviderConfig
+
+    base_agent = SimpleNamespace(
+        _provider_config=LMProviderConfig(
+            provider="claude_code",
+            api_base="claude-code://exec",
+            model="haiku",
+            api_key="x",
+            claude_code_transport="exec",
+        )
+    )
+
+    cfg = _dynamic_agent_lm_config(
+        base_agent,
+        AgentDef(
+            id="earthscope",
+            source="expert_pack",
+            title="EarthScope",
+            system_prompt="Use the EarthScope blueprint.",
+        ),
+    )
+
+    assert cfg.provider == "claude_code"
+    assert cfg.claude_code_transport == "exec"
 
 
 def test_build_stream_listeners_binds_known_predictors_explicitly() -> None:

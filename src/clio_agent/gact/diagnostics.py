@@ -130,6 +130,8 @@ def _install_sigusr1_diagnostic() -> None:
             pass
     else:
         try:
-            _faulthandler.register(_signal.SIGUSR1, all_threads=True)
+            register = getattr(_faulthandler, "register", None)
+            if register is not None:
+                register(_signal.SIGUSR1, all_threads=True)
         except (ValueError, OSError):
             pass

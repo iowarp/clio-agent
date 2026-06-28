@@ -12,7 +12,9 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
+from clio_agent.config import LMProviderConfig
 from clio_agent.gact.app import build_app
+from clio_agent.gact.providers.config import _effective_lm_config
 
 
 def _wait_lm_provider_ready(c: TestClient, timeout_s: float = 5.0) -> dict[str, Any]:
@@ -37,6 +39,28 @@ def test_get_lm_provider_unconfigured(tmp_path: Path) -> None:
         assert "openrouter" in ids
         assert "lm_studio" in ids
         assert "codex" in ids
+
+
+def test_effective_lm_config_reports_claude_code_transport() -> None:
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            lm_config={},
+            agent=SimpleNamespace(
+                _provider_config=LMProviderConfig(
+                    provider="claude_code",
+                    api_base="claude-code://exec",
+                    model="haiku",
+                    api_key="x",
+                    claude_code_transport="exec",
+                )
+            ),
+        )
+    )
+
+    cfg = _effective_lm_config(app)  # type: ignore[arg-type]
+
+    assert cfg["provider"] == "claude_code"
+    assert cfg["transport"] == "exec"
 
 
 def test_get_lm_provider_reports_argonne_auth_required(tmp_path: Path, monkeypatch) -> None:

@@ -4,11 +4,34 @@ from __future__ import annotations
 
 import json
 import os
+import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
 DEFAULT_MAX_FILE_SIZE_BYTES = 1 << 30
+_SIZE_PATTERN = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([kmgt]?i?b?)?\s*$", re.IGNORECASE)
+_SIZE_MULTIPLIERS = {
+    "": 1,
+    "b": 1,
+    "k": 1000,
+    "kb": 1000,
+    "m": 1000**2,
+    "mb": 1000**2,
+    "g": 1000**3,
+    "gb": 1000**3,
+    "t": 1000**4,
+    "tb": 1000**4,
+    "ki": 1024,
+    "kib": 1024,
+    "mi": 1024**2,
+    "mib": 1024**2,
+    "gi": 1024**3,
+    "gib": 1024**3,
+    "ti": 1024**4,
+    "tib": 1024**4,
+}
 
 
 def _default_allowed_roots() -> tuple[Path, ...]:
@@ -74,35 +97,45 @@ class FileAccessPolicy:
 
     @classmethod
     def from_env(cls) -> "FileAccessPolicy":
-        """Build policy from CLIO_* environment variables."""
-        return cls.from_mapping(os.environ)
+        """Build policy from config file, then CLIO_* environment variables."""
+        from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+        roots = conf.resolve(
+            "tools.file_policy.allowed_roots",
+            env="CLIO_ALLOWED_ROOTS",
+            default=_default_allowed_roots(),
+            cast=_coerce_roots,
+        )
+        max_size = conf.resolve(
+            "tools.file_policy.max_file_size_bytes",
+            env="CLIO_MAX_FILE_SIZE_BYTES",
+            default=DEFAULT_MAX_FILE_SIZE_BYTES,
+            cast=_coerce_size_bytes("CLIO_MAX_FILE_SIZE_BYTES"),
+        )
+        allow_symlinks = conf.resolve(
+            "tools.file_policy.allow_symlinks",
+            env="CLIO_ALLOW_SYMLINKS",
+            default=False,
+            cast=conf.as_bool,
+        )
+        return cls(
+            allowed_roots=tuple(_resolve_root(root) for root in roots),
+            max_file_size_bytes=max_size,
+            allow_symlinks=allow_symlinks,
+        )
 
     @classmethod
     def from_mapping(cls, env: Mapping[str, str]) -> "FileAccessPolicy":
         """Build policy from an environment-like mapping."""
         roots_raw = env.get("CLIO_ALLOWED_ROOTS", "")
-        if roots_raw.strip():
-            roots = tuple(Path(item).expanduser() for item in roots_raw.split(os.pathsep) if item)
-        else:
-            roots = _default_allowed_roots()
+        roots = _coerce_roots(roots_raw) if roots_raw.strip() else _default_allowed_roots()
 
         max_size_raw = env.get("CLIO_MAX_FILE_SIZE_BYTES", "")
-        try:
-            max_size = int(max_size_raw) if max_size_raw else DEFAULT_MAX_FILE_SIZE_BYTES
-        except ValueError as exc:
-            raise FilePolicyError(
-                code="invalid_policy",
-                message=f"CLIO_MAX_FILE_SIZE_BYTES must be an integer, got {max_size_raw!r}.",
-                field="CLIO_MAX_FILE_SIZE_BYTES",
-                next_action="Set CLIO_MAX_FILE_SIZE_BYTES to a positive integer.",
-            ) from exc
-        if max_size <= 0:
-            raise FilePolicyError(
-                code="invalid_policy",
-                message="CLIO_MAX_FILE_SIZE_BYTES must be positive.",
-                field="CLIO_MAX_FILE_SIZE_BYTES",
-                next_action="Set CLIO_MAX_FILE_SIZE_BYTES to a positive integer.",
-            )
+        max_size = (
+            _coerce_size_bytes("CLIO_MAX_FILE_SIZE_BYTES")(max_size_raw)
+            if max_size_raw
+            else DEFAULT_MAX_FILE_SIZE_BYTES
+        )
 
         allow_symlinks = env.get("CLIO_ALLOW_SYMLINKS", "false").lower() in {
             "1",
@@ -326,6 +359,57 @@ def _resolve_root(root: Path) -> Path:
         return root.resolve(strict=False)
     except RuntimeError:
         return root.absolute()
+
+
+def _coerce_roots(value: Any) -> tuple[Path, ...]:
+    """Coerce YAML/env allowed-root declarations to non-empty paths."""
+    if isinstance(value, (list, tuple)):
+        roots = [Path(str(item)).expanduser() for item in value if str(item).strip()]
+    else:
+        raw = str(value).strip()
+        sep = os.pathsep if os.pathsep in raw else ","
+        roots = [Path(item.strip()).expanduser() for item in raw.split(sep) if item.strip()]
+    if not roots:
+        return _default_allowed_roots()
+    return tuple(roots)
+
+
+def _coerce_size_bytes(field: str) -> Callable[[Any], int]:
+    """Return a cast function for byte sizes with optional K/M/G/T suffixes."""
+
+    def cast(value: Any) -> int:
+        if isinstance(value, bool):
+            raise FilePolicyError(
+                code="invalid_policy",
+                message=f"{field} must be a byte size, got {value!r}.",
+                field=field,
+                next_action=f"Set {field} to a positive byte size.",
+            )
+        if isinstance(value, int):
+            number = value
+        elif isinstance(value, float):
+            number = int(value)
+        else:
+            match = _SIZE_PATTERN.match(str(value))
+            if match is None:
+                raise FilePolicyError(
+                    code="invalid_policy",
+                    message=f"{field} must be a byte size, got {value!r}.",
+                    field=field,
+                    next_action=f"Set {field} to a positive byte size.",
+                )
+            multiplier = _SIZE_MULTIPLIERS[(match.group(2) or "").lower()]
+            number = int(float(match.group(1)) * multiplier)
+        if number <= 0:
+            raise FilePolicyError(
+                code="invalid_policy",
+                message=f"{field} must be positive.",
+                field=field,
+                next_action=f"Set {field} to a positive byte size.",
+            )
+        return number
+
+    return cast
 
 
 def _has_symlink(path: Path) -> bool:

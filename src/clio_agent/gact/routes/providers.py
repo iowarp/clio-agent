@@ -385,6 +385,11 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 )
             return {"models": models, "source": "static_catalog"}
 
+        if preset.provider in {"codex", "claude_code"}:
+            static = _PROVIDER_MODELS.get(preset.id) or _PROVIDER_MODELS.get(preset.provider)
+            if static:
+                return {"models": static, "source": "static_catalog"}
+
         env_name = _cloud_env().get(preset.provider, "")
         api_key = (
             _os.environ.get(env_name, "") if env_name else _os.environ.get("CLIO_LM_API_KEY", "")

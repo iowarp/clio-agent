@@ -1,5 +1,6 @@
 """Tests for file access policy validation."""
 
+from clio_agent import conf
 from clio_agent.tools import file_policy
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
 
@@ -88,3 +89,39 @@ def test_policy_from_mapping_reports_effective_settings(tmp_path):
     assert result["allow_symlinks"] is True
     assert "read_mode" in result
     assert "write_mode" in result
+
+
+def test_policy_from_env_prefers_workspace_config(tmp_path, monkeypatch):
+    config_root = tmp_path / "from-config"
+    env_root = tmp_path / "from-env"
+    config_root.mkdir()
+    env_root.mkdir()
+    config_dir = tmp_path / ".clio"
+    config_dir.mkdir()
+    (config_dir / "config.yaml").write_text(
+        "\n".join(
+            [
+                "tools:",
+                "  file_policy:",
+                "    allowed_roots:",
+                f"      - {config_root.as_posix()}",
+                "    max_file_size_bytes: 10GB",
+                "    allow_symlinks: true",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(env_root))
+    monkeypatch.setenv("CLIO_MAX_FILE_SIZE_BYTES", "1024")
+    monkeypatch.setenv("CLIO_ALLOW_SYMLINKS", "false")
+    conf.reload()
+    try:
+        policy = FileAccessPolicy.from_env()
+    finally:
+        conf.reload()
+
+    assert policy.allowed_roots == (config_root.resolve(),)
+    assert policy.max_file_size_bytes == 10_000_000_000
+    assert policy.allow_symlinks is True

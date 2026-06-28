@@ -106,6 +106,8 @@ def test_run_exec_invokes_claude_with_tools_disabled() -> None:
     assert "--tools" in argv
     assert argv[argv.index("--tools") + 1] == ""
     assert run_mock.call_args.kwargs["input"] == "hello"
+    assert run_mock.call_args.kwargs["encoding"] == "utf-8"
+    assert run_mock.call_args.kwargs["errors"] == "replace"
     assert run_mock.call_args.kwargs["cwd"] == "/tmp"
 
 
