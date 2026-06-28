@@ -262,6 +262,19 @@ async def _run_turn_in_background(
     }
     turn_cost = 0.0
 
+    def _drain_observed_tool_calls(
+        current_rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Merge completed live-observer tool calls into turn metadata rows."""
+
+        ledger = getattr(app.state, "tool_call_ledger", None)
+        if ledger is None:
+            return current_rows
+        observed = ledger.pop(sid, [])
+        if not observed:
+            return current_rows
+        return _merge_tool_call_rows(current_rows, observed)
+
     def _update_retry_attempt(
         status: str,
         *,
@@ -1840,11 +1853,7 @@ async def _run_turn_in_background(
         # Drain the per-session observer ledger so direct-tool short-
         # circuits (HDF5/Parquet/fs experts that bypass ReAct) still
         # report tools_called on the assistant message metadata.
-        ledger = getattr(app.state, "tool_call_ledger", None)
-        if ledger is not None:
-            observed = ledger.pop(sid, [])
-            if observed:
-                tools_called = _merge_tool_call_rows(tools_called, observed)
+        tools_called = _drain_observed_tool_calls(tools_called)
         # iowarp/clio-agent#17 — surface DSPy reasoning as a
         # `thinking` Part. ChainOfThought predictions expose
         # ``.reasoning`` (single string); ReAct exposes
@@ -2338,6 +2347,11 @@ async def _run_turn_in_background(
             }
             if text_stream_source == "batch" and stream_fallback:
                 part.metadata["stream_fallback"] = stream_fallback
+    # A live observer completion can arrive after the immediate post-forward drain
+    # but before the assistant message is persisted. Reconcile once more at the
+    # final metadata boundary so reloads retain the same tool facts as the live bus.
+    if not cancelled_turn:
+        tools_called = _drain_observed_tool_calls(tools_called)
     if tools_called:
         assistant_metadata["tools_called"] = tools_called
     if expert_handoffs:
