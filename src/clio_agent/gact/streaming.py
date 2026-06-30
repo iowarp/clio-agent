@@ -46,6 +46,7 @@ from clio_agent.gact.evidence import _bounded_tool_call_result
 from clio_agent.gact.providers.config import _provider_runtime_kind
 from clio_agent.gact.runtime.capabilities import _STREAM_FALLBACK_REASON_DEFINITIONS
 from clio_agent.runtime import trace
+from clio_agent.runtime.stream_audit import stream_audit
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -510,6 +511,7 @@ async def _try_streamed_forward(
     final_pred = None
     emitted_any = False
     previous_stream_field = ""
+    provider_event_index = 0
     # Seed the reasoning-heartbeat clock so the first reasoning chunk publishes
     # immediately (refreshing the watchdog the moment the model starts thinking).
     last_reasoning_heartbeat = time.monotonic() - _REASONING_HEARTBEAT_S
@@ -552,6 +554,40 @@ async def _try_streamed_forward(
             except TypeError:
                 stream_iter = streamed(question=enriched_text, session_id=sid)
         async for piece in stream_iter:
+            provider_event_index += 1
+            if isinstance(piece, StreamResponse):
+                piece_text = str(piece.chunk or "")
+                piece_reasoning = ""
+                source_channel = "contract_delta" if piece_text else "provider_event"
+                signature_field = getattr(piece, "signature_field_name", "") or ""
+            elif isinstance(piece, dspy.Prediction):
+                piece_text = ""
+                piece_reasoning = ""
+                source_channel = "final_prediction"
+                signature_field = ""
+            else:
+                piece_text = _chunk_text(piece)
+                piece_reasoning = _chunk_reasoning_text(piece)
+                if piece_reasoning:
+                    source_channel = "reasoning_content"
+                elif piece_text:
+                    source_channel = "text_delta"
+                else:
+                    source_channel = "provider_event"
+                signature_field = ""
+            stream_audit(
+                "provider.raw_event",
+                provider="dspy_streamify",
+                session_id=sid,
+                event_index=provider_event_index,
+                raw_event_type=type(piece).__name__,
+                source_channel=source_channel,
+                signature_field_name=signature_field,
+                text_len=len(piece_text),
+                reasoning_len=len(piece_reasoning),
+                chunk_len=len(piece_text or piece_reasoning),
+                head=(piece_text or piece_reasoning)[:120],
+            )
             trace.HF_ON and trace.hot(
                 "STREAM-DSPY",
                 "piece type=%s final=%s",

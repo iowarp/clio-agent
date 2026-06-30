@@ -35,7 +35,9 @@ SEAM_SYMBOLS: list[str] = [
     "_agent_streaming_unsupported_reason",
     "_blueprint_runtime_signature",
     "_build_tool_user_agent_module",
+    "_clean_public_transcript_text",
     "_delegated_expert_prompt",
+    "_delegated_expert_public_prompt",
     "_estimate_cost_usd",
     "_format_sse",
     "_gact_turn_timeout_s",
@@ -91,8 +93,16 @@ def test_seam_build_tool_user_agent_module_importable() -> None:
     _assert_importable("_build_tool_user_agent_module")
 
 
+def test_seam_clean_public_transcript_text_importable() -> None:
+    _assert_importable("_clean_public_transcript_text")
+
+
 def test_seam_delegated_expert_prompt_importable() -> None:
     _assert_importable("_delegated_expert_prompt")
+
+
+def test_seam_delegated_expert_public_prompt_importable() -> None:
+    _assert_importable("_delegated_expert_public_prompt")
 
 
 def test_seam_estimate_cost_usd_importable() -> None:

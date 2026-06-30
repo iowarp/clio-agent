@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -393,6 +394,8 @@ async def test_expert_stream_responses_emit_live_field_chunks(
 ) -> None:
     from dspy.streaming.messages import StreamResponse
 
+    audit_path = tmp_path / "stream-audit.jsonl"
+    monkeypatch.setenv("CLIO_STREAM_AUDIT_LOG", str(audit_path))
     captured: dict[str, Any] = {}
 
     def fake_streamify(program: Any, **kwargs: Any) -> Any:
@@ -446,6 +449,27 @@ async def test_expert_stream_responses_emit_live_field_chunks(
     listeners = captured["stream_listeners"]
     assert all(listener.predict is not None for listener in listeners)
     assert {listener.signature_field_name for listener in listeners} == {"answer"}
+    audit_rows = [
+        json.loads(line)
+        for line in audit_path.read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    raw_events = [row for row in audit_rows if row["stage"] == "provider.raw_event"]
+    assert [row["provider"] for row in raw_events] == [
+        "dspy_streamify",
+        "dspy_streamify",
+        "dspy_streamify",
+    ]
+    assert {row["session_id"] for row in raw_events} == {"sid"}
+    assert [row["source_channel"] for row in raw_events] == [
+        "contract_delta",
+        "contract_delta",
+        "final_prediction",
+    ]
+    assert [row["signature_field_name"] for row in raw_events[:2]] == [
+        "analysis",
+        "recommendations",
+    ]
 
 
 async def test_stream_failure_after_delta_raises_instead_of_sync_fallback(

@@ -23,10 +23,12 @@ helpers are concern-private and live here.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -36,6 +38,7 @@ from clio_agent.gact.events import Event, heartbeat_payload
 from clio_agent.gact.runtime.constants import GACT_BACKEND_VERSION
 from clio_agent.gact.runtime.globals import _format_sse
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Session
+from clio_agent.runtime.stream_audit import stream_audit
 
 # Connection-preamble events (server.connected / session.snapshot) carry this
 # fixed id instead of a monotonic timeline id: it sorts before every real event
@@ -44,7 +47,7 @@ from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Session
 _PREAMBLE_EVENT_ID = 0
 
 
-def _sse_wire_tap(sid: str, frame: bytes) -> None:
+def _sse_wire_tap(sid: str, frame: bytes, event: Event | None = None) -> None:
     """Append the EXACT bytes written to one SSE connection to a debug file.
 
     Opt-in via ``CLIO_SSE_WIRE_TAP`` (a file path). This records the literal
@@ -54,13 +57,36 @@ def _sse_wire_tap(sid: str, frame: bytes) -> None:
     stream for ordering/quality debugging. Best-effort: never breaks the feed.
     """
     path = os.environ.get("CLIO_SSE_WIRE_TAP")
-    if not path:
+    if path:
+        try:
+            with open(path, "ab") as fh:
+                fh.write(frame)
+        except OSError:
+            pass
+    if event is None:
         return
-    try:
-        with open(path, "ab") as fh:
-            fh.write(frame)
-    except OSError:
-        pass
+    written_at = datetime.now(timezone.utc).isoformat()
+    row = {
+        "sse_written_at": written_at,
+        "session_id": sid,
+        "event_id": event.id,
+        "event_type": event.type,
+        "event_occurred_at": event.occurred_at,
+        "replay": bool(event.replay),
+        "frame_bytes": len(frame),
+        "payload_keys": sorted(event.payload.keys()),
+    }
+    event_log = os.environ.get("CLIO_SSE_EVENT_LOG", "").strip()
+    if event_log:
+        try:
+            log_path = Path(event_log).expanduser()
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(row, sort_keys=True))
+                fh.write("\n")
+        except OSError:
+            pass
+    stream_audit("sse.write", **row)
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -393,7 +419,7 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
             connected.id = _PREAMBLE_EVENT_ID
             _frame = _format_sse(connected)
-            _sse_wire_tap(sid, _frame)
+            _sse_wire_tap(sid, _frame, connected)
             yield _frame
             if sess_snapshot is not None:
                 snapshot = Event(
@@ -408,7 +434,7 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                 )
                 snapshot.id = _PREAMBLE_EVENT_ID
                 _frame = _format_sse(snapshot)
-                _sse_wire_tap(sid, _frame)
+                _sse_wire_tap(sid, _frame, snapshot)
                 yield _frame
 
             try:
@@ -435,7 +461,7 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
 
                 async for event in sub:
                     _frame = _format_sse(event)
-                    _sse_wire_tap(sid, _frame)
+                    _sse_wire_tap(sid, _frame, event)
                     yield _frame
             except asyncio.CancelledError:
                 # Client disconnected. Cleanup happens in `finally`.

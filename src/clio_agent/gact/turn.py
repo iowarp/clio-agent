@@ -357,6 +357,7 @@ async def _run_turn_in_background(
         _build_prompt_user_agent_module,
         _build_tool_user_agent_module,
         _cancelled_error_info,
+        _clean_public_transcript_text,
         _coerce_ask_user_action,
         _coerce_expert_handoff_rows,
         _compile_session_conversation_history,
@@ -364,6 +365,7 @@ async def _run_turn_in_background(
         _current_lm_model_id,
         _delegated_expert_agent_id,
         _delegated_expert_prompt,
+        _delegated_expert_public_prompt,
         _dspy_images_from_parts,
         _dynamic_agent_runtime_provenance,
         _dynamic_parent_resume_prompt,
@@ -812,6 +814,21 @@ async def _run_turn_in_background(
                 stream_field,
             )
             return
+        if not is_provider_thinking:
+            text = _clean_public_transcript_text(text)
+            if not text:
+                stream_audit(
+                    "sse.normalized_emit",
+                    session_id=sid,
+                    turn_id=turn_id,
+                    agent_id=chunk_agent,
+                    field=stream_field,
+                    normalized_event="turn.text.delta",
+                    chunk_len=0,
+                    duplicate_suppressed=True,
+                    duplicate_reason="clio_contract_text_stripped",
+                )
+                return
         resume_output = _latest_parent_resume_output(
             _live_parts_store().get(sid, []),
             chunk_agent,
@@ -942,6 +959,8 @@ async def _run_turn_in_background(
                     "turn_id": turn_id,
                     "trace_id": f"{turn_id}:{provider_source}",
                     "trace_kind": "model_aux",
+                    "agent_id": chunk_agent,
+                    "part_id": streamed_assistant_part_id,
                     "text_append": text,
                 },
             )
@@ -965,6 +984,8 @@ async def _run_turn_in_background(
                 "turn.text.delta",
                 {
                     "turn_id": turn_id,
+                    "agent_id": chunk_agent,
+                    "part_id": streamed_assistant_part_id,
                     "field": transcript_field,
                     "text_append": text,
                 },
@@ -1292,6 +1313,7 @@ async def _run_turn_in_background(
                 )
                 continue
 
+            public_prompt = _delegated_expert_public_prompt(row, source_text)
             prompt = _append_session_workflow_state_context(
                 app,
                 sid,
@@ -1376,7 +1398,7 @@ async def _run_turn_in_background(
                         "call_id": f"agent_call:{parent_agent.id}:{target.id}:{len(executed)}",
                         "agent_id": parent_agent.id,
                         "target_agent": target.id,
-                        "prompt": prompt,
+                        "prompt": public_prompt,
                     },
                 },
             )
@@ -1564,6 +1586,25 @@ async def _run_turn_in_background(
                         },
                     ),
                 )
+                raw_return_summary = (
+                    handoff_output or str(completed_row.get("output_summary") or "").strip()
+                )
+                public_return_summary = _clean_public_transcript_text(raw_return_summary)
+                if not public_return_summary:
+                    public_return_summary = (
+                        f"{target.id} returned a compact result to {parent_agent.id}."
+                    )
+                if workflow_state:
+                    _publish_transcript_event(
+                        bus,
+                        sid,
+                        "state.updated",
+                        {
+                            "turn_id": turn_id,
+                            "value": workflow_state,
+                            "visibility": "hidden",
+                        },
+                    )
                 _publish_transcript_event(
                     bus,
                     sid,
@@ -1575,9 +1616,7 @@ async def _run_turn_in_background(
                             "call_id": (f"return:{target.id}:{parent_agent.id}:{len(executed)}"),
                             "agent_id": target.id,
                             "target_agent": parent_agent.id,
-                            "summary": handoff_output
-                            or str(completed_row.get("output_summary") or "").strip(),
-                            "workflow_state": workflow_state,
+                            "summary": public_return_summary,
                         },
                     },
                 )

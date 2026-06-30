@@ -79,6 +79,21 @@ def _trace_json(value: Any) -> str:
         return json.dumps(str(value), ensure_ascii=False)
 
 
+def _active_gact_ids() -> tuple[str, str, str]:
+    """Return active GACT session, turn, and trace ids for audit rows."""
+
+    try:
+        from clio_agent.gact.context import (  # noqa: PLC0415
+            active_session_id,
+            active_trace_id,
+            active_turn_id,
+        )
+
+        return active_session_id(), active_turn_id(), active_trace_id()
+    except Exception:  # noqa: BLE001 - provider audit must never break calls
+        return "", "", ""
+
+
 def _normalise_message_content(content: Any) -> str:
     """Convert OpenAI message content into bounded text for Claude Code."""
     if content is None:
@@ -148,6 +163,7 @@ def _run_exec(
     timeout: float | None = 180.0,
     cwd: str | None = None,
     extra_args: list[str] | None = None,
+    call_index: int = 0,
 ) -> tuple[str, dict[str, Any]]:
     """Run ``claude -p`` and return ``(text, usage)``."""
     binary = _resolve_claude_binary()
@@ -205,6 +221,40 @@ def _run_exec(
     if not text:
         raise ClaudeCodeExecError(f"claude -p returned empty content (model={model})")
     usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+    session_id, turn_id, trace_id = _active_gact_ids()
+    stream_audit(
+        "provider.raw_event",
+        provider="claude_code_exec",
+        session_id=session_id,
+        turn_id=turn_id,
+        trace_id=trace_id,
+        call_index=call_index,
+        event_index=1,
+        raw_event_type="claude_exec_result",
+        source_channel="content",
+        model=f"claude_code/{model}",
+        transport="exec",
+        text_len=len(text),
+        chunk_len=len(text),
+        usage_keys=sorted(str(key) for key in usage),
+        head=text[:120],
+    )
+    stream_audit(
+        "provider.batch_response",
+        provider="claude_code_exec",
+        session_id=session_id,
+        turn_id=turn_id,
+        trace_id=trace_id,
+        call_index=call_index,
+        source_channel="content",
+        model=f"claude_code/{model}",
+        transport="exec",
+        content_len=len(text),
+        reasoning_len=0,
+        chunk_len=len(text),
+        finish_reason="stop",
+        head=text[:120],
+    )
     return text, usage
 
 
@@ -875,9 +925,17 @@ class ClaudeCodeLLM(CustomLLM):
             timeout_s,
             cwd or "",
         )
-        runner = _run_sdk if transport == "sdk" else _run_exec
         started = time.monotonic()
-        text, usage = runner(prompt=prompt, model=clean_model, timeout=timeout_s, cwd=cwd)
+        if transport == "sdk":
+            text, usage = _run_sdk(prompt=prompt, model=clean_model, timeout=timeout_s, cwd=cwd)
+        else:
+            text, usage = _run_exec(
+                prompt=prompt,
+                model=clean_model,
+                timeout=timeout_s,
+                cwd=cwd,
+                call_index=call_index,
+            )
         trace.HF_ON and trace.hot(
             "CLAUDE-CODE-CALL",
             "completion_end call=%d model=%s transport=%s elapsed_ms=%.1f text_chars=%d",

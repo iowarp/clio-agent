@@ -33,6 +33,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Literal, Mapping, Optional
 from urllib.parse import urlparse
 
+from clio_agent.runtime.stream_audit import stream_audit
+
 # dspy lives behind a lazy import — top-level ``import dspy`` costs
 # ~4 s on Aurora's frameworks Python (litellm + transitive deps), and
 # every ``runtime.status`` / ``gact.app`` boot path imports config.py
@@ -1059,11 +1061,6 @@ def _io_logging_lm_cls() -> Any:
                     ) or ""
                 # Stash the reasoning from this single read so the react step reuses it.
                 self._clio_last_reasoning = str(reasoning or "").strip()
-                # No active GACT turn -> nothing to emit (CLI/optimizer paths). The
-                # stash above is still set so a synchronous loop can read it.
-                target = self._clio_trace_target()
-                if target is None:
-                    return
                 record = {
                     "model": entry.get("model"),
                     "messages": entry.get("messages") or entry.get("prompt"),
@@ -1075,6 +1072,44 @@ def _io_logging_lm_cls() -> Any:
                     "usage": entry.get("usage"),
                     "timestamp": entry.get("timestamp"),
                 }
+                try:
+                    from clio_agent.gact.context import (  # noqa: PLC0415
+                        active_session_id,
+                        active_trace_id,
+                        active_turn_id,
+                    )
+
+                    audit_sid = active_session_id()
+                    audit_turn_id = active_turn_id()
+                    audit_trace_id = active_trace_id()
+                except Exception:  # noqa: BLE001 - audit is best-effort
+                    audit_sid = ""
+                    audit_turn_id = ""
+                    audit_trace_id = ""
+                stream_audit(
+                    "provider.batch_response",
+                    provider="dspy_lm",
+                    session_id=audit_sid,
+                    turn_id=audit_turn_id,
+                    trace_id=audit_trace_id,
+                    model=str(record["model"] or ""),
+                    source_channel=(
+                        "content+reasoning_content"
+                        if content and reasoning
+                        else ("reasoning_content" if reasoning else "content")
+                    ),
+                    content_len=len(str(content)),
+                    reasoning_len=len(str(reasoning)),
+                    chunk_len=len(str(content or reasoning)),
+                    finish_reason=finish,
+                    head=str(content or reasoning)[:120],
+                )
+                # No active GACT turn -> nothing to emit (CLI/optimizer paths). The
+                # stash above is still set so a synchronous loop can read it, and the
+                # batch provider audit above still records timing when enabled.
+                target = self._clio_trace_target()
+                if target is None:
+                    return
                 # Emit the canonical trace's DURABLE-ONLY lm.call event: the one
                 # place an expert call's raw messages + reasoning_content are
                 # reliably visible (expert LMs run in executors the settle path
