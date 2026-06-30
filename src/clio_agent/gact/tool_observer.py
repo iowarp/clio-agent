@@ -59,6 +59,17 @@ _OBSERVER_CALL_IDS = threading.local()
 _OBSERVER_CALL_T0 = threading.local()
 
 
+def _publish_transcript_event(
+    app: "FastAPI",
+    sid: str,
+    event_type: str,
+    payload: Mapping[str, Any],
+) -> None:
+    """Publish one normalized transcript event alongside legacy tool events."""
+
+    app.state.bus.publish(Event(type=event_type, session_id=sid, payload=dict(payload)))
+
+
 def _install_tool_runtime_hooks(app: "FastAPI") -> None:
     """Install permission, cancellation, and telemetry hooks for tool calls."""
 
@@ -269,6 +280,17 @@ def _make_tool_observer(app: "FastAPI"):
     deterministic short-circuit paths).
     """
 
+    def _streamed_field_contains(sid: str, agent_id: str, field: str, text: str) -> bool:
+        if not sid or not agent_id or not text.strip():
+            return False
+        store = getattr(app.state, "live_streamed_field_text", None) or {}
+        session_store = store.get(sid, {}) if isinstance(store, Mapping) else {}
+        agent_store = session_store.get(agent_id, {}) if isinstance(session_store, Mapping) else {}
+        streamed = str(agent_store.get(field, "") or "") if isinstance(agent_store, Mapping) else ""
+        left = " ".join(streamed.split())
+        right = " ".join(text.split())
+        return bool(left and right and (left == right or right in left))
+
     def observe(
         name: str,
         args: Mapping[str, Any],
@@ -325,6 +347,9 @@ def _make_tool_observer(app: "FastAPI"):
                     },
                 )
             )
+            step_thought = _ctx.active_step_thought()
+            if _streamed_field_contains(sid, invoking_expert, "next_thought", step_thought):
+                step_thought = ""
             _append_live_assistant_part(
                 app,
                 sid,
@@ -336,10 +361,26 @@ def _make_tool_observer(app: "FastAPI"):
                     tool_name=name,
                     # The step's reasoning rides the tool_call part (#732): the
                     # model's text and the action it chose are one ordered event.
-                    thought=_ctx.active_step_thought(),
+                    thought=step_thought,
                     input=dict(args),
                     metadata={"stream_source": "live", "telemetry_source": "live_observer"},
                 ),
+            )
+            _publish_transcript_event(
+                app,
+                sid,
+                "turn.action.added",
+                {
+                    "turn_id": _ctx.active_turn_id(),
+                    "action": {
+                        "kind": "tool_call",
+                        "call_id": call_id,
+                        "agent_id": invoking_expert,
+                        "name": name,
+                        "args": dict(args),
+                        **({"thought": step_thought} if step_thought else {}),
+                    },
+                },
             )
         elif phase == "completed":
             call_id = getattr(_OBSERVER_CALL_IDS, "value", "") or ""
@@ -457,6 +498,21 @@ def _make_tool_observer(app: "FastAPI"):
                         **cancellation_metadata,
                     },
                 ),
+            )
+            _publish_transcript_event(
+                app,
+                sid,
+                "call.result.delta",
+                {
+                    "call_id": call_id,
+                    "content_type": "text/plain",
+                    "text_append": result_text,
+                    **(
+                        {"value_append": _bounded_tool_call_result(result)}
+                        if result is not None
+                        else {}
+                    ),
+                },
             )
 
     return observe

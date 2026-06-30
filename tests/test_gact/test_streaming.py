@@ -228,7 +228,7 @@ async def test_streamify_setup_failure_returns_none_for_sync_fallback(
     assert "ValueError" in fallback["message"]
 
 
-async def test_provider_without_live_streaming_skips_streamify(
+async def test_batch_transport_without_live_streaming_skips_streamify(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     def fail_streamify(*args: Any, **kwargs: Any) -> Any:
@@ -238,7 +238,7 @@ async def test_provider_without_live_streaming_skips_streamify(
     streamify_module = importlib.import_module("dspy.streaming.streamify")
     monkeypatch.setattr(streamify_module, "streamify", fail_streamify)
     agent = _DspyAgent("sync answer")
-    agent._provider_config = SimpleNamespace(provider="claude_code")
+    agent._provider_config = SimpleNamespace(provider="claude_code", claude_code_transport="exec")
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     chunks: list[str] = []
 
@@ -272,12 +272,33 @@ def test_argonne_streaming_is_not_force_classified_as_batch() -> None:
     for provider in ("argonne", "argonne_metis", "argonne_sophia"):
         assert _agent_streaming_unsupported_reason(_agent(provider)) == "", provider
 
-    # Genuinely non-streaming CLI transports remain force-classified as batch.
-    for provider in ("codex", "claude_code"):
-        assert (
-            _agent_streaming_unsupported_reason(_agent(provider))
-            == "provider_streaming_unsupported"
-        ), provider
+    # Claude Code SDK is streaming-capable; the explicit exec transport is not.
+    assert _agent_streaming_unsupported_reason(_agent("claude_code")) == ""
+    assert (
+        _agent_streaming_unsupported_reason(
+            SimpleNamespace(
+                _provider_config=SimpleNamespace(
+                    provider="claude_code",
+                    claude_code_transport="sdk",
+                )
+            )
+        )
+        == ""
+    )
+    assert (
+        _agent_streaming_unsupported_reason(
+            SimpleNamespace(
+                _provider_config=SimpleNamespace(
+                    provider="claude_code",
+                    claude_code_transport="exec",
+                )
+            )
+        )
+        == "provider_streaming_unsupported"
+    )
+
+    # Codex JSON-RPC remains force-classified as batch.
+    assert _agent_streaming_unsupported_reason(_agent("codex")) == "provider_streaming_unsupported"
 
 
 @pytest.mark.asyncio
@@ -637,6 +658,8 @@ def test_live_streamed_deltas_are_marked_live(
         return _Pred(answer="Hello", selected_expert="", routing_rationale="")
 
     monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "file")
+    monkeypatch.setenv("CLIO_SEMANTIC_TRACE_PATH", str(tmp_path / "semantic_traces"))
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent("fallback"))
     client = TestClient(app)
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
@@ -646,7 +669,17 @@ def test_live_streamed_deltas_are_marked_live(
     )
 
     history = app.state.bus._history.get(sid, [])
+    added = [e for e in history if e.type == "message.part.added"]
     deltas = [e for e in history if e.type == "message.part.delta"]
+    trace_backend = app.state.semantic_trace_backend
+    trace_backend.flush()
+    trace_rows = [
+        line
+        for line in (tmp_path / "semantic_traces" / f"{sid}.semantic.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line
+    ]
     completed = [
         e
         for e in history
@@ -656,6 +689,16 @@ def test_live_streamed_deltas_are_marked_live(
 
     assert [d.payload["delta"]["text_append"] for d in deltas] == ["Hel", "lo"]
     assert all(d.payload["stream_source"] == "live" for d in deltas)
+    assert all(d.payload["signature_field_name"] == "answer" for d in deltas)
+    text_added = [e for e in added if e.payload["part"]["type"] == "text"]
+    assert text_added[-1].payload["part"]["metadata"]["signature_field_name"] == "answer"
+    assert any(
+        '"event_type": "lm.token.delta"' in row and '"delta": "Hel"' in row for row in trace_rows
+    )
+    assert any(
+        '"event_type": "lm.token.delta"' in row and '"delta": "lo"' in row for row in trace_rows
+    )
+    assert all(e.type != "semantic.event" for e in history)
     assert len(completed) == 1
     assert completed[0].payload["stream_source"] == "live"
     assert message_completed[-1].payload["metadata"]["stream_source"] == "live"
@@ -664,6 +707,81 @@ def test_live_streamed_deltas_are_marked_live(
     text_parts = [p for p in assistant["parts"] if p["type"] == "text"]
     assert text_parts[-1]["metadata"]["stream_source"] == "live"
     assert "stream_fallback" not in text_parts[-1]["metadata"]
+
+
+def test_live_streamed_contract_fields_emit_normalized_transcript_events(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async def fake_streamed_forward(
+        app: Any,
+        enriched_text: str,
+        sid: str,
+        emit_chunk: Any,
+        session_mode: str = "chat",
+        session_edit_mode: str = "diff",
+    ) -> _Pred:
+        del app, enriched_text, sid, session_mode, session_edit_mode
+        await emit_chunk("thinking ", "main", "reasoning")
+        await emit_chunk("next ", "main", "next_thought")
+        await emit_chunk("answer", "main", "answer")
+        return _Pred(answer="answer", selected_expert="", routing_rationale="")
+
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent("fallback"))
+    client = TestClient(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+
+    client.post(
+        f"/v1/sessions/{sid}/messages",
+        json={"parts": [{"type": "text", "text": "stream me"}]},
+    )
+
+    history = app.state.bus._history.get(sid, [])
+    transcript_events = [e for e in history if e.type.startswith("turn.")]
+    text_deltas = [e for e in history if e.type == "turn.text.delta"]
+
+    assert transcript_events[0].type == "turn.started"
+    assert [e.payload["field"] for e in text_deltas] == ["thought", "thought", "answer"]
+    assert [e.payload["text_append"] for e in text_deltas] == [
+        "thinking ",
+        "next ",
+        "answer",
+    ]
+    assert transcript_events[-1].type == "turn.completed"
+    assert all("[[ ##" not in e.payload.get("text_append", "") for e in text_deltas)
+
+
+def test_provider_aux_streams_as_model_aux_trace_event(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async def fake_streamed_forward(
+        app: Any,
+        enriched_text: str,
+        sid: str,
+        emit_chunk: Any,
+        session_mode: str = "chat",
+        session_edit_mode: str = "diff",
+    ) -> _Pred:
+        del app, enriched_text, sid, session_mode, session_edit_mode
+        await emit_chunk("raw provider thought", "main", "provider_thinking:claude_code_sdk")
+        return _Pred(answer="done", selected_expert="", routing_rationale="")
+
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent("fallback"))
+    client = TestClient(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+
+    client.post(
+        f"/v1/sessions/{sid}/messages",
+        json={"parts": [{"type": "text", "text": "stream me"}]},
+    )
+
+    history = app.state.bus._history.get(sid, [])
+    trace_deltas = [e for e in history if e.type == "turn.trace.delta"]
+
+    assert len(trace_deltas) == 1
+    assert trace_deltas[0].payload["trace_kind"] == "model_aux"
+    assert trace_deltas[0].payload["text_append"] == "raw provider thought"
 
 
 def _turn_id_of(history: list[Any]) -> str:

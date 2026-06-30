@@ -28,6 +28,7 @@ from typing import Any
 
 from clio_agent import conf
 from clio_agent.runtime import trace
+from clio_agent.runtime.stream_audit import stream_audit
 
 _LOCK = threading.Lock()
 _STATE: dict[str, float] = {"inflight": 0.0, "started": 0.0, "last": 0.0}
@@ -57,12 +58,15 @@ def reset_live_chunk_emitter(token: Any) -> None:
         pass
 
 
-def note_lm_answer_delta(text: str) -> None:
-    """Stream an answer-field delta to the live UI via the turn's chat publisher.
+def note_lm_answer_delta(text: str, *, field: str = "answer") -> None:
+    """Stream a generated output-field delta to the live UI via the turn publisher.
 
     Scheduled cross-thread onto the turn's loop (the tap runs in an executor), so
     it reuses _emit_chunk's message/part bookkeeping and the final message
     reconciles to ONE assistant message. No-op off-turn or when nothing is bound.
+    The text is not interpreted, summarized, or hidden here; ``field`` is carried
+    as metadata so renderers can distinguish workflow/status output from final
+    prose without losing the raw generated tokens.
     """
     if not text:
         return
@@ -75,13 +79,108 @@ def note_lm_answer_delta(text: str) -> None:
     # author is known here; the chat publisher splits parts when it changes (WS3).
     agent_id = ""
     try:
-        from clio_agent.gact.context import active_react_scope  # noqa: PLC0415
+        from clio_agent.gact.context import (  # noqa: PLC0415
+            active_app,
+            active_react_scope,
+            active_session_id,
+            active_visible_answer_stream,
+        )
 
         agent_id = active_react_scope()
+        app = active_app()
+        sid = active_session_id()
+        if app is not None and sid and agent_id:
+            store = getattr(app.state, "live_streamed_field_text", None)
+            if store is None:
+                store = {}
+                app.state.live_streamed_field_text = store
+            session_store = store.setdefault(sid, {})
+            agent_store = session_store.setdefault(agent_id, {})
+            agent_store[field] = str(agent_store.get(field, "")) + text
+        visible_fields = {"reasoning", "next_thought"}
+        if field == "answer" and active_visible_answer_stream():
+            visible_fields.add("answer")
+        if field not in visible_fields:
+            stream_audit(
+                "bridge.contract_field",
+                agent_id=agent_id or "",
+                field=field,
+                chunk_len=len(text),
+                visible=False,
+                normalized_event="",
+                duplicate_suppressed=True,
+                duplicate_reason="nonvisible_contract_field",
+                head=text[:120],
+            )
+            trace.HF_ON and trace.hot(
+                "STREAM-SSE",
+                "record_nonvisible_contract_field agent=%s field=%s len=%d head=%r",
+                agent_id or "",
+                field,
+                len(text),
+                text[:80],
+            )
+            return
     except Exception:  # noqa: BLE001 - scope unavailable off-turn (CLI/optimizer)
         agent_id = ""
     try:
-        asyncio.run_coroutine_threadsafe(emit_coro(text, agent_id or None), loop)
+        stream_audit(
+            "bridge.contract_field",
+            agent_id=agent_id or "",
+            field=field,
+            chunk_len=len(text),
+            visible=True,
+            normalized_event="turn.text.delta",
+            duplicate_suppressed=False,
+            head=text[:120],
+        )
+        trace.HF_ON and trace.hot(
+            "STREAM-SSE",
+            "publish_contract_field agent=%s field=%s len=%d head=%r",
+            agent_id or "",
+            field,
+            len(text),
+            text[:80],
+        )
+        asyncio.run_coroutine_threadsafe(emit_coro(text, agent_id or None, field), loop)
+    except Exception:  # noqa: BLE001 - live streaming is best-effort, never break the call
+        pass
+
+
+def note_lm_provider_thinking_delta(text: str, *, provider: str = "") -> None:
+    """Stream provider-internal thinking/debug deltas as a collapsed thinking part.
+
+    This is intentionally separate from DSPy contract fields. For Claude Code SDK,
+    ``thinking_delta`` is hidden provider thinking, while the visible contract prose
+    arrives later on the text channel as ``[[ ## reasoning ## ]]`` or
+    ``[[ ## next_thought ## ]]``.
+    """
+    if not text:
+        return
+    emitter = _LIVE_CHUNK_EMITTER.get()
+    if not emitter:
+        return
+    loop, emit_coro = emitter
+    agent_id = ""
+    try:
+        from clio_agent.gact.context import active_react_scope  # noqa: PLC0415
+
+        agent_id = active_react_scope()
+    except Exception:  # noqa: BLE001 - scope unavailable off-turn
+        agent_id = ""
+    field = f"provider_thinking:{provider or 'provider'}"
+    try:
+        stream_audit(
+            "bridge.provider_aux",
+            agent_id=agent_id or "",
+            provider=provider or "provider",
+            field=field,
+            chunk_len=len(text),
+            normalized_event="turn.trace.delta",
+            duplicate_suppressed=False,
+            head=text[:120],
+        )
+        asyncio.run_coroutine_threadsafe(emit_coro(text, agent_id or None, field), loop)
     except Exception:  # noqa: BLE001 - live streaming is best-effort, never break the call
         pass
 
@@ -124,6 +223,7 @@ def note_lm_token_event(content: str, reasoning: str, *, field: str = "answer") 
         )
     except Exception:  # noqa: BLE001 - capture must never break a call
         pass
+
 
 # Hard ceiling on how long a single in-flight LM call is trusted as "progress".
 # Past this, the call is assumed wedged and stops refreshing the watchdog so the

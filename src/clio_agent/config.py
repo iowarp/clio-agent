@@ -875,6 +875,7 @@ def _io_logging_lm_cls() -> Any:
 
                 import anyio as _anyio  # noqa: PLC0415
 
+                from clio_agent.runtime import trace  # noqa: PLC0415
                 from clio_agent.runtime.lm_activity import (  # noqa: PLC0415
                     note_lm_activity,
                     note_lm_answer_delta,
@@ -904,7 +905,15 @@ def _io_logging_lm_cls() -> Any:
                     finally:
                         await send.aclose()
 
-                extractor = AnswerFieldExtractor("answer")
+                extractors = {
+                    "reasoning": AnswerFieldExtractor("reasoning"),
+                    "answer": AnswerFieldExtractor("answer"),
+                    "next_thought": AnswerFieldExtractor("next_thought"),
+                    "next_expert": AnswerFieldExtractor("next_expert"),
+                    "next_task": AnswerFieldExtractor("next_task"),
+                    "workflow_state": AnswerFieldExtractor("workflow_state"),
+                }
+                visible_contract_fields = {"reasoning", "next_thought", "answer"}
                 acc_answer = ""
                 acc_reasoning = ""
                 last_event = _time.monotonic()
@@ -915,15 +924,29 @@ def _io_logging_lm_cls() -> Any:
                             note_lm_activity()  # watchdog liveness (per token)
                             content, reasoning = extract_delta(_chunk)
                             if content:
-                                answer_delta = extractor.feed(content)
-                                if answer_delta:
-                                    # live UI: only PROSE answers (synthesis) — an
-                                    # intermediate expert's answer field is a
-                                    # structured object and must not show as UI text.
-                                    # One streaming path for chat AND blueprint turns.
-                                    if not extractor.is_structured():
-                                        note_lm_answer_delta(answer_delta)
-                                    acc_answer += answer_delta  # highway gets all
+                                trace.HF_ON and trace.hot(
+                                    "STREAM-FIELD",
+                                    "raw_content len=%d head=%r",
+                                    len(content),
+                                    content[:120],
+                                )
+                                for field_name, extractor in extractors.items():
+                                    answer_delta = extractor.feed(content)
+                                    if (
+                                        answer_delta
+                                        and field_name in visible_contract_fields
+                                        and not extractor.is_structured()
+                                    ):
+                                        trace.HF_ON and trace.hot(
+                                            "STREAM-FIELD",
+                                            "emit field=%s len=%d head=%r",
+                                            field_name,
+                                            len(answer_delta),
+                                            answer_delta[:120],
+                                        )
+                                        # Preserve exact generated output-field tokens.
+                                        note_lm_answer_delta(answer_delta, field=field_name)
+                                        acc_answer += answer_delta  # highway gets all
                             if reasoning:
                                 acc_reasoning += reasoning
                             # highway event (trace + ARC), coalesced so the durable
@@ -934,11 +957,22 @@ def _io_logging_lm_cls() -> Any:
                                 acc_answer = ""
                                 acc_reasoning = ""
                                 last_event = now
-                    tail = extractor.flush()
-                    if tail:
-                        if not extractor.is_structured():
-                            note_lm_answer_delta(tail)
-                        acc_answer += tail
+                    for field_name, extractor in extractors.items():
+                        tail = extractor.flush()
+                        if (
+                            tail
+                            and field_name in visible_contract_fields
+                            and not extractor.is_structured()
+                        ):
+                            trace.HF_ON and trace.hot(
+                                "STREAM-FIELD",
+                                "flush field=%s len=%d head=%r",
+                                field_name,
+                                len(tail),
+                                tail[:120],
+                            )
+                            note_lm_answer_delta(tail, field=field_name)
+                            acc_answer += tail
                     if acc_answer or acc_reasoning:
                         note_lm_token_event(acc_answer, acc_reasoning)
                 if "exc" in holder:

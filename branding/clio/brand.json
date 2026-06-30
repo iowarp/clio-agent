@@ -4,6 +4,7 @@
   "tagline": "Your local AI coding & data agent",
   "markGlyph": "C",
   "logoSvg": "logo.svg",
+  "logoImage": "../logo.png",
   "accent": "#ea7b2a",
   "themeTokens": {
     "--color-accent": "#ea7b2a"
@@ -13,6 +14,7 @@
     "url": "https://github.com/iowarp/clio-agent",
     "detail": "CLIO backend"
   },
+  "releaseUrl": "https://github.com/iowarp/clio-agent/releases",
   "backend": {
     "mode": "managed",
     "sidecarName": "clio-agent",

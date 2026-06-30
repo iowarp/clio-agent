@@ -62,7 +62,11 @@ class AnswerFieldExtractor:
         structured answers still ride the highway/trace. Decided from the first
         non-whitespace char so it's stable once content starts."""
         answer = self._current_answer(safe=False).lstrip()
-        return bool(answer) and answer[0] in "{["
+        if not answer:
+            return False
+        if answer[0] in "{[":
+            return True
+        return answer.startswith("```json") or answer.startswith("```JSON")
 
     def flush(self) -> str:
         """Final call after the stream ends; emit any held-back remainder."""

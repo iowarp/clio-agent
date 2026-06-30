@@ -1650,6 +1650,16 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             _react_scope_token = _ctx.set_react_scope(str(getattr(self.agent_def, "id", "")))
             _react_session_token = _ctx.set_react_session(active_session_id)
             _react_window_token = _ctx.set_react_window(_resolve_expert_context_window(self.config))
+            _agent_id_for_stream = str(getattr(self.agent_def, "id", "") or "")
+            _structured_outputs = (
+                self.agent_def.structured_outputs
+                if isinstance(self.agent_def.structured_outputs, Mapping)
+                else {}
+            )
+            _answer_stream_visible = _agent_id_for_stream == "synthesis" or not bool(
+                _structured_outputs.get("workflow_state")
+            )
+            _visible_answer_token = _ctx.set_visible_answer_stream(_answer_stream_visible)
             if trace.HF_ON:
                 _ck_sp = kwargs.get("system_prompt", "")
                 _ck_q = str(kwargs.get("question", ""))
@@ -1821,6 +1831,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 # so reset MUST unwind in strict reverse-LIFO of the sets
                 # (window -> session -> scope -> rows) or an earlier reset would
                 # restore a snapshot that predates the later sets. (#714)
+                _ctx.reset(_visible_answer_token)
                 _ctx.reset(_react_window_token)
                 _ctx.reset(_react_session_token)
                 _ctx.reset(_react_scope_token)

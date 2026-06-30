@@ -19,13 +19,46 @@ def test_extractor_pulls_only_answer_field_across_chunk_splits():
     full = (
         "[[ ## reasoning ## ]]\nthinking hard\n"
         "[[ ## answer ## ]]\nHello world, the result.\n"
-        "[[ ## workflow_state ## ]]\n{\"a\": 1}\n[[ ## completed ## ]]"
+        '[[ ## workflow_state ## ]]\n{"a": 1}\n[[ ## completed ## ]]'
     )
     ex = AnswerFieldExtractor("answer")
     out = "".join(ex.feed(c) for c in _chunked(full, [1, 4, 9, 2, 7, 3])) + ex.flush()
     assert out.strip() == "Hello world, the result."
     assert "[[" not in out and "##" not in out  # no markers leaked
     assert "thinking" not in out  # reasoning not leaked
+
+
+def test_extractor_handles_all_contract_fields_without_marker_leaks():
+    full = (
+        "[[ ## reasoning ## ]]\nroute to geo\n"
+        "[[ ## next_thought ## ]]\nneed coordinates\n"
+        "[[ ## next_expert ## ]]\ngeospatial\n"
+        "[[ ## next_task ## ]]\nResolve Los Angeles.\n"
+        "[[ ## answer ## ]]\nDone.\n"
+        '[[ ## workflow_state ## ]]\n{"region":{"status":"ready"}}\n'
+        "[[ ## completed ## ]]"
+    )
+    chunks = _chunked(full, [2, 5, 1, 8, 3])
+
+    outputs = {}
+    for field in (
+        "reasoning",
+        "next_thought",
+        "next_expert",
+        "next_task",
+        "answer",
+        "workflow_state",
+    ):
+        extractor = AnswerFieldExtractor(field)
+        outputs[field] = "".join(extractor.feed(chunk) for chunk in chunks) + extractor.flush()
+
+    assert outputs["reasoning"].strip() == "route to geo"
+    assert outputs["next_thought"].strip() == "need coordinates"
+    assert outputs["next_expert"].strip() == "geospatial"
+    assert outputs["next_task"].strip() == "Resolve Los Angeles."
+    assert outputs["answer"].strip() == "Done."
+    assert outputs["workflow_state"].strip() == '{"region":{"status":"ready"}}'
+    assert all("[[ ##" not in value for value in outputs.values())
 
 
 def test_extractor_flags_structured_answer_vs_prose():

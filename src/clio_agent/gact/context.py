@@ -78,6 +78,7 @@ class RuntimeContext:
     react_session: str = ""  # _ACTIVE_REACT_SESSION
     react_context_window: int = 0  # _ACTIVE_REACT_CONTEXT_WINDOW
     blueprint_tool_rows: list[dict[str, Any]] | None = None  # _ACTIVE_BLUEPRINT_TOOL_ROWS
+    visible_answer_stream: bool = True
     parent_span_id: str = ""  # _ACTIVE_PARENT_SPAN_ID
     trajectory_cell: TrajectoryCell | None = None  # _ACTIVE_REACT_TRAJECTORY (via cell)
 
@@ -159,6 +160,12 @@ def active_react_context_window() -> int:
 def active_blueprint_tool_rows() -> list[dict[str, Any]] | None:
     """``_ACTIVE_BLUEPRINT_TOOL_ROWS.get()``."""
     return _RUNTIME.get().blueprint_tool_rows
+
+
+def active_visible_answer_stream() -> bool:
+    """Return whether the active LM ``answer`` field is transcript-visible prose."""
+
+    return _RUNTIME.get().visible_answer_stream
 
 
 def active_parent_span_id() -> str:
@@ -276,6 +283,13 @@ def set_blueprint_tool_rows(
     """
     cur = _RUNTIME.get()
     return _RUNTIME.set(replace(cur, blueprint_tool_rows=rows))
+
+
+def set_visible_answer_stream(visible: bool) -> contextvars.Token[RuntimeContext]:
+    """Set whether this LM call's ``answer`` field may stream to the transcript."""
+
+    cur = _RUNTIME.get()
+    return _RUNTIME.set(replace(cur, visible_answer_stream=bool(visible)))
 
 
 def set_react_scope(scope: str) -> contextvars.Token[RuntimeContext]:

@@ -18,10 +18,24 @@ invariant). ``app.py`` re-exports them so existing
 
 from __future__ import annotations
 
+from importlib import metadata
+
+import clio_agent
 from clio_agent import conf
 
 CONTRACT_VERSION = "0.2"
-GACT_BACKEND_VERSION = "0.1.0"  # version of this clio_agent.gact module
+
+
+def _installed_clio_agent_version() -> str:
+    """Return the installed package version exposed by the backend API."""
+
+    try:
+        return metadata.version("clio-agent")
+    except metadata.PackageNotFoundError:
+        return str(getattr(clio_agent, "__version__", "0.0.0"))
+
+
+GACT_BACKEND_VERSION = _installed_clio_agent_version()
 
 _CTX_MAX_BYTES = conf.resolve(
     "limits.context_inline_bytes",
