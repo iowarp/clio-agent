@@ -668,6 +668,13 @@ def _clean_public_transcript_text(text: str, *, preserve_whitespace: bool = Fals
     """
 
     public = _clean_public_delegation_prompt(text)
+    # DSPy ChatAdapter field markers ([[ ## field ## ]]) must never reach the
+    # visible transcript. They survive into a field's text when the model
+    # re-emits a marker mid-field (self-referential) — DSPy's StreamListener then
+    # folds the SECOND marker into the field content (e.g. a `next_thought` chunk
+    # that contains a literal "[[ ## next_thought ## ]]"). Strip any that leaked;
+    # collapse to a single space so the two halves of the field rejoin cleanly.
+    public = re.sub(r"\s*\[\[\s*##\s*[A-Za-z0-9_]+\s*##\s*\]\]\s*", " ", public)
     public = re.sub(
         r"(?ims)\n*\s*[A-Za-z ]*region:\s*```(?:json)?\s*[\s\S]*?\bworkflow_state\b[\s\S]*?```",
         "",

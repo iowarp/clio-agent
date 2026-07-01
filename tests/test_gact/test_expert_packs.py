@@ -371,6 +371,39 @@ def test_public_transcript_text_strips_return_state_leaks() -> None:
     assert "acquisition.metadata_path" not in cleaned
 
 
+def test_public_transcript_text_strips_leaked_dspy_field_markers() -> None:
+    """A DSPy ChatAdapter field marker re-emitted mid-field (self-referential)
+    must never reach the visible transcript.
+
+    Real leak captured from live EarthScope runs: the model emits a second
+    ``[[ ## next_thought ## ]]`` inside a ``next_thought`` chunk, and DSPy's
+    StreamListener folds it into the field content. The whole-part cleaner strips
+    it and rejoins the two halves with a single space.
+    """
+    from clio_agent.gact.app import _clean_public_transcript_text
+
+    cases = [
+        (
+            "I converted the path to Windows path format."
+            "[[ ## next_thought ## ]] STEP 1 completed successfully with the geocode.",
+            "I converted the path to Windows path format. "
+            "STEP 1 completed successfully with the geocode.",
+        ),
+        (
+            "The result is ready.[[ ## next_tool_name ## ]] geo_geocode and then done.",
+            "The result is ready. geo_geocode and then done.",
+        ),
+    ]
+    for raw, expected in cases:
+        cleaned = _clean_public_transcript_text(raw)
+        assert "[[ ##" not in cleaned
+        assert cleaned == expected
+
+    # ordinary double-brackets and real emphasis are NOT markers -- leave them be.
+    prose = "This is **bold** with [[ brackets ]] that are fine."
+    assert _clean_public_transcript_text(prose) == prose
+
+
 def test_public_transcript_text_strips_state_assignment_clause_from_live_thought() -> None:
     from clio_agent.gact.app import _clean_public_transcript_text
 
