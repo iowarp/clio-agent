@@ -2831,7 +2831,19 @@ async def _run_turn_in_background(
         streamed_assistant_part_id is not None
         and streamed_assistant_part_id not in closed_streamed_part_ids
     ):
-        if answer_text and streamed_last_agent == responder_agent_id:
+        # Reuse the still-open part as the canonical answer ONLY when it was actually
+        # streaming the answer field. If the last field to stream was a DIFFERENT
+        # field (e.g. ``reasoning``/``next_thought``), its buffered text is that
+        # field's content — overwriting it with ``answer_text`` swaps the part's text
+        # out from under the live view (the reasoning->answer "beginning of the turn
+        # breaks" bug: live shows the reasoning, finalize/reload swaps to the answer).
+        # Close it as-is instead (its reasoning is preserved + emitted consistently),
+        # and let the answer land as its own authored part via the fallback below.
+        if (
+            answer_text
+            and streamed_last_agent == responder_agent_id
+            and streamed_last_field == "answer"
+        ):
             reuse_streamed_part_id = streamed_assistant_part_id
         else:
             _close_streamed_part(streamed_assistant_part_id)
