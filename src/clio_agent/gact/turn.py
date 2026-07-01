@@ -160,6 +160,51 @@ def _dedup_cross_agent_text(parts: list[Part]) -> list[Part]:
     return kept
 
 
+def _drop_orchestrator_resume_restatement(
+    parts: list[Part], responder_agent_id: str
+) -> list[Part]:
+    """Drop the orchestrator's TERMINAL parent-resume reasoning text.
+
+    After the terminal child (e.g. ``synthesis``) writes the answer and returns, the
+    resumed orchestrator often emits a ``reasoning`` field that RESTATES that answer —
+    frequently with a model-mangled/doubled artifact path. Per the blueprint the
+    orchestrator never authors the answer, and :func:`_is_parent_resume_reasoning_part`
+    already documents this reasoning as "valuable for trace/metadata, but NOT a
+    transcript atom" (the child answer + the ``parent.resumed`` handoff already deliver
+    it). It is suppressed for the finalize ``thinking_text`` path but NOT for the
+    streamed ``reasoning`` text part, so the duplicate survives. Remove ONLY the
+    responder's ``reasoning``-field text that appears AFTER its last ``parent.resumed``
+    handoff; the child's answer and all earlier reasoning are untouched. No-op unless
+    the responder genuinely resumed after a child (so direct-answer turns are safe)."""
+    if not responder_agent_id or not _is_parent_resume_reasoning_part(
+        parts, responder_agent_id=responder_agent_id
+    ):
+        return parts
+    last_resume = -1
+    for i, part in enumerate(parts):
+        if (
+            part.type == "expert_handoff"
+            and getattr(part, "stage", "") == "parent.resumed"
+            and part.agent_id == responder_agent_id
+        ):
+            last_resume = i
+    if last_resume < 0:
+        return parts
+    kept: list[Part] = []
+    for i, part in enumerate(parts):
+        if (
+            i > last_resume
+            and part.type == "text"
+            and part.agent_id == responder_agent_id
+            and isinstance(part.metadata, Mapping)
+            and part.metadata.get("signature_field_name") == "reasoning"
+            and (part.text or "").strip()
+        ):
+            continue
+        kept.append(part)
+    return kept
+
+
 def _is_parent_resume_reasoning_part(
     parts: list[Part],
     *,
@@ -3117,10 +3162,13 @@ async def _run_turn_in_background(
                     metadata=p.metadata,
                 )
                 break
-    # #736: drop the resumed orchestrator's verbatim echo of a terminal child's answer
-    # from the authored (persisted/reloaded) transcript, keeping the child-authored
-    # original. Serving-layer dedup — the live stream still carries main's echo (it
-    # genuinely streamed) and the client dedups it defensively. See helper docstring.
+    # Drop the orchestrator's terminal parent-resume reasoning that merely RESTATES the
+    # child answer (redundant per the blueprint; often carries a model-mangled/doubled
+    # path). Structural — catches the paraphrase the fuzzy near-dup pass below misses.
+    assistant_parts = _drop_orchestrator_resume_restatement(assistant_parts, responder_agent_id)
+    # #736: drop the resumed orchestrator's verbatim/near echo of a terminal child's
+    # answer from the authored (persisted/reloaded) transcript, keeping the child-
+    # authored original.
     assistant_parts = _dedup_cross_agent_text(assistant_parts)
     # #731: stamp a monotonic 1-based arrival-order key on every persisted part so a
     # reloaded conversation can be restored to the exact order it streamed even if a
