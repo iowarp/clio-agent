@@ -61,6 +61,31 @@ def test_extractor_handles_all_contract_fields_without_marker_leaks():
     assert all("[[ ##" not in value for value in outputs.values())
 
 
+def test_field_quoting_its_own_marker_inline_is_not_a_boundary():
+    # A next_thought whose prose QUOTES the ChatAdapter markers (the model explaining
+    # the output format) must NOT be truncated: only a marker ALONE on its own line is
+    # a real field boundary. Before the line-anchored _SECTION regex, this thought was
+    # extracted as the garbage between the two quoted markers -> "`, then `".
+    full = (
+        "[[ ## next_thought ## ]]\n"
+        "I must respond in the format strictly, starting with `[[ ## next_thought ## ]]`, "
+        "then `[[ ## next_tool_name ## ]]`, then the args. Now I profile "
+        "`MTA1.CI.LY_.30.csv`.\n"
+        "[[ ## next_tool_name ## ]]\n"
+        "pandas_profile_csv\n"
+        "[[ ## completed ## ]]"
+    )
+    for sizes in ([1], [7], [3, 11, 2], [500]):
+        extractor = AnswerFieldExtractor("next_thought")
+        out = "".join(extractor.feed(c) for c in _chunked(full, sizes)) + extractor.flush()
+        assert out.strip().startswith("I must respond in the format strictly")
+        assert "`MTA1.CI.LY_.30.csv`" in out
+        # the quoted markers survive verbatim INSIDE the thought (not treated as bounds)
+        assert "`[[ ## next_thought ## ]]`" in out
+        # the real trailing tool-name marker is NOT leaked into the field
+        assert "pandas_profile_csv" not in out
+
+
 def test_extractor_flags_structured_answer_vs_prose():
     prose = AnswerFieldExtractor("answer")
     prose.feed("[[ ## answer ## ]]\n## Region\nReno, Nevada")
