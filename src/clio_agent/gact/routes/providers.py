@@ -916,7 +916,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 presence_penalty=req.presence_penalty,
                 thinking_budget=req.thinking_budget,
                 codex_transport=req.transport or "exec",
-                claude_code_transport=req.transport or "exec",
+                claude_code_transport=req.transport or "sdk",
             )
             # Per-provider handshake: discover connectivity + per-model config and
             # fold it into cfg — context-aware max_tokens (replacing the static ALCF

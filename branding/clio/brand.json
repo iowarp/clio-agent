@@ -1,13 +1,26 @@
 {
   "name": "CLIO",
   "wordmark": "CLIO",
-  "tagline": "Your local AI coding & data agent",
+  "tagline": "by the Gnosis Research Center",
+  "taglineAccent": "Gnosis Research Center",
+  "homeUrl": "https://iowarp.ai",
+  "taglineAccentUrl": "https://grc.iit.edu",
   "markGlyph": "C",
   "logoSvg": "logo.svg",
-  "logoImage": "../logo.png",
+  "logoImage": "../logo_cropeed.png",
   "accent": "#ea7b2a",
   "themeTokens": {
     "--color-accent": "#ea7b2a"
+  },
+  "sessionSemantics": {
+    "blueprintLabel": "NDP Organization",
+    "showExpertPackPicker": false,
+    "blueprintDisplayNames": {
+      "earthscope-gnss-region": "EarthScope",
+      "EarthScope GNSS Region": "EarthScope",
+      "wildfire-smoke-impact-review": "NIFC",
+      "Wildfire Smoke Impact Review": "NIFC"
+    }
   },
   "backendRepository": {
     "label": "github.com/iowarp/clio-agent",

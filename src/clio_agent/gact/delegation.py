@@ -657,8 +657,15 @@ def _clean_public_delegation_prompt(text: str) -> str:
     return re.sub(r"[ \t]+\n", "\n", public).strip()
 
 
-def _clean_public_transcript_text(text: str) -> str:
-    """Strip CLIO contract prose from visible thought/answer transcript text."""
+def _clean_public_transcript_text(text: str, *, preserve_whitespace: bool = False) -> str:
+    """Strip CLIO contract prose from visible thought/answer transcript text.
+
+    ``preserve_whitespace`` keeps the text's exact leading/trailing/inner spacing
+    after the contract-prose removal. Use it for STREAMING chunks: each token
+    delta must keep its boundary whitespace so concatenated chunks read
+    ``"thinking next"`` and not ``"thinkingnext"``. The default (full-text)
+    behavior still trims and collapses runs of spaces for one-shot cleaning.
+    """
 
     public = _clean_public_delegation_prompt(text)
     public = re.sub(
@@ -681,6 +688,13 @@ def _clean_public_transcript_text(text: str) -> str:
         lambda match: match.group(1) if match.group(1).strip() else "",
         public,
     )
+    if preserve_whitespace:
+        # The inner cleaner strips boundary whitespace; re-attach the ORIGINAL
+        # leading/trailing whitespace around the cleaned core so streamed chunks
+        # keep their spacing ("thinking " stays "thinking ", not "thinking").
+        leading = text[: len(text) - len(text.lstrip())]
+        trailing = text[len(text.rstrip()) :]
+        return f"{leading}{public.strip()}{trailing}"
     return re.sub(r" {2,}", " ", public).strip()
 
 

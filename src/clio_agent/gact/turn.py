@@ -175,6 +175,59 @@ def _looks_like_structured_answer(text: str) -> bool:
     return stripped[0] in "{[" or stripped.startswith("```json") or stripped.startswith("```JSON")
 
 
+def _render_return_summary(output: str) -> str:
+    """A human-readable one-liner for a child's return, from its GENUINE answer.
+
+    Prose answers pass through unchanged. Structured (JSON) answers — the typed
+    ``dspy.extract`` deliverable — are rendered into a compact, grounded summary
+    (a ``summary``/``description`` field if present, else the top-level scalar
+    fields) so the transcript shows the real result instead of a generic
+    "returned a compact result" placeholder. Returns "" when there is nothing
+    meaningful to show (caller supplies the fallback)."""
+
+    text = (output or "").strip()
+    if not text or not _looks_like_structured_answer(text):
+        return text
+    body = text
+    if body.startswith("```"):
+        body = body.strip("`")
+        body = body.split("\n", 1)[-1].strip() if "\n" in body else ""
+    try:
+        data = json.loads(body)
+    except Exception:
+        return text
+    if isinstance(data, Mapping):
+        node: Mapping[str, Any] = data
+        # Unwrap a single-key namespace wrapper (e.g. {"geospatial": {...}}) so the
+        # salient fields one level down are summarised, not just "{namespace}".
+        for _ in range(2):
+            if len(node) == 1:
+                only = next(iter(node.values()))
+                if isinstance(only, Mapping):
+                    node = only
+                    continue
+            break
+        for key in ("summary", "description", "answer", "result"):
+            value = node.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        scalars = []
+        for key, value in node.items():
+            if isinstance(value, bool) or isinstance(value, (str, int, float)):
+                text_value = str(value)
+                if len(text_value) > 60:
+                    text_value = text_value[:57] + "..."
+                scalars.append(f"{key}: {text_value}")
+            if len(scalars) >= 6:
+                break
+        if scalars:
+            return "; ".join(scalars)
+    if isinstance(data, list):
+        return f"{len(data)} item(s)"
+    # Structured but unrenderable (e.g. empty object): no meaningful one-liner.
+    return ""
+
+
 _INTERNAL_METADATA_TOOL_NAMES = frozenset(
     {
         "clio_prior_workflow_state",
@@ -734,6 +787,24 @@ async def _run_turn_in_background(
         if part_id in closed_streamed_part_ids:
             return
         buffered = "".join(streamed_part_text.get(part_id, []))
+        # Locate the open part so we know its type: only TEXT parts get the
+        # contract-prose clean (provider thinking is shown verbatim), and the
+        # empty-drop path below needs the type too.
+        target_part = next(
+            (
+                part
+                for part in _live_parts_store().get(sid, [])
+                if part.id == part_id and part.type in {"text", "thinking"}
+            ),
+            None,
+        )
+        # B2: clean the COMPLETE buffered answer once, here — never per chunk. On
+        # whole text the block/line regexes match real ```json … workflow_state```
+        # dumps and full contract lines (stripping them), and partial-chunk
+        # truncation can no longer happen. preserve_whitespace keeps the answer's
+        # markdown spacing (lists/code) intact; only contract prose is removed.
+        if target_part is not None and target_part.type == "text" and buffered.strip():
+            buffered = _clean_public_transcript_text(buffered, preserve_whitespace=True)
         if not buffered.strip():
             live_parts = _live_parts_store().get(sid, [])
             _live_parts_store()[sid] = [
@@ -753,10 +824,8 @@ async def _run_turn_in_background(
             )
             return
         closed_streamed_part_ids.add(part_id)
-        for part in _live_parts_store().get(sid, []):
-            if part.id == part_id and part.type in {"text", "thinking"}:
-                part.text = buffered
-                break
+        if target_part is not None:
+            target_part.text = buffered
         bus.publish(
             Event(
                 type="message.part.completed",
@@ -770,6 +839,28 @@ async def _run_turn_in_background(
                 },
             )
         )
+
+    def _close_streamed_part_at_runtime_boundary() -> None:
+        """Close open streamed text before appending a non-text runtime part.
+
+        A provider may emit the same contract field in multiple chunks across
+        intervening tool calls/results. Persisting that as one mutable text part
+        makes reloads render later text before the intervening tools. Closing the
+        current part at each runtime boundary preserves the append-only order.
+        """
+        nonlocal streamed_assistant_part_id, streamed_last_agent, streamed_last_field
+        if streamed_assistant_part_id is None:
+            return
+        _close_streamed_part(streamed_assistant_part_id)
+        streamed_assistant_part_id = None
+        streamed_last_agent = None
+        streamed_last_field = ""
+
+    boundary_hooks = getattr(app.state, "live_stream_text_boundary_hooks", None)
+    if boundary_hooks is None:
+        boundary_hooks = {}
+        app.state.live_stream_text_boundary_hooks = boundary_hooks
+    boundary_hooks[sid] = _close_streamed_part_at_runtime_boundary
 
     async def _emit_chunk(
         text: str,
@@ -814,28 +905,30 @@ async def _run_turn_in_background(
                 stream_field,
             )
             return
-        if not is_provider_thinking:
-            text = _clean_public_transcript_text(text)
-            if not text:
-                stream_audit(
-                    "sse.normalized_emit",
-                    session_id=sid,
-                    turn_id=turn_id,
-                    agent_id=chunk_agent,
-                    field=stream_field,
-                    normalized_event="turn.text.delta",
-                    chunk_len=0,
-                    duplicate_suppressed=True,
-                    duplicate_reason="clio_contract_text_stripped",
-                )
-                return
+        # B2: do NOT run the contract-prose cleaner per streamed chunk. Its block
+        # and full-line regexes (delegation._clean_public_transcript_text) only
+        # match complete ```json … workflow_state``` blocks / whole lines; on a
+        # PARTIAL chunk the multiline ^/$/\n\n anchors hit the chunk boundary and
+        # empty or leading-truncate real answer text (the " station in a…" /
+        # "The acquis…" artifacts). The whole buffered part is cleaned once in
+        # _close_streamed_part instead. Raw chunks flow through here with their
+        # boundary whitespace intact, so concatenation stays "thinking next".
         resume_output = _latest_parent_resume_output(
             _live_parts_store().get(sid, []),
             chunk_agent,
         )
         if stream_field == "answer" and resume_output:
             offset = suppressed_parent_resume_offsets.get(chunk_agent, 0)
-            if resume_output[offset:].startswith(text):
+            after = resume_output[offset + len(text) :]
+            # Only suppress a duplicated chunk when it ends on a WORD BOUNDARY in
+            # the resume output. Otherwise, when the parent's text diverges from
+            # the child's mid-word (e.g. parent paraphrases after "Los An|geles"),
+            # we'd drop "Los An" and emit "geles" — a corrupted mid-word fragment
+            # that also gets stored and breaks reload. Emitting the chunk instead
+            # keeps the text intact (any true full-line duplication is deduped by
+            # the client's dedupeRepeatedText).
+            chunk_ends_word = (not after) or after[:1].isspace() or text[-1:].isspace()
+            if resume_output[offset:].startswith(text) and chunk_ends_word:
                 suppressed_parent_resume_offsets[chunk_agent] = offset + len(text)
                 trace.HF_ON and trace.hot(
                     "STREAM-SSE",
@@ -1521,6 +1614,16 @@ async def _run_turn_in_background(
                         _merge_workflow_state_mapping(workflow_state, row_state)
                 child_tools_called = _sanitize_tools_called_metadata(child_tools_called)
                 handoff_output = "" if _looks_like_structured_answer(output) else output
+                # The PUBLIC return summary is derived from the child's GENUINE
+                # answer (structured answers rendered to a readable one-liner) so
+                # the transcript shows the real result, not a generic placeholder.
+                # handoff_output stays blanked for structured answers because it
+                # feeds the parent RESUME PROMPT (which receives the typed
+                # workflow_state separately, not raw JSON).
+                public_return_summary = (
+                    _clean_public_transcript_text(_render_return_summary(output))
+                    or f"{target.id} returned to {parent_agent.id}."
+                )
                 completed_row = {
                     **row,
                     "agent_id": target.id,
@@ -1539,6 +1642,15 @@ async def _run_turn_in_background(
                     "execution_mode": execution_mode,
                     "input": prompt,
                     "output": handoff_output,
+                    # Real, human-readable return summary — same string the live
+                    # turn.action.added return uses, so the reload (/messages)
+                    # render matches the live render (no change-on-reload).
+                    "output_summary": public_return_summary,
+                    # The GENUINE structured output for the "details" disclosure on
+                    # reload (mirrors the live return's `response`). Empty for prose
+                    # (the body already is the answer). Distinct from `output`, which
+                    # stays blanked to keep the parent resume prompt clean.
+                    "output_raw": output if _looks_like_structured_answer(output) else "",
                     "workflow_state": workflow_state,
                     "tools_called": child_tools_called,
                     "children": [
@@ -1558,7 +1670,7 @@ async def _run_turn_in_background(
                     f"{delegation_event_prefix}.completed",
                     turn_id=turn_id,
                     trace_id=trace_id,
-                    summary=f"{target.id} returned a compact result to {parent_agent.id}.",
+                    summary=public_return_summary,
                     actor={"agent_id": target.id, "role": "child_expert"},
                     subject={"agent_id": parent_agent.id, "role": "parent_expert"},
                     blueprint=delegation_blueprint,
@@ -1586,14 +1698,6 @@ async def _run_turn_in_background(
                         },
                     ),
                 )
-                raw_return_summary = (
-                    handoff_output or str(completed_row.get("output_summary") or "").strip()
-                )
-                public_return_summary = _clean_public_transcript_text(raw_return_summary)
-                if not public_return_summary:
-                    public_return_summary = (
-                        f"{target.id} returned a compact result to {parent_agent.id}."
-                    )
                 if workflow_state:
                     _publish_transcript_event(
                         bus,
@@ -1605,20 +1709,25 @@ async def _run_turn_in_background(
                             "visibility": "hidden",
                         },
                     )
+                return_action: dict[str, Any] = {
+                    "kind": "return",
+                    "call_id": (f"return:{target.id}:{parent_agent.id}:{len(executed)}"),
+                    "agent_id": target.id,
+                    "target_agent": parent_agent.id,
+                    "summary": public_return_summary,
+                }
+                # For a structured answer the body shows the readable summary; the
+                # GENUINE raw output rides along as `response` so the client can
+                # reveal it under a "details" disclosure (it's just LLM output —
+                # shown on demand, not hidden). Prose answers ARE the body, so no
+                # separate raw is sent.
+                if _looks_like_structured_answer(output):
+                    return_action["response"] = output
                 _publish_transcript_event(
                     bus,
                     sid,
                     "turn.action.added",
-                    {
-                        "turn_id": turn_id,
-                        "action": {
-                            "kind": "return",
-                            "call_id": (f"return:{target.id}:{parent_agent.id}:{len(executed)}"),
-                            "agent_id": target.id,
-                            "target_agent": parent_agent.id,
-                            "summary": public_return_summary,
-                        },
-                    },
+                    {"turn_id": turn_id, "action": return_action},
                 )
                 completed_row = _sanitize_handoff_tool_metadata(completed_row)
                 executed.append(completed_row)
@@ -3310,6 +3419,7 @@ async def _run_turn_in_background(
     getattr(app.state, "live_assistant_message_ids", {}).pop(sid, None)
     getattr(app.state, "live_assistant_parts", {}).pop(sid, None)
     getattr(app.state, "live_assistant_part_keys", {}).pop(sid, None)
+    getattr(app.state, "live_stream_text_boundary_hooks", {}).pop(sid, None)
     getattr(app.state, "expert_terminal_answers", {}).pop(sid, None)
     _update_retry_attempt(
         retry_status,

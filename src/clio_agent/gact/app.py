@@ -2186,6 +2186,9 @@ def build_app(
         install = read_install_metadata(install_root) if install_root is not None else {}
         return {
             "active_agent_blueprint_id": str(blueprint_wire.get("id") or ""),
+            "active_agent_blueprint_name": str(
+                blueprint_wire.get("name") or blueprint_wire.get("display_name") or blueprint_wire.get("title") or ""
+            ),
             "active_agent_blueprint_version": str(blueprint_wire.get("version") or ""),
             "active_agent_blueprint_scope": scope,
             "active_agent_blueprint_definition_path": str(

@@ -135,6 +135,12 @@ def _ensure_live_assistant_message(app: "FastAPI", sid: str) -> str:
 def _append_live_assistant_part(app: "FastAPI", sid: str, part: Part) -> None:
     """Publish and remember a real runtime part for the active assistant turn."""
 
+    boundary_hooks = getattr(app.state, "live_stream_text_boundary_hooks", None)
+    if isinstance(boundary_hooks, dict):
+        hook = boundary_hooks.get(sid)
+        if callable(hook):
+            hook()
+
     msg_id = _ensure_live_assistant_message(app, sid)
     live_parts = getattr(app.state, "live_assistant_parts", None)
     if live_parts is None:
@@ -267,6 +273,42 @@ def _emit_live_tool_route_context(app: "FastAPI", sid: str, tool_name: str) -> N
         )
 
 
+def _streamed_text_matches(streamed: str, candidate: str) -> bool:
+    """True when ``candidate`` is the same text already streamed as ``streamed``.
+
+    Whitespace-insensitive, BIDIRECTIONAL containment: ``candidate`` (a raw ReAct
+    step ``thought``) may be a SUBSET of the streamed copy (a short, clean thought)
+    OR a SUPERSET of it — DSPy's ChatAdapter sometimes re-emits ``next_thought``
+    with a ``[[ ## next_thought ## ]]`` marker, so the raw thought is the streamed
+    answer repeated and runs LONGER than the streamed copy. Both mean the thought
+    was already shown as a text row, so the caller drops it from the tool_call
+    instead of rendering the same answer twice (gap: tool_call.thought duplicating
+    the next_thought text part on reload).
+    """
+    left = " ".join(streamed.split())
+    right = " ".join(candidate.split())
+    return bool(left and right and (left == right or right in left or left in right))
+
+
+def _thought_repeats_emitted_text(app: "FastAPI", sid: str, agent: str, thought: str) -> bool:
+    """True when ``thought`` repeats a ``text`` part already emitted this turn for
+    ``agent`` — the next_thought already shows as a visible text row, so it must
+    not also ride the tool_call.thought. Compares against the EMITTED parts
+    (``live_assistant_parts``), which is reliable on every transport — unlike the
+    streamed-field buffer, which was empty on the SDK path so the old dedup never
+    fired."""
+    if not thought.strip():
+        return False
+    store = getattr(app.state, "live_assistant_parts", None) or {}
+    parts = store.get(sid, []) if isinstance(store, Mapping) else []
+    for part in reversed(list(parts)):
+        if getattr(part, "type", "") == "text" and getattr(part, "agent_id", "") == agent:
+            text = getattr(part, "text", "") or ""
+            if text.strip():
+                return _streamed_text_matches(text, thought)
+    return False
+
+
 def _make_tool_observer(app: "FastAPI"):
     """Build a callable suitable for MCPToolBridge.tool_observer.
 
@@ -287,9 +329,7 @@ def _make_tool_observer(app: "FastAPI"):
         session_store = store.get(sid, {}) if isinstance(store, Mapping) else {}
         agent_store = session_store.get(agent_id, {}) if isinstance(session_store, Mapping) else {}
         streamed = str(agent_store.get(field, "") or "") if isinstance(agent_store, Mapping) else ""
-        left = " ".join(streamed.split())
-        right = " ".join(text.split())
-        return bool(left and right and (left == right or right in left))
+        return _streamed_text_matches(streamed, text)
 
     def observe(
         name: str,
@@ -348,7 +388,21 @@ def _make_tool_observer(app: "FastAPI"):
                 )
             )
             step_thought = _ctx.active_step_thought()
-            if _streamed_field_contains(sid, invoking_expert, "next_thought", step_thought):
+            # The next_thought already streams as a visible text row, so it must NOT
+            # also ride the tool_call.thought (else the answer renders twice — once
+            # as the text row, once as the tool's thought). Clear it whenever it
+            # repeats an already-emitted text part for this agent. Comparing against
+            # the EMITTED parts is reliable on every transport (the streamed-field
+            # buffer was empty for the SDK path, so the old check never fired); we
+            # also keep the streamed-field check as a fast path. NOTE: we no longer
+            # fall back to active_step_reasoning() — that raw DSPy channel carries
+            # ``[[ ## next_thought ## ]]`` markers and the answer repeated, which is
+            # exactly the garbage that rode the tool_call on reload.
+            if (
+                not step_thought
+                or _streamed_field_contains(sid, invoking_expert, "next_thought", step_thought)
+                or _thought_repeats_emitted_text(app, sid, invoking_expert, step_thought)
+            ):
                 step_thought = ""
             _append_live_assistant_part(
                 app,

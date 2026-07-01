@@ -361,13 +361,18 @@ PROVIDERS: tuple[Provider, ...] = (
             "LiteLLM CustomLLM with Claude Code tools disabled."
         ),
         provider_kind="claude_code",
-        api_base="claude-code://exec",
+        api_base="claude-code://sdk",
         suggested_model="sonnet",
         requires_api_key=False,
         auth_method="none",
         is_kind_default=True,
         supports_live_catalog=False,
         model_catalog=(
+            ModelEntry(
+                "haiku",
+                "Claude Haiku (Claude Code alias)",
+                "Candidate Claude Code alias; not guaranteed by account entitlement.",
+            ),
             ModelEntry(
                 "sonnet",
                 "Claude Sonnet (Claude Code alias)",
@@ -376,11 +381,6 @@ PROVIDERS: tuple[Provider, ...] = (
             ModelEntry(
                 "opus",
                 "Claude Opus (Claude Code alias)",
-                "Candidate Claude Code alias; not guaranteed by account entitlement.",
-            ),
-            ModelEntry(
-                "haiku",
-                "Claude Haiku (Claude Code alias)",
                 "Candidate Claude Code alias; not guaranteed by account entitlement.",
             ),
         ),
