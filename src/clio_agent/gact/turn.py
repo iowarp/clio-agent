@@ -90,31 +90,72 @@ if TYPE_CHECKING:
     from clio_agent.gact.types import AgentDef  # noqa: F401
 
 
+def _cross_agent_answer_tokens(text: str) -> set[str]:
+    """Content tokens for cross-agent near-duplicate detection: strip URLs, Windows
+    paths, and backtick spans (which vary between paraphrases), then keep 3+ char
+    non-stopword tokens. Mirrors the (retired) client heuristic, now at the SOURCE."""
+    import re  # noqa: PLC0415 - turn.py has no module-level re import
+
+    normalized = re.sub(
+        r"[^a-z0-9_]+",
+        " ",
+        re.sub(
+            r"`[^`]*`",
+            " ",
+            re.sub(r"[a-zA-Z]:\\[^\s)`]+", " ", re.sub(r"https?://\S+", " ", text.lower())),
+        ),
+    )
+    stop = {"and", "are", "but", "for", "from", "not", "the", "this", "that", "with"}
+    return {tok for tok in normalized.split() if len(tok) >= 3 and tok not in stop}
+
+
+def _is_cross_agent_near_dup(a: str, b: str) -> bool:
+    """True when two LONG answers by different authors are strong near-duplicates — the
+    orchestrator PARAPHRASING a terminal child's answer (#736 in its non-verbatim form,
+    which the exact-match pass misses). Bounded to long, high-overlap text so distinct
+    prose is never merged."""
+    if len(a) < 500 or len(b) < 500:
+        return False
+    ta, tb = _cross_agent_answer_tokens(a), _cross_agent_answer_tokens(b)
+    if len(ta) < 40 or len(tb) < 40:
+        return False
+    intersection = len(ta & tb)
+    return intersection / min(len(ta), len(tb)) >= 0.82
+
+
 def _dedup_cross_agent_text(parts: list[Part]) -> list[Part]:
-    """Drop a ``text`` part that verbatim-duplicates an earlier one by another author.
+    """Drop a ``text`` part that duplicates an earlier one by ANOTHER author.
 
     iowarp/clio-agent#736: after a terminal child (e.g. ``synthesis``) returns its
     deliverable, the resumed orchestrator (``main``) frequently re-emits that child's
-    answer **verbatim** as its own ``text`` part, so the final brief lands twice in the
-    persisted transcript — once child-authored, once parent-authored. This drops the
-    later, cross-agent byte-identical copy and keeps the original (child-authored) part.
+    answer as its own ``text`` part, so the final brief lands twice — once child-
+    authored, once parent-authored. This drops the later, cross-agent copy and keeps
+    the original (child-authored) part.
 
-    Narrow by design: only a ``text`` part whose *stripped* content exactly matches an
-    EARLIER ``text`` part authored by a DIFFERENT ``agent_id`` is removed. The
-    orchestrator's own distinct wrap-up (its ``thinking`` part — different type and
-    content) and any legitimate same-author repetition are left untouched. Arrival
-    order of the surviving parts is preserved.
+    Catches BOTH the byte-identical echo AND the near-duplicate PARAPHRASE (main often
+    rewords a few tokens — "nits" vs " units" — so exact match alone misses it;
+    :func:`_is_cross_agent_near_dup` bounds the fuzzy case to long, high-overlap text).
+
+    Narrow by design: same-author repetition is never touched (so the legitimate
+    same-expert dspy.extract restatement — expected, hidden downstream in the return's
+    show-details — is preserved). Arrival order of survivors is kept.
     """
-    seen_author_by_text: dict[str, str] = {}
+    kept_texts: list[tuple[str, str]] = []  # (normalized_text, author)
     kept: list[Part] = []
     for part in parts:
         if part.type == "text":
             normalized = (part.text or "").strip()
             if normalized:
-                prior_author = seen_author_by_text.get(normalized)
-                if prior_author is not None and prior_author != part.agent_id:
+                drop = False
+                for prev_text, prev_author in kept_texts:
+                    if prev_author == part.agent_id:
+                        continue
+                    if prev_text == normalized or _is_cross_agent_near_dup(normalized, prev_text):
+                        drop = True
+                        break
+                if drop:
                     continue
-                seen_author_by_text.setdefault(normalized, part.agent_id)
+                kept_texts.append((normalized, part.agent_id))
         kept.append(part)
     return kept
 
