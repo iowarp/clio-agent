@@ -47,6 +47,36 @@ def _default_allowed_roots() -> tuple[Path, ...]:
     return (Path.cwd(), Path("/tmp"))
 
 
+def _active_workspace_root() -> Path | None:
+    """The active session's workspace root, when a tool is executing within one.
+
+    A session must ALWAYS be able to read/write/shell inside its OWN workspace,
+    even when ``CLIO_ALLOWED_ROOTS`` (default: process cwd + ``/tmp``) does not
+    name it — otherwise the agent is locked out of the very workspace it was
+    launched to work in and is forced to route shell through ``/tmp`` with
+    absolute paths. Bound by ``tools.execution.tool_workspace_context`` during
+    tool runs; ``None`` off-turn. Lazy import avoids the execution↔file_policy
+    import cycle, and any failure degrades to ``None`` (never breaks the policy).
+    """
+    try:
+        from clio_agent.tools.execution import (  # noqa: PLC0415
+            get_active_tool_workspace_root,
+        )
+
+        raw = (get_active_tool_workspace_root() or "").strip()
+        return _resolve_root(Path(raw)) if raw else None
+    except Exception:  # noqa: BLE001 - policy must never fail to build
+        return None
+
+
+def _with_active_workspace(resolved: list[Path]) -> tuple[Path, ...]:
+    """Prepend the active workspace root to ``resolved`` (deduped) when bound."""
+    workspace = _active_workspace_root()
+    if workspace is not None and workspace not in resolved:
+        return (workspace, *resolved)
+    return tuple(resolved)
+
+
 class FilePolicyError(ValueError):
     """Structured validation error raised before a tool touches a file."""
 
@@ -119,7 +149,7 @@ class FileAccessPolicy:
             cast=conf.as_bool,
         )
         return cls(
-            allowed_roots=tuple(_resolve_root(root) for root in roots),
+            allowed_roots=_with_active_workspace([_resolve_root(root) for root in roots]),
             max_file_size_bytes=max_size,
             allow_symlinks=allow_symlinks,
         )
@@ -143,7 +173,7 @@ class FileAccessPolicy:
             "yes",
         }
         return cls(
-            allowed_roots=tuple(_resolve_root(root) for root in roots),
+            allowed_roots=_with_active_workspace([_resolve_root(root) for root in roots]),
             max_file_size_bytes=max_size,
             allow_symlinks=allow_symlinks,
         )
