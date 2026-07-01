@@ -596,6 +596,7 @@ async def _astream_sdk(
                     thinking_len=len(thinking),
                     chunk_len=len(text or thinking),
                     head=(text or thinking)[:120],
+                    full_text=(text or thinking)[:12000],
                 )
                 trace.HF_ON and trace.hot(
                     "STREAM-SDK",

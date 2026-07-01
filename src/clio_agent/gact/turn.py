@@ -948,6 +948,7 @@ async def _run_turn_in_background(
                     duplicate_suppressed=True,
                     duplicate_reason="parent_resume_duplicate",
                     head=text[:120],
+                    full_text=text[:12000],
                 )
                 return
         if not is_provider_thinking:
@@ -1068,6 +1069,7 @@ async def _run_turn_in_background(
                 chunk_len=len(text),
                 duplicate_suppressed=False,
                 head=text[:120],
+                full_text=text[:12000],
             )
         else:
             transcript_field = _transcript_text_field(stream_field)
@@ -1095,6 +1097,7 @@ async def _run_turn_in_background(
                 chunk_len=len(text),
                 duplicate_suppressed=False,
                 head=text[:120],
+                full_text=text[:12000],
             )
         trace.HF_ON and trace.hot(
             "STREAM-SSE",
