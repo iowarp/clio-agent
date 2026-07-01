@@ -476,7 +476,7 @@ def _make_permission_gate(app: "FastAPI"):
     to deny — fail-safe.
     """
 
-    DEFAULT_TIMEOUT_S = 120.0
+    DEFAULT_TIMEOUT_S = 600.0
 
     def gate(name: str, args: Mapping[str, Any]) -> str:
         # iowarp/clio-agent#20: user-defined pre_tool hook can veto
