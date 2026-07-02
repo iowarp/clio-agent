@@ -429,3 +429,66 @@ def test_wrap_up_thinking_lands_when_reasoning_did_not_stream(tmp_path: Path) ->
         assert thinking["text"] == "Batch-only reasoning trace."
         assert thinking["agent_id"] == "code_expert"
         assert [p["sequence"] for p in assistant["parts"]] == [1, 2, 3]
+
+
+def test_chat_answer_streamed_reasoning_batch_wraps_in_arrival_order(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """CHAT path where the ANSWER streamed live but reasoning did NOT — the one
+    path where the wrap-up gate's ``close_open_text`` closes an OPEN ANSWER part
+    (no routing banner ran to close it earlier). The close must not duplicate or
+    swap the answer, and it pins the batch thinking to ARRIVAL ORDER on the wire:
+    the streamed answer completes BEFORE the batch thinking is added (#731),
+    rather than the reconciliation-era interleave where the batch thinking landed
+    while the answer part was still open."""
+
+    async def fake_streamed_forward(
+        app: Any, enriched_text: str, sid: str, emit_chunk: Any, **kwargs: Any
+    ) -> Any:
+        await emit_chunk("The streamed ", None, "answer")
+        await emit_chunk("answer.", None, "answer")
+        return _Pred(
+            answer="The streamed answer.",
+            reasoning="Deliberating in batch only.",
+            selected_expert="",
+        )
+
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    app = _build(tmp_path, "answeropen", _PlainAgent("unused"))
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "a"}).json()["id"]
+        _complete_turn(client, sid, "answer streams, reason in batch")
+        assistant = _assistant_message(client, sid)
+
+        # Exactly the live answer then the batch thinking — no duplicate answer,
+        # no thinking twin, no text swap.
+        shape = [
+            (p["type"], (p.get("metadata") or {}).get("signature_field_name", ""))
+            for p in assistant["parts"]
+        ]
+        assert shape == [("text", "answer"), ("thinking", "")], shape
+        answer_part, thinking_part = assistant["parts"]
+        assert answer_part["text"] == "The streamed answer."
+        assert answer_part["metadata"]["stream_source"] == "live"
+        assert thinking_part["text"] == "Deliberating in batch only."
+
+        # Wire arrival order: the streamed answer's part.completed precedes the
+        # batch thinking's part.added — the close_open_text at the gate is what
+        # moves the answer completion ahead of the wrap-up copy.
+        history = app.state.bus._history.get(sid, [])
+        seq = [
+            e.type
+            for e in history
+            if (
+                (e.type == "message.part.completed")
+                or (e.type == "message.part.added" and e.payload["part"]["type"] == "thinking")
+            )
+        ]
+        assert seq.index("message.part.completed") < seq.index("message.part.added"), seq
+        # And exactly one batch thinking was added (no #732 twin).
+        thinking_added = [
+            e
+            for e in history
+            if e.type == "message.part.added" and e.payload["part"]["type"] == "thinking"
+        ]
+        assert len(thinking_added) == 1, thinking_added
