@@ -10,6 +10,9 @@ that the tick loop reads:
 * ``POST /v1/sessions/{sid}/schedules`` -- add a ``cron`` + ``question`` schedule.
 * ``DELETE /v1/schedules/{schedule_id}`` -- delete a schedule (policy-gated).
 
+Cron expressions are evaluated in UTC only (#766); the list envelope carries
+``cron_timezone: "utc"`` so clients need not guess.
+
 The store lives on ``app.state.schedules`` and the scheduler tick task owns the
 actual firing, so these handlers only mutate the store; they never duplicate the
 background-turn launch path. The delete route is a direct destructive action, so
@@ -43,6 +46,7 @@ def register_schedules_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.get("/v1/sessions/{sid}/schedules")
     async def list_schedules(sid: str) -> dict[str, Any]:
+        """List a session's scheduled turns. Cron fires in UTC only."""
         if app.state.sessions.get(sid) is None:
             raise HTTPException(
                 status_code=404,
@@ -55,7 +59,8 @@ def register_schedules_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             )
         rows = [s.to_wire() for s in app.state.schedules.list(session_id=sid)]
-        return {"schedules": rows}
+        # Cron expressions are evaluated in UTC only; say so on the wire (#766).
+        return {"schedules": rows, "cron_timezone": "utc"}
 
     @app.post("/v1/sessions/{sid}/schedules")
     async def add_schedule(sid: str, request: Request) -> dict[str, Any]:

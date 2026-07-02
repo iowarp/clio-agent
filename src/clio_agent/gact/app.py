@@ -1118,7 +1118,7 @@ from clio_agent.gact.catalog import (  # noqa: E402, F401
     _tool_visible_to_for_catalog,
     _truthy_command_field,
 )
-from clio_agent.gact.events import Event, EventBus
+from clio_agent.gact.events import EventBus
 from clio_agent.gact.expert_packs import (
     discover_expert_packs,
     load_expert_pack_path,
@@ -1382,59 +1382,99 @@ async def _construct_agent_async(app: "FastAPI") -> None:
     print("[clio-agent-gact] agent ready.", flush=True)
 
 
-async def _scheduler_tick(app: "FastAPI") -> None:
-    """Once-a-minute loop: fire any due schedules.
+def _seconds_until_next_minute(now: datetime) -> float:
+    """Seconds from ``now`` to just past the next UTC minute boundary.
 
-    Each due schedule kicks the same _run_turn_in_background path
-    a regular POST /messages would, so SSE subscribers see the
-    automated turn unfold like any other.
+    Aligning the inter-tick sleep to the boundary (instead of a flat
+    ``sleep(60)`` after processing) keeps slow ticks from drifting past
+    cron minutes (#766). The small epsilon lands the wake *after* the
+    boundary so ``due_now``'s minute-truncation sees the new minute; the
+    floor guards against a zero/negative sleep hot loop right at the
+    boundary (``due_now`` already dedupes within a minute).
+    """
+
+    remaining = 60.0 - (now.second + now.microsecond / 1_000_000.0)
+    return max(0.5, remaining + 0.05)
+
+
+def _fire_schedule(app: "FastAPI", sch: Any) -> None:
+    """Fire one due schedule through the standard user-turn staging.
+
+    Marks the schedule fired, then stages the question via the same
+    :func:`_start_background_user_turn` engine POST /messages uses (#766):
+    the user message is persisted + published, the session flips to
+    ``running`` with a ``session.status_changed`` event, and the turn task
+    is registered in ``app.state.in_flight_turns`` so cancellation can
+    reach it (and the task reference is held, so it cannot be GC'd
+    mid-run). A schedule pointing at a missing session is logged with a
+    structured reason instead of firing into nothing.
+    """
+
+    sess = app.state.sessions.get(sch.session_id)
+    if sess is None:
+        app.state.schedules.mark_fired(sch.id)
+        logger.warning(
+            "scheduler tick error reason=schedule_session_not_found schedule_id=%s session_id=%s",
+            sch.id,
+            sch.session_id,
+        )
+        return
+    app.state.schedules.mark_fired(sch.id)
+    _turn_start_background_user_turn(
+        app,
+        sch.session_id,
+        sess,
+        sch.question,
+        metadata={"scheduled": True, "schedule_id": sch.id},
+        prev_status=str(getattr(sess, "status", "idle") or "idle"),
+    )
+
+
+def _scheduler_tick_once(app: "FastAPI") -> None:
+    """Process one scheduler tick: fire every currently-due schedule.
+
+    Never raises: a due-scan failure or a per-schedule firing failure is
+    logged with a structured reason (``schedule_due_scan_failed`` /
+    ``schedule_fire_failed``) so failed schedules are visible instead of
+    silently swallowed (#766), and one bad schedule cannot starve the rest.
+    """
+
+    try:
+        now = datetime.now(timezone.utc)
+        due = list(app.state.schedules.due_now(now))
+    except Exception:  # noqa: BLE001 - the tick loop must survive a bad store
+        logger.warning(
+            "scheduler tick error reason=schedule_due_scan_failed",
+            exc_info=True,
+        )
+        return
+    for sch in due:
+        try:
+            _fire_schedule(app, sch)
+        except Exception:  # noqa: BLE001 - one bad schedule must not kill the loop
+            logger.warning(
+                "scheduler tick error reason=schedule_fire_failed schedule_id=%s session_id=%s",
+                sch.id,
+                sch.session_id,
+                exc_info=True,
+            )
+
+
+async def _scheduler_tick(app: "FastAPI") -> None:
+    """Once-a-minute loop: fire any due schedules (UTC cron, #21/#766).
+
+    Each due schedule is staged through the same
+    :func:`_start_background_user_turn` engine a regular POST /messages
+    uses, so the session status, ``in_flight_turns`` registration,
+    cancellation, and SSE stream all behave exactly like a user turn.
+    Errors are logged with a structured reason (never silently dropped),
+    and the sleep is aligned to just past the next minute boundary so
+    slow ticks don't drift past cron minutes.
     """
 
     while True:
-        try:
-            now = datetime.now(timezone.utc)
-            for sch in list(app.state.schedules.due_now(now)):
-                scheduled_user_msg_id = _new_message_id("user")
-                user_msg = Message(
-                    id=scheduled_user_msg_id,
-                    # A scheduled turn correlates to its own user message id (#711).
-                    turn_id=scheduled_user_msg_id,
-                    session_id=sch.session_id,
-                    role="user",
-                    created_at=_iso_from_epoch(time.time()),
-                    updated_at=_iso_from_epoch(time.time()),
-                    parts=[
-                        Part(
-                            id=_new_part_id(),
-                            type="text",
-                            text=sch.question,
-                        )
-                    ],
-                    metadata={"scheduled": True, "schedule_id": sch.id},
-                )
-                _append_session_message(app, sch.session_id, user_msg)
-                app.state.bus.publish(
-                    Event(
-                        type="message.created",
-                        session_id=sch.session_id,
-                        payload=user_msg.to_wire(),
-                    )
-                )
-                app.state.schedules.mark_fired(sch.id)
-                # Fire-and-forget the turn task.
-                asyncio.create_task(
-                    _run_turn_in_background(
-                        app,
-                        sch.session_id,
-                        sch.question,
-                        user_msg,
-                    )
-                )
-        except Exception:  # noqa: BLE001
-            pass
-        # Sleep until just past the next minute boundary so we don't
-        # double-fire on the same minute.
-        await asyncio.sleep(60)
+        _scheduler_tick_once(app)
+        await asyncio.sleep(_seconds_until_next_minute(datetime.now(timezone.utc)))
 
 
 class ARCLike(Protocol):
