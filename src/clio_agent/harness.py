@@ -17,8 +17,7 @@ from clio_agent.arc.schema import ToolCall
 from clio_agent.scientific_suffixes import scientific_suffix_alternation
 
 RouteTarget = str
-RouteSource = Literal["deterministic", "dspy", "guard", "recovery"]
-ExpertSource = Literal["deterministic", "dspy", "fallback"]
+RouteSource = Literal["dspy"]
 
 # Generic path-detection regex: suffixes recognized when extracting candidate
 # file paths from free text. Structural grounding only (is a file referenced),
@@ -58,37 +57,6 @@ class RouteDecision:
     reason: str
     confidence: float
     capabilities: tuple[str, ...] = ()
-
-    @classmethod
-    def from_dspy(
-        cls,
-        raw_target: Any,
-        *,
-        available_targets: Sequence[str] | None = None,
-    ) -> "RouteDecision":
-        """Normalize and validate a DSPy-selected route target.
-
-        Agent route targets are runtime registry entries, not a closed enum.
-        Callers with a live registry should pass ``available_targets`` so newly
-        installed experts or skills validate without code changes.
-        """
-        target = str(raw_target or "").strip().lower()
-        valid_targets = {
-            str(item).strip().lower()
-            for item in (available_targets or SPECIAL_ROUTE_TARGETS)
-            if str(item).strip()
-        }
-        if target in valid_targets:
-            return cls(
-                target=target,
-                source="dspy",
-                reason="DSPy planner selected a valid CLIO route.",
-                confidence=0.7,
-            )
-        raise ValueError(
-            f"Planner produced invalid route target {target!r}. "
-            f"Expected one of: {', '.join(sorted(valid_targets))}."
-        )
 
 
 @dataclass
@@ -144,41 +112,6 @@ class ExpertHandoff:
         if self.error:
             row["error"] = self.error
         return row
-
-
-@dataclass(frozen=True)
-class ExpertRequest:
-    """Typed expert input contract used by native CLIO expert modules."""
-
-    question: str
-    file_context: str = ""
-    route: RouteDecision | None = None
-    trace_id: str | None = None
-
-
-@dataclass(frozen=True)
-class ExpertResult:
-    """Typed expert output contract with explicit tool provenance."""
-
-    analysis: str
-    recommendations: str
-    source: ExpertSource
-    tools: tuple[ToolObservation, ...] = ()
-    metadata: Mapping[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class ValidatedToolResult:
-    """Validated native tool payload or a normalized contract error."""
-
-    tool: str
-    data: dict[str, Any] | None = None
-    error: dict[str, Any] | None = None
-
-    @property
-    def ok(self) -> bool:
-        """Return whether validation succeeded."""
-        return self.error is None and self.data is not None
 
 
 @dataclass
@@ -305,18 +238,6 @@ def extract_file_paths(
     return paths
 
 
-def format_bytes(size: int) -> str:
-    """Format byte counts for compact terminal/API answers."""
-    value = float(size)
-    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
-        if value < 1024 or unit == "TiB":
-            if unit == "B":
-                return f"{int(value)} {unit}"
-            return f"{value:.1f} {unit}"
-        value /= 1024
-    return f"{value:.1f} TiB"
-
-
 def normalize_tool_error(
     error: Any,
     *,
@@ -399,59 +320,6 @@ def normalize_tool_result(result: Any, *, tool: str | None = None) -> Any:
     return result
 
 
-def validate_tool_result(
-    tool: str,
-    result: Any,
-    required_fields: Mapping[str, type | tuple[type, ...]],
-) -> ValidatedToolResult:
-    """Validate a native tool result mapping before answer construction."""
-    normalized = normalize_tool_result(result, tool=tool)
-    if isinstance(normalized, MappingABC) and "error" in normalized:
-        return ValidatedToolResult(tool=tool, error=normalized["error"])
-    if not isinstance(normalized, dict):
-        return _validation_failure(
-            tool,
-            "invalid_result_type",
-            f"{tool} returned {type(normalized).__name__}, expected object.",
-            {"received_type": type(normalized).__name__},
-        )
-
-    field_error = _validate_fields(tool, normalized, required_fields)
-    if field_error:
-        return ValidatedToolResult(tool=tool, error=field_error)
-    return ValidatedToolResult(tool=tool, data=normalized)
-
-
-def validate_tool_items(
-    tool: str,
-    result: Mapping[str, Any],
-    field: str,
-    required_fields: Mapping[str, type | tuple[type, ...]],
-) -> ValidatedToolResult:
-    """Validate a list field containing typed object items."""
-    items = result.get(field)
-    if not isinstance(items, list):
-        return _validation_failure(
-            tool,
-            "invalid_result_field",
-            f"{tool} returned invalid {field!r}; expected list.",
-            {"field": field, "received_type": type(items).__name__},
-        )
-
-    for index, item in enumerate(items):
-        if not isinstance(item, dict):
-            return _validation_failure(
-                tool,
-                "invalid_result_item",
-                f"{tool} returned invalid {field}[{index}]; expected object.",
-                {"field": field, "index": index, "received_type": type(item).__name__},
-            )
-        field_error = _validate_fields(tool, item, required_fields, context=f"{field}[{index}]")
-        if field_error:
-            return ValidatedToolResult(tool=tool, error=field_error)
-    return ValidatedToolResult(tool=tool, data=dict(result))
-
-
 def compact_tool_result(
     result: Any,
     *,
@@ -471,95 +339,6 @@ def compact_tool_result(
             compacted.setdefault("ok", bool(ok))
         return compacted
     return {"ok": bool(ok) if ok is not None else tool_result_ok(normalized), "value": compacted}
-
-
-def format_tool_error(error: Any) -> str:
-    """Format structured tool errors for user-facing expert answers."""
-    normalized = normalize_tool_error(error)
-    message = normalized.get("message") or str(error)
-    next_action = normalized.get("next_action")
-    if next_action:
-        return f"{message} Next action: {next_action}"
-    return str(message)
-
-
-def _validation_failure(
-    tool: str,
-    code: str,
-    message: str,
-    details: Mapping[str, Any],
-) -> ValidatedToolResult:
-    return ValidatedToolResult(
-        tool=tool,
-        error=normalize_tool_error(
-            {"type": "tool_contract", "code": code, "message": message},
-            tool=tool,
-            code=code,
-            next_action="Fix the tool contract or inspect the tool backend before retrying.",
-            details=details,
-        ),
-    )
-
-
-def _validate_fields(
-    tool: str,
-    data: Mapping[str, Any],
-    required_fields: Mapping[str, type | tuple[type, ...]],
-    *,
-    context: str = "result",
-) -> dict[str, Any] | None:
-    missing: list[str] = []
-    invalid: list[dict[str, str]] = []
-    for field_name, expected_type in required_fields.items():
-        if field_name not in data:
-            missing.append(field_name)
-            continue
-        value = data[field_name]
-        if not _matches_type(value, expected_type):
-            invalid.append(
-                {
-                    "field": field_name,
-                    "expected": _type_label(expected_type),
-                    "received": type(value).__name__,
-                }
-            )
-
-    if not missing and not invalid:
-        return None
-
-    details: dict[str, Any] = {"context": context}
-    if missing:
-        details["missing"] = missing
-    if invalid:
-        details["invalid"] = invalid
-    return normalize_tool_error(
-        {
-            "type": "tool_contract",
-            "code": "invalid_result_shape",
-            "message": f"{tool} returned an invalid {context} shape.",
-        },
-        tool=tool,
-        code="invalid_result_shape",
-        next_action="Fix the tool contract or inspect the tool backend before retrying.",
-        details=details,
-    )
-
-
-def _matches_type(value: Any, expected_type: type | tuple[type, ...]) -> bool:
-    expected = expected_type if isinstance(expected_type, tuple) else (expected_type,)
-    for item in expected:
-        if item is int and isinstance(value, bool):
-            continue
-        if item is float and isinstance(value, (int, float)) and not isinstance(value, bool):
-            return True
-        if isinstance(value, item):
-            return True
-    return False
-
-
-def _type_label(expected_type: type | tuple[type, ...]) -> str:
-    expected = expected_type if isinstance(expected_type, tuple) else (expected_type,)
-    return " | ".join(item.__name__ for item in expected)
 
 
 def _compact_value(value: Any, *, max_items: int, max_text: int, depth: int) -> Any:
