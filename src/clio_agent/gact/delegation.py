@@ -31,7 +31,6 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterable, Iterator, Mapping
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.runtime.globals import _jsonish
@@ -254,28 +253,6 @@ def _latest_delegation_output_summary(rows: list[dict[str, Any]]) -> str:
         ).strip()
         if summary:
             latest = summary
-    return latest
-
-
-def _latest_completed_artifact_output_summary(rows: list[dict[str, Any]]) -> str:
-    """Return the latest completed child output that contains final artifact evidence."""
-
-    latest = ""
-    stack = list(rows)
-    while stack:
-        row = stack.pop(0)
-        if str(row.get("stage") or "") == "delegate.completed" and str(row.get("status") or "") in {
-            "",
-            "completed",
-        }:
-            summary = str(
-                row.get("output") or row.get("output_summary") or row.get("summary") or ""
-            ).strip()
-            if re.search(r"(?im)^\s*(?:FINAL_ARTIFACT|ARTIFACT)\s*:", summary):
-                latest = summary
-        children = row.get("children")
-        if isinstance(children, list):
-            stack.extend(child for child in children if isinstance(child, dict))
     return latest
 
 
@@ -826,50 +803,3 @@ def _failed_child_delegation_output_summary(
         f"Child expert {child_agent_id!r} failed while delegated from "
         f"{parent_agent_id!r}: {error}. {message}"
     )
-
-
-# ------------------------------------------------------------------------- #
-# Typed workflow-state predicates (reactivity / grounding) #
-# ------------------------------------------------------------------------- #
-
-
-def _state_path_value(state: Mapping[str, Any], path: str) -> Any:
-    current: Any = state
-    for part in path.split("."):
-        if isinstance(current, Mapping) and part in current:
-            current = current[part]
-        else:
-            return None
-    return current
-
-
-def _workflow_state_has_existing_staged_path(state: Mapping[str, Any]) -> bool:
-    acquisition = state.get("acquisition")
-    if not isinstance(acquisition, Mapping):
-        return True
-    status = str(acquisition.get("status") or "").strip().lower()
-    if status != "staged" or acquisition.get("analysis_ready") is not True:
-        return True
-    local_path = str(acquisition.get("local_path") or acquisition.get("path") or "").strip()
-    if not local_path.startswith(("/", "~")):
-        return True
-    return Path(local_path).expanduser().is_file()
-
-
-def _state_predicate_hit(actual: Any, expected: Any) -> bool:
-    if isinstance(expected, Mapping):
-        if "exists" in expected:
-            return (actual is not None) is bool(expected.get("exists"))
-        if "equals" in expected:
-            return _state_predicate_hit(actual, expected.get("equals"))
-        if "in" in expected and isinstance(expected.get("in"), list | tuple | set):
-            return any(_state_predicate_hit(actual, item) for item in expected["in"])
-        if "not" in expected:
-            return not _state_predicate_hit(actual, expected.get("not"))
-    if isinstance(expected, list | tuple | set):
-        return any(_state_predicate_hit(actual, item) for item in expected)
-    if isinstance(actual, bool):
-        if isinstance(expected, str):
-            return actual is (expected.strip().lower() in {"1", "true", "yes", "on"})
-        return actual is bool(expected)
-    return str(actual).strip().lower() == str(expected).strip().lower()

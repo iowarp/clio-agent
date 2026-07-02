@@ -503,18 +503,14 @@ from clio_agent.gact.delegation import (  # noqa: E402,F401
     _failed_child_delegation_workflow_state,
     _iter_delegation_return_rows,
     _json_objects_from_text,
-    _latest_completed_artifact_output_summary,
     _latest_completed_child_output_summary,
     _latest_delegation_output_summary,
     _latest_final_child_output_summary,
     _latest_parent_resumed_output_summary,
     _merge_workflow_state_from_value,
     _should_execute_delegated_handoff,
-    _state_path_value,
-    _state_predicate_hit,
     _workflow_state_from_handoff_rows,
     _workflow_state_from_outputs,
-    _workflow_state_has_existing_staged_path,
     _workflow_state_payload,
 )
 
