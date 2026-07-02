@@ -50,11 +50,16 @@ jobs:
 
   flake-hunt:
     # Concurrency / shared-state tests (marked ``@pytest.mark.concurrency``) run
-    # under xdist load — ``--dist loadfile`` groups a file's tests onto one worker,
-    # the exact condition #735 reproduced under — repeated x3. A thread-safety
-    # regression (leaked global, cross-thread mutation) that a single serial run
-    # masks surfaces here. Kept separate from ``check`` so its parallel/repeat
-    # flags never touch the coverage-gated main run.
+    # under xdist load repeated x3. This surfaces GENUINELY-THREADED races that a
+    # single serial run masks: EventBus cross-thread publish (#758) and ARC
+    # concurrent segment writes, whose failure is timing-dependent and only shows
+    # up over repeated interleavings. NOTE: ``--dist loadfile`` isolates each file
+    # to its OWN worker PROCESS, so it does NOT reproduce #735 (a single-process
+    # multi-app module-global clobber) — that class is guarded DETERMINISTICALLY
+    # by test_sync_mcp_tool_executor_prefers_per_turn_observer_over_clobbered_global
+    # and the two-app telemetry test in the serial ``check`` job. Kept separate
+    # from ``check`` so its parallel/repeat flags never touch the coverage-gated
+    # main run.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

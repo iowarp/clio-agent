@@ -368,6 +368,37 @@ def test_concurrent_apps_do_not_cross_tool_telemetry(tmp_path: Path) -> None:
     assert assistant_b["metadata"]["tools_called"][0]["telemetry_source"] == "live_observer"
 
 
+def test_absent_pending_hook_falls_through_to_global_not_none() -> None:
+    """#735 fix-of-the-fix: an app that never stamps a hook must NOT mask the global.
+
+    ``_tool_session_context`` defaults an absent ``pending_*`` to ``_UNSET_HOOK``
+    (not ``None``), so a process-global installed via ``set_global_*`` still applies
+    in-turn. Binding ``None`` instead would silently disable a global interceptor or
+    permission gate — e.g. the no-agent build branch omits ``pending_tool_interceptor``
+    — a security-adjacent regression. Fails if the default reverts to ``None``.
+    """
+    from types import SimpleNamespace
+
+    from clio_agent.gact.runtime.globals import _tool_session_context
+    from clio_agent.tools.execution import (
+        _active_tool_interceptor,
+        set_global_tool_interceptor,
+    )
+
+    def sentinel(_name: str, _args: object) -> None:
+        return None
+
+    # app.state carries NO pending_tool_interceptor attribute.
+    app = SimpleNamespace(state=SimpleNamespace(sessions=None, workspaces=None))
+    try:
+        set_global_tool_interceptor(sentinel)
+        with _tool_session_context("sess-x", app):
+            # In-turn, the absent per-app interceptor falls through to the global.
+            assert _active_tool_interceptor() is sentinel
+    finally:
+        set_global_tool_interceptor(None)
+
+
 def test_live_observer_upgrades_matching_posthoc_trace_metadata(tmp_path: Path) -> None:
     from .conftest import complete_turn
 

@@ -18,6 +18,7 @@ from clio_agent.tools.execution import (
     set_global_cancellation_checker,
     set_global_permission_gate,
     set_global_tool_observer,
+    tool_runtime_hooks_context,
     tool_workspace_context,
 )
 
@@ -279,6 +280,48 @@ def test_sync_mcp_tool_executor_uses_late_global_hooks():
             executor.call_tool("fake_echo", {"value": "blocked"})
     finally:
         set_global_permission_gate(None)
+        set_global_tool_observer(None)
+        executor.close()
+
+
+def test_sync_mcp_tool_executor_prefers_per_turn_observer_over_clobbered_global():
+    """#735: the per-turn observer override must win over a SIBLING app's global.
+
+    This guards the REAL read site — ``SyncMCPToolExecutor.call_tool`` resolving
+    ``self._tool_observer or _active_tool_observer()``. Two apps in one process:
+    app B built last, so it clobbered the process-global observer. A turn on app A
+    binds A's observer via ``tool_runtime_hooks_context`` (the per-turn override
+    that rides the turn's ``copy_context``). A's tool call MUST land on A's
+    observer, never B's leaked global. Reverting ``call_tool`` to read the raw
+    ``_GLOBAL_TOOL_OBSERVER`` fails this test (the gact-level two-app test alone
+    does not — it exercises the notify path, not this read site).
+    """
+    fake_client = FakeClient()
+    executor = SyncMCPToolExecutor(
+        object(),
+        timeout=1.0,
+        client_factory=lambda _: fake_client,
+    )
+    app_a_observed: list[tuple[str, str | None]] = []
+    sibling_b_observed: list[tuple[str, str | None]] = []
+
+    try:
+        # App B (built last) owns the process-global observer.
+        set_global_tool_observer(
+            lambda name, args, phase, error: sibling_b_observed.append((name, phase))
+        )
+        # App A's turn binds ITS observer as the per-turn override.
+        with tool_runtime_hooks_context(
+            tool_observer=lambda name, args, phase, error: app_a_observed.append((name, phase))
+        ):
+            result = executor.call_tool("fake_echo", {"value": "hello"})
+
+        assert '"name": "fake_echo"' in result
+        # A's turn telemetry landed on A's observer...
+        assert app_a_observed == [("fake_echo", "started"), ("fake_echo", "completed")]
+        # ...and B's clobbered global saw nothing — no cross-app contamination.
+        assert sibling_b_observed == []
+    finally:
         set_global_tool_observer(None)
         executor.close()
 

@@ -151,10 +151,18 @@ def _tool_session_context(sid: str, app: Any = None) -> Iterator[None]:
         # reads a sibling app's process-global. pending_* are stamped by
         # ``_install_tool_runtime_hooks`` (and the no-agent build_app branch);
         # they ride the turn's copy_context() snapshot into the executor thread.
-        permission_gate = getattr(app_state, "pending_permission_gate", None)
-        tool_observer = getattr(app_state, "pending_tool_observer", None)
-        tool_interceptor = getattr(app_state, "pending_tool_interceptor", None)
-        cancellation_checker = getattr(app_state, "pending_cancellation_checker", None)
+        #
+        # Default to ``_UNSET_HOOK`` (NOT ``None``): when an app never stamps a
+        # given hook (e.g. the no-agent build branch omits pending_tool_interceptor)
+        # a ``None`` override would BIND and mask the process-global fallback for
+        # the whole turn — silently disabling a global interceptor/permission gate a
+        # harness installed via ``set_global_*``. ``_UNSET_HOOK`` leaves that hook
+        # unbound so the global still applies; a per-app hook that IS stamped still
+        # overrides (isolating concurrent apps).
+        permission_gate = getattr(app_state, "pending_permission_gate", _UNSET_HOOK)
+        tool_observer = getattr(app_state, "pending_tool_observer", _UNSET_HOOK)
+        tool_interceptor = getattr(app_state, "pending_tool_interceptor", _UNSET_HOOK)
+        cancellation_checker = getattr(app_state, "pending_cancellation_checker", _UNSET_HOOK)
     token = _ctx.set_tool_session_id(sid)
     try:
         with (

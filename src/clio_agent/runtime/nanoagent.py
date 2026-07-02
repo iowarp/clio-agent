@@ -138,6 +138,16 @@ def spawn_many(
         kwargs = {question_field: _render_input(item.get("input", {}))}
         pairs.append((agent, kwargs))
 
+    # WARNING (#735 follow-up, tracked in #813): ``dspy.Parallel`` submits to a
+    # plain ThreadPoolExecutor that forwards only DSPy's ``thread_local_overrides``
+    # — it does NOT copy ``contextvars.Context`` into the worker threads. So the
+    # per-turn tool-runtime hook overrides (_CTX_TOOL_OBSERVER/_PERMISSION_GATE/...)
+    # AND ``_ACTIVE_TOOL_WORKSPACE_ROOT`` do not reach nanoagent tool calls run here;
+    # they fall back to the process-global, which in a multi-app process is a sibling
+    # app's hook (reintroducing #735). Latent today (no production caller wires
+    # spawn_many into a turn). Before wiring it, wrap each worker in the captured
+    # ``copy_context().run(...)`` (or re-bind the four overrides + workspace root
+    # inside the worker).
     parallel = dspy.Parallel(num_threads=num_threads)
     raw_results = parallel(pairs)
 
