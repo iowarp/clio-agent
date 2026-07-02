@@ -49,7 +49,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Literal, Optional, cast
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -2727,13 +2727,6 @@ def build_app(
     # clear-session-model-refs) through ``deps``.
     register_providers_routes(app, deps)
 
-    # ---- 501 stubs for the still-unwired v0.2 surface ----------------
-
-    _stub_routes: list[tuple[str, str, str]] = [
-        # (method, path, capability_name_for_error)
-        # /v1/tools moved out of stubs — implemented below.
-    ]
-
     # ---- /v1/catalog/tools + /v1/tools + /v1/tools/{tool_id} ----------
     # The built-in tool catalog and the unified live catalog (bundled gateway +
     # installed third-party MCP servers) are owned by routes/catalog.py and
@@ -2759,24 +2752,6 @@ def build_app(
     # routes/messages.py and registered below via register_messages_routes(
     # app, deps); the destructive-action guard + ledger replace travel on
     # ``deps`` and both publish message.deleted for SSE subscribers.
-
-    def _make_stub(cap: str):
-        # Use a Request param so FastAPI doesn't try to validate
-        # path/query/body params against the handler signature —
-        # stubs take anything and return 501.
-        async def _stub(request: Request) -> JSONResponse:
-            body = _not_implemented(cap).model_dump(exclude_none=True)
-            return JSONResponse(status_code=501, content=body)
-
-        return _stub
-
-    for method, path, cap in _stub_routes:
-        app.add_api_route(
-            path,
-            _make_stub(cap),
-            methods=[method],
-            include_in_schema=False,
-        )
 
     def _error_code_for_status(status_code: int) -> str:
         if status_code == 404:
