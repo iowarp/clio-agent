@@ -1,12 +1,11 @@
 """
 ClioAgent - Main Agent Module
 
-Agent-loop architecture over registered experts and tools.
+Agent-loop architecture over registered tools.
 
 Architecture:
     User Query -> Planner action
         -> tool call -> observation -> Planner action
-        -> expert delegation -> expert result
         -> answer from observations
 
 Usage:
@@ -26,7 +25,7 @@ import os
 import re
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Literal
@@ -97,12 +96,28 @@ from clio_agent.tools.mcp_config import load_mcp_servers
 
 PLANNER_HIDDEN_TOOL_NAMES = {"fs_read_file", "fs_apply_edit_write"}
 
-# Candidate local-path tokens inside tool payload strings: POSIX /-rooted or a
-# Windows drive-rooted path (D:\... or D:/...). Suffix filtering happens after
-# the match, against SCIENTIFIC_FILE_SUFFIXES.
-_LOCAL_PATH_CANDIDATE_RE = re.compile(
-    r"(?:(?<![A-Za-z])[A-Za-z]:[\\/]|/)(?:[^\s,\"'`]|\\ )+"
-)
+# Action kinds the agent loop can execute. Enum validation happens at the
+# parse layer (_parse_action_json) as the sanctioned format-only barrier.
+SUPPORTED_PLANNER_ACTION_KINDS = frozenset({"tool", "answer", "none"})
+
+
+class UnsupportedPlannerActionError(ValueError):
+    """Planner returned well-formed JSON whose action kind has no executor.
+
+    Raised by :meth:`ClioAgent._parse_action_json` so the agent loop can
+    surface the rejected action back to the planner as a structured
+    ``planner_error`` observation and re-ask. The model stays the decider;
+    CLIO does not reroute, scrub, or fabricate a decision on its behalf.
+    """
+
+    def __init__(self, action: dict[str, Any]) -> None:
+        kind = str(action.get("action", "")).strip().lower()
+        super().__init__(
+            f"Planner returned unsupported action {kind!r}. "
+            f"Supported actions: {', '.join(sorted(SUPPORTED_PLANNER_ACTION_KINDS))}."
+        )
+        self.kind = kind
+        self.action = action
 
 
 _ROUTING_MODE_OVERRIDE: contextvars.ContextVar[str] = contextvars.ContextVar(
@@ -148,12 +163,11 @@ ERROR_RECOVERY_ACTIONS = ("retry", "reconfigure_provider", "exit")
 
 
 class ClioAgent(dspy.Module):
-    """CLIO Agent with a planner loop over registered tools and experts.
+    """CLIO Agent with a planner loop over registered tools.
 
     Architecture:
         User Query -> Planner action
             -> tool call -> observation -> next planner action
-            -> expert delegation -> expert result
             -> answer from observations or conversation
 
     Attributes:
@@ -402,7 +416,7 @@ class ClioAgent(dspy.Module):
         Flow:
             1. Retrieve session and current-file context from ARC
             2. Ask the planner for the next action using live capabilities
-            3. Execute tools or experts and append observations
+            3. Execute tools and append observations
             4. Answer from observations or direct conversation
             5. Store decisions, provenance, metrics, and conversation in ARC
 
@@ -596,6 +610,21 @@ class ClioAgent(dspy.Module):
                     capabilities=capabilities,
                     observations=observations,
                 )
+            except UnsupportedPlannerActionError as unsupported:
+                # Bounded re-ask: surface the rejected action back to the
+                # planner as a structured observation and let it decide.
+                observations.append(
+                    {
+                        "step": step + 1,
+                        "type": "planner_error",
+                        "ok": False,
+                        "result": {
+                            "message": str(unsupported),
+                            "action": unsupported.action,
+                        },
+                    }
+                )
+                continue
             except RoutingError as planner_error:
                 if not self._has_successful_execution_observation(observations):
                     raise
@@ -799,25 +828,6 @@ class ClioAgent(dspy.Module):
             for observation in observations
         )
 
-    @classmethod
-    def _local_paths_from_value(cls, value: Any) -> list[str]:
-        """Extract local file paths from nested tool payloads for planner state."""
-        paths: list[str] = []
-        if isinstance(value, str):
-            for match in _LOCAL_PATH_CANDIDATE_RE.findall(value):
-                cleaned = match.rstrip(".,;:)")
-                if Path(cleaned).suffix.lower() in SCIENTIFIC_FILE_SUFFIXES:
-                    paths.append(cleaned)
-            return paths
-        if isinstance(value, Mapping):
-            for item in value.values():
-                paths.extend(cls._local_paths_from_value(item))
-            return paths
-        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-            for item in value:
-                paths.extend(cls._local_paths_from_value(item))
-        return paths
-
     def _plan_next_action(
         self,
         *,
@@ -851,6 +861,11 @@ class ClioAgent(dspy.Module):
                 ),
             )
             return self._parse_action_json(getattr(result, "action_json", ""))
+        except UnsupportedPlannerActionError:
+            # Well-formed JSON with a non-executable kind is not a format
+            # failure: the agent loop re-asks the planner with a structured
+            # planner_error observation instead of a compact-prompt retry.
+            raise
         except Exception as planner_error:
             raw_action = self._parse_action_from_adapter_error(planner_error)
             if raw_action is not None:
@@ -870,6 +885,8 @@ class ClioAgent(dspy.Module):
                         ),
                     )
                     return self._parse_action_json(getattr(result, "action_json", ""))
+                except UnsupportedPlannerActionError:
+                    raise
                 except Exception as retry_error:
                     raw_action = self._parse_action_from_adapter_error(retry_error)
                     if raw_action is not None:
@@ -964,8 +981,7 @@ class ClioAgent(dspy.Module):
         return (
             "/no_think\n"
             "Return only the action_json JSON object. Do not include reasoning, "
-            "analysis, markdown, or prose outside the JSON object. For expert "
-            "actions, set question to an empty string unless narrowing is required.\n"
+            "analysis, markdown, or prose outside the JSON object.\n"
             f"{question}"
         )
 
@@ -975,9 +991,8 @@ class ClioAgent(dspy.Module):
             return question
         return (
             "/no_think\n"
-            "Return exactly one minified JSON action. Prefer expert delegation "
-            "over listing tool calls when the request is a natural multi-file "
-            'scientific triage. For expert actions use question:"".\n'
+            "Return exactly one minified JSON action: a listed tool call, an "
+            "answer, or none.\n"
             f"{question}"
         )
 
@@ -1161,8 +1176,7 @@ class ClioAgent(dspy.Module):
             "selected_expert": selected,
             "detected_files": [str(path) for path in paths],
             "next_action": (
-                "Use the native scientific tools for the selected expert, or route to "
-                "the appropriate data/analysis/visualization expert."
+                "Use the appropriate native scientific tool from available_scoped_tools instead."
             ),
             "available_scoped_tools": native_tools,
         }
@@ -1305,12 +1319,6 @@ class ClioAgent(dspy.Module):
         lines: list[str] = []
         for observation in observations:
             if observation.get("ok") is False:
-                continue
-            if observation.get("type") == "expert":
-                answer = cls._coerce_text(observation.get("answer")).strip()
-                expert = cls._coerce_text(observation.get("expert")).strip()
-                if answer:
-                    lines.append(f"{expert} expert returned:\n{answer}" if expert else answer)
                 continue
             tool = cls._coerce_text(observation.get("tool")).strip()
             result = observation.get("result")
@@ -1517,26 +1525,26 @@ class ClioAgent(dspy.Module):
             "to the owning expert. Chat may only use tools listed under Chat utility tools."
         )
         lines.append(
-            "- Child experts are not root route targets. When a child capability is needed, "
-            "delegate to its parent expert and let the parent synchronously call the child "
-            "with the same task context."
+            "- Child experts are delegated capabilities owned by their parent expert. "
+            "Call their listed tools directly; CLIO attributes the work to the owning "
+            "hierarchy."
         )
         lines.append(
-            "Routing strategy: choose the expert that owns the next unresolved phase, "
-            "not the expert that owns the final deliverable. For multi-phase work, "
-            "delegate one phase, observe its result, then plan the next phase from "
-            "the updated state. Do not skip data acquisition/discovery before "
-            "analysis, and do not skip analysis before visualization."
+            "Routing strategy: choose the tool that resolves the next unresolved phase, "
+            "not the final deliverable. For multi-phase work, run one phase, observe "
+            "its result, then plan the next phase from the updated state. Do not skip "
+            "data acquisition/discovery before analysis, and do not skip analysis "
+            "before visualization."
         )
         lines.append(
             "Observation rule: local_paths in observations are newly available files. "
             "Use them for the next phase instead of repeating the same discovery or "
-            "staging expert, while preserving source/provenance caveats."
+            "staging tool, while preserving source/provenance caveats."
         )
         if routing_mode == "experts":
             lines.append(
                 "Routing override: experts mode is active. Do not choose answer or none "
-                "before a tool or expert has produced an observation."
+                "before a tool has produced an observation."
             )
         return "\n".join(lines)
 
@@ -1801,9 +1809,9 @@ class ClioAgent(dspy.Module):
                 raise ValueError(f"Planner action must be a JSON object: {raw!r}")
 
         action = cls._coerce_text(decoded.get("action")).strip().lower()
-        if action not in {"tool", "expert", "answer", "none"}:
-            raise ValueError(f"Planner returned unsupported action: {decoded!r}")
         decoded["action"] = action
+        if action not in SUPPORTED_PLANNER_ACTION_KINDS:
+            raise UnsupportedPlannerActionError(decoded)
         return decoded
 
     @classmethod
@@ -1816,7 +1824,6 @@ class ClioAgent(dspy.Module):
         the repaired object is usable.
         """
 
-        truncated_key = cls._truncated_string_key(text)
         repaired = cls._close_truncated_json(text)
         if repaired is None or repaired == text:
             return None
@@ -1825,11 +1832,6 @@ class ClioAgent(dspy.Module):
         except json.JSONDecodeError:
             return None
         if not isinstance(decoded, dict):
-            return None
-        if (
-            truncated_key == "question"
-            and cls._coerce_text(decoded.get("action")).strip().lower() != "expert"
-        ):
             return None
         return decoded
 
@@ -1864,40 +1866,15 @@ class ClioAgent(dspy.Module):
                 if not stack or stack.pop() != char:
                     return None
 
-        if in_string and ClioAgent._unterminated_string_key(text, string_start) not in {
-            "question",
-            "reason",
-        }:
+        # Only a truncated "reason" string may be closed: it is advisory text.
+        # Closing a truncated argument value would hand a tool corrupted input.
+        if in_string and ClioAgent._unterminated_string_key(text, string_start) != "reason":
             return None
         suffix = '"' if in_string else ""
         suffix += "".join(reversed(stack))
         if not suffix:
             return None
         return text + suffix
-
-    @staticmethod
-    def _truncated_string_key(text: str) -> str | None:
-        """Return the key for an unterminated trailing string, if present."""
-
-        in_string = False
-        escaped = False
-        string_start = -1
-        for index, char in enumerate(text):
-            if in_string:
-                if escaped:
-                    escaped = False
-                elif char == "\\":
-                    escaped = True
-                elif char == '"':
-                    in_string = False
-                    string_start = -1
-                continue
-            if char == '"':
-                in_string = True
-                string_start = index
-        if not in_string:
-            return None
-        return ClioAgent._unterminated_string_key(text, string_start)
 
     @staticmethod
     def _extract_json_object_text(text: str) -> str | None:
@@ -1980,6 +1957,8 @@ class ClioAgent(dspy.Module):
         raw_response = message.split(marker, 1)[1].split(expected, 1)[0].strip()
         try:
             return cls._parse_action_json(raw_response)
+        except UnsupportedPlannerActionError:
+            raise
         except ValueError:
             return None
 

@@ -1,51 +1,20 @@
 """Windows-correctness regressions for issue #765.
 
-Covers:
-- ``ClioAgent._local_paths_from_value`` must recognize Windows drive paths
-  (``D:\\...`` and ``D:/...``) so staged files reach the planner's
-  ``local_paths`` grounding on Windows.
-- The three hand-synced scientific-suffix vocabularies (agent set, harness
-  regex, gact/delegation evidence-index patterns) must derive from the single
-  shared module ``clio_agent.scientific_suffixes``.
+Covers the three hand-synced scientific-suffix vocabularies (agent set,
+harness regex, gact/delegation evidence-index patterns), which must derive
+from the single shared module ``clio_agent.scientific_suffixes``.
+
+Note: ``ClioAgent._local_paths_from_value`` and its Windows-path tests were
+deleted with the tier-2 expert arm (issue #768) — the helper's only caller
+died with that arm. Windows path grounding lives on in the shared
+``clio_agent.scientific_suffixes`` vocabulary and
+``harness.extract_file_paths`` (``WINDOWS_FILE_PATH_RE``), exercised below.
 """
 
 from __future__ import annotations
 
 from clio_agent import harness
 from clio_agent.agent import SCIENTIFIC_FILE_SUFFIXES as AGENT_SUFFIXES
-from clio_agent.agent import ClioAgent
-
-
-class TestLocalPathsFromValueWindows:
-    """Staged Windows paths must reach the planner grounding (issue #765 (a))."""
-
-    def test_backslash_drive_path_in_string(self) -> None:
-        value = r"Staged the station table at D:\staging\earthscope\data.csv for analysis."
-        assert ClioAgent._local_paths_from_value(value) == [r"D:\staging\earthscope\data.csv"]
-
-    def test_forward_slash_drive_path_in_string(self) -> None:
-        value = "wrote D:/staging/output.parquet next"
-        assert ClioAgent._local_paths_from_value(value) == ["D:/staging/output.parquet"]
-
-    def test_windows_path_in_nested_payload(self) -> None:
-        payload = {
-            "result": {
-                "files": [r"C:\Users\alice\run.h5", "notes"],
-                "detail": "no path here",
-            }
-        }
-        assert ClioAgent._local_paths_from_value(payload) == [r"C:\Users\alice\run.h5"]
-
-    def test_posix_paths_still_extracted(self) -> None:
-        value = "outputs: /data/exp/results.parquet and /tmp/scratch/plot.png"
-        assert ClioAgent._local_paths_from_value(value) == [
-            "/data/exp/results.parquet",
-            "/tmp/scratch/plot.png",
-        ]
-
-    def test_non_scientific_suffix_ignored(self) -> None:
-        value = r"see D:\staging\notes.txt and /var/log/app.log"
-        assert ClioAgent._local_paths_from_value(value) == []
 
 
 class TestSuffixVocabularyConsolidation:

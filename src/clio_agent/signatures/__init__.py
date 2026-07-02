@@ -4,7 +4,7 @@ ClioAgent Signatures Module
 DSPy signature definitions for ClioAgent components.
 
 Available Signatures:
-- AgentActionSignature: Selects loop actions over registered experts/tools
+- AgentActionSignature: Selects loop actions over registered tools
 - AgentAnswerSignature: Synthesizes answers from loop observations
 - ChatAgentSignature: Conversational responses for non-data queries
 
