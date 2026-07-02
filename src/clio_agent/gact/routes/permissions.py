@@ -142,6 +142,9 @@ def register_permissions_routes(app: FastAPI, deps: "GactDeps") -> None:
             policy = _append_permission_policy_from_resolution(app, row=row, action=action)
             if policy is not None:
                 row["policy"] = policy
+                # iowarp/clio-agent#759: sticky grants must survive a
+                # server restart, so flush the derived policy to disk.
+                _flush_permission_policies(app)
             # iowarp/clio-agent#7: wake any MCPToolBridge thread
             # waiting on this permission's event.
             evt = app.state.permission_events.pop(pid, None)
