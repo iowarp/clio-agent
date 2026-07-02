@@ -3,7 +3,7 @@
 Tracking issue: https://github.com/iowarp/clio-agent/issues/334
 
 This document records the completed backend prompt-alignment pass. The public
-reference matrix remains in [PROMPT_ALIGNMENT_REFERENCE_MATRIX.md](PROMPT_ALIGNMENT_REFERENCE_MATRIX.md);
+reference matrix remains in [PROMPT_ALIGNMENT_REFERENCE_MATRIX.md](../PROMPT_ALIGNMENT_REFERENCE_MATRIX.md);
 this file describes what CLIO now enforces in code.
 
 ## Built-In Prompt Profiles

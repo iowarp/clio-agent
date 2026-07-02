@@ -1,7 +1,7 @@
 # CLIO Agent - Next Milestone Vision Document
 
 > Active-spec note (2026-04-23): this document is historical vision context.
-> Use [PLAN.md](PLAN.md) as the current source of truth when it conflicts with
+> Use [PLAN.md](../../PLAN.md) as the current source of truth when it conflicts with
 > this file. Source code and tests still outrank both documents.
 
 ## What This Is
@@ -110,7 +110,7 @@ From analysis of 19 vault articles + 12 web searches covering OpenAI data agent,
 
 ## Implementation Phases
 
-See [PLAN.md](PLAN.md) for detailed task breakdown. Summary:
+See [PLAN.md](../../PLAN.md) for detailed task breakdown. Summary:
 
 | Phase | Goal | Key Deliverables |
 |-------|------|-----------------|

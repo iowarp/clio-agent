@@ -5,11 +5,11 @@ Tracking issue: https://github.com/iowarp/clio-agent/issues/331
 Related docs:
 
 - [Hierarchical user-defined experts](HIERARCHICAL_EXPERTS.md)
-- [External editable prompt system](PROMPT_SYSTEM.md)
+- [External editable prompt system](../PROMPT_SYSTEM.md)
 - [User-defined slash commands](USER_DEFINED_COMMANDS_DESIGN.md)
 - [Undo and rewind](UNDO_REWIND_DESIGN.md)
 - [Command and capability truth](COMMAND_CAPABILITY_TRUTH_DESIGN.md)
-- [ARC memory layer](ARC_MEMORY_LAYER.md)
+- [ARC memory layer](../ARC_MEMORY_LAYER.md)
 
 ## Purpose
 
