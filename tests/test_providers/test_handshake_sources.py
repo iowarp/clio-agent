@@ -1,14 +1,14 @@
 """Offline tests for the context-source factory + the local model-limits DB.
 
 The cascade is provider-live -> models.dev -> local DB. models.dev is forced to a
-captured fixture (no network); the DB is pointed at a tmp copy of the repo seed so
-lookups work and write-backs land in tmp, never the repo. No test hits the network.
+captured fixture (no network); the writable DB is pointed at a tmp file (the packaged
+seed merges beneath it, so seed lookups work and write-backs land in tmp, never the
+repo). No test hits the network.
 """
 
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 
 import pytest
@@ -45,9 +45,8 @@ def offline_models_dev(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def isolated_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    """Point the DB at a tmp copy of the repo seed (lookups work; writes stay in tmp)."""
+    """Point the writable DB at a tmp file (seed merges beneath; writes stay in tmp)."""
     db_file = tmp_path / "model_limits.json"
-    shutil.copyfile(SEED_DB, db_file)
     monkeypatch.setenv("CLIO_MODEL_DB", str(db_file))
     return db_file
 
@@ -85,12 +84,11 @@ def test_resolve_falls_through_to_db_seed() -> None:
 
 
 def test_resolve_models_dev_takes_priority_over_db(isolated_db: Path) -> None:
-    data = json.loads(isolated_db.read_text(encoding="utf-8"))
     # Use the fully-qualified key: the seed already carries
     # ``google/gemma-4-31b-it`` (262144), whose basename ``gemma-4-31b-it`` is
-    # registered in the lookup index — so a bare key would be shadowed. Overwrite
-    # the qualified entry to plant the deliberately-wrong DB value.
-    data["google/gemma-4-31b-it"] = {"context": 4096}  # deliberately wrong DB value
+    # registered in the lookup index — so a bare key would be shadowed. Shadow
+    # the qualified entry (user DB wins over seed) to plant the wrong DB value.
+    data = {"google/gemma-4-31b-it": {"context": 4096}}  # deliberately wrong DB value
     isolated_db.write_text(json.dumps(data), encoding="utf-8")
     assert db_mod.lookup_context("google/gemma-4-31b-it") == 4096
     window, source = resolve_context("google/gemma-4-31b-it", "openai_compat")
@@ -105,6 +103,46 @@ def test_resolve_miss_and_empty() -> None:
 
 def test_resolve_output_limit_from_models_dev() -> None:
     assert resolve_output_limit("google/gemma-4-31b-it", "openai_compat") == 32768
+
+
+# ---- packaged seed is read-only; writes go to the user data dir (#763) ----
+def test_record_never_touches_packaged_seed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A fresh handshake record() must not mutate the repo-shipped seed file.
+
+    Regression for #763: with no ``CLIO_MODEL_DB`` override, ``db_path()`` must
+    resolve under the user data dir and ``record()`` must write there, leaving the
+    packaged seed byte-identical (clean ``git status``). Seed entries still resolve
+    (merged beneath the user DB).
+    """
+    monkeypatch.delenv("CLIO_MODEL_DB", raising=False)
+    monkeypatch.setenv("CLIO_USER_DIR", str(tmp_path / "user"))
+    seed_bytes = SEED_DB.read_bytes()
+    seed_mtime = SEED_DB.stat().st_mtime_ns
+
+    db_mod.record(
+        "acme/fresh-live-model", context=54321, output=8765, source="live", provider="lm_studio"
+    )
+
+    assert SEED_DB.read_bytes() == seed_bytes  # packaged file untouched
+    assert SEED_DB.stat().st_mtime_ns == seed_mtime
+    user_db = db_mod.db_path()
+    assert user_db == tmp_path / "user" / "data" / "model_limits.json"
+    assert user_db.exists()  # write landed in the user data dir
+    assert db_mod.lookup_context("acme/fresh-live-model") == 54321
+    assert db_mod.lookup_output("acme/fresh-live-model") == 8765
+    # seed entries still resolve even though the user DB doesn't contain them
+    assert db_mod.lookup_context("openai/gpt-4o") == 128000
+
+
+def test_user_db_entry_wins_over_seed(isolated_db: Path) -> None:
+    """User-recorded limits shadow the packaged seed for the same model."""
+    assert db_mod.lookup_context("openai/gpt-4o") == 128000  # from the seed
+    db_mod.record("openai/gpt-4o", context=200000, source="live", provider="p")
+    assert db_mod.lookup_context("openai/gpt-4o") == 200000  # user entry wins
+    # the seed itself is a fallback for everything else
+    assert db_mod.lookup_context("mistral-7b") == 32768
 
 
 # ---- the local DB: read / write-back / mismatch / record_report ----
