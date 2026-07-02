@@ -595,10 +595,7 @@ class ClioAgent(dspy.Module):
         capabilities = self._build_capabilities_context(routing_mode=routing_mode)
         observations: list[dict[str, Any]] = []
         selected = "chat"
-        last_expert_result: Any = None
-        last_error_info: dict[str, Any] | None = None
         error_info: dict[str, Any] | None = None
-        accumulated_nanoagents: list[dict[str, Any]] = []
         route = trace.route
 
         for step in range(self._agent_max_steps()):
@@ -646,16 +643,7 @@ class ClioAgent(dspy.Module):
                         planner_observations=observations[-3:],
                     ),
                 ).to_dict()
-                return (
-                    selected,
-                    answer,
-                    self._expert_result_with_nanoagents(
-                        last_expert_result,
-                        accumulated_nanoagents,
-                    ),
-                    error_info,
-                    route,
-                )
+                return selected, answer, None, error_info, route
             self._raise_if_cancelled("planner_after")
             kind = self._coerce_text(action.get("action")).strip().lower()
             reason = self._coerce_text(action.get("reason")).strip()
@@ -679,50 +667,6 @@ class ClioAgent(dspy.Module):
                             "ok": False,
                             "result": scope_error,
                         }
-                    )
-                    continue
-                if self._should_promote_tool_action_to_expert(
-                    tool_name,
-                    selected=selected,
-                    owning_expert=owning_expert,
-                    observations=observations,
-                    question=question,
-                    file_context=file_context,
-                ):
-                    self._raise_if_cancelled("expert_before")
-                    selected, answer, expert_result, error_info = self._dispatch_expert_action(
-                        expert_id=selected,
-                        question=question,
-                        file_context=file_context,
-                        session_context=self._session_context_with_observations(
-                            session_context,
-                            observations,
-                        ),
-                        trace=trace,
-                    )
-                    selected = self._parent_route_for_child(selected) or selected
-                    self._extend_nanoagents(accumulated_nanoagents, expert_result)
-                    last_expert_result = expert_result
-                    last_error_info = error_info
-                    self._raise_if_cancelled("expert_after")
-                    route = self._route_for_selected(
-                        selected,
-                        reason
-                        or (
-                            f"Planner selected {tool_name}, promoted to the owning "
-                            f"{selected} expert for scoped tool execution."
-                        ),
-                        confidence=0.75,
-                    )
-                    observations.append(
-                        self._expert_loop_observation(
-                            step=step + 1,
-                            expert=selected,
-                            answer=answer,
-                            expert_result=expert_result,
-                            error_info=error_info,
-                            reason=reason,
-                        )
                     )
                     continue
                 self._raise_if_cancelled("tool_before")
@@ -760,69 +704,6 @@ class ClioAgent(dspy.Module):
                 )
                 continue
 
-            if kind == "expert":
-                expert_id = self._coerce_text(action.get("expert")).strip().lower()
-                expert_question = self._coerce_text(action.get("question")).strip() or question
-                expert_question = self._repair_question_filepaths_from_context(
-                    expert_question,
-                    source_question=question,
-                    file_context=file_context,
-                )
-                child_parent = self._parent_route_for_child(expert_id)
-                if child_parent:
-                    reason = (
-                        reason
-                        or f"Planner selected child expert {expert_id}; routing through parent."
-                    )
-                    expert_id = child_parent
-                compatibility_error = self._expert_file_compatibility_error(
-                    expert_id,
-                    file_context,
-                    question=expert_question,
-                )
-                if compatibility_error is not None:
-                    observations.append(
-                        {
-                            "step": step + 1,
-                            "type": "planner_error",
-                            "ok": False,
-                            "result": compatibility_error,
-                        }
-                    )
-                    continue
-                self._raise_if_cancelled("expert_before")
-                selected, answer, expert_result, error_info = self._dispatch_expert_action(
-                    expert_id=expert_id,
-                    question=expert_question,
-                    file_context=file_context,
-                    session_context=self._session_context_with_observations(
-                        session_context,
-                        observations,
-                    ),
-                    trace=trace,
-                )
-                selected = self._parent_route_for_child(selected) or selected
-                self._extend_nanoagents(accumulated_nanoagents, expert_result)
-                last_expert_result = expert_result
-                last_error_info = error_info
-                self._raise_if_cancelled("expert_after")
-                route = self._route_for_selected(
-                    selected,
-                    reason or f"Agent planner delegated to the {selected} expert.",
-                    confidence=0.75,
-                )
-                observations.append(
-                    self._expert_loop_observation(
-                        step=step + 1,
-                        expert=selected,
-                        answer=answer,
-                        expert_result=expert_result,
-                        error_info=error_info,
-                        reason=reason,
-                    )
-                )
-                continue
-
             if kind == "none":
                 if routing_mode == "experts":
                     raise RoutingError(
@@ -855,22 +736,6 @@ class ClioAgent(dspy.Module):
                         ),
                     )
                 answer = self._coerce_text(action.get("answer")).strip()
-                if not answer and last_error_info is not None:
-                    route = self._route_for_selected(
-                        selected,
-                        reason or "Agent planner observed an expert failure.",
-                        confidence=0.55,
-                    )
-                    return (
-                        selected,
-                        "",
-                        self._expert_result_with_nanoagents(
-                            last_expert_result,
-                            accumulated_nanoagents,
-                        ),
-                        last_error_info,
-                        route,
-                    )
                 if not answer and observations:
                     answer = self._synthesize_agent_answer(
                         question=question,
@@ -890,16 +755,7 @@ class ClioAgent(dspy.Module):
                     reason or "Agent planner answered from conversation or observations.",
                     confidence=0.7,
                 )
-                return (
-                    selected,
-                    answer,
-                    self._expert_result_with_nanoagents(
-                        last_expert_result,
-                        accumulated_nanoagents,
-                    ),
-                    last_error_info,
-                    route,
-                )
+                return selected, answer, None, None, route
 
             observations.append(
                 {
@@ -946,13 +802,7 @@ class ClioAgent(dspy.Module):
                 planner_observations=observations[-3:],
             ),
         ).to_dict()
-        return (
-            selected,
-            answer,
-            self._expert_result_with_nanoagents(last_expert_result, accumulated_nanoagents),
-            error_info or last_error_info,
-            route,
-        )
+        return selected, answer, None, error_info, route
 
     @staticmethod
     def _has_successful_execution_observation(observations: list[dict[str, Any]]) -> bool:
@@ -961,62 +811,6 @@ class ClioAgent(dspy.Module):
             observation.get("type") != "planner_error" and observation.get("ok") is True
             for observation in observations
         )
-
-    def _expert_loop_observation(
-        self,
-        *,
-        step: int,
-        expert: str,
-        answer: str,
-        expert_result: Any,
-        error_info: dict[str, Any] | None,
-        reason: str,
-    ) -> dict[str, Any]:
-        """Represent a completed expert delegation as planner-loop state."""
-        tools: list[dict[str, Any]] = []
-        local_paths: list[str] = []
-        for observation in list(getattr(expert_result, "tool_provenance", []) or []) + list(
-            getattr(expert_result, "tools", []) or []
-        ):
-            tool_name = self._coerce_text(getattr(observation, "tool", "")).strip()
-            raw_result = getattr(observation, "result", None)
-            ok = bool(getattr(observation, "ok", tool_result_ok(raw_result)))
-            if ok:
-                for path in self._local_paths_from_value(raw_result):
-                    if path not in local_paths:
-                        local_paths.append(path)
-            tools.append(
-                {
-                    "tool": tool_name,
-                    "ok": ok,
-                    "result": compact_tool_result(raw_result, tool=tool_name or None, ok=ok),
-                }
-            )
-
-        metadata = getattr(expert_result, "metadata", None)
-        if not isinstance(metadata, Mapping):
-            metadata = {}
-        parent_actions: list[str] = []
-        staging = metadata.get("staging")
-        if isinstance(staging, Mapping):
-            parent_actions = [
-                self._coerce_text(action).strip()
-                for action in staging.get("recommended_parent_actions", [])
-                if self._coerce_text(action).strip()
-            ]
-        return {
-            "step": step,
-            "type": "expert",
-            "expert": expert,
-            "ok": error_info is None,
-            "reason": reason,
-            "answer": self._coerce_text(answer).strip()[:1800],
-            "metadata": dict(metadata),
-            "recommended_parent_actions": parent_actions,
-            "tools": tools[-8:],
-            "local_paths": local_paths[-8:],
-            "error_info": error_info,
-        }
 
     @classmethod
     def _local_paths_from_value(cls, value: Any) -> list[str]:
@@ -1036,65 +830,6 @@ class ClioAgent(dspy.Module):
             for item in value:
                 paths.extend(cls._local_paths_from_value(item))
         return paths
-
-    def _session_context_with_observations(
-        self,
-        session_context: str,
-        observations: list[dict[str, Any]],
-    ) -> str:
-        """Append compact current-turn observations for downstream experts."""
-        if not observations:
-            return session_context
-        observation_context = self._format_observations_for_prompt(observations[-4:])
-        if not session_context.strip():
-            return f"[Current turn observations]\n{observation_context}"
-        return f"{session_context.strip()}\n\n[Current turn observations]\n{observation_context}"
-
-    def _should_promote_tool_action_to_expert(
-        self,
-        tool_name: str,
-        *,
-        selected: str,
-        owning_expert: str,
-        observations: list[dict[str, Any]],
-        question: str,
-        file_context: str,
-    ) -> bool:
-        """Return whether a planner tool action should become expert delegation.
-
-        Child expert tools should execute through the parent-owned delegation
-        boundary on the first planner step. Letting the tier-1 planner iterate
-        directly over provider/format tools makes the orchestrator behave like
-        a flat tool-using expert and loses handoff boundaries.
-        """
-
-        caps = self.registry.get_capabilities(owning_expert)
-        if caps is not None and caps.parent_id and not observations:
-            return True
-        if selected != "data" or not tool_name.startswith("ndp_"):
-            return False
-        return not ClioAgent._has_successful_execution_observation(observations)
-
-    def _unique_agent_for_metadata_suffix(
-        self,
-        *,
-        metadata_key: str,
-        suffixes: set[str],
-    ) -> str:
-        """Return one agent whose metadata suffix set covers the requested suffixes."""
-        candidates: list[str] = []
-        for agent_id in self.registry.list_agents():
-            caps = self.registry.get_capabilities(agent_id)
-            if caps is None:
-                continue
-            supported = {
-                str(suffix).lower()
-                for suffix in caps.metadata.get(metadata_key, [])
-                if str(suffix).strip()
-            }
-            if suffixes.issubset(supported):
-                candidates.append(agent_id)
-        return candidates[0] if len(candidates) == 1 else ""
 
     def _plan_next_action(
         self,
@@ -1316,71 +1051,6 @@ class ClioAgent(dspy.Module):
                 "qwen-3.5",
             )
         )
-
-    @classmethod
-    def _expert_dispatch_context(cls, *, file_context: str, session_context: str) -> str:
-        """Return scoped context passed from the orchestrator into an expert."""
-        cleaned_session = cls._strip_context_sections(
-            session_context,
-            {"Available Tools", "Available Data"},
-        ).strip()
-        if cleaned_session == "No prior context":
-            cleaned_session = ""
-        parts: list[str] = []
-        if file_context.strip():
-            parts.append(file_context.strip())
-        if cleaned_session:
-            parts.append("[Retained session context]\n" + cleaned_session)
-        return "\n\n".join(parts)
-
-    def _dispatch_expert_action(
-        self,
-        *,
-        expert_id: str,
-        question: str,
-        file_context: str,
-        trace: RunTrace,
-        session_context: str = "",
-    ) -> tuple[str, str, Any, dict[str, Any] | None]:
-        """Reject native expert delegation from the direct core runtime.
-
-        Domain experts are registry-loaded Agent Blueprint programs in the
-        GACT runtime. The direct ``ClioAgent`` core can still execute concrete
-        tools and synthesize answers from observations, but it no longer owns
-        a privileged Python expert dispatch path.
-        """
-        del question, file_context, session_context
-        dispatch_id = self._dispatch_target_for_expert(expert_id)
-        self._record_expert_handoff(
-            trace,
-            expert_id=expert_id,
-            dispatch_target=dispatch_id,
-            stage="planner_dispatch",
-            input_summary="native expert dispatch rejected",
-            status="failure",
-            error="native expert dispatch is disabled",
-        )
-        error = ExpertError(
-            "Native Python expert dispatch has been removed from CLIO core.",
-            details=self._recovery_details(
-                expert=expert_id,
-                dispatch_target=dispatch_id,
-                next_action=(
-                    "Activate a registry Agent Blueprint for expert behavior, or call a concrete "
-                    "tool directly through the runtime substrate."
-                ),
-                available=self.registry.list_agents(),
-            ),
-        ).to_dict()
-        return "none", "", None, error
-
-    def _dispatch_target_for_expert(self, expert_id: str) -> str:
-        """Return the executable expert target for a registered expert id."""
-        caps = self.registry.get_capabilities(expert_id)
-        if caps is None:
-            return expert_id
-        target = self._coerce_text(caps.metadata.get("dispatch_to")).strip().lower()
-        return target or expert_id
 
     def _execute_tool_action(
         self,
@@ -2100,95 +1770,6 @@ class ClioAgent(dspy.Module):
                 return self._parent_route_for_child(selected) or selected
         return "chat"
 
-    def _expert_file_compatibility_error(
-        self,
-        expert_id: str,
-        file_context: str,
-        *,
-        question: str = "",
-    ) -> dict[str, Any] | None:
-        """Reject expert delegation that cannot inspect the current file context."""
-        paths = extract_file_paths(
-            "\n".join(part for part in (question, file_context) if part),
-            "",
-            SCIENTIFIC_FILE_SUFFIXES,
-        )
-        if not paths:
-            return None
-
-        caps = self.registry.get_capabilities(expert_id)
-        if caps is None:
-            return {
-                "message": f"Unknown expert {expert_id!r}.",
-                "available_experts": self.registry.list_agents(),
-            }
-
-        supported = {
-            str(suffix).lower()
-            for suffix in caps.metadata.get("file_suffixes", [])
-            if str(suffix).strip()
-        }
-        supported.update(self._child_file_suffixes(expert_id))
-        if not supported:
-            return None
-
-        unsupported = [str(path) for path in paths if path.suffix.lower() not in supported]
-        if not unsupported:
-            return None
-        coordinated = {
-            str(suffix).lower()
-            for suffix in caps.metadata.get("coordinated_file_suffixes", [])
-            if str(suffix).strip()
-        }
-        if (
-            coordinated
-            and {path.suffix.lower() for path in paths}.issubset(coordinated)
-            and len(paths) > 1
-        ):
-            return None
-
-        compatible = self._compatible_experts_for_paths(paths)
-        return {
-            "message": (
-                f"Expert {expert_id!r} cannot inspect the current file context "
-                f"({', '.join(unsupported)}). Choose a compatible expert or tool."
-            ),
-            "expert": expert_id,
-            "supported_suffixes": sorted(supported),
-            "compatible_experts": compatible,
-        }
-
-    def _compatible_experts_for_paths(self, paths: list[Path]) -> list[str]:
-        """List registered experts that support all current file suffixes."""
-        suffixes = {path.suffix.lower() for path in paths}
-        compatible: list[str] = []
-        for agent_id in self.registry.list_agents():
-            caps = self.registry.get_capabilities(agent_id)
-            if caps is None:
-                continue
-            supported = {
-                str(suffix).lower()
-                for suffix in caps.metadata.get("file_suffixes", [])
-                if str(suffix).strip()
-            }
-            if supported and suffixes.issubset(supported):
-                compatible.append(agent_id)
-        return compatible
-
-    def _child_file_suffixes(self, parent_id: str) -> set[str]:
-        """Return file suffixes handled by child experts under a parent."""
-        suffixes: set[str] = set()
-        for agent_id in self.registry.list_agents():
-            caps = self.registry.get_capabilities(agent_id)
-            if caps is None or caps.parent_id != parent_id:
-                continue
-            suffixes.update(
-                str(suffix).lower()
-                for suffix in caps.metadata.get("file_suffixes", [])
-                if str(suffix).strip()
-            )
-        return suffixes
-
     def _route_for_selected(
         self,
         selected: str,
@@ -2279,58 +1860,6 @@ class ClioAgent(dspy.Module):
         repaired = dict(args)
         repaired["filepath"] = str(matches[0].expanduser())
         return repaired
-
-    @staticmethod
-    def _repair_question_filepaths_from_context(
-        text: str,
-        *,
-        source_question: str,
-        file_context: str,
-    ) -> str:
-        """Repair degraded file paths in a planner-rewritten expert question."""
-        repaired = text
-        source_paths = extract_file_paths(source_question, file_context, SCIENTIFIC_FILE_SUFFIXES)
-        if not source_paths:
-            return repaired
-
-        for source_path in source_paths:
-            replacement = str(source_path.expanduser())
-            if replacement in repaired or not source_path.name:
-                continue
-            updated = ClioAgent._replace_degraded_path_token(
-                repaired,
-                source_path.name,
-                replacement,
-            )
-            if updated != repaired:
-                repaired = updated
-
-        for degraded in extract_file_paths(text, "", SCIENTIFIC_FILE_SUFFIXES):
-            expanded = degraded.expanduser()
-            if (expanded.exists() and degraded.is_absolute()) or not degraded.name:
-                continue
-            matches = [
-                candidate
-                for candidate in source_paths
-                if candidate.name == degraded.name and candidate.expanduser().exists()
-            ]
-            if len(matches) == 1:
-                replacement = str(matches[0].expanduser())
-                if str(degraded) in repaired:
-                    repaired = repaired.replace(str(degraded), replacement)
-                else:
-                    repaired = ClioAgent._replace_degraded_path_token(
-                        repaired,
-                        degraded.name,
-                        replacement,
-                    )
-        return repaired
-
-    @staticmethod
-    def _replace_degraded_path_token(text: str, basename: str, replacement: str) -> str:
-        """Replace a malformed path token ending in basename with replacement."""
-        pattern = re.compile(rf"(?:[A-Za-z]:)?[^\s'\"`]*{re.escape(basename)}")
-        return pattern.sub(lambda _match: replacement, text, count=1)
 
     @staticmethod
     def _decode_tool_result(raw_result: Any) -> Any:
@@ -2627,16 +2156,6 @@ class ClioAgent(dspy.Module):
             value = DEFAULT_AGENT_MAX_STEPS
         return max(1, min(value, 12))
 
-    @staticmethod
-    def _merge_expert_provenance(trace: RunTrace, expert_result: Any) -> None:
-        """Copy native expert tool provenance into the active run trace."""
-        provenance = getattr(expert_result, "tool_provenance", None)
-        if not isinstance(provenance, (list, tuple)):
-            return
-        for observation in provenance:
-            if hasattr(observation, "to_arc_tool_call"):
-                trace.tools.append(observation)
-
     def _record_expert_handoff(
         self,
         trace: RunTrace,
@@ -2665,66 +2184,6 @@ class ClioAgent(dspy.Module):
             duration_ms=duration_ms,
             error=error,
             metadata=metadata,
-        )
-
-        reported_expert = self._coerce_text(metadata.get("expert")).strip().lower()
-        if not reported_expert or reported_expert == expert_id:
-            return
-        if reported_expert in {row.agent_id for row in trace.expert_handoffs}:
-            return
-        reported_parent = self._coerce_text(metadata.get("parent_expert")).strip().lower()
-        child_parent_id = reported_parent or expert_id
-        lifecycle_metadata = {
-            **metadata,
-            "observed_through": expert_id,
-            "delegation_lifecycle": "sync",
-            "delegate_parent_id": child_parent_id,
-            "delegate_child_id": reported_expert,
-        }
-        trace.record_expert_handoff(
-            agent_id=reported_expert,
-            parent_id=child_parent_id,
-            dispatch_target=reported_expert,
-            stage=f"{stage}_child",
-            status=status,
-            input_summary=self._compact_handoff_text(input_summary),
-            output_summary=output_summary,
-            duration_ms=duration_ms,
-            error=error,
-            metadata=lifecycle_metadata,
-        )
-        trace.record_expert_handoff(
-            agent_id=reported_expert,
-            parent_id=child_parent_id,
-            dispatch_target=reported_expert,
-            stage="delegate.completed" if status == "success" else "delegate.failed",
-            status=status,
-            input_summary=self._compact_handoff_text(input_summary),
-            output_summary=output_summary,
-            duration_ms=duration_ms,
-            error=error,
-            metadata={
-                **lifecycle_metadata,
-                "return_to": child_parent_id,
-                "return_payload": "compact_result",
-            },
-        )
-        trace.record_expert_handoff(
-            agent_id=expert_id,
-            parent_id=self._registered_parent_id(expert_id),
-            dispatch_target=expert_id,
-            stage="parent.resumed",
-            status=status,
-            input_summary=self._compact_handoff_text(input_summary),
-            output_summary=output_summary,
-            duration_ms=0.0,
-            error=error,
-            metadata={
-                "delegation_lifecycle": "sync",
-                "resumed_from": reported_expert,
-                "child_parent_id": child_parent_id,
-                "return_payload": "compact_result",
-            },
         )
 
     def _registered_parent_id(self, expert_id: str) -> str | None:
@@ -3250,29 +2709,6 @@ class ClioAgent(dspy.Module):
         except Exception as e:
             if self.verbose:
                 print(f"[ClioAgent] Warning: Failed to store expert invocation: {e}")
-
-    @staticmethod
-    def _extend_nanoagents(target: list[dict[str, Any]], prediction: Any) -> None:
-        """Append nanoagent spawns from a prediction without duplicating wire rows."""
-        for spawn in ClioAgent._extract_nanoagents_spawned(prediction):
-            if spawn not in target:
-                target.append(spawn)
-
-    @staticmethod
-    def _expert_result_with_nanoagents(
-        prediction: Any,
-        nanoagents_spawned: list[dict[str, Any]],
-    ) -> Any:
-        """Return a prediction carrying all nanoagent spawns observed this turn."""
-        if not nanoagents_spawned:
-            return prediction
-        if prediction is None:
-            return dspy.Prediction(nanoagents_spawned=nanoagents_spawned)
-        try:
-            prediction.nanoagents_spawned = nanoagents_spawned  # type: ignore[attr-defined]
-            return prediction
-        except Exception:
-            return dspy.Prediction(nanoagents_spawned=nanoagents_spawned)
 
     @staticmethod
     def _extract_nanoagents_spawned(prediction: Any) -> list[dict[str, Any]]:
