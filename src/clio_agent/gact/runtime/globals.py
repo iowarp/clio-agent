@@ -19,9 +19,9 @@ It owns, as the single source of truth:
 * **The internal exceptions** used to settle turns / signal terminal workflow
   states, plus ``_not_implemented`` / ``_coerce_error_info``.
 * **ID / timestamp generators + the SSE wire formatter** (``_format_sse``).
-* **The ``_ctx`` boundary shims + resolve-once caches** (the ``_CompatVar``
-  proxies, the tool/app context managers, the expert-children / orchestrator
-  briefing caches).
+* **The ``_ctx`` boundary shims** (the ``_CompatVar`` proxies, the tool/app
+  context managers). The resolve-once expert caches formerly here are now
+  per-app on ``app.state`` (``gact.runtime.app_state.per_app_dict``, #770).
 
 It imports ONLY gact *leaves* (``gact.context``, ``gact.semantic_events``,
 ``gact.events``, ``gact.types``) + stdlib -- NEVER ``gact.app`` -- so it is
@@ -103,18 +103,13 @@ _ACTIVE_BLUEPRINT_TOOL_ROWS = _CompatVar(
     _ctx.active_blueprint_tool_rows, _ctx.set_blueprint_tool_rows
 )
 
-# Resolve-once cache of an expert's declared child ids, used to build the
-# next_expert: Literal[children, "finish"] routing field. The signature is rebuilt
-# on several paths and some lack the app/session context needed to resolve children
-# live; this process-global cache keeps the Literal correct (vs collapsing to
-# Literal["finish"], which would force an immediate finish). Keyed by expert id.
-_EXPERT_CHILDREN_CACHE: dict[str, list[str]] = {}
-# Same problem, the prompt side: the orchestrator-identity briefing (built from the
-# children rows, which need the session) collapses to "" on a session-less module
-# rebuild -- so the model loses its "you are an orchestrator, delegate, don't
-# fabricate" grounding on exactly the build it runs. Render-once-reuse keeps the
-# briefing on every build. Keyed by expert id.
-_ORCHESTRATOR_BRIEFING_CACHE: dict[str, str] = {}
+# The resolve-once expert caches (declared child ids for the next_expert Literal;
+# the orchestrator-identity briefing) no longer live here as process-global dicts
+# (#770 unified-concurrency §4 Site 2). They are keyed on the live turn's
+# ``app.state`` via ``gact.runtime.app_state.per_app_dict`` so one app's build can
+# never leak its value into a sibling app's (first/last-writer-wins), and an
+# app-less consume yields a structured empty (deterministic finish) rather than a
+# stale cross-app value.
 
 
 @contextmanager

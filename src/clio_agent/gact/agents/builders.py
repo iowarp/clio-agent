@@ -56,9 +56,9 @@ from clio_agent.gact.agents.runtime import (
     _retaining_react_cls,
 )
 from clio_agent.gact.events import Event
+from clio_agent.gact.runtime.app_state import per_app_dict
 from clio_agent.gact.runtime.context_tokens import _resolve_expert_context_window
 from clio_agent.gact.runtime.globals import (
-    _EXPERT_CHILDREN_CACHE,
     _active_semantic_trace_id,
     _active_semantic_turn_id,
     _BlueprintTerminalWorkflowState,
@@ -904,8 +904,13 @@ def _tool_user_agent_max_iters(agent_def: "AgentDef") -> int:
     return max_iters
 
 
-def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
-    """Build a DSPy Signature from a blueprint's ordered signature fields."""
+def _blueprint_runtime_signature(agent_def: "AgentDef", *, app: Any = None) -> Any:
+    """Build a DSPy Signature from a blueprint's ordered signature fields.
+
+    ``app`` lets a caller that already holds the live app thread it in explicitly
+    for the per-app children cache (#770 Site 2); when omitted the live turn's
+    ``active_app()`` is the source (reliable in-turn via the keystone).
+    """
 
     import dspy  # noqa: PLC0415
 
@@ -1016,7 +1021,7 @@ def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
     # makes a model fill it reliably (the old free-string `expert_handoffs` was always
     # emitted empty, so 100% of routing fell through to the contracts). The Literal is
     # built per-expert from its OWN declared children (a leaf gets Literal["finish"]).
-    _route_app = _ctx.active_app()
+    _route_app = app if app is not None else _ctx.active_app()
     _route_sid = _ctx.active_session_id()
     _agent_id = getattr(agent_def, "id", "")
     _child_ids: list[str] = []
@@ -1027,15 +1032,19 @@ def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
             )
         except Exception:  # noqa: BLE001 - routing field is best-effort at sig-build
             _child_ids = []
-    # Resolve-once-then-reuse via a process-global cache: some signature-build paths
-    # carry NEITHER the app nor the session context, so resolve children live when we
-    # can and fall back to the cache otherwise -- keeps next_expert's Literal correct
-    # instead of collapsing to Literal["finish"] and forcing an immediate finish.
+    # Resolve-once-then-reuse via a PER-APP cache on the live app's ``app.state``
+    # (#770 Site 2): some signature-build paths carry the app but not the session, so
+    # resolve children live when we can and fall back to this app's own cache
+    # otherwise -- keeps next_expert's Literal correct instead of collapsing to
+    # Literal["finish"]. When genuinely app-less, per_app_dict returns a fresh empty
+    # dict, so the Literal deterministically collapses to "finish" rather than leaking
+    # a sibling app's children through a process-global cache.
+    _children_cache = per_app_dict("expert_children", app=_route_app)
     if _agent_id:
         if _child_ids:
-            _EXPERT_CHILDREN_CACHE[_agent_id] = _child_ids
-        elif _agent_id in _EXPERT_CHILDREN_CACHE:
-            _child_ids = list(_EXPERT_CHILDREN_CACHE[_agent_id])
+            _children_cache[_agent_id] = _child_ids
+        elif _agent_id in _children_cache:
+            _child_ids = list(_children_cache[_agent_id])
     if "next_expert" not in _declared:
         _route_values = tuple(_child_ids) + ("finish",)
         _next_expert_type = Literal[_route_values]  # type: ignore[valid-type]
