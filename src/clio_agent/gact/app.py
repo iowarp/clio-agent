@@ -1663,6 +1663,15 @@ def build_app(
     # and fall back to these factories — mirroring _call_enabled_external_mcp_tool.
     app.state.make_permission_gate = lambda: _make_permission_gate(app)
     app.state.make_tool_observer = lambda: _make_tool_observer(app)
+    # #735 unified-concurrency seam: install the STATELESS tool-runtime resolver
+    # once (idempotent). It dispatches on the live turn's ``active_app()`` so N
+    # apps in one process each read THEIR OWN ``app.state.pending_*`` hooks — no
+    # shared process-global on the in-turn path. Installed unconditionally (both
+    # the eager-agent and deferred-construction branches below run turns).
+    from clio_agent.gact.runtime.app_state import resolve_tool_runtime  # noqa: PLC0415
+    from clio_agent.tools.execution import set_tool_runtime_resolver  # noqa: PLC0415
+
+    set_tool_runtime_resolver(resolve_tool_runtime)
     if agent is not None:
         try:
             _install_tool_runtime_hooks(app)

@@ -8,8 +8,10 @@ import contextvars
 import json
 import logging
 import threading
+from collections import deque
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager, suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Optional, Protocol
 
@@ -18,6 +20,7 @@ from fastmcp import Client
 
 from clio_agent import conf
 from clio_agent.errors import CancellationError
+from clio_agent.runtime.stream_audit import stream_audit
 from clio_agent.tools.file_policy import FileAccessPolicy
 
 logger = logging.getLogger(__name__)
@@ -165,6 +168,149 @@ def _active_cancellation_checker() -> Optional[Callable[[], bool]]:
     return _GLOBAL_CANCELLATION_CHECKER if value is _UNSET_HOOK else value
 
 
+# --------------------------------------------------------------------------- #
+# iowarp/clio-agent#735 — the tool-runtime hooks SEAM (unified concurrency §2). #
+#                                                                               #
+# The low ``tools`` layer owns an inversion-of-control SLOT: a frozen data      #
+# shape (``ToolRuntimeHooks``), one resolver function pointer, and one retained #
+# fallback bundle. gact installs a STATELESS resolver once (``build_app`` ->     #
+# ``set_tool_runtime_resolver``) that dispatches on the live turn's app; the    #
+# executor reads the bundle via ``current_tool_runtime()`` at call time. Nothing #
+# per-app is ever pushed into this layer, and this layer imports no ``gact``.    #
+#                                                                               #
+# During the #812 transition (steps 3->4) the four ``_active_*`` resolvers above #
+# (ContextVar-over-process-global) remain the app-less NET so no existing caller #
+# regresses; step 4 collapses the app-less path to the single fallback bundle.   #
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class ToolRuntimeHooks:
+    """The per-tool-call hook bundle resolved for the live turn (#735).
+
+    A frozen value object carrying the four tool-runtime hooks. ``None`` on any
+    field means "no such hook" (a no-op), never "look elsewhere".
+    """
+
+    permission_gate: Optional[Callable[[str, Mapping[str, Any]], str]] = None
+    tool_observer: Optional[ToolObserver | LegacyToolObserver] = None
+    tool_interceptor: Optional[Callable[[str, Mapping[str, Any]], Any | None]] = None
+    cancellation_checker: Optional[Callable[[], bool]] = None
+
+
+# One installed resolver slot (gact fills it once) + one retained fallback bundle
+# used ONLY when no app resolves (out-of-band / app-less caller).
+_TOOL_RUNTIME_RESOLVER: Optional[Callable[[], "ToolRuntimeHooks | None"]] = None
+_FALLBACK_TOOL_RUNTIME: ToolRuntimeHooks = ToolRuntimeHooks()
+
+
+def set_tool_runtime_resolver(fn: Optional[Callable[[], "ToolRuntimeHooks | None"]]) -> None:
+    """Install the stateless per-call resolver (gact does this once in build_app).
+
+    The resolver returns the live turn's hooks, or ``None`` when app-less so
+    ``current_tool_runtime`` takes the reason-logged fallback path.
+    """
+
+    global _TOOL_RUNTIME_RESOLVER
+    _TOOL_RUNTIME_RESOLVER = fn
+
+
+def set_tool_runtime_fallback(hooks: ToolRuntimeHooks) -> None:
+    """Record the last-installed app's hooks as the app-less fallback bundle."""
+
+    global _FALLBACK_TOOL_RUNTIME
+    _FALLBACK_TOOL_RUNTIME = hooks
+
+
+# Structured reason catalog for a degraded tool-runtime resolve — modeled on the
+# ``stream_fallback`` catalog (a typed reason, recorded + queryable after the
+# fact). Every app-less resolve emits one of these instead of silently returning
+# an empty bundle (the no-silent-fallback ground rule): a dropped permission gate
+# must always be observable in the audit sink.
+_TOOL_RUNTIME_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
+    "tool_runtime_appless_fallback": {
+        "severity": "warning",
+        "detail": (
+            "no app resolved for this tool call; used the retained last-installed "
+            "hook bundle (out-of-band / app-less caller)"
+        ),
+    },
+    "tool_runtime_unresolved": {
+        "severity": "warning",
+        "detail": (
+            "no app resolved and the retained fallback bundle carries no permission "
+            "gate or observer; the tool call runs unhooked"
+        ),
+    },
+}
+
+_TOOL_RUNTIME_REASONS: "deque[dict[str, Any]]" = deque(maxlen=256)
+_TOOL_RUNTIME_REASONS_LOCK = threading.Lock()
+
+
+def _emit_tool_runtime_reason(reason: str, **fields: Any) -> dict[str, Any]:
+    """Record a typed tool-runtime resolve reason to the low-layer audit sink.
+
+    Appends to the bounded, queryable in-process ring (``recorded_tool_runtime_reasons``)
+    and to the ``stream_audit`` JSONL. Does NOT import gact.
+    """
+
+    definition = _TOOL_RUNTIME_REASON_DEFINITIONS.get(reason)
+    if definition is None:
+        raise ValueError(f"Unknown tool-runtime reason: {reason}")
+    payload: dict[str, Any] = {"reason": reason, **definition, **fields}
+    with _TOOL_RUNTIME_REASONS_LOCK:
+        _TOOL_RUNTIME_REASONS.append(payload)
+    stream_audit("tool_runtime_fallback", **payload)
+    logger.debug(
+        "tool-runtime resolve degraded reason=%s detail=%s",
+        reason,
+        definition["detail"],
+    )
+    return payload
+
+
+def recorded_tool_runtime_reasons() -> list[dict[str, Any]]:
+    """Return a snapshot of recorded tool-runtime resolve reasons (queryable audit)."""
+
+    with _TOOL_RUNTIME_REASONS_LOCK:
+        return list(_TOOL_RUNTIME_REASONS)
+
+
+def current_tool_runtime() -> ToolRuntimeHooks:
+    """Resolve the live tool-runtime hook bundle for THIS tool call (#735 seam).
+
+    Prefers the installed resolver (gact dispatches on ``active_app()`` so N apps
+    in one process each read their own ``app.state.pending_*``). When no app
+    resolves it falls back — but LOUDLY: it emits a structured reason so the
+    degradation reaches the audit sink rather than silently dropping a gate.
+
+    Transition note (#812, steps 3->4): the app-less bundle is assembled from the
+    retained ContextVar-over-global ``_active_*`` net (else the single
+    ``_FALLBACK_TOOL_RUNTIME``) so no pre-#735 caller regresses; step 4 collapses
+    this to ``return _FALLBACK_TOOL_RUNTIME``.
+    """
+
+    resolver = _TOOL_RUNTIME_RESOLVER
+    resolved = resolver() if resolver is not None else None
+    if resolved is not None:
+        return resolved
+    fallback = ToolRuntimeHooks(
+        permission_gate=_active_permission_gate() or _FALLBACK_TOOL_RUNTIME.permission_gate,
+        tool_observer=_active_tool_observer() or _FALLBACK_TOOL_RUNTIME.tool_observer,
+        tool_interceptor=_active_tool_interceptor() or _FALLBACK_TOOL_RUNTIME.tool_interceptor,
+        cancellation_checker=(
+            _active_cancellation_checker() or _FALLBACK_TOOL_RUNTIME.cancellation_checker
+        ),
+    )
+    _emit_tool_runtime_reason(
+        "tool_runtime_appless_fallback"
+        if fallback.permission_gate is not None or fallback.tool_observer is not None
+        else "tool_runtime_unresolved"
+    )
+    return fallback
+
+
 def set_global_permission_gate(
     gate: Optional[Callable[[str, Mapping[str, Any]], str]],
 ) -> None:
@@ -236,7 +382,7 @@ def notify_global_tool_observer(
     app's process-global (iowarp/clio-agent#735).
     """
 
-    notify_tool_observer(_active_tool_observer(), name, args, phase, error, result)
+    notify_tool_observer(current_tool_runtime().tool_observer, name, args, phase, error, result)
 
 
 def _structured_tool_result_error(result: Any) -> str | None:
@@ -658,9 +804,10 @@ class SyncMCPToolExecutor:
         if self._closed:
             raise RuntimeError("SyncMCPToolExecutor is closed")
 
-        permission_gate = self._permission_gate or _active_permission_gate()
-        tool_observer = self._tool_observer or _active_tool_observer()
-        cancellation_checker = _active_cancellation_checker()
+        hooks = current_tool_runtime()
+        permission_gate = self._permission_gate or hooks.permission_gate
+        tool_observer = self._tool_observer or hooks.tool_observer
+        cancellation_checker = hooks.cancellation_checker
 
         def raise_if_cancelled(stage: str) -> None:
             if cancellation_checker is not None and cancellation_checker():
@@ -697,7 +844,7 @@ class SyncMCPToolExecutor:
             notify_tool_observer(tool_observer, name, effective_args, "completed", circuit_error)
             raise RepeatedToolFailureError(circuit_error)
 
-        tool_interceptor = _active_tool_interceptor()
+        tool_interceptor = hooks.tool_interceptor
         if tool_interceptor is not None:
             intercepted = tool_interceptor(name, dict(effective_args))
             if intercepted is not None:
@@ -1058,14 +1205,19 @@ __all__ = [
     "SyncMCPToolExecutor",
     "SyncToolExecutor",
     "ToolExecutor",
+    "ToolRuntimeHooks",
     "create_async_tool_executor",
     "create_sync_tool_executor",
+    "current_tool_runtime",
     "get_active_tool_workspace_root",
     "notify_global_tool_observer",
     "notify_tool_observer",
+    "recorded_tool_runtime_reasons",
     "set_global_cancellation_checker",
     "set_global_permission_gate",
     "set_global_tool_interceptor",
     "set_global_tool_observer",
+    "set_tool_runtime_fallback",
+    "set_tool_runtime_resolver",
     "tool_workspace_context",
 ]
