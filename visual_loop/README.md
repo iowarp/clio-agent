@@ -50,7 +50,7 @@ visual_loop/screenshots/clio_tui_brand_intro.gif
 The most useful live transcript source is the ALCF demo benchmark harness:
 
 - `scripts/run_demo_benchmark.py`
-- `docs/ALCF_DEMO_BENCHMARK_REPORT.md`
+- `docs/archive/ALCF_DEMO_BENCHMARK_REPORT.md`
 
 The report documents the final 21-case run, including prompts, provider/model
 settings, selected agent, handoffs, tools, child sessions, artifacts, elapsed

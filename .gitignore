@@ -10,8 +10,6 @@ venv/
 env/
 ENV/
 .venv
-.env
-*.env
 
 # Python cache
 __pycache__/
@@ -22,6 +20,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+*.whl
 
 # pytest
 .pytest_cache/
@@ -61,16 +60,13 @@ mcp_*.log
 *.swo
 *~
 .DS_Store
-.env.local
-.env.*.local
 
 # Testing
 test_output/
-test_*.json
-.pytest_cache/
 
 # Temporary files
 tmp/
+/tmp/
 temp/
 *.tmp
 *.bak
@@ -82,6 +78,7 @@ temp/
 
 # Environment variables with secrets
 .env
+*.env
 .env.local
 .env.*.local
 *.env.local
@@ -119,18 +116,11 @@ api_*.log
 # UV lockfile (optional - include if you want reproducible deps)
 # uv.lock
 
-# Build artifacts
-build/
-dist/
-*.egg-info/
-*.whl
-
 # ============================================================================
 # OS Specific
 # ============================================================================
 
 # macOS
-.DS_Store
 .AppleDouble
 .LSOverride
 
@@ -156,7 +146,14 @@ ANTHONY/
 .research/
 docs/ref/
 
-
+# Agent-run data artifacts left at the repo root (root-scoped: tracked assets
+# in subdirectories are unaffected). The real fix is pinning the agent staging
+# dir outside the repo (#774); this stops the whack-a-mole meanwhile.
+/*.csv
+/*.png
+/*.geojson
+/*.parquet
+/*.h5
 
 # Test artefacts (relative-path file_diff tests sometimes leak)
 /b.py
@@ -169,10 +166,6 @@ benchmark/**/runs/*
 !benchmark/**/runs/REVIEW_LOG.md
 benchmark/**/trace*.jsonl
 benchmark/**/report-*.md
-/tmp/
-tmp/
-/ca_warnings_full.geojson
-/cimis_fresno_weather.png
 /artifacts/
 
 # handshake DB runtime mismatch log

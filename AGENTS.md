@@ -2,14 +2,19 @@
 
 ## Project Structure & Module Organization
 `src/clio_agent/` contains production code, organized by responsibility:
-- `ui/` for CLI and FastAPI entry points
-- `experts/`, `registry/`, and `signatures/` for routing and expert behavior
-- `arc/` for memory/indexing/storage components
-- `tools/servers/` for FastMCP-backed tool servers
+- `gact/` for the GACT server — the shipped API surface gact-tui talks to (FastAPI app, turn orchestration, SSE streaming, sessions/messages, `routes/`, `agents/`, `runtime/`, `workflow_state/`, `providers/`)
+- `agent.py`, `harness.py`, `conversation_manager.py`, `errors.py` for the Tier-1 planner loop and run tracing
+- `conf.py`, `config.py`, `paths.py`, `prompts.py` for runtime/LM configuration, canonical paths, and the editable prompt system
+- `experts/`, `registry/`, `signatures/` for native expert tools, capability routing, and DSPy signatures
+- `prompt_packs/` and `agent_blueprints/` for built-in packs and blueprints
+- `arc/` for ARC memory: live context plane, prompt recorder, context compiler, cache/index/LSM/storage/retrieval
+- `tools/` for the FastMCP gateway, tool catalog, file policy, and execution boundary; `tools/servers/` for the FS and shell MCP servers
+- `providers/` for provider auth and LiteLLM bridges (Argonne/ALCF, claude_code, codex) plus `handshake/` model-limit discovery
 - `optimizer/` for tuning and instrumentation workflows
-- `runtime/` for doctor and integration status reporting
+- `runtime/` for doctor/status, hooks, LM activity/stream audit, and the nanoagent spawn primitive
+- `ui/` for the legacy CLI and REST API entry points (gact is the product surface)
 
-Tests mirror the runtime layout in `tests/` (`test_core/`, `test_arc/`, `test_experts/`, `test_tools/`, `test_integration/`). Architecture and design docs live in `docs/`, and reference material is in `ai-docs/`.
+Tests mirror the runtime layout in `tests/` (`test_core/`, `test_arc/`, `test_experts/`, `test_tools/`, `test_gact/`, `test_integration/`, ...). Architecture and design docs live in `docs/` (historical material in `docs/archive/`), and reference material is in `ai-docs/`.
 Helper scripts for local demos and homelab setup live in `scripts/`.
 
 ## Build, Test, and Development Commands

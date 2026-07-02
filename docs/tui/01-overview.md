@@ -6,7 +6,7 @@
 
 **One-liner**: CLIO Agent is a self-improving autonomous agent specialised in scientific data management inside HPC environments — the **Intelligence Layer (CEI)** of IOWarp's 3-tier architecture.
 
-**Elevator pitch**: CLIO is *not* a framework for building agents — it IS the agent. It helps researchers and HPC operators inspect and optimise HDF5 files, analyse I/O traces, convert data formats, and reason over scientific-computing workflows. It routes work to specialised Experts, maintains persistent memory (ARC), learns from past runs, and can call external agents via the A2A protocol. Unlike a general-purpose chatbot, CLIO is context-engineered for scientific data, memory-backed, and self-improving (`../../README.md` L14–43; `CLIO_VISION.md` L1–7).
+**Elevator pitch**: CLIO is *not* a framework for building agents — it IS the agent. It helps researchers and HPC operators inspect and optimise HDF5 files, analyse I/O traces, convert data formats, and reason over scientific-computing workflows. It routes work to specialised Experts, maintains persistent memory (ARC), learns from past runs, and can call external agents via the A2A protocol. Unlike a general-purpose chatbot, CLIO is context-engineered for scientific data, memory-backed, and self-improving (`../../README.md` L14–43; `../archive/CLIO_VISION.md` L1–7).
 
 ## Intended users
 

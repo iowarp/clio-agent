@@ -5,7 +5,7 @@ Tracking issue: https://github.com/iowarp/clio-agent/issues/330
 Related docs:
 
 - [Hierarchical user-defined experts](HIERARCHICAL_EXPERTS.md)
-- [External editable prompt system](PROMPT_SYSTEM.md)
+- [External editable prompt system](../PROMPT_SYSTEM.md)
 - [Command and capability truth](COMMAND_CAPABILITY_TRUTH_DESIGN.md)
 - [Permission surfacing](PERMISSION_SURFACING_DESIGN.md)
 
