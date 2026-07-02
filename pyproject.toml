@@ -67,6 +67,10 @@ dependencies = [
     "fastapi>=0.104.0",
     "uvicorn>=0.24.0",
     "sse-starlette>=1.6.0",
+    # clio_agent.sdk (#799) — the typed GACT client imports httpx directly
+    # (already present transitively via fastmcp/dspy; declared so the SDK
+    # does not lean on someone else's dependency tree).
+    "httpx>=0.27.0",
 ]
 
 [project.optional-dependencies]
