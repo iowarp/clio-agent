@@ -14,7 +14,7 @@ DRIFTED since — at PR2's base `develop@e58c647` `turn.py` is 3,813 lines (the 
 merges moved the clusters: the stream-tap closure vars sit at :912-926,
 `_close_streamed_part` at :948, `_emit_chunk` at :1030, the finalize region at
 :2890-3737, `_settle_failed_finalize` at :387); after PR2 the stream-tap state machine is
-deleted from `turn.py` entirely (3,629 lines) and lives in `transcript.py`. Treat the
+deleted from `turn.py` entirely (3,633 lines) and lives in `transcript.py`. Treat the
 `a933728` refs below as the design's forensic record, not as pointers into the current
 tree.
 
@@ -259,7 +259,7 @@ Five PRs, each green, each shrinking `turn.py` (accretion rule: `system-cleanup-
   `_emit_chunk` shrinks to an adapter (semantic `lm.token.delta` + `stream_audit` +
   transcript call; the parent-resume gate temporarily retained until PR4). Deletes the
   closure vars and `live_stream_text_boundary_hooks`. Landed at -184 `turn.py` lines
-  (3,813 → 3,629). **Disclosed adaptations against this entry as written:**
+  (3,813 → 3,633). **Disclosed adaptations against this entry as written:**
   (a) the turn-loop LIFECYCLE (open at turn start; settle in the success path, inside
   fix/756's `_settle_failed_finalize`, and at the ask_user early return) ships in PR2,
   pulled forward from the PR3 bullet — settling uses `abandon()` (freeze WITHOUT

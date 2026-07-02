@@ -17,13 +17,16 @@ Covers the PR2 behavior surface:
 
 from __future__ import annotations
 
+import logging
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
+from clio_agent.gact.tool_observer import _mirror_transcript_state
 from clio_agent.gact.transcript import (
     TranscriptFrozenError,
     TurnTranscript,
@@ -530,3 +533,29 @@ def test_ask_user_early_return_settles_ledger_and_resume_adopts_carry(
         ]
         assert len(created) == 1, "the carried message id must be created exactly once"
         assert app.state.turn_transcripts.get(sid) is None
+
+
+def test_mirror_of_frozen_transcript_never_touches_legacy_dicts(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A settled ledger must never re-enter ``app.state`` via any shim's mirror.
+
+    Covers the ``registry.get()`` -> ``abandon()`` race window for
+    executor-thread producers: the frozen ledger already rejects the op at the
+    ledger API, and the mirror must not hand the finished turn's identity and
+    parts back to the just-popped legacy dicts (where the next turn's
+    carried-state adoption would pick them up).
+    """
+
+    transcript, _publisher = _make_transcript()
+    transcript.ensure_message()
+    transcript.abandon()
+    assert transcript.frozen
+
+    app = SimpleNamespace(state=SimpleNamespace())
+    with caplog.at_level(logging.WARNING):
+        _mirror_transcript_state(app, "sess_t", transcript)
+
+    assert getattr(app.state, "live_assistant_message_ids", None) in (None, {})
+    assert getattr(app.state, "live_assistant_parts", None) in (None, {})
+    assert any("frozen_transcript_mirror" in record.message for record in caplog.records)

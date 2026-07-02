@@ -131,7 +131,22 @@ def _mirror_transcript_state(app: "FastAPI", sid: str, transcript: "TurnTranscri
     ledger list and ``live_assistant_message_ids[sid]`` its message id, so
     untouched ``turn.py`` finalize reads (and ``routes/messages.py``'s live
     projection) keep working during the PR1/PR2 migration window.
+
+    A frozen (settled/abandoned) ledger is never mirrored: an executor-thread
+    producer that fetched the transcript just before ``abandon()`` →
+    ``registry.close()`` must not hand the finished turn's identity and parts
+    back to the just-popped legacy dicts (the same poison class as the late
+    stream-tap chunk guarded in ``turn.py``'s ``_emit_chunk``).
     """
+
+    if transcript.frozen:
+        logger.warning(
+            "turn_transcript mirror skipped reason=frozen_transcript_mirror "
+            "session=%s message=%s — settled ledgers never re-enter the live dicts",
+            sid,
+            transcript.message_id or "",
+        )
+        return
 
     live_ids = getattr(app.state, "live_assistant_message_ids", None)
     if live_ids is None:
