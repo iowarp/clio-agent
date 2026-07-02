@@ -2749,6 +2749,19 @@ async def _run_turn_in_background(
         # the suppressed_thinking_part substring matching): when the responder's
         # contract reasoning already streamed live as a text part this turn, the
         # wrap-up copy is that same channel and must not land twice.
+        #
+        # Close the still-open streamed part FIRST: ``has_closed_text`` reads
+        # closed state only, and on the chat path (no selected_agent -> the
+        # routing-banner append above never ran to close it) a turn that
+        # streamed ``reasoning`` and returned a batch-only answer still holds
+        # that reasoning part OPEN here — the gate saw "nothing landed" and
+        # appended a verbatim batch ``thinking`` twin (the #732 duplicate
+        # class). On routed turns the banner's ``append_part`` already closed
+        # it, so this is a no-op there. An explicit close deliberately does
+        # NOT reset ``current_stream_part_id`` (captured above), so the
+        # live-vs-batch stream provenance below is unchanged; the canonical
+        # answer channel was taken above, while its part could still be open.
+        transcript.close_open_text()
         if thinking_text and not transcript.has_closed_text(responder_agent_id, "reasoning"):
             transcript.append_part(
                 Part(

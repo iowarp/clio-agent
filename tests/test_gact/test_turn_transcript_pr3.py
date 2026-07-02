@@ -83,9 +83,7 @@ def test_streamed_answer_is_never_swapped_and_the_batch_copy_never_lands(
         assert text_parts[0]["text"] == "The streamed truth."
         assert text_parts[0]["metadata"]["stream_source"] == "live"
         # The paraphrased batch copy never landed anywhere.
-        assert all(
-            "paraphrased" not in (p.get("text") or "") for p in assistant["parts"]
-        )
+        assert all("paraphrased" not in (p.get("text") or "") for p in assistant["parts"])
         # And it never hit the wire either: one added text part, total.
         added_text = [
             e
@@ -284,8 +282,7 @@ def test_route_banner_lands_exactly_once_live_or_finalize(tmp_path: Path) -> Non
         added_routing = [
             e
             for e in app.state.bus._history.get(sid, [])
-            if e.type == "message.part.added"
-            and e.payload["part"]["type"] == "routing_decision"
+            if e.type == "message.part.added" and e.payload["part"]["type"] == "routing_decision"
         ]
         assert len(added_routing) == 1
 
@@ -330,11 +327,79 @@ def test_wrap_up_thinking_gated_by_streamed_reasoning_identity(
         reasoning_parts = [
             p
             for p in assistant["parts"]
-            if p["type"] == "text"
-            and p["metadata"].get("signature_field_name") == "reasoning"
+            if p["type"] == "text" and p["metadata"].get("signature_field_name") == "reasoning"
         ]
         assert len(reasoning_parts) == 1
         assert reasoning_parts[0]["text"] == "Thinking it through. Simple."
+
+
+def test_chat_path_streamed_reasoning_with_batch_only_answer_lands_once(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """CHAT path (no ``selected_expert`` -> no routing-banner append): the
+    reasoning field streams live and the answer arrives batch-only. The
+    streamed reasoning part is still OPEN when the wrap-up thinking gate runs,
+    so ``has_closed_text`` (closed-state only) saw "nothing landed" and a
+    verbatim batch ``thinking`` duplicate landed next to the live reasoning
+    text part — a strict regression of the #732 duplicate class (on develop
+    the raw-buffer probe suppressed it regardless of open/closed state). The
+    turn must persist AND stream exactly [text reasoning, text answer]."""
+
+    async def fake_streamed_forward(
+        app: Any, enriched_text: str, sid: str, emit_chunk: Any, **kwargs: Any
+    ) -> Any:
+        await emit_chunk("Weighing the question. ", None, "reasoning")
+        await emit_chunk("It is simple.", None, "reasoning")
+        return _Pred(
+            answer="CHAT_BATCH_ONLY_ANSWER",
+            reasoning="Weighing the question. It is simple.",
+            selected_expert="",
+        )
+
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    app = _build(tmp_path, "chatgate", _PlainAgent("unused"))
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "c"}).json()["id"]
+        _complete_turn(client, sid, "think out loud then answer in batch")
+        assistant = _assistant_message(client, sid)
+
+        # The full persisted shape: the live reasoning text part, then the
+        # batch answer text part — and NOTHING else (no thinking duplicate).
+        shape = [
+            (p["type"], (p.get("metadata") or {}).get("signature_field_name", ""))
+            for p in assistant["parts"]
+        ]
+        assert shape == [("text", "reasoning"), ("text", "answer")], (
+            f"expected exactly [text reasoning, text answer], got {shape} "
+            f"(parts: {[(p['type'], (p.get('text') or '')[:40]) for p in assistant['parts']]})"
+        )
+        reasoning_part, answer_part = assistant["parts"]
+        assert reasoning_part["text"] == "Weighing the question. It is simple."
+        assert reasoning_part["metadata"]["stream_source"] == "live"
+        assert answer_part["text"] == "CHAT_BATCH_ONLY_ANSWER"
+        assert answer_part["metadata"]["stream_source"] == "batch"
+
+        # The wire agrees: exactly ONE reasoning-bearing part ever streamed —
+        # no batch ``thinking`` twin of the live reasoning part was added.
+        history = app.state.bus._history.get(sid, [])
+        reasoning_added = [
+            e
+            for e in history
+            if e.type == "message.part.added"
+            and e.payload["part"]["type"] in {"text", "thinking"}
+            and "Weighing the question." in (e.payload["part"].get("text") or "")
+        ]
+        added_by_type = [
+            e.payload["part"]["type"]
+            for e in history
+            if e.type == "message.part.added" and e.payload["part"]["type"] in {"text", "thinking"}
+        ]
+        assert added_by_type == ["text", "text"], added_by_type
+        # A live part is ADDED empty and filled by deltas; only a batch twin
+        # would be added already carrying the reasoning verbatim.
+        assert reasoning_added == [], (
+            "the streamed reasoning part gained a verbatim batch thinking twin"
+        )
 
 
 def test_wrap_up_thinking_lands_when_reasoning_did_not_stream(tmp_path: Path) -> None:

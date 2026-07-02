@@ -328,11 +328,19 @@ Five PRs, each green, each shrinking `turn.py` (accretion rule: `system-cleanup-
   appended them with; the message-level `metadata.stream_source`/`stream_fallback`
   reporting is unchanged, and the canonical batch burst carries the turn's
   `stream_fallback` payload in its part metadata + completed event (legacy shape).
-  Wire deltas vs the PR2 goldens (all regenerated with line-by-line rationale in the
-  commit): finalize-appended parts no longer carry `sequence` on their `part.added`
-  event (sequence is stamped at `finalize()`; the wire order IS the sequence), and
-  persisted order is arrival order (#731) — the routing banner lands where it was
-  appended instead of being hoisted above the live spine.
+  Wire deltas vs the PR2 goldens (all four regenerated on this tree; this list is the
+  contract of record): (1) finalize-appended parts no longer carry `sequence` on their
+  `part.added` event (sequence is stamped at `finalize()`; the wire order IS the
+  sequence); (2) persisted order is arrival order (#731) — the routing banner lands
+  where it was appended instead of being hoisted above the live spine; (3) the batch
+  canonical-answer part gains `metadata.signature_field_name="answer"` (the burst now
+  goes through the one producer API — §4 row 7) and the turn's `stream_fallback`
+  payload rides BOTH its `part.added` metadata and its `part.completed` event
+  (byte-identical to the legacy completed shape); (4) the error-envelope golden gains
+  one routing `part.added` published at APPEND time — before the simulated finalize
+  crash (§2: the append itself publishes the wire event; there is no publish phase
+  left to die before) — whose fresh part id renumbers the envelope's error-message id
+  token purely as a normalizer consequence.
 - **PR4 — `refactor(gact): single dedup owner — tag parent echoes, delete suppression.`**
   Implements §5: `restates_part_id` at close; deletes `suppressed_parent_resume_offsets`
   (:916-953) (`_dedup_cross_agent_text` already fell in PR3 — see its disclosed
@@ -431,6 +439,17 @@ Gate per PR: full `pytest tests/` green, `ruff check src/` clean, baseline CLI s
   is fixing the parent-resume prompt (the root), never re-adding content heuristics;
   `stream_audit` counters on tag hits/misses give the parity data #232 wants before the
   client dedupe is deleted.
+- **Residual #756 hole (publish-at-append × the error envelope).** Finalize-time parts
+  appended BEFORE a finalize crash (e.g. the error-envelope golden's routing banner) are
+  already on the wire under the turn's minted assistant message id, but are never
+  persisted: `_settle_failed_finalize` persists a FRESH error message, so a reload shows
+  only the envelope's error message while a live client may still hold parts under a
+  message id that never lands. Inherent to publish-at-append + the envelope as designed
+  (§2: the append itself publishes; the envelope deliberately does not adopt a
+  half-finalized ledger), and bounded — the ledger is frozen and closed on that path, so
+  nothing leaks into later turns. PR-4 consideration: either persist the minted
+  message's already-published parts alongside the envelope or emit a terminal event
+  that voids the minted message id for live clients.
 - **Event-volume back-compat.** PR1-PR4 change nothing on the wire (both vocabularies
   preserved, same event shapes). PR5's single-vocabulary switch is client-visible and ships
   only behind the #232 conformance suite and a gact-tui release gate.
