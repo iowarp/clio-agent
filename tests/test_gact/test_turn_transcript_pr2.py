@@ -390,6 +390,45 @@ def test_failed_finalize_still_settles_the_ledger(
         assert app.state.turn_transcripts.get(sid) is None
 
 
+def test_late_chunk_after_settle_is_rejected_and_never_repopulates_legacy_dicts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An executor tap can outlive the turn. A late chunk must be rejected +
+    audited by the frozen ledger AND must not re-populate the popped legacy
+    dicts — otherwise the dead turn's identity would be handed to the next
+    turn's carried-state adoption (the poison class the settle prevents)."""
+
+    import asyncio
+
+    taps: dict[str, Any] = {}
+
+    async def fake_streamed_forward(
+        app: Any, enriched_text: str, sid: str, emit_chunk: Any, **kwargs: Any
+    ) -> Any:
+        taps["emit"] = emit_chunk
+        await emit_chunk("live ")
+        return _Pred(answer="live answer", selected_expert="main")
+
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    audits: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.transcript.stream_audit",
+        lambda stage, **fields: audits.append((stage, fields)),
+    )
+    app = _build(tmp_path, "latechunk", _Pred)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "s"}).json()["id"]
+        complete_turn(client, sid, "go")
+        assert sid not in getattr(app.state, "live_assistant_parts", {})
+
+        asyncio.run(taps["emit"]("late chunk"))
+
+        assert sid not in getattr(app.state, "live_assistant_parts", {})
+        assert sid not in getattr(app.state, "live_assistant_message_ids", {})
+        late = [fields for stage, fields in audits if stage == "transcript.late_op"]
+        assert any(fields.get("op") == "append_text_delta" for fields in late)
+
+
 class _AskUserThenAnswerAgent:
     """First forward: appends a live tool part, then asks the user.
     Second forward (the resume): answers."""

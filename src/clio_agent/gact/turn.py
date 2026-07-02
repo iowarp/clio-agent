@@ -1041,6 +1041,12 @@ async def _run_turn_in_background(
         # normalized turn.text.delta / turn.trace.delta twin — the state
         # machine that used to live here.
         transcript.append_text_delta(chunk_agent, stream_field, text)
+        if transcript.frozen:
+            # Settled turn: the ledger rejected + audited this late chunk.
+            # Do NOT mirror — re-populating the popped legacy dicts would hand
+            # the dead turn's identity to the next turn's carried-state
+            # adoption (the poison class the settle exists to prevent).
+            return
         _mirror_transcript_state(app, sid, transcript)
         stream_part_id = transcript.current_stream_part_id or ""
         stream_audit(
