@@ -11,6 +11,7 @@ import dspy
 import pytest
 from fastapi.testclient import TestClient
 
+from clio_agent import conf
 from clio_agent.agent import ClioAgent
 from clio_agent.gact import context as ctx
 from clio_agent.gact.agent_blueprints import (
@@ -18,6 +19,9 @@ from clio_agent.gact.agent_blueprints import (
     DEFAULT_REGISTRY_COMMIT,
     DEFAULT_REGISTRY_REF,
     DEFAULT_REGISTRY_URL,
+    default_registry_install_source,
+    default_registry_metadata,
+    default_registry_url,
     discover_agent_blueprints,
     load_agent_blueprint_path,
     load_agent_blueprints,
@@ -217,6 +221,75 @@ def test_builtin_agents_are_loaded_from_default_registry_snapshot(
     assert agents["root"].metadata["source_blueprint"] == "default_registry"
     assert "agent_blueprints/builtin" not in agents["root"].metadata["definition_path"]
     assert agents["variant"].metadata["install"]["commit"] == DEFAULT_REGISTRY_COMMIT
+
+
+def test_default_registry_url_default_is_https() -> None:
+    """Regression (#764): the baked-in default must be a keyless https remote."""
+
+    assert DEFAULT_REGISTRY_URL == "https://github.com/iowarp/clio-agent-marketplace.git"
+    assert default_registry_url() == DEFAULT_REGISTRY_URL
+
+
+def test_default_registry_url_env_override_selects_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (#764): CLIO_BLUEPRINT_REGISTRY_URL must drive URL selection."""
+
+    override = "https://example.com/custom-marketplace.git"
+    monkeypatch.setenv("CLIO_BLUEPRINT_REGISTRY_URL", override)
+    assert default_registry_url() == override
+    assert default_registry_metadata()["source"] == override
+    # An explicit override wins even when a dev checkout carries the
+    # marketplace submodule as a local install source.
+    assert default_registry_install_source() == override
+
+
+def test_default_registry_url_conf_file_wins_over_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (#764): file layer beats env, per conf.resolve precedence."""
+
+    workspace = tmp_path / "workspace"
+    (workspace / ".clio").mkdir(parents=True)
+    (workspace / ".clio" / "config.yaml").write_text(
+        "gact:\n  blueprint_registry:\n    url: https://example.com/file-marketplace.git\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(workspace)
+    monkeypatch.setenv("CLIO_BLUEPRINT_REGISTRY_URL", "https://example.com/env-marketplace.git")
+    conf.reload()
+    try:
+        assert default_registry_url() == "https://example.com/file-marketplace.git"
+    finally:
+        conf.reload()
+
+
+def test_default_registry_url_blank_configured_value_falls_back_with_warning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Regression (#764): a blank configured URL degrades loudly to the default."""
+
+    workspace = tmp_path / "workspace"
+    (workspace / ".clio").mkdir(parents=True)
+    (workspace / ".clio" / "config.yaml").write_text(
+        'gact:\n  blueprint_registry:\n    url: ""\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(workspace)
+    conf.reload()
+    try:
+        with caplog.at_level("WARNING", logger="clio_agent.gact.agent_blueprints"):
+            assert default_registry_url() == DEFAULT_REGISTRY_URL
+        assert any(
+            "blueprint_registry_url_fallback" in record.getMessage()
+            and "blank_configured_value" in record.getMessage()
+            for record in caplog.records
+        )
+    finally:
+        conf.reload()
 
 
 def test_workflow_state_normalizes_unicode_hyphens_in_path_fields() -> None:
