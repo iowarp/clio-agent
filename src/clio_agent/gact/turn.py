@@ -1155,8 +1155,11 @@ async def _run_turn_in_background(
         # wait_for) does NOT cancel the task when the poll interval elapses, so a
         # still-running turn is never disturbed by the watchdog tick. We seed the
         # no-progress clock at "now" so a turn that publishes nothing at all is
-        # still bounded by one window; every bus publish for this session (or a
-        # global "" event) refreshes it via EventBus.last_publish_monotonic.
+        # still bounded by one window; every bus publish for THIS session
+        # refreshes it via EventBus.last_publish_monotonic. Progress is
+        # attributed per-session on purpose: folding other sessions' publishes
+        # in (the old global "" stamp) kept a genuinely wedged session alive as
+        # long as any other session was busy (iowarp/clio-agent#761).
         bus = app.state.bus
         task = asyncio.ensure_future(awaitable)
         last_progress = time.monotonic()
@@ -1165,10 +1168,7 @@ async def _run_turn_in_background(
                 done, _pending = await asyncio.wait({task}, timeout=_watchdog_poll_s)
                 if done:
                     return task.result()
-                heartbeat = max(
-                    bus.last_publish_monotonic(sid),
-                    bus.last_publish_monotonic(""),
-                )
+                heartbeat = bus.last_publish_monotonic(sid)
                 if heartbeat > last_progress:
                     last_progress = heartbeat
                 # An LM call that is actively generating IS progress, even when it
@@ -1180,6 +1180,15 @@ async def _run_turn_in_background(
                 # the watchdog from killing a working model mid-think; a per-call
                 # ceiling inside lm_call_in_flight() still lets it abort a truly
                 # wedged provider. See clio_agent.runtime.lm_activity.
+                #
+                # NOTE: lm_call_in_flight() is deliberately PROCESS-GLOBAL
+                # (unlike the per-session bus-progress stamp above): "is ANY LM
+                # call generating right now" is a coarse liveness net, so an
+                # active call in one session also counts as progress for the
+                # others. That is an accepted imprecision — the per-call
+                # ceiling / inter-token idle gate inside it still bounds a
+                # truly wedged provider (see runtime/lm_activity.py module
+                # docstring; iowarp/clio-agent#761).
                 if _lm_call_in_flight():
                     last_progress = time.monotonic()
                 if time.monotonic() - last_progress >= turn_progress_timeout_s:

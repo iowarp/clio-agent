@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
-from clio_agent.gact.events import Event, heartbeat_payload
+from clio_agent.gact.events import Event, heartbeat_event
 from clio_agent.gact.runtime.constants import GACT_BACKEND_VERSION
 from clio_agent.gact.runtime.globals import _format_sse
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Session
@@ -446,16 +446,13 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
             try:
                 # Heartbeat task — pumps a server.heartbeat event
                 # into the queue every 15s. SPEC §7.1.
+                # Transient (live-delivery only): heartbeats must not
+                # enter the replay history or count as watchdog
+                # progress — see events.heartbeat_event (#761).
                 async def _heartbeat() -> None:
                     while True:
                         await asyncio.sleep(15)
-                        app.state.bus.publish(
-                            Event(
-                                type="server.heartbeat",
-                                session_id=sid,
-                                payload=heartbeat_payload(),
-                            )
-                        )
+                        app.state.bus.publish(heartbeat_event(sid))
 
                 heartbeat_task = asyncio.create_task(_heartbeat())
 

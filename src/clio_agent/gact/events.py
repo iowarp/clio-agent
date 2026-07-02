@@ -56,7 +56,7 @@ def _next_event_id() -> int:
 class Event:
     """In-memory event record."""
 
-    __slots__ = ("id", "type", "session_id", "occurred_at", "payload", "replay")
+    __slots__ = ("id", "type", "session_id", "occurred_at", "payload", "replay", "transient")
 
     def __init__(
         self,
@@ -65,6 +65,7 @@ class Event:
         session_id: str,
         payload: dict[str, Any],
         replay: bool = False,
+        transient: bool = False,
     ) -> None:
         self.id = _next_event_id()
         self.type = type
@@ -72,6 +73,11 @@ class Event:
         self.occurred_at = _utcnow_iso()
         self.payload = payload
         self.replay = replay
+        # Transient events are connection plumbing (server.heartbeat
+        # keepalives), not session timeline: they are delivered to live
+        # subscribers only — never recorded into the replay history and
+        # never counted as turn progress (iowarp/clio-agent#761).
+        self.transient = transient
 
     def replay_copy(self) -> "Event":
         """Return a replay-marked copy preserving the original event id/time."""
@@ -83,6 +89,7 @@ class Event:
         copy.occurred_at = self.occurred_at
         copy.payload = self.payload
         copy.replay = True
+        copy.transient = self.transient
         return copy
 
     def envelope(self) -> dict[str, Any]:
@@ -157,16 +164,16 @@ class EventBus:
         (iowarp/clio-agent#758).
         """
 
-        # Record the liveness heartbeat for the turn watchdog. A specific
-        # session's progress also counts as global ("") progress so the
-        # no-progress watchdog (which keys off the turn's session) sees it.
-        # Stamped in the publishing thread (plain float assignment is
-        # GIL-atomic) so liveness is visible even before the owning loop
-        # runs a bridged callback.
-        now = time.monotonic()
-        self._last_publish_monotonic[event.session_id] = now
-        if event.session_id != "":
-            self._last_publish_monotonic[""] = now
+        # Record the liveness heartbeat for the turn watchdog, attributed
+        # strictly to the event's own session: folding every publish into a
+        # global key made the no-progress watchdog inert as soon as a second
+        # session was active (iowarp/clio-agent#761). Transient keepalives
+        # (server.heartbeat) fire on a timer for any attached SSE client, so
+        # they are NOT progress either. Stamped in the publishing thread
+        # (plain float assignment is GIL-atomic) so liveness is visible even
+        # before the owning loop runs a bridged callback.
+        if not event.transient:
+            self._last_publish_monotonic[event.session_id] = time.monotonic()
 
         try:
             running: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
@@ -195,7 +202,8 @@ class EventBus:
                 event.session_id,
                 exc,
             )
-            self._record_history(event)
+            if not event.transient:
+                self._record_history(event)
 
     def _record_history(self, event: Event) -> None:
         """Append to the bounded per-session replay log."""
@@ -211,9 +219,15 @@ class EventBus:
         Runs on the owning loop once one is bound (``publish`` bridges
         foreign-thread callers); before a loop is bound there are no
         subscriber queues, so running inline is safe.
+
+        Transient events (server.heartbeat keepalives) skip the replay
+        history: recording one every 15s per subscriber evicts every
+        real event from the bounded buffer within an idle hour, gapping
+        ``Last-Event-ID`` resume (iowarp/clio-agent#761).
         """
 
-        self._record_history(event)
+        if not event.transient:
+            self._record_history(event)
         subscriber_sessions = (
             list(self._subs)
             if event.session_id == ""
@@ -323,6 +337,25 @@ def heartbeat_payload() -> dict[str, Any]:
     presence is the signal."""
 
     return {}
+
+
+def heartbeat_event(session_id: str) -> Event:
+    """Build the 15-s SSE keepalive for ``session_id``.
+
+    Marked transient: a heartbeat is connection plumbing, not part of
+    the session's event timeline, so it is delivered to live
+    subscribers only — it never enters the replay history (it would
+    evict real events from the bounded buffer) and never counts as
+    turn progress for the no-progress watchdog
+    (iowarp/clio-agent#761).
+    """
+
+    return Event(
+        type="server.heartbeat",
+        session_id=session_id,
+        payload=heartbeat_payload(),
+        transient=True,
+    )
 
 
 def _ms_since(start: float) -> int:
