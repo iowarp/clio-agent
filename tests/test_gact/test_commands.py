@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -169,6 +170,96 @@ def test_user_agent_command_listed_and_dispatches_to_agent(
     msgs = c.get(f"/v1/sessions/{sid}/messages").json()["messages"]
     assert msgs[0]["metadata"]["command"] == "/review"
     assert msgs[0]["metadata"]["agent_id"] == "reviewer"
+
+
+def test_dispatch_user_command_does_not_block_event_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """iowarp/clio-agent#755: a slow command turn must not freeze the server.
+
+    The blueprint runner is a blocking DSPy run that can take minutes. If it
+    executes on the event-loop thread, every other request (health, SSE, other
+    sessions) stalls until the command finishes. Hold the fake runner on a
+    threading.Event and prove ``GET /v1/health`` completes while the command
+    turn is still in flight — while preserving the synchronous response shape
+    and the audit row.
+    """
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
+        del base_agent, question, session_id
+        started.set()
+        assert release.wait(timeout=30), "test never released the slow command runner"
+        return _Pred(answer="SLOW_OK", selected_expert=agent_def.id)
+
+    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", slow_prompt_agent)
+    monkeypatch.setattr("clio_agent.gact.app._run_blueprint_dspy_agent", slow_prompt_agent)
+
+    # Context-managed client => one persistent portal/event loop shared by all
+    # requests. A bare TestClient spins up a fresh loop per request, which
+    # would mask cross-request event-loop blocking entirely.
+    with TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent())) as c:
+        c.post(
+            "/v1/agents",
+            json={
+                "id": "reviewer",
+                "title": "Reviewer",
+                "system_prompt": "Review carefully.",
+                "metadata": {
+                    "commands": [
+                        {
+                            "id": "/review",
+                            "description": "Review the supplied change",
+                            "prompt_template": "Review this: {{input}}",
+                        }
+                    ]
+                },
+            },
+        )
+        sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
+
+        command_result: dict[str, Any] = {}
+
+        def _run_command() -> None:
+            command_result["resp"] = c.post(
+                f"/v1/sessions/{sid}/commands/review", json={"input": "diff --git"}
+            )
+
+        health_done = threading.Event()
+        health_result: dict[str, Any] = {}
+
+        def _probe_health() -> None:
+            health_result["resp"] = c.get("/v1/health")
+            health_done.set()
+
+        cmd_thread = threading.Thread(target=_run_command, daemon=True)
+        cmd_thread.start()
+        try:
+            assert started.wait(timeout=30), "command dispatch never reached the runner"
+            probe_thread = threading.Thread(target=_probe_health, daemon=True)
+            probe_thread.start()
+            health_unblocked = health_done.wait(timeout=5.0)
+        finally:
+            release.set()
+            cmd_thread.join(timeout=30)
+
+        assert health_unblocked, (
+            "/v1/health blocked while a command turn was running "
+            "(command dispatch froze the event loop)"
+        )
+        assert health_result["resp"].status_code == 200
+
+        # The synchronous response contract + audit row are preserved.
+        resp = command_result["resp"]
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["result"]["type"] == "agent_message"
+        assert body["result"]["text"] == "SLOW_OK"
+        assert body["result"]["audit"]["status"] == "completed"
+        assert c.app.state.command_audit[-1]["status"] == "completed"
 
 
 def test_skill_frontmatter_command_is_listed(
