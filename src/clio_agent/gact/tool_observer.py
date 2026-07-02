@@ -194,11 +194,6 @@ def _publish_transcript_event(
 def _install_tool_runtime_hooks(app: "FastAPI") -> None:
     """Install permission, cancellation, and telemetry hooks for tool calls."""
 
-    from clio_agent.tools.execution import (  # noqa: PLC0415
-        ToolRuntimeHooks,
-        set_tool_runtime_fallback,
-    )
-
     checker = getattr(app.state, "pending_cancellation_checker", None)
     if checker is None:
         checker = _make_cancellation_checker(app)
@@ -214,18 +209,14 @@ def _install_tool_runtime_hooks(app: "FastAPI") -> None:
     app.state.pending_tool_interceptor = interceptor
     app.state.pending_tool_observer = observer
     app.state.tool_hooks_installed = True
-    # #735: record THIS app's hooks as the single retained app-less fallback
-    # bundle for the ``current_tool_runtime`` seam. The in-turn path resolves
-    # per-app via ``resolve_tool_runtime`` (dispatching on ``active_app()``); this
-    # bundle is the reason-logged net for out-of-band/app-less tool calls only.
-    set_tool_runtime_fallback(
-        ToolRuntimeHooks(
-            permission_gate=gate,
-            tool_observer=observer,
-            tool_interceptor=interceptor,
-            cancellation_checker=checker,
-        )
-    )
+    # #735 (unified §1): install ONLY stamps this app's ``pending_*`` hooks. The
+    # in-turn path resolves them per-app via ``resolve_tool_runtime`` (dispatching
+    # on the keystone-bound ``active_app()``). We deliberately do NOT record them
+    # as the process-global ``_FALLBACK_TOOL_RUNTIME``: in a multi-app process the
+    # last install would win, so an app-less resolve would hand one app's call a
+    # SIBLING app's gate/observer — the exact cross-app leak this design forbids.
+    # App-less tool calls resolve to the neutral fallback + a loud
+    # ``tool_runtime_unresolved`` reason instead (never a sibling's value).
 
 
 def _ensure_live_assistant_message(app: "FastAPI", sid: str) -> str:

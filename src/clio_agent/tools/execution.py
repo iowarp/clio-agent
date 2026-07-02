@@ -135,7 +135,14 @@ def set_tool_runtime_resolver(fn: Optional[Callable[[], "ToolRuntimeHooks | None
 
 
 def set_tool_runtime_fallback(hooks: ToolRuntimeHooks) -> None:
-    """Record the last-installed app's hooks as the app-less fallback bundle."""
+    """Set the neutral app-less fallback bundle (defaults to empty hooks).
+
+    Production leaves this NEUTRAL: gact's per-app install stamps ``app.state``
+    only and the resolver dispatches on ``active_app()``, so an app-less resolve
+    never returns a sibling app's live hooks (#735 unified §1). This setter exists
+    for explicit out-of-band / test callers that deliberately exercise the app-less
+    path; such callers own resetting it back to ``ToolRuntimeHooks()``.
+    """
 
     global _FALLBACK_TOOL_RUNTIME
     _FALLBACK_TOOL_RUNTIME = hooks

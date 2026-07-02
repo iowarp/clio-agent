@@ -4,8 +4,8 @@ Two failing-first regressions for the ``ToolRuntimeHooks`` seam:
 
 1. **Two-app hooks isolation on the ORCHESTRATOR rail.** Two ``build_app()``
    instances A/B in one process, each with a DISTINCT ``pending_tool_observer``.
-   App B is built last and owns the single retained app-less fallback bundle. A
-   real MCP tool is driven via ``SyncMCPToolExecutor.call_tool`` on a
+   A B-flavored observer is also seeded into the app-less fallback bundle (a stale
+   out-of-band net). A real MCP tool is driven via ``SyncMCPToolExecutor.call_tool`` on a
    ``contextvars.copy_context()`` snapshot taken inside app A's *orchestrator*
    turn identity (the keystone-bound ``set_turn_identity(app=A)`` layer — the
    rail that binds NO per-turn ``_tool_session_context`` on the sync forward
@@ -77,9 +77,10 @@ def test_two_app_hooks_isolation_on_orchestrator_rail(tmp_path: Path) -> None:
         lambda name, args, phase, error=None, result=None: b_observed.append((name, phase)),
     )
 
-    # App B, built last, owns the single retained app-less fallback bundle (the
-    # last-installed net). The resolver dispatching on active_app()==A must win
-    # over it, so A's call never touches B's fallback observer.
+    # Seed the app-less fallback with a B-flavored observer (a STALE out-of-band
+    # net — production install no longer records an app's hooks here, P1). The
+    # resolver dispatching on active_app()==A must win over it, so A's call never
+    # touches B's fallback observer.
     set_tool_runtime_fallback(
         ToolRuntimeHooks(
             tool_observer=lambda name, args, phase, error=None, result=None: b_observed.append(
@@ -161,3 +162,42 @@ def test_appless_resolve_emits_structured_reason() -> None:
             _ex._TOOL_RUNTIME_RESOLVER,
             _ex._FALLBACK_TOOL_RUNTIME,
         ) = saved
+
+
+def test_install_hooks_never_pollutes_appless_fallback_with_a_sibling_app(tmp_path: Path) -> None:
+    """P1 (#735 unified §1): production hook install MUST NOT record an app's live
+    hooks as the process-global app-less fallback.
+
+    Otherwise two apps in one process let an app-less ``current_tool_runtime()``
+    hand app A's out-of-band call app B's gate/observer — a *sibling app's value*,
+    which the design forbids ("never a sibling app's value, never a silently
+    dropped safety hook"). After installing A then B, an app-less resolve must be
+    NEUTRAL (no gate/observer) with a ``tool_runtime_unresolved`` reason — never
+    B's live hooks. Fails while ``_install_tool_runtime_hooks`` calls
+    ``set_tool_runtime_fallback(this app's hooks)``.
+    """
+
+    import clio_agent.tools.execution as _ex  # noqa: PLC0415
+    from clio_agent.gact.tool_observer import _install_tool_runtime_hooks  # noqa: PLC0415
+
+    saved = (_ex._TOOL_RUNTIME_RESOLVER, _ex._FALLBACK_TOOL_RUNTIME)
+    try:
+        _ex.set_tool_runtime_resolver(None)  # force the app-less path
+        _ex.set_tool_runtime_fallback(_ex.ToolRuntimeHooks())  # start neutral
+
+        app_a = build_app(sessions_path=tmp_path / "a.json")
+        app_b = build_app(sessions_path=tmp_path / "b.json")
+        _override_hooks(app_a, lambda *a, **k: None)
+        _override_hooks(app_b, lambda *a, **k: None)
+        _install_tool_runtime_hooks(app_a)
+        _install_tool_runtime_hooks(app_b)  # B installed last
+
+        before = len(_ex.recorded_tool_runtime_reasons())
+        hooks = _ex.current_tool_runtime()  # app-less: resolver is None
+        emitted = [r["reason"] for r in _ex.recorded_tool_runtime_reasons()[before:]]
+
+        assert hooks.tool_observer is None, "app-less fallback leaked a sibling app's observer"
+        assert hooks.permission_gate is None, "app-less fallback leaked a sibling app's gate"
+        assert "tool_runtime_unresolved" in emitted, emitted
+    finally:
+        (_ex._TOOL_RUNTIME_RESOLVER, _ex._FALLBACK_TOOL_RUNTIME) = saved
