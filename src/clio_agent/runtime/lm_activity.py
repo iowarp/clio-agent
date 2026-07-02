@@ -45,17 +45,13 @@ _LIVE_CHUNK_EMITTER: ContextVar[tuple[Any, Any] | None] = ContextVar(
 )
 
 
-def set_live_chunk_emitter(loop: Any, emit_coro: Any) -> Any:
-    """Bind the turn's (event loop, async answer-chunk publisher). Returns a token
-    to pass to :func:`reset_live_chunk_emitter`."""
-    return _LIVE_CHUNK_EMITTER.set((loop, emit_coro))
+def set_live_chunk_emitter(loop: Any, emit_coro: Any) -> None:
+    """Bind the turn's (event loop, async answer-chunk publisher).
 
-
-def reset_live_chunk_emitter(token: Any) -> None:
-    try:
-        _LIVE_CHUNK_EMITTER.reset(token)
-    except Exception:  # noqa: BLE001 - reset across contexts is best-effort
-        pass
+    The binding is a ContextVar set in the turn's context: it is copied into the
+    executor that runs the expert and dies with the turn's context — no explicit
+    reset is needed (or provided)."""
+    _LIVE_CHUNK_EMITTER.set((loop, emit_coro))
 
 
 def note_lm_answer_delta(text: str, *, field: str = "answer") -> None:

@@ -49,7 +49,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Literal, Optional, cast
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -126,7 +126,6 @@ from clio_agent.gact.runtime.globals import (  # noqa: E402, F401
     _TurnTimedOut,
     _UnsupportedSessionAgent,
     _wire_arc_op_logger,
-    _with_ui_safe_semantic_fields,
 )
 
 _EXECUTABLE_SESSION_AGENT_IDS = {
@@ -503,18 +502,14 @@ from clio_agent.gact.delegation import (  # noqa: E402,F401
     _failed_child_delegation_workflow_state,
     _iter_delegation_return_rows,
     _json_objects_from_text,
-    _latest_completed_artifact_output_summary,
     _latest_completed_child_output_summary,
     _latest_delegation_output_summary,
     _latest_final_child_output_summary,
     _latest_parent_resumed_output_summary,
     _merge_workflow_state_from_value,
     _should_execute_delegated_handoff,
-    _state_path_value,
-    _state_predicate_hit,
     _workflow_state_from_handoff_rows,
     _workflow_state_from_outputs,
-    _workflow_state_has_existing_staged_path,
     _workflow_state_payload,
 )
 
@@ -596,23 +591,6 @@ def _prediction_workflow_state(result: Any) -> dict[str, Any]:
             return dict(inner)
         return dict(normalized_state)
     return {}
-
-
-def _append_prediction_workflow_state(output: str, result: Any) -> str:
-    """Return ``output`` unchanged; typed ``workflow_state`` flows structurally.
-
-    Historically this appended a ``CLIO typed workflow state:\\n{JSON}`` block to
-    the answer/output text so the parent could re-parse the child's typed state
-    out of prose. That polluted the user-facing answer and was redundant: the
-    same ``workflow_state`` field is carried STRUCTURALLY on every Prediction and
-    on every completed/handoff/ledger row. The prose channel is removed; use
-    :func:`_prediction_workflow_state` to read the typed field structurally.
-
-    The function is retained as an identity passthrough so existing call sites
-    (which interleave it with output reassignment) stay correct without churn.
-    """
-
-    return output
 
 
 def _fallback_answer_from_delegation(handoffs: list[dict[str, Any]]) -> str:
@@ -1214,8 +1192,6 @@ from clio_agent.gact.usage import (  # noqa: E402,F401
     _snapshot_lm_history_index,
     _usage_from_dspy_history,
     _usage_from_history_slice,
-    _usage_from_history_slice_legacy,
-    _usage_from_tracker,
 )
 from clio_agent.gact.workspaces import (
     WorkspaceStore,
@@ -2749,13 +2725,6 @@ def build_app(
     # clear-session-model-refs) through ``deps``.
     register_providers_routes(app, deps)
 
-    # ---- 501 stubs for the still-unwired v0.2 surface ----------------
-
-    _stub_routes: list[tuple[str, str, str]] = [
-        # (method, path, capability_name_for_error)
-        # /v1/tools moved out of stubs — implemented below.
-    ]
-
     # ---- /v1/catalog/tools + /v1/tools + /v1/tools/{tool_id} ----------
     # The built-in tool catalog and the unified live catalog (bundled gateway +
     # installed third-party MCP servers) are owned by routes/catalog.py and
@@ -2781,24 +2750,6 @@ def build_app(
     # routes/messages.py and registered below via register_messages_routes(
     # app, deps); the destructive-action guard + ledger replace travel on
     # ``deps`` and both publish message.deleted for SSE subscribers.
-
-    def _make_stub(cap: str):
-        # Use a Request param so FastAPI doesn't try to validate
-        # path/query/body params against the handler signature —
-        # stubs take anything and return 501.
-        async def _stub(request: Request) -> JSONResponse:
-            body = _not_implemented(cap).model_dump(exclude_none=True)
-            return JSONResponse(status_code=501, content=body)
-
-        return _stub
-
-    for method, path, cap in _stub_routes:
-        app.add_api_route(
-            path,
-            _make_stub(cap),
-            methods=[method],
-            include_in_schema=False,
-        )
 
     def _error_code_for_status(status_code: int) -> str:
         if status_code == 404:

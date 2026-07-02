@@ -983,8 +983,8 @@ def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
 
     # CLEAN CONTRACT: workflow_state is the ONE load-bearing structured output --
     # a TYPED dict the adapter forces the model to emit, and the channel the
-    # agent->agent handoff actually travels on (_append_prediction_workflow_state
-    # carries ONLY workflow_state to the next expert). The former companions
+    # agent->agent handoff actually travels on (carried STRUCTURALLY on every
+    # Prediction / handoff row, never re-parsed from prose). The former companions
     # (evidence/artifacts/errors/delegation) were a redundant second copy that
     # nothing authoritative consumed: `artifacts` is tool-tracked on disk
     # (clio_sut._artifacts) and its handoff rides in workflow_state; `evidence`

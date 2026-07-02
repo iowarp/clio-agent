@@ -2,17 +2,17 @@
 
 Behavior-preserving extraction from :mod:`clio_agent.gact.app`. This module is the
 single source of truth for rolling a turn's token usage and cost up out of DSPy's
-per-LM ``history`` (and the per-turn ``UsageTracker``), plus the best-effort
-per-token price table used when an upstream provider doesn't report a cost.
+per-LM ``history``, plus the best-effort per-token price table used when an
+upstream provider doesn't report a cost.
 
 The turn engine snapshots ``len(lm.history)`` for every known LM at turn start
 (:func:`_snapshot_lm_history_index`), then diffs the slice at turn end
 (:func:`_usage_from_history_slice`, :func:`_reasoning_records_from_history_slice`)
 so planner + every expert + chat token counts (and reasoning traces) roll up
-across the whole turn. The preferred path is the per-turn
-:class:`~clio_agent.optimizer.usage_tracker.UsageTracker`
-(:func:`_usage_from_tracker`), which survives the executor-thread + streaming hops
-that strand ``dspy.LM.history``; history scraping is the fallback.
+across the whole turn. The history diff IS the path the turn uses: ``lm.history``
+is shared across threads (list.append under the GIL), so it survives the
+executor-thread + streaming hops that make ``dspy.settings.usage_tracker``
+unreliable from worker threads.
 
 The module imports only stdlib plus :mod:`clio_agent.gact.runtime.globals` (for the
 single-owner :func:`_entry_reasoning_text` reasoning-channel extractor). It never
@@ -35,12 +35,10 @@ __all__ = [
     "_all_known_lms",
     "_snapshot_lm_history_index",
     "_usage_from_history_slice",
-    "_usage_from_history_slice_legacy",
     "_entry_reasoning_text",
     "_entry_response_text",
     "_entry_prompt_text",
     "_reasoning_records_from_history_slice",
-    "_usage_from_tracker",
     "_usage_from_dspy_history",
     "_estimate_cost_usd",
     "_PRICE_TABLE_PER_M",
@@ -215,90 +213,6 @@ def _reasoning_records_from_history_slice(
                 }
             )
     return records
-
-
-def _usage_from_history_slice_legacy(start: int) -> dict[str, Any]:
-    """Single-LM history diff retained for tests that don't pass
-    an app. Walks dspy.settings.lm only."""
-
-    try:
-        import dspy  # noqa: PLC0415
-    except Exception:  # pragma: no cover
-        return {}
-    lm = getattr(dspy.settings, "lm", None) if hasattr(dspy, "settings") else None
-    if lm is None:
-        return {}
-    history = getattr(lm, "history", None) or []
-    if start >= len(history):
-        return {}
-    input_tok = 0
-    output_tok = 0
-    cache_read = 0
-    cache_write = 0
-    raw_cost = 0.0
-    last_model = ""
-    for entry in history[start:]:
-        if not isinstance(entry, dict):
-            continue
-        usage = entry.get("usage") or {}
-        if not isinstance(usage, dict):
-            continue
-        input_tok += int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
-        output_tok += int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
-        cache_read += int(usage.get("cache_read_input_tokens") or 0)
-        cache_write += int(usage.get("cache_creation_input_tokens") or 0)
-        raw_cost += float(usage.get("cost_usd") or usage.get("total_cost") or 0.0)
-        last_model = entry.get("model") or last_model
-    if raw_cost == 0.0:
-        raw_cost = _estimate_cost_usd(last_model, input_tok, output_tok)
-    return {
-        "input": input_tok,
-        "output": output_tok,
-        "cache_read": cache_read,
-        "cache_write": cache_write,
-        "cost_usd": raw_cost,
-    }
-
-
-def _usage_from_tracker(tracker: Any) -> dict[str, Any]:
-    """Sum usage from a per-turn ``UsageTracker`` (preferred path).
-
-    The tracker collects per-call usage as litellm/dspy hits the LM,
-    surviving the executor-thread + streaming hops that strand
-    ``dspy.LM.history``. Returns ``{}`` when the tracker is absent
-    or empty so the caller falls back to history scraping.
-    """
-
-    if tracker is None:
-        return {}
-    try:
-        totals = tracker.get_total_tokens()
-    except Exception:  # noqa: BLE001
-        return {}
-    if not totals:
-        return {}
-    input_tok = 0
-    output_tok = 0
-    cache_read = 0
-    cache_write = 0
-    raw_cost = 0.0
-    last_model = ""
-    for model, entry in totals.items():
-        last_model = model
-        input_tok += int(entry.get("prompt_tokens") or entry.get("input_tokens") or 0)
-        output_tok += int(entry.get("completion_tokens") or entry.get("output_tokens") or 0)
-        cache_read += int(entry.get("cache_read_input_tokens") or 0)
-        cache_write += int(entry.get("cache_creation_input_tokens") or 0)
-        raw_cost += float(entry.get("cost_usd") or entry.get("total_cost") or 0.0)
-    if raw_cost == 0.0:
-        raw_cost = _estimate_cost_usd(last_model, input_tok, output_tok)
-    return {
-        "input": input_tok,
-        "output": output_tok,
-        "cache_read": cache_read,
-        "cache_write": cache_write,
-        "cost_usd": raw_cost,
-    }
 
 
 def _usage_from_dspy_history() -> dict[str, Any]:
