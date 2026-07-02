@@ -242,3 +242,63 @@ class TestClioAgent:
         ctx = agent._get_session_context("test question", "empty_session")
         assert isinstance(ctx, str)
         agent.shutdown()
+
+
+class TestStoreExpertInvocation:
+    """#801: the per-turn invocation write is the future optimizer training
+    corpus (and feeds /metrics) — pin that it still persists to ARC."""
+
+    def test_store_expert_invocation_persists_training_corpus(self, tmp_path):
+        """A successful expert turn must land as a tier-2 ARC invocation."""
+        agent = ClioAgent(data_dir=str(tmp_path / "clio"))
+        try:
+            prediction = dspy.Prediction(
+                analysis="mean displacement is 4.2 mm",
+                recommendations="plot the north component",
+            )
+            agent._store_expert_invocation(
+                question="what is the mean displacement?",
+                file_context="station MTA1 csv",
+                selected="data",
+                session_id="s-corpus",
+                expert_result=prediction,
+                success=True,
+                error_msg=None,
+                duration_ms=12.5,
+                trace=None,
+            )
+
+            invocations = agent.arc.get_invocations_by_agent("data", status="success")
+            assert len(invocations) == 1
+            inv = invocations[0]
+            assert inv.tier == 2
+            assert inv.agent_id == "data"
+            assert inv.session_id == "s-corpus"
+            assert inv.input["question"] == "what is the mean displacement?"
+            assert inv.input["file_context"] == "station MTA1 csv"
+            assert inv.output["analysis"] == "mean displacement is 4.2 mm"
+            assert inv.performance["success"] is True
+        finally:
+            agent.shutdown()
+
+    def test_store_expert_invocation_records_failures_too(self, tmp_path):
+        """Failed turns are corpus signal as well — status + error persist."""
+        agent = ClioAgent(data_dir=str(tmp_path / "clio"))
+        try:
+            agent._store_expert_invocation(
+                question="broken question",
+                file_context="",
+                selected="data",
+                session_id="s-corpus",
+                expert_result=None,
+                success=False,
+                error_msg="expert exploded",
+                duration_ms=3.0,
+                trace=None,
+            )
+
+            invocations = agent.arc.get_invocations_by_agent("data", status="failure")
+            assert len(invocations) == 1
+            assert invocations[0].output["error"] == "expert exploded"
+        finally:
+            agent.shutdown()
