@@ -17,7 +17,7 @@ default registry:
 
 Fresh installs install that snapshot into the normal Agent Blueprint store.
 Missing or mismatched pins are surfaced as disabled Blueprint diagnostics; CLIO
-does not fall back to `src/clio_agent/agent_blueprints/builtin`.
+has no in-repo builtin blueprint fallback.
 
 ## Expert Module Contract
 
