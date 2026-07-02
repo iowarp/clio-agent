@@ -203,9 +203,9 @@ def test_release_drops_memory_keeps_store(tmp_path):
 
 
 def test_new_kinds_round_trip():
-    """The richer ARC-as-source kinds (lm_io / extract_io / answer) encode and
+    """The richer ARC-as-source kinds (answer / semantic_event) encode and
     decode through the locked Segment schema."""
-    for kind in ("lm_io", "extract_io", "answer"):
+    for kind in ("answer", "semantic_event"):
         seg = Segment(
             scope="agentA/exp",
             kind=kind,
@@ -386,7 +386,7 @@ def test_segment_correlation_fields_round_trip():
     """A Segment carrying the three span ids encodes/decodes (msgspec back-compat)."""
     seg = Segment(
         scope="agentA",
-        kind="lm_io",
+        kind="answer",
         content={"content": "hi"},
         session_id=SID,
         step=-1,
@@ -398,4 +398,4 @@ def test_segment_correlation_fields_round_trip():
     )
     decoded = decode_segment(msgspec.msgpack.encode(seg))
     assert (decoded.turn_id, decoded.expert_span_id, decoded.run_span_id) == ("T1", "E1", "R1")
-    assert decoded.kind == "lm_io"
+    assert decoded.kind == "answer"

@@ -1140,7 +1140,7 @@ class ARCMemory:
         self, session_id: str, scope: str, *, as_of: Optional[int] = None
     ) -> Any:
         """Ordered LIVE WORKING-SET segments — the kinds the prompt + the compaction/
-        reset paths operate on (excludes ``lm_io`` / ``extract_io`` / ``answer``). The
+        reset paths operate on (excludes ``answer`` / ``semantic_event``). The
         target of the per-turn reset and auto-compaction, NOT a new prompt source; see
         :meth:`SegmentStore.render_working_set`."""
         return self._segments.render_working_set(session_id, scope, as_of=as_of)
