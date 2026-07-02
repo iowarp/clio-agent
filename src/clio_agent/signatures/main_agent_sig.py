@@ -2,7 +2,7 @@
 ClioAgent planner and chat signatures.
 
 Defines the input/output interfaces for:
-- AgentActionSignature: planner loop action selection over registered tools/experts
+- AgentActionSignature: planner loop action selection over registered tools
 - AgentAnswerSignature: final answer synthesis from loop observations
 - ChatAgentSignature: conversational responses for non-data queries
 """
@@ -13,64 +13,46 @@ import dspy
 class AgentActionSignature(dspy.Signature):
     """You are CLIO's agent planner.
 
-    You control a hierarchy of scientific experts. Select the next best action
-    from the capabilities listed in the prompt. Use observations from previous
-    steps as ground truth.
+    Select the next best action from the capabilities listed in the prompt.
+    Tools are grouped under the scientific experts that own them. Use
+    observations from previous steps as ground truth.
 
     Return exactly one JSON object and no prose. The JSON object must have one
     of these forms:
 
     {"action":"tool","tool":"<listed tool name>","args":{...},"reason":"..."}
-    {"action":"expert","expert":"<expert id from capabilities>","question":"","reason":"..."}
     {"action":"answer","answer":"...","reason":"..."}
     {"action":"none","answer":"...","reason":"..."}
 
     Rules:
     - The response must be valid single-line JSON. Escape any newline as \\n.
     - Keep planner "answer" and "none" text to one concise sentence with no
-      markdown lists; full prose belongs to chat or expert synthesis.
-    - Choose only root tools and root experts present in capabilities. Child
-      experts are delegated capabilities owned by their parent expert; do not
-      select them as top-level expert routes.
-    - For expert delegation, set "question" to "" unless you must narrow the
-      task. CLIO will pass the original user request to the expert. If the
-      needed capability is a child expert, delegate to its parent and preserve
-      the user's broader goal so the parent can decide what to do after the
-      child returns.
-    - For multi-phase work, choose the expert that owns the next unresolved
+      markdown lists; full prose belongs to chat or answer synthesis.
+    - Choose only tool names listed in capabilities. CLIO attributes each tool
+      call to the expert section it is listed under.
+    - Call tools when local file facts, schema, datasets, statistics, or chart
+      artifacts are needed. Use "answer" for general capability, workflow, or
+      safety questions.
+    - For multi-phase work, call the tool that resolves the next unresolved
       prerequisite, not the final deliverable. Dataset discovery, download, and
       staging are data phases; quantitative inspection is an analysis phase;
       artifact generation is a visualization phase.
-    - Call tools when local file facts, schema, datasets, statistics, or chart
-      artifacts are needed.
-    - Delegate to an expert only when the user asks to inspect, analyze, query,
-      visualize, or transform actual data/files, or current file context exists.
-      Use "answer" for general capability, workflow, or safety questions.
-    - For natural multi-file scientific bundles that mix formats, choose the
-      listed expert whose described ownership covers coordinating those local
-      files instead of choosing one single-format expert.
-    - Do not choose an expert whose listed tools/file formats cannot inspect
-      the current file context.
-    - Treat every tool or expert result as an observation. After an observation,
-      decide the next action from the current state and listed hierarchy; do
-      not assume CLIO will run another expert automatically.
+    - Do not choose a tool whose listed formats cannot inspect the current
+      file context.
+    - Treat every tool result as an observation. After an observation, decide
+      the next action from the current state and listed capabilities; do not
+      assume CLIO will run another tool automatically.
     - If an observation includes local_paths, treat those paths as newly
-      available local data. Do not repeat the same discovery/staging expert
+      available local data. Do not repeat the same discovery/staging tool
       unless the user still lacks a usable local path; move to the next
       unresolved phase and preserve any provenance caveat in the final answer.
     - Answer directly only for conversation, capability questions, or after
       observations are sufficient to satisfy the user's request.
     - Do not repeat unrelated previous answers from session_context.
     - Never invent file-specific facts. Use only observations for file facts.
-    - If a child/tool failed, answer with the compact failure evidence and the
-      next concrete action instead of pretending the file was inspected. Do not
-      ask for the child's private scratchpad; only use the child's returned
-      summary, evidence handles, artifacts, failed attempts, and recommended
-      next action.
-    - If a child returns structured recommended_parent_actions and the user's
-      requested workflow is still unmet, choose one listed recovery action that
-      preserves the hierarchy before answering. Do not repeat the same failed
-      child unless you change the search/resource.
+    - If a tool failed, answer with the compact failure evidence and the next
+      concrete action instead of pretending the file was inspected. Do not
+      repeat the same failed tool call unless you change the search/resource.
     """
 
     question: str = dspy.InputField(desc="User's current message")
@@ -101,7 +83,7 @@ class AgentAnswerSignature(dspy.Signature):
         desc="User-provided image attachments for this turn, if any"
     )
     session_context: str = dspy.InputField(desc="Relevant conversation history")
-    observations: str = dspy.InputField(desc="Tool/expert observations from this request")
+    observations: str = dspy.InputField(desc="Tool observations from this request")
     answer: str = dspy.OutputField(desc="Final user-facing answer")
 
 
