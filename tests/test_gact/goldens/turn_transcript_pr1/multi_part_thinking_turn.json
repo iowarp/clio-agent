@@ -243,7 +243,6 @@
           },
           "rationale": "matched coding keywords",
           "selected_agent": "code_expert",
-          "sequence": 1,
           "type": "routing_decision"
         },
         "stream_source": "batch",
@@ -266,18 +265,6 @@
   "persisted_assistant_parts": [
     {
       "agent_id": "main",
-      "id": "<part#8>",
-      "metadata": {
-        "route_reason": "planner selected code expert",
-        "route_source": "dspy"
-      },
-      "rationale": "matched coding keywords",
-      "selected_agent": "code_expert",
-      "sequence": 1,
-      "type": "routing_decision"
-    },
-    {
-      "agent_id": "main",
       "id": "<part#5>",
       "metadata": {
         "default_collapsed": true,
@@ -286,7 +273,7 @@
         "stream_source": "live",
         "thinking_source": "provider"
       },
-      "sequence": 2,
+      "sequence": 1,
       "text": "Weighing the options...",
       "type": "thinking"
     },
@@ -297,7 +284,7 @@
         "signature_field_name": "reasoning",
         "stream_source": "live"
       },
-      "sequence": 3,
+      "sequence": 2,
       "text": "I should answer directly. Because it is simple.",
       "type": "text"
     },
@@ -308,9 +295,21 @@
         "signature_field_name": "answer",
         "stream_source": "live"
       },
-      "sequence": 4,
+      "sequence": 3,
       "text": "The answer is 42.",
       "type": "text"
+    },
+    {
+      "agent_id": "main",
+      "id": "<part#8>",
+      "metadata": {
+        "route_reason": "planner selected code expert",
+        "route_source": "dspy"
+      },
+      "rationale": "matched coding keywords",
+      "selected_agent": "code_expert",
+      "sequence": 4,
+      "type": "routing_decision"
     }
   ]
 }

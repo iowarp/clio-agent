@@ -1089,7 +1089,10 @@ def test_post_message_prompt_user_agent_streams_live_when_available(
     completed = [ev for ev in history if ev.type == "message.completed"]
 
     assert agent.calls == []
-    assert assistant["parts"][1]["text"] == "USER_AGENT_LIVE_OK"
+    # #767 PR3 (#731): parts persist in ARRIVAL order — the streamed answer part
+    # landed live first; the routing banner is appended at finalize, after it.
+    assert [part["type"] for part in assistant["parts"]] == ["text", "routing_decision"]
+    assert assistant["parts"][0]["text"] == "USER_AGENT_LIVE_OK"
     assert assistant["metadata"]["stream_source"] == "live"
     assert [d.payload["delta"]["text_append"] for d in deltas] == [
         "USER_",
@@ -1171,19 +1174,21 @@ def test_post_message_tool_user_agent_executes_registered_agent(
     assert calls == [("tool_reviewer", "hi", sid)]
     assert assistant["stop_reason"] == "end_turn"
     assert assistant.get("error_info") is None
-    # #731: the persisted message is the live spine in ARRIVAL ORDER — the
-    # tool_call / tool_result parts the observer emitted are retained (previously
-    # only ``text`` parts survived, regrouping by type and dropping tool parts).
+    # #731 / #767 PR3: the persisted message IS the ledger in ARRIVAL ORDER —
+    # the observer's tool_call / tool_result parts landed live during the turn;
+    # the routing banner and the batch answer are appended at finalize, after
+    # them. (Before PR3 finalize hoisted its routing part above the live spine,
+    # so reload order differed from stream order.)
     assert [part["type"] for part in assistant["parts"]] == [
-        "routing_decision",
         "tool_call",
         "tool_result",
+        "routing_decision",
         "text",
     ]
     # #731: every persisted part carries a monotonic 1-based arrival-order key.
     assert [part["sequence"] for part in assistant["parts"]] == [1, 2, 3, 4]
-    assert assistant["parts"][0]["selected_agent"] == "tool_reviewer"
-    assert assistant["parts"][1]["tool_name"] == "fs_read_file"
+    assert assistant["parts"][2]["selected_agent"] == "tool_reviewer"
+    assert assistant["parts"][0]["tool_name"] == "fs_read_file"
     assert assistant["parts"][-1]["text"] == "TOOL_USER_AGENT_OK"
     assert assistant["metadata"]["stream_source"] == "batch"
     assert assistant["metadata"]["stream_fallback"]["reason"] == ("dynamic_tool_stream_unavailable")
@@ -1278,7 +1283,10 @@ def test_post_message_tool_user_agent_streams_live_when_available(
     completed = [ev for ev in history if ev.type == "message.completed"]
 
     assert agent.calls == []
-    assert assistant["parts"][1]["text"] == "TOOL_USER_AGENT_LIVE_OK"
+    # #767 PR3 (#731): arrival order — the streamed answer part precedes the
+    # finalize-appended routing banner.
+    assert [part["type"] for part in assistant["parts"]] == ["text", "routing_decision"]
+    assert assistant["parts"][0]["text"] == "TOOL_USER_AGENT_LIVE_OK"
     assert assistant["metadata"]["stream_source"] == "live"
     assert [d.payload["delta"]["text_append"] for d in deltas] == [
         "TOOL_",
@@ -1613,49 +1621,10 @@ def test_tool_call_part_carries_thought_and_invoking_expert(tmp_path: Path) -> N
         assert wire["agent_id"] == "geospatial"
 
 
-def test_dedup_cross_agent_text_drops_verbatim_echo() -> None:
-    """#736: when the resumed orchestrator (``main``) re-emits a terminal child's
-    answer verbatim, the later cross-agent byte-identical ``text`` part is dropped
-    from the authored transcript and the original child-authored part is kept."""
-
-    from clio_agent.gact.turn import _dedup_cross_agent_text
-    from clio_agent.gact.types import Part
-
-    answer = "## Region\n\nLos Angeles. Strain-rate estimation complete."
-    parts = [
-        Part(id="p1", type="text", agent_id="synthesis", text=answer),
-        Part(id="p2", type="expert_handoff", agent_id="main"),
-        # main reprints synthesis's answer verbatim (the #736 dup)
-        Part(id="p3", type="text", agent_id="main", text=answer),
-        # main's own distinct closing wrap-up — must survive
-        Part(id="p4", type="thinking", agent_id="main", text="All stages complete."),
-    ]
-
-    kept = _dedup_cross_agent_text(parts)
-
-    kept_ids = [p.id for p in kept]
-    assert kept_ids == ["p1", "p2", "p4"]
-    # the surviving answer is the child-authored original
-    answer_parts = [p for p in kept if p.type == "text" and p.text.strip() == answer.strip()]
-    assert len(answer_parts) == 1
-    assert answer_parts[0].agent_id == "synthesis"
-
-
-def test_dedup_cross_agent_text_keeps_same_author_repeat() -> None:
-    """The dedup is cross-agent only: a single author legitimately repeating text
-    (and whitespace-only / empty parts) is left untouched — only a DIFFERENT author's
-    verbatim echo of an earlier part is removed."""
-
-    from clio_agent.gact.turn import _dedup_cross_agent_text
-    from clio_agent.gact.types import Part
-
-    parts = [
-        Part(id="a1", type="text", agent_id="data", text="status: ok"),
-        Part(id="a2", type="text", agent_id="data", text="status: ok"),  # same author
-        Part(id="a3", type="text", agent_id="analysis", text=""),  # empty: ignored
-        Part(id="a4", type="text", agent_id="analysis", text="   "),  # blank: ignored
-    ]
-
-    kept = _dedup_cross_agent_text(parts)
-
-    assert [p.id for p in kept] == ["a1", "a2", "a3", "a4"]
+# NOTE (#767 PR3): the ``_dedup_cross_agent_text`` finalize scrub (mechanism 6's
+# persist-time half) was deleted — finalize persists the ledger VERBATIM, so a
+# post-hoc text-matching drop pass can no longer exist. The #736 symptom is now
+# covered by exactly-once producer assertions in ``test_turn_transcript_pr3.py``
+# (the canonical answer channel never re-emits an already-landed answer, by op
+# identity) and by the suite-wide live==reload fold property in ``conftest.py``.
+# The restates_part_id echo TAG (mechanism 6's replacement labeling) ships in PR4.
