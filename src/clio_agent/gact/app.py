@@ -1704,6 +1704,11 @@ def build_app(
     app.state.lm_config = None
     app.state.lm_config_status = {"state": "idle"}
     app.state.lm_config_task = None
+    # #770 Site 4: one serialized owner for the process-global LM bind. Every
+    # PUT /v1/providers/lm path acquires this around the snapshot -> mutate
+    # os.environ -> reconfigure dspy -> restore critical section so concurrent
+    # binds for different providers cannot interleave into a mixed final state.
+    app.state.lm_bind_lock = asyncio.Lock()
     app.state.lm_studio_owned_instance = None
     # CLIO-BBBBBBBBBB-WS: workspaces store. Persisted alongside
     # sessions; seeds a default workspace if none exist so the TUI
