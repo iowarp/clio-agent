@@ -1,13 +1,22 @@
 # TurnTranscript — the single-writer part ledger
 
-**Status:** accepted design, not yet implemented · **Origin:** synthesis of three competing
+**Status:** accepted design · PR1 MERGED (`d4159db` — `gact/transcript.py` ledger +
+registry, tool-observer/delegation shims) · PR2 implemented on
+`feat/767-turn-transcript-pr2` (turn-loop lifecycle + stream tap; see §6 PR2 for the
+disclosed adaptations) · **Origin:** synthesis of three competing
 designs judged 2026-07-01 (winner: minimal-invasive ledger; grafts: the op-log design's
 `FieldStream` exactly-once handle, close-op-recorded `final_text`, and tag-don't-suppress
 parent echoes) · **Tracking:** [epic #767](https://github.com/iowarp/clio-agent/issues/767) ·
 **Coordinates with:** [gact-tui #232](https://github.com/iowarp/gact-tui/issues/232) (protocol
-convergence, single dedup owner) · **Evidence baseline:** `develop@a933728`
-(`src/clio_agent/gact/turn.py` at 3,618 lines); every `file:line` below was verified against
-that tree.
+convergence, single dedup owner) · **Evidence baseline:** every `file:line` below was
+verified against `develop@a933728` (`src/clio_agent/gact/turn.py` at 3,618 lines) and has
+DRIFTED since — at PR2's base `develop@e58c647` `turn.py` is 3,813 lines (the Phase 0
+merges moved the clusters: the stream-tap closure vars sit at :912-926,
+`_close_streamed_part` at :948, `_emit_chunk` at :1030, the finalize region at
+:2890-3737, `_settle_failed_finalize` at :387); after PR2 the stream-tap state machine is
+deleted from `turn.py` entirely (3,633 lines) and lives in `transcript.py`. Treat the
+`a933728` refs below as the design's forensic record, not as pointers into the current
+tree.
 
 ---
 
@@ -235,7 +244,7 @@ Five PRs, each green, each shrinking `turn.py` (accretion rule: `system-cleanup-
 §1.7). Ordering is designed around the in-flight Phase 0 branches (§10).
 
 - **PR1 — `feat(gact): TurnTranscript ledger + registry; migrate producers 1+2 (tool
-  observer, delegation).`** New `transcript.py` + unit tests. `tool_observer.py`'s
+  observer, delegation).`** MERGED as `d4159db`. New `transcript.py` + unit tests. `tool_observer.py`'s
   `_append_live_assistant_part` (:135), `_append_live_assistant_part_once` (:166), and
   `_ensure_live_assistant_message` (:104) become one-line shims into the registry (falling
   back to the legacy dicts when no turn is open), preserving every test seam — tests
@@ -243,13 +252,40 @@ Five PRs, each green, each shrinking `turn.py` (accretion rule: `system-cleanup-
   call sits *inside* the shim body. `app.state.live_assistant_parts[sid]` becomes an alias
   of `transcript.snapshot()` so `turn.py`'s finalize reads work unchanged. `turn.py`
   untouched → lands before/parallel to fix/756's large turn.py diff with zero conflict.
-- **PR2 — `refactor(gact): migrate producer 3 (stream tap).`** Cut after fix/756/757/761
-  merge. `_emit_chunk`'s open/delta/close state machine, per-part buffers, boundary hook,
+- **PR2 — `refactor(gact): migrate producer 3 (stream tap).`** Implemented on
+  `feat/767-turn-transcript-pr2` (cut after fix/756/757/761 merged). `_emit_chunk`'s
+  open/delta/close state machine, per-part buffers, boundary hook,
   and lazy message mint move into `append_text_delta`/`close_open_text`/`ensure_message`;
   `_emit_chunk` shrinks to an adapter (semantic `lm.token.delta` + `stream_audit` +
   transcript call; the parent-resume gate temporarily retained until PR4). Deletes the
-  closure vars at turn.py:740-754 (timeout/StreamingOutputError partials at :2625-2653 read
-  `transcript.streamed_text` instead) and `live_stream_text_boundary_hooks`. ~-250 lines.
+  closure vars and `live_stream_text_boundary_hooks`. Landed at -184 `turn.py` lines
+  (3,813 → 3,633). **Disclosed adaptations against this entry as written:**
+  (a) the turn-loop LIFECYCLE (open at turn start; settle in the success path, inside
+  fix/756's `_settle_failed_finalize`, and at the ask_user early return) ships in PR2,
+  pulled forward from the PR3 bullet — settling uses `abandon()` (freeze WITHOUT
+  closing/publishing) because the legacy finalize region still owns the terminal wire
+  events during the PR2 window; PR3 swaps it for `finalize()` + verbatim persist.
+  (b) the error partials read `transcript.raw_streamed_text()` — a whole-turn,
+  cross-(agent, field) arrival-order aggregate added to the API — because the per-field
+  `streamed_text` cannot reproduce the legacy `streamed_assistant_buffer` concat
+  byte-identically (§9 error/cancel partials).
+  (c) finalize's remaining reads of the deleted closure vars are re-derived from two
+  legacy-equivalent queries added to the API: `current_stream_part_id` (mirrors
+  `streamed_assistant_part_id`: set on open, cleared only at the atomic-append runtime
+  boundary, NOT by close) and `was_closed_live(part_id)` (mirrors
+  `closed_streamed_part_ids`, empty-drops included).
+  (d) `ensure_message` on a frozen, never-minted ledger now raises the structured
+  `TranscriptFrozenError` (audited late_op) instead of silently returning `""`.
+  (e) the ask_user pause CARRIES the in-flight assistant message across the question
+  today (same message id, pre-question live parts persist into the resumed turn's
+  message); PR2 encodes that explicitly — the early return settles the ledger, the
+  legacy dicts keep the carried state, and the resume turn's open adopts it via
+  `adopt_carried_state` (fresh-ledger-only, publishes nothing) so the wire stays
+  byte-identical while a leaked ledger still cannot poison a later turn (the registry
+  evicts real leaks loudly).
+  Wire equivalence is enforced by the develop-captured goldens
+  (`tests/test_gact/goldens/turn_transcript_pr1/` + the PR2
+  `error_envelope_turn` golden).
 - **PR3 — `refactor(gact): finalize becomes a reader; delete the reconciliation block.`**
   Finalize appends routing_decision via `append_part_once("route:{agent}")` (same key the
   live observer uses), thinking gated by `has_closed_text(responder, "reasoning")`, the
