@@ -117,12 +117,20 @@ def _path_under(path: Path, base: Path) -> bool:
 
 
 def _write_test_default_registry_blueprint(xdg_root: Path) -> None:
-    root = xdg_root / "clio-agent" / "agent-blueprints" / "data-semantics"
+    # Bind the fixture blueprint id to the loader's DEFAULT_AGENT_BLUEPRINT_ID so
+    # the two can never drift again: _builtin_agents() filters load_agent_blueprints
+    # by that id, so a mismatch yields an EMPTY /v1/agents catalog and breaks every
+    # agent-catalog/expert-pack test. (Commit 3bf695b changed the constant to
+    # "earthscope-gnss-region" for the demo default registry but left this fixture
+    # on the old "data-semantics" id.)
+    from clio_agent.gact.agent_blueprints import DEFAULT_AGENT_BLUEPRINT_ID  # noqa: PLC0415
+
+    root = xdg_root / "clio-agent" / "agent-blueprints" / DEFAULT_AGENT_BLUEPRINT_ID
     experts = root / "experts"
     experts.mkdir(parents=True, exist_ok=True)
     root.joinpath("AGENT.md").write_text(
-        """---
-id: data-semantics
+        f"""---
+id: {DEFAULT_AGENT_BLUEPRINT_ID}
 version: 0.1.0
 title: Data Semantics Agent
 description: Test default registry data semantics agent.
