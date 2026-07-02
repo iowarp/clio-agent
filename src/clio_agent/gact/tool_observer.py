@@ -23,6 +23,7 @@ particular ``build_app`` wires ``app.state.make_tool_observer`` and the
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import uuid
@@ -53,11 +54,85 @@ from clio_agent.gact.types import Message, Part
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
+    from clio_agent.gact.transcript import TurnTranscript
+
+logger = logging.getLogger(__name__)
+
 # Per-thread call_id + start-time stash so the ``completed`` phase reuses the
 # same id and can compute duration. MCPToolBridge invokes the observer on a
 # worker thread, so threading-locals (not contextvars) are the right scope.
 _OBSERVER_CALL_IDS = threading.local()
 _OBSERVER_CALL_T0 = threading.local()
+
+
+def _session_turn_transcript(app: "FastAPI", sid: str) -> "Optional[TurnTranscript]":
+    """The open TurnTranscript ledger for ``sid``, or ``None`` (#767 PR1).
+
+    When a turn transcript is open, the live-part helpers below shim into it
+    (the ledger owns identity/order/events); when none is open — every
+    production turn until the turn loop migrates in PR2/PR3 — they fall back
+    to the legacy ``app.state`` dict path, byte-for-byte unchanged.
+    """
+
+    registry = getattr(app.state, "turn_transcripts", None)
+    if registry is None:
+        return None
+    return registry.get(sid)
+
+
+def _run_live_stream_boundary_hook(app: "FastAPI", sid: str) -> None:
+    """Close the turn loop's open streamed text part at a runtime boundary.
+
+    Cross-module callback owned by ``turn.py`` until PR2 moves the stream tap
+    into the transcript; both the legacy and the transcript-shimmed append
+    paths must keep firing it during the migration window."""
+
+    boundary_hooks = getattr(app.state, "live_stream_text_boundary_hooks", None)
+    if isinstance(boundary_hooks, dict):
+        hook = boundary_hooks.get(sid)
+        if callable(hook):
+            hook()
+
+
+def _mirror_transcript_state(app: "FastAPI", sid: str, transcript: "TurnTranscript") -> None:
+    """Alias the transcript's identity/ledger into the legacy ``app.state`` dicts.
+
+    ``app.state.live_assistant_parts[sid]`` becomes the transcript's internal
+    ledger list and ``live_assistant_message_ids[sid]`` its message id, so
+    untouched ``turn.py`` finalize reads (and ``routes/messages.py``'s live
+    projection) keep working during the PR1/PR2 migration window.
+    """
+
+    live_ids = getattr(app.state, "live_assistant_message_ids", None)
+    if live_ids is None:
+        live_ids = {}
+        app.state.live_assistant_message_ids = live_ids
+    if transcript.message_id:
+        prior = str(live_ids.get(sid) or "")
+        if prior and prior != transcript.message_id:
+            logger.warning(
+                "turn_transcript identity conflict reason=legacy_live_message_id_mismatch "
+                "session=%s legacy=%s transcript=%s — transcript id wins",
+                sid,
+                prior,
+                transcript.message_id,
+            )
+        live_ids[sid] = transcript.message_id
+    live_parts = getattr(app.state, "live_assistant_parts", None)
+    if live_parts is None:
+        live_parts = {}
+        app.state.live_assistant_parts = live_parts
+    alias = transcript.live_parts_alias()
+    existing = live_parts.get(sid)
+    if existing is not alias:
+        if existing:
+            logger.warning(
+                "turn_transcript alias conflict reason=legacy_live_parts_present "
+                "session=%s legacy_count=%d — transcript ledger wins",
+                sid,
+                len(existing),
+            )
+        live_parts[sid] = alias
 
 
 def _publish_transcript_event(
@@ -105,6 +180,15 @@ def _install_tool_runtime_hooks(app: "FastAPI") -> None:
 def _ensure_live_assistant_message(app: "FastAPI", sid: str) -> str:
     """Return the in-flight assistant message id, creating it if needed."""
 
+    transcript = _session_turn_transcript(app, sid)
+    if transcript is not None:
+        # #767 PR1: the ledger is the sole minter of the assistant message id
+        # (message.created published exactly once, whichever producer arrives
+        # first); mirrored into the legacy dicts for untouched readers.
+        msg_id = transcript.ensure_message()
+        _mirror_transcript_state(app, sid, transcript)
+        return msg_id
+
     live_ids = getattr(app.state, "live_assistant_message_ids", None)
     if live_ids is None:
         live_ids = {}
@@ -136,11 +220,15 @@ def _ensure_live_assistant_message(app: "FastAPI", sid: str) -> str:
 def _append_live_assistant_part(app: "FastAPI", sid: str, part: Part) -> None:
     """Publish and remember a real runtime part for the active assistant turn."""
 
-    boundary_hooks = getattr(app.state, "live_stream_text_boundary_hooks", None)
-    if isinstance(boundary_hooks, dict):
-        hook = boundary_hooks.get(sid)
-        if callable(hook):
-            hook()
+    _run_live_stream_boundary_hook(app, sid)
+
+    transcript = _session_turn_transcript(app, sid)
+    if transcript is not None:
+        # #767 PR1: append through the single-writer ledger — it closes its own
+        # open text, mints ids, and publishes message.part.added itself.
+        transcript.append_part(part)
+        _mirror_transcript_state(app, sid, transcript)
+        return
 
     msg_id = _ensure_live_assistant_message(app, sid)
     live_parts = getattr(app.state, "live_assistant_parts", None)
@@ -176,6 +264,18 @@ def _append_live_assistant_part_once(
     transcript should show the route decision once, then the concrete tool
     calls/results under it, not repeat the same route banner for every call.
     """
+
+    transcript = _session_turn_transcript(app, sid)
+    if transcript is not None:
+        # #767 PR1: the idempotency key is turn-scoped ledger state. The
+        # legacy path only fires the stream boundary hook when the key is
+        # fresh (a duplicate banner never closes streamed text) — preserved.
+        if transcript.has_part_key(key):
+            return False
+        _run_live_stream_boundary_hook(app, sid)
+        appended = transcript.append_part_once(key, part)
+        _mirror_transcript_state(app, sid, transcript)
+        return appended is not None
 
     live_keys = getattr(app.state, "live_assistant_part_keys", None)
     if live_keys is None:

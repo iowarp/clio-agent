@@ -1,0 +1,322 @@
+{
+  "events": [
+    {
+      "payload": {
+        "id": "<msg#1>",
+        "metadata": {},
+        "parts": [
+          {
+            "agent_id": "",
+            "id": "<part#3>",
+            "text": "call a tool please",
+            "type": "text"
+          }
+        ],
+        "role": "user",
+        "session_id": "<sess#2>",
+        "stop_reason": "",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.created"
+    },
+    {
+      "payload": {
+        "args": {
+          "path": "README.md"
+        },
+        "call_id": "<call#4>",
+        "telemetry_source": "live_observer",
+        "tool": "fs_read_file"
+      },
+      "type": "tool.call.started"
+    },
+    {
+      "payload": {
+        "id": "<msg#5>",
+        "metadata": {},
+        "parts": [],
+        "role": "assistant",
+        "session_id": "<sess#2>",
+        "stop_reason": "",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.created"
+    },
+    {
+      "payload": {
+        "message_id": "<msg#5>",
+        "part": {
+          "agent_id": "",
+          "call_id": "<call#4>",
+          "id": "live_<call#4>_call",
+          "input": {
+            "path": "README.md"
+          },
+          "metadata": {
+            "stream_source": "live",
+            "telemetry_source": "live_observer"
+          },
+          "tool_name": "fs_read_file",
+          "type": "tool_call"
+        },
+        "stream_source": "live",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.part.added"
+    },
+    {
+      "payload": {
+        "action": {
+          "agent_id": "",
+          "args": {
+            "path": "README.md"
+          },
+          "call_id": "<call#4>",
+          "kind": "tool_call",
+          "name": "fs_read_file"
+        },
+        "turn_id": "<msg#1>"
+      },
+      "type": "turn.action.added"
+    },
+    {
+      "payload": {
+        "cached": false,
+        "call_id": "<call#4>",
+        "ok": true,
+        "result": {
+          "ok": true,
+          "text": "readme contents"
+        },
+        "telemetry_source": "live_observer",
+        "tool": "fs_read_file"
+      },
+      "type": "tool.call.completed"
+    },
+    {
+      "payload": {
+        "message_id": "<msg#5>",
+        "part": {
+          "agent_id": "",
+          "call_id": "<call#4>",
+          "content": [
+            {
+              "agent_id": "",
+              "id": "live_<call#4>_result_text",
+              "text": "{\"ok\": true, \"text\": \"readme contents\"}",
+              "type": "text"
+            }
+          ],
+          "id": "live_<call#4>_result",
+          "metadata": {
+            "result": {
+              "ok": true,
+              "text": "readme contents"
+            },
+            "stream_source": "live",
+            "telemetry_source": "live_observer"
+          },
+          "tool_name": "fs_read_file",
+          "type": "tool_result"
+        },
+        "stream_source": "live",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.part.added"
+    },
+    {
+      "payload": {
+        "call_id": "<call#4>",
+        "content_type": "text/plain",
+        "text_append": "{\"ok\": true, \"text\": \"readme contents\"}",
+        "value_append": {
+          "ok": true,
+          "text": "readme contents"
+        }
+      },
+      "type": "call.result.delta"
+    },
+    {
+      "payload": {
+        "message_id": "<msg#5>",
+        "part": {
+          "agent_id": "main",
+          "id": "<part#6>",
+          "metadata": {
+            "route_reason": "planner selected code expert",
+            "route_source": "dspy"
+          },
+          "rationale": "matched coding keywords",
+          "selected_agent": "code_expert",
+          "sequence": 1,
+          "type": "routing_decision"
+        },
+        "stream_source": "batch",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.part.added"
+    },
+    {
+      "payload": {
+        "message_id": "<msg#5>",
+        "part": {
+          "agent_id": "code_expert",
+          "id": "<part#7>",
+          "metadata": {
+            "stream_fallback": {
+              "category": "capability_gap",
+              "description": "The selected agent is not a DSPy module and cannot emit provider-token deltas.",
+              "live_streaming": false,
+              "reason": "agent_not_streamable",
+              "recovery_actions": [
+                "continue_without_live_streaming",
+                "reconfigure"
+              ],
+              "synthetic_posthoc": true
+            },
+            "stream_source": "batch"
+          },
+          "sequence": 4,
+          "text": "TOOL_TURN_DONE",
+          "type": "text"
+        },
+        "stream_source": "batch",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.part.added"
+    },
+    {
+      "payload": {
+        "final_text": "TOOL_TURN_DONE",
+        "message_id": "<msg#5>",
+        "part_id": "<part#7>",
+        "stream_fallback": {
+          "category": "capability_gap",
+          "description": "The selected agent is not a DSPy module and cannot emit provider-token deltas.",
+          "live_streaming": false,
+          "reason": "agent_not_streamable",
+          "recovery_actions": [
+            "continue_without_live_streaming",
+            "reconfigure"
+          ],
+          "synthetic_posthoc": true
+        },
+        "stream_source": "batch",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.part.completed"
+    },
+    {
+      "payload": {
+        "message_id": "<msg#5>",
+        "metadata": {
+          "stream_fallback": {
+            "category": "capability_gap",
+            "description": "The selected agent is not a DSPy module and cannot emit provider-token deltas.",
+            "live_streaming": false,
+            "reason": "agent_not_streamable",
+            "recovery_actions": [
+              "continue_without_live_streaming",
+              "reconfigure"
+            ],
+            "synthetic_posthoc": true
+          },
+          "stream_source": "batch",
+          "tools_called": [
+            {
+              "args": {
+                "path": "README.md"
+              },
+              "cached": false,
+              "call_id": "<call#4>",
+              "name": "fs_read_file",
+              "ok": true,
+              "result": {
+                "ok": true,
+                "text": "readme contents"
+              },
+              "telemetry_source": "live_observer"
+            }
+          ]
+        },
+        "stop_reason": "end_turn",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.completed"
+    }
+  ],
+  "persisted_assistant_parts": [
+    {
+      "agent_id": "main",
+      "id": "<part#6>",
+      "metadata": {
+        "route_reason": "planner selected code expert",
+        "route_source": "dspy"
+      },
+      "rationale": "matched coding keywords",
+      "selected_agent": "code_expert",
+      "sequence": 1,
+      "type": "routing_decision"
+    },
+    {
+      "agent_id": "",
+      "call_id": "<call#4>",
+      "id": "live_<call#4>_call",
+      "input": {
+        "path": "README.md"
+      },
+      "metadata": {
+        "stream_source": "live",
+        "telemetry_source": "live_observer"
+      },
+      "sequence": 2,
+      "tool_name": "fs_read_file",
+      "type": "tool_call"
+    },
+    {
+      "agent_id": "",
+      "call_id": "<call#4>",
+      "content": [
+        {
+          "agent_id": "",
+          "id": "live_<call#4>_result_final_text",
+          "text": "{\"ok\": true, \"text\": \"readme contents\"}",
+          "type": "text"
+        }
+      ],
+      "id": "live_<call#4>_result",
+      "metadata": {
+        "result": {
+          "ok": true,
+          "text": "readme contents"
+        },
+        "stream_source": "live",
+        "telemetry_source": "live_observer"
+      },
+      "sequence": 3,
+      "tool_name": "fs_read_file",
+      "type": "tool_result"
+    },
+    {
+      "agent_id": "code_expert",
+      "id": "<part#7>",
+      "metadata": {
+        "stream_fallback": {
+          "category": "capability_gap",
+          "description": "The selected agent is not a DSPy module and cannot emit provider-token deltas.",
+          "live_streaming": false,
+          "reason": "agent_not_streamable",
+          "recovery_actions": [
+            "continue_without_live_streaming",
+            "reconfigure"
+          ],
+          "synthetic_posthoc": true
+        },
+        "stream_source": "batch"
+      },
+      "sequence": 4,
+      "text": "TOOL_TURN_DONE",
+      "type": "text"
+    }
+  ]
+}
