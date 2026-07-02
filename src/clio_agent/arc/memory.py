@@ -26,26 +26,20 @@ from clio_agent.arc.index import BTreeIndex
 from clio_agent.arc.live import EVENTS_SCOPE, LiveRuntimeContext, build_event_content
 from clio_agent.arc.lsm import LSMTree
 from clio_agent.arc.schema import (
-    Context,
     Conversation,
     DatasetProfile,
     Invocation,
-    Metrics,
     ProceduralMemory,
     SegmentKind,
     VariantRecord,
-    decode_context,
     decode_conversation,
     decode_dataset_profile,
     decode_invocation,
-    decode_metrics,
     decode_procedural_memory,
     decode_variant_record,
-    encode_context,
     encode_conversation,
     encode_dataset_profile,
     encode_invocation,
-    encode_metrics,
     encode_procedural_memory,
     encode_variant_record,
 )
@@ -105,8 +99,8 @@ def _durable_trace_backend() -> str:
 class ARCMemory:
     """Adaptive Retrieval Cache - Main interface for memory operations.
 
-    Provides cache-first storage and retrieval for conversations, invocations,
-    metrics, and context with O(log N) fallback to disk.
+    Provides cache-first storage and retrieval for conversations and
+    invocations with O(log N) fallback to disk.
 
     Args:
         data_dir: Directory for persistent storage (default: ".clio/agent/arc")
@@ -189,12 +183,11 @@ class ARCMemory:
         )
         self._cache = LRUCache(capacity=capacity)
 
-        # Index layers (O(log N) retrieval), keyed by (session_id, timestamp). NO size
+        # Index layer (O(log N) retrieval), keyed by (session_id, timestamp). NO size
         # cap: an arbitrary ceiling would silently fail large workloads (entries falling
         # off the end). Memory is bounded by LIFECYCLE instead — ``release_session``
         # evicts a session's branches on end/delete, and the index is rebuildable from the
         # durable record (trace / stored blobs / clio-core) on restart.
-        self._conv_index = BTreeIndex()  # Conversation index
         self._inv_index = BTreeIndex()  # Invocation index
 
         # LSM tree for high-throughput metrics. Flush/compaction thresholds are storage
@@ -224,12 +217,11 @@ class ARCMemory:
         self._disk_writes = 0
 
     def store_conversation(self, conversation: Conversation) -> None:
-        """Store conversation in cache and index.
+        """Store conversation in cache and on disk.
 
         Writes conversation to:
         1. In-memory cache (fast access)
-        2. B-tree index (O(log N) lookup)
-        3. Disk (persistent storage)
+        2. Disk (persistent storage)
 
         Args:
             conversation: Conversation object to store
@@ -251,12 +243,6 @@ class ARCMemory:
 
             # Store in cache (hot data)
             self._cache.put(cache_key, conversation)
-
-            # Store in index (for range queries)
-            # Parse timestamp for index key
-            timestamp = self._parse_timestamp(conversation.updated_at)
-            index_key = (session_id, timestamp)
-            self._conv_index.insert(index_key, {"session_id": session_id})
 
             # Persist to disk
             encoded = encode_conversation(conversation)
@@ -463,226 +449,6 @@ class ARCMemory:
         # Return most recent first
         return list(reversed(invocations))
 
-    def store_metrics(self, metrics: Metrics) -> None:
-        """Store performance metrics.
-
-        Args:
-            metrics: Metrics object to store
-
-        Examples:
-            >>> from clio_agent.arc.schema import (
-            ...     InvocationStats, LatencyStats, UserSatisfactionStats
-            ... )
-            >>> metrics = Metrics(
-            ...     agent_id="DataExpert",
-            ...     tier=2,
-            ...     period="2025-01",
-            ...     computed_at="2025-01-31T23:59:59Z",
-            ...     invocations=InvocationStats(100, 95, 5, 0, 0.95),
-            ...     latency=LatencyStats(1500, 1200, 2500, 4000, 200, 8000),
-            ...     user_satisfaction=UserSatisfactionStats(50, 45, 5, 0.90)
-            ... )
-            >>> arc.store_metrics(metrics)
-        """
-        with self._lock:
-            agent_id = metrics.agent_id
-            period = metrics.period
-            cache_key = f"metrics:{agent_id}:{period}"
-
-            # Store in cache
-            self._cache.put(cache_key, metrics)
-
-            # Persist to disk
-            encoded = encode_metrics(metrics)
-            self._store.put("metrics", f"{agent_id}_{period}", encoded)
-            self._disk_writes += 1
-
-    def get_metrics(self, agent_id: str, period: Optional[str] = None) -> Optional[Metrics]:
-        """Get metrics for agent.
-
-        Args:
-            agent_id: Agent identifier
-            period: Time period (e.g., "2025-01"). If None, returns latest.
-
-        Returns:
-            Metrics object if found, None otherwise
-
-        Examples:
-            >>> metrics = arc.get_metrics("DataExpert", period="2025-01")
-            >>> if metrics:
-            ...     print(f"Success rate: {metrics.invocations.success_rate:.2%}")
-        """
-        # If no period specified, find latest metrics file
-        if period is None:
-            with self._lock:
-                matching = sorted(
-                    self._store.scan("metrics", prefix=f"{agent_id}_"),
-                    key=lambda kv: kv[0],
-                )
-                if not matching:
-                    return None
-                # Most recent = lexicographically latest name (agent_period)
-                encoded = matching[-1][1]
-                metrics = decode_metrics(encoded)
-                self._disk_reads += 1
-
-                # Cache it
-                cache_key = f"metrics:{agent_id}:{metrics.period}"
-                self._cache.put(cache_key, metrics)
-
-                return metrics
-
-        cache_key = f"metrics:{agent_id}:{period}"
-
-        # Fast path: check cache
-        cached = self._cache.get(cache_key)
-        if cached is not None:
-            return cached
-
-        # Slow path: load from disk
-        with self._lock:
-            raw = self._store.get("metrics", f"{agent_id}_{period}")
-            if raw is None:
-                return None
-
-            metrics = decode_metrics(raw)
-            self._disk_reads += 1
-
-            # Update cache
-            self._cache.put(cache_key, metrics)
-
-            return metrics
-
-    def store_context(self, context: Context) -> None:
-        """Store domain context.
-
-        Args:
-            context: Context object to store
-
-        Examples:
-            >>> ctx = Context(
-            ...     domain="hdf5_optimization",
-            ...     created_at="2025-01-09T14:30:00Z",
-            ...     updated_at="2025-01-09T14:30:00Z"
-            ... )
-            >>> arc.store_context(ctx)
-        """
-        with self._lock:
-            domain = context.domain
-            cache_key = f"ctx:{domain}"
-
-            # Store in cache
-            self._cache.put(cache_key, context)
-
-            # Persist to disk
-            encoded = encode_context(context)
-            self._store.put("context", domain, encoded)
-            self._disk_writes += 1
-
-    def get_context(self, domain: str) -> Optional[Context]:
-        """Get context for domain.
-
-        Args:
-            domain: Domain identifier (e.g., "hdf5_optimization")
-
-        Returns:
-            Context object if found, None otherwise
-
-        Examples:
-            >>> ctx = arc.get_context("hdf5_optimization")
-            >>> if ctx:
-            ...     print(f"Cached tools: {len(ctx.cached_tool_results)}")
-        """
-        cache_key = f"ctx:{domain}"
-
-        # Fast path: check cache
-        cached = self._cache.get(cache_key)
-        if cached is not None:
-            return cached
-
-        # Slow path: load from disk
-        with self._lock:
-            encoded = self._store.get("context", domain)
-            if encoded is None:
-                return None
-
-            context = decode_context(encoded)
-            self._disk_reads += 1
-
-            # Update cache
-            self._cache.put(cache_key, context)
-
-            return context
-
-    def cache_tool_result(
-        self,
-        server_name: str,
-        tool_name: str,
-        arguments: Dict[str, Any],
-        result: Any,
-        ttl_seconds: int = 3600,
-    ) -> None:
-        """Cache tool result in ARC.
-
-        Args:
-            server_name: MCP server name (e.g., "hdf5")
-            tool_name: Tool name (e.g., "analyze_file")
-            arguments: Tool arguments dict
-            result: Tool result to cache
-            ttl_seconds: Cache TTL in seconds (default: 1 hour)
-
-        Examples:
-            >>> arc.cache_tool_result(
-            ...     "hdf5",
-            ...     "analyze_file",
-            ...     {"path": "/data/experiment.h5"},
-            ...     {"shape": [100, 200], "dtype": "float64"},
-            ...     ttl_seconds=1800
-            ... )
-        """
-        import hashlib
-        import json
-
-        # Create cache key from server + tool + args
-        args_str = json.dumps(arguments, sort_keys=True)
-        key_str = f"tool_{server_name}_{tool_name}_{args_str}"
-        cache_key = hashlib.md5(key_str.encode()).hexdigest()
-
-        # Store in cache with TTL
-        self._cache.put(cache_key, result, ttl_seconds=ttl_seconds)
-
-    def get_cached_tool_result(
-        self, server_name: str, tool_name: str, arguments: Dict[str, Any]
-    ) -> Optional[Any]:
-        """Get cached tool result from ARC.
-
-        Args:
-            server_name: MCP server name
-            tool_name: Tool name
-            arguments: Tool arguments dict
-
-        Returns:
-            Cached result or None if not found/expired
-
-        Examples:
-            >>> result = arc.get_cached_tool_result(
-            ...     "hdf5",
-            ...     "analyze_file",
-            ...     {"path": "/data/experiment.h5"}
-            ... )
-            >>> if result is not None:
-            ...     print(f"Cache hit: {result}")
-        """
-        import hashlib
-        import json
-
-        # Create same cache key
-        args_str = json.dumps(arguments, sort_keys=True)
-        key_str = f"tool_{server_name}_{tool_name}_{args_str}"
-        cache_key = hashlib.md5(key_str.encode()).hexdigest()
-
-        return self._cache.get(cache_key)
-
     def get_tool_cache_stats(self) -> Dict[str, Any]:
         """Get tool cache statistics.
 
@@ -702,29 +468,6 @@ class ARCMemory:
             "tool_cache_size": stats["size"],
             "target_hit_rate": 0.50,  # >50% per PLAN.md
         }
-
-    def query_metrics_by_time_range(self, start_ts: float, end_ts: float) -> List[Dict[str, Any]]:
-        """Query metrics in time range using LSM tree.
-
-        Provides fast time-range queries over invocation metrics
-        stored in the LSM tree.
-
-        Args:
-            start_ts: Start timestamp (Unix timestamp)
-            end_ts: End timestamp (Unix timestamp)
-
-        Returns:
-            List of metrics in range, sorted by timestamp
-
-        Examples:
-            >>> import time
-            >>> start = time.time() - 3600  # Last hour
-            >>> end = time.time()
-            >>> metrics = arc.query_metrics_by_time_range(start, end)
-            >>> for metric in metrics:
-            ...     print(f"{metric['agent_id']}: {metric['duration_ms']}ms")
-        """
-        return self._lsm.range_scan(start_ts, end_ts)
 
     def get_lsm_stats(self) -> Dict[str, Any]:
         """Get LSM tree statistics.
@@ -752,7 +495,6 @@ class ARCMemory:
                 - capacity: Maximum cache capacity
                 - disk_reads: Total disk reads
                 - disk_writes: Total disk writes
-                - conv_index_size: Conversation index entry count
                 - inv_index_size: Invocation index entry count
 
         Examples:
@@ -771,7 +513,6 @@ class ARCMemory:
                 "capacity": cache_stats["capacity"],
                 "disk_reads": self._disk_reads,
                 "disk_writes": self._disk_writes,
-                "conv_index_size": len(self._conv_index),
                 "inv_index_size": len(self._inv_index),
             }
 
@@ -1466,8 +1207,7 @@ class ARCMemory:
             evicted_cache += self._cache.invalidate_prefix(f"profile:{session_id}:")
             evicted_cache += self._cache.invalidate_prefix(f"proc:{session_id}:")
 
-            evicted_index = self._conv_index.delete_session(session_id)
-            evicted_index += self._inv_index.delete_session(session_id)
+            evicted_index = self._inv_index.delete_session(session_id)
 
         # Outside the lock: LiveRuntimeContext and SegmentStore have their own locks.
         # The observer's release ERASES the reserved ``_events`` scope (the single
@@ -1507,9 +1247,10 @@ class ARCMemory:
     def flush_and_release(self) -> None:
         """Release ALL in-memory state to return to baseline (tests/memprof).
 
-        Flushes the LSM MemTable to disk, clears the cache, and clears both
-        indexes. The persistent store is untouched and fully re-loadable; this
-        only drops the hot/heap copies so memory profiling sees a clean floor.
+        Flushes the LSM MemTable to disk, clears the cache, and clears the
+        invocation index. The persistent store is untouched and fully
+        re-loadable; this only drops the hot/heap copies so memory profiling
+        sees a clean floor.
 
         Examples:
             >>> arc.flush_and_release()
@@ -1519,7 +1260,6 @@ class ARCMemory:
         with self._lock:
             self._lsm.flush()
             self._cache.clear()
-            self._conv_index.clear()
             self._inv_index.clear()
         # The observer's clear ERASES the reserved ``_events`` scope across every
         # session (the single persisted semantic-event stream it projects over) —
@@ -1568,8 +1308,7 @@ class ARCMemory:
             # Clear cache
             self._cache.clear()
 
-            # Clear indexes
-            self._conv_index.clear()
+            # Clear index
             self._inv_index.clear()
 
             # Clear disk storage (wipes the "segments" kind too, since it's in ARC_KINDS)

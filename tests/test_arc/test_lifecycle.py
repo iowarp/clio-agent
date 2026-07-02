@@ -151,9 +151,8 @@ class TestReleaseSession:
 
         # cache: conv:s1 + 2 invocations resolved via index
         assert result["cache"] >= 1
-        assert result["index"] == 3  # 1 conv + 2 inv index entries
+        assert result["index"] == 2  # 2 inv index entries
         # Hot copies gone...
-        assert len(arc._conv_index) == 0
         assert len(arc._inv_index) == 0
         # ...but durable records survive and re-load from disk.
         assert arc.get_conversation("s1") is not None
@@ -169,7 +168,6 @@ class TestReleaseSession:
         arc.release_session("s1")
 
         # s2's index entries remain intact.
-        assert len(arc._conv_index) == 1
         assert len(arc._inv_index) == 1
         assert arc.get_conversation("s2") is not None
 
@@ -191,7 +189,6 @@ class TestFlushAndRelease:
 
         stats = arc.get_cache_stats()
         assert stats["size"] == 0
-        assert stats["conv_index_size"] == 0
         assert stats["inv_index_size"] == 0
         # Durable data still readable (re-populates cache on read).
         assert arc.get_conversation("s1") is not None
