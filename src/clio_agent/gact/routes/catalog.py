@@ -27,6 +27,8 @@ through ``deps`` rather than importing back into :mod:`clio_agent.gact.app`.
 
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import json
 import uuid
 from collections.abc import Mapping
@@ -659,13 +661,25 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                 cmd_id=cmd_id,
                 agent_id=agent_id,
             )
+            # #755: the runner is a full (blocking) DSPy agent turn that can
+            # take minutes. Run it off the event loop so /health, SSE
+            # heartbeats, and other sessions stay responsive, mirroring how
+            # turn.py executes blueprint runners. Copy the request context
+            # with the app contextvar bound so the runner's dynamic-agent
+            # tool wrappers still resolve ``app`` inside the worker thread;
+            # the synchronous response shape and audit rows are unchanged.
             with _gact_app_context(app):
-                pred = deps.blueprint_runner_for_agent(agent_def)(
+                command_turn_context = contextvars.copy_context()
+            pred = await asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda: command_turn_context.run(
+                    deps.blueprint_runner_for_agent(agent_def),
                     app.state.agent,
                     agent_def,
                     question,
                     sid,
-                )
+                ),
+            )
             agent_body_text = str(getattr(pred, "answer", "") or "").strip()
             if not agent_body_text:
                 agent_body_text = f"user command {cmd_id} completed with no answer"
