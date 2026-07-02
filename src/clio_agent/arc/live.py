@@ -29,7 +29,10 @@ Design (ARC unification — one log):
       projection.
     * Released per session (``release``) and wholesale (``clear``) -- the
       ``_events`` scope's segments are ERASED (``drop_scope``) so an idle server
-      returns to baseline (the durable trace keeps the full history).
+      returns to baseline. Erasing is only safe when the durable trace keeps the
+      full history, so ``ARCMemory`` calls these ONLY when the durable trace
+      backend is enabled; under the default ``none`` backend the log is the only
+      copy and is retained instead (#762).
 
 ``project_conversation`` / ``project_invocations`` produce valid
 ``clio_agent.arc.schema`` objects from the log; ``view`` is the compact summary

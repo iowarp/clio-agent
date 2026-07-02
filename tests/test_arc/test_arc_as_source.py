@@ -226,8 +226,13 @@ def test_emit_semantic_event_fails_loud_when_no_arc(monkeypatch):
         app_mod._emit_semantic_event(app, "s1", "turn.started")
 
 
-def test_release_drops_events_scope(tmp_path):
-    """release_session erases the reserved _events scope (idle -> baseline)."""
+def test_release_drops_events_scope(tmp_path, monkeypatch):
+    """release_session erases the reserved _events scope (idle -> baseline).
+
+    The erase is gated on the durable trace keeping the full history (#762), so
+    this test enables the file backend; retention under the default "none"
+    backend is covered by test_events_log_retention.py."""
+    monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "file")
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))
     arc.set_highway_sink(lambda e: {})
     arc.record_semantic_event(_turn_started())
@@ -237,8 +242,10 @@ def test_release_drops_events_scope(tmp_path):
     assert arc.render_segments("s1", EVENTS_SCOPE) == []
 
 
-def test_flush_and_release_drops_events_scope(tmp_path):
-    """flush_and_release erases the _events scope across all sessions."""
+def test_flush_and_release_drops_events_scope(tmp_path, monkeypatch):
+    """flush_and_release erases the _events scope across all sessions (durable
+    trace enabled — the erase is gated on it keeping the full history, #762)."""
+    monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "file")
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))
     arc.set_highway_sink(lambda e: {})
     arc.record_semantic_event(_turn_started())

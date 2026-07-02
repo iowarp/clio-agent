@@ -15,6 +15,7 @@ Performance Targets:
 See docs/ARC_MEMORY_LAYER.md for architecture details.
 """
 
+import logging
 import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, cast
@@ -70,6 +71,35 @@ from clio_agent.runtime import trace
 # old recursion (record -> op-logger -> arc.op -> record) cannot form, so neither the
 # skip entry nor the thread-local re-entrancy guard is needed.)
 _EVENT_LOG_SKIP: frozenset[str] = frozenset({"lm.token.delta"})
+
+logger = logging.getLogger(__name__)
+
+# Backend names that mean the durable semantic trace is DISABLED — the same set
+# :func:`clio_agent.gact.semantic_events.build_trace_backend` maps to the no-op
+# backend. Kept in sync by ``tests/test_arc/test_events_log_retention.py``.
+_DISABLED_TRACE_BACKENDS: frozenset[str] = frozenset({"", "none", "off", "disabled"})
+
+
+def _durable_trace_backend() -> str:
+    """Resolved durable semantic-trace backend name (``none`` when disabled).
+
+    Mirrors the decision :func:`clio_agent.gact.semantic_events.build_trace_backend`
+    makes, from the SAME config key (``trace.backend`` / env
+    ``CLIO_SEMANTIC_TRACE_BACKEND``, default ``none``), resolved here directly so
+    ``arc/`` stays free of any ``gact/`` import. The session-release paths gate the
+    destructive erase of the ``_events`` log on this: when the durable trace keeps
+    no copy, the log is the ONLY record of the session's events (#762).
+    """
+    return (
+        conf.resolve(
+            "trace.backend",
+            env="CLIO_SEMANTIC_TRACE_BACKEND",
+            default="none",
+            cast=conf.as_str,
+        )
+        .strip()
+        .lower()
+    )
 
 
 class ARCMemory:
@@ -1442,8 +1472,30 @@ class ARCMemory:
         # Outside the lock: LiveRuntimeContext and SegmentStore have their own locks.
         # The observer's release ERASES the reserved ``_events`` scope (the single
         # persisted raw semantic-event stream it projects over) so an idle server
-        # returns to baseline; the durable trace keeps the full history.
-        live = self._live.release(session_id)
+        # returns to baseline — but ONLY when the durable trace actually keeps the
+        # full history. The trace backend defaults to "none" (opt-in), so erasing
+        # unconditionally destroyed the ONLY copy of the session event log (#762).
+        # When the trace is disabled the log is RETAINED; the segment release below
+        # still drops the hot in-memory copy (write-through, nothing lost), so the
+        # heap returns toward baseline either way. Both paths log their reason.
+        backend = _durable_trace_backend()
+        if backend in _DISABLED_TRACE_BACKENDS:
+            live = 0
+            logger.warning(
+                "arc: retained _events log session=%s reason=durable_trace_disabled "
+                "backend=%r (the log is the only copy; erase skipped, #762)",
+                session_id,
+                backend,
+            )
+        else:
+            live = self._live.release(session_id)
+            logger.info(
+                "arc: erased _events log session=%s reason=durable_trace_enabled "
+                "backend=%r turns=%d (the durable trace keeps the full history)",
+                session_id,
+                backend,
+                live,
+            )
         segments = self._segments.release(session_id)
         return {
             "cache": evicted_cache,
@@ -1470,9 +1522,26 @@ class ARCMemory:
             self._conv_index.clear()
             self._inv_index.clear()
         # The observer's clear ERASES the reserved ``_events`` scope across every
-        # session (the single persisted semantic-event stream it projects over); the
-        # durable trace retains the full history, so an idle server returns to baseline.
-        self._live.clear()
+        # session (the single persisted semantic-event stream it projects over) —
+        # gated, like ``release_session``, on the durable trace actually retaining
+        # the full history. Under the default "none" backend the log is the ONLY
+        # copy and is retained (#762); ``SegmentStore.clear`` below only drops the
+        # in-memory copies (write-through store untouched), so the heap still
+        # returns to baseline. Both paths log their reason.
+        backend = _durable_trace_backend()
+        if backend in _DISABLED_TRACE_BACKENDS:
+            logger.warning(
+                "arc: retained _events log for all sessions reason=durable_trace_disabled "
+                "backend=%r (the log is the only copy; erase skipped, #762)",
+                backend,
+            )
+        else:
+            logger.info(
+                "arc: erased _events log for all sessions reason=durable_trace_enabled "
+                "backend=%r (the durable trace keeps the full history)",
+                backend,
+            )
+            self._live.clear()
         self._segments.clear()
 
     def clear_cache(self) -> None:

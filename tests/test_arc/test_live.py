@@ -143,7 +143,11 @@ class TestARCMemoryLiveWiring:
         conv = arc.project_live_conversation("s1")
         assert conv is not None and len(conv.messages) == 2
 
-    def test_release_session_clears_live(self, tmp_path):
+    def test_release_session_clears_live(self, tmp_path, monkeypatch):
+        # The _events erase is gated on the durable trace being enabled (#762);
+        # retention under the default "none" backend is covered by
+        # test_events_log_retention.py.
+        monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "file")
         arc = ARCMemory(data_dir=str(tmp_path / "arc"))
         for e in _earthscope_turn_events():
             arc.on_semantic_event(e)
@@ -151,7 +155,8 @@ class TestARCMemoryLiveWiring:
         assert result["live"] == 1
         assert arc.get_live_context("s1") == {}
 
-    def test_flush_and_release_clears_live(self, tmp_path):
+    def test_flush_and_release_clears_live(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "file")
         arc = ARCMemory(data_dir=str(tmp_path / "arc"))
         for e in _earthscope_turn_events():
             arc.on_semantic_event(e)
@@ -337,8 +342,11 @@ class TestBufferBacked:
             assert a.duration_ms == b.duration_ms
             assert a.performance == b.performance
 
-    def test_release_returns_to_baseline(self, tmp_path):
-        """release erases the '_events' log scope from the buffer (idle -> baseline)."""
+    def test_release_returns_to_baseline(self, tmp_path, monkeypatch):
+        """release erases the '_events' log scope from the buffer (idle -> baseline).
+
+        The erase requires the durable trace to keep the full history (#762)."""
+        monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "file")
         arc = ARCMemory(data_dir=str(tmp_path / "arc"))
         for e in _multi_turn_corpus():
             arc.on_semantic_event(e)
