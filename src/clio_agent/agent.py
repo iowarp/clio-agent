@@ -61,13 +61,11 @@ from clio_agent.errors import (
     ExpertError,
     ProviderError,
     RoutingError,
-    ToolError,
 )
 from clio_agent.harness import (
     SPECIAL_ROUTE_TARGETS,
     RouteDecision,
     RunTrace,
-    ToolObservation,
     compact_tool_result,
     extract_file_paths,
     normalize_tool_error,
@@ -480,12 +478,6 @@ class ClioAgent(dspy.Module):
             )
             trace.route = route
             success = True
-            if selected not in SPECIAL_ROUTE_TARGETS and error_info is None:
-                error_info = self._tool_error_info_from_trace(selected, trace)
-            if error_info and not error_info.get("details", {}).get("partial", False):
-                success = False
-                error_msg = str(error_info.get("message") or "Tool execution failed.")
-                answer = ""
         except Exception as e:
             success = False
             inferred_selected = self._selected_expert_from_trace(trace)
@@ -783,29 +775,6 @@ class ClioAgent(dspy.Module):
                         or f"Planner selected child expert {expert_id}; routing through parent."
                     )
                     expert_id = child_parent
-                if self._should_answer_with_chat(question, file_context):
-                    if routing_mode == "experts":
-                        raise RoutingError(
-                            "Session routing_mode='experts' requires an expert/tool action, "
-                            "but the planner selected an expert without concrete file or data "
-                            "context.",
-                            details=self._recovery_details(
-                                requested_mode=routing_mode,
-                                planner_action=action,
-                            ),
-                        )
-                    answer = self._run_chat_agent(
-                        question,
-                        session_context,
-                        images=image_inputs,
-                        trace=trace,
-                    )
-                    route = self._route_for_selected(
-                        "chat",
-                        "Planner expert action ignored because no concrete file/data context exists.",
-                        confidence=0.65,
-                    )
-                    return "chat", answer, None, None, route
                 compatibility_error = self._expert_file_compatibility_error(
                     expert_id,
                     file_context,
@@ -869,19 +838,6 @@ class ClioAgent(dspy.Module):
                         "Agent planner selected no action but did not provide an explanation.",
                         details=self._recovery_details(planner_action=action),
                     )
-                if self._should_replace_planner_text(
-                    kind=kind,
-                    question=question,
-                    session_context=session_context,
-                    answer=answer,
-                ):
-                    raise RoutingError(
-                        "Agent planner selected no action with stale or in-scope answer text.",
-                        details=self._recovery_details(
-                            planner_action=action,
-                            replacement_reason="stale_or_in_scope_text",
-                        ),
-                    )
                 route = self._route_for_selected(
                     "none",
                     reason or "Agent planner found no suitable CLIO action.",
@@ -899,23 +855,6 @@ class ClioAgent(dspy.Module):
                         ),
                     )
                 answer = self._coerce_text(action.get("answer")).strip()
-                if self._should_replace_planner_text(
-                    kind=kind,
-                    question=question,
-                    session_context=session_context,
-                    answer=answer,
-                ):
-                    if not observations:
-                        raise RoutingError(
-                            "Agent planner produced stale or invalid direct answer text.",
-                            details=self._recovery_details(
-                                planner_action=action,
-                                replacement_reason="stale_or_invalid_answer_text",
-                            ),
-                        )
-                    answer = ""
-                if not answer and observations:
-                    answer = self._fallback_answer_from_observations(observations)
                 if not answer and last_error_info is not None:
                     route = self._route_for_selected(
                         selected,
@@ -984,14 +923,12 @@ class ClioAgent(dspy.Module):
             )
 
         self._raise_if_cancelled("answer_synthesis_before")
-        answer = self._fallback_answer_from_observations(observations)
-        if not answer:
-            answer = self._synthesize_agent_answer(
-                question=question,
-                session_context=session_context,
-                images=image_inputs,
-                observations=observations,
-            )
+        answer = self._synthesize_agent_answer(
+            question=question,
+            session_context=session_context,
+            images=image_inputs,
+            observations=observations,
+        )
         self._raise_if_cancelled("answer_synthesis_after")
         if selected == "chat":
             selected = self._selected_expert_from_trace(trace)
@@ -2022,11 +1959,6 @@ class ClioAgent(dspy.Module):
                 "Routing override: experts mode is active. Do not choose answer or none "
                 "before a tool or expert has produced an observation."
             )
-        elif routing_mode == "reasoning_only":
-            lines.append(
-                "Routing override: reasoning_only mode is active. Prefer the planner's "
-                "tool/expert reasoning path over deterministic shortcuts."
-            )
         return "\n".join(lines)
 
     def _planner_child_capability_lines(self, parent_id: str) -> list[str]:
@@ -2671,141 +2603,6 @@ class ClioAgent(dspy.Module):
             return "No observations yet"
         return json.dumps(observations, ensure_ascii=False, indent=2)
 
-    @classmethod
-    def _should_answer_with_chat(cls, question: str, file_context: str) -> bool:
-        """Return whether an expert action should be kept in chat.
-
-        Without a concrete file path or current file context, broad capability
-        and workflow questions should not be sent to data experts. Weak local
-        planners otherwise produce plausible but file-context-dependent expert
-        answers for ordinary conversation.
-        """
-        if file_context.strip() or extract_file_paths(question, "", SCIENTIFIC_FILE_SUFFIXES):
-            return False
-
-        lowered = " ".join(question.lower().split())
-        general_prefixes = (
-            "briefly",
-            "explain",
-            "how ",
-            "if ",
-            "summarize",
-            "tell me",
-            "what ",
-            "when ",
-            "why ",
-        )
-        general_terms = (
-            "capabilit",
-            "can you do",
-            "local data file",
-            "previous answer",
-            "provider",
-            "safe next step",
-            "workflow",
-        )
-        return lowered.startswith(general_prefixes) or any(
-            term in lowered for term in general_terms
-        )
-
-    @classmethod
-    def _should_replace_planner_text(
-        cls,
-        *,
-        kind: str,
-        question: str,
-        session_context: str,
-        answer: str,
-    ) -> bool:
-        """Return whether planner text is stale or invalid for the route."""
-        if not answer:
-            return False
-
-        lowered = answer.lower()
-        if "file_context" in lowered or "no current file context" in lowered:
-            return True
-
-        if kind == "none" and not cls._question_looks_out_of_scope(question):
-            return True
-
-        previous = cls._last_assistant_context(session_context)
-        return cls._text_similarity(answer, previous) >= 0.72
-
-    @staticmethod
-    def _question_looks_out_of_scope(question: str) -> bool:
-        """Return whether a request is clearly outside CLIO's domain."""
-        lowered = question.lower()
-        in_scope_terms = (
-            "analysis",
-            "clio",
-            "data",
-            "file",
-            "hdf5",
-            "parquet",
-            "previous answer",
-            "provider",
-            "scientific",
-            "summarize",
-            "visual",
-        )
-        return not any(term in lowered for term in in_scope_terms)
-
-    @staticmethod
-    def _last_assistant_context(session_context: str) -> str:
-        """Extract the most recent assistant line from compiled context."""
-        for line in reversed(session_context.splitlines()):
-            if line.lower().startswith("assistant:"):
-                return line.split(":", 1)[1].strip()
-        return ""
-
-    @staticmethod
-    def _assistant_context_lines(session_context: str) -> list[str]:
-        """Extract assistant lines from compiled context."""
-        lines: list[str] = []
-        for line in session_context.splitlines():
-            if line.lower().startswith("assistant:"):
-                text = line.split(":", 1)[1].strip()
-                if text:
-                    lines.append(text)
-        return lines
-
-    @classmethod
-    def _summarize_assistant_context(cls, session_context: str) -> str:
-        """Build a short deterministic summary from prior assistant turns."""
-        snippets: list[str] = []
-        for line in cls._assistant_context_lines(session_context):
-            snippet = cls._first_sentence(line, max_chars=120).strip()
-            if not snippet:
-                continue
-            if any(cls._text_similarity(snippet, existing) >= 0.7 for existing in snippets):
-                continue
-            snippets.append(snippet)
-            if len(snippets) >= 4:
-                break
-
-        if not snippets:
-            return ""
-        return "Previous answers covered: " + "; ".join(snippets) + "."
-
-    @staticmethod
-    def _question_requests_summary(question: str) -> bool:
-        """Return whether the user is asking to summarize prior answers."""
-        lowered = question.lower()
-        return "summar" in lowered and (
-            "previous" in lowered or "prior" in lowered or "earlier" in lowered
-        )
-
-    @staticmethod
-    def _text_similarity(left: str, right: str) -> float:
-        """Small token-overlap score for repeated context detection."""
-        if not left or not right:
-            return 0.0
-        left_tokens = {token for token in left.lower().split() if len(token) > 3}
-        right_tokens = {token for token in right.lower().split() if len(token) > 3}
-        if not left_tokens or not right_tokens:
-            return 0.0
-        return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
-
     @staticmethod
     def _first_sentence(text: str, max_chars: int = 220) -> str:
         """Return a compact one-line description."""
@@ -3006,20 +2803,12 @@ class ClioAgent(dspy.Module):
             answer = self._coerce_text(getattr(result, "answer", None)).strip()
             self._raise_if_cancelled("chat_after")
             if answer:
-                if self._question_requests_summary(question):
-                    summary = self._summarize_assistant_context(chat_context)
-                    if summary:
-                        return summary
                 return answer
             raise ValueError("Chat agent returned an empty answer.")
         except Exception as chat_error:
             recovered = self._parse_answer_from_adapter_error(chat_error)
             if recovered:
                 self._raise_if_cancelled("chat_after")
-                if self._question_requests_summary(question):
-                    summary = self._summarize_assistant_context(chat_context)
-                    if summary:
-                        return summary
                 return recovered
             if self.verbose:
                 print(f"[ClioAgent] ChatAgent failed: {chat_error}")
@@ -3105,74 +2894,6 @@ class ClioAgent(dspy.Module):
             except ValueError:
                 continue
         return policy.allowed_roots[0] / ".clio-agent-artifacts"
-
-    @classmethod
-    def _tool_error_info_from_trace(
-        cls,
-        selected: str,
-        trace: RunTrace,
-    ) -> dict[str, Any] | None:
-        """Return structured error_info for unrecovered failed tools in a trace."""
-        last_success_index = -1
-        for index, observation in enumerate(trace.tools):
-            if observation.ok:
-                last_success_index = index
-        successful_tools = [tool.tool for tool in trace.tools[: last_success_index + 1] if tool.ok]
-        for observation in trace.tools[last_success_index + 1 :]:
-            if observation.ok:
-                continue
-            if cls._tool_error_observation_handled(observation):
-                continue
-            error = cls._tool_error_from_result(observation.tool, observation.result)
-            info = cls._tool_error_info(
-                selected=selected,
-                tool=observation.tool,
-                error=error,
-                partial=bool(successful_tools),
-            )
-            if successful_tools:
-                info["details"]["successful_tools"] = successful_tools
-            return info
-        return None
-
-    @staticmethod
-    def _tool_error_observation_handled(observation: ToolObservation) -> bool:
-        """Return whether an expert explicitly recovered this failed observation."""
-        normalized = normalize_tool_result(observation.result, tool=observation.tool)
-        if not isinstance(normalized, dict) or "error" not in normalized:
-            return False
-        error = normalize_tool_error(normalized["error"], tool=observation.tool)
-        return bool(error.get("handled"))
-
-    @staticmethod
-    def _tool_error_from_result(tool: str, result: Any) -> dict[str, Any]:
-        """Extract one normalized tool error from a raw or structured result."""
-        normalized = normalize_tool_result(result, tool=tool)
-        if isinstance(normalized, dict) and "error" in normalized:
-            return normalize_tool_error(normalized["error"], tool=tool)
-        return normalize_tool_error(result, tool=tool)
-
-    @staticmethod
-    def _tool_error_info(
-        *,
-        selected: str,
-        tool: str,
-        error: dict[str, Any],
-        partial: bool,
-    ) -> dict[str, Any]:
-        """Build the public result error_info shape for handled tool failures."""
-        normalized = normalize_tool_error(error, tool=tool)
-        message = str(normalized.get("message") or f"{tool} failed.")
-        return ToolError(
-            message,
-            details={
-                "expert": selected,
-                "tool": tool,
-                "tool_error": normalized,
-                "partial": partial,
-                "recovery_actions": list(ERROR_RECOVERY_ACTIONS),
-            },
-        ).to_dict()
 
     @staticmethod
     def _call_tool_function(tool: Any, *args: Any, **kwargs: Any) -> Any:
