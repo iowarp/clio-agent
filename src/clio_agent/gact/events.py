@@ -30,10 +30,13 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import logging
 import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
+
+logger = logging.getLogger(__name__)
 
 
 def _utcnow_iso() -> str:
@@ -103,9 +106,18 @@ class EventBus:
     / handler returns). ``publish`` writes to every active queue
     for the matching session.
 
-    Concurrency: single-process, single-thread (FastAPI worker).
-    The bus itself is a plain dict; queues are asyncio.Queue
-    instances which serialize their own operations.
+    Concurrency: single-process, multi-producer. The subscriber
+    queues are ``asyncio.Queue`` instances owned by the server's
+    event loop, and ``asyncio.Queue`` is NOT thread-safe — but
+    ``publish`` is called from worker threads (the MCP tool-observer
+    thread, the LM-bind thread running its own loop, executor
+    threads emitting semantic events). The bus therefore binds the
+    owning loop on first ``subscribe`` and bridges every foreign-
+    thread publish onto it via ``loop.call_soon_threadsafe``, so
+    ``_subs``/``_history`` and the queues are only ever mutated on
+    the owning loop (iowarp/clio-agent#758). Before a loop is bound
+    there are no subscriber queues, so publishes touch only the
+    replay history and run inline.
     """
 
     def __init__(self, *, queue_capacity: int = 256, history_per_session: int = 256) -> None:
@@ -124,6 +136,10 @@ class EventBus:
         # progressing turn from a wedged one. Plain float assignment is safe to
         # set from worker threads (the agent loop runs in an executor).
         self._last_publish_monotonic: dict[str, float] = {}
+        # The event loop that owns _subs/_history and every subscriber
+        # queue. Bound by the first subscribe(); foreign-thread publishes
+        # are bridged onto it via call_soon_threadsafe (#758).
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     def publish(self, event: Event) -> None:
         """Fan-out to every subscriber of event.session_id + record
@@ -135,21 +151,69 @@ class EventBus:
         show up as a ``server.disposed``-equivalent gap in the
         client's stream; clients catch up via ``GET /v1/sessions/
         {sid}/messages`` on reconnect.
+
+        Safe to call from any thread: publishes arriving off the
+        owning loop are bridged via ``loop.call_soon_threadsafe``
+        (iowarp/clio-agent#758).
         """
+
+        # Record the liveness heartbeat for the turn watchdog. A specific
+        # session's progress also counts as global ("") progress so the
+        # no-progress watchdog (which keys off the turn's session) sees it.
+        # Stamped in the publishing thread (plain float assignment is
+        # GIL-atomic) so liveness is visible even before the owning loop
+        # runs a bridged callback.
+        now = time.monotonic()
+        self._last_publish_monotonic[event.session_id] = now
+        if event.session_id != "":
+            self._last_publish_monotonic[""] = now
+
+        try:
+            running: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        owner = self._loop
+        if owner is None or running is owner:
+            # On the owning loop — or no loop bound yet, in which case no
+            # subscriber queues exist and this only appends replay history.
+            self._deliver(event)
+            return
+        # Foreign thread (or a coroutine on a different loop, e.g. the
+        # LM-bind worker's private loop): bridge onto the owning loop so
+        # queue/history mutations stay single-threaded and waiting getters
+        # are woken reliably.
+        try:
+            owner.call_soon_threadsafe(self._deliver, event)
+        except RuntimeError as exc:
+            # Degraded path: the owning loop is closed (server teardown).
+            # Live delivery is impossible; keep the replay record so a
+            # reconnecting client can still catch up, and say so.
+            logger.warning(
+                "eventbus_publish_fallback reason=owner_loop_closed "
+                "event_type=%s session_id=%s live_delivery=dropped error=%s",
+                event.type,
+                event.session_id,
+                exc,
+            )
+            self._record_history(event)
+
+    def _record_history(self, event: Event) -> None:
+        """Append to the bounded per-session replay log."""
 
         log = self._history[event.session_id]
         log.append(event)
         if len(log) > self._history_cap:
             del log[: len(log) - self._history_cap]
 
-        # Record the liveness heartbeat for the turn watchdog. A specific
-        # session's progress also counts as global ("") progress so the
-        # no-progress watchdog (which keys off the turn's session) sees it.
-        now = time.monotonic()
-        self._last_publish_monotonic[event.session_id] = now
-        if event.session_id != "":
-            self._last_publish_monotonic[""] = now
+    def _deliver(self, event: Event) -> None:
+        """Record replay history + fan out to live subscriber queues.
 
+        Runs on the owning loop once one is bound (``publish`` bridges
+        foreign-thread callers); before a loop is bound there are no
+        subscriber queues, so running inline is safe.
+        """
+
+        self._record_history(event)
         subscriber_sessions = (
             list(self._subs)
             if event.session_id == ""
@@ -201,6 +265,21 @@ class EventBus:
         mid-iteration.
         """
 
+        # Bind the owning loop on first subscribe: every queue the bus
+        # fans out to is consumed on this loop, so this is the loop that
+        # foreign-thread publishes must be bridged onto (#758).
+        loop = asyncio.get_running_loop()
+        if self._loop is None:
+            self._loop = loop
+        elif loop is not self._loop:
+            # Never expected in this app (one serving loop); surfaced
+            # loudly because cross-loop queues cannot be woken safely.
+            logger.warning(
+                "eventbus_subscribe_fallback reason=foreign_loop_subscriber "
+                "session_id=%s — subscriber runs on a different event loop "
+                "than the bus owner; delivery to it is not thread-safe",
+                session_id,
+            )
         q: asyncio.Queue[Event] = asyncio.Queue(maxsize=self._capacity)
         self._subs[session_id].append(q)
         try:
