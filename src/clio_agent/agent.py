@@ -24,6 +24,7 @@ import contextvars
 import json
 import os
 import re
+import tempfile
 import time
 import uuid
 from collections.abc import Mapping, Sequence
@@ -75,6 +76,11 @@ from clio_agent.harness import (
 )
 from clio_agent.optimizer.instrumentation import _extract_output
 from clio_agent.registry.registry import AgentCapability, AgentRegistry
+
+# Generic path-detection allowlist: file suffixes recognized when extracting
+# candidate file paths from free text. Re-exported from the shared vocabulary
+# module (single source of truth — see clio_agent.scientific_suffixes).
+from clio_agent.scientific_suffixes import SCIENTIFIC_FILE_SUFFIXES
 from clio_agent.signatures.main_agent_sig import (
     AgentActionSignature,
     AgentAnswerSignature,
@@ -95,32 +101,14 @@ from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError, vali
 from clio_agent.tools.gateway import build_gateway, build_tool_catalog
 from clio_agent.tools.mcp_config import load_mcp_servers
 
-# Generic path-detection allowlist: file suffixes recognized when extracting
-# candidate file paths from free text. This is structural grounding (does the
-# text mention a file at all), NOT keyword->format inference — nothing branches
-# on which suffix matched. Keep it as a minimal, case-agnostic set.
-SCIENTIFIC_FILE_SUFFIXES = {
-    ".h5",
-    ".hdf5",
-    ".parquet",
-    ".csv",
-    ".bp",
-    ".bp4",
-    ".bp5",
-    ".sac",
-    ".tar",
-    ".tgz",
-    ".gz",
-    ".fa",
-    ".fasta",
-    ".fna",
-    ".vcf",
-    ".cif",
-    ".geojson",
-    ".png",
-    ".mzml",
-}
 PLANNER_HIDDEN_TOOL_NAMES = {"fs_read_file", "fs_apply_edit_write"}
+
+# Candidate local-path tokens inside tool payload strings: POSIX /-rooted or a
+# Windows drive-rooted path (D:\... or D:/...). Suffix filtering happens after
+# the match, against SCIENTIFIC_FILE_SUFFIXES.
+_LOCAL_PATH_CANDIDATE_RE = re.compile(
+    r"(?:(?<![A-Za-z])[A-Za-z]:[\\/]|/)(?:[^\s,\"'`]|\\ )+"
+)
 
 
 _ROUTING_MODE_OVERRIDE: contextvars.ContextVar[str] = contextvars.ContextVar(
@@ -1098,7 +1086,7 @@ class ClioAgent(dspy.Module):
         """Extract local file paths from nested tool payloads for planner state."""
         paths: list[str] = []
         if isinstance(value, str):
-            for match in re.findall(r"/(?:[^\s,\"'`]|\\ )+", value):
+            for match in _LOCAL_PATH_CANDIDATE_RE.findall(value):
                 cleaned = match.rstrip(".,;:)")
                 if Path(cleaned).suffix.lower() in SCIENTIFIC_FILE_SUFFIXES:
                     paths.append(cleaned)
@@ -3106,7 +3094,7 @@ class ClioAgent(dspy.Module):
             return Path(configured).expanduser()
 
         if not os.environ.get("CLIO_ALLOWED_ROOTS", "").strip():
-            return Path("/tmp/clio-agent-artifacts")
+            return Path(tempfile.gettempdir()) / "clio-agent-artifacts"
 
         policy = FileAccessPolicy.from_env()
         resolved_file = filepath.expanduser().resolve(strict=False)
