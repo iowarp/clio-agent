@@ -36,4 +36,6 @@ jobs:
       # Coverage floor lowered to 70 as the v0.5 merge brought in
       # large under-tested gact code; tracked in iowarp/clio-agent#31
       # to ratchet back up to 80% as the new code gets tests.
-      - run: uv run pytest tests/ -m "not integration" --cov-fail-under=70
+      # Coverage flags are explicit here on purpose: pyproject addopts is
+      # empty so local pytest runs stay lean (iowarp/clio-agent#773).
+      - run: uv run pytest tests/ -m "not integration" --cov=clio_agent --cov-report=term-missing --cov-fail-under=70

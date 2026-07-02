@@ -179,12 +179,10 @@ markers = [
     "real_case: end-to-end live CLIO blueprint case (a tier above unit/integration; needs CLIO_RUN_LIVE=1)",
     "live: hits a live gact server + external provider (slow; skipped unless CLIO_RUN_LIVE=1)",
 ]
-addopts = [
-    "--verbose",
-    "--cov=clio_agent",
-    "--cov-report=term-missing",
-    "--cov-report=html",
-]
+# Keep addopts empty: forcing --verbose + coverage (incl. 23MB htmlcov) on
+# every invocation — even --collect-only — punishes local runs. CI passes
+# its coverage flags explicitly in .github/workflows/ci.yml (#773).
+addopts = []
 
 [tool.black]
 line-length = 100
