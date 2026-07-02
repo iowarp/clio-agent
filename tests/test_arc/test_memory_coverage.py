@@ -1,11 +1,9 @@
 """Additional ARC Memory tests for coverage of uncovered paths.
 
-Covers: index lifecycle (no cap; release eviction), get_invocation (cache miss path), get_session_invocations,
-store_metrics, get_metrics (with/without period, cache miss), store_context, get_context
-(cache miss), cache_tool_result, get_cached_tool_result, store_dataset_profile,
-get_dataset_profile (disk fallback), get_session_profiles, store_procedural_memory,
-get_procedural_memories, query_metrics_by_time_range, get_lsm_stats, clear_cache,
-clear_all, _parse_timestamp (string timestamps).
+Covers: index lifecycle (no cap; release eviction), get_invocation (cache miss path),
+get_session_invocations, store_dataset_profile, get_dataset_profile (disk fallback),
+get_session_profiles, store_procedural_memory, get_procedural_memories, get_lsm_stats,
+clear_cache, clear_all, _parse_timestamp (string timestamps).
 """
 
 import time
@@ -14,16 +12,11 @@ import pytest
 
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.schema import (
-    Context,
     Conversation,
     DatasetProfile,
     Invocation,
-    InvocationStats,
-    LatencyStats,
     Message,
-    Metrics,
     ProceduralMemory,
-    UserSatisfactionStats,
 )
 
 
@@ -55,32 +48,28 @@ def _inv(trace_id, session_id="s1", agent_id="data"):
 
 
 class TestIndexLifecycle:
-    """The conversation/invocation B-tree indexes have NO size cap — an arbitrary
-    ceiling would silently fail large workloads (entries falling off the end). Memory is
-    bounded by LIFECYCLE instead: ``release_session`` evicts a session's branches on
+    """The invocation B-tree index has NO size cap — an arbitrary ceiling would
+    silently fail large workloads (entries falling off the end). Memory is bounded
+    by LIFECYCLE instead: ``release_session`` evicts a session's branches on
     end/delete, and the index is rebuildable from the durable record on restart."""
 
     def test_no_size_cap_keeps_every_entry_findable(self, arc):
         """Storing far more than any old ceiling keeps EVERY entry — nothing is dropped."""
         for i in range(500):
-            arc._conv_index.insert((f"s{i}", float(i)), {"session_id": f"s{i}"})
             arc._inv_index.insert((f"s{i}", float(i)), {"trace_id": f"t{i}"})
-        assert len(arc._conv_index) == 500
         assert len(arc._inv_index) == 500
 
     def test_release_session_evicts_only_that_sessions_branches(self, arc):
         """Lifecycle eviction: releasing a session drops ITS index branches; others stay."""
         for i in range(5):
-            arc._conv_index.insert(("keep", float(i)), {"session_id": "keep"})
-            arc._conv_index.insert(("drop", float(i)), {"session_id": "drop"})
+            arc._inv_index.insert(("keep", float(i)), {"trace_id": f"k{i}"})
             arc._inv_index.insert(("drop", float(i)), {"trace_id": f"t{i}"})
 
         arc.release_session("drop")
 
-        conv_keys = list(arc._conv_index.keys())
-        assert all(k[0] != "drop" for k in conv_keys), "released session's branch survived"
-        assert any(k[0] == "keep" for k in conv_keys), "other session was wrongly evicted"
-        assert all(k[0] != "drop" for k in arc._inv_index.keys())
+        inv_keys = list(arc._inv_index.keys())
+        assert all(k[0] != "drop" for k in inv_keys), "released session's branch survived"
+        assert any(k[0] == "keep" for k in inv_keys), "other session was wrongly evicted"
 
 
 class TestGetInvocation:
@@ -125,101 +114,6 @@ class TestGetSessionInvocations:
         """Should return empty list for session with no invocations."""
         result = arc.get_session_invocations("empty")
         assert result == []
-
-
-class TestStoreGetMetrics:
-    """Test store_metrics and get_metrics."""
-
-    def _make_metrics(self, agent_id="data", period="2025-01"):
-        return Metrics(
-            agent_id=agent_id,
-            tier=2,
-            period=period,
-            computed_at=time.time(),
-            invocations=InvocationStats(100, 95, 5, 0, 0.95),
-            latency=LatencyStats(1500.0, 1200.0, 2500.0, 4000.0, 200.0, 8000.0),
-            user_satisfaction=UserSatisfactionStats(50, 45, 5, 0.90),
-        )
-
-    def test_store_and_get_with_period(self, arc):
-        """Store and retrieve metrics by period."""
-        m = self._make_metrics()
-        arc.store_metrics(m)
-        result = arc.get_metrics("data", period="2025-01")
-        assert result is not None
-        assert result.agent_id == "data"
-        assert result.period == "2025-01"
-
-    def test_get_latest_without_period(self, arc):
-        """Get latest metrics when no period specified."""
-        arc.store_metrics(self._make_metrics(period="2025-01"))
-        arc.store_metrics(self._make_metrics(period="2025-02"))
-        result = arc.get_metrics("data")
-        assert result is not None
-        assert result.period == "2025-02"
-
-    def test_get_missing_returns_none(self, arc):
-        """Should return None for nonexistent metrics."""
-        assert arc.get_metrics("nonexistent", period="2025-01") is None
-
-    def test_get_latest_no_files(self, arc):
-        """Should return None when no metrics files exist."""
-        assert arc.get_metrics("data") is None
-
-    def test_disk_fallback(self, arc):
-        """Should load from disk on cache miss."""
-        arc.store_metrics(self._make_metrics())
-        arc.clear_cache()
-        result = arc.get_metrics("data", period="2025-01")
-        assert result is not None
-
-
-class TestStoreGetContext:
-    """Test store_context and get_context."""
-
-    def test_store_and_get(self, arc):
-        """Store and retrieve context."""
-        now = time.time()
-        ctx = Context(domain="hdf5", created_at=now, updated_at=now)
-        arc.store_context(ctx)
-        result = arc.get_context("hdf5")
-        assert result is not None
-        assert result.domain == "hdf5"
-
-    def test_disk_fallback(self, arc):
-        """Should load from disk on cache miss."""
-        now = time.time()
-        ctx = Context(domain="test", created_at=now, updated_at=now)
-        arc.store_context(ctx)
-        arc.clear_cache()
-        result = arc.get_context("test")
-        assert result is not None
-
-    def test_missing_returns_none(self, arc):
-        """Should return None for nonexistent context."""
-        assert arc.get_context("nonexistent") is None
-
-
-class TestToolCache:
-    """Test cache_tool_result and get_cached_tool_result."""
-
-    def test_cache_and_retrieve(self, arc):
-        """Should cache and retrieve tool result."""
-        arc.cache_tool_result("hdf5", "analyze", {"path": "a.h5"}, {"size": 100})
-        result = arc.get_cached_tool_result("hdf5", "analyze", {"path": "a.h5"})
-        assert result == {"size": 100}
-
-    def test_cache_miss(self, arc):
-        """Should return None for uncached tool result."""
-        result = arc.get_cached_tool_result("hdf5", "analyze", {"path": "missing.h5"})
-        assert result is None
-
-    def test_different_args_different_keys(self, arc):
-        """Different arguments should produce different cache entries."""
-        arc.cache_tool_result("hdf5", "analyze", {"path": "a.h5"}, "result_a")
-        arc.cache_tool_result("hdf5", "analyze", {"path": "b.h5"}, "result_b")
-        assert arc.get_cached_tool_result("hdf5", "analyze", {"path": "a.h5"}) == "result_a"
-        assert arc.get_cached_tool_result("hdf5", "analyze", {"path": "b.h5"}) == "result_b"
 
 
 class TestDatasetProfiles:
@@ -331,15 +225,8 @@ class TestProceduralMemory:
         assert len(result) >= 1
 
 
-class TestQueryMetrics:
-    """Test query_metrics_by_time_range and get_lsm_stats."""
-
-    def test_range_query(self, arc):
-        """Should query LSM for time range."""
-        now = time.time()
-        arc.store_invocation(_inv("t1"))
-        result = arc.query_metrics_by_time_range(now - 10, now + 10)
-        assert isinstance(result, list)
+class TestLsmStats:
+    """Test get_lsm_stats."""
 
     def test_lsm_stats(self, arc):
         """Should return LSM statistics."""
@@ -376,13 +263,10 @@ class TestClearOperations:
                 messages=[Message(role="user", content="hi", timestamp=now)],
             )
         )
-        arc.store_context(Context(domain="d1", created_at=now, updated_at=now))
-
         arc.clear_all()
 
         assert arc.get_invocation("t1") is None
         assert arc.get_conversation("s1") is None
-        assert arc.get_context("d1") is None
         stats = arc.get_cache_stats()
         assert stats["disk_reads"] == 0
         assert stats["disk_writes"] == 0

@@ -896,8 +896,8 @@ class SegmentStore:
         self, session_id: str, scope: str, *, as_of: int | None = None
     ) -> list[Segment]:
         """LIVE WORKING-SET segments — the kinds the PROMPT and the compaction/reset
-        paths operate on. Excludes the richer ARC-as-source kinds (``lm_io`` /
-        ``extract_io`` / ``answer``), which are part of ARC's complete freeze-anytime
+        paths operate on. Excludes the richer ARC-as-source kinds (``answer`` /
+        ``semantic_event``), which are part of ARC's complete freeze-anytime
         state but are NOT working-set context.
 
         This is the target of the per-turn working-set reset and ``_maybe_autocompact``

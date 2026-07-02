@@ -19,7 +19,7 @@ See docs/ARC_MEMORY_LAYER.md for architecture details.
 
 import re
 from collections import Counter
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.schema import Context, Conversation
@@ -380,71 +380,3 @@ class ContextRetriever:
         keywords = [token for token in tokens if token not in self._stop_words and len(token) >= 3]
 
         return keywords
-
-    def get_relevant_tool_results(
-        self, query: str, domain: str, max_results: int = 5
-    ) -> List[Dict[str, Any]]:
-        """Retrieve relevant cached tool results from context.
-
-        Searches for previously cached tool results that might be
-        relevant to the current query.
-
-        Args:
-            query: User query
-            domain: Domain identifier (e.g., "hdf5_optimization")
-            max_results: Maximum number of results to return
-
-        Returns:
-            List of cached tool results with metadata
-
-        Examples:
-            >>> results = retriever.get_relevant_tool_results(
-            ...     query="analyze HDF5 file",
-            ...     domain="hdf5_optimization",
-            ...     max_results=3
-            ... )
-            >>> for result in results:
-            ...     print(f"Tool: {result['tool']}, Hit count: {result['hit_count']}")
-        """
-        # Get context for domain
-        context = self.memory.get_context(domain)
-
-        if not context or not context.cached_tool_results:
-            return []
-
-        # Extract query keywords
-        query_keywords = set(self._extract_keywords(query.lower()))
-
-        # Score each cached tool result
-        scored_results = []
-        for tool_key, cached_result in context.cached_tool_results.items():
-            # Score based on parameter relevance
-            params_text = str(cached_result.result).lower()
-            params_keywords = set(self._extract_keywords(params_text))
-
-            if not params_keywords:
-                continue
-
-            # Calculate overlap
-            intersection = query_keywords & params_keywords
-            score = len(intersection) / len(query_keywords) if query_keywords else 0.0
-
-            if score > 0:
-                scored_results.append(
-                    {
-                        "score": score,
-                        "tool": tool_key,
-                        "result": cached_result.result,
-                        "hit_count": cached_result.hit_count,
-                        "cached_at": cached_result.cached_at,
-                    }
-                )
-
-        # Sort by score (descending)
-        scored_results.sort(key=lambda x: x["score"], reverse=True)
-
-        # Return top N results (without score in output)
-        return [
-            {k: v for k, v in result.items() if k != "score"}
-            for result in scored_results[:max_results]
-        ]

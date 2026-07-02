@@ -1,4 +1,4 @@
-"""Data schemas for ARC (Conversation, Invocation, Metrics, Context)
+"""Data schemas for ARC (Conversation, Invocation, Context, Segment)
 
 This module defines msgspec.Struct-based schemas for efficient serialization
 in the ARC Memory Layer. All schemas support msgpack encoding/decoding.
@@ -6,8 +6,8 @@ in the ARC Memory Layer. All schemas support msgpack encoding/decoding.
 Architecture:
     - Conversation: Session history and routing decisions
     - Invocation: Individual agent execution traces
-    - Metrics: Aggregated performance metrics per agent
-    - Context: Cached tools, learned patterns, domain knowledge
+    - Context: Query-relevant retrieval context (learned patterns, docs)
+    - Segment: One ordered, scoped piece of the live context plane
 
 Timestamp Consistency:
     - All timestamp fields use float type (Unix time from time.time())
@@ -66,11 +66,8 @@ SegmentKind = Literal[
     "tool_call",
     "observation",
     "summary",
-    # Richer ARC-as-source kinds (substrate-ready; no writer emits these yet — they
-    # are the targets of the live-atom phase). They are NOT part of the dspy
-    # trajectory projection (segments_to_keys ignores any kind it doesn't model).
-    "lm_io",  # one raw LM call's input + output (the I/O of a single ReAct step)
-    "extract_io",  # a dspy.Extract call's input + output
+    # Richer ARC-as-source kinds. They are NOT part of the dspy trajectory
+    # projection (segments_to_keys ignores any kind it doesn't model).
     "answer",  # an expert/turn final message
     "semantic_event",  # one persisted raw semantic event — ARC's ONE log (the
     # ARC-as-source highway record AND the substrate the live observer projects over)
@@ -80,10 +77,10 @@ SegmentStatus = Literal["live", "tombstoned"]
 # The kinds the model's PROMPT is rendered from (the dspy trajectory projection's
 # domain) + the static framing kinds. These are the ONLY kinds the live-plane
 # consumers that MUTATE the working set operate over: the per-turn working-set reset
-# and the auto-compaction target. The richer ARC-as-source kinds (lm_io/extract_io/
-# answer) plus the reserved highway/observer atom (semantic_event in the ``_events``
-# scope — ARC's ONE persisted semantic-event log, which the live observer projects
-# its turn records over) are part of ARC's COMPLETE freeze-anytime state but are NOT
+# and the auto-compaction target. The richer ARC-as-source kinds (``answer``) plus
+# the reserved highway/observer atom (semantic_event in the ``_events`` scope —
+# ARC's ONE persisted semantic-event log, which the live observer projects its turn
+# records over) are part of ARC's COMPLETE freeze-anytime state but are NOT
 # working-set context, so they must never be reset-tombstoned at a new turn nor folded
 # into a compaction summary. They are also never rendered into a model prompt: they
 # live in their own reserved scope (so a normal expert scope's working-set/keys render
@@ -355,141 +352,6 @@ class Invocation(msgspec.Struct):
     nanoagents_spawned: List[NanoagentSpawn] = msgspec.field(default_factory=list)
     performance: Dict[str, Any] = msgspec.field(default_factory=dict)
     storage_tier: str = "cold"
-
-
-class InvocationStats(msgspec.Struct):
-    """Invocation statistics for metrics aggregation.
-
-    Attributes:
-        total: Total invocation count
-        success: Successful invocation count
-        failure: Failed invocation count
-        timeout: Timed-out invocation count
-        success_rate: Success rate (0.0-1.0)
-    """
-
-    total: int
-    success: int
-    failure: int
-    timeout: int
-    success_rate: float
-
-
-class LatencyStats(msgspec.Struct):
-    """Latency statistics for metrics aggregation.
-
-    Attributes:
-        avg_ms: Average latency in milliseconds
-        median_ms: Median latency in milliseconds
-        p95_ms: 95th percentile latency
-        p99_ms: 99th percentile latency
-        min_ms: Minimum latency
-        max_ms: Maximum latency
-    """
-
-    avg_ms: float
-    median_ms: float
-    p95_ms: float
-    p99_ms: float
-    min_ms: float
-    max_ms: float
-
-
-class UserSatisfactionStats(msgspec.Struct):
-    """User satisfaction statistics.
-
-    Attributes:
-        total_rated: Total number of rated interactions
-        positive: Positive rating count
-        negative: Negative rating count
-        score: Overall satisfaction score (0.0-1.0)
-    """
-
-    total_rated: int
-    positive: int
-    negative: int
-    score: float
-
-
-class ToolMetrics(msgspec.Struct):
-    """Metrics for a specific tool.
-
-    Attributes:
-        calls: Total call count
-        avg_duration_ms: Average duration in milliseconds
-        cache_hit_rate: Cache hit rate (0.0-1.0)
-    """
-
-    calls: int
-    avg_duration_ms: float
-    cache_hit_rate: float
-
-
-class OptimizationRecord(msgspec.Struct):
-    """Record of an optimization event.
-
-    Attributes:
-        timestamp: Optimization timestamp (Unix timestamp)
-        optimizer: Optimizer name
-        method: Optimization method (e.g., "MIPRO")
-        variant_id: New variant identifier
-        improvements: Improvement metrics
-        training_examples: Number of training examples used
-        optimization_duration: Duration of optimization process in seconds
-    """
-
-    timestamp: float
-    optimizer: str
-    method: str
-    variant_id: str
-    improvements: Dict[str, Dict[str, Any]]
-    training_examples: int
-    optimization_duration: float
-
-
-class Metrics(msgspec.Struct):
-    """Aggregated performance metrics for an agent over a time period.
-
-    Attributes:
-        agent_id: Agent identifier
-        tier: Agent tier (1=Main, 2=Expert, 3=Nanoagent)
-        period: Time period (e.g., "2025-01-01/2025-01-31")
-        computed_at: Metrics computation timestamp (Unix timestamp)
-        invocations: Invocation statistics
-        latency: Latency statistics
-        user_satisfaction: User satisfaction statistics
-        tools: Tool-specific metrics
-        optimization_history: Optimization event history
-        storage_tier: Current IOWarp CTE storage tier
-
-    Example:
-        >>> import time
-        >>> metrics = Metrics(
-        ...     agent_id="DataExpert",
-        ...     tier=2,
-        ...     period="2025-01/2025-01",
-        ...     computed_at=time.time(),
-        ...     invocations=InvocationStats(1234, 1193, 31, 10, 0.967),
-        ...     latency=LatencyStats(1523, 1200, 2500, 4200, 234, 8900),
-        ...     user_satisfaction=UserSatisfactionStats(342, 305, 37, 0.89),
-        ...     tools={},
-        ...     optimization_history=[],
-        ...     storage_tier="warm"
-        ... )
-        >>> encoded = msgspec.msgpack.encode(metrics)
-        >>> decoded = msgspec.msgpack.decode(encoded, type=Metrics)
-    """
-
-    agent_id: str
-    tier: int
-    period: str
-    computed_at: float
-    invocations: InvocationStats
-    latency: LatencyStats
-    user_satisfaction: UserSatisfactionStats
-    tools: Dict[str, ToolMetrics] = msgspec.field(default_factory=dict)
-    optimization_history: List[OptimizationRecord] = msgspec.field(default_factory=list)
-    storage_tier: str = "warm"
 
 
 class RetrievedDoc(msgspec.Struct):
@@ -786,13 +648,6 @@ class ProceduralMemory(msgspec.Struct):
     confidence: float = 0.5
 
 
-# Type aliases for convenience
-ConversationDict = Dict[str, Any]
-InvocationDict = Dict[str, Any]
-MetricsDict = Dict[str, Any]
-ContextDict = Dict[str, Any]
-
-
 def encode_conversation(conv: Conversation) -> bytes:
     """Encode Conversation to msgpack bytes.
 
@@ -844,54 +699,6 @@ def decode_invocation(data: bytes) -> Invocation:
         Invocation object
     """
     return msgspec.msgpack.decode(data, type=Invocation)
-
-
-def encode_metrics(metrics: Metrics) -> bytes:
-    """Encode Metrics to msgpack bytes.
-
-    Args:
-        metrics: Metrics object
-
-    Returns:
-        Msgpack-encoded bytes
-    """
-    return msgspec.msgpack.encode(metrics)
-
-
-def decode_metrics(data: bytes) -> Metrics:
-    """Decode msgpack bytes to Metrics.
-
-    Args:
-        data: Msgpack-encoded bytes
-
-    Returns:
-        Metrics object
-    """
-    return msgspec.msgpack.decode(data, type=Metrics)
-
-
-def encode_context(ctx: Context) -> bytes:
-    """Encode Context to msgpack bytes.
-
-    Args:
-        ctx: Context object
-
-    Returns:
-        Msgpack-encoded bytes
-    """
-    return msgspec.msgpack.encode(ctx)
-
-
-def decode_context(data: bytes) -> Context:
-    """Decode msgpack bytes to Context.
-
-    Args:
-        data: Msgpack-encoded bytes
-
-    Returns:
-        Context object
-    """
-    return msgspec.msgpack.decode(data, type=Context)
 
 
 def encode_dataset_profile(profile: DatasetProfile) -> bytes:

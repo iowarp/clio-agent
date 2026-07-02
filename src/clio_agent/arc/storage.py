@@ -42,8 +42,6 @@ logger = logging.getLogger(__name__)
 ARC_KINDS: tuple[str, ...] = (
     "conversations",
     "invocations",
-    "metrics",
-    "context",
     "profiles",
     "procedural",
     "variants",
