@@ -139,6 +139,47 @@ def test_permission_list_filter_by_session(tmp_path: Path) -> None:
     assert body["metadata"]["total_after_session_filter"] == 1
 
 
+def test_sticky_permission_policy_survives_restart(tmp_path: Path) -> None:
+    """iowarp/clio-agent#759: allow_workspace must persist across a server restart.
+
+    Resolving a permission with ``allow_workspace`` derives a sticky policy;
+    a fresh app instance over the same store directory must re-load that
+    policy from disk instead of re-prompting.
+    """
+
+    client = _client(
+        tmp_path,
+        perms=[
+            {
+                "tool_call": {
+                    "call_id": "c1",
+                    "tool_name": "shell.exec",
+                    "input": {"cmd": "rm -rf /tmp/scratch"},
+                },
+                "summary": "destructive shell command",
+            }
+        ],
+    )
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    _turn(client, sid)
+    pid = client.get("/v1/permissions?status=pending").json()["permissions"][0]["id"]
+
+    resp = client.post(f"/v1/permissions/{pid}", json={"action": "allow_workspace"})
+    assert resp.status_code == 204
+
+    live = client.get("/v1/policies").json()["policies"]
+    assert [p["tool_name_pattern"] for p in live] == ["shell.exec"]
+
+    # Simulate a restart: a fresh store instance over the same directory.
+    restarted = TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent([])))
+    persisted = restarted.get("/v1/policies").json()["policies"]
+    assert len(persisted) == 1
+    assert persisted[0]["scope"] == "workspace"
+    assert persisted[0]["action"] == "allow"
+    assert persisted[0]["tool_name_pattern"] == "shell.exec"
+    assert persisted[0]["created_from_permission_id"] == pid
+
+
 def test_permission_list_metadata_reports_truncation_and_recent_first(
     tmp_path: Path,
 ) -> None:
