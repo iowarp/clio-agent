@@ -47,8 +47,9 @@ def test_commands_listed(client: TestClient) -> None:
     optimize = next(c for c in body["commands"] if c["id"] == "/optimize")
     assert optimize["status"] == "unavailable"
     assert optimize["enabled"] is False
-    assert optimize["error"] == "not_implemented"
-    assert optimize["disabled_reason"]
+    # #801: uniform structured not-implemented — shared reason code + #633 pointer.
+    assert optimize["error"] == "optimizer_not_implemented"
+    assert "633" in optimize["disabled_reason"]
 
 
 def test_commands_capability_advertised(client: TestClient) -> None:
@@ -862,10 +863,12 @@ def test_dispatch_optimize_returns_structured_not_implemented(
 
     assert resp.status_code == 501
     body = resp.json()
-    assert body["error"]["error"] == "not_implemented"
+    # #801: uniform structured not-implemented — shared reason code + #633 pointer.
+    assert body["error"]["error"] == "optimizer_not_implemented"
+    assert "633" in body["error"]["message"]
     assert body["error"]["details"]["command"] == "/optimize"
     assert body["error"]["details"]["status"] == "unavailable"
-    assert body["error"]["details"]["disabled_reason"]
+    assert "633" in body["error"]["details"]["disabled_reason"]
     assert body["error"]["details"]["recovery_actions"] == [
         "retry_after_optimizer_support_lands",
         "exit",

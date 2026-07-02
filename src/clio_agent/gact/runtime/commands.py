@@ -13,8 +13,9 @@ surfaces consume it, so it lives here as the single source rather than as a
 
 Every function takes ``app`` explicitly (it reads ``app.state.sessions`` /
 ``workspaces`` / ``user_agents`` and the runtime blueprint resolvers); the module
-imports only leaf packages (catalog, agents.resolution, types, stdlib) and never
-loads :mod:`clio_agent.gact.app`.
+imports only leaf packages (catalog, agents.resolution, types, the dependency-free
+:mod:`clio_agent.optimizer.stub`, stdlib) and never loads
+:mod:`clio_agent.gact.app`.
 """
 
 from __future__ import annotations
@@ -33,6 +34,10 @@ from clio_agent.gact.catalog import (
     _truthy_command_field,
 )
 from clio_agent.gact.types import AgentDef
+from clio_agent.optimizer.stub import (
+    OPTIMIZER_NOT_IMPLEMENTED_MESSAGE,
+    OPTIMIZER_NOT_IMPLEMENTED_REASON,
+)
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -72,14 +77,17 @@ BACKEND_COMMANDS: list[dict[str, Any]] = [
         "error": "",
     },
     {
+        # #801: the optimizer stays as a research surface — this row projects
+        # the uniform structured not-implemented stub (reason code + #633
+        # pointer) that every optimizer entry point shares.
         "id": "/optimize",
         "title": "Optimize active expert",
-        "description": "Unavailable until optimizer command execution is wired.",
+        "description": OPTIMIZER_NOT_IMPLEMENTED_MESSAGE,
         "source": "builtin",
         "status": "unavailable",
         "enabled": False,
-        "error": "not_implemented",
-        "disabled_reason": "optimizer command execution is not wired yet",
+        "error": OPTIMIZER_NOT_IMPLEMENTED_REASON,
+        "disabled_reason": OPTIMIZER_NOT_IMPLEMENTED_MESSAGE,
     },
 ]
 
