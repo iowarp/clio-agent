@@ -196,10 +196,6 @@ def _install_tool_runtime_hooks(app: "FastAPI") -> None:
 
     from clio_agent.tools.execution import (  # noqa: PLC0415
         ToolRuntimeHooks,
-        set_global_cancellation_checker,
-        set_global_permission_gate,
-        set_global_tool_interceptor,
-        set_global_tool_observer,
         set_tool_runtime_fallback,
     )
 
@@ -213,10 +209,6 @@ def _install_tool_runtime_hooks(app: "FastAPI") -> None:
     if observer is None:
         observer = _make_tool_observer(app)
     interceptor = getattr(app.state, "pending_tool_interceptor", None)
-    set_global_cancellation_checker(checker)
-    set_global_permission_gate(gate)
-    set_global_tool_interceptor(interceptor)
-    set_global_tool_observer(observer)
     app.state.pending_cancellation_checker = checker
     app.state.pending_permission_gate = gate
     app.state.pending_tool_interceptor = interceptor
@@ -224,9 +216,8 @@ def _install_tool_runtime_hooks(app: "FastAPI") -> None:
     app.state.tool_hooks_installed = True
     # #735: record THIS app's hooks as the single retained app-less fallback
     # bundle for the ``current_tool_runtime`` seam. The in-turn path resolves
-    # per-app via ``resolve_tool_runtime``; this bundle is the reason-logged net
-    # for out-of-band/app-less tool calls only. (The #812 ``set_global_*`` stamps
-    # above stay until step 4 collapses them into this bundle.)
+    # per-app via ``resolve_tool_runtime`` (dispatching on ``active_app()``); this
+    # bundle is the reason-logged net for out-of-band/app-less tool calls only.
     set_tool_runtime_fallback(
         ToolRuntimeHooks(
             permission_gate=gate,

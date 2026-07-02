@@ -12,13 +12,11 @@ from clio_agent.tools.execution import (
     MCPToolBridge,
     RepeatedToolFailureError,
     SyncMCPToolExecutor,
+    ToolRuntimeHooks,
     _ground_output_paths,
     create_async_tool_executor,
     create_sync_tool_executor,
-    set_global_cancellation_checker,
-    set_global_permission_gate,
-    set_global_tool_observer,
-    tool_runtime_hooks_context,
+    set_tool_runtime_fallback,
     tool_workspace_context,
 )
 
@@ -252,8 +250,9 @@ def test_sync_mcp_tool_executor_timeout_cancels_tool_call():
     assert executor.closed is True
 
 
-def test_sync_mcp_tool_executor_uses_late_global_hooks():
-    """Deferred GACT hook install should affect already-built executors."""
+def test_sync_mcp_tool_executor_uses_late_fallback_hooks():
+    """Deferred hook install (via the app-less fallback bundle) should affect
+    already-built executors."""
     fake_client = FakeClient()
     executor = SyncMCPToolExecutor(
         object(),
@@ -262,10 +261,11 @@ def test_sync_mcp_tool_executor_uses_late_global_hooks():
     )
     observed: list[tuple[str, dict[str, Any], str | None, str | None]] = []
 
+    def _observer(name, args, phase, error):
+        observed.append((name, dict(args), phase, error))
+
     try:
-        set_global_tool_observer(
-            lambda name, args, phase, error: observed.append((name, dict(args), phase, error))
-        )
+        set_tool_runtime_fallback(ToolRuntimeHooks(tool_observer=_observer))
 
         result = executor.call_tool("fake_echo", {"value": "hello"})
 
@@ -275,54 +275,13 @@ def test_sync_mcp_tool_executor_uses_late_global_hooks():
             ("fake_echo", {"value": "hello"}, "completed", None),
         ]
 
-        set_global_permission_gate(lambda _name, _args: "deny")
+        set_tool_runtime_fallback(
+            ToolRuntimeHooks(tool_observer=_observer, permission_gate=lambda _n, _a: "deny")
+        )
         with pytest.raises(PermissionError, match="denied"):
             executor.call_tool("fake_echo", {"value": "blocked"})
     finally:
-        set_global_permission_gate(None)
-        set_global_tool_observer(None)
-        executor.close()
-
-
-def test_sync_mcp_tool_executor_prefers_per_turn_observer_over_clobbered_global():
-    """#735: the per-turn observer override must win over a SIBLING app's global.
-
-    This guards the REAL read site — ``SyncMCPToolExecutor.call_tool`` resolving
-    ``self._tool_observer or _active_tool_observer()``. Two apps in one process:
-    app B built last, so it clobbered the process-global observer. A turn on app A
-    binds A's observer via ``tool_runtime_hooks_context`` (the per-turn override
-    that rides the turn's ``copy_context``). A's tool call MUST land on A's
-    observer, never B's leaked global. Reverting ``call_tool`` to read the raw
-    ``_GLOBAL_TOOL_OBSERVER`` fails this test (the gact-level two-app test alone
-    does not — it exercises the notify path, not this read site).
-    """
-    fake_client = FakeClient()
-    executor = SyncMCPToolExecutor(
-        object(),
-        timeout=1.0,
-        client_factory=lambda _: fake_client,
-    )
-    app_a_observed: list[tuple[str, str | None]] = []
-    sibling_b_observed: list[tuple[str, str | None]] = []
-
-    try:
-        # App B (built last) owns the process-global observer.
-        set_global_tool_observer(
-            lambda name, args, phase, error: sibling_b_observed.append((name, phase))
-        )
-        # App A's turn binds ITS observer as the per-turn override.
-        with tool_runtime_hooks_context(
-            tool_observer=lambda name, args, phase, error: app_a_observed.append((name, phase))
-        ):
-            result = executor.call_tool("fake_echo", {"value": "hello"})
-
-        assert '"name": "fake_echo"' in result
-        # A's turn telemetry landed on A's observer...
-        assert app_a_observed == [("fake_echo", "started"), ("fake_echo", "completed")]
-        # ...and B's clobbered global saw nothing — no cross-app contamination.
-        assert sibling_b_observed == []
-    finally:
-        set_global_tool_observer(None)
+        set_tool_runtime_fallback(ToolRuntimeHooks())
         executor.close()
 
 
@@ -337,9 +296,11 @@ def test_sync_mcp_tool_executor_reports_structured_tool_error_result():
     observed: list[tuple[str, dict[str, Any], str | None, str | None, Any | None]] = []
 
     try:
-        set_global_tool_observer(
-            lambda name, args, phase, error, result=None: observed.append(
-                (name, dict(args), phase, error, result)
+        set_tool_runtime_fallback(
+            ToolRuntimeHooks(
+                tool_observer=lambda name, args, phase, error, result=None: observed.append(
+                    (name, dict(args), phase, error, result)
+                )
             )
         )
 
@@ -348,7 +309,7 @@ def test_sync_mcp_tool_executor_reports_structured_tool_error_result():
             {"output_path": "/missing/plot.png"},
         )
     finally:
-        set_global_tool_observer(None)
+        set_tool_runtime_fallback(ToolRuntimeHooks())
         executor.close()
 
     assert '"error"' in result
@@ -378,8 +339,12 @@ def test_sync_mcp_tool_executor_bounds_repeated_transient_tool_failures():
     observed: list[tuple[str, dict[str, Any], str | None, str | None]] = []
 
     try:
-        set_global_tool_observer(
-            lambda name, args, phase, error: observed.append((name, dict(args), phase, error))
+        set_tool_runtime_fallback(
+            ToolRuntimeHooks(
+                tool_observer=lambda name, args, phase, error: observed.append(
+                    (name, dict(args), phase, error)
+                )
+            )
         )
 
         with pytest.raises(TimeoutError):
@@ -389,7 +354,7 @@ def test_sync_mcp_tool_executor_bounds_repeated_transient_tool_failures():
         with pytest.raises(RepeatedToolFailureError, match="status='tool_failed'"):
             executor.call_tool("ndp_search_datasets", {"search_terms": ["MHDL"]})
     finally:
-        set_global_tool_observer(None)
+        set_tool_runtime_fallback(ToolRuntimeHooks())
         executor.close()
 
     assert fake_client.calls == 2
@@ -486,15 +451,19 @@ def test_sync_mcp_tool_executor_repairs_unique_missing_file_arg(
     observed: list[tuple[str, dict[str, Any], str | None, str | None]] = []
 
     try:
-        set_global_tool_observer(
-            lambda name, args, phase, error: observed.append((name, dict(args), phase, error))
+        set_tool_runtime_fallback(
+            ToolRuntimeHooks(
+                tool_observer=lambda name, args, phase, error: observed.append(
+                    (name, dict(args), phase, error)
+                )
+            )
         )
         result = executor.call_tool(
             "fake_echo",
             {"filepath": str(tmp_path / "typo" / "pathogen_reference.fasta")},
         )
     finally:
-        set_global_tool_observer(None)
+        set_tool_runtime_fallback(ToolRuntimeHooks())
         executor.close()
 
     assert str(good.resolve()) in result
@@ -545,9 +514,13 @@ def test_sync_mcp_tool_executor_reports_cooperative_cancel_after_tool_result():
     observed: list[tuple[str, dict[str, Any], str | None, str | None]] = []
 
     try:
-        set_global_cancellation_checker(lambda: next(checks, True))
-        set_global_tool_observer(
-            lambda name, args, phase, error: observed.append((name, dict(args), phase, error))
+        set_tool_runtime_fallback(
+            ToolRuntimeHooks(
+                cancellation_checker=lambda: next(checks, True),
+                tool_observer=lambda name, args, phase, error: observed.append(
+                    (name, dict(args), phase, error)
+                ),
+            )
         )
 
         with pytest.raises(CancellationError, match="tool call cancelled"):
@@ -559,8 +532,7 @@ def test_sync_mcp_tool_executor_reports_cooperative_cancel_after_tool_result():
         assert observed[-1][3] is not None
         assert "CancellationError" in observed[-1][3]
     finally:
-        set_global_cancellation_checker(None)
-        set_global_tool_observer(None)
+        set_tool_runtime_fallback(ToolRuntimeHooks())
         executor.close()
 
 

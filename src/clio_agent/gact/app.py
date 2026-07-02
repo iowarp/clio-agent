@@ -87,8 +87,6 @@ from clio_agent.gact.runtime.globals import (  # noqa: E402, F401
     _ACTIVE_GACT_SESSION_ID,
     _ACTIVE_GACT_TRACE_ID,
     _ACTIVE_GACT_TURN_ID,
-    _EXPERT_CHILDREN_CACHE,
-    _ORCHESTRATOR_BRIEFING_CACHE,
     _PROCESS_ARC,
     ARC_OP_EVENT_TYPE,
     _active_lm_last_reasoning,
@@ -1272,21 +1270,6 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             _trace_close()
         except Exception:  # pragma: no cover - defensive shutdown cleanup
             pass
-    if getattr(app.state, "tool_hooks_installed", False):
-        try:
-            from clio_agent.tools.execution import (  # noqa: PLC0415
-                set_global_cancellation_checker,
-                set_global_permission_gate,
-                set_global_tool_interceptor,
-                set_global_tool_observer,
-            )
-
-            set_global_cancellation_checker(None)
-            set_global_permission_gate(None)
-            set_global_tool_interceptor(None)
-            set_global_tool_observer(None)
-        except Exception:  # pragma: no cover - defensive shutdown cleanup
-            pass
     # NOTE: the shared clio-core runtime client is released (last-one-out stop) via the
     # atexit hook registered in CTEStore — NOT here. uvicorn handles SIGTERM by exiting
     # the serve loop and returning normally, so the interpreter exits and atexit fires
@@ -2218,7 +2201,10 @@ def build_app(
         return {
             "active_agent_blueprint_id": str(blueprint_wire.get("id") or ""),
             "active_agent_blueprint_name": str(
-                blueprint_wire.get("name") or blueprint_wire.get("display_name") or blueprint_wire.get("title") or ""
+                blueprint_wire.get("name")
+                or blueprint_wire.get("display_name")
+                or blueprint_wire.get("title")
+                or ""
             ),
             "active_agent_blueprint_version": str(blueprint_wire.get("version") or ""),
             "active_agent_blueprint_scope": scope,

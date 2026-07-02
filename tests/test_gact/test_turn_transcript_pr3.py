@@ -249,9 +249,9 @@ def test_route_banner_lands_exactly_once_live_or_finalize(tmp_path: Path) -> Non
             return ""
 
         def forward(self, question: str, session_id: str) -> Any:
-            from clio_agent.tools.execution import _GLOBAL_TOOL_OBSERVER
+            from clio_agent.tools.execution import current_tool_runtime
 
-            observer = _GLOBAL_TOOL_OBSERVER
+            observer = current_tool_runtime().tool_observer
             assert observer is not None
             observer("fs_read_file", {"path": "README.md"}, "started", None)
             observer(

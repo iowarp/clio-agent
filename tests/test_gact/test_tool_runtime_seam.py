@@ -4,18 +4,16 @@ Two failing-first regressions for the ``ToolRuntimeHooks`` seam:
 
 1. **Two-app hooks isolation on the ORCHESTRATOR rail.** Two ``build_app()``
    instances A/B in one process, each with a DISTINCT ``pending_tool_observer``.
-   App B is built last and clobbers the process-global observer (the pre-#735
-   net). A real MCP tool is driven via ``SyncMCPToolExecutor.call_tool`` on a
+   App B is built last and owns the single retained app-less fallback bundle. A
+   real MCP tool is driven via ``SyncMCPToolExecutor.call_tool`` on a
    ``contextvars.copy_context()`` snapshot taken inside app A's *orchestrator*
    turn identity (the keystone-bound ``set_turn_identity(app=A)`` layer — the
    rail that binds NO per-turn ``_tool_session_context`` on the sync forward
    path). A's observer MUST see the call; B's must not.
 
-   Before step 3, ``call_tool`` resolved ``_active_tool_observer()`` which, with
-   no ``_tool_session_context`` bound, returns the process-global = B's observer
-   → A's call fires B → FAIL. After step 3, ``call_tool`` resolves
-   ``current_tool_runtime()`` → the installed resolver dispatches on
-   ``active_app()`` == A → A's ``pending_tool_observer`` → PASS.
+   ``call_tool`` resolves ``current_tool_runtime()`` → the installed resolver
+   dispatches on ``active_app()`` == A → A's ``pending_tool_observer``; B's
+   fallback bundle is never consulted because an app resolved.
 
 2. **App-less resolve emits a structured reason.** With no app resolvable and a
    retained fallback bundle carrying a gate/observer, ``current_tool_runtime()``
@@ -37,7 +35,8 @@ from clio_agent.gact import context as _ctx
 from clio_agent.gact.app import build_app
 from clio_agent.tools.execution import (
     SyncMCPToolExecutor,
-    set_global_tool_observer,
+    ToolRuntimeHooks,
+    set_tool_runtime_fallback,
 )
 
 
@@ -78,9 +77,15 @@ def test_two_app_hooks_isolation_on_orchestrator_rail(tmp_path: Path) -> None:
         lambda name, args, phase, error=None, result=None: b_observed.append((name, phase)),
     )
 
-    # App B, built last, clobbered the process-global observer (pre-#735 net).
-    set_global_tool_observer(
-        lambda name, args, phase, error=None, result=None: b_observed.append((name, phase))
+    # App B, built last, owns the single retained app-less fallback bundle (the
+    # last-installed net). The resolver dispatching on active_app()==A must win
+    # over it, so A's call never touches B's fallback observer.
+    set_tool_runtime_fallback(
+        ToolRuntimeHooks(
+            tool_observer=lambda name, args, phase, error=None, result=None: b_observed.append(
+                (name, phase)
+            )
+        )
     )
 
     executor = SyncMCPToolExecutor(_echo_server(), timeout=5.0, client_factory=Client)
@@ -99,21 +104,20 @@ def test_two_app_hooks_isolation_on_orchestrator_rail(tmp_path: Path) -> None:
         # cannot leak app A into the test thread's context.
         result = contextvars.copy_context().run(turn_body)
     finally:
-        set_global_tool_observer(None)
+        set_tool_runtime_fallback(ToolRuntimeHooks())
         executor.close()
 
     assert "hi" in result
     # A's turn telemetry landed on A's observer (via the resolver dispatch)...
     assert a_observed == [("echo", "started"), ("echo", "completed")], a_observed
-    # ...and B's clobbered global saw nothing — no cross-app contamination.
+    # ...and B's fallback observer saw nothing — no cross-app contamination.
     assert b_observed == [], b_observed
 
 
 def test_appless_resolve_emits_structured_reason() -> None:
     """current_tool_runtime() app-less MUST record a typed reason, never silently
-    drop a gate. Fully controls the module's hook state (resolver + process-globals
-    + fallback) so the outcome is deterministic regardless of suite ordering; the
-    #812 ctxvars are never bound on this (main) thread. Reads the reason via a
+    drop a gate. Fully controls the module's hook state (resolver + fallback) so the
+    outcome is deterministic regardless of suite ordering. Reads the reason via a
     before/after slice + membership so a concurrent app-less emit cannot flake it.
     """
 
@@ -128,19 +132,11 @@ def test_appless_resolve_emits_structured_reason() -> None:
     saved = (
         _ex._TOOL_RUNTIME_RESOLVER,
         _ex._FALLBACK_TOOL_RUNTIME,
-        _ex._GLOBAL_PERMISSION_GATE,
-        _ex._GLOBAL_TOOL_OBSERVER,
-        _ex._GLOBAL_TOOL_INTERCEPTOR,
-        _ex._GLOBAL_CANCELLATION_CHECKER,
     )
     try:
-        # Deterministic app-less state: no resolver + no process-globals, so the
-        # ONLY hook source is the retained fallback bundle set per case below.
+        # Deterministic app-less state: no resolver, so the ONLY hook source is the
+        # retained fallback bundle set per case below.
         _ex.set_tool_runtime_resolver(None)
-        _ex.set_global_permission_gate(None)
-        _ex.set_global_tool_observer(None)
-        _ex.set_global_tool_interceptor(None)
-        _ex.set_global_cancellation_checker(None)
 
         # (a) fallback carrying a gate/observer -> appless_fallback.
         _ex.set_tool_runtime_fallback(
@@ -164,8 +160,4 @@ def test_appless_resolve_emits_structured_reason() -> None:
         (
             _ex._TOOL_RUNTIME_RESOLVER,
             _ex._FALLBACK_TOOL_RUNTIME,
-            _ex._GLOBAL_PERMISSION_GATE,
-            _ex._GLOBAL_TOOL_OBSERVER,
-            _ex._GLOBAL_TOOL_INTERCEPTOR,
-            _ex._GLOBAL_CANCELLATION_CHECKER,
         ) = saved

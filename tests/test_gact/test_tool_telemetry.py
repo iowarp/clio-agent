@@ -133,25 +133,20 @@ def test_propose_edit_falls_back_to_trajectory() -> None:
 
 @pytest.fixture(autouse=True)
 def _isolate_tool_runtime_globals():
-    """Reset the process-global tool-runtime hooks around every test.
+    """Reset the retained app-less tool-runtime fallback around every test.
 
-    Turns run in daemon threads and the tool observer/gate/etc. are process
-    globals that ``build_app(agent=...)`` installs eagerly but that are cleared
-    only on lifespan shutdown. These tests use a bare ``TestClient`` (no ``with``),
-    so without an explicit reset a prior test's lingering daemon turn thread can
-    fire the global observer AFTER the next test has re-pointed it, leaking
-    events into the wrong app's bus and making the live-observer assertions flake
-    nondeterministically. Clearing to None before and after each test makes a
-    late stray call a no-op, so each test's own ``build_app`` install is the
+    Turns run in daemon threads; the in-turn observer/gate resolve per-app from
+    ``active_app().state.pending_*`` (isolated), but the single retained
+    ``_FALLBACK_TOOL_RUNTIME`` bundle is the app-less net and persists across
+    tests. These tests use a bare ``TestClient`` (no ``with``), so clearing the
+    fallback to an empty bundle before and after each test makes a late stray
+    app-less call a no-op, leaving each test's own ``build_app`` install as the
     only authority during its turn.
     """
     from clio_agent.tools import execution  # noqa: PLC0415
 
     def _clear() -> None:
-        execution.set_global_tool_observer(None)
-        execution.set_global_permission_gate(None)
-        execution.set_global_cancellation_checker(None)
-        execution.set_global_tool_interceptor(None)
+        execution.set_tool_runtime_fallback(execution.ToolRuntimeHooks())
 
     _clear()
     yield
@@ -178,9 +173,9 @@ class _Agent:
 
 class _LiveObservedAgent:
     def forward(self, question: str, session_id: str):
-        from clio_agent.tools.execution import _active_tool_observer, notify_global_tool_observer
+        from clio_agent.tools.execution import current_tool_runtime, notify_global_tool_observer
 
-        assert _active_tool_observer() is not None
+        assert current_tool_runtime().tool_observer is not None
         notify_global_tool_observer("hdf5_list_datasets", {"filepath": "x.h5"}, "started", None)
         notify_global_tool_observer("hdf5_list_datasets", {"filepath": "x.h5"}, "completed", None)
         return _Pred()
@@ -188,9 +183,9 @@ class _LiveObservedAgent:
 
 class _LiveObservedWithPosthocTraceAgent:
     def forward(self, question: str, session_id: str):
-        from clio_agent.tools.execution import _active_tool_observer, notify_global_tool_observer
+        from clio_agent.tools.execution import current_tool_runtime, notify_global_tool_observer
 
-        assert _active_tool_observer() is not None
+        assert current_tool_runtime().tool_observer is not None
         args = {"filepath": "x.h5"}
         notify_global_tool_observer("hdf5_list_datasets", args, "started", None)
         notify_global_tool_observer("hdf5_list_datasets", args, "completed", None)
@@ -210,9 +205,9 @@ class _LiveObservedWithPosthocTraceAgent:
 
 class _LiveObservedResultAgent:
     def forward(self, question: str, session_id: str):
-        from clio_agent.tools.execution import _active_tool_observer, notify_global_tool_observer
+        from clio_agent.tools.execution import current_tool_runtime, notify_global_tool_observer
 
-        assert _active_tool_observer() is not None
+        assert current_tool_runtime().tool_observer is not None
         args = {"filepath": "x.h5"}
         result = {"datasets": ["safe_float"], "checksum": "abc123"}
         notify_global_tool_observer("hdf5_list_datasets", args, "started", None)
@@ -222,9 +217,9 @@ class _LiveObservedResultAgent:
 
 class _LiveObservedStructuredErrorResultAgent:
     def forward(self, question: str, session_id: str):
-        from clio_agent.tools.execution import _active_tool_observer, notify_global_tool_observer
+        from clio_agent.tools.execution import current_tool_runtime, notify_global_tool_observer
 
-        assert _active_tool_observer() is not None
+        assert current_tool_runtime().tool_observer is not None
         args = {"output_path": "/missing/plot.png"}
         result = {
             "error": {
@@ -341,14 +336,14 @@ def test_live_observed_tool_call_is_not_reemitted_post_turn(tmp_path: Path) -> N
 def test_concurrent_apps_do_not_cross_tool_telemetry(tmp_path: Path) -> None:
     """#735: two live-observed apps in ONE process must not share the observer.
 
-    Building app_b rebinds the process-global observer to b's (build-time install),
-    and entering both lifespans leaves the global pointing at whichever app started
-    last. A turn on app_a must STILL land a's ``tools_called`` on a's message — the
-    observer is resolved per-turn from the LIVE app (`_tool_session_context` binds
-    `pending_*` into the turn's copy_context snapshot), never from the process-global
-    another app clobbered. This is the deterministic form of the cross-file flake:
-    it fails on `develop` (KeyError 'tools_called' on whichever app didn't win the
-    global) and passes once the hooks are per-turn scoped.
+    Building app_b rebinds the retained app-less fallback bundle to b's, so a
+    stale reader would attribute a's turn to b. A turn on app_a must STILL land
+    a's ``tools_called`` on a's message — the observer is resolved per tool call
+    from the LIVE app (the installed resolver dispatches on ``active_app()`` into
+    that app's ``pending_*``), never from the last-installed fallback. This is the
+    deterministic form of the cross-file flake: it fails on `develop` (KeyError
+    'tools_called' on whichever app didn't win the global) and passes once the
+    hooks are resolved per-app.
     """
     from .conftest import complete_turn
 
@@ -366,37 +361,6 @@ def test_concurrent_apps_do_not_cross_tool_telemetry(tmp_path: Path) -> None:
     assert assistant_a["metadata"]["tools_called"][0]["telemetry_source"] == "live_observer"
     assert assistant_b["metadata"]["tools_called"][0]["name"] == "hdf5_list_datasets"
     assert assistant_b["metadata"]["tools_called"][0]["telemetry_source"] == "live_observer"
-
-
-def test_absent_pending_hook_falls_through_to_global_not_none() -> None:
-    """#735 fix-of-the-fix: an app that never stamps a hook must NOT mask the global.
-
-    ``_tool_session_context`` defaults an absent ``pending_*`` to ``_UNSET_HOOK``
-    (not ``None``), so a process-global installed via ``set_global_*`` still applies
-    in-turn. Binding ``None`` instead would silently disable a global interceptor or
-    permission gate — e.g. the no-agent build branch omits ``pending_tool_interceptor``
-    — a security-adjacent regression. Fails if the default reverts to ``None``.
-    """
-    from types import SimpleNamespace
-
-    from clio_agent.gact.runtime.globals import _tool_session_context
-    from clio_agent.tools.execution import (
-        _active_tool_interceptor,
-        set_global_tool_interceptor,
-    )
-
-    def sentinel(_name: str, _args: object) -> None:
-        return None
-
-    # app.state carries NO pending_tool_interceptor attribute.
-    app = SimpleNamespace(state=SimpleNamespace(sessions=None, workspaces=None))
-    try:
-        set_global_tool_interceptor(sentinel)
-        with _tool_session_context("sess-x", app):
-            # In-turn, the absent per-app interceptor falls through to the global.
-            assert _active_tool_interceptor() is sentinel
-    finally:
-        set_global_tool_interceptor(None)
 
 
 def test_live_observer_upgrades_matching_posthoc_trace_metadata(tmp_path: Path) -> None:

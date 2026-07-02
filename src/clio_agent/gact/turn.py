@@ -51,7 +51,6 @@ from clio_agent.gact.runtime.globals import (
     _coerce_error_info,
     _ContextFileAccessError,
     _emit_semantic_event,
-    _gact_app_context,
     _iso_from_epoch,
     _llm_provider_payload,
     _new_message_id,
@@ -1119,12 +1118,14 @@ async def _run_turn_in_background(
     async def _run_dynamic_agent_sync(agent_def: "AgentDef", prompt: str) -> Any:
         runner = _blueprint_runner_for_agent(agent_def)
         loop = asyncio.get_running_loop()
-        with _gact_app_context(app), _tool_session_context(sid, app):
+        with _tool_session_context(sid):
             # The signature is rebuilt inside the executor (via _build_blueprint_dspy_module);
             # its routing Literal[children, "finish"] resolves children from the active
             # blueprint keyed on _ACTIVE_GACT_SESSION_ID. Set it here so the copied context
             # carries it -- otherwise children resolve empty and next_expert collapses to
-            # Literal["finish"], forcing the agent to finish immediately.
+            # Literal["finish"], forcing the agent to finish immediately. The keystone
+            # (set_turn_identity) already binds active_app() for the whole turn, so no
+            # _gact_app_context wrapper is needed here.
             _sid_tok = _ctx.set_session_id(sid)
             try:
                 turn_context = contextvars.copy_context()
@@ -2010,20 +2011,21 @@ async def _run_turn_in_background(
                 dynamic_agent,
                 execution_mode=execution_mode,
             )
-            with _gact_app_context(app):
-                session_token = _ctx.set_session_id(sid)
-                try:
-                    module = (
-                        _build_blueprint_dspy_module(app.state.agent, dynamic_agent)
-                        if _agent_definition_uses_blueprint_runtime(dynamic_agent)
-                        else (
-                            _build_tool_user_agent_module(app.state.agent, dynamic_agent)
-                            if dynamic_agent.tools
-                            else _build_prompt_user_agent_module(app.state.agent, dynamic_agent)
-                        )
+            # The keystone (set_turn_identity) already binds active_app() for the
+            # whole turn, so no _gact_app_context wrapper is needed here.
+            session_token = _ctx.set_session_id(sid)
+            try:
+                module = (
+                    _build_blueprint_dspy_module(app.state.agent, dynamic_agent)
+                    if _agent_definition_uses_blueprint_runtime(dynamic_agent)
+                    else (
+                        _build_tool_user_agent_module(app.state.agent, dynamic_agent)
+                        if dynamic_agent.tools
+                        else _build_prompt_user_agent_module(app.state.agent, dynamic_agent)
                     )
-                finally:
-                    _ctx.reset(session_token)
+                )
+            finally:
+                _ctx.reset(session_token)
             llm_actor = {
                 "agent_id": dynamic_agent.id,
                 "agent_title": dynamic_agent.title,
@@ -2055,7 +2057,7 @@ async def _run_turn_in_background(
                     "native_image_count": len(native_images),
                 },
             )
-            with _cancellation_checker(cancel_requested), _tool_session_context(sid, app):
+            with _cancellation_checker(cancel_requested), _tool_session_context(sid):
                 pred = await _await_turn_work(
                     _try_streamed_forward_compat(
                         app,
@@ -2104,7 +2106,7 @@ async def _run_turn_in_background(
                         "native_image_count": len(native_images),
                     },
                 )
-                with _cancellation_checker(cancel_requested), _tool_session_context(sid, app):
+                with _cancellation_checker(cancel_requested), _tool_session_context(sid):
                     loop = asyncio.get_running_loop()
                     turn_context = contextvars.copy_context()
                     pred = await _await_turn_work(
@@ -2144,7 +2146,7 @@ async def _run_turn_in_background(
             from clio_agent.agent import routing_mode_override as _routing_override  # noqa: PLC0415
 
             with _routing_override(routing_override), _cancellation_checker(cancel_requested):
-                with _tool_session_context(sid, app):
+                with _tool_session_context(sid):
                     llm_actor = {
                         "agent_id": active_agent_id or "orchestrator",
                         "source": "builtin",

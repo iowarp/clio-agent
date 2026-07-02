@@ -49,50 +49,25 @@ class MCPClientProtocol(Protocol):
 ClientFactory = Callable[[Any], MCPClientProtocol]
 
 
-# iowarp/clio-agent#7 + #2: process-global hooks. The GACT layer
-# (or any other harness) sets these once and every SyncMCPToolExecutor
-# consults them at call time. None means "no-op".
-#
-# iowarp/clio-agent#735: these bare module globals are rebound per-app by
-# ``set_global_*`` and read from the tool-executor worker thread. Across
-# concurrent apps in one process a turn thread would dereference a SIBLING
-# app's hook (its telemetry landing on the wrong message). The globals are
-# RETAINED as a process-wide FALLBACK for out-of-turn callers, but every
-# read now prefers a per-turn ContextVar override (below) bound in
-# ``_tool_session_context`` from the LIVE app's ``pending_*`` hooks and
-# carried into the executor thread by the turn's ``copy_context()`` snapshot
-# — the same rail the existing ``_ACTIVE_TOOL_WORKSPACE_ROOT`` rides.
-_GLOBAL_PERMISSION_GATE: Optional[Callable[[str, Mapping[str, Any]], str]] = None
-_GLOBAL_TOOL_INTERCEPTOR: Optional[Callable[[str, Mapping[str, Any]], Any | None]] = None
+# iowarp/clio-agent#7 + #2 + #735: the four tool-runtime hooks (permission
+# gate, telemetry observer, preflight interceptor, cancellation checker) are
+# resolved per tool call through the ``ToolRuntimeHooks`` seam below — gact
+# installs a stateless resolver that dispatches on the LIVE turn's app, so
+# concurrent apps in one process never share a hook. There is no process-global
+# hook state left; the sole retained net is the single ``_FALLBACK_TOOL_RUNTIME``
+# bundle consulted (loudly) only when no app resolves.
 ToolObserver = Callable[
     [str, Mapping[str, Any], Optional[str], Optional[str], Any | None],
     None,
 ]
 LegacyToolObserver = Callable[[str, Mapping[str, Any], Optional[str], Optional[str]], None]
 
-_GLOBAL_TOOL_OBSERVER: Optional[ToolObserver | LegacyToolObserver] = None
-_GLOBAL_CANCELLATION_CHECKER: Optional[Callable[[], bool]] = None
+# The active session workspace root rides its own ContextVar (kept: it is read on
+# the app-less CLI grounding path where no app resolves — see ``agent.py`` /
+# ``file_policy.py`` — so it cannot fold into the ``active_app()``-keyed bundle).
 _ACTIVE_TOOL_WORKSPACE_ROOT: contextvars.ContextVar[str] = contextvars.ContextVar(
     "clio_active_tool_workspace_root",
     default="",
-)
-
-# Per-turn overrides for the four hooks above. ``_UNSET_HOOK`` distinguishes
-# "no per-turn binding — use the process-global fallback" from an explicit
-# ``None`` binding ("this turn's app has no such hook"), so a turn never leaks
-# to a sibling app's global.
-_UNSET_HOOK: Any = object()
-_CTX_PERMISSION_GATE: contextvars.ContextVar[Any] = contextvars.ContextVar(
-    "clio_tool_permission_gate", default=_UNSET_HOOK
-)
-_CTX_TOOL_OBSERVER: contextvars.ContextVar[Any] = contextvars.ContextVar(
-    "clio_tool_observer", default=_UNSET_HOOK
-)
-_CTX_TOOL_INTERCEPTOR: contextvars.ContextVar[Any] = contextvars.ContextVar(
-    "clio_tool_interceptor", default=_UNSET_HOOK
-)
-_CTX_CANCELLATION_CHECKER: contextvars.ContextVar[Any] = contextvars.ContextVar(
-    "clio_tool_cancellation_checker", default=_UNSET_HOOK
 )
 
 
@@ -113,61 +88,6 @@ def get_active_tool_workspace_root() -> str:
     return _ACTIVE_TOOL_WORKSPACE_ROOT.get()
 
 
-@contextmanager
-def tool_runtime_hooks_context(
-    *,
-    permission_gate: Any = _UNSET_HOOK,
-    tool_observer: Any = _UNSET_HOOK,
-    tool_interceptor: Any = _UNSET_HOOK,
-    cancellation_checker: Any = _UNSET_HOOK,
-) -> Iterator[None]:
-    """Bind the LIVE app's tool-runtime hooks for the current turn (#735).
-
-    These per-turn bindings take precedence over the process-global fallbacks
-    for the duration of the turn. Entered inside ``_tool_session_context`` —
-    immediately before the turn's ``contextvars.copy_context()`` — so the
-    bindings ride that snapshot into the ``run_in_executor`` thread where
-    ``SyncMCPToolExecutor.call_tool`` reads them, isolating concurrent apps'
-    tool telemetry. An argument left at ``_UNSET_HOOK`` is not bound (the
-    global fallback still applies for that hook).
-    """
-
-    tokens: list[tuple[contextvars.ContextVar[Any], contextvars.Token[Any]]] = []
-    for var, value in (
-        (_CTX_PERMISSION_GATE, permission_gate),
-        (_CTX_TOOL_OBSERVER, tool_observer),
-        (_CTX_TOOL_INTERCEPTOR, tool_interceptor),
-        (_CTX_CANCELLATION_CHECKER, cancellation_checker),
-    ):
-        if value is not _UNSET_HOOK:
-            tokens.append((var, var.set(value)))
-    try:
-        yield
-    finally:
-        for var, token in reversed(tokens):
-            var.reset(token)
-
-
-def _active_permission_gate() -> Optional[Callable[[str, Mapping[str, Any]], str]]:
-    value = _CTX_PERMISSION_GATE.get()
-    return _GLOBAL_PERMISSION_GATE if value is _UNSET_HOOK else value
-
-
-def _active_tool_observer() -> Optional[ToolObserver | LegacyToolObserver]:
-    value = _CTX_TOOL_OBSERVER.get()
-    return _GLOBAL_TOOL_OBSERVER if value is _UNSET_HOOK else value
-
-
-def _active_tool_interceptor() -> Optional[Callable[[str, Mapping[str, Any]], Any | None]]:
-    value = _CTX_TOOL_INTERCEPTOR.get()
-    return _GLOBAL_TOOL_INTERCEPTOR if value is _UNSET_HOOK else value
-
-
-def _active_cancellation_checker() -> Optional[Callable[[], bool]]:
-    value = _CTX_CANCELLATION_CHECKER.get()
-    return _GLOBAL_CANCELLATION_CHECKER if value is _UNSET_HOOK else value
-
-
 # --------------------------------------------------------------------------- #
 # iowarp/clio-agent#735 — the tool-runtime hooks SEAM (unified concurrency §2). #
 #                                                                               #
@@ -178,9 +98,8 @@ def _active_cancellation_checker() -> Optional[Callable[[], bool]]:
 # executor reads the bundle via ``current_tool_runtime()`` at call time. Nothing #
 # per-app is ever pushed into this layer, and this layer imports no ``gact``.    #
 #                                                                               #
-# During the #812 transition (steps 3->4) the four ``_active_*`` resolvers above #
-# (ContextVar-over-process-global) remain the app-less NET so no existing caller #
-# regresses; step 4 collapses the app-less path to the single fallback bundle.   #
+# This is the SOLE tool-hook mechanism: the resolver is the in-turn path and the #
+# single ``_FALLBACK_TOOL_RUNTIME`` bundle is the reason-logged app-less net.    #
 # --------------------------------------------------------------------------- #
 
 
@@ -282,60 +201,22 @@ def current_tool_runtime() -> ToolRuntimeHooks:
 
     Prefers the installed resolver (gact dispatches on ``active_app()`` so N apps
     in one process each read their own ``app.state.pending_*``). When no app
-    resolves it falls back — but LOUDLY: it emits a structured reason so the
-    degradation reaches the audit sink rather than silently dropping a gate.
-
-    Transition note (#812, steps 3->4): the app-less bundle is assembled from the
-    retained ContextVar-over-global ``_active_*`` net (else the single
-    ``_FALLBACK_TOOL_RUNTIME``) so no pre-#735 caller regresses; step 4 collapses
-    this to ``return _FALLBACK_TOOL_RUNTIME``.
+    resolves it falls back to the single retained ``_FALLBACK_TOOL_RUNTIME``
+    bundle — but LOUDLY: it emits a structured reason so the degradation reaches
+    the audit sink rather than silently dropping a gate.
     """
 
     resolver = _TOOL_RUNTIME_RESOLVER
     resolved = resolver() if resolver is not None else None
     if resolved is not None:
         return resolved
-    fallback = ToolRuntimeHooks(
-        permission_gate=_active_permission_gate() or _FALLBACK_TOOL_RUNTIME.permission_gate,
-        tool_observer=_active_tool_observer() or _FALLBACK_TOOL_RUNTIME.tool_observer,
-        tool_interceptor=_active_tool_interceptor() or _FALLBACK_TOOL_RUNTIME.tool_interceptor,
-        cancellation_checker=(
-            _active_cancellation_checker() or _FALLBACK_TOOL_RUNTIME.cancellation_checker
-        ),
-    )
+    fallback = _FALLBACK_TOOL_RUNTIME
     _emit_tool_runtime_reason(
         "tool_runtime_appless_fallback"
         if fallback.permission_gate is not None or fallback.tool_observer is not None
         else "tool_runtime_unresolved"
     )
     return fallback
-
-
-def set_global_permission_gate(
-    gate: Optional[Callable[[str, Mapping[str, Any]], str]],
-) -> None:
-    """Install a process-global permission gate. Pass None to disable."""
-
-    global _GLOBAL_PERMISSION_GATE
-    _GLOBAL_PERMISSION_GATE = gate
-
-
-def set_global_tool_observer(
-    observer: Optional[ToolObserver | LegacyToolObserver],
-) -> None:
-    """Install a process-global tool-call observer. Pass None to disable."""
-
-    global _GLOBAL_TOOL_OBSERVER
-    _GLOBAL_TOOL_OBSERVER = observer
-
-
-def set_global_tool_interceptor(
-    interceptor: Optional[Callable[[str, Mapping[str, Any]], Any | None]],
-) -> None:
-    """Install a process-global preflight tool interceptor. Pass None to disable."""
-
-    global _GLOBAL_TOOL_INTERCEPTOR
-    _GLOBAL_TOOL_INTERCEPTOR = interceptor
 
 
 def notify_tool_observer(
@@ -414,13 +295,6 @@ def _structured_tool_result_error(result: Any) -> str | None:
         if normalized.startswith("error:"):
             return decoded.strip()
     return None
-
-
-def set_global_cancellation_checker(checker: Optional[Callable[[], bool]]) -> None:
-    """Install a process-global cooperative cancellation checker."""
-
-    global _GLOBAL_CANCELLATION_CHECKER
-    _GLOBAL_CANCELLATION_CHECKER = checker
 
 
 class AsyncToolExecutor(Protocol):
@@ -718,9 +592,9 @@ class SyncMCPToolExecutor:
         #   "allow"  → run the tool unchanged
         #   "deny"   → raise a PermissionError; the agent sees the
         #              traceback in its tool_result and reports it.
-        # Explicit instance hook wins. When omitted, call_tool consults
-        # the module-level _GLOBAL_PERMISSION_GATE dynamically so GACT
-        # deferred startup can wire hooks after an executor exists.
+        # Explicit instance hook wins. When omitted, call_tool consults the
+        # resolved ``current_tool_runtime()`` bundle dynamically so GACT deferred
+        # startup can wire hooks after an executor exists.
         self._permission_gate = permission_gate
         # iowarp/clio-agent#2: optional observer called BEFORE
         # ("started") and AFTER ("completed", error?) every tool
@@ -1213,10 +1087,6 @@ __all__ = [
     "notify_global_tool_observer",
     "notify_tool_observer",
     "recorded_tool_runtime_reasons",
-    "set_global_cancellation_checker",
-    "set_global_permission_gate",
-    "set_global_tool_interceptor",
-    "set_global_tool_observer",
     "set_tool_runtime_fallback",
     "set_tool_runtime_resolver",
     "tool_workspace_context",

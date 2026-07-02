@@ -118,27 +118,20 @@ _ORCHESTRATOR_BRIEFING_CACHE: dict[str, str] = {}
 
 
 @contextmanager
-def _tool_session_context(sid: str, app: Any = None) -> Iterator[None]:
-    """Bind GACT tool hooks to the session driving the current turn.
+def _tool_session_context(sid: str) -> Iterator[None]:
+    """Bind the tool session id + workspace root for the current turn.
 
-    ``app`` is passed explicitly by the turn dispatch (it is authoritative there);
-    only the dynamic-child path also sets ``_gact_app_context``, so relying on
-    ``_ctx.active_app()`` alone would leave the main-agent paths without the live
-    app — and thus without the per-turn hook bindings (#735).
+    The four tool-runtime hooks are resolved per tool call by the installed
+    ``ToolRuntimeHooks`` resolver (``resolve_tool_runtime`` dispatching on the
+    keystone-bound ``_ctx.active_app()``), so this no longer binds them. It binds
+    only the tool session id (read by the permission gate to attribute the call to
+    the live turn's session) and the workspace root — resolved off the live app so
+    the tool executor grounds output artifacts into the bound workspace (#735).
     """
-    from clio_agent.tools.execution import (  # noqa: PLC0415
-        _UNSET_HOOK,
-        tool_runtime_hooks_context,
-        tool_workspace_context,
-    )
+    from clio_agent.tools.execution import tool_workspace_context  # noqa: PLC0415
 
     workspace_root = ""
-    permission_gate: Any = _UNSET_HOOK
-    tool_observer: Any = _UNSET_HOOK
-    tool_interceptor: Any = _UNSET_HOOK
-    cancellation_checker: Any = _UNSET_HOOK
-    if app is None:
-        app = _ctx.active_app()
+    app = _ctx.active_app()
     app_state = getattr(app, "state", None) if app is not None else None
     if app_state is not None:
         sessions = getattr(app_state, "sessions", None)
@@ -147,33 +140,9 @@ def _tool_session_context(sid: str, app: Any = None) -> Iterator[None]:
         workspace_id = str(getattr(sess, "workspace_id", "") or "") if sess is not None else ""
         ws = workspaces.get(workspace_id) if workspaces is not None and workspace_id else None
         workspace_root = str(getattr(ws, "root_path", "") or "")
-        # #735: bind THIS app's hooks for the turn so the tool executor never
-        # reads a sibling app's process-global. pending_* are stamped by
-        # ``_install_tool_runtime_hooks`` (and the no-agent build_app branch);
-        # they ride the turn's copy_context() snapshot into the executor thread.
-        #
-        # Default to ``_UNSET_HOOK`` (NOT ``None``): when an app never stamps a
-        # given hook (e.g. the no-agent build branch omits pending_tool_interceptor)
-        # a ``None`` override would BIND and mask the process-global fallback for
-        # the whole turn — silently disabling a global interceptor/permission gate a
-        # harness installed via ``set_global_*``. ``_UNSET_HOOK`` leaves that hook
-        # unbound so the global still applies; a per-app hook that IS stamped still
-        # overrides (isolating concurrent apps).
-        permission_gate = getattr(app_state, "pending_permission_gate", _UNSET_HOOK)
-        tool_observer = getattr(app_state, "pending_tool_observer", _UNSET_HOOK)
-        tool_interceptor = getattr(app_state, "pending_tool_interceptor", _UNSET_HOOK)
-        cancellation_checker = getattr(app_state, "pending_cancellation_checker", _UNSET_HOOK)
     token = _ctx.set_tool_session_id(sid)
     try:
-        with (
-            tool_workspace_context(workspace_root),
-            tool_runtime_hooks_context(
-                permission_gate=permission_gate,
-                tool_observer=tool_observer,
-                tool_interceptor=tool_interceptor,
-                cancellation_checker=cancellation_checker,
-            ),
-        ):
+        with tool_workspace_context(workspace_root):
             yield
     finally:
         _ctx.reset(token)
