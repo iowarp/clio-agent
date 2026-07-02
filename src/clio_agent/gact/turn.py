@@ -36,6 +36,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import json
+import logging
 import os
 import threading
 import time
@@ -90,9 +91,13 @@ from clio_agent.runtime.stream_audit import stream_audit
 # ``runtime.globals`` (their single owner + the documented test-patch site).
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from fastapi import FastAPI
 
     from clio_agent.gact.types import AgentDef  # noqa: F401
+
+logger = logging.getLogger(__name__)
 
 
 def _dedup_cross_agent_text(parts: list[Part]) -> list[Part]:
@@ -377,6 +382,168 @@ def _transcript_text_field(field_name: str) -> str:
     """Map DSPy contract fields to public transcript text fields."""
 
     return "answer" if field_name == "answer" else "thought"
+
+
+def _settle_failed_finalize(
+    app: "FastAPI",
+    sid: str,
+    *,
+    turn_id: str,
+    trace_id: str,
+    turn_tokens: Mapping[str, int],
+    turn_cost: float,
+    turn_cancel_event: threading.Event,
+    update_retry_attempt: "Callable[..., None]",
+    exc: BaseException,
+) -> None:
+    """#756: the turn's error envelope for a finalize-region crash.
+
+    Everything after :func:`_run_turn_in_background`'s forward except-chain
+    (answer grounding, part assembly, diff indexing, publishes, persistence)
+    runs inside a fire-and-forget task. An exception escaping there used to
+    die silently -- no ``message.completed``, no ``session.status_changed``,
+    session wedged in ``running`` forever. This settles the turn instead:
+    structured log, ``turn.failed`` semantic event, ``message.completed`` with
+    ``stop_reason=error`` + ``error_info``, a persisted assistant error message
+    (so the failure is visible in the reloaded transcript, not just live), and
+    a terminal ``session.status_changed``. Nothing degrades silently: every
+    best-effort step below logs its reason when it fails.
+    """
+
+    from clio_agent.gact.app import _append_session_message  # noqa: PLC0415
+
+    logger.error(
+        "turn finalize failed: reason=turn_finalize_error session=%s turn=%s error=%s",
+        sid,
+        turn_id,
+        type(exc).__name__,
+        exc_info=exc,
+    )
+    if trace.HF_ON:
+        trace.hot("TURN-FINALIZE-FAIL", "%s %s: %s", sid, type(exc).__name__, exc)
+
+    sess = app.state.sessions.get(sid)
+    if sess is not None and getattr(sess, "status", "") != "running":
+        # Finalize already settled the turn (the exception escaped after the
+        # terminal publishes); re-running the envelope would double-publish
+        # completion. The failure stays visible via the log above.
+        return
+
+    error_info = ErrorInfo(
+        error="finalize_error",
+        message=f"turn finalize raised: {exc}",
+        details={
+            "reason": "turn_finalize_error",
+            "session_id": sid,
+            "turn_id": turn_id,
+            "original_error": type(exc).__name__,
+            "stage": "finalize",
+        },
+        recoverable=True,
+    )
+    now = time.time()
+    assistant_msg = Message(
+        id=_new_message_id("asst"),
+        turn_id=turn_id,
+        session_id=sid,
+        role="assistant",
+        created_at=_iso_from_epoch(now),
+        updated_at=_iso_from_epoch(now),
+        parts=[],
+        tokens=Tokens(**dict(turn_tokens)),
+        cost_usd=turn_cost,
+        stop_reason="error",
+        error_info=error_info,
+    )
+    completed_payload: dict[str, Any] = {
+        "turn_id": turn_id,
+        "message_id": assistant_msg.id,
+        "stop_reason": "error",
+        "tokens": dict(turn_tokens),
+        "cost_usd": turn_cost,
+        "error_info": error_info.model_dump(exclude_none=True),
+    }
+    bus: EventBus = app.state.bus
+    try:
+        _emit_semantic_event(
+            app,
+            sid,
+            "turn.failed",
+            turn_id=turn_id,
+            trace_id=trace_id,
+            status="failed",
+            summary=f"CLIO turn failed: {error_info.error}.",
+            actor={"agent_id": "orchestrator"},
+            subject={"message_id": assistant_msg.id},
+            payload={
+                **completed_payload,
+                "final_message": assistant_msg.model_dump(exclude_none=True),
+            },
+        )
+    except Exception:  # noqa: BLE001 - the bus publishes below must still go out
+        logger.exception(
+            "turn.failed semantic emit failed during finalize settle: session=%s turn=%s",
+            sid,
+            turn_id,
+        )
+    _publish_transcript_event(bus, sid, "turn.completed", {"turn_id": turn_id})
+    bus.publish(
+        Event(
+            type="message.completed",
+            session_id=sid,
+            payload=completed_payload,
+        )
+    )
+    try:
+        _append_session_message(app, sid, assistant_msg)
+    except Exception:  # noqa: BLE001 - persistence degraded; the status flip must still happen
+        logger.exception(
+            "assistant error-message persistence failed during finalize settle: session=%s turn=%s",
+            sid,
+            turn_id,
+        )
+    try:
+        update_retry_attempt(
+            "failed",
+            metadata_patch={
+                "assistant_message_id": assistant_msg.id,
+                "stop_reason": "error",
+            },
+        )
+    except Exception:  # noqa: BLE001 - retry bookkeeping degraded; keep settling
+        logger.exception(
+            "retry-attempt update failed during finalize settle: session=%s turn=%s",
+            sid,
+            turn_id,
+        )
+    getattr(app.state, "live_assistant_message_ids", {}).pop(sid, None)
+    getattr(app.state, "live_assistant_parts", {}).pop(sid, None)
+    getattr(app.state, "live_assistant_part_keys", {}).pop(sid, None)
+    getattr(app.state, "live_stream_text_boundary_hooks", {}).pop(sid, None)
+    getattr(app.state, "expert_terminal_answers", {}).pop(sid, None)
+    # #757: the streamed-field buffer is per-turn; a failed finalize must
+    # drop it exactly like the happy-path cleanup or later turns'
+    # suppression matchers eat legitimate thinking parts.
+    _clear_live_streamed_field_text(app, sid)
+    if sess is not None:
+        app.state.sessions.update(
+            sid,
+            status="error",
+            message_count=sess.message_count + 2,
+        )
+    bus.publish(
+        Event(
+            type="session.status_changed",
+            session_id=sid,
+            payload={
+                "session_id": sid,
+                "status": "error",
+                "prev_status": "running",
+            },
+        )
+    )
+    if app.state.cancel_events.get(sid) is turn_cancel_event:
+        app.state.cancel_events.pop(sid, None)
 
 
 async def _run_turn_in_background(
@@ -2698,542 +2865,544 @@ async def _run_turn_in_background(
             recoverable=True,
         )
 
-    if error_info is None and not answer_text and expert_handoffs:
-        answer_text = _fallback_answer_from_delegation(expert_handoffs)
+    # #756: everything below (answer grounding, part assembly, diff indexing,
+    # nanoagent spawn, publishes, persistence) runs inside a fire-and-forget
+    # task; an exception escaping it used to vanish (the done-callback only
+    # pops in_flight_turns) and wedge the session in 'running' with no
+    # completion event. Run it under the turn's error envelope instead.
+    try:
+        if error_info is None and not answer_text and expert_handoffs:
+            answer_text = _fallback_answer_from_delegation(expert_handoffs)
 
-    # Final user-facing text only: correct any fabricated local artifact (csv/png)
-    # path the answer presents as produced — whether the synthesizing expert
-    # composed a plausible-but-wrong filename or the delegation-fallback text
-    # carried a model-requested ``output_path`` that the tool never wrote — by
-    # grounding it against the run's verified on-disk artifacts in the merged
-    # typed workflow_state. Generic (typed state + filesystem only), applied once
-    # on the assembled answer, never on intermediate child rows.
-    if answer_text and expert_handoffs:
-        answer_text = _ground_fabricated_local_artifact_paths(
-            answer_text,
-            _workflow_state_from_handoff_rows(expert_handoffs),
-        )
-
-    # Build assistant parts — routing_decision (v0.2) first when we
-    # got a selected_agent, then optional thinking trace, then the
-    # text answer, then any file_diffs.
-    if (
-        error_info is None
-        and not answer_text
-        and not thinking_text
-        and not proposed_diffs
-        and not nanoagents
-    ):
-        error_info = ErrorInfo(
-            error="empty_response",
-            message="Agent completed without user-visible output.",
-            details={
-                "session_id": sid,
-                "routing_mode": getattr(sess, "routing_mode", "auto"),
-                "selected_agent": selected_agent,
-            },
-            recoverable=True,
-        )
-
-    live_parts_by_session = getattr(app.state, "live_assistant_parts", {}) or {}
-    live_assistant_parts = list(live_parts_by_session.get(sid, []))
-    # #731: the PERSISTED assistant message is the live spine IN ARRIVAL ORDER —
-    # every part type (routing_decision / expert_handoff / tool_call / tool_result /
-    # text), NOT a text-only subset regrouped by type. This single-sources the live
-    # stream and the reloaded message (Principle 6) and retains the delegate.started
-    # handoffs the old text-only rebuild silently dropped. The dedup sets below scan
-    # ALL live parts so the finalize pass never re-adds a part that already streamed.
-    live_routing_agents = {
-        p.selected_agent
-        for p in live_assistant_parts
-        if p.type == "routing_decision" and p.selected_agent
-    }
-    live_has_expert_handoff = any(p.type == "expert_handoff" for p in live_assistant_parts)
-    # Delegation atoms already streamed live as expert_handoff parts (delegate.started/
-    # completed/parent_resumed). The finalize pass rebuilds the same handoffs from the
-    # expert_handoffs rows for the PERSISTED message; suppress re-publishing those on
-    # the bus when a live equivalent already went out, so the UI sees each delegation
-    # lifecycle transition once (single-source, Principle 6). Keyed by the lifecycle
-    # signature, not the (fresh) part id.
-    live_handoff_sigs = {
-        (p.stage, p.parent_agent, p.child_agent)
-        for p in live_assistant_parts
-        if p.type == "expert_handoff"
-    }
-    live_tool_calls = {
-        p.call_id: p for p in live_assistant_parts if p.type == "tool_call" and p.call_id
-    }
-    enriched_live_part_ids: set[str] = set()
-    for part in live_assistant_parts:
-        if part.type != "tool_result" or not part.call_id:
-            continue
-        call_part = live_tool_calls.get(part.call_id)
-        if call_part is None:
-            continue
-        for row in tools_called:
-            if str(row.get("name") or "") != call_part.tool_name:
-                continue
-            if row.get("args") != call_part.input:
-                continue
-            if "result" not in row:
-                continue
-            part.content = [
-                Part(
-                    id=f"{part.id}_final_text",
-                    type="text",
-                    text=_tool_result_preview(row.get("result")),
-                )
-            ]
-            enriched_live_part_ids.add(part.id)
-            break
-
-    assistant_parts: list[Part] = []
-    if selected_agent and selected_agent not in live_routing_agents:
-        assistant_parts.append(
-            Part(
-                id=_new_part_id(),
-                type="routing_decision",
-                # The decision is MADE by the orchestrator; ``selected_agent`` is the
-                # CHOSEN expert.
-                agent_id=invocation_agent_id or "main",
-                metadata={
-                    k: v
-                    for k, v in {
-                        "route_source": route_source,
-                        "route_reason": route_reason,
-                    }.items()
-                    if v
-                },
-                selected_agent=selected_agent,
-                rationale=rationale,
-                confidence=0.0,
-                heuristic=False,
-                execution_path=execution_path,
+        # Final user-facing text only: correct any fabricated local artifact (csv/png)
+        # path the answer presents as produced — whether the synthesizing expert
+        # composed a plausible-but-wrong filename or the delegation-fallback text
+        # carried a model-requested ``output_path`` that the tool never wrote — by
+        # grounding it against the run's verified on-disk artifacts in the merged
+        # typed workflow_state. Generic (typed state + filesystem only), applied once
+        # on the assembled answer, never on intermediate child rows.
+        if answer_text and expert_handoffs:
+            answer_text = _ground_fabricated_local_artifact_paths(
+                answer_text,
+                _workflow_state_from_handoff_rows(expert_handoffs),
             )
-        )
-    for handoff in [] if live_has_expert_handoff else expert_handoffs:
-        handoff_fields = _expert_handoff_fields(handoff)
-        assistant_parts.append(
-            Part(
-                id=_new_part_id(),
-                type="expert_handoff",
-                # The parent (decider) generates the handoff; structured fields are
-                # the contract, ``text`` is a short label only.
-                agent_id=handoff_fields["parent_agent"] or selected_agent or invocation_agent_id,
-                parent_agent=handoff_fields["parent_agent"],
-                child_agent=handoff_fields["child_agent"],
-                stage=handoff_fields["stage"],
-                status=handoff_fields["status"],
-                metadata=_handoff_part_metadata(handoff),
-                text=_expert_handoff_summary(handoff),
-            )
-        )
-    # The expert that produced this turn's thinking/answer/diff parts: the routed
-    # expert when one was selected, else the active orchestrator.
-    responder_agent_id = selected_agent or invocation_agent_id or "main"
-    # Reconcile the per-expert live streamed parts (WS3) with the canonical answer.
-    # Earlier experts' parts were already closed live (text persisted + completed).
-    # The still-open part (the last streamer) becomes the canonical answer part when
-    # its author is the responding expert; otherwise it's closed as-is and the
-    # canonical answer lands as its own authored part below.
-    reuse_streamed_part_id: Optional[str] = None
-    if (
-        streamed_assistant_part_id is not None
-        and streamed_assistant_part_id not in closed_streamed_part_ids
-    ):
-        # Reuse the still-open part as the canonical answer ONLY when it was actually
-        # streaming the answer field. If the last field to stream was a DIFFERENT
-        # field (e.g. ``reasoning``/``next_thought``), its buffered text is that
-        # field's content — overwriting it with ``answer_text`` swaps the part's text
-        # out from under the live view (the reasoning->answer "beginning of the turn
-        # breaks" bug: live shows the reasoning, finalize/reload swaps to the answer).
-        # Close it as-is instead (its reasoning is preserved + emitted consistently),
-        # and let the answer land as its own authored part via the fallback below.
+
+        # Build assistant parts — routing_decision (v0.2) first when we
+        # got a selected_agent, then optional thinking trace, then the
+        # text answer, then any file_diffs.
         if (
-            answer_text
-            and streamed_last_agent == responder_agent_id
-            and streamed_last_field == "answer"
+            error_info is None
+            and not answer_text
+            and not thinking_text
+            and not proposed_diffs
+            and not nanoagents
         ):
-            reuse_streamed_part_id = streamed_assistant_part_id
-        else:
-            _close_streamed_part(streamed_assistant_part_id)
-    assistant_parts.extend(live_assistant_parts)
-    # #733 fallback: a TERMINAL expert whose answer did NOT stream live (a
-    # non-streaming provider / blocking path leaves its WS3 text part empty) gets its
-    # answer emitted as an authored text part now. When WS3 DID stream the answer the
-    # expert already has a non-empty text part (closed by this point), so this adds
-    # nothing — no duplicate. Author = the expert; this is its deliverable.
-    answered_agents = {
-        p.agent_id for p in assistant_parts if p.type == "text" and (p.text or "").strip()
-    }
-    for fb_expert, fb_answer in (getattr(app.state, "expert_terminal_answers", {}) or {}).get(
-        sid, []
-    ):
-        if fb_expert in answered_agents:
-            continue
-        if _looks_like_structured_answer(fb_answer):
-            continue
-        answered_agents.add(fb_expert)
-        assistant_parts.append(
-            Part(
-                id=_new_part_id(),
-                type="text",
-                agent_id=fb_expert,
-                text=fb_answer,
-                metadata={"stream_source": "expert_answer"},
+            error_info = ErrorInfo(
+                error="empty_response",
+                message="Agent completed without user-visible output.",
+                details={
+                    "session_id": sid,
+                    "routing_mode": getattr(sess, "routing_mode", "auto"),
+                    "selected_agent": selected_agent,
+                },
+                recoverable=True,
             )
-        )
-    suppressed_thinking_part: dict[str, str] = {}
-    if thinking_text and _streamed_field_contains(responder_agent_id, "reasoning", thinking_text):
-        suppressed_thinking_part = {
-            "agent_id": responder_agent_id,
-            "reason": "already_streamed_contract_reasoning",
-            "text": thinking_text,
+
+        live_parts_by_session = getattr(app.state, "live_assistant_parts", {}) or {}
+        live_assistant_parts = list(live_parts_by_session.get(sid, []))
+        # #731: the PERSISTED assistant message is the live spine IN ARRIVAL ORDER —
+        # every part type (routing_decision / expert_handoff / tool_call / tool_result /
+        # text), NOT a text-only subset regrouped by type. This single-sources the live
+        # stream and the reloaded message (Principle 6) and retains the delegate.started
+        # handoffs the old text-only rebuild silently dropped. The dedup sets below scan
+        # ALL live parts so the finalize pass never re-adds a part that already streamed.
+        live_routing_agents = {
+            p.selected_agent
+            for p in live_assistant_parts
+            if p.type == "routing_decision" and p.selected_agent
         }
-    elif thinking_text and _is_parent_resume_reasoning_part(
-        assistant_parts,
-        responder_agent_id=responder_agent_id,
-    ):
-        suppressed_thinking_part = {
-            "agent_id": responder_agent_id,
-            "reason": "parent_resume_bookkeeping",
-            "text": thinking_text,
+        live_has_expert_handoff = any(p.type == "expert_handoff" for p in live_assistant_parts)
+        # Delegation atoms already streamed live as expert_handoff parts (delegate.started/
+        # completed/parent_resumed). The finalize pass rebuilds the same handoffs from the
+        # expert_handoffs rows for the PERSISTED message; suppress re-publishing those on
+        # the bus when a live equivalent already went out, so the UI sees each delegation
+        # lifecycle transition once (single-source, Principle 6). Keyed by the lifecycle
+        # signature, not the (fresh) part id.
+        live_handoff_sigs = {
+            (p.stage, p.parent_agent, p.child_agent)
+            for p in live_assistant_parts
+            if p.type == "expert_handoff"
         }
-    elif thinking_text:
-        # iowarp/clio-agent#17: surface DSPy reasoning as a thinking Part so the TUI
-        # can collapse + render it (gated on capabilities.thinking_blocks). Appended
-        # AFTER the live spine — the responder's wrap-up reasoning is produced at the
-        # END of the turn and published at finalize, so its persisted ``sequence``
-        # must follow the spine, not be hoisted above it (#731: no reorder on reload).
-        assistant_parts.append(
-            Part(
-                id=_new_part_id(),
-                type="thinking",
-                agent_id=responder_agent_id,
-                text=thinking_text,
-            )
-        )
-    # The canonical turn answer is the last terminal expert's deliverable; only append
-    # a main-authored copy when it is NOT already present as an authored text part
-    # (the WS3 stream or the #733 fallback above) — otherwise it duplicates.
-    answer_already_present = bool(answer_text) and any(
-        p.type == "text" and (p.text or "").strip() == answer_text.strip() for p in assistant_parts
-    )
-    if (
-        answer_text
-        and reuse_streamed_part_id is None
-        and not answer_already_present
-        and not _looks_like_structured_answer(answer_text)
-    ):
-        assistant_parts.append(
-            Part(
-                id=_new_part_id(),
-                type="text",
-                agent_id=responder_agent_id,
-                text=answer_text,
-            )
-        )
-    for row in proposed_diffs:
-        if isinstance(row, dict):
-            getf = row.get
-        else:
-
-            def getf(k, default=None, _r=row):
-                return getattr(_r, k, default)
-
-        path = getf("path", "") or ""
-        udiff = getf("unified_diff", "") or ""
-        new_content = getf("new_content", "") or ""
-        edit_mode = getf("edit_mode", "") or ""
-        lines_added = int(getf("lines_added", 0) or 0)
-        lines_removed = int(getf("lines_removed", 0) or 0)
-        if not path:
-            continue
-        # In "whole" mode the unified_diff may be empty by design;
-        # the new_content carries the full replacement. Accept either
-        # so the Part lands instead of being dropped.
-        if not udiff and not new_content:
-            continue
-        diff_part = Part(
-            id=_new_part_id(),
-            type="file_diff",
-            agent_id=responder_agent_id,
-            path=path,
-            unified_diff=udiff,
-            new_content=new_content,
-            status="pending",
-            edit_mode=edit_mode,
-            lines_added=lines_added,
-            lines_removed=lines_removed,
-        )
-        assistant_parts.append(diff_part)
-        _emit_semantic_event(
-            app,
-            sid,
-            "artifact.proposed",
-            turn_id=turn_id,
-            trace_id=trace_id,
-            summary=f"Agent proposed a file diff for {path}.",
-            actor={"agent_id": selected_agent or invocation_agent_id},
-            subject={"path": path, "part_id": diff_part.id, "artifact_type": "file_diff"},
-            payload={
-                "path": path,
-                "unified_diff": udiff,
-                "new_content": new_content,
-                "edit_mode": edit_mode,
-                "lines_added": lines_added,
-                "lines_removed": lines_removed,
-            },
-        )
-
-    error_info = _enrich_cancellation_error_info(app, sid, error_info)
-    cancelled_turn = error_info is not None and error_info.error == "cancelled"
-    if cancelled_turn:
-        app.state.cancel_flags.discard(sid)
-        ledger = getattr(app.state, "tool_call_ledger", None)
-        if ledger is not None:
-            ledger.pop(sid, None)
-
-    assistant_metadata: dict[str, Any] = {}
-    if turn_agent_id:
-        assistant_metadata["agent_override"] = {
-            "requested_agent_id": turn_agent_id,
-            "session_agent_id": _session_agent_id(sess),
-            "effective_agent_id": selected_agent or turn_agent_id,
-            "scope": "turn",
+        live_tool_calls = {
+            p.call_id: p for p in live_assistant_parts if p.type == "tool_call" and p.call_id
         }
-    has_live_parts = bool(live_assistant_parts or streamed_assistant_part_id)
-    should_report_stream_provenance = bool(answer_text) or error_info is not None or has_live_parts
-    text_stream_source = ""
-    if bool(answer_text) or error_info is not None:
-        text_stream_source = "live" if streamed_assistant_part_id is not None else "batch"
-    elif has_live_parts:
-        text_stream_source = "live"
-    if should_report_stream_provenance and text_stream_source:
-        assistant_metadata["stream_source"] = text_stream_source
-    stream_fallback = _pop_stream_fallback(app, sid)
-    if text_stream_source == "batch" and (bool(answer_text) or error_info is not None):
-        if not stream_fallback:
-            stream_fallback = _stream_fallback_payload("sync_execution_path")
-        assistant_metadata["stream_fallback"] = stream_fallback
-    if text_stream_source and answer_text:
-        for part in assistant_parts:
-            if part.type != "text" or not part.text:
+        enriched_live_part_ids: set[str] = set()
+        for part in live_assistant_parts:
+            if part.type != "tool_result" or not part.call_id:
                 continue
-            part.metadata = {
-                **part.metadata,
-                "stream_source": text_stream_source,
-            }
-            if text_stream_source == "batch" and stream_fallback:
-                part.metadata["stream_fallback"] = stream_fallback
-    # A live observer completion can arrive after the immediate post-forward drain
-    # but before the assistant message is persisted. Reconcile once more at the
-    # final metadata boundary so reloads retain the same tool facts as the live bus.
-    if not cancelled_turn:
-        tools_called = _drain_observed_tool_calls(tools_called)
-    tools_called = _sanitize_tools_called_metadata(tools_called)
-    if tools_called:
-        assistant_metadata["tools_called"] = tools_called
-    if expert_handoffs:
-        expert_handoffs = [
-            _sanitize_handoff_tool_metadata(row) if isinstance(row, Mapping) else row
-            for row in expert_handoffs
-        ]
-        assistant_metadata["expert_handoffs"] = expert_handoffs
-    if context_file_provenance["files"]:
-        assistant_metadata["context_files"] = context_file_provenance
-    if memory_search_metadata:
-        assistant_metadata["memory_search"] = memory_search_metadata
-    if agent_runtime:
-        assistant_metadata["agent_runtime"] = agent_runtime
-    if prompt_resolution:
-        assistant_metadata["prompt_resolution"] = prompt_resolution
-    if suppressed_thinking_part:
-        assistant_metadata["suppressed_thinking_part"] = suppressed_thinking_part
-    # Reasoning capture: log the chain-of-thought tokens for EVERY LM call this
-    # turn (planner + each expert + chat), extracted from dspy.lm.history. Most
-    # stacks discard reasoning_content; we persist (question, reasoning, response)
-    # on the assistant message metadata because the reasoning has scientific
-    # value for analysing how the model reached its answer. Gated by
-    # CLIO_CAPTURE_REASONING (default on); set to 0 to avoid the metadata growth.
-    if os.environ.get("CLIO_CAPTURE_REASONING", "").strip().lower() not in {
-        "0",
-        "false",
-        "no",
-        "off",
-    }:
-        try:
-            _reasoning_log = _reasoning_records_from_history_slice(history_start, app)
-        except Exception:  # noqa: BLE001 - reasoning capture is best-effort, never fail a turn
-            _reasoning_log = []
-        if _reasoning_log:
-            assistant_metadata["reasoning_log"] = _reasoning_log
-            trace.event(
-                "REASONING",
-                "captured %d call(s): %s",
-                len(_reasoning_log),
-                "; ".join(
-                    f"{(r['model'] or '?').split('/')[-1]}={r['reasoning_chars']}c"
-                    for r in _reasoning_log
-                ),
-            )
-    # iowarp/clio-agent#6: when streaming actually emitted chunks,
-    # reuse its message_id + part_id so the deltas + final
-    # message line up. Otherwise mint a fresh id (existing path).
-    live_ids = getattr(app.state, "live_assistant_message_ids", {}) or {}
-    live_assistant_msg_id = str(live_ids.get(sid) or "")
-    asst_id = streamed_assistant_msg_id or live_assistant_msg_id or _new_message_id("asst")
-    if reuse_streamed_part_id is not None and answer_text:
-        # Replace the reused (still-open, responder-authored) live part with a stub
-        # carrying its streamed part_id + the canonical answer, so the final message
-        # references the same id the deltas used. Match by id (not "first text part")
-        # so per-expert child text parts streamed earlier are left untouched.
-        for i, p in enumerate(assistant_parts):
-            if p.type == "text" and p.id == reuse_streamed_part_id:
-                assistant_parts[i] = Part(
-                    id=reuse_streamed_part_id,
-                    type="text",
-                    agent_id=p.agent_id or responder_agent_id,
-                    text=answer_text,
-                    metadata=p.metadata,
-                )
+            call_part = live_tool_calls.get(part.call_id)
+            if call_part is None:
+                continue
+            for row in tools_called:
+                if str(row.get("name") or "") != call_part.tool_name:
+                    continue
+                if row.get("args") != call_part.input:
+                    continue
+                if "result" not in row:
+                    continue
+                part.content = [
+                    Part(
+                        id=f"{part.id}_final_text",
+                        type="text",
+                        text=_tool_result_preview(row.get("result")),
+                    )
+                ]
+                enriched_live_part_ids.add(part.id)
                 break
-    # #736: drop the resumed orchestrator's verbatim echo of a terminal child's answer
-    # from the authored (persisted/reloaded) transcript, keeping the child-authored
-    # original. Serving-layer dedup — the live stream still carries main's echo (it
-    # genuinely streamed) and the client dedups it defensively. See helper docstring.
-    assistant_parts = _dedup_cross_agent_text(assistant_parts)
-    # #731: stamp a monotonic 1-based arrival-order key on every persisted part so a
-    # reloaded conversation can be restored to the exact order it streamed even if a
-    # client re-sorts. The list is already in arrival order; ``sequence`` makes the
-    # ordering explicit and survives the slim ``to_wire`` projection.
-    for _seq, _part in enumerate(assistant_parts, start=1):
-        _part.sequence = _seq
-    assistant_msg = Message(
-        id=asst_id,
-        # Correlate the assistant reply to the user-turn that produced it (#711).
-        turn_id=turn_id,
-        session_id=sid,
-        role="assistant",
-        created_at=_iso_from_epoch(time.time()),
-        updated_at=_iso_from_epoch(time.time()),
-        parts=assistant_parts,
-        tokens=Tokens(**turn_tokens),
-        cost_usd=turn_cost,
-        stop_reason="cancelled" if cancelled_turn else ("error" if error_info else "end_turn"),
-        error_info=error_info,
-        metadata=assistant_metadata,
-    )
-    _finalize_context_frame(
-        app,
-        sid,
-        context_frame["id"],
-        assistant_msg.id,
-        "cancelled" if cancelled_turn else ("error" if error_info else "completed"),
-        error_info=error_info,
-    )
 
-    # Index file_diff parts so /diffs/apply + /diffs/reject find them.
-    bucket = app.state.pending_diffs.setdefault(sid, [])
-    for p in assistant_parts:
-        if p.type != "file_diff":
-            continue
-        write_content = (
-            p.new_content if p.new_content or p.edit_mode in {"whole", "patch"} else None
-        )
-        bucket.append(
-            {
-                "path": p.path,
-                "unified_diff": p.unified_diff,
-                "new_content": write_content,
-                "status": "pending",
-                "part_id": p.id,
-                "message_id": assistant_msg.id,
-            }
-        )
-
-    # Materialise nanoagent spawns + publish their lifecycle events.
-    for spawn in nanoagents:
-        get = (
-            spawn.get
-            if isinstance(spawn, dict)
-            else (lambda k, default=None, _s=spawn: getattr(_s, k, default))
-        )
-        agent_id = get("agent_id") or get("agent") or "nanoagent"
-        spawn_input = get("input") or {}
-        answer = get("answer") or ""
-        tools_called = get("tools_called") or get("tools") or []
-        subsess = app.state.sessions.create(
-            workspace_id=sess.workspace_id,
-            title=f"{agent_id} subagent",
-            parent_session_id=sid,
-            agent={"id": str(agent_id), "mode": "subagent"},
-            metadata={
-                "session_type": "nanoagent",
-                "agent_id": str(agent_id),
-                "parent_session_id": sid,
-                "spawned_by_message_id": assistant_msg.id,
-                "spawned_by_agent": selected_agent,
-                "tool_count": len(tools_called) if isinstance(tools_called, list) else 0,
-            },
-        )
-        sub_now = time.time()
-        sub_user = Message(
-            id=_new_message_id("user"),
-            session_id=subsess.id,
-            role="user",
-            created_at=_iso_from_epoch(sub_now),
-            updated_at=_iso_from_epoch(sub_now),
-            parts=[
+        assistant_parts: list[Part] = []
+        if selected_agent and selected_agent not in live_routing_agents:
+            assistant_parts.append(
+                Part(
+                    id=_new_part_id(),
+                    type="routing_decision",
+                    # The decision is MADE by the orchestrator; ``selected_agent`` is the
+                    # CHOSEN expert.
+                    agent_id=invocation_agent_id or "main",
+                    metadata={
+                        k: v
+                        for k, v in {
+                            "route_source": route_source,
+                            "route_reason": route_reason,
+                        }.items()
+                        if v
+                    },
+                    selected_agent=selected_agent,
+                    rationale=rationale,
+                    confidence=0.0,
+                    heuristic=False,
+                    execution_path=execution_path,
+                )
+            )
+        for handoff in [] if live_has_expert_handoff else expert_handoffs:
+            handoff_fields = _expert_handoff_fields(handoff)
+            assistant_parts.append(
+                Part(
+                    id=_new_part_id(),
+                    type="expert_handoff",
+                    # The parent (decider) generates the handoff; structured fields are
+                    # the contract, ``text`` is a short label only.
+                    agent_id=handoff_fields["parent_agent"]
+                    or selected_agent
+                    or invocation_agent_id,
+                    parent_agent=handoff_fields["parent_agent"],
+                    child_agent=handoff_fields["child_agent"],
+                    stage=handoff_fields["stage"],
+                    status=handoff_fields["status"],
+                    metadata=_handoff_part_metadata(handoff),
+                    text=_expert_handoff_summary(handoff),
+                )
+            )
+        # The expert that produced this turn's thinking/answer/diff parts: the routed
+        # expert when one was selected, else the active orchestrator.
+        responder_agent_id = selected_agent or invocation_agent_id or "main"
+        # Reconcile the per-expert live streamed parts (WS3) with the canonical answer.
+        # Earlier experts' parts were already closed live (text persisted + completed).
+        # The still-open part (the last streamer) becomes the canonical answer part when
+        # its author is the responding expert; otherwise it's closed as-is and the
+        # canonical answer lands as its own authored part below.
+        reuse_streamed_part_id: Optional[str] = None
+        if (
+            streamed_assistant_part_id is not None
+            and streamed_assistant_part_id not in closed_streamed_part_ids
+        ):
+            # Reuse the still-open part as the canonical answer ONLY when it was actually
+            # streaming the answer field. If the last field to stream was a DIFFERENT
+            # field (e.g. ``reasoning``/``next_thought``), its buffered text is that
+            # field's content — overwriting it with ``answer_text`` swaps the part's text
+            # out from under the live view (the reasoning->answer "beginning of the turn
+            # breaks" bug: live shows the reasoning, finalize/reload swaps to the answer).
+            # Close it as-is instead (its reasoning is preserved + emitted consistently),
+            # and let the answer land as its own authored part via the fallback below.
+            if (
+                answer_text
+                and streamed_last_agent == responder_agent_id
+                and streamed_last_field == "answer"
+            ):
+                reuse_streamed_part_id = streamed_assistant_part_id
+            else:
+                _close_streamed_part(streamed_assistant_part_id)
+        assistant_parts.extend(live_assistant_parts)
+        # #733 fallback: a TERMINAL expert whose answer did NOT stream live (a
+        # non-streaming provider / blocking path leaves its WS3 text part empty) gets its
+        # answer emitted as an authored text part now. When WS3 DID stream the answer the
+        # expert already has a non-empty text part (closed by this point), so this adds
+        # nothing — no duplicate. Author = the expert; this is its deliverable.
+        answered_agents = {
+            p.agent_id for p in assistant_parts if p.type == "text" and (p.text or "").strip()
+        }
+        for fb_expert, fb_answer in (getattr(app.state, "expert_terminal_answers", {}) or {}).get(
+            sid, []
+        ):
+            if fb_expert in answered_agents:
+                continue
+            if _looks_like_structured_answer(fb_answer):
+                continue
+            answered_agents.add(fb_expert)
+            assistant_parts.append(
                 Part(
                     id=_new_part_id(),
                     type="text",
-                    text=_format_subagent_input(spawn_input),
+                    agent_id=fb_expert,
+                    text=fb_answer,
+                    metadata={"stream_source": "expert_answer"},
                 )
-            ],
-            metadata={
-                "subagent_input": spawn_input,
-                "parent_session_id": sid,
-                "spawned_by_message_id": assistant_msg.id,
-            },
+            )
+        suppressed_thinking_part: dict[str, str] = {}
+        if thinking_text and _streamed_field_contains(
+            responder_agent_id, "reasoning", thinking_text
+        ):
+            suppressed_thinking_part = {
+                "agent_id": responder_agent_id,
+                "reason": "already_streamed_contract_reasoning",
+                "text": thinking_text,
+            }
+        elif thinking_text and _is_parent_resume_reasoning_part(
+            assistant_parts,
+            responder_agent_id=responder_agent_id,
+        ):
+            suppressed_thinking_part = {
+                "agent_id": responder_agent_id,
+                "reason": "parent_resume_bookkeeping",
+                "text": thinking_text,
+            }
+        elif thinking_text:
+            # iowarp/clio-agent#17: surface DSPy reasoning as a thinking Part so the TUI
+            # can collapse + render it (gated on capabilities.thinking_blocks). Appended
+            # AFTER the live spine — the responder's wrap-up reasoning is produced at the
+            # END of the turn and published at finalize, so its persisted ``sequence``
+            # must follow the spine, not be hoisted above it (#731: no reorder on reload).
+            assistant_parts.append(
+                Part(
+                    id=_new_part_id(),
+                    type="thinking",
+                    agent_id=responder_agent_id,
+                    text=thinking_text,
+                )
+            )
+        # The canonical turn answer is the last terminal expert's deliverable; only append
+        # a main-authored copy when it is NOT already present as an authored text part
+        # (the WS3 stream or the #733 fallback above) — otherwise it duplicates.
+        answer_already_present = bool(answer_text) and any(
+            p.type == "text" and (p.text or "").strip() == answer_text.strip()
+            for p in assistant_parts
         )
-        sub_asst = Message(
-            id=_new_message_id("asst"),
-            session_id=subsess.id,
+        if (
+            answer_text
+            and reuse_streamed_part_id is None
+            and not answer_already_present
+            and not _looks_like_structured_answer(answer_text)
+        ):
+            assistant_parts.append(
+                Part(
+                    id=_new_part_id(),
+                    type="text",
+                    agent_id=responder_agent_id,
+                    text=answer_text,
+                )
+            )
+        for row in proposed_diffs:
+            if isinstance(row, dict):
+                getf = row.get
+            else:
+
+                def getf(k, default=None, _r=row):
+                    return getattr(_r, k, default)
+
+            path = getf("path", "") or ""
+            udiff = getf("unified_diff", "") or ""
+            new_content = getf("new_content", "") or ""
+            edit_mode = getf("edit_mode", "") or ""
+            lines_added = int(getf("lines_added", 0) or 0)
+            lines_removed = int(getf("lines_removed", 0) or 0)
+            if not path:
+                continue
+            # In "whole" mode the unified_diff may be empty by design;
+            # the new_content carries the full replacement. Accept either
+            # so the Part lands instead of being dropped.
+            if not udiff and not new_content:
+                continue
+            diff_part = Part(
+                id=_new_part_id(),
+                type="file_diff",
+                agent_id=responder_agent_id,
+                path=path,
+                unified_diff=udiff,
+                new_content=new_content,
+                status="pending",
+                edit_mode=edit_mode,
+                lines_added=lines_added,
+                lines_removed=lines_removed,
+            )
+            assistant_parts.append(diff_part)
+            _emit_semantic_event(
+                app,
+                sid,
+                "artifact.proposed",
+                turn_id=turn_id,
+                trace_id=trace_id,
+                summary=f"Agent proposed a file diff for {path}.",
+                actor={"agent_id": selected_agent or invocation_agent_id},
+                subject={"path": path, "part_id": diff_part.id, "artifact_type": "file_diff"},
+                payload={
+                    "path": path,
+                    "unified_diff": udiff,
+                    "new_content": new_content,
+                    "edit_mode": edit_mode,
+                    "lines_added": lines_added,
+                    "lines_removed": lines_removed,
+                },
+            )
+
+        error_info = _enrich_cancellation_error_info(app, sid, error_info)
+        cancelled_turn = error_info is not None and error_info.error == "cancelled"
+        if cancelled_turn:
+            app.state.cancel_flags.discard(sid)
+            ledger = getattr(app.state, "tool_call_ledger", None)
+            if ledger is not None:
+                ledger.pop(sid, None)
+
+        assistant_metadata: dict[str, Any] = {}
+        if turn_agent_id:
+            assistant_metadata["agent_override"] = {
+                "requested_agent_id": turn_agent_id,
+                "session_agent_id": _session_agent_id(sess),
+                "effective_agent_id": selected_agent or turn_agent_id,
+                "scope": "turn",
+            }
+        has_live_parts = bool(live_assistant_parts or streamed_assistant_part_id)
+        should_report_stream_provenance = (
+            bool(answer_text) or error_info is not None or has_live_parts
+        )
+        text_stream_source = ""
+        if bool(answer_text) or error_info is not None:
+            text_stream_source = "live" if streamed_assistant_part_id is not None else "batch"
+        elif has_live_parts:
+            text_stream_source = "live"
+        if should_report_stream_provenance and text_stream_source:
+            assistant_metadata["stream_source"] = text_stream_source
+        stream_fallback = _pop_stream_fallback(app, sid)
+        if text_stream_source == "batch" and (bool(answer_text) or error_info is not None):
+            if not stream_fallback:
+                stream_fallback = _stream_fallback_payload("sync_execution_path")
+            assistant_metadata["stream_fallback"] = stream_fallback
+        if text_stream_source and answer_text:
+            for part in assistant_parts:
+                if part.type != "text" or not part.text:
+                    continue
+                part.metadata = {
+                    **part.metadata,
+                    "stream_source": text_stream_source,
+                }
+                if text_stream_source == "batch" and stream_fallback:
+                    part.metadata["stream_fallback"] = stream_fallback
+        # A live observer completion can arrive after the immediate post-forward drain
+        # but before the assistant message is persisted. Reconcile once more at the
+        # final metadata boundary so reloads retain the same tool facts as the live bus.
+        if not cancelled_turn:
+            tools_called = _drain_observed_tool_calls(tools_called)
+        tools_called = _sanitize_tools_called_metadata(tools_called)
+        if tools_called:
+            assistant_metadata["tools_called"] = tools_called
+        if expert_handoffs:
+            expert_handoffs = [
+                _sanitize_handoff_tool_metadata(row) if isinstance(row, Mapping) else row
+                for row in expert_handoffs
+            ]
+            assistant_metadata["expert_handoffs"] = expert_handoffs
+        if context_file_provenance["files"]:
+            assistant_metadata["context_files"] = context_file_provenance
+        if memory_search_metadata:
+            assistant_metadata["memory_search"] = memory_search_metadata
+        if agent_runtime:
+            assistant_metadata["agent_runtime"] = agent_runtime
+        if prompt_resolution:
+            assistant_metadata["prompt_resolution"] = prompt_resolution
+        if suppressed_thinking_part:
+            assistant_metadata["suppressed_thinking_part"] = suppressed_thinking_part
+        # Reasoning capture: log the chain-of-thought tokens for EVERY LM call this
+        # turn (planner + each expert + chat), extracted from dspy.lm.history. Most
+        # stacks discard reasoning_content; we persist (question, reasoning, response)
+        # on the assistant message metadata because the reasoning has scientific
+        # value for analysing how the model reached its answer. Gated by
+        # CLIO_CAPTURE_REASONING (default on); set to 0 to avoid the metadata growth.
+        if os.environ.get("CLIO_CAPTURE_REASONING", "").strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }:
+            try:
+                _reasoning_log = _reasoning_records_from_history_slice(history_start, app)
+            except Exception:  # noqa: BLE001 - reasoning capture is best-effort, never fail a turn
+                _reasoning_log = []
+            if _reasoning_log:
+                assistant_metadata["reasoning_log"] = _reasoning_log
+                trace.event(
+                    "REASONING",
+                    "captured %d call(s): %s",
+                    len(_reasoning_log),
+                    "; ".join(
+                        f"{(r['model'] or '?').split('/')[-1]}={r['reasoning_chars']}c"
+                        for r in _reasoning_log
+                    ),
+                )
+        # iowarp/clio-agent#6: when streaming actually emitted chunks,
+        # reuse its message_id + part_id so the deltas + final
+        # message line up. Otherwise mint a fresh id (existing path).
+        live_ids = getattr(app.state, "live_assistant_message_ids", {}) or {}
+        live_assistant_msg_id = str(live_ids.get(sid) or "")
+        asst_id = streamed_assistant_msg_id or live_assistant_msg_id or _new_message_id("asst")
+        if reuse_streamed_part_id is not None and answer_text:
+            # Replace the reused (still-open, responder-authored) live part with a stub
+            # carrying its streamed part_id + the canonical answer, so the final message
+            # references the same id the deltas used. Match by id (not "first text part")
+            # so per-expert child text parts streamed earlier are left untouched.
+            for i, p in enumerate(assistant_parts):
+                if p.type == "text" and p.id == reuse_streamed_part_id:
+                    assistant_parts[i] = Part(
+                        id=reuse_streamed_part_id,
+                        type="text",
+                        agent_id=p.agent_id or responder_agent_id,
+                        text=answer_text,
+                        metadata=p.metadata,
+                    )
+                    break
+        # #736: drop the resumed orchestrator's verbatim echo of a terminal child's answer
+        # from the authored (persisted/reloaded) transcript, keeping the child-authored
+        # original. Serving-layer dedup — the live stream still carries main's echo (it
+        # genuinely streamed) and the client dedups it defensively. See helper docstring.
+        assistant_parts = _dedup_cross_agent_text(assistant_parts)
+        # #731: stamp a monotonic 1-based arrival-order key on every persisted part so a
+        # reloaded conversation can be restored to the exact order it streamed even if a
+        # client re-sorts. The list is already in arrival order; ``sequence`` makes the
+        # ordering explicit and survives the slim ``to_wire`` projection.
+        for _seq, _part in enumerate(assistant_parts, start=1):
+            _part.sequence = _seq
+        assistant_msg = Message(
+            id=asst_id,
+            # Correlate the assistant reply to the user-turn that produced it (#711).
+            turn_id=turn_id,
+            session_id=sid,
             role="assistant",
-            created_at=_iso_from_epoch(sub_now),
-            updated_at=_iso_from_epoch(sub_now),
-            parts=(
-                [Part(id=_new_part_id(), type="text", agent_id=str(agent_id), text=answer)]
-                if answer
-                else []
-            ),
-            stop_reason="end_turn",
-            metadata={"tools_called": tools_called} if tools_called else {},
+            created_at=_iso_from_epoch(time.time()),
+            updated_at=_iso_from_epoch(time.time()),
+            parts=assistant_parts,
+            tokens=Tokens(**turn_tokens),
+            cost_usd=turn_cost,
+            stop_reason="cancelled" if cancelled_turn else ("error" if error_info else "end_turn"),
+            error_info=error_info,
+            metadata=assistant_metadata,
         )
-        _extend_session_messages(app, subsess.id, [sub_user, sub_asst])
-        app.state.sessions.update(subsess.id, message_count=2, status="idle")
-        _emit_semantic_event(
+        _finalize_context_frame(
             app,
             sid,
-            "subagent.started",
-            turn_id=turn_id,
-            trace_id=trace_id,
-            status="running",
-            summary=f"Spawned subagent {agent_id}.",
-            actor={"agent_id": selected_agent or "orchestrator"},
-            subject={"agent_id": str(agent_id), "session_id": subsess.id},
-            payload={
-                "parent_session_id": sid,
-                "child_session_id": subsess.id,
-                "agent_id": agent_id,
-                "spawned_by_message_id": assistant_msg.id,
-            },
+            context_frame["id"],
+            assistant_msg.id,
+            "cancelled" if cancelled_turn else ("error" if error_info else "completed"),
+            error_info=error_info,
         )
-        bus.publish(
-            Event(
-                type="subagent.started",
-                session_id=sid,
+
+        # Index file_diff parts so /diffs/apply + /diffs/reject find them.
+        bucket = app.state.pending_diffs.setdefault(sid, [])
+        for p in assistant_parts:
+            if p.type != "file_diff":
+                continue
+            write_content = (
+                p.new_content if p.new_content or p.edit_mode in {"whole", "patch"} else None
+            )
+            bucket.append(
+                {
+                    "path": p.path,
+                    "unified_diff": p.unified_diff,
+                    "new_content": write_content,
+                    "status": "pending",
+                    "part_id": p.id,
+                    "message_id": assistant_msg.id,
+                }
+            )
+
+        # Materialise nanoagent spawns + publish their lifecycle events.
+        for spawn in nanoagents:
+            get = (
+                spawn.get
+                if isinstance(spawn, dict)
+                else (lambda k, default=None, _s=spawn: getattr(_s, k, default))
+            )
+            agent_id = get("agent_id") or get("agent") or "nanoagent"
+            spawn_input = get("input") or {}
+            answer = get("answer") or ""
+            tools_called = get("tools_called") or get("tools") or []
+            subsess = app.state.sessions.create(
+                workspace_id=sess.workspace_id,
+                title=f"{agent_id} subagent",
+                parent_session_id=sid,
+                agent={"id": str(agent_id), "mode": "subagent"},
+                metadata={
+                    "session_type": "nanoagent",
+                    "agent_id": str(agent_id),
+                    "parent_session_id": sid,
+                    "spawned_by_message_id": assistant_msg.id,
+                    "spawned_by_agent": selected_agent,
+                    "tool_count": len(tools_called) if isinstance(tools_called, list) else 0,
+                },
+            )
+            sub_now = time.time()
+            sub_user = Message(
+                id=_new_message_id("user"),
+                session_id=subsess.id,
+                role="user",
+                created_at=_iso_from_epoch(sub_now),
+                updated_at=_iso_from_epoch(sub_now),
+                parts=[
+                    Part(
+                        id=_new_part_id(),
+                        type="text",
+                        text=_format_subagent_input(spawn_input),
+                    )
+                ],
+                metadata={
+                    "subagent_input": spawn_input,
+                    "parent_session_id": sid,
+                    "spawned_by_message_id": assistant_msg.id,
+                },
+            )
+            sub_asst = Message(
+                id=_new_message_id("asst"),
+                session_id=subsess.id,
+                role="assistant",
+                created_at=_iso_from_epoch(sub_now),
+                updated_at=_iso_from_epoch(sub_now),
+                parts=(
+                    [Part(id=_new_part_id(), type="text", agent_id=str(agent_id), text=answer)]
+                    if answer
+                    else []
+                ),
+                stop_reason="end_turn",
+                metadata={"tools_called": tools_called} if tools_called else {},
+            )
+            _extend_session_messages(app, subsess.id, [sub_user, sub_asst])
+            app.state.sessions.update(subsess.id, message_count=2, status="idle")
+            _emit_semantic_event(
+                app,
+                sid,
+                "subagent.started",
+                turn_id=turn_id,
+                trace_id=trace_id,
+                status="running",
+                summary=f"Spawned subagent {agent_id}.",
+                actor={"agent_id": selected_agent or "orchestrator"},
+                subject={"agent_id": str(agent_id), "session_id": subsess.id},
                 payload={
                     "parent_session_id": sid,
                     "child_session_id": subsess.id,
@@ -3241,29 +3410,27 @@ async def _run_turn_in_background(
                     "spawned_by_message_id": assistant_msg.id,
                 },
             )
-        )
-        _emit_semantic_event(
-            app,
-            sid,
-            "subagent.completed",
-            turn_id=turn_id,
-            trace_id=trace_id,
-            summary=f"Subagent {agent_id} completed.",
-            actor={"agent_id": str(agent_id), "session_id": subsess.id},
-            subject={"session_id": sid},
-            payload={
-                "parent_session_id": sid,
-                "child_session_id": subsess.id,
-                "agent_id": agent_id,
-                "duration_ms": float(get("duration_ms", 0.0) or 0.0),
-                "tokens": get("tokens") or {},
-                "cost_usd": float(get("cost_usd", 0.0) or 0.0),
-            },
-        )
-        bus.publish(
-            Event(
-                type="subagent.completed",
-                session_id=sid,
+            bus.publish(
+                Event(
+                    type="subagent.started",
+                    session_id=sid,
+                    payload={
+                        "parent_session_id": sid,
+                        "child_session_id": subsess.id,
+                        "agent_id": agent_id,
+                        "spawned_by_message_id": assistant_msg.id,
+                    },
+                )
+            )
+            _emit_semantic_event(
+                app,
+                sid,
+                "subagent.completed",
+                turn_id=turn_id,
+                trace_id=trace_id,
+                summary=f"Subagent {agent_id} completed.",
+                actor={"agent_id": str(agent_id), "session_id": subsess.id},
+                subject={"session_id": sid},
                 payload={
                     "parent_session_id": sid,
                     "child_session_id": subsess.id,
@@ -3273,54 +3440,100 @@ async def _run_turn_in_background(
                     "cost_usd": float(get("cost_usd", 0.0) or 0.0),
                 },
             )
-        )
-
-    # message.created for the assistant message (empty body — parts
-    # arrive via subsequent message.part.added/delta events).
-    # When real streaming already fired the message.created +
-    # message.part.added + N deltas (#6), skip re-issuing them so we
-    # don't duplicate.
-    if streamed_assistant_msg_id is None and not live_assistant_msg_id:
-        bus.publish(
-            Event(
-                type="message.created",
-                session_id=sid,
-                payload=Message(
-                    id=assistant_msg.id,
-                    turn_id=turn_id,
+            bus.publish(
+                Event(
+                    type="subagent.completed",
                     session_id=sid,
-                    role="assistant",
-                    created_at=assistant_msg.created_at,
-                    updated_at=assistant_msg.updated_at,
-                    parts=[],
-                ).to_wire(),
+                    payload={
+                        "parent_session_id": sid,
+                        "child_session_id": subsess.id,
+                        "agent_id": agent_id,
+                        "duration_ms": float(get("duration_ms", 0.0) or 0.0),
+                        "tokens": get("tokens") or {},
+                        "cost_usd": float(get("cost_usd", 0.0) or 0.0),
+                    },
+                )
             )
-        )
-    # Stream live text parts via message.part.delta. When a turn only has
-    # post-hoc text, publish the completed text as a normal part instead
-    # of chunking it into synthetic deltas that could be mistaken for live
-    # provider tokens.
-    for part in assistant_parts:
-        if part.metadata.get("stream_source") == "live" and part.type != "text":
-            continue
-        # Per-expert child text parts were already streamed AND completed live
-        # (WS3); skip them here so they are neither re-added nor re-completed.
-        if part.type == "text" and part.id in closed_streamed_part_ids:
-            continue
-        # Delegation handoffs already streamed live: keep them in the persisted
-        # message but don't re-publish on the bus (single-source, Principle 6).
-        if (
-            part.type == "expert_handoff"
-            and (part.stage, part.parent_agent, part.child_agent) in live_handoff_sigs
-        ):
-            continue
-        if part.type == "text" and part.text:
-            if part.id == reuse_streamed_part_id:
-                # Real streaming already pumped deltas — but those
-                # carry raw LM output that includes ChatAdapter format
-                # markers ([[ ## answer ## ]] etc). The final ``part.text``
-                # is the parsed clean answer; ship it on the completed
-                # event so the TUI can replace the buffered text.
+
+        # message.created for the assistant message (empty body — parts
+        # arrive via subsequent message.part.added/delta events).
+        # When real streaming already fired the message.created +
+        # message.part.added + N deltas (#6), skip re-issuing them so we
+        # don't duplicate.
+        if streamed_assistant_msg_id is None and not live_assistant_msg_id:
+            bus.publish(
+                Event(
+                    type="message.created",
+                    session_id=sid,
+                    payload=Message(
+                        id=assistant_msg.id,
+                        turn_id=turn_id,
+                        session_id=sid,
+                        role="assistant",
+                        created_at=assistant_msg.created_at,
+                        updated_at=assistant_msg.updated_at,
+                        parts=[],
+                    ).to_wire(),
+                )
+            )
+        # Stream live text parts via message.part.delta. When a turn only has
+        # post-hoc text, publish the completed text as a normal part instead
+        # of chunking it into synthetic deltas that could be mistaken for live
+        # provider tokens.
+        for part in assistant_parts:
+            if part.metadata.get("stream_source") == "live" and part.type != "text":
+                continue
+            # Per-expert child text parts were already streamed AND completed live
+            # (WS3); skip them here so they are neither re-added nor re-completed.
+            if part.type == "text" and part.id in closed_streamed_part_ids:
+                continue
+            # Delegation handoffs already streamed live: keep them in the persisted
+            # message but don't re-publish on the bus (single-source, Principle 6).
+            if (
+                part.type == "expert_handoff"
+                and (part.stage, part.parent_agent, part.child_agent) in live_handoff_sigs
+            ):
+                continue
+            if part.type == "text" and part.text:
+                if part.id == reuse_streamed_part_id:
+                    # Real streaming already pumped deltas — but those
+                    # carry raw LM output that includes ChatAdapter format
+                    # markers ([[ ## answer ## ]] etc). The final ``part.text``
+                    # is the parsed clean answer; ship it on the completed
+                    # event so the TUI can replace the buffered text.
+                    bus.publish(
+                        Event(
+                            type="message.part.completed",
+                            session_id=sid,
+                            payload={
+                                "turn_id": turn_id,
+                                "message_id": assistant_msg.id,
+                                "part_id": part.id,
+                                "stream_source": "live",
+                                "final_text": part.text,
+                            },
+                        )
+                    )
+                    continue
+                delivered = part.model_copy(deep=True)
+                delivered.metadata = {
+                    **delivered.metadata,
+                    "stream_source": "batch",
+                }
+                if stream_fallback:
+                    delivered.metadata["stream_fallback"] = stream_fallback
+                bus.publish(
+                    Event(
+                        type="message.part.added",
+                        session_id=sid,
+                        payload={
+                            "turn_id": turn_id,
+                            "message_id": assistant_msg.id,
+                            "stream_source": "batch",
+                            "part": delivered.to_wire(),
+                        },
+                    )
+                )
                 bus.publish(
                     Event(
                         type="message.part.completed",
@@ -3329,218 +3542,199 @@ async def _run_turn_in_background(
                             "turn_id": turn_id,
                             "message_id": assistant_msg.id,
                             "part_id": part.id,
-                            "stream_source": "live",
+                            "stream_source": "batch",
+                            "stream_fallback": stream_fallback,
                             "final_text": part.text,
                         },
                     )
                 )
-                continue
-            delivered = part.model_copy(deep=True)
-            delivered.metadata = {
-                **delivered.metadata,
-                "stream_source": "batch",
-            }
-            if stream_fallback:
-                delivered.metadata["stream_fallback"] = stream_fallback
-            bus.publish(
-                Event(
-                    type="message.part.added",
-                    session_id=sid,
-                    payload={
-                        "turn_id": turn_id,
-                        "message_id": assistant_msg.id,
-                        "stream_source": "batch",
-                        "part": delivered.to_wire(),
-                    },
+            else:
+                bus.publish(
+                    Event(
+                        type="message.part.added",
+                        session_id=sid,
+                        payload={
+                            "turn_id": turn_id,
+                            "message_id": assistant_msg.id,
+                            "stream_source": str(part.metadata.get("stream_source") or "batch"),
+                            "part": part.to_wire(),
+                        },
+                    )
                 )
-            )
-            bus.publish(
-                Event(
-                    type="message.part.completed",
-                    session_id=sid,
-                    payload={
-                        "turn_id": turn_id,
-                        "message_id": assistant_msg.id,
-                        "part_id": part.id,
-                        "stream_source": "batch",
-                        "stream_fallback": stream_fallback,
-                        "final_text": part.text,
-                    },
-                )
-            )
-        else:
-            bus.publish(
-                Event(
-                    type="message.part.added",
-                    session_id=sid,
-                    payload={
-                        "turn_id": turn_id,
-                        "message_id": assistant_msg.id,
-                        "stream_source": str(part.metadata.get("stream_source") or "batch"),
-                        "part": part.to_wire(),
-                    },
-                )
-            )
-    # Tool lifecycle events are only emitted by the live observer at the
-    # execution boundary. Prediction.tools_called remains summary metadata;
-    # do not reconstruct started/completed events after the turn, because
-    # that makes post-hoc facts look like live tool timing.
-    completed_payload: dict[str, Any] = {
-        "turn_id": turn_id,
-        "message_id": assistant_msg.id,
-        "stop_reason": "cancelled" if cancelled_turn else ("error" if error_info else "end_turn"),
-        "tokens": dict(turn_tokens),
-        "cost_usd": turn_cost,
-    }
-    if error_info is not None:
-        completed_payload["error_info"] = error_info.model_dump(exclude_none=True)
-    if assistant_metadata:
-        completed_payload["metadata"] = assistant_metadata
-    # Embed the full final assistant message in the DURABLE turn.completed so the
-    # messages store is derivable from the canonical trace (the trace is the
-    # source of truth). final_message is in SENSITIVE_KEYS, so the SSE projection
-    # strips it -- the message already streams to clients via message.* events.
-    semantic_completed_payload = {
-        **completed_payload,
-        "final_message": assistant_msg.model_dump(exclude_none=True),
-    }
-    _emit_semantic_event(
-        app,
-        sid,
-        "turn.completed" if error_info is None else "turn.failed",
-        turn_id=turn_id,
-        trace_id=trace_id,
-        status="completed" if error_info is None else "failed",
-        summary=(
-            "CLIO turn completed."
-            if error_info is None
-            else f"CLIO turn failed: {error_info.error}."
-        ),
-        actor={"agent_id": selected_agent or "orchestrator"},
-        subject={"message_id": assistant_msg.id},
-        payload=semantic_completed_payload,
-    )
-    _publish_transcript_event(
-        bus,
-        sid,
-        "turn.completed",
-        {"turn_id": turn_id},
-    )
-    bus.publish(
-        Event(
-            type="message.completed",
-            session_id=sid,
-            payload=completed_payload,
-        )
-    )
-
-    # Persist + settle.
-    final_status = "cancelled" if cancelled_turn else ("error" if error_info else "idle")
-    retry_status = "cancelled" if cancelled_turn else ("failed" if error_info else "completed")
-    _append_session_message(app, sid, assistant_msg)
-    getattr(app.state, "live_assistant_message_ids", {}).pop(sid, None)
-    getattr(app.state, "live_assistant_parts", {}).pop(sid, None)
-    getattr(app.state, "live_assistant_part_keys", {}).pop(sid, None)
-    getattr(app.state, "live_stream_text_boundary_hooks", {}).pop(sid, None)
-    getattr(app.state, "expert_terminal_answers", {}).pop(sid, None)
-    # #757: the streamed-field buffer is per-turn; leaving it grows without bound
-    # and makes later turns' suppression matchers eat legitimate thinking parts.
-    _clear_live_streamed_field_text(app, sid)
-    _update_retry_attempt(
-        retry_status,
-        metadata_patch={
-            "executed_user_message_id": user_msg.id,
-            "assistant_message_id": assistant_msg.id,
-            "stop_reason": completed_payload["stop_reason"],
-        },
-    )
-    app.state.sessions.update(
-        sid,
-        status=final_status,
-        message_count=sess.message_count + 2,
-        add_tokens_input=turn_tokens["input"],
-        add_tokens_output=turn_tokens["output"],
-        add_cost_usd=turn_cost,
-    )
-    cancellation_status: dict[str, Any] = {}
-    if cancelled_turn and error_info is not None:
-        cancellation_status = {
-            "execution_cancellation": error_info.details.get("execution_cancellation"),
-            "executor_work_may_continue": error_info.details.get("executor_work_may_continue"),
-            "cancellation_attempt": error_info.details.get("cancellation_attempt", {}),
+        # Tool lifecycle events are only emitted by the live observer at the
+        # execution boundary. Prediction.tools_called remains summary metadata;
+        # do not reconstruct started/completed events after the turn, because
+        # that makes post-hoc facts look like live tool timing.
+        completed_payload: dict[str, Any] = {
+            "turn_id": turn_id,
+            "message_id": assistant_msg.id,
+            "stop_reason": "cancelled"
+            if cancelled_turn
+            else ("error" if error_info else "end_turn"),
+            "tokens": dict(turn_tokens),
+            "cost_usd": turn_cost,
         }
-    bus.publish(
-        Event(
-            type="session.status_changed",
-            session_id=sid,
-            payload={
-                "session_id": sid,
-                "status": final_status,
-                "prev_status": "running",
-                **cancellation_status,
-            },
+        if error_info is not None:
+            completed_payload["error_info"] = error_info.model_dump(exclude_none=True)
+        if assistant_metadata:
+            completed_payload["metadata"] = assistant_metadata
+        # Embed the full final assistant message in the DURABLE turn.completed so the
+        # messages store is derivable from the canonical trace (the trace is the
+        # source of truth). final_message is in SENSITIVE_KEYS, so the SSE projection
+        # strips it -- the message already streams to clients via message.* events.
+        semantic_completed_payload = {
+            **completed_payload,
+            "final_message": assistant_msg.model_dump(exclude_none=True),
+        }
+        _emit_semantic_event(
+            app,
+            sid,
+            "turn.completed" if error_info is None else "turn.failed",
+            turn_id=turn_id,
+            trace_id=trace_id,
+            status="completed" if error_info is None else "failed",
+            summary=(
+                "CLIO turn completed."
+                if error_info is None
+                else f"CLIO turn failed: {error_info.error}."
+            ),
+            actor={"agent_id": selected_agent or "orchestrator"},
+            subject={"message_id": assistant_msg.id},
+            payload=semantic_completed_payload,
         )
-    )
-    # iowarp/clio-agent#20: post_message hook runs AFTER persistence
-    # so user audit code sees the settled assistant + can ship to
-    # external systems. Errors are swallowed (post_* contract).
-    try:
-        from clio_agent.runtime.hooks import fire as _fire_hook
+        _publish_transcript_event(
+            bus,
+            sid,
+            "turn.completed",
+            {"turn_id": turn_id},
+        )
+        bus.publish(
+            Event(
+                type="message.completed",
+                session_id=sid,
+                payload=completed_payload,
+            )
+        )
 
-        _emit_semantic_event(
-            app,
-            sid,
-            "hook.invocation.started",
-            turn_id=turn_id,
-            trace_id=trace_id,
-            status="running",
-            summary="post_message hook dispatch started.",
-            actor={"hook": "post_message"},
-            subject={"message_id": assistant_msg.id},
-            payload={"assistant": assistant_msg.model_dump(exclude_none=True)},
-        )
-        _fire_hook(
-            "post_message",
-            sid,
-            assistant_msg.model_dump(exclude_none=True),
-            hook_scope={
-                "session_id": sid,
-                "workspace_id": getattr(sess, "workspace_id", ""),
-                "blueprint_id": _runtime_active_agent_blueprint_id(app, sid),
+        # Persist + settle.
+        final_status = "cancelled" if cancelled_turn else ("error" if error_info else "idle")
+        retry_status = "cancelled" if cancelled_turn else ("failed" if error_info else "completed")
+        _append_session_message(app, sid, assistant_msg)
+        getattr(app.state, "live_assistant_message_ids", {}).pop(sid, None)
+        getattr(app.state, "live_assistant_parts", {}).pop(sid, None)
+        getattr(app.state, "live_assistant_part_keys", {}).pop(sid, None)
+        getattr(app.state, "live_stream_text_boundary_hooks", {}).pop(sid, None)
+        getattr(app.state, "expert_terminal_answers", {}).pop(sid, None)
+        # #757: the streamed-field buffer is per-turn; leaving it grows without bound
+        # and makes later turns' suppression matchers eat legitimate thinking parts.
+        _clear_live_streamed_field_text(app, sid)
+        _update_retry_attempt(
+            retry_status,
+            metadata_patch={
+                "executed_user_message_id": user_msg.id,
+                "assistant_message_id": assistant_msg.id,
+                "stop_reason": completed_payload["stop_reason"],
             },
         )
-        _emit_semantic_event(
+        app.state.sessions.update(
+            sid,
+            status=final_status,
+            message_count=sess.message_count + 2,
+            add_tokens_input=turn_tokens["input"],
+            add_tokens_output=turn_tokens["output"],
+            add_cost_usd=turn_cost,
+        )
+        cancellation_status: dict[str, Any] = {}
+        if cancelled_turn and error_info is not None:
+            cancellation_status = {
+                "execution_cancellation": error_info.details.get("execution_cancellation"),
+                "executor_work_may_continue": error_info.details.get("executor_work_may_continue"),
+                "cancellation_attempt": error_info.details.get("cancellation_attempt", {}),
+            }
+        bus.publish(
+            Event(
+                type="session.status_changed",
+                session_id=sid,
+                payload={
+                    "session_id": sid,
+                    "status": final_status,
+                    "prev_status": "running",
+                    **cancellation_status,
+                },
+            )
+        )
+        # iowarp/clio-agent#20: post_message hook runs AFTER persistence
+        # so user audit code sees the settled assistant + can ship to
+        # external systems. Errors are swallowed (post_* contract).
+        try:
+            from clio_agent.runtime.hooks import fire as _fire_hook
+
+            _emit_semantic_event(
+                app,
+                sid,
+                "hook.invocation.started",
+                turn_id=turn_id,
+                trace_id=trace_id,
+                status="running",
+                summary="post_message hook dispatch started.",
+                actor={"hook": "post_message"},
+                subject={"message_id": assistant_msg.id},
+                payload={"assistant": assistant_msg.model_dump(exclude_none=True)},
+            )
+            _fire_hook(
+                "post_message",
+                sid,
+                assistant_msg.model_dump(exclude_none=True),
+                hook_scope={
+                    "session_id": sid,
+                    "workspace_id": getattr(sess, "workspace_id", ""),
+                    "blueprint_id": _runtime_active_agent_blueprint_id(app, sid),
+                },
+            )
+            _emit_semantic_event(
+                app,
+                sid,
+                "hook.invocation.completed",
+                turn_id=turn_id,
+                trace_id=trace_id,
+                summary="post_message hook dispatch completed.",
+                actor={"hook": "post_message"},
+                subject={"message_id": assistant_msg.id},
+                payload={},
+            )
+        except Exception:  # noqa: BLE001
+            _emit_semantic_event(
+                app,
+                sid,
+                "hook.invocation.failed",
+                turn_id=turn_id,
+                trace_id=trace_id,
+                status="failed",
+                summary="post_message hook dispatch failed and was swallowed by policy.",
+                actor={"hook": "post_message"},
+                subject={"message_id": assistant_msg.id},
+                payload={},
+            )
+            pass
+        if not (
+            cancelled_turn
+            and error_info is not None
+            and error_info.details.get("execution_cancellation") == "best_effort"
+        ):
+            if app.state.cancel_events.get(sid) is turn_cancel_event:
+                app.state.cancel_events.pop(sid, None)
+    except Exception as finalize_exc:  # noqa: BLE001 - detached task: settle, no re-raise
+        _settle_failed_finalize(
             app,
             sid,
-            "hook.invocation.completed",
             turn_id=turn_id,
             trace_id=trace_id,
-            summary="post_message hook dispatch completed.",
-            actor={"hook": "post_message"},
-            subject={"message_id": assistant_msg.id},
-            payload={},
+            turn_tokens=turn_tokens,
+            turn_cost=turn_cost,
+            turn_cancel_event=turn_cancel_event,
+            update_retry_attempt=_update_retry_attempt,
+            exc=finalize_exc,
         )
-    except Exception:  # noqa: BLE001
-        _emit_semantic_event(
-            app,
-            sid,
-            "hook.invocation.failed",
-            turn_id=turn_id,
-            trace_id=trace_id,
-            status="failed",
-            summary="post_message hook dispatch failed and was swallowed by policy.",
-            actor={"hook": "post_message"},
-            subject={"message_id": assistant_msg.id},
-            payload={},
-        )
-        pass
-    if not (
-        cancelled_turn
-        and error_info is not None
-        and error_info.details.get("execution_cancellation") == "best_effort"
-    ):
-        if app.state.cancel_events.get(sid) is turn_cancel_event:
-            app.state.cancel_events.pop(sid, None)
 
 
 def _arc_write_terminal_expert(
