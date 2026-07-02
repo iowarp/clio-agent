@@ -21,6 +21,7 @@ imports :mod:`clio_agent.gact.app`.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any, Optional
 
 # Single source of truth for the reasoning-channel extractor: it already lives in
@@ -30,6 +31,8 @@ from clio_agent.gact.runtime.globals import _entry_reasoning_text
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "_all_known_lms",
@@ -58,8 +61,12 @@ def _all_known_lms(app: "FastAPI") -> list[Any]:
         main = getattr(dspy.settings, "lm", None) if hasattr(dspy, "settings") else None
         if main is not None:
             lms.append(main)
-    except Exception:  # pragma: no cover
-        pass
+    except Exception as exc:  # pragma: no cover  # noqa: BLE001 - roll up what we can
+        logger.warning(
+            "global dspy LM not reachable; usage rollup may under-count this turn "
+            "reason=usage_lm_discovery_failed error=%s",
+            exc,
+        )
     agent = getattr(getattr(app, "state", None), "agent", None)
     # Include _main_lm: the agent's primary LM (planner + experts route through it
     # when it is not the global dspy.settings.lm). Missing it under-counts usage

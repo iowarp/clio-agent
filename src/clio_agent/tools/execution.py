@@ -129,8 +129,14 @@ def notify_tool_observer(
                 observer(name, dict(args), phase, error, result)  # type: ignore[misc, call-arg]
             except TypeError:
                 observer(name, dict(args), phase, error)  # type: ignore[misc, call-arg]
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 - observers must never break tool execution
+        logger.warning(
+            "tool observer raised; its view of this call is lost "
+            "reason=tool_observer_failed tool=%s phase=%s error=%s",
+            name,
+            phase,
+            exc,
+        )
 
 
 def notify_global_tool_observer(

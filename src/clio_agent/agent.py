@@ -21,6 +21,7 @@ Usage:
 
 import contextvars
 import json
+import logging
 import os
 import re
 import time
@@ -93,6 +94,8 @@ from clio_agent.tools.execution import (
 )
 from clio_agent.tools.gateway import build_gateway, build_tool_catalog
 from clio_agent.tools.mcp_config import load_mcp_servers
+
+logger = logging.getLogger(__name__)
 
 PLANNER_HIDDEN_TOOL_NAMES = {"fs_read_file", "fs_apply_edit_write"}
 
@@ -2288,8 +2291,13 @@ class ClioAgent(dspy.Module):
                                     context_parts.append(f"{key}: {value}")
                     if context_parts:
                         return "; ".join(context_parts[:5])
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - degraded context, not a failed turn
+                logger.warning(
+                    "ARC legacy context retrieval failed; expert runs without prior context "
+                    "reason=arc_context_unavailable session=%s error=%s",
+                    session_id,
+                    exc,
+                )
         return "No prior context"
 
     def _get_file_context(self, session_id: str, active_file: Path | None = None) -> str:
@@ -2317,8 +2325,13 @@ class ClioAgent(dspy.Module):
                 if active_file is not None:
                     return f"{context}\nCurrent session file: {active_file}"
                 return context
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - degraded context, not a failed turn
+            logger.warning(
+                "ARC dataset profiles unavailable; expert runs without file context "
+                "reason=arc_file_context_unavailable session=%s error=%s",
+                session_id,
+                exc,
+            )
         if active_file is not None:
             return f"Current session file: {active_file}"
         return ""
