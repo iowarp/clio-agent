@@ -126,7 +126,6 @@ from clio_agent.gact.runtime.globals import (  # noqa: E402, F401
     _TurnTimedOut,
     _UnsupportedSessionAgent,
     _wire_arc_op_logger,
-    _with_ui_safe_semantic_fields,
 )
 
 _EXECUTABLE_SESSION_AGENT_IDS = {
@@ -592,23 +591,6 @@ def _prediction_workflow_state(result: Any) -> dict[str, Any]:
             return dict(inner)
         return dict(normalized_state)
     return {}
-
-
-def _append_prediction_workflow_state(output: str, result: Any) -> str:
-    """Return ``output`` unchanged; typed ``workflow_state`` flows structurally.
-
-    Historically this appended a ``CLIO typed workflow state:\\n{JSON}`` block to
-    the answer/output text so the parent could re-parse the child's typed state
-    out of prose. That polluted the user-facing answer and was redundant: the
-    same ``workflow_state`` field is carried STRUCTURALLY on every Prediction and
-    on every completed/handoff/ledger row. The prose channel is removed; use
-    :func:`_prediction_workflow_state` to read the typed field structurally.
-
-    The function is retained as an identity passthrough so existing call sites
-    (which interleave it with output reassignment) stay correct without churn.
-    """
-
-    return output
 
 
 def _fallback_answer_from_delegation(handoffs: list[dict[str, Any]]) -> str:

@@ -29,7 +29,6 @@ from clio_agent.gact.agent_blueprints import (
 )
 from clio_agent.gact.app import (
     _active_base_agent_tool_executor,
-    _append_prediction_workflow_state,
     _append_session_workflow_state_context,
     _blueprint_fanout_config,
     _blueprint_module_kind,
@@ -2274,20 +2273,6 @@ def test_prediction_workflow_state_read_structurally() -> None:
 
     assert state["acquisition"]["status"] == "metadata_only"
     assert state["acquisition"]["analysis_ready"] is False
-
-
-def test_append_prediction_workflow_state_no_longer_pollutes_answer() -> None:
-    # The legacy appender is now an identity passthrough: the typed state must NOT
-    # appear in the answer text. State flows via _prediction_workflow_state instead.
-    answer = _append_prediction_workflow_state(
-        "metadata staged",
-        SimpleNamespace(workflow_state={"acquisition": {"status": "metadata_only"}}),
-    )
-
-    assert answer == "metadata staged"
-    assert "workflow state" not in answer.casefold()
-    assert "workflow_state" not in answer
-    assert _workflow_state_from_outputs([answer]) == {}
 
 
 def test_prediction_workflow_state_accepts_json_string_and_wrapped_mapping() -> None:

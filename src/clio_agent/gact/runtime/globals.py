@@ -258,30 +258,6 @@ def _active_semantic_trace_id() -> str:
     return _ctx.active_trace_id()
 
 
-def _with_ui_safe_semantic_fields(
-    event_type: str,
-    *,
-    status: str,
-    summary: str,
-    payload: Optional[dict[str, Any]],
-) -> dict[str, Any]:
-    """Return the payload unchanged — clio does NOT author UI captions.
-
-    This used to inject ``ui_summary`` (a copy of the envelope ``summary``) and
-    ``result_summary`` (a third copy) into every event payload. That is lossy
-    compaction substituting a clio-authored label for the real content, and it
-    breaks the absolute-observability contract owed to the scientist: the stream
-    must carry what the agent actually did, not clio's caption of it. The event's
-    one-line ``summary`` already rides the envelope; the consumer (TUI) decides
-    how to fold the FULL content — clio transmits, it does not editorialize.
-
-    Kept as an identity passthrough so the (many) emit call sites need no change;
-    ``event_type``/``status``/``summary`` are accepted and ignored.
-    """
-    del event_type, status, summary  # intentionally unused — no captions authored
-    return dict(payload or {})
-
-
 def _llm_provider_payload(app: "FastAPI", agent_id: str = "") -> dict[str, Any]:
     """Build the ``provider`` payload (provider/model/api-base/temperature/max-tokens)
     attached to LM-activity semantic events.
@@ -344,12 +320,10 @@ def _build_semantic_event(
     else:
         sess = None
     workspace_id = str(getattr(sess, "workspace_id", "") or "")
-    event_payload = _with_ui_safe_semantic_fields(
-        event_type,
-        status=status,
-        summary=summary,
-        payload=payload,
-    )
+    # The payload rides verbatim — clio does NOT author UI captions. The event's
+    # one-line ``summary`` already rides the envelope; the consumer (TUI) decides
+    # how to fold the FULL content.
+    event_payload = dict(payload or {})
     return SemanticEvent(
         event_type=event_type,
         session_id=sid,
