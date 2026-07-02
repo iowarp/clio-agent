@@ -38,9 +38,9 @@ logger = logging.getLogger(__name__)
 _BLUEPRINT_ROOT_NAME = "AGENT.md"
 _BLUEPRINT_ID_RE = r"^[A-Za-z0-9_.-]+$"
 # Keyless https remote so first-run bootstrap works without any SSH identity
-# (iowarp/clio-agent#764). Override via config file or env; see
-# ``default_registry_url``.
-DEFAULT_REGISTRY_URL = "https://github.com/JaimeCernuda/clio-agent-marketplace.git"
+# (iowarp/clio-agent#764); iowarp is the canonical marketplace org (matches
+# .gitmodules). Override via config file or env; see ``default_registry_url``.
+DEFAULT_REGISTRY_URL = "https://github.com/iowarp/clio-agent-marketplace.git"
 _REGISTRY_URL_CONF_KEY = "gact.blueprint_registry.url"
 _REGISTRY_URL_ENV = "CLIO_BLUEPRINT_REGISTRY_URL"
 DEFAULT_REGISTRY_REF = "main"

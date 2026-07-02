@@ -226,7 +226,7 @@ def test_builtin_agents_are_loaded_from_default_registry_snapshot(
 def test_default_registry_url_default_is_https() -> None:
     """Regression (#764): the baked-in default must be a keyless https remote."""
 
-    assert DEFAULT_REGISTRY_URL == "https://github.com/JaimeCernuda/clio-agent-marketplace.git"
+    assert DEFAULT_REGISTRY_URL == "https://github.com/iowarp/clio-agent-marketplace.git"
     assert default_registry_url() == DEFAULT_REGISTRY_URL
 
 
