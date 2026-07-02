@@ -9,6 +9,7 @@ adapted at the API boundary rather than duplicated here.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 import shutil
@@ -20,6 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
+from clio_agent import conf
 from clio_agent.gact.expert_packs import (
     ExpertPackDefinition,
     _fallback_expert_id,
@@ -31,9 +33,16 @@ from clio_agent.gact.expert_packs import (
 from clio_agent.gact.types import AgentDef
 from clio_agent.tools.catalog import TOOL_CATALOG
 
+logger = logging.getLogger(__name__)
+
 _BLUEPRINT_ROOT_NAME = "AGENT.md"
 _BLUEPRINT_ID_RE = r"^[A-Za-z0-9_.-]+$"
-DEFAULT_REGISTRY_URL = "git@github.com:JaimeCernuda/clio-agent-marketplace.git"
+# Keyless https remote so first-run bootstrap works without any SSH identity
+# (iowarp/clio-agent#764). Override via config file or env; see
+# ``default_registry_url``.
+DEFAULT_REGISTRY_URL = "https://github.com/JaimeCernuda/clio-agent-marketplace.git"
+_REGISTRY_URL_CONF_KEY = "gact.blueprint_registry.url"
+_REGISTRY_URL_ENV = "CLIO_BLUEPRINT_REGISTRY_URL"
 DEFAULT_REGISTRY_REF = "main"
 # Empty commit => follow the registry ref (main) HEAD instead of a frozen pin.
 DEFAULT_REGISTRY_COMMIT = ""
@@ -95,11 +104,42 @@ def builtin_agent_blueprints_root() -> Path:
     return Path(__file__).resolve().parents[1] / "agent_blueprints" / "builtin"
 
 
+def default_registry_url() -> str:
+    """Resolve the default blueprint registry URL.
+
+    Precedence follows :func:`clio_agent.conf.resolve` (config file over env
+    over in-code default): the ``gact.blueprint_registry.url`` key in
+    ``config.yaml``, then the ``CLIO_BLUEPRINT_REGISTRY_URL`` environment
+    variable, then :data:`DEFAULT_REGISTRY_URL`. A configured-but-blank value
+    is a degraded path: it falls back to the default and logs a structured
+    warning rather than attempting a clone from an empty remote.
+    """
+
+    resolved = str(
+        conf.resolve(
+            _REGISTRY_URL_CONF_KEY,
+            env=_REGISTRY_URL_ENV,
+            default=DEFAULT_REGISTRY_URL,
+            cast=conf.as_str,
+        )
+    ).strip()
+    if not resolved:
+        logger.warning(
+            "blueprint_registry_url_fallback reason=blank_configured_value key=%s env=%s "
+            "falling back to default %s",
+            _REGISTRY_URL_CONF_KEY,
+            _REGISTRY_URL_ENV,
+            DEFAULT_REGISTRY_URL,
+        )
+        return DEFAULT_REGISTRY_URL
+    return resolved
+
+
 def default_registry_metadata() -> dict[str, str]:
     """Return the pinned default registry bootstrap contract."""
 
     return {
-        "source": DEFAULT_REGISTRY_URL,
+        "source": default_registry_url(),
         "ref": DEFAULT_REGISTRY_REF,
         "commit": DEFAULT_REGISTRY_COMMIT,
         "default_agent_blueprint_id": DEFAULT_AGENT_BLUEPRINT_ID,
@@ -113,14 +153,18 @@ def default_registry_install_source() -> str:
     Development checkouts may carry the marketplace as a git submodule. When
     present, use it as the install source so first-run bootstrap does not depend
     on network access. Packaged installs without the submodule still clone the
-    pinned registry URL.
+    pinned registry URL. An explicit registry override (config file or
+    ``CLIO_BLUEPRINT_REGISTRY_URL``) always wins over the local submodule.
     """
 
+    url = default_registry_url()
+    if url != DEFAULT_REGISTRY_URL:
+        return url
     repo_root = Path(__file__).resolve().parents[3]
     submodule = repo_root / DEFAULT_REGISTRY_SUBMODULE_PATH
     if submodule.is_dir():
         return str(submodule)
-    return DEFAULT_REGISTRY_URL
+    return url
 
 
 def discover_agent_blueprints(
@@ -221,7 +265,7 @@ def ensure_default_registry_bootstrap(
         )
     except Exception as exc:  # noqa: BLE001
         target = pinned or DEFAULT_REGISTRY_REF
-        return f"unable to install default registry {DEFAULT_REGISTRY_URL}@{target}: {exc}"
+        return f"unable to install default registry {default_registry_url()}@{target}: {exc}"
     return ""
 
 
