@@ -45,6 +45,8 @@ from clio_agent.gact.events import Event
 from clio_agent.gact.evidence import _bounded_tool_call_result
 from clio_agent.gact.providers.config import _provider_runtime_kind
 from clio_agent.gact.runtime.capabilities import _STREAM_FALLBACK_REASON_DEFINITIONS
+from clio_agent.runtime import trace
+from clio_agent.runtime.stream_audit import stream_audit
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -222,9 +224,9 @@ def _append_stream_listener(
     *,
     signature_field_name: str,
     predict: Any,
-) -> None:
+) -> bool:
     if predict is None:
-        return
+        return False
     try:
         listeners.append(
             stream_listener_cls(
@@ -232,32 +234,83 @@ def _append_stream_listener(
                 predict=predict,
             )
         )
+        return True
     except Exception:  # noqa: BLE001
-        return
+        return False
+
+
+def _stream_predictor_candidates(agent: Any) -> list[Any]:
+    """Return likely DSPy predictor objects attached to a CLIO module.
+
+    Blueprint modules wrap predictors in a few different shapes:
+    ``program`` for predict/CoT experts, ``react_agent.extract.predict`` for
+    ReAct extractors, and the older top-level ``chat_agent`` /
+    ``answer_synthesizer`` fields. StreamListener wants the underlying predictor,
+    so walk those known wrapper attributes generically instead of special-casing
+    one blueprint or provider.
+    """
+
+    candidates: list[Any] = []
+    seen: set[int] = set()
+    stack: list[Any] = [agent]
+    attribute_names = (
+        "chat_agent",
+        "answer_synthesizer",
+        "program",
+        "predict",
+        "extract",
+        "react_agent",
+    )
+
+    while stack:
+        current = stack.pop()
+        if current is None:
+            continue
+        identity = id(current)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        candidates.append(current)
+        for attr_name in reversed(attribute_names):
+            try:
+                child = getattr(current, attr_name, None)
+            except Exception:  # noqa: BLE001 - third-party wrappers may expose properties
+                continue
+            if child is not None and id(child) not in seen:
+                stack.append(child)
+    return candidates
 
 
 def _build_stream_listeners(agent: Any, stream_listener_cls: Any) -> list[Any]:
-    """Build explicit DSPy stream listeners for CLIO's known predictors.
+    """Build explicit DSPy stream listeners for CLIO predictors.
 
     Auto-discovering by field name is fragile here because several CLIO
-    predictors expose the same output fields. Explicit predictor binding
-    lets chat, final synthesis, and expert outputs stream live without
-    fighting over repeated names like ``answer`` or ``analysis``.
+    predictors expose the same output fields. Binding each listener to the
+    concrete predictor object lets chat, final synthesis, and blueprint expert
+    outputs stream live without fighting over repeated names like ``answer``.
     """
 
     listeners: list[Any] = []
-    _append_stream_listener(
-        listeners,
-        stream_listener_cls,
-        signature_field_name="answer",
-        predict=getattr(agent, "chat_agent", None),
-    )
-    _append_stream_listener(
-        listeners,
-        stream_listener_cls,
-        signature_field_name="answer",
-        predict=getattr(agent, "answer_synthesizer", None),
-    )
+    bound_predictors: set[int] = set()
+    root_identity = id(agent)
+    for candidate in _stream_predictor_candidates(agent):
+        identity = id(candidate)
+        if identity == root_identity:
+            continue
+        if identity in bound_predictors:
+            continue
+        if _append_stream_listener(
+            listeners,
+            stream_listener_cls,
+            signature_field_name="answer",
+            predict=candidate,
+        ):
+            bound_predictors.add(identity)
+            trace.HF_ON and trace.hot(
+                "STREAM-DSPY",
+                "listener_bound predictor=%s",
+                type(candidate).__name__,
+            )
 
     return listeners
 
@@ -278,7 +331,11 @@ def _agent_streaming_unsupported_reason(agent: Any) -> str:
     provider_config = getattr(agent, "_provider_config", None)
     provider = str(getattr(provider_config, "provider", "") or "")
     provider_kind = _provider_runtime_kind(provider)
-    if provider_kind in {"claude_code", "codex"}:
+    if provider_kind == "claude_code":
+        transport = str(getattr(provider_config, "claude_code_transport", "sdk") or "sdk")
+        if transport == "exec":
+            return "provider_streaming_unsupported"
+    elif provider_kind == "codex":
         return "provider_streaming_unsupported"
     # iowarp/clio-agent#639: normalize the preset id (argonne_sophia/_metis) to
     # the provider kind (argonne) BEFORE the capability check. Reasoning models on
@@ -454,6 +511,7 @@ async def _try_streamed_forward(
     final_pred = None
     emitted_any = False
     previous_stream_field = ""
+    provider_event_index = 0
     # Seed the reasoning-heartbeat clock so the first reasoning chunk publishes
     # immediately (refreshing the watchdog the moment the model starts thinking).
     last_reasoning_heartbeat = time.monotonic() - _REASONING_HEARTBEAT_S
@@ -496,17 +554,71 @@ async def _try_streamed_forward(
             except TypeError:
                 stream_iter = streamed(question=enriched_text, session_id=sid)
         async for piece in stream_iter:
+            provider_event_index += 1
+            if isinstance(piece, StreamResponse):
+                piece_text = str(piece.chunk or "")
+                piece_reasoning = ""
+                source_channel = "contract_delta" if piece_text else "provider_event"
+                signature_field = getattr(piece, "signature_field_name", "") or ""
+            elif isinstance(piece, dspy.Prediction):
+                piece_text = ""
+                piece_reasoning = ""
+                source_channel = "final_prediction"
+                signature_field = ""
+            else:
+                piece_text = _chunk_text(piece)
+                piece_reasoning = _chunk_reasoning_text(piece)
+                if piece_reasoning:
+                    source_channel = "reasoning_content"
+                elif piece_text:
+                    source_channel = "text_delta"
+                else:
+                    source_channel = "provider_event"
+                signature_field = ""
+            stream_audit(
+                "provider.raw_event",
+                provider="dspy_streamify",
+                session_id=sid,
+                event_index=provider_event_index,
+                raw_event_type=type(piece).__name__,
+                source_channel=source_channel,
+                signature_field_name=signature_field,
+                text_len=len(piece_text),
+                reasoning_len=len(piece_reasoning),
+                chunk_len=len(piece_text or piece_reasoning),
+                head=(piece_text or piece_reasoning)[:120],
+                full_text=(piece_text or piece_reasoning)[:12000],
+            )
+            trace.HF_ON and trace.hot(
+                "STREAM-DSPY",
+                "piece type=%s final=%s",
+                type(piece).__name__,
+                isinstance(piece, dspy.Prediction),
+            )
             if isinstance(piece, dspy.Prediction):
                 final_pred = piece
                 continue
             if isinstance(piece, StreamResponse):
                 if piece.chunk:
+                    trace.HF_ON and trace.hot(
+                        "STREAM-DSPY",
+                        "stream_response field=%s len=%d head=%r",
+                        getattr(piece, "signature_field_name", "") or "",
+                        len(piece.chunk),
+                        piece.chunk[:80],
+                    )
                     await _emit_visible_chunk(
                         piece.chunk, getattr(piece, "signature_field_name", "") or ""
                     )
                 continue
             text_chunk = _chunk_text(piece)
             if text_chunk:
+                trace.HF_ON and trace.hot(
+                    "STREAM-DSPY",
+                    "raw_chunk len=%d head=%r",
+                    len(text_chunk),
+                    text_chunk[:80],
+                )
                 await _emit_visible_chunk(text_chunk)
                 continue
             # No answer-content in this chunk -- but the model may be actively

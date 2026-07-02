@@ -264,14 +264,17 @@ def _retaining_react_cls() -> Any:
                             expert_span_id=expert_span_id,
                             run_span_id=step_span_id,
                         )
-                        try:
-                            trajectory[f"observation_{idx}"] = self.tools[pred.next_tool_name](
-                                **pred.next_tool_args
-                            )
-                        except Exception as err:  # noqa: BLE001 - mirror dspy: errors become observations
-                            trajectory[f"observation_{idx}"] = (
-                                f"Execution error in {pred.next_tool_name}: {err}"
-                            )
+                        if pred.next_tool_name == "finish":
+                            trajectory[f"observation_{idx}"] = "Completed."
+                        else:
+                            try:
+                                trajectory[f"observation_{idx}"] = self.tools[pred.next_tool_name](
+                                    **pred.next_tool_args
+                                )
+                            except Exception as err:  # noqa: BLE001 - mirror dspy: errors become observations
+                                trajectory[f"observation_{idx}"] = (
+                                    f"Execution error in {pred.next_tool_name}: {err}"
+                                )
                         self._arc_write(
                             arc,
                             _session,

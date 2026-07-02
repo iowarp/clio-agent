@@ -220,6 +220,11 @@ def bash(
             text=True,
             timeout=timeout,
             check=False,
+            # Give the child an immediately-EOF stdin. Without this the spawned
+            # shell inherits clio-agent's own stdin (a pipe the parent holds open
+            # and never closes), and PowerShell/cmd block at startup waiting on
+            # that stream — every command then hits the timeout with empty output.
+            stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout if isinstance(exc.stdout, str) else ""

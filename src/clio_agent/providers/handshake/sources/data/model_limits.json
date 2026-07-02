@@ -225,7 +225,7 @@
   "context": 262144,
   "provider": "lm_studio",
   "source": "live",
-  "updated_at": "2026-06-14T18:01:21.188312+00:00"
+  "updated_at": "2026-07-01T05:45:36.840885+00:00"
  },
  "qwopus3.5-9b-v3:2": {
   "context": 262144,
@@ -242,6 +242,6 @@
   "context": 2048,
   "provider": "lm_studio",
   "source": "live",
-  "updated_at": "2026-06-14T18:01:21.189090+00:00"
+  "updated_at": "2026-07-01T05:45:36.850763+00:00"
  }
 }

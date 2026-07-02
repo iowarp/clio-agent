@@ -184,6 +184,367 @@ def test_delegated_expert_prompt_appends_parent_evidence() -> None:
     assert "stop_gained" in prompt
 
 
+def test_delegated_expert_public_prompt_excludes_parent_evidence_and_state() -> None:
+    from clio_agent.gact.app import (
+        _append_accumulated_workflow_state_context,
+        _delegated_expert_prompt,
+        _delegated_expert_public_prompt,
+    )
+
+    row = {
+        "delegate_to": "data",
+        "question": "Stage a real EarthScope GNSS station CSV for Los Angeles.",
+    }
+    fallback = _append_accumulated_workflow_state_context(
+        "Parent answer about prior steps.",
+        {"geospatial": {"status": "resolved", "region_name": "Los Angeles"}},
+    )
+
+    execution_prompt = _delegated_expert_prompt(row, fallback)
+    public_prompt = _delegated_expert_public_prompt(row, fallback)
+
+    assert "Parent evidence available for this delegated task" in execution_prompt
+    assert "workflow_state" in execution_prompt
+    assert public_prompt == "Stage a real EarthScope GNSS station CSV for Los Angeles."
+    assert "Parent evidence available for this delegated task" not in public_prompt
+    assert "workflow_state" not in public_prompt
+
+
+def test_delegated_expert_public_prompt_strips_clio_output_contract() -> None:
+    from clio_agent.gact.app import _delegated_expert_public_prompt
+
+    public_prompt = _delegated_expert_public_prompt(
+        {
+            "delegate_to": "data",
+            "question": (
+                "Discover stations and stage a real CSV. Return the staged CSV file "
+                "path and resource metadata in workflow_state.\n"
+                '{"workflow_state": {"acquisition": {"status": "metadata_only"}}}'
+            ),
+        },
+        "",
+    )
+
+    assert public_prompt == "Discover stations and stage a real CSV."
+    assert "workflow_state" not in public_prompt
+
+
+def test_delegated_expert_public_prompt_strips_workflow_state_orphans() -> None:
+    from clio_agent.gact.app import _delegated_expert_public_prompt
+
+    public_prompt = _delegated_expert_public_prompt(
+        {
+            "delegate_to": "data",
+            "question": (
+                "Stage a real, analysis-ready station time-series CSV with "
+                "displacement and uncertainty values. workflow_state.acquisition."
+            ),
+        },
+        "",
+    )
+    child_prompt = _delegated_expert_public_prompt(
+        {
+            "delegate_to": "ndp_dataset_discovery",
+            "question": (
+                "Locate and stage the station metadata catalog CSV. "
+                "workflow_state.acquisition so that ranking can proceed."
+            ),
+        },
+        "",
+    )
+    middle_prompt = _delegated_expert_public_prompt(
+        {
+            "delegate_to": "data",
+            "question": (
+                "Stage the highest-quality station's concrete time-series CSV "
+                "resource with associated metadata. workflow_state.acquisition. "
+                "If no stations are available, return a clear blocker."
+            ),
+        },
+        "",
+    )
+
+    assert (
+        public_prompt
+        == "Stage a real, analysis-ready station time-series CSV with displacement and uncertainty values."
+    )
+    assert child_prompt == "Locate and stage the station metadata catalog CSV."
+    assert (
+        middle_prompt
+        == "Stage the highest-quality station's concrete time-series CSV resource with associated metadata. "
+        "If no stations are available, return a clear blocker."
+    )
+    assert "workflow_state" not in public_prompt
+    assert "acquisition so that" not in child_prompt
+    assert "acquisition." not in middle_prompt
+
+
+def test_delegated_expert_public_prompt_strips_structured_state_field_mentions() -> None:
+    from clio_agent.gact.app import _delegated_expert_public_prompt
+
+    public_prompt = _delegated_expert_public_prompt(
+        {
+            "delegate_to": "ndp_dataset_discovery",
+            "question": (
+                "Search NDP for the EarthScope station-metadata catalog. "
+                "Identify the complete station-metadata CSV resource and stage it. "
+                "Return the exact staged metadata_path in acquisition.metadata_path."
+            ),
+        },
+        "",
+    )
+
+    assert (
+        public_prompt == "Search NDP for the EarthScope station-metadata catalog. "
+        "Identify the complete station-metadata CSV resource and stage it."
+    )
+    assert "acquisition.metadata_path" not in public_prompt
+
+
+def test_public_transcript_text_strips_clio_contract_mentions() -> None:
+    from clio_agent.gact.app import _clean_public_transcript_text
+
+    text = (
+        "Resolve the region from tool evidence. I'll let the typed workflow_state "
+        "guide the next hop. Continue with data discovery."
+    )
+
+    cleaned = _clean_public_transcript_text(text)
+
+    assert cleaned == "Resolve the region from tool evidence. Continue with data discovery."
+    assert "workflow_state" not in cleaned
+
+
+def test_public_transcript_text_strips_structured_state_field_mentions() -> None:
+    from clio_agent.gact.app import _clean_public_transcript_text
+
+    text = (
+        "The parent has resolved the geospatial region. "
+        "This is the entry point to the data acquisition orchestration. "
+        "Until that child returns `acquisition.metadata_path` in the workflow state, "
+        "I cannot proceed to catalog ranking. "
+        "I have no tools and cannot fabricate station facts."
+    )
+
+    cleaned = _clean_public_transcript_text(text)
+
+    assert (
+        cleaned == "The parent has resolved the geospatial region. "
+        "This is the entry point to the data acquisition orchestration. "
+        "I have no tools and cannot fabricate station facts."
+    )
+    assert "acquisition.metadata_path" not in cleaned
+    assert "workflow state" not in cleaned
+
+
+def test_public_transcript_text_strips_parenthesized_state_field_mentions() -> None:
+    from clio_agent.gact.app import _clean_public_transcript_text
+
+    text = (
+        "The data acquisition chain requires a strict handoff:\n"
+        "1. ndp_dataset_discovery must stage the catalog (acquisition.metadata_path)\n"
+        "2. earthscope_station_catalog will rank nearby stations\n"
+    )
+
+    cleaned = _clean_public_transcript_text(text)
+
+    assert "acquisition.metadata_path" not in cleaned
+    assert "stage the catalog" in cleaned
+    assert "rank nearby stations" in cleaned
+
+
+def test_public_transcript_text_strips_return_state_leaks() -> None:
+    from clio_agent.gact.app import _clean_public_transcript_text
+
+    text = (
+        "The staged catalog exists and can be used for station ranking. "
+        "Set acquisition.analysis_ready = false until a full data file is staged. "
+        "Use acquisition.metadata_path to continue from the metadata-only artifact. "
+        '{"workflow_state": {"acquisition": {"analysis_ready": false}}}'
+    )
+
+    cleaned = _clean_public_transcript_text(text)
+
+    assert cleaned == "The staged catalog exists and can be used for station ranking."
+    assert "workflow_state" not in cleaned
+    assert "analysis_ready" not in cleaned
+    assert "acquisition.metadata_path" not in cleaned
+
+
+def test_public_transcript_text_strips_leaked_dspy_field_markers() -> None:
+    """A DSPy ChatAdapter field marker re-emitted mid-field (self-referential)
+    must never reach the visible transcript.
+
+    Real leak captured from live EarthScope runs: the model emits a second
+    ``[[ ## next_thought ## ]]`` inside a ``next_thought`` chunk, and DSPy's
+    StreamListener folds it into the field content. The whole-part cleaner strips
+    it and rejoins the two halves with a single space.
+    """
+    from clio_agent.gact.app import _clean_public_transcript_text
+
+    cases = [
+        (
+            "I converted the path to Windows path format."
+            "[[ ## next_thought ## ]] STEP 1 completed successfully with the geocode.",
+            "I converted the path to Windows path format. "
+            "STEP 1 completed successfully with the geocode.",
+        ),
+        (
+            "The result is ready.[[ ## next_tool_name ## ]] geo_geocode and then done.",
+            "The result is ready. geo_geocode and then done.",
+        ),
+    ]
+    for raw, expected in cases:
+        cleaned = _clean_public_transcript_text(raw)
+        assert "[[ ##" not in cleaned
+        assert cleaned == expected
+
+    # ordinary double-brackets and real emphasis are NOT markers -- leave them be.
+    prose = "This is **bold** with [[ brackets ]] that are fine."
+    assert _clean_public_transcript_text(prose) == prose
+
+
+def test_public_transcript_text_strips_state_assignment_clause_from_live_thought() -> None:
+    from clio_agent.gact.app import _clean_public_transcript_text
+
+    text = (
+        "STEP 3: Running the shell_bash clean command to normalize the raw "
+        "EarthScope catalog by keeping only the first 3 columns (station id "
+        "and two coordinate columns) and removing the duplicate-name header "
+        "ambiguity. The cleaned CSV will be written to "
+        "earthscope_stations_clean.csv in the workspace root, which will then "
+        "be set as acquisition.metadata_path in the final workflow_state."
+    )
+
+    cleaned = _clean_public_transcript_text(text)
+
+    assert cleaned == (
+        "STEP 3: Running the shell_bash clean command to normalize the raw "
+        "EarthScope catalog by keeping only the first 3 columns (station id "
+        "and two coordinate columns) and removing the duplicate-name header "
+        "ambiguity. The cleaned CSV will be written to "
+        "earthscope_stations_clean.csv in the workspace root."
+    )
+    assert "workflow_state" not in cleaned
+    assert "acquisition.metadata_path" not in cleaned
+
+
+def test_public_transcript_text_strips_blocked_metadata_path_sentence() -> None:
+    from clio_agent.gact.app import _clean_public_transcript_text
+
+    text = (
+        "STEP 3 (shell_bash cleanup) BLOCKED by permission gate: The mandatory "
+        "cut -d, -f1-3 command was denied at the permission boundary. "
+        "Without STEP 3 execution, the cleaned metadata path cannot be set in "
+        "acquisition.metadata_path, preventing the parent orchestrator from "
+        "advancing to the ranking and station resolution phase."
+    )
+
+    cleaned = _clean_public_transcript_text(text)
+
+    assert cleaned == (
+        "STEP 3 (shell_bash cleanup) BLOCKED by permission gate: The mandatory "
+        "cut -d, -f1-3 command was denied at the permission boundary."
+    )
+    assert "acquisition.metadata_path" not in cleaned
+
+
+def test_public_transcript_text_strips_bare_state_field_paragraphs() -> None:
+    from clio_agent.gact.app import _clean_public_transcript_text
+
+    text = (
+        "The ndp_dataset_discovery child has successfully located and staged the raw "
+        "EarthScope stations metadata CSV (`earthscope_converted_data.csv`) from the "
+        "national data platform. However, it is blocked at a post-staging normalization "
+        "step: a `shell_bash` command to clean the CSV has been denied by the permission "
+        "gate after 4 attempts.\n\n"
+        'status="staged_awaiting_normalization"`, NOT `staged` with `analysis_ready=true`. '
+        "This means the metadata_path is not yet finalized in structured state for the "
+        "next expert to consume.\n\n"
+        "Per the orchestrator rules:\n"
+        '- "Do not call `earthscope_station_catalog` until structured state contains an '
+        'exact `acquisition.metadata_path`" — this field is not yet present.\n'
+        "- The blocker is a permission gate.\n"
+        "- I cannot invent a cleaned path.\n\n"
+        "The correct action is to surface this blocker and stop the data branch."
+    )
+
+    cleaned = _clean_public_transcript_text(text)
+
+    assert "metadata_path" not in cleaned
+    assert "analysis_ready" not in cleaned
+    assert "structured state" not in cleaned
+    assert "permission gate" in cleaned
+    assert "surface this blocker" in cleaned
+
+
+def test_delegated_expert_public_prompt_strips_numbered_state_update_clause() -> None:
+    from clio_agent.gact.delegation import _clean_public_delegation_prompt
+
+    text = (
+        "Normalize the raw EarthScope metadata CSV using Python and rank nearby stations. "
+        "(1) Read the raw CSV from D:\\path\\earthscope_converted_data.csv; inspect and "
+        "report the column structure. "
+        "(2) Using pandas or pyarrow, extract the relevant columns and clean data types. "
+        "(3) Stage the normalized CSV to the workspace and update acquisition.metadata_path "
+        "in workflow_state with the staged normalized CSV path; "
+        "(4) Use geo_filter_points_by_radius to spatially filter stations to the Los Angeles "
+        "region; rank and return the filtered station list."
+    )
+
+    cleaned = _clean_public_delegation_prompt(text)
+
+    assert "acquisition.metadata_path" not in cleaned
+    assert "workflow_state" not in cleaned
+    assert "Stage the normalized CSV" not in cleaned
+    assert "rank nearby stations" in cleaned
+    assert "geo_filter_points_by_radius" in cleaned
+
+
+def test_delegated_expert_public_prompt_strips_state_path_clause_after_decimal_coordinates() -> (
+    None
+):
+    from clio_agent.gact.delegation import _clean_public_delegation_prompt
+
+    text = (
+        "Filter and rank EarthScope GNSS stations within the LA region "
+        "(center 34.0536909°N, -118.242766°W, 50 km radius) using the "
+        "staged metadata catalog at acquisition.metadata_path. Return ranked "
+        "candidate station IDs ordered by spatial coverage and data freshness."
+    )
+
+    cleaned = _clean_public_delegation_prompt(text)
+
+    assert cleaned == (
+        "Filter and rank EarthScope GNSS stations within the LA region "
+        "(center 34.0536909°N, -118.242766°W, 50 km radius). Return ranked "
+        "candidate station IDs ordered by spatial coverage and data freshness."
+    )
+    assert "metadata_path" not in cleaned
+
+
+def test_public_transcript_text_strips_workflow_state_code_fence() -> None:
+    from clio_agent.gact.app import _clean_public_transcript_text
+
+    text = (
+        'The geo_geocode tool successfully resolved "Los Angeles" to an administrative '
+        "boundary with high confidence. The geospatial resolution task is complete.\n\n"
+        "Resolved region:\n"
+        "```json\n"
+        '{\n "workflow_state": {\n "geospatial": {"status": "resolved"}\n }\n}\n'
+        "```"
+    )
+
+    cleaned = _clean_public_transcript_text(text)
+
+    assert cleaned == (
+        'The geo_geocode tool successfully resolved "Los Angeles" to an administrative '
+        "boundary with high confidence. The geospatial resolution task is complete."
+    )
+    assert "workflow_state" not in cleaned
+    assert "```" not in cleaned
+
+
 def test_manifest_pack_loads_nested_experts_with_pack_metadata(isolated_env: Path) -> None:
     pack = isolated_env / ".clio" / "expert-packs" / "data-semantics"
     (pack / "experts" / "data").mkdir(parents=True)

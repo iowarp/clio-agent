@@ -48,7 +48,7 @@ def test_effective_lm_config_reports_claude_code_transport() -> None:
             agent=SimpleNamespace(
                 _provider_config=LMProviderConfig(
                     provider="claude_code",
-                    api_base="claude-code://exec",
+                    api_base="claude-code://sdk",
                     model="haiku",
                     api_key="x",
                     claude_code_transport="exec",
@@ -739,6 +739,62 @@ def test_put_lm_provider_accepts_claude_code_exec_transport(tmp_path: Path, monk
     assert captured["cfg"].claude_code_transport == "exec"
     assert app.state.lm_config["transport"] == "exec"
     assert os.environ["CLIO_CLAUDE_CODE_TRANSPORT"] == "exec"
+
+
+def test_put_lm_provider_defaults_claude_code_to_sdk_transport(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Claude Code should use the streaming-capable SDK path unless exec is explicit."""
+    monkeypatch.delenv("CLIO_CLAUDE_CODE_TRANSPORT", raising=False)
+    captured: dict[str, Any] = {}
+
+    class _StubAgent:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.arc = type(
+                "ARC",
+                (),
+                {
+                    "get_cache_stats": lambda self: {
+                        "hits": 0,
+                        "misses": 0,
+                        "hit_rate": 0.0,
+                        "capacity": 10,
+                    }
+                },
+            )()
+
+        def forward(self, *args: Any, **kwargs: Any) -> Any:
+            return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
+
+    monkeypatch.setattr("clio_agent.agent.ClioAgent", _StubAgent)
+
+    def _stub_create_lm(cfg: Any) -> Any:
+        captured["cfg"] = cfg
+        return type("FakeLM", (), {"history": []})()
+
+    monkeypatch.setattr("clio_agent.config.create_lm", _stub_create_lm)
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        resp = c.put(
+            "/v1/providers/lm",
+            json={
+                "provider": "claude_code",
+                "api_base": "claude-code://sdk",
+                "model": "haiku",
+            },
+        )
+        body = resp.json()
+        get_body = c.get("/v1/providers/lm").json()
+
+    assert resp.status_code == 200, resp.text
+    assert body["transport"] == "sdk"
+    assert get_body["transport"] == "sdk"
+    assert captured["cfg"].provider == "claude_code"
+    assert captured["cfg"].api_key == "x"
+    assert captured["cfg"].claude_code_transport == "sdk"
+    assert app.state.lm_config["transport"] == "sdk"
+    assert os.environ["CLIO_CLAUDE_CODE_TRANSPORT"] == "sdk"
 
 
 def test_put_lm_provider_applies_lm_studio_context_length(tmp_path: Path, monkeypatch) -> None:

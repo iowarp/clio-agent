@@ -33,6 +33,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Literal, Mapping, Optional
 from urllib.parse import urlparse
 
+from clio_agent.runtime.stream_audit import stream_audit
+
 # dspy lives behind a lazy import — top-level ``import dspy`` costs
 # ~4 s on Aurora's frameworks Python (litellm + transitive deps), and
 # every ``runtime.status`` / ``gact.app`` boot path imports config.py
@@ -875,6 +877,7 @@ def _io_logging_lm_cls() -> Any:
 
                 import anyio as _anyio  # noqa: PLC0415
 
+                from clio_agent.runtime import trace  # noqa: PLC0415
                 from clio_agent.runtime.lm_activity import (  # noqa: PLC0415
                     note_lm_activity,
                     note_lm_answer_delta,
@@ -904,7 +907,15 @@ def _io_logging_lm_cls() -> Any:
                     finally:
                         await send.aclose()
 
-                extractor = AnswerFieldExtractor("answer")
+                extractors = {
+                    "reasoning": AnswerFieldExtractor("reasoning"),
+                    "answer": AnswerFieldExtractor("answer"),
+                    "next_thought": AnswerFieldExtractor("next_thought"),
+                    "next_expert": AnswerFieldExtractor("next_expert"),
+                    "next_task": AnswerFieldExtractor("next_task"),
+                    "workflow_state": AnswerFieldExtractor("workflow_state"),
+                }
+                visible_contract_fields = {"reasoning", "next_thought", "answer"}
                 acc_answer = ""
                 acc_reasoning = ""
                 last_event = _time.monotonic()
@@ -915,15 +926,29 @@ def _io_logging_lm_cls() -> Any:
                             note_lm_activity()  # watchdog liveness (per token)
                             content, reasoning = extract_delta(_chunk)
                             if content:
-                                answer_delta = extractor.feed(content)
-                                if answer_delta:
-                                    # live UI: only PROSE answers (synthesis) — an
-                                    # intermediate expert's answer field is a
-                                    # structured object and must not show as UI text.
-                                    # One streaming path for chat AND blueprint turns.
-                                    if not extractor.is_structured():
-                                        note_lm_answer_delta(answer_delta)
-                                    acc_answer += answer_delta  # highway gets all
+                                trace.HF_ON and trace.hot(
+                                    "STREAM-FIELD",
+                                    "raw_content len=%d head=%r",
+                                    len(content),
+                                    content[:120],
+                                )
+                                for field_name, extractor in extractors.items():
+                                    answer_delta = extractor.feed(content)
+                                    if (
+                                        answer_delta
+                                        and field_name in visible_contract_fields
+                                        and not extractor.is_structured()
+                                    ):
+                                        trace.HF_ON and trace.hot(
+                                            "STREAM-FIELD",
+                                            "emit field=%s len=%d head=%r",
+                                            field_name,
+                                            len(answer_delta),
+                                            answer_delta[:120],
+                                        )
+                                        # Preserve exact generated output-field tokens.
+                                        note_lm_answer_delta(answer_delta, field=field_name)
+                                        acc_answer += answer_delta  # highway gets all
                             if reasoning:
                                 acc_reasoning += reasoning
                             # highway event (trace + ARC), coalesced so the durable
@@ -934,11 +959,22 @@ def _io_logging_lm_cls() -> Any:
                                 acc_answer = ""
                                 acc_reasoning = ""
                                 last_event = now
-                    tail = extractor.flush()
-                    if tail:
-                        if not extractor.is_structured():
-                            note_lm_answer_delta(tail)
-                        acc_answer += tail
+                    for field_name, extractor in extractors.items():
+                        tail = extractor.flush()
+                        if (
+                            tail
+                            and field_name in visible_contract_fields
+                            and not extractor.is_structured()
+                        ):
+                            trace.HF_ON and trace.hot(
+                                "STREAM-FIELD",
+                                "flush field=%s len=%d head=%r",
+                                field_name,
+                                len(tail),
+                                tail[:120],
+                            )
+                            note_lm_answer_delta(tail, field=field_name)
+                            acc_answer += tail
                     if acc_answer or acc_reasoning:
                         note_lm_token_event(acc_answer, acc_reasoning)
                 if "exc" in holder:
@@ -1025,11 +1061,6 @@ def _io_logging_lm_cls() -> Any:
                     ) or ""
                 # Stash the reasoning from this single read so the react step reuses it.
                 self._clio_last_reasoning = str(reasoning or "").strip()
-                # No active GACT turn -> nothing to emit (CLI/optimizer paths). The
-                # stash above is still set so a synchronous loop can read it.
-                target = self._clio_trace_target()
-                if target is None:
-                    return
                 record = {
                     "model": entry.get("model"),
                     "messages": entry.get("messages") or entry.get("prompt"),
@@ -1041,6 +1072,44 @@ def _io_logging_lm_cls() -> Any:
                     "usage": entry.get("usage"),
                     "timestamp": entry.get("timestamp"),
                 }
+                try:
+                    from clio_agent.gact.context import (  # noqa: PLC0415
+                        active_session_id,
+                        active_trace_id,
+                        active_turn_id,
+                    )
+
+                    audit_sid = active_session_id()
+                    audit_turn_id = active_turn_id()
+                    audit_trace_id = active_trace_id()
+                except Exception:  # noqa: BLE001 - audit is best-effort
+                    audit_sid = ""
+                    audit_turn_id = ""
+                    audit_trace_id = ""
+                stream_audit(
+                    "provider.batch_response",
+                    provider="dspy_lm",
+                    session_id=audit_sid,
+                    turn_id=audit_turn_id,
+                    trace_id=audit_trace_id,
+                    model=str(record["model"] or ""),
+                    source_channel=(
+                        "content+reasoning_content"
+                        if content and reasoning
+                        else ("reasoning_content" if reasoning else "content")
+                    ),
+                    content_len=len(str(content)),
+                    reasoning_len=len(str(reasoning)),
+                    chunk_len=len(str(content or reasoning)),
+                    finish_reason=finish,
+                    head=str(content or reasoning)[:120],
+                )
+                # No active GACT turn -> nothing to emit (CLI/optimizer paths). The
+                # stash above is still set so a synchronous loop can read it, and the
+                # batch provider audit above still records timing when enabled.
+                target = self._clio_trace_target()
+                if target is None:
+                    return
                 # Emit the canonical trace's DURABLE-ONLY lm.call event: the one
                 # place an expert call's raw messages + reasoning_content are
                 # reliably visible (expert LMs run in executors the settle path

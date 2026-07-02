@@ -179,15 +179,28 @@ def _gact_cors_origins() -> list[str]:
     compatibility fallback for older launch scripts.
     """
 
+    default_origins = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:4173",
+        "http://127.0.0.1:4173",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
     try:
-        raw: list[str] = conf.resolve(
+        raw_value: Any = conf.resolve(
             "gact.cors.origins",
             env="CLIO_GACT_CORS_ORIGINS",
-            default=[],
-            cast=cast(Callable[[Any], list[str]], conf.as_csv),
+            default=None,
         )
     except (TypeError, ValueError):
-        return []
+        return default_origins
+    if raw_value in (None, "", []):
+        return default_origins
+    try:
+        raw = cast(Callable[[Any], list[str]], conf.as_csv)(raw_value)
+    except (TypeError, ValueError):
+        return default_origins
     if raw == ["*"]:
         return ["*"]
     return [origin for origin in raw if origin]
@@ -477,10 +490,12 @@ from clio_agent.gact.delegation import (  # noqa: E402,F401
     _append_accumulated_workflow_state_context,
     _append_session_workflow_state_context,
     _bubbled_child_evidence_output_summary,
+    _clean_public_transcript_text,
     _coerce_expert_handoff_rows,
     _compact_exact_evidence_index,
     _delegated_expert_agent_id,
     _delegated_expert_prompt,
+    _delegated_expert_public_prompt,
     _dynamic_parent_resume_prompt,
     _expert_handoff_fields,
     _expert_handoff_summary,
@@ -945,15 +960,13 @@ def _merge_tool_call_rows(
         supplemental_has_result = _tool_call_has_result_evidence(supplemental)
         supplemental_ok = supplemental.get("ok")
         candidate_indexes = list(by_key.get(key, []))
-        if not candidate_indexes and (
-            not supplemental.get("call_id") or not supplemental_has_result
-        ):
+        if not candidate_indexes:
             fallback_indexes = by_name_args.get(_tool_call_name_args_key(supplemental), [])
             if supplemental_has_result:
                 fallback_indexes = [
                     index for index in fallback_indexes if merged[index].get("ok") is not False
                 ]
-            if len(fallback_indexes) == 1:
+            if fallback_indexes:
                 candidate_indexes = fallback_indexes
         for index in candidate_indexes:
             existing = merged[index]
@@ -976,6 +989,7 @@ def _merge_tool_call_rows(
             continue
 
         existing = merged[candidate_index]
+        old_key = _tool_call_event_key(existing)
         for field_name, value in supplemental.items():
             if field_name in {"result", "observation", "output", "response", "result_preview"}:
                 if not _tool_call_has_result_evidence(existing):
@@ -987,6 +1001,9 @@ def _merge_tool_call_rows(
                 existing[field_name] = value
             elif field_name in {"duration_ms", "cached", "telemetry_source", "ok", "error"}:
                 existing[field_name] = value
+        new_key = _tool_call_event_key(existing)
+        if new_key != old_key and candidate_index not in by_key.get(new_key, []):
+            by_key.setdefault(new_key, []).append(candidate_index)
     return merged
 
 
@@ -2169,6 +2186,9 @@ def build_app(
         install = read_install_metadata(install_root) if install_root is not None else {}
         return {
             "active_agent_blueprint_id": str(blueprint_wire.get("id") or ""),
+            "active_agent_blueprint_name": str(
+                blueprint_wire.get("name") or blueprint_wire.get("display_name") or blueprint_wire.get("title") or ""
+            ),
             "active_agent_blueprint_version": str(blueprint_wire.get("version") or ""),
             "active_agent_blueprint_scope": scope,
             "active_agent_blueprint_definition_path": str(

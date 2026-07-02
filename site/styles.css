@@ -255,6 +255,31 @@ h2 { font-size: clamp(26px, 4vw, 36px); font-weight: 700; letter-spacing: -0.01e
   display: block;
 }
 
+/* ---------- Demo video ---------- */
+.demo-video {
+  margin: 0;
+  padding: 10px;
+  background: #08090b;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.45);
+}
+.demo-video video {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+  border-radius: calc(var(--radius) - 6px);
+  display: block;
+  background: #050607;
+}
+.demo-video figcaption {
+  text-align: center;
+  color: var(--muted);
+  font-size: 14px;
+  margin-top: 12px;
+  padding-bottom: 4px;
+}
+
 /* ---------- Code blocks ---------- */
 /* Flex row: the command text and the copy control live in separate
    columns so the icon never overlaps the text. */

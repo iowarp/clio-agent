@@ -25,6 +25,7 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import _format_sse, build_app
 from clio_agent.gact.events import Event, EventBus
+from clio_agent.gact.routes.misc import _sse_wire_tap
 
 # ---- EventBus unit tests --------------------------------------------------
 
@@ -66,6 +67,34 @@ def test_format_sse_emits_canonical_wire_shape() -> None:
     payload = json.loads(data_line.removeprefix("data: "))
     assert payload["type"] == "message.completed"
     assert payload["payload"] == {"a": 1}
+
+
+def test_sse_wire_tap_writes_timestamped_event_log(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    raw_path = tmp_path / "sse.raw"
+    event_log_path = tmp_path / "sse.events.jsonl"
+    audit_path = tmp_path / "stream-audit.jsonl"
+    monkeypatch.setenv("CLIO_SSE_WIRE_TAP", str(raw_path))
+    monkeypatch.setenv("CLIO_SSE_EVENT_LOG", str(event_log_path))
+    monkeypatch.setenv("CLIO_STREAM_AUDIT_LOG", str(audit_path))
+    event = Event(type="turn.text.delta", session_id="sess_1", payload={"turn_id": "t1"})
+    frame = _format_sse(event)
+
+    _sse_wire_tap("sess_1", frame, event)
+
+    assert raw_path.read_bytes() == frame
+    row = json.loads(event_log_path.read_text(encoding="utf-8"))
+    assert row["session_id"] == "sess_1"
+    assert row["event_id"] == event.id
+    assert row["event_type"] == "turn.text.delta"
+    assert row["event_occurred_at"] == event.occurred_at
+    assert row["sse_written_at"]
+    assert row["frame_bytes"] == len(frame)
+
+    audit_row = json.loads(audit_path.read_text(encoding="utf-8"))
+    assert audit_row["stage"] == "sse.write"
+    assert audit_row["event_id"] == event.id
 
 
 @pytest.mark.asyncio

@@ -551,6 +551,160 @@ def _delegated_expert_prompt(row: Mapping[str, Any], fallback: str) -> str:
     return fallback
 
 
+def _delegated_expert_public_prompt(row: Mapping[str, Any], fallback: str) -> str:
+    """Return the public task text for an agent-call transcript event.
+
+    This is intentionally narrower than :func:`_delegated_expert_prompt`: child
+    execution may need parent evidence and typed workflow state, but the GACT
+    transcript action prompt is the task shown under ``call(agent)``. Execution
+    context must travel privately in the child prompt or structurally in state
+    events, not as public transcript prose.
+    """
+
+    for key in ("question", "input", "prompt", "request"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            return _clean_public_delegation_prompt(value)
+    return _clean_public_delegation_prompt(fallback)
+
+
+def _clean_public_delegation_prompt(text: str) -> str:
+    """Strip CLIO execution contract context from a public agent-call prompt."""
+
+    public = text.strip()
+    for marker in (
+        "Parent evidence available for this delegated task:",
+        "Accumulated typed workflow state from prior CLIO tool evidence",
+        "Authoritative typed workflow_state accumulated from the completed",
+    ):
+        index = public.find(marker)
+        if index >= 0:
+            public = public[:index].rstrip()
+
+    json_index = public.find('{"workflow_state"')
+    if json_index >= 0:
+        public = public[:json_index].rstrip()
+
+    state_path = (
+        r"(?:acquisition|analysis|artifacts|datasets?|evidence|geospatial|region|station_catalog)"
+        r"\.[A-Za-z0-9_]+"
+    )
+    state_field = r"(?:metadata_path|analysis_ready|workflow[_ ]state|structured state)"
+    public = re.sub(
+        rf"(?is)\s*\(\d+\)\s*[^.;\n]*\b(?:{state_path}|{state_field})\b[^.;\n]*(?:[.;]|$)",
+        " ",
+        public,
+    )
+    public = re.sub(
+        rf"(?is)\s+using\b[^.?!\n]*\b(?:{state_path}|{state_field})\b[^.?!\n]*(?=[.?!]|$)",
+        "",
+        public,
+    )
+    public = re.sub(
+        rf"(?is)(^|[.!?]\s+)Until\b[^.\n]*?\b{state_path}\b[^.\n]*?\bworkflow\s+state\b,\s*[^.?!\n]*(?:[.?!]|$)",
+        lambda match: match.group(1) if match.group(1).strip() else "",
+        public,
+    )
+    public = re.sub(
+        rf"(?is)\s*,?\s*\b(?:which|that)\s+[^.?!\n]*\b{state_path}\b[^.?!\n]*(?:\bworkflow[_ ]state\b[^.?!\n]*)?",
+        "",
+        public,
+    )
+
+    # Public call prompts should describe the work, not the private CLIO output
+    # carrier. Keep the rest of the task while removing the contract sentence.
+    public = re.sub(
+        r"(?is)(^|[.!?]\s+)[^.?!\n]*\bworkflow_state\b[^.?!\n]*(?:[.?!]|$)",
+        lambda match: match.group(1) if match.group(1).strip() else "",
+        public,
+    )
+    state_field_sentence_pattern = re.compile(
+        rf"(?is)(^|[.!?]\s+)[^.?!\n]*\b{state_path}\b[^.?!\n]*(?:[.?!]|$)"
+    )
+    while True:
+        cleaned = state_field_sentence_pattern.sub(
+            lambda match: match.group(1) if match.group(1).strip() else "",
+            public,
+        )
+        if cleaned == public:
+            break
+        public = cleaned
+    public = re.sub(
+        rf"(?is)\s*\([^()\n]*\b{state_path}\b[^()\n]*\)",
+        "",
+        public,
+    )
+    public = re.sub(
+        r"(?is)(^|[.!?]\s+)[^.?!\n]*\bworkflow\s+state\b[^.?!\n]*(?:[.?!]|$)",
+        lambda match: match.group(1) if match.group(1).strip() else "",
+        public,
+    )
+    public = re.sub(
+        r"(?is)([.!?])\s+\b(?:acquisition|analysis|artifacts|datasets?|evidence|region)\s+so\s+that\b[^.?!\n]*(?:[.?!]|$)",
+        r"\1",
+        public,
+    )
+    public = re.sub(
+        r"(?is)([.!?])\s+\b(?:acquisition|analysis|artifacts|datasets?|evidence|region)\s*[.?!]\s+",
+        r"\1 ",
+        public,
+    )
+    public = re.sub(
+        r"(?is)([.!?])\s+\b(?:acquisition|analysis|artifacts|datasets?|evidence|region)\s*[.?!]\s*$",
+        r"\1",
+        public,
+    )
+    return re.sub(r"[ \t]+\n", "\n", public).strip()
+
+
+def _clean_public_transcript_text(text: str, *, preserve_whitespace: bool = False) -> str:
+    """Strip CLIO contract prose from visible thought/answer transcript text.
+
+    ``preserve_whitespace`` keeps the text's exact leading/trailing/inner spacing
+    after the contract-prose removal. Use it for STREAMING chunks: each token
+    delta must keep its boundary whitespace so concatenated chunks read
+    ``"thinking next"`` and not ``"thinkingnext"``. The default (full-text)
+    behavior still trims and collapses runs of spaces for one-shot cleaning.
+    """
+
+    public = _clean_public_delegation_prompt(text)
+    # DSPy ChatAdapter field markers ([[ ## field ## ]]) must never reach the
+    # visible transcript. They survive into a field's text when the model
+    # re-emits a marker mid-field (self-referential) — DSPy's StreamListener then
+    # folds the SECOND marker into the field content (e.g. a `next_thought` chunk
+    # that contains a literal "[[ ## next_thought ## ]]"). Strip any that leaked;
+    # collapse to a single space so the two halves of the field rejoin cleanly.
+    public = re.sub(r"\s*\[\[\s*##\s*[A-Za-z0-9_]+\s*##\s*\]\]\s*", " ", public)
+    public = re.sub(
+        r"(?ims)\n*\s*[A-Za-z ]*region:\s*```(?:json)?\s*[\s\S]*?\bworkflow_state\b[\s\S]*?```",
+        "",
+        public,
+    )
+    public = re.sub(
+        r"(?ims)```(?:json)?\s*[\s\S]*?\bworkflow_state\b[\s\S]*?```",
+        "",
+        public,
+    )
+    public = re.sub(
+        r"(?ims)(^|\n\n)[^\n]*(?:\bmetadata_path\b|\banalysis_ready\b|\bstructured state\b)[\s\S]*?(?=\n\n|$)",
+        lambda match: match.group(1) if match.group(1).strip() else "",
+        public,
+    )
+    public = re.sub(
+        r"(?is)(^|[.!?]\s+)[^.?!\n]*\btyped\s+workflow[_ ]state\b[^.?!\n]*(?:[.?!]|$)",
+        lambda match: match.group(1) if match.group(1).strip() else "",
+        public,
+    )
+    if preserve_whitespace:
+        # The inner cleaner strips boundary whitespace; re-attach the ORIGINAL
+        # leading/trailing whitespace around the cleaned core so streamed chunks
+        # keep their spacing ("thinking " stays "thinking ", not "thinking").
+        leading = text[: len(text) - len(text.lstrip())]
+        trailing = text[len(text.rstrip()) :]
+        return f"{leading}{public.strip()}{trailing}"
+    return re.sub(r" {2,}", " ", public).strip()
+
+
 def _append_accumulated_workflow_state_context(prompt: str, state: Mapping[str, Any]) -> str:
     """Attach durable typed state to child prompts without relying on prose."""
 

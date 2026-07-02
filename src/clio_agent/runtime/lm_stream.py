@@ -28,8 +28,13 @@ from __future__ import annotations
 import re
 from typing import Any
 
-# ``[[ ## <field> ## ]]`` section markers (ChatAdapter). Tolerant of extra spaces.
-_SECTION = re.compile(r"\[\[\s*##\s*([A-Za-z0-9_]+)\s*##\s*\]\]")
+# ``[[ ## <field> ## ]]`` section markers (ChatAdapter). Each REAL marker stands ALONE
+# on its own line, so anchor to line boundaries (MULTILINE ^…$, all inner spacing kept
+# on one line via [ \t]). Without this, a marker the model QUOTES inline in its own prose
+# — e.g. a next_thought explaining "respond starting with `[[ ## next_thought ## ]]`, then
+# `[[ ## next_tool_name ## ]]`" — was matched as a real field boundary, and the field was
+# extracted as the garbage BETWEEN the quoted markers (the "`, then `" truncation).
+_SECTION = re.compile(r"(?m)^[ \t]*\[\[[ \t]*##[ \t]*([A-Za-z0-9_]+)[ \t]*##[ \t]*\]\][ \t]*$")
 # Longest tail to hold back so a partial marker mid-arrival isn't emitted.
 _HOLDBACK = len("[[ ## workflow_state ## ]]") + 2
 
@@ -62,7 +67,11 @@ class AnswerFieldExtractor:
         structured answers still ride the highway/trace. Decided from the first
         non-whitespace char so it's stable once content starts."""
         answer = self._current_answer(safe=False).lstrip()
-        return bool(answer) and answer[0] in "{["
+        if not answer:
+            return False
+        if answer[0] in "{[":
+            return True
+        return answer.startswith("```json") or answer.startswith("```JSON")
 
     def flush(self) -> str:
         """Final call after the stream ends; emit any held-back remainder."""

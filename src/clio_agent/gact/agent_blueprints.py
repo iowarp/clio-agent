@@ -37,7 +37,7 @@ DEFAULT_REGISTRY_URL = "git@github.com:JaimeCernuda/clio-agent-marketplace.git"
 DEFAULT_REGISTRY_REF = "main"
 # Empty commit => follow the registry ref (main) HEAD instead of a frozen pin.
 DEFAULT_REGISTRY_COMMIT = ""
-DEFAULT_AGENT_BLUEPRINT_ID = "data-semantics"
+DEFAULT_AGENT_BLUEPRINT_ID = "earthscope-gnss-region"
 DEFAULT_REGISTRY_SUBMODULE_PATH = "external/clio-agent-marketplace"
 _DEFAULT_BOOTSTRAP_ENV = "CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP"
 _DEFAULT_BOOTSTRAP_TIMEOUT_S = 20
@@ -48,6 +48,7 @@ class AgentBlueprintDefinition:
     id: str
     version: str
     title: str
+    display_name: str
     description: str
     scope: str
     root: Path
@@ -69,6 +70,7 @@ class AgentBlueprintDefinition:
         # Same install/update/delete lifecycle; the kind is a property of the
         # installed artifact, surfaced so the UI can render and filter them.
         payload["kind"] = "blueprint" if str(self.root_expert).strip() else "pack"
+        payload["name"] = self.display_name or self.title or self.id
         return payload
 
 
@@ -152,6 +154,7 @@ def discover_agent_blueprints(
                 id=DEFAULT_AGENT_BLUEPRINT_ID,
                 version="",
                 title="Default registry Agent Blueprint",
+                display_name="Default registry Agent Blueprint",
                 description="Pinned default registry bootstrap did not produce an installed blueprint.",
                 scope="global",
                 root=install_root,
@@ -230,6 +233,7 @@ def parse_agent_blueprint_root(root: Path, *, scope: str) -> AgentBlueprintDefin
             id=_fallback_expert_id(root),
             version="",
             title=root.name,
+            display_name=root.name,
             description="",
             scope=scope,
             root=root,
@@ -244,6 +248,7 @@ def parse_agent_blueprint_root(root: Path, *, scope: str) -> AgentBlueprintDefin
             id=_fallback_expert_id(root),
             version="",
             title=root.name,
+            display_name=root.name,
             description="",
             scope=scope,
             root=root,
@@ -263,10 +268,13 @@ def parse_agent_blueprint_root(root: Path, *, scope: str) -> AgentBlueprintDefin
     defaults = raw_defaults if isinstance(raw_defaults, dict) else {}
     requirements = meta.get("requires") if isinstance(meta.get("requires"), dict) else {}
     install_metadata = read_install_metadata(path.parent)
+    title = str(meta.get("title") or blueprint_id).strip()
+    display_name = str(meta.get("display_name") or title).strip()
     return AgentBlueprintDefinition(
         id=blueprint_id,
         version=str(meta.get("version") or "").strip(),
-        title=str(meta.get("title") or blueprint_id).strip(),
+        title=title,
+        display_name=display_name,
         description=str(meta.get("description") or "").strip(),
         scope=scope,
         root=path.parent,
@@ -984,6 +992,7 @@ def _load_blueprint_agents(blueprint: AgentBlueprintDefinition) -> list[AgentDef
             "agent_blueprint_id": blueprint.id,
             "agent_blueprint_version": blueprint.version,
             "agent_blueprint_title": blueprint.title,
+            "agent_blueprint_display_name": blueprint.display_name,
             "agent_blueprint_scope": blueprint.scope,
             "agent_blueprint_root_expert": blueprint.root_expert,
             "agent_blueprint_definition_path": str(blueprint.root_path),

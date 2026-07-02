@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import json
 import os
 import threading
 import time
@@ -71,6 +72,7 @@ from clio_agent.gact.types import (
 )
 from clio_agent.runtime import trace
 from clio_agent.runtime.lm_activity import lm_call_in_flight as _lm_call_in_flight
+from clio_agent.runtime.stream_audit import stream_audit
 
 # NOTE: The agent-builder / agent-resolution / provider-auth / workflow-state
 # helpers this engine drives are imported *lazily* from
@@ -117,6 +119,261 @@ def _dedup_cross_agent_text(parts: list[Part]) -> list[Part]:
     return kept
 
 
+def _is_parent_resume_reasoning_part(
+    parts: list[Part],
+    *,
+    responder_agent_id: str,
+) -> bool:
+    """Return whether final reasoning belongs to a parent resume bookkeeping step.
+
+    A parent can resume after a child returns, decide that the child answer is
+    already terminal, and still produce a ChainOfThought ``reasoning`` field
+    explaining that no further delegation is needed. That reasoning is valuable
+    for trace/metadata, but it is not a transcript atom. The transcript already
+    has the child answer plus the structured ``parent.resumed`` handoff.
+    """
+
+    if not responder_agent_id:
+        return False
+    for part in reversed(parts):
+        if part.type != "expert_handoff":
+            continue
+        if part.stage != "parent.resumed":
+            continue
+        if part.agent_id != responder_agent_id:
+            continue
+        resumed_from = ""
+        if isinstance(part.metadata, Mapping):
+            resumed_from = str(part.metadata.get("resumed_from") or "")
+        return bool(resumed_from)
+    return False
+
+
+def _latest_parent_resume_output(parts: list[Part], agent_id: str) -> str:
+    """Return the latest child output already handed back to ``agent_id``."""
+
+    if not agent_id:
+        return ""
+    for part in reversed(parts):
+        if part.type != "expert_handoff" or part.stage != "parent.resumed":
+            continue
+        if part.agent_id != agent_id:
+            continue
+        metadata = part.metadata if isinstance(part.metadata, Mapping) else {}
+        output = str(metadata.get("output") or "").strip()
+        if output:
+            return output
+    return ""
+
+
+def _looks_like_structured_answer(text: str) -> bool:
+    """True when an expert answer is machine-readable state, not prose."""
+
+    stripped = (text or "").lstrip()
+    if not stripped:
+        return False
+    return stripped[0] in "{[" or stripped.startswith("```json") or stripped.startswith("```JSON")
+
+
+def _render_return_summary(output: str) -> str:
+    """A human-readable one-liner for a child's return, from its GENUINE answer.
+
+    Prose answers pass through unchanged. Structured (JSON) answers — the typed
+    ``dspy.extract`` deliverable — are rendered into a compact, grounded summary
+    (a ``summary``/``description`` field if present, else the top-level scalar
+    fields) so the transcript shows the real result instead of a generic
+    "returned a compact result" placeholder. Returns "" when there is nothing
+    meaningful to show (caller supplies the fallback)."""
+
+    text = (output or "").strip()
+    if not text or not _looks_like_structured_answer(text):
+        return text
+    body = text
+    if body.startswith("```"):
+        body = body.strip("`")
+        body = body.split("\n", 1)[-1].strip() if "\n" in body else ""
+    try:
+        data = json.loads(body)
+    except Exception:
+        return text
+    if isinstance(data, Mapping):
+        node: Mapping[str, Any] = data
+        # Unwrap a single-key namespace wrapper (e.g. {"geospatial": {...}}) so the
+        # salient fields one level down are summarised, not just "{namespace}".
+        for _ in range(2):
+            if len(node) == 1:
+                only = next(iter(node.values()))
+                if isinstance(only, Mapping):
+                    node = only
+                    continue
+            break
+        for key in ("summary", "description", "answer", "result"):
+            value = node.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        scalars = []
+        for key, value in node.items():
+            if isinstance(value, bool) or isinstance(value, (str, int, float)):
+                text_value = str(value)
+                if len(text_value) > 60:
+                    text_value = text_value[:57] + "..."
+                scalars.append(f"{key}: {text_value}")
+            if len(scalars) >= 6:
+                break
+        if scalars:
+            return "; ".join(scalars)
+    if isinstance(data, list):
+        return f"{len(data)} item(s)"
+    # Structured but unrenderable (e.g. empty object): no meaningful one-liner.
+    return ""
+
+
+_INTERNAL_METADATA_TOOL_NAMES = frozenset(
+    {
+        "clio_prior_workflow_state",
+        "finish",
+    }
+)
+
+
+def _tool_metadata_name(row: Mapping[str, Any]) -> str:
+    """Return the display tool name for a metadata row."""
+
+    return str(row.get("name") or row.get("tool") or "").strip()
+
+
+def _tool_metadata_name_args_key(row: Mapping[str, Any]) -> tuple[str, str]:
+    """Return a user-visible identity for metadata-level tool summaries."""
+
+    args = row.get("args")
+    if args is None:
+        args = row.get("arguments")
+    if args is None:
+        args = row.get("params")
+    try:
+        encoded_args = json.dumps(args or {}, sort_keys=True, default=str)
+    except TypeError:
+        encoded_args = str(args or {})
+    return _tool_metadata_name(row), encoded_args
+
+
+def _tool_metadata_has_result(row: Mapping[str, Any]) -> bool:
+    """Return whether a metadata row has result evidence worth preserving."""
+
+    for key in ("result", "observation", "output", "response", "result_preview"):
+        if row.get(key) not in (None, "", [], {}):
+            return True
+    return False
+
+
+def _sanitize_tools_called_metadata(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop internal tool-summary rows and de-duplicate equivalent public rows."""
+
+    cleaned: list[dict[str, Any]] = []
+    by_key: dict[tuple[str, str], int] = {}
+    dropped_internal = 0
+    merged_duplicates = 0
+    for raw_row in rows:
+        if not isinstance(raw_row, Mapping):
+            continue
+        name = _tool_metadata_name(raw_row)
+        if not name or name in _INTERNAL_METADATA_TOOL_NAMES:
+            dropped_internal += 1
+            continue
+        row = dict(raw_row)
+        key = _tool_metadata_name_args_key(row)
+        existing_index = by_key.get(key)
+        if existing_index is None:
+            by_key[key] = len(cleaned)
+            cleaned.append(row)
+            continue
+        merged_duplicates += 1
+        existing = cleaned[existing_index]
+        for field_name, value in row.items():
+            if value in (None, "", [], {}):
+                continue
+            if field_name in {"result", "observation", "output", "response", "result_preview"}:
+                if not _tool_metadata_has_result(existing):
+                    existing[field_name] = value
+                continue
+            if field_name not in existing or existing[field_name] in (None, "", [], {}):
+                existing[field_name] = value
+            elif field_name in {"duration_ms", "cached", "ok", "error"}:
+                existing[field_name] = value
+    if rows and (dropped_internal or merged_duplicates or len(cleaned) != len(rows)):
+        trace.HF_ON and trace.hot(
+            "STREAM-SSE",
+            "sanitized_tools_called input=%d output=%d dropped_internal=%d merged_duplicates=%d",
+            len(rows),
+            len(cleaned),
+            dropped_internal,
+            merged_duplicates,
+        )
+    return cleaned
+
+
+def _sanitize_handoff_tool_metadata(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a handoff row with public ``tools_called`` metadata normalized."""
+
+    cleaned = dict(row)
+    tools = cleaned.get("tools_called")
+    if isinstance(tools, list):
+        public_tools = _sanitize_tools_called_metadata(
+            [dict(tool) for tool in tools if isinstance(tool, Mapping)]
+        )
+        if public_tools:
+            cleaned["tools_called"] = public_tools
+        else:
+            cleaned.pop("tools_called", None)
+    children = cleaned.get("children")
+    if isinstance(children, list):
+        cleaned["children"] = [
+            _sanitize_handoff_tool_metadata(child) if isinstance(child, Mapping) else child
+            for child in children
+        ]
+    return cleaned
+
+
+def _handoff_part_metadata(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Return metadata for a display handoff part.
+
+    Tool calls/results are emitted as explicit ordered parts. Keeping the same
+    rows inside handoff metadata makes the UI render duplicate tools, so handoff
+    parts carry delegation state only.
+    """
+
+    cleaned = _sanitize_handoff_tool_metadata(row)
+    cleaned.pop("tools_called", None)
+    children = cleaned.get("children")
+    if isinstance(children, list):
+        display_children: list[Any] = []
+        for child in children:
+            if isinstance(child, Mapping):
+                child_clean = _handoff_part_metadata(child)
+                display_children.append(child_clean)
+            else:
+                display_children.append(child)
+        cleaned["children"] = display_children
+    return cleaned
+
+
+def _publish_transcript_event(
+    bus: EventBus,
+    sid: str,
+    event_type: str,
+    payload: Mapping[str, Any],
+) -> None:
+    """Publish one normalized transcript event alongside legacy message events."""
+
+    bus.publish(Event(type=event_type, session_id=sid, payload=dict(payload)))
+
+
+def _transcript_text_field(field_name: str) -> str:
+    """Map DSPy contract fields to public transcript text fields."""
+
+    return "answer" if field_name == "answer" else "thought"
+
+
 async def _run_turn_in_background(
     app: "FastAPI",
     sid: str,
@@ -153,6 +410,7 @@ async def _run_turn_in_background(
         _build_prompt_user_agent_module,
         _build_tool_user_agent_module,
         _cancelled_error_info,
+        _clean_public_transcript_text,
         _coerce_ask_user_action,
         _coerce_expert_handoff_rows,
         _compile_session_conversation_history,
@@ -160,6 +418,7 @@ async def _run_turn_in_background(
         _current_lm_model_id,
         _delegated_expert_agent_id,
         _delegated_expert_prompt,
+        _delegated_expert_public_prompt,
         _dspy_images_from_parts,
         _dynamic_agent_runtime_provenance,
         _dynamic_parent_resume_prompt,
@@ -321,6 +580,15 @@ async def _run_turn_in_background(
         subject={"message_id": user_msg.id},
         payload={"text": user_text, "retry_attempt_id": retry_attempt_id},
     )
+    _publish_transcript_event(
+        bus,
+        sid,
+        "turn.started",
+        {
+            "turn_id": turn_id,
+            "agent_id": turn_agent_id or _session_agent_id(sess) or "main",
+        },
+    )
 
     # iowarp/clio-agent#5: prepend any attached context files to the
     # user's text so the agent's forward() sees them as primed input.
@@ -479,9 +747,11 @@ async def _run_turn_in_background(
     # finalized on close; ``closed_streamed_part_ids`` marks parts already completed
     # live (so the finalize loop neither re-adds nor re-completes them).
     streamed_last_agent: Optional[str] = None
+    streamed_last_field: str = ""
     streamed_live_part_ids: set[str] = set()
     streamed_part_text: dict[str, list[str]] = {}
     closed_streamed_part_ids: set[str] = set()
+    suppressed_parent_resume_offsets: dict[str, int] = {}
 
     def _live_parts_store() -> dict[str, list[Part]]:
         live_parts = getattr(app.state, "live_assistant_parts", None)
@@ -490,18 +760,72 @@ async def _run_turn_in_background(
             app.state.live_assistant_parts = live_parts
         return live_parts
 
+    def _record_streamed_field_text(agent: str, field: str, chunk: str) -> None:
+        store = getattr(app.state, "live_streamed_field_text", None)
+        if store is None:
+            store = {}
+            app.state.live_streamed_field_text = store
+        session_store = store.setdefault(sid, {})
+        agent_store = session_store.setdefault(agent, {})
+        agent_store[field] = str(agent_store.get(field, "")) + chunk
+
+    def _streamed_field_contains(agent: str, field: str, text: str) -> bool:
+        if not agent or not text.strip():
+            return False
+        store = getattr(app.state, "live_streamed_field_text", None) or {}
+        session_store = store.get(sid, {}) if isinstance(store, dict) else {}
+        agent_store = session_store.get(agent, {}) if isinstance(session_store, dict) else {}
+        streamed = str(agent_store.get(field, "") or "") if isinstance(agent_store, dict) else ""
+        left = " ".join(streamed.split())
+        right = " ".join(text.split())
+        return bool(left and right and (right in left or left in right))
+
     def _close_streamed_part(part_id: str) -> None:
         """Finalize an open live text part: persist its accumulated text onto the
         Part and emit ``message.part.completed`` so a client can replace the
         buffered deltas with the clean text. Idempotent per part."""
         if part_id in closed_streamed_part_ids:
             return
-        closed_streamed_part_ids.add(part_id)
         buffered = "".join(streamed_part_text.get(part_id, []))
-        for part in _live_parts_store().get(sid, []):
-            if part.id == part_id and part.type == "text":
-                part.text = buffered
-                break
+        # Locate the open part so we know its type: only TEXT parts get the
+        # contract-prose clean (provider thinking is shown verbatim), and the
+        # empty-drop path below needs the type too.
+        target_part = next(
+            (
+                part
+                for part in _live_parts_store().get(sid, [])
+                if part.id == part_id and part.type in {"text", "thinking"}
+            ),
+            None,
+        )
+        # B2: clean the COMPLETE buffered answer once, here — never per chunk. On
+        # whole text the block/line regexes match real ```json … workflow_state```
+        # dumps and full contract lines (stripping them), and partial-chunk
+        # truncation can no longer happen. preserve_whitespace keeps the answer's
+        # markdown spacing (lists/code) intact; only contract prose is removed.
+        if target_part is not None and target_part.type == "text" and buffered.strip():
+            buffered = _clean_public_transcript_text(buffered, preserve_whitespace=True)
+        if not buffered.strip():
+            live_parts = _live_parts_store().get(sid, [])
+            _live_parts_store()[sid] = [
+                part
+                for part in live_parts
+                if not (part.id == part_id and part.type in {"text", "thinking"})
+            ]
+            streamed_live_part_ids.discard(part_id)
+            streamed_part_text.pop(part_id, None)
+            closed_streamed_part_ids.add(part_id)
+            trace.HF_ON and trace.hot(
+                "STREAM-SSE",
+                "dropped_empty_streamed_part sid=%s msg=%s part=%s",
+                sid,
+                streamed_assistant_msg_id or "",
+                part_id,
+            )
+            return
+        closed_streamed_part_ids.add(part_id)
+        if target_part is not None:
+            target_part.text = buffered
         bus.publish(
             Event(
                 type="message.part.completed",
@@ -516,11 +840,119 @@ async def _run_turn_in_background(
             )
         )
 
-    async def _emit_chunk(text: str, agent_id: Optional[str] = None) -> None:
+    def _close_streamed_part_at_runtime_boundary() -> None:
+        """Close open streamed text before appending a non-text runtime part.
+
+        A provider may emit the same contract field in multiple chunks across
+        intervening tool calls/results. Persisting that as one mutable text part
+        makes reloads render later text before the intervening tools. Closing the
+        current part at each runtime boundary preserves the append-only order.
+        """
+        nonlocal streamed_assistant_part_id, streamed_last_agent, streamed_last_field
+        if streamed_assistant_part_id is None:
+            return
+        _close_streamed_part(streamed_assistant_part_id)
+        streamed_assistant_part_id = None
+        streamed_last_agent = None
+        streamed_last_field = ""
+
+    boundary_hooks = getattr(app.state, "live_stream_text_boundary_hooks", None)
+    if boundary_hooks is None:
+        boundary_hooks = {}
+        app.state.live_stream_text_boundary_hooks = boundary_hooks
+    boundary_hooks[sid] = _close_streamed_part_at_runtime_boundary
+
+    async def _emit_chunk(
+        text: str,
+        agent_id: Optional[str] = None,
+        field_name: str = "answer",
+    ) -> None:
         nonlocal streamed_assistant_part_id, streamed_assistant_msg_id, streamed_last_agent
+        nonlocal streamed_last_field
         # The generating expert (passed by the LM token tap from its react scope);
         # falls back to the turn's selected/invocation agent for the chat path.
         chunk_agent = agent_id or active_agent_id or invocation_agent_id or "main"
+        stream_field = str(field_name or "answer")
+        is_provider_thinking = stream_field.startswith("provider_thinking:")
+        try:
+            from clio_agent.gact.semantic_events import (  # noqa: PLC0415
+                LM_TOKEN_DELTA,
+                lm_token_delta_payload,
+            )
+
+            _emit_semantic_event(
+                app,
+                sid,
+                LM_TOKEN_DELTA,
+                turn_id=turn_id,
+                trace_id=trace_id,
+                status="running",
+                summary="LM token delta.",
+                actor={"agent_id": chunk_agent, "role": "expert"},
+                provider=_llm_provider_payload(app, chunk_agent),
+                payload=lm_token_delta_payload(content=text, field=stream_field),
+                # Capture/derive through ARC-as-source without adding a second
+                # served transcript event; message.part.delta remains the UI stream.
+                detail_level="off",
+            )
+        except Exception:  # noqa: BLE001 - transcript streaming must not fail a turn
+            pass
+        if not text:
+            trace.HF_ON and trace.hot(
+                "STREAM-SSE",
+                "ignored_empty_delta agent=%s field=%s",
+                chunk_agent,
+                stream_field,
+            )
+            return
+        # B2: do NOT run the contract-prose cleaner per streamed chunk. Its block
+        # and full-line regexes (delegation._clean_public_transcript_text) only
+        # match complete ```json … workflow_state``` blocks / whole lines; on a
+        # PARTIAL chunk the multiline ^/$/\n\n anchors hit the chunk boundary and
+        # empty or leading-truncate real answer text (the " station in a…" /
+        # "The acquis…" artifacts). The whole buffered part is cleaned once in
+        # _close_streamed_part instead. Raw chunks flow through here with their
+        # boundary whitespace intact, so concatenation stays "thinking next".
+        resume_output = _latest_parent_resume_output(
+            _live_parts_store().get(sid, []),
+            chunk_agent,
+        )
+        if stream_field == "answer" and resume_output:
+            offset = suppressed_parent_resume_offsets.get(chunk_agent, 0)
+            after = resume_output[offset + len(text) :]
+            # Only suppress a duplicated chunk when it ends on a WORD BOUNDARY in
+            # the resume output. Otherwise, when the parent's text diverges from
+            # the child's mid-word (e.g. parent paraphrases after "Los An|geles"),
+            # we'd drop "Los An" and emit "geles" — a corrupted mid-word fragment
+            # that also gets stored and breaks reload. Emitting the chunk instead
+            # keeps the text intact (any true full-line duplication is deduped by
+            # the client's dedupeRepeatedText).
+            chunk_ends_word = (not after) or after[:1].isspace() or text[-1:].isspace()
+            if resume_output[offset:].startswith(text) and chunk_ends_word:
+                suppressed_parent_resume_offsets[chunk_agent] = offset + len(text)
+                trace.HF_ON and trace.hot(
+                    "STREAM-SSE",
+                    "suppressed_parent_resume_duplicate agent=%s len=%d head=%r",
+                    chunk_agent,
+                    len(text),
+                    text[:80],
+                )
+                stream_audit(
+                    "sse.normalized_emit",
+                    session_id=sid,
+                    turn_id=turn_id,
+                    agent_id=chunk_agent,
+                    field=stream_field,
+                    normalized_event="turn.text.delta",
+                    chunk_len=len(text),
+                    duplicate_suppressed=True,
+                    duplicate_reason="parent_resume_duplicate",
+                    head=text[:120],
+                    full_text=text[:12000],
+                )
+                return
+        if not is_provider_thinking:
+            _record_streamed_field_text(chunk_agent, stream_field, text)
         if streamed_assistant_msg_id is None:
             # Lazily invent the message id the moment the first chunk arrives;
             # the final assistant message will reuse it.
@@ -550,19 +982,37 @@ async def _run_turn_in_background(
         # Open a fresh part whenever none is open or the generating expert changed,
         # closing the prior one so each expert's streamed text is its own authored
         # part instead of being mashed into a single "main"-frozen part.
-        if streamed_assistant_part_id is None or chunk_agent != streamed_last_agent:
+        if (
+            streamed_assistant_part_id is None
+            or chunk_agent != streamed_last_agent
+            or stream_field != streamed_last_field
+        ):
             if streamed_assistant_part_id is not None:
                 _close_streamed_part(streamed_assistant_part_id)
             streamed_assistant_part_id = _new_part_id()
             streamed_last_agent = chunk_agent
+            streamed_last_field = stream_field
             streamed_live_part_ids.add(streamed_assistant_part_id)
             streamed_part_text[streamed_assistant_part_id] = []
+            part_type = "thinking" if is_provider_thinking else "text"
             text_part = Part(
                 id=streamed_assistant_part_id,
-                type="text",
+                type=part_type,
                 agent_id=chunk_agent,
                 text="",
-                metadata={"stream_source": "live"},
+                metadata={
+                    "stream_source": "live",
+                    "signature_field_name": stream_field,
+                    **(
+                        {
+                            "thinking_source": "provider",
+                            "provider_source": stream_field.split(":", 1)[1],
+                            "default_collapsed": True,
+                        }
+                        if is_provider_thinking
+                        else {}
+                    ),
+                },
             )
             _live_parts_store().setdefault(sid, []).append(text_part)
             bus.publish(
@@ -588,9 +1038,77 @@ async def _run_turn_in_background(
                     "message_id": streamed_assistant_msg_id,
                     "part_id": streamed_assistant_part_id,
                     "stream_source": "live",
+                    "signature_field_name": stream_field,
                     "delta": {"text_append": text},
                 },
             )
+        )
+        if is_provider_thinking:
+            provider_source = stream_field.split(":", 1)[1] if ":" in stream_field else "provider"
+            _publish_transcript_event(
+                bus,
+                sid,
+                "turn.trace.delta",
+                {
+                    "turn_id": turn_id,
+                    "trace_id": f"{turn_id}:{provider_source}",
+                    "trace_kind": "model_aux",
+                    "agent_id": chunk_agent,
+                    "part_id": streamed_assistant_part_id,
+                    "text_append": text,
+                },
+            )
+            stream_audit(
+                "sse.normalized_emit",
+                session_id=sid,
+                turn_id=turn_id,
+                agent_id=chunk_agent,
+                part_id=streamed_assistant_part_id or "",
+                field=stream_field,
+                normalized_event="turn.trace.delta",
+                chunk_len=len(text),
+                duplicate_suppressed=False,
+                head=text[:120],
+                full_text=text[:12000],
+            )
+        else:
+            transcript_field = _transcript_text_field(stream_field)
+            _publish_transcript_event(
+                bus,
+                sid,
+                "turn.text.delta",
+                {
+                    "turn_id": turn_id,
+                    "agent_id": chunk_agent,
+                    "part_id": streamed_assistant_part_id,
+                    "field": transcript_field,
+                    "text_append": text,
+                },
+            )
+            stream_audit(
+                "sse.normalized_emit",
+                session_id=sid,
+                turn_id=turn_id,
+                agent_id=chunk_agent,
+                part_id=streamed_assistant_part_id or "",
+                field=stream_field,
+                transcript_field=transcript_field,
+                normalized_event="turn.text.delta",
+                chunk_len=len(text),
+                duplicate_suppressed=False,
+                head=text[:120],
+                full_text=text[:12000],
+            )
+        trace.HF_ON and trace.hot(
+            "STREAM-SSE",
+            "published_delta sid=%s msg=%s part=%s agent=%s field=%s len=%d head=%r",
+            sid,
+            streamed_assistant_msg_id or "",
+            streamed_assistant_part_id or "",
+            chunk_agent,
+            stream_field,
+            len(text),
+            text[:80],
         )
 
     # Unified LM token highway (#693): bind this turn's loop + chat publisher so a
@@ -728,6 +1246,16 @@ async def _run_turn_in_background(
             len(str(getattr(_pred, "next_task", "") or "")),
             len(str(getattr(_pred, "answer", "") or "")),
         )
+        trace.HF_ON and trace.hot(
+            "TURN-SEMANTICS",
+            "agent=%s reasoning=%r answer=%r next_expert=%r next_task=%r workflow_state_type=%s",
+            getattr(agent_def, "id", "?"),
+            str(getattr(_pred, "reasoning", "") or "")[:500],
+            str(getattr(_pred, "answer", "") or "")[:300],
+            str(getattr(_pred, "next_expert", "") or ""),
+            str(getattr(_pred, "next_task", "") or "")[:300],
+            type(getattr(_pred, "workflow_state", None)).__name__,
+        )
         # Per-expert capture: one expert.response.completed per dynamic-agent run
         # (child or parent-resume), carrying that expert's full reasoning +
         # trajectory via _prediction_summary. Closes the nested-expert capture
@@ -752,6 +1280,18 @@ async def _run_turn_in_background(
             },
             payload=_prediction_summary(_pred),
         )
+        _workflow_state = _prediction_workflow_state(_pred)
+        if _workflow_state:
+            _publish_transcript_event(
+                bus,
+                sid,
+                "state.updated",
+                {
+                    "turn_id": turn_id,
+                    "value": _workflow_state,
+                    "visibility": "hidden",
+                },
+            )
         # #733: remember each TERMINAL expert's answer so the FINALIZE pass can emit
         # it as an ordered transcript ``text`` part IFF the expert's answer did not
         # already stream live (WS3). The dedup must happen at finalize (after the
@@ -869,6 +1409,7 @@ async def _run_turn_in_background(
                 )
                 continue
 
+            public_prompt = _delegated_expert_public_prompt(row, source_text)
             prompt = _append_session_workflow_state_context(
                 app,
                 sid,
@@ -939,8 +1480,23 @@ async def _run_turn_in_background(
                     # The orchestrator's reasoning rides the delegation atom (#732).
                     thought=str(started_row.get("thought") or ""),
                     text=f"{parent_agent.id} -> {target.id}",
-                    metadata={**started_row, "stream_source": "live"},
+                    metadata={**_handoff_part_metadata(started_row), "stream_source": "live"},
                 ),
+            )
+            _publish_transcript_event(
+                bus,
+                sid,
+                "turn.action.added",
+                {
+                    "turn_id": turn_id,
+                    "action": {
+                        "kind": "agent_call",
+                        "call_id": f"agent_call:{parent_agent.id}:{target.id}:{len(executed)}",
+                        "agent_id": parent_agent.id,
+                        "target_agent": target.id,
+                        "prompt": public_prompt,
+                    },
+                },
             )
             ledger_start = 0
             ledger = getattr(app.state, "tool_call_ledger", None)
@@ -1059,6 +1615,18 @@ async def _run_turn_in_background(
                     row_state = tool_row.get("workflow_state")
                     if isinstance(row_state, Mapping):
                         _merge_workflow_state_mapping(workflow_state, row_state)
+                child_tools_called = _sanitize_tools_called_metadata(child_tools_called)
+                handoff_output = "" if _looks_like_structured_answer(output) else output
+                # The PUBLIC return summary is derived from the child's GENUINE
+                # answer (structured answers rendered to a readable one-liner) so
+                # the transcript shows the real result, not a generic placeholder.
+                # handoff_output stays blanked for structured answers because it
+                # feeds the parent RESUME PROMPT (which receives the typed
+                # workflow_state separately, not raw JSON).
+                public_return_summary = (
+                    _clean_public_transcript_text(_render_return_summary(output))
+                    or f"{target.id} returned to {parent_agent.id}."
+                )
                 completed_row = {
                     **row,
                     "agent_id": target.id,
@@ -1076,10 +1644,24 @@ async def _run_turn_in_background(
                     "duration_ms": duration_ms,
                     "execution_mode": execution_mode,
                     "input": prompt,
-                    "output": output,
+                    "output": handoff_output,
+                    # Real, human-readable return summary — same string the live
+                    # turn.action.added return uses, so the reload (/messages)
+                    # render matches the live render (no change-on-reload).
+                    "output_summary": public_return_summary,
+                    # The GENUINE structured output for the "details" disclosure on
+                    # reload (mirrors the live return's `response`). Empty for prose
+                    # (the body already is the answer). Distinct from `output`, which
+                    # stays blanked to keep the parent resume prompt clean.
+                    "output_raw": output if _looks_like_structured_answer(output) else "",
                     "workflow_state": workflow_state,
                     "tools_called": child_tools_called,
-                    "children": nested,
+                    "children": [
+                        _sanitize_handoff_tool_metadata(child)
+                        if isinstance(child, Mapping)
+                        else child
+                        for child in nested
+                    ],
                 }
                 # completed_row carries the child's GENUINE output (the typed
                 # dspy.extract deliverable) verbatim — no heuristic compaction.
@@ -1091,7 +1673,7 @@ async def _run_turn_in_background(
                     f"{delegation_event_prefix}.completed",
                     turn_id=turn_id,
                     trace_id=trace_id,
-                    summary=f"{target.id} returned a compact result to {parent_agent.id}.",
+                    summary=public_return_summary,
                     actor={"agent_id": target.id, "role": "child_expert"},
                     subject={"agent_id": parent_agent.id, "role": "parent_expert"},
                     blueprint=delegation_blueprint,
@@ -1113,9 +1695,44 @@ async def _run_turn_in_background(
                         stage=str(completed_row.get("stage") or ""),
                         status=str(completed_row.get("status") or ""),
                         text=f"{parent_agent.id} <- {target.id}",
-                        metadata={**completed_row, "stream_source": "live"},
+                        metadata={
+                            **_handoff_part_metadata(completed_row),
+                            "stream_source": "live",
+                        },
                     ),
                 )
+                if workflow_state:
+                    _publish_transcript_event(
+                        bus,
+                        sid,
+                        "state.updated",
+                        {
+                            "turn_id": turn_id,
+                            "value": workflow_state,
+                            "visibility": "hidden",
+                        },
+                    )
+                return_action: dict[str, Any] = {
+                    "kind": "return",
+                    "call_id": (f"return:{target.id}:{parent_agent.id}:{len(executed)}"),
+                    "agent_id": target.id,
+                    "target_agent": parent_agent.id,
+                    "summary": public_return_summary,
+                }
+                # For a structured answer the body shows the readable summary; the
+                # GENUINE raw output rides along as `response` so the client can
+                # reveal it under a "details" disclosure (it's just LLM output —
+                # shown on demand, not hidden). Prose answers ARE the body, so no
+                # separate raw is sent.
+                if _looks_like_structured_answer(output):
+                    return_action["response"] = output
+                _publish_transcript_event(
+                    bus,
+                    sid,
+                    "turn.action.added",
+                    {"turn_id": turn_id, "action": return_action},
+                )
+                completed_row = _sanitize_handoff_tool_metadata(completed_row)
                 executed.append(completed_row)
                 resumed_row = {
                     "agent_id": parent_agent.id,
@@ -1126,7 +1743,7 @@ async def _run_turn_in_background(
                     "delegation_lifecycle": "sync",
                     "resumed_from": target.id,
                     "depth": depth,
-                    "output": output,
+                    "output": handoff_output,
                     "workflow_state": workflow_state,
                 }
                 _emit_semantic_event(
@@ -1153,7 +1770,10 @@ async def _run_turn_in_background(
                         stage=str(resumed_row.get("stage") or ""),
                         status=str(resumed_row.get("status") or ""),
                         text=f"{parent_agent.id} resumed (from {target.id})",
-                        metadata={**resumed_row, "stream_source": "live"},
+                        metadata={
+                            **_handoff_part_metadata(resumed_row),
+                            "stream_source": "live",
+                        },
                     ),
                 )
                 executed.append(resumed_row)
@@ -1188,6 +1808,7 @@ async def _run_turn_in_background(
                     error=error_name,
                     message=error_message,
                 )
+                child_tools_called = _sanitize_tools_called_metadata(child_tools_called)
                 failed_row = {
                     **row,
                     "agent_id": target.id,
@@ -1223,7 +1844,7 @@ async def _run_turn_in_background(
                         "provider_id": target.default_provider,
                         "model_id": target.default_model,
                     },
-                    payload=failed_row,
+                    payload=_sanitize_handoff_tool_metadata(failed_row),
                 )
                 _append_live_assistant_part(
                     app,
@@ -1237,10 +1858,13 @@ async def _run_turn_in_background(
                         stage=str(failed_row.get("stage") or ""),
                         status=str(failed_row.get("status") or ""),
                         text=f"{parent_agent.id} -> {target.id} (failed)",
-                        metadata={**failed_row, "stream_source": "live"},
+                        metadata={
+                            **_handoff_part_metadata(failed_row),
+                            "stream_source": "live",
+                        },
                     ),
                 )
-                executed.append(failed_row)
+                executed.append(_sanitize_handoff_tool_metadata(failed_row))
         return executed
 
     async def _settle_dynamic_agent_delegations(
@@ -1843,6 +2467,18 @@ async def _run_turn_in_background(
         # branches not yet migrated).
         execution_path = getattr(pred, "execution_path", "") or ""
         tools_called = _extract_tools_called(pred)
+        top_level_workflow_state = _prediction_workflow_state(pred)
+        if top_level_workflow_state:
+            _publish_transcript_event(
+                bus,
+                sid,
+                "state.updated",
+                {
+                    "turn_id": turn_id,
+                    "value": top_level_workflow_state,
+                    "visibility": "hidden",
+                },
+            )
         raw_handoffs = getattr(pred, "expert_handoffs", None) or []
         if not expert_handoffs:
             expert_handoffs = _coerce_expert_handoff_rows(raw_handoffs)
@@ -2181,7 +2817,7 @@ async def _run_turn_in_background(
                 child_agent=handoff_fields["child_agent"],
                 stage=handoff_fields["stage"],
                 status=handoff_fields["status"],
-                metadata=handoff,
+                metadata=_handoff_part_metadata(handoff),
                 text=_expert_handoff_summary(handoff),
             )
         )
@@ -2198,7 +2834,19 @@ async def _run_turn_in_background(
         streamed_assistant_part_id is not None
         and streamed_assistant_part_id not in closed_streamed_part_ids
     ):
-        if answer_text and streamed_last_agent == responder_agent_id:
+        # Reuse the still-open part as the canonical answer ONLY when it was actually
+        # streaming the answer field. If the last field to stream was a DIFFERENT
+        # field (e.g. ``reasoning``/``next_thought``), its buffered text is that
+        # field's content — overwriting it with ``answer_text`` swaps the part's text
+        # out from under the live view (the reasoning->answer "beginning of the turn
+        # breaks" bug: live shows the reasoning, finalize/reload swaps to the answer).
+        # Close it as-is instead (its reasoning is preserved + emitted consistently),
+        # and let the answer land as its own authored part via the fallback below.
+        if (
+            answer_text
+            and streamed_last_agent == responder_agent_id
+            and streamed_last_field == "answer"
+        ):
             reuse_streamed_part_id = streamed_assistant_part_id
         else:
             _close_streamed_part(streamed_assistant_part_id)
@@ -2216,6 +2864,8 @@ async def _run_turn_in_background(
     ):
         if fb_expert in answered_agents:
             continue
+        if _looks_like_structured_answer(fb_answer):
+            continue
         answered_agents.add(fb_expert)
         assistant_parts.append(
             Part(
@@ -2226,7 +2876,23 @@ async def _run_turn_in_background(
                 metadata={"stream_source": "expert_answer"},
             )
         )
-    if thinking_text:
+    suppressed_thinking_part: dict[str, str] = {}
+    if thinking_text and _streamed_field_contains(responder_agent_id, "reasoning", thinking_text):
+        suppressed_thinking_part = {
+            "agent_id": responder_agent_id,
+            "reason": "already_streamed_contract_reasoning",
+            "text": thinking_text,
+        }
+    elif thinking_text and _is_parent_resume_reasoning_part(
+        assistant_parts,
+        responder_agent_id=responder_agent_id,
+    ):
+        suppressed_thinking_part = {
+            "agent_id": responder_agent_id,
+            "reason": "parent_resume_bookkeeping",
+            "text": thinking_text,
+        }
+    elif thinking_text:
         # iowarp/clio-agent#17: surface DSPy reasoning as a thinking Part so the TUI
         # can collapse + render it (gated on capabilities.thinking_blocks). Appended
         # AFTER the live spine — the responder's wrap-up reasoning is produced at the
@@ -2246,7 +2912,12 @@ async def _run_turn_in_background(
     answer_already_present = bool(answer_text) and any(
         p.type == "text" and (p.text or "").strip() == answer_text.strip() for p in assistant_parts
     )
-    if answer_text and reuse_streamed_part_id is None and not answer_already_present:
+    if (
+        answer_text
+        and reuse_streamed_part_id is None
+        and not answer_already_present
+        and not _looks_like_structured_answer(answer_text)
+    ):
         assistant_parts.append(
             Part(
                 id=_new_part_id(),
@@ -2324,20 +2995,21 @@ async def _run_turn_in_background(
             "effective_agent_id": selected_agent or turn_agent_id,
             "scope": "turn",
         }
-    should_report_stream_provenance = bool(answer_text) or error_info is not None
-    text_stream_source = (
-        ("live" if streamed_assistant_part_id is not None else "batch")
-        if should_report_stream_provenance
-        else ""
-    )
-    if text_stream_source:
+    has_live_parts = bool(live_assistant_parts or streamed_assistant_part_id)
+    should_report_stream_provenance = bool(answer_text) or error_info is not None or has_live_parts
+    text_stream_source = ""
+    if bool(answer_text) or error_info is not None:
+        text_stream_source = "live" if streamed_assistant_part_id is not None else "batch"
+    elif has_live_parts:
+        text_stream_source = "live"
+    if should_report_stream_provenance and text_stream_source:
         assistant_metadata["stream_source"] = text_stream_source
     stream_fallback = _pop_stream_fallback(app, sid)
-    if text_stream_source == "batch":
+    if text_stream_source == "batch" and (bool(answer_text) or error_info is not None):
         if not stream_fallback:
             stream_fallback = _stream_fallback_payload("sync_execution_path")
         assistant_metadata["stream_fallback"] = stream_fallback
-    if text_stream_source:
+    if text_stream_source and answer_text:
         for part in assistant_parts:
             if part.type != "text" or not part.text:
                 continue
@@ -2352,9 +3024,14 @@ async def _run_turn_in_background(
     # final metadata boundary so reloads retain the same tool facts as the live bus.
     if not cancelled_turn:
         tools_called = _drain_observed_tool_calls(tools_called)
+    tools_called = _sanitize_tools_called_metadata(tools_called)
     if tools_called:
         assistant_metadata["tools_called"] = tools_called
     if expert_handoffs:
+        expert_handoffs = [
+            _sanitize_handoff_tool_metadata(row) if isinstance(row, Mapping) else row
+            for row in expert_handoffs
+        ]
         assistant_metadata["expert_handoffs"] = expert_handoffs
     if context_file_provenance["files"]:
         assistant_metadata["context_files"] = context_file_provenance
@@ -2364,6 +3041,8 @@ async def _run_turn_in_background(
         assistant_metadata["agent_runtime"] = agent_runtime
     if prompt_resolution:
         assistant_metadata["prompt_resolution"] = prompt_resolution
+    if suppressed_thinking_part:
+        assistant_metadata["suppressed_thinking_part"] = suppressed_thinking_part
     # Reasoning capture: log the chain-of-thought tokens for EVERY LM call this
     # turn (planner + each expert + chat), extracted from dspy.lm.history. Most
     # stacks discard reasoning_content; we persist (question, reasoning, response)
@@ -2615,11 +3294,7 @@ async def _run_turn_in_background(
     # of chunking it into synthetic deltas that could be mistaken for live
     # provider tokens.
     for part in assistant_parts:
-        if (
-            part.metadata.get("stream_source") == "live"
-            and part.id not in enriched_live_part_ids
-            and part.type != "text"
-        ):
+        if part.metadata.get("stream_source") == "live" and part.type != "text":
             continue
         # Per-expert child text parts were already streamed AND completed live
         # (WS3); skip them here so they are neither re-added nor re-completed.
@@ -2738,6 +3413,12 @@ async def _run_turn_in_background(
         subject={"message_id": assistant_msg.id},
         payload=semantic_completed_payload,
     )
+    _publish_transcript_event(
+        bus,
+        sid,
+        "turn.completed",
+        {"turn_id": turn_id},
+    )
     bus.publish(
         Event(
             type="message.completed",
@@ -2753,6 +3434,7 @@ async def _run_turn_in_background(
     getattr(app.state, "live_assistant_message_ids", {}).pop(sid, None)
     getattr(app.state, "live_assistant_parts", {}).pop(sid, None)
     getattr(app.state, "live_assistant_part_keys", {}).pop(sid, None)
+    getattr(app.state, "live_stream_text_boundary_hooks", {}).pop(sid, None)
     getattr(app.state, "expert_terminal_answers", {}).pop(sid, None)
     _update_retry_attempt(
         retry_status,
