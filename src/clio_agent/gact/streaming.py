@@ -587,6 +587,7 @@ async def _try_streamed_forward(
                 reasoning_len=len(piece_reasoning),
                 chunk_len=len(piece_text or piece_reasoning),
                 head=(piece_text or piece_reasoning)[:120],
+                full_text=(piece_text or piece_reasoning)[:12000],
             )
             trace.HF_ON and trace.hot(
                 "STREAM-DSPY",
