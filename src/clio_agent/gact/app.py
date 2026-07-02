@@ -1172,6 +1172,7 @@ from clio_agent.gact.tool_observer import (  # noqa: E402,F401
     _install_tool_runtime_hooks,
     _make_tool_observer,
 )
+from clio_agent.gact.transcript import TurnTranscriptRegistry
 from clio_agent.gact.types import (
     AgentCapabilityRef,
     AgentDef,
@@ -1635,6 +1636,11 @@ def build_app(
     app.state.live_assistant_message_ids = {}
     app.state.live_assistant_parts = {}
     app.state.live_assistant_part_keys = {}
+    # #767 PR1: the single-writer part-ledger registry (TurnTranscript). No
+    # production path opens a turn yet — the turn loop adopts it in PR2/PR3 —
+    # but the tool-observer/delegation append helpers already shim into any
+    # open ledger, falling back to the legacy dicts above when none is open.
+    app.state.turn_transcripts = TurnTranscriptRegistry()
 
     # iowarp/clio-agent#7 + #2: install process-global hooks on the
     # MCPToolBridge so EVERY expert's tool call routes through our
