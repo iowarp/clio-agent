@@ -14,13 +14,17 @@ PR2 scope (design §6): the turn loop owns the registry lifecycle — it opens
 the ledger at turn start, the stream tap (``turn.py``'s ``_emit_chunk``, now a
 thin adapter) appends through :meth:`TurnTranscript.append_text_delta`, and
 the loop settles the ledger on EVERY exit path (success, the #756 finalize
-error envelope, and the ask_user early return). During the PR2 window the
-finalize region is still the legacy reader — it re-derives its decisions from
-transcript state queries (:attr:`current_stream_part_id`,
-:meth:`was_closed_live`, :meth:`raw_streamed_text`, :meth:`open_text_part`)
-instead of the deleted ``turn.py`` closure variables — so turn end uses
-:meth:`abandon` (freeze without publishing) rather than :meth:`finalize`;
-PR3 flips finalize into a pure reader of :meth:`finalize`.
+error envelope, and the ask_user early return).
+
+PR3 scope (design §6): finalize is a pure READER. The turn loop appends its
+finalize-time parts (routing banner, wrap-up thinking, the canonical answer
+via :meth:`turn_answer_stream` + :meth:`FieldStream.finish`, file diffs)
+through the same producer API and persists :meth:`finalize` VERBATIM — no
+rewriting, no dedup, no re-publish loop. :class:`FieldStream` handles seed
+their exactly-once identity from the turn's ledger state, so "did this
+channel already produce the text?" is an op-identity check, never a string
+comparison (replaces ``answer_already_present`` / ``answered_agents`` /
+``expert_terminal_answers`` / the ``reuse_streamed_part_id`` text swap).
 
 THREADING CONTRACT (PR2)
 - The stream tap always enters the ledger ON THE TURN'S EVENT LOOP THREAD:
@@ -531,9 +535,9 @@ class TurnTranscript:
     def was_closed_live(self, part_id: str) -> bool:
         """True when ``part_id`` is a streamed part already closed live THIS turn.
 
-        Includes empty-after-clean drops. The finalize publish loop uses this
-        instead of the legacy ``closed_streamed_part_ids`` closure set so live
-        parts are neither re-added nor re-completed.
+        Includes empty-after-clean drops. Since PR3 deleted the finalize
+        re-publish loop this is a diagnostic query only (closing is a ledger
+        state transition; finalize publishes nothing).
         """
 
         with self._lock:
@@ -573,12 +577,40 @@ class TurnTranscript:
     def field_stream(self, agent_id: str, field: str = "answer") -> "FieldStream":
         """Take the exactly-once text handle for ``(agent_id, field)``.
 
-        LM-call sites take this BEFORE the call and :meth:`FieldStream.finish`
+        LM-call sites take this around the call and :meth:`FieldStream.finish`
         it after; whether the batch fallback text lands is decided by op
-        identity (did this handle stream?), never by comparing strings.
+        identity (did this channel already produce a part this turn?), never
+        by comparing strings. The handle seeds that identity from the turn's
+        ledger state, so a handle taken after the call (the stream tap feeds
+        :meth:`append_text_delta` directly) still sees its channel's streamed
+        part.
         """
 
         return FieldStream(self, agent_id, field)
+
+    def turn_answer_stream(
+        self, responder_agent_id: str, *also_covering: str
+    ) -> "FieldStream":
+        """The finalize-scoped exactly-once handle for the turn's canonical answer.
+
+        The channel covers the AGENT LABELS the turn's top-level answer can
+        stream under (#767 PR3, mechanism 5's replacement): the routed
+        responder plus the stream tap's attribution fallbacks — the chat path
+        labels chunks with the active/session agent while
+        ``pred.selected_expert`` names the responder, and both are the SAME
+        LM call's answer field. When a part already landed on any covered
+        label, :meth:`FieldStream.finish` closes/keeps that part and the batch
+        fallback is audited + ignored by identity; when none landed, ONE batch
+        burst authored to ``responder_agent_id`` lands. Never both, never a
+        text swap. A delegated child's own answer channel is NOT covered — its
+        deliverable settles at its LM-call site and must never suppress the
+        responder's distinct final answer.
+        """
+
+        covers = frozenset(
+            {responder_agent_id, *also_covering} - {""}
+        ) or frozenset({responder_agent_id})
+        return FieldStream(self, responder_agent_id, "answer", covers=covers)
 
     # -- the reader (finalize; loop-only) --------------------------------------
 
@@ -600,15 +632,13 @@ class TurnTranscript:
     def abandon(self) -> None:
         """Freeze the ledger WITHOUT closing open text or publishing anything.
 
-        PR2-window settle: the legacy finalize region still owns the terminal
-        wire events (it completes/republishes the open answer part itself), so
-        turn end must retire the ledger without emitting — a transcript-side
-        close here would double-publish ``message.part.completed``. Every turn
-        exit path (success, the #756 finalize error envelope, the ask_user
-        early return) calls this before ``registry.close(sid)`` so late
-        producer ops are rejected + audited instead of silently absorbed.
-        Idempotent. PR3 replaces this with :meth:`finalize` once the loop
-        persists the ledger verbatim.
+        The non-emitting settle: the ask_user early return carries the
+        in-flight assistant state across the question (nothing may publish or
+        close), and the #756 finalize error envelope must not emit transcript
+        events for a turn it is settling as failed. Every turn exit path calls
+        this before ``registry.close(sid)`` so late producer ops are rejected
+        + audited instead of silently absorbed; on the success path it is a
+        no-op because :meth:`finalize` already froze the ledger. Idempotent.
         """
 
         with self._lock:
@@ -670,12 +700,22 @@ class TurnTranscript:
             },
         )
 
-    def _append_batch_text_locked(self, agent_id: str, field: str, cleaned: str) -> Part:
+    def _append_batch_text_locked(
+        self,
+        agent_id: str,
+        field: str,
+        cleaned: str,
+        *,
+        extra_metadata: Optional[Mapping[str, Any]] = None,
+    ) -> Part:
         """One added+completed burst for a batch (non-streamed) text field.
 
-        The wire shape matches today's finalize loop for batch parts:
+        The wire shape matches the retired finalize loop's batch parts:
         ``message.part.added`` then ``message.part.completed`` with
         ``stream_source: "batch"`` and NO delta events (design §4 row 7).
+        ``extra_metadata`` carries post-hoc facts that ride the burst (e.g.
+        the turn's ``stream_fallback`` payload); a ``stream_fallback`` key is
+        mirrored onto the completed event to keep the legacy completed shape.
         """
 
         part = Part(
@@ -686,21 +726,22 @@ class TurnTranscript:
             metadata={
                 "stream_source": "batch",
                 "signature_field_name": field,
+                **dict(extra_metadata or {}),
             },
         )
         appended = self.append_part(part, stream_source="batch")
         assert appended is not None  # caller holds the lock and checked frozen
         self._closed_text.setdefault((agent_id, field), []).append(cleaned)
-        self._publisher.publish(
-            "message.part.completed",
-            {
-                "turn_id": self.turn_id,
-                "message_id": self.message_id,
-                "part_id": part.id,
-                "stream_source": "batch",
-                "final_text": cleaned,
-            },
-        )
+        completed_payload: dict[str, Any] = {
+            "turn_id": self.turn_id,
+            "message_id": self.message_id,
+            "part_id": part.id,
+            "stream_source": "batch",
+            "final_text": cleaned,
+        }
+        if part.metadata.get("stream_fallback"):
+            completed_payload["stream_fallback"] = part.metadata["stream_fallback"]
+        self._publisher.publish("message.part.completed", completed_payload)
         return part
 
     def _audit_late_op(self, op: str, **fields: Any) -> None:
@@ -723,26 +764,62 @@ class TurnTranscript:
 
 
 class FieldStream:
-    """Exactly-once text channel for one ``(agent_id, field)`` within one LM-call scope.
+    """Exactly-once text channel for one ``(agent_id, field)`` within one turn.
 
-    Take the handle BEFORE the LM call; the stream tap calls :meth:`append`;
-    :meth:`finish` after the call decides — by op identity, never by string
-    comparison — whether the batch ``fallback_text`` lands:
+    Take the handle around the LM call; deltas reach the transcript either
+    through :meth:`append` or directly through the stream tap
+    (``append_text_delta``) — the handle seeds its identity from the turn's
+    ledger state at construction, so both producer shapes count.
+    :meth:`finish` settles the channel — by op identity, never by string
+    comparison — deciding whether the batch ``fallback_text`` lands:
 
-    - deltas streamed          -> close the part (clean once); fallback audited + ignored
-    - no deltas + fallback     -> ONE added+completed batch burst authored to (agent, field)
-    - neither                  -> ``None``
+    - a non-empty part landed for the channel -> keep it (closing the open
+      part first when it carries this channel's field); fallback audited + ignored
+    - nothing landed + fallback               -> ONE added+completed batch burst
+    - neither                                 -> ``None``
+
+    ``covers`` widens the channel to a SET of agent labels
+    (:meth:`TurnTranscript.turn_answer_stream`) — the same logical field can
+    stream under more than one attribution label for one LM call.
     """
 
-    def __init__(self, transcript: TurnTranscript, agent_id: str, field: str) -> None:
+    def __init__(
+        self,
+        transcript: TurnTranscript,
+        agent_id: str,
+        field: str,
+        *,
+        covers: Optional[frozenset[str]] = None,
+    ) -> None:
         self._transcript = transcript
         self._agent_id = str(agent_id or "")
         self._field = str(field or "answer")
-        self._streamed = False
+        self._covers = covers if covers is not None else frozenset({self._agent_id})
         self._finished = False
-        #: The part id this handle's text landed in; ``None`` until the first
-        #: delta opens a part (or the batch burst lands one at finish).
+        #: The part id this handle's text landed in; ``None`` until a delta
+        #: opens a part (or seeding/finish binds one).
         self.part_id: Optional[str] = None
+        with transcript._lock:
+            open_part = self._open_channel_part_locked()
+            if open_part is not None:
+                self.part_id = open_part.id
+
+    def _open_channel_part_locked(self) -> Optional[Part]:
+        """The transcript's open part when it carries THIS channel's field."""
+
+        transcript = self._transcript
+        open_part = transcript._open_part
+        if open_part is None or transcript._open_field != self._field:
+            return None
+        if transcript._open_agent not in self._covers:
+            return None
+        return open_part
+
+    def _landed_locked(self) -> bool:
+        """Op identity: did this channel land a non-empty closed part this turn?"""
+
+        closed = self._transcript._closed_text
+        return any(bool(closed.get((agent, self._field))) for agent in self._covers)
 
     def append(self, chunk: str) -> None:
         """Route one streamed delta to the transcript; opens the part lazily."""
@@ -761,11 +838,19 @@ class FieldStream:
             transcript.append_text_delta(self._agent_id, self._field, chunk)
             open_part = transcript._open_part
             if open_part is not None:
-                self._streamed = True
                 self.part_id = open_part.id
 
-    def finish(self, *, fallback_text: str = "") -> Optional[str]:
-        """Settle the channel; returns the final text that landed, if any."""
+    def finish(
+        self,
+        *,
+        fallback_text: str = "",
+        fallback_metadata: Optional[Mapping[str, Any]] = None,
+    ) -> Optional[str]:
+        """Settle the channel; returns the final text that landed, if any.
+
+        ``fallback_metadata`` rides the batch burst's part metadata when the
+        fallback lands (e.g. the turn's ``stream_fallback`` payload).
+        """
 
         transcript = self._transcript
         with transcript._lock:
@@ -777,11 +862,16 @@ class FieldStream:
                 )
                 return None
             self._finished = True
-            if self._streamed:
+            open_part = self._open_channel_part_locked()
+            if open_part is not None:
+                self.part_id = open_part.id
+                transcript._close_open_text_locked()
+            if self._landed_locked():
                 if fallback_text.strip():
-                    # The batch copy of an already-streamed field is dropped by
-                    # IDENTITY (this handle streamed), never by text comparison;
-                    # audited so parity data exists (#733's replacement).
+                    # The batch copy of an already-landed channel is dropped by
+                    # IDENTITY (a part landed this turn), never by text
+                    # comparison; audited so parity data exists (#733/#736's
+                    # replacement).
                     stream_audit(
                         "transcript.fieldstream.fallback_ignored",
                         session_id=transcript.session_id,
@@ -791,13 +881,6 @@ class FieldStream:
                         reason="already_streamed",
                         fallback_len=len(fallback_text),
                     )
-                open_part = transcript._open_part
-                if (
-                    open_part is not None
-                    and self.part_id is not None
-                    and open_part.id == self.part_id
-                ):
-                    transcript._close_open_text_locked()
                 closed = next(
                     (p for p in transcript._parts if p.id == self.part_id),
                     None,
@@ -822,7 +905,12 @@ class FieldStream:
                     part_type="text",
                 )
                 return None
-            part = transcript._append_batch_text_locked(self._agent_id, self._field, cleaned)
+            part = transcript._append_batch_text_locked(
+                self._agent_id,
+                self._field,
+                cleaned,
+                extra_metadata=fallback_metadata,
+            )
             self.part_id = part.id
             return cleaned
 

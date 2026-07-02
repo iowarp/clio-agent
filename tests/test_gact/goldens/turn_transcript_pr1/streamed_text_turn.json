@@ -139,7 +139,6 @@
           },
           "rationale": "matched coding keywords",
           "selected_agent": "code_expert",
-          "sequence": 1,
           "type": "routing_decision"
         },
         "stream_source": "batch",
@@ -162,6 +161,17 @@
   "persisted_assistant_parts": [
     {
       "agent_id": "main",
+      "id": "<part#5>",
+      "metadata": {
+        "signature_field_name": "answer",
+        "stream_source": "live"
+      },
+      "sequence": 1,
+      "text": "Hello streamed world.",
+      "type": "text"
+    },
+    {
+      "agent_id": "main",
       "id": "<part#6>",
       "metadata": {
         "route_reason": "planner selected code expert",
@@ -169,19 +179,8 @@
       },
       "rationale": "matched coding keywords",
       "selected_agent": "code_expert",
-      "sequence": 1,
-      "type": "routing_decision"
-    },
-    {
-      "agent_id": "main",
-      "id": "<part#5>",
-      "metadata": {
-        "signature_field_name": "answer",
-        "stream_source": "live"
-      },
       "sequence": 2,
-      "text": "Hello streamed world.",
-      "type": "text"
+      "type": "routing_decision"
     }
   ]
 }

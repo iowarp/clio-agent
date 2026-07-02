@@ -65,7 +65,6 @@ from clio_agent.gact.runtime.globals import (
 )
 from clio_agent.gact.streaming import (
     _clear_live_streamed_field_text,
-    _live_streamed_field_text_for_turn,
     _record_live_streamed_field_text,
 )
 from clio_agent.gact.transcript import _transcript_text_field
@@ -99,65 +98,6 @@ if TYPE_CHECKING:
     from clio_agent.gact.types import AgentDef  # noqa: F401
 
 logger = logging.getLogger(__name__)
-
-
-def _dedup_cross_agent_text(parts: list[Part]) -> list[Part]:
-    """Drop a ``text`` part that verbatim-duplicates an earlier one by another author.
-
-    iowarp/clio-agent#736: after a terminal child (e.g. ``synthesis``) returns its
-    deliverable, the resumed orchestrator (``main``) frequently re-emits that child's
-    answer **verbatim** as its own ``text`` part, so the final brief lands twice in the
-    persisted transcript — once child-authored, once parent-authored. This drops the
-    later, cross-agent byte-identical copy and keeps the original (child-authored) part.
-
-    Narrow by design: only a ``text`` part whose *stripped* content exactly matches an
-    EARLIER ``text`` part authored by a DIFFERENT ``agent_id`` is removed. The
-    orchestrator's own distinct wrap-up (its ``thinking`` part — different type and
-    content) and any legitimate same-author repetition are left untouched. Arrival
-    order of the surviving parts is preserved.
-    """
-    seen_author_by_text: dict[str, str] = {}
-    kept: list[Part] = []
-    for part in parts:
-        if part.type == "text":
-            normalized = (part.text or "").strip()
-            if normalized:
-                prior_author = seen_author_by_text.get(normalized)
-                if prior_author is not None and prior_author != part.agent_id:
-                    continue
-                seen_author_by_text.setdefault(normalized, part.agent_id)
-        kept.append(part)
-    return kept
-
-
-def _is_parent_resume_reasoning_part(
-    parts: list[Part],
-    *,
-    responder_agent_id: str,
-) -> bool:
-    """Return whether final reasoning belongs to a parent resume bookkeeping step.
-
-    A parent can resume after a child returns, decide that the child answer is
-    already terminal, and still produce a ChainOfThought ``reasoning`` field
-    explaining that no further delegation is needed. That reasoning is valuable
-    for trace/metadata, but it is not a transcript atom. The transcript already
-    has the child answer plus the structured ``parent.resumed`` handoff.
-    """
-
-    if not responder_agent_id:
-        return False
-    for part in reversed(parts):
-        if part.type != "expert_handoff":
-            continue
-        if part.stage != "parent.resumed":
-            continue
-        if part.agent_id != responder_agent_id:
-            continue
-        resumed_from = ""
-        if isinstance(part.metadata, Mapping):
-            resumed_from = str(part.metadata.get("resumed_from") or "")
-        return bool(resumed_from)
-    return False
 
 
 def _latest_parent_resume_output(parts: list[Part], agent_id: str) -> str:
@@ -525,7 +465,6 @@ def _settle_failed_finalize(
     getattr(app.state, "live_assistant_message_ids", {}).pop(sid, None)
     getattr(app.state, "live_assistant_parts", {}).pop(sid, None)
     getattr(app.state, "live_assistant_part_keys", {}).pop(sid, None)
-    getattr(app.state, "expert_terminal_answers", {}).pop(sid, None)
     # #757: the streamed-field buffer is per-turn; a failed finalize must
     # drop it exactly like the happy-path cleanup or later turns'
     # suppression matchers eat legitimate thinking parts.
@@ -603,8 +542,6 @@ async def _run_turn_in_background(
         _enrich_with_context_files,
         _enrich_with_requested_memory_search,
         _estimate_cost_usd,
-        _expert_handoff_fields,
-        _expert_handoff_summary,
         _extend_session_messages,
         _extract_tools_called,
         _failed_child_delegation_output_summary,
@@ -673,6 +610,7 @@ async def _run_turn_in_background(
     # agent is resolved inside the forward try-block; pre-seeded so the final
     # part-assembly always has a value even when forward errors early.
     invocation_agent_id = ""
+    active_agent_id = ""
     tools_called: list[dict[str, Any]] = []
     expert_handoffs: list[dict[str, Any]] = []
     prompt_resolution: dict[str, Any] = {}
@@ -934,24 +872,19 @@ async def _run_turn_in_background(
 
     def _record_streamed_field_text(agent: str, field: str, chunk: str) -> None:
         # Turn-scoped buffer (#757): stamped with THIS turn's id and cleared at
-        # turn end, so suppression never matches a previous turn's streamed text.
+        # turn end, so the tool observer's thought dedup never matches a
+        # previous turn's streamed text. Retires in PR4 (#767) in favor of
+        # ``transcript.streamed_text``.
         _record_live_streamed_field_text(app, sid, turn_id, agent, field, chunk)
 
-    def _streamed_field_contains(agent: str, field: str, text: str) -> bool:
-        if not agent or not text.strip():
-            return False
-        streamed = _live_streamed_field_text_for_turn(app, sid, turn_id, agent, field)
-        left = " ".join(streamed.split())
-        right = " ".join(text.split())
-        return bool(left and right and (right in left or left in right))
-
     def _settle_turn_transcript() -> None:
-        """Retire the turn's ledger (PR2): freeze without publishing, close.
+        """Retire the turn's ledger: freeze (no-op after finalize), close.
 
-        The legacy finalize region still owns the terminal wire events during
-        the PR2 window, so settling must not emit — ``abandon()`` freezes so
-        late producer ops are rejected + audited instead of silently absorbed
-        into the next turn. Runs on EVERY turn exit path.
+        ``abandon()`` freezes without publishing so late producer ops are
+        rejected + audited instead of silently absorbed into the next turn; on
+        the success path ``transcript.finalize()`` already froze the ledger.
+        Runs on EVERY turn exit path (success, ask_user early return; the #756
+        error envelope settles through ``_settle_failed_finalize``).
         """
 
         transcript.abandon()
@@ -1269,25 +1202,31 @@ async def _run_turn_in_background(
                     "visibility": "hidden",
                 },
             )
-        # #733: remember each TERMINAL expert's answer so the FINALIZE pass can emit
-        # it as an ordered transcript ``text`` part IFF the expert's answer did not
-        # already stream live (WS3). The dedup must happen at finalize (after the
-        # per-expert streamed text parts close), not here — the streamed part is
-        # still open/empty at this point, so an emit-time check would miss it and a
-        # streaming provider would get the answer twice. Skip delegating rounds (the
-        # deliverable is the delegation, not an answer).
+        # #733 (#767 PR3, mechanism 4's replacement): a TERMINAL expert's answer
+        # settles its exactly-once (agent, "answer") channel HERE, at the LM-call
+        # site — when the answer already streamed live the fallback is audited +
+        # ignored by op identity; when it did not stream, ONE batch added+completed
+        # burst lands now, in arrival order. This replaces the
+        # ``expert_terminal_answers`` side-ledger + finalize ``answered_agents``
+        # scan. The TURN-level responder's own terminal answer is deliberately
+        # left to finalize's canonical-answer channel (its fallback text is
+        # grounded against on-disk artifacts there). Delegating rounds settle
+        # nothing (the deliverable is the delegation, not an answer); structured
+        # (JSON) answers stay out of the visible transcript, as before.
         _expert_id = str(getattr(agent_def, "id", "") or "")
         _answer_text = str(getattr(_pred, "answer", "") or "").strip()
         _next_expert = str(getattr(_pred, "next_expert", "") or "").strip()
         _is_terminal = _next_expert not in _runtime_declared_child_ids(
             app, _expert_id, session_id=sid
         )
-        if _answer_text and _is_terminal:
-            _ta = getattr(app.state, "expert_terminal_answers", None)
-            if _ta is None:
-                _ta = {}
-                app.state.expert_terminal_answers = _ta
-            _ta.setdefault(sid, []).append((_expert_id, _answer_text))
+        if (
+            _answer_text
+            and _is_terminal
+            and _expert_id
+            and _expert_id != invocation_agent_id
+            and not _looks_like_structured_answer(_answer_text)
+        ):
+            transcript.field_stream(_expert_id, "answer").finish(fallback_text=_answer_text)
         # WS2: capture a TERMINAL CoT/predict expert's reasoning + answer in its own
         # ARC scope. Delegating rounds are written by the settle loop's
         # _arc_write_orchestrator_route (route per round); ReAct leaves self-write.
@@ -2721,35 +2660,22 @@ async def _run_turn_in_background(
                 recoverable=True,
             )
 
-        live_parts_by_session = getattr(app.state, "live_assistant_parts", {}) or {}
-        live_assistant_parts = list(live_parts_by_session.get(sid, []))
-        # #731: the PERSISTED assistant message is the live spine IN ARRIVAL ORDER —
-        # every part type (routing_decision / expert_handoff / tool_call / tool_result /
-        # text), NOT a text-only subset regrouped by type. This single-sources the live
-        # stream and the reloaded message (Principle 6) and retains the delegate.started
-        # handoffs the old text-only rebuild silently dropped. The dedup sets below scan
-        # ALL live parts so the finalize pass never re-adds a part that already streamed.
-        live_routing_agents = {
-            p.selected_agent
-            for p in live_assistant_parts
-            if p.type == "routing_decision" and p.selected_agent
-        }
-        live_has_expert_handoff = any(p.type == "expert_handoff" for p in live_assistant_parts)
-        # Delegation atoms already streamed live as expert_handoff parts (delegate.started/
-        # completed/parent_resumed). The finalize pass rebuilds the same handoffs from the
-        # expert_handoffs rows for the PERSISTED message; suppress re-publishing those on
-        # the bus when a live equivalent already went out, so the UI sees each delegation
-        # lifecycle transition once (single-source, Principle 6). Keyed by the lifecycle
-        # signature, not the (fresh) part id.
-        live_handoff_sigs = {
-            (p.stage, p.parent_agent, p.child_agent)
-            for p in live_assistant_parts
-            if p.type == "expert_handoff"
-        }
+        # ---- #767 PR3: finalize is a READER of the TurnTranscript ledger. ----
+        # Live parts already streamed at the moment they happened; finalize only
+        # appends ITS OWN parts (route banner, wrap-up thinking, the canonical
+        # answer channel, file diffs) through the same producer API and then
+        # persists the ledger verbatim. No live-parts scans, no rebuild-from-rows,
+        # no text swap, no dedup, no re-publish.
+        #
+        # Capture stream provenance BEFORE any finalize-time append: an atomic
+        # append is the runtime boundary and clears ``current_stream_part_id``
+        # (the legacy closure var was only reset by mid-turn boundaries).
+        current_stream_part_id = transcript.current_stream_part_id
+        live_assistant_parts = transcript.snapshot()
+        has_live_parts = bool(live_assistant_parts or current_stream_part_id)
         live_tool_calls = {
             p.call_id: p for p in live_assistant_parts if p.type == "tool_call" and p.call_id
         }
-        enriched_live_part_ids: set[str] = set()
         for part in live_assistant_parts:
             if part.type != "tool_result" or not part.call_id:
                 continue
@@ -2770,12 +2696,28 @@ async def _run_turn_in_background(
                         text=_tool_result_preview(row.get("result")),
                     )
                 ]
-                enriched_live_part_ids.add(part.id)
                 break
 
-        assistant_parts: list[Part] = []
-        if selected_agent and selected_agent not in live_routing_agents:
-            assistant_parts.append(
+        # The expert that produced this turn's thinking/answer/diff parts: the routed
+        # expert when one was selected, else the active orchestrator.
+        responder_agent_id = selected_agent or invocation_agent_id or "main"
+        # Take the canonical-answer channel FIRST: its exactly-once identity seeds
+        # from the pre-append ledger (the still-open streamed answer part included).
+        # It covers the responder PLUS the stream tap's attribution fallback label
+        # (``_emit_chunk``'s chat-path default) — the same top-level LM call's
+        # answer can stream under either; a delegated child's channel is NOT
+        # covered (its deliverable settled at its LM-call site and must never
+        # suppress the responder's distinct final answer).
+        answer_channel = transcript.turn_answer_stream(
+            responder_agent_id,
+            active_agent_id or invocation_agent_id or "main",
+        )
+        # Mechanism 1 replaced: the once-key IS the identity — the same
+        # ``route:{agent}`` key the live tool observer uses, so the banner lands
+        # exactly once whether it streamed live or lands here.
+        if selected_agent:
+            transcript.append_part_once(
+                f"route:{selected_agent}",
                 Part(
                     id=_new_part_id(),
                     type="routing_decision",
@@ -2795,133 +2737,52 @@ async def _run_turn_in_background(
                     confidence=0.0,
                     heuristic=False,
                     execution_path=execution_path,
-                )
+                ),
+                stream_source="batch",
             )
-        for handoff in [] if live_has_expert_handoff else expert_handoffs:
-            handoff_fields = _expert_handoff_fields(handoff)
-            assistant_parts.append(
-                Part(
-                    id=_new_part_id(),
-                    type="expert_handoff",
-                    # The parent (decider) generates the handoff; structured fields are
-                    # the contract, ``text`` is a short label only.
-                    agent_id=handoff_fields["parent_agent"]
-                    or selected_agent
-                    or invocation_agent_id,
-                    parent_agent=handoff_fields["parent_agent"],
-                    child_agent=handoff_fields["child_agent"],
-                    stage=handoff_fields["stage"],
-                    status=handoff_fields["status"],
-                    metadata=_handoff_part_metadata(handoff),
-                    text=_expert_handoff_summary(handoff),
-                )
-            )
-        # The expert that produced this turn's thinking/answer/diff parts: the routed
-        # expert when one was selected, else the active orchestrator.
-        responder_agent_id = selected_agent or invocation_agent_id or "main"
-        # Reconcile the per-expert live streamed parts (WS3) with the canonical answer.
-        # Earlier experts' parts were already closed live (text persisted + completed).
-        # The still-open part (the last streamer) becomes the canonical answer part when
-        # its author is the responding expert; otherwise it's closed as-is and the
-        # canonical answer lands as its own authored part below.
-        reuse_streamed_part_id: Optional[str] = None
-        open_stream_part = transcript.open_text_part()
-        if open_stream_part is not None:
-            # Reuse the still-open part as the canonical answer ONLY when it was actually
-            # streaming the answer field. If the last field to stream was a DIFFERENT
-            # field (e.g. ``reasoning``/``next_thought``), its buffered text is that
-            # field's content — overwriting it with ``answer_text`` swaps the part's text
-            # out from under the live view (the reasoning->answer "beginning of the turn
-            # breaks" bug: live shows the reasoning, finalize/reload swaps to the answer).
-            # Close it as-is instead (its reasoning is preserved + emitted consistently),
-            # and let the answer land as its own authored part via the fallback below.
-            if (
-                answer_text
-                and open_stream_part.agent_id == responder_agent_id
-                and str(open_stream_part.metadata.get("signature_field_name") or "") == "answer"
-            ):
-                reuse_streamed_part_id = open_stream_part.id
-            else:
-                transcript.close_open_text()
-        assistant_parts.extend(live_assistant_parts)
-        # #733 fallback: a TERMINAL expert whose answer did NOT stream live (a
-        # non-streaming provider / blocking path leaves its WS3 text part empty) gets its
-        # answer emitted as an authored text part now. When WS3 DID stream the answer the
-        # expert already has a non-empty text part (closed by this point), so this adds
-        # nothing — no duplicate. Author = the expert; this is its deliverable.
-        answered_agents = {
-            p.agent_id for p in assistant_parts if p.type == "text" and (p.text or "").strip()
-        }
-        for fb_expert, fb_answer in (getattr(app.state, "expert_terminal_answers", {}) or {}).get(
-            sid, []
-        ):
-            if fb_expert in answered_agents:
-                continue
-            if _looks_like_structured_answer(fb_answer):
-                continue
-            answered_agents.add(fb_expert)
-            assistant_parts.append(
-                Part(
-                    id=_new_part_id(),
-                    type="text",
-                    agent_id=fb_expert,
-                    text=fb_answer,
-                    metadata={"stream_source": "expert_answer"},
-                )
-            )
-        suppressed_thinking_part: dict[str, str] = {}
-        if thinking_text and _streamed_field_contains(
-            responder_agent_id, "reasoning", thinking_text
-        ):
-            suppressed_thinking_part = {
-                "agent_id": responder_agent_id,
-                "reason": "already_streamed_contract_reasoning",
-                "text": thinking_text,
-            }
-        elif thinking_text and _is_parent_resume_reasoning_part(
-            assistant_parts,
-            responder_agent_id=responder_agent_id,
-        ):
-            suppressed_thinking_part = {
-                "agent_id": responder_agent_id,
-                "reason": "parent_resume_bookkeeping",
-                "text": thinking_text,
-            }
-        elif thinking_text:
-            # iowarp/clio-agent#17: surface DSPy reasoning as a thinking Part so the TUI
-            # can collapse + render it (gated on capabilities.thinking_blocks). Appended
-            # AFTER the live spine — the responder's wrap-up reasoning is produced at the
-            # END of the turn and published at finalize, so its persisted ``sequence``
-            # must follow the spine, not be hoisted above it (#731: no reorder on reload).
-            assistant_parts.append(
+        # Mechanism 2 replaced: there is no finalize rebuild-from-rows — delegation
+        # appended its expert_handoff parts once, at emit time; the
+        # ``expert_handoffs`` rows stay message METADATA only (design §4 row 6).
+        #
+        # iowarp/clio-agent#17: surface DSPy reasoning as a thinking Part so the TUI
+        # can collapse + render it. Gated by op identity (has_closed_text replaces
+        # the suppressed_thinking_part substring matching): when the responder's
+        # contract reasoning already streamed live as a text part this turn, the
+        # wrap-up copy is that same channel and must not land twice.
+        if thinking_text and not transcript.has_closed_text(responder_agent_id, "reasoning"):
+            transcript.append_part(
                 Part(
                     id=_new_part_id(),
                     type="thinking",
                     agent_id=responder_agent_id,
                     text=thinking_text,
-                )
+                ),
+                stream_source="batch",
             )
-        # The canonical turn answer is the last terminal expert's deliverable; only append
-        # a main-authored copy when it is NOT already present as an authored text part
-        # (the WS3 stream or the #733 fallback above) — otherwise it duplicates.
-        answer_already_present = bool(answer_text) and any(
-            p.type == "text" and (p.text or "").strip() == answer_text.strip()
-            for p in assistant_parts
-        )
+        # Mechanisms 4+5 replaced: the canonical turn answer settles its exactly-once
+        # channel — when an ``answer``-field part already landed this turn (streamed
+        # live and closed with its own cleaned buffer, or a terminal expert's batch
+        # burst), the fallback is audited + ignored BY OP IDENTITY; otherwise ONE
+        # batch added+completed burst lands now. Never both; never a text swap
+        # (the streamed part's close already carried the cleaned buffer as
+        # final_text — there is nothing to swap). Structured (JSON) answers stay
+        # out of the visible transcript, as before.
+        stream_fallback = _pop_stream_fallback(app, sid)
+        batch_turn_text = current_stream_part_id is None
         if (
-            answer_text
-            and reuse_streamed_part_id is None
-            and not answer_already_present
-            and not _looks_like_structured_answer(answer_text)
+            batch_turn_text
+            and (bool(answer_text) or error_info is not None)
+            and not stream_fallback
         ):
-            assistant_parts.append(
-                Part(
-                    id=_new_part_id(),
-                    type="text",
-                    agent_id=responder_agent_id,
-                    text=answer_text,
-                )
-            )
+            stream_fallback = _stream_fallback_payload("sync_execution_path")
+        answer_channel.finish(
+            fallback_text=(
+                "" if _looks_like_structured_answer(answer_text) else str(answer_text or "")
+            ),
+            fallback_metadata=(
+                {"stream_fallback": stream_fallback} if stream_fallback and batch_turn_text else {}
+            ),
+        )
         for row in proposed_diffs:
             if isinstance(row, dict):
                 getf = row.get
@@ -2955,7 +2816,7 @@ async def _run_turn_in_background(
                 lines_added=lines_added,
                 lines_removed=lines_removed,
             )
-            assistant_parts.append(diff_part)
+            transcript.append_part(diff_part, stream_source="batch")
             _emit_semantic_event(
                 app,
                 sid,
@@ -2991,12 +2852,12 @@ async def _run_turn_in_background(
                 "effective_agent_id": selected_agent or turn_agent_id,
                 "scope": "turn",
             }
-        # ``current_stream_part_id`` keeps the legacy semantic: a text part
-        # opened since the last runtime boundary marks the turn's text as
-        # live-streamed even after it closed (closing never reset the legacy
-        # closure var; only an atomic runtime part did).
-        current_stream_part_id = transcript.current_stream_part_id
-        has_live_parts = bool(live_assistant_parts or current_stream_part_id)
+        # ``current_stream_part_id`` (captured BEFORE the finalize appends above)
+        # keeps the legacy semantic: a text part opened since the last mid-turn
+        # runtime boundary marks the turn's text as live-streamed even after it
+        # closed. Per-part ``stream_source`` is no longer restamped here — every
+        # part carries the provenance its producer appended it with (#767 PR3:
+        # finalize never rewrites the ledger).
         should_report_stream_provenance = (
             bool(answer_text) or error_info is not None or has_live_parts
         )
@@ -3007,21 +2868,8 @@ async def _run_turn_in_background(
             text_stream_source = "live"
         if should_report_stream_provenance and text_stream_source:
             assistant_metadata["stream_source"] = text_stream_source
-        stream_fallback = _pop_stream_fallback(app, sid)
         if text_stream_source == "batch" and (bool(answer_text) or error_info is not None):
-            if not stream_fallback:
-                stream_fallback = _stream_fallback_payload("sync_execution_path")
             assistant_metadata["stream_fallback"] = stream_fallback
-        if text_stream_source and answer_text:
-            for part in assistant_parts:
-                if part.type != "text" or not part.text:
-                    continue
-                part.metadata = {
-                    **part.metadata,
-                    "stream_source": text_stream_source,
-                }
-                if text_stream_source == "batch" and stream_fallback:
-                    part.metadata["stream_fallback"] = stream_fallback
         # A live observer completion can arrive after the immediate post-forward drain
         # but before the assistant message is persisted. Reconcile once more at the
         # final metadata boundary so reloads retain the same tool facts as the live bus.
@@ -3044,8 +2892,6 @@ async def _run_turn_in_background(
             assistant_metadata["agent_runtime"] = agent_runtime
         if prompt_resolution:
             assistant_metadata["prompt_resolution"] = prompt_resolution
-        if suppressed_thinking_part:
-            assistant_metadata["suppressed_thinking_part"] = suppressed_thinking_part
         # Reasoning capture: log the chain-of-thought tokens for EVERY LM call this
         # turn (planner + each expert + chat), extracted from dspy.lm.history. Most
         # stacks discard reasoning_content; we persist (question, reasoning, response)
@@ -3073,37 +2919,18 @@ async def _run_turn_in_background(
                         for r in _reasoning_log
                     ),
                 )
-        # iowarp/clio-agent#6: when a producer already minted the live message
-        # id (stream tap or tool observer — both mint through the transcript
-        # now), reuse it so the deltas + final message line up. Otherwise mint
-        # a fresh id (existing path).
-        asst_id = transcript.message_id or _new_message_id("asst")
-        if reuse_streamed_part_id is not None and answer_text:
-            # Replace the reused (still-open, responder-authored) live part with a stub
-            # carrying its streamed part_id + the canonical answer, so the final message
-            # references the same id the deltas used. Match by id (not "first text part")
-            # so per-expert child text parts streamed earlier are left untouched.
-            for i, p in enumerate(assistant_parts):
-                if p.type == "text" and p.id == reuse_streamed_part_id:
-                    assistant_parts[i] = Part(
-                        id=reuse_streamed_part_id,
-                        type="text",
-                        agent_id=p.agent_id or responder_agent_id,
-                        text=answer_text,
-                        metadata=p.metadata,
-                    )
-                    break
-        # #736: drop the resumed orchestrator's verbatim echo of a terminal child's answer
-        # from the authored (persisted/reloaded) transcript, keeping the child-authored
-        # original. Serving-layer dedup — the live stream still carries main's echo (it
-        # genuinely streamed) and the client dedups it defensively. See helper docstring.
-        assistant_parts = _dedup_cross_agent_text(assistant_parts)
-        # #731: stamp a monotonic 1-based arrival-order key on every persisted part so a
-        # reloaded conversation can be restored to the exact order it streamed even if a
-        # client re-sorts. The list is already in arrival order; ``sequence`` makes the
-        # ordering explicit and survives the slim ``to_wire`` projection.
-        for _seq, _part in enumerate(assistant_parts, start=1):
-            _part.sequence = _seq
+        # iowarp/clio-agent#6: the transcript is the sole minter of the assistant
+        # message id — reuse it when a producer already minted it (stream tap /
+        # tool observer / the finalize appends above); a turn with no parts at
+        # all mints + publishes message.created here, exactly once.
+        asst_id = transcript.ensure_message()
+        # #767 PR3: persist the ledger VERBATIM. finalize() closes any still-open
+        # streamed part (publishing its completed event with the cleaned buffer),
+        # stamps the 1-based arrival-order ``sequence`` (#731: reload order IS
+        # stream order, by construction), freezes the ledger against late
+        # producers, and returns the parts. No text rewriting, no dedup, no
+        # re-publish — live and reload are two projections of this one ledger.
+        assistant_parts = transcript.finalize()
         assistant_msg = Message(
             id=asst_id,
             # Correlate the assistant reply to the user-turn that produced it (#711).
@@ -3270,116 +3097,13 @@ async def _run_turn_in_background(
                 )
             )
 
-        # message.created for the assistant message (empty body — parts
-        # arrive via subsequent message.part.added/delta events).
-        # When real streaming already fired the message.created +
-        # message.part.added + N deltas (#6), skip re-issuing them so we
-        # don't duplicate.
-        if not transcript.message_id:
-            bus.publish(
-                Event(
-                    type="message.created",
-                    session_id=sid,
-                    payload=Message(
-                        id=assistant_msg.id,
-                        turn_id=turn_id,
-                        session_id=sid,
-                        role="assistant",
-                        created_at=assistant_msg.created_at,
-                        updated_at=assistant_msg.updated_at,
-                        parts=[],
-                    ).to_wire(),
-                )
-            )
-        # Stream live text parts via message.part.delta. When a turn only has
-        # post-hoc text, publish the completed text as a normal part instead
-        # of chunking it into synthetic deltas that could be mistaken for live
-        # provider tokens.
-        for part in assistant_parts:
-            if part.metadata.get("stream_source") == "live" and part.type != "text":
-                continue
-            # Per-expert child text parts were already streamed AND completed live
-            # (WS3); skip them here so they are neither re-added nor re-completed.
-            if part.type == "text" and transcript.was_closed_live(part.id):
-                continue
-            # Delegation handoffs already streamed live: keep them in the persisted
-            # message but don't re-publish on the bus (single-source, Principle 6).
-            if (
-                part.type == "expert_handoff"
-                and (part.stage, part.parent_agent, part.child_agent) in live_handoff_sigs
-            ):
-                continue
-            if part.type == "text" and part.text:
-                if part.id == reuse_streamed_part_id:
-                    # Real streaming already pumped deltas — but those
-                    # carry raw LM output that includes ChatAdapter format
-                    # markers ([[ ## answer ## ]] etc). The final ``part.text``
-                    # is the parsed clean answer; ship it on the completed
-                    # event so the TUI can replace the buffered text.
-                    bus.publish(
-                        Event(
-                            type="message.part.completed",
-                            session_id=sid,
-                            payload={
-                                "turn_id": turn_id,
-                                "message_id": assistant_msg.id,
-                                "part_id": part.id,
-                                "stream_source": "live",
-                                "final_text": part.text,
-                            },
-                        )
-                    )
-                    continue
-                delivered = part.model_copy(deep=True)
-                delivered.metadata = {
-                    **delivered.metadata,
-                    "stream_source": "batch",
-                }
-                if stream_fallback:
-                    delivered.metadata["stream_fallback"] = stream_fallback
-                bus.publish(
-                    Event(
-                        type="message.part.added",
-                        session_id=sid,
-                        payload={
-                            "turn_id": turn_id,
-                            "message_id": assistant_msg.id,
-                            "stream_source": "batch",
-                            "part": delivered.to_wire(),
-                        },
-                    )
-                )
-                bus.publish(
-                    Event(
-                        type="message.part.completed",
-                        session_id=sid,
-                        payload={
-                            "turn_id": turn_id,
-                            "message_id": assistant_msg.id,
-                            "part_id": part.id,
-                            "stream_source": "batch",
-                            "stream_fallback": stream_fallback,
-                            "final_text": part.text,
-                        },
-                    )
-                )
-            else:
-                bus.publish(
-                    Event(
-                        type="message.part.added",
-                        session_id=sid,
-                        payload={
-                            "turn_id": turn_id,
-                            "message_id": assistant_msg.id,
-                            "stream_source": str(part.metadata.get("stream_source") or "batch"),
-                            "part": part.to_wire(),
-                        },
-                    )
-                )
-        # Tool lifecycle events are only emitted by the live observer at the
-        # execution boundary. Prediction.tools_called remains summary metadata;
-        # do not reconstruct started/completed events after the turn, because
-        # that makes post-hoc facts look like live tool timing.
+        # #767 PR3: finalize re-publishes NOTHING — every part's message.created /
+        # part.added / part.delta / part.completed already went out at append
+        # time, from the one producer API. Tool lifecycle events are only emitted
+        # by the live observer at the execution boundary. Prediction.tools_called
+        # remains summary metadata; do not reconstruct started/completed events
+        # after the turn, because that makes post-hoc facts look like live tool
+        # timing.
         completed_payload: dict[str, Any] = {
             "turn_id": turn_id,
             "message_id": assistant_msg.id,
@@ -3435,13 +3159,13 @@ async def _run_turn_in_background(
         final_status = "cancelled" if cancelled_turn else ("error" if error_info else "idle")
         retry_status = "cancelled" if cancelled_turn else ("failed" if error_info else "completed")
         _append_session_message(app, sid, assistant_msg)
-        # #767 PR2: settle the ledger on the success path (freeze + close) so
-        # a late producer op is rejected + audited, never absorbed silently.
+        # #767 PR3: the ledger is already frozen by transcript.finalize(); settle
+        # retires it from the registry so a late producer op is rejected +
+        # audited, never absorbed silently.
         _settle_turn_transcript()
         getattr(app.state, "live_assistant_message_ids", {}).pop(sid, None)
         getattr(app.state, "live_assistant_parts", {}).pop(sid, None)
         getattr(app.state, "live_assistant_part_keys", {}).pop(sid, None)
-        getattr(app.state, "expert_terminal_answers", {}).pop(sid, None)
         # #757: the streamed-field buffer is per-turn; leaving it grows without bound
         # and makes later turns' suppression matchers eat legitimate thinking parts.
         _clear_live_streamed_field_text(app, sid)
