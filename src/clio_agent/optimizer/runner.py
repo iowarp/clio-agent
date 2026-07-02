@@ -1,5 +1,12 @@
 """SIMBA optimization runner with statistical significance testing.
 
+Research-pending (#801; tracked in
+https://github.com/iowarp/clio-agent/issues/633): the pipeline below is
+implemented but has no wired entry point — nothing in the current runtime
+invokes it, and it has never been validated against the blueprint-era
+experts. Every user-facing optimizer surface returns the structured
+not-implemented stub from :mod:`clio_agent.optimizer.stub` instead.
+
 Provides SIMBARunner for executing the full optimization pipeline:
 evaluate before score, run SIMBA compilation, evaluate after score,
 test statistical significance, and save the optimized variant.

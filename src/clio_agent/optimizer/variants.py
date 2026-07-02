@@ -1,5 +1,11 @@
 """Variant management for optimized expert modules.
 
+Research-pending (#801; tracked in
+https://github.com/iowarp/clio-agent/issues/633): variant persistence,
+comparison, and rollback work mechanically, but no optimization run produces
+variants today, so the ``/compare`` and ``/rollback`` CLI commands honestly
+report empty state until the #633 research lands.
+
 Provides VariantManager for saving, loading, deploying, rolling back,
 and comparing optimized expert variants. Each variant is stored as a
 JSON file on disk with metadata tracked in ARC memory via VariantRecord.
