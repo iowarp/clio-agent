@@ -1,7 +1,7 @@
 # External Editable Prompt System
 
 Tracking issue: https://github.com/iowarp/clio-agent/issues/326
-Related: [Hierarchical user-defined experts](HIERARCHICAL_EXPERTS.md)
+Related: [Hierarchical user-defined experts](archive/HIERARCHICAL_EXPERTS.md)
 
 ## Purpose
 

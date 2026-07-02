@@ -1,5 +1,9 @@
 # Capabilities matrix — v0.3.1
 
+> **Historical (v0.3.1) — pending refresh, see [#774](https://github.com/iowarp/clio-agent/issues/774).**
+> This matrix was written against v0.3.1 and has not been re-audited against the
+> current release. Treat individual flags as evidence of that audit, not the present.
+
 This matrix records the capability flags advertised by
 `/v1/capabilities` and the contract-level evidence behind each flag.
 It does not claim that every true flag is driven by the real
