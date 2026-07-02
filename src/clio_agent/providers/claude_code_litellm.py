@@ -1171,7 +1171,7 @@ class ClaudeCodeLLM(CustomLLM):
         # A completion (non-stream) choice carries ``.message``; guard defensively
         # since the union also admits StreamingChoices (``.delta``) in the stubs.
         message = getattr(choice, "message", None)
-        chunk: GenericStreamingChunk = {
+        final_chunk: GenericStreamingChunk = {
             "text": getattr(message, "content", "") or "",
             "is_finished": True,
             "finish_reason": choice.finish_reason or "stop",
@@ -1190,9 +1190,9 @@ class ClaudeCodeLLM(CustomLLM):
             clean_model,
             transport,
             (time.monotonic() - started) * 1000.0,
-            len(str(chunk.get("text") or "")),
+            len(str(final_chunk.get("text") or "")),
         )
-        yield chunk
+        yield final_chunk
 
 
 _registered: bool = False

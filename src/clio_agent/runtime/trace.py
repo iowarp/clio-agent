@@ -172,16 +172,20 @@ def route(tag: str, msg: str, *args: Any) -> None:
     _emit(tag, msg, args)
 
 
-def hot(tag: str, msg: str, *args: Any) -> None:
+def hot(tag: str, msg: str, *args: Any) -> bool:
     """Emit a HIGH_FREQ trace (per-call/per-build firehose).
 
     Guard call sites with the :data:`HF_ON` flag for near-zero disabled cost::
 
         trace.HF_ON and trace.hot("LM-CALL", "%s", payload)
+
+    Returns ``True`` so the ``HF_ON and hot(...)`` short-circuit idiom is a
+    well-typed boolean expression (mypy ``func-returns-value``).
     """
     if not HF_ON:
-        return
+        return False
     _emit(tag, msg, args)
+    return True
 
 
 # Resolve the gates at import so instrumentation is correctly gated even if a
