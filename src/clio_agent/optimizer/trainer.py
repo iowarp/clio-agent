@@ -1,5 +1,12 @@
 """Training set generator and metric function for SIMBA optimization.
 
+Research-pending (#801; tracked in
+https://github.com/iowarp/clio-agent/issues/633): the field mapping in
+``_invocation_to_example`` targets the native data/analysis/visualization
+experts that were deleted in the Agent Blueprint migration, so the
+training-example schema needs a redesign as part of the #633 research work —
+not patching. No entry point invokes this module today.
+
 Converts ARC invocation history into dspy.Example training sets
 and provides a multi-signal metric function for evaluating expert outputs.
 

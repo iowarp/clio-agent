@@ -1,5 +1,13 @@
 """Expert call instrumentation for optimization data collection.
 
+Research-pending (#801; tracked in
+https://github.com/iowarp/clio-agent/issues/633): this is the live half of
+the optimizer vertical — per-turn invocation records are written by
+``ClioAgent._store_expert_invocation`` (which reuses ``_extract_output``
+here) and ``MetricsAggregator`` feeds ``/metrics`` today. The
+``instrumented_forward`` decorator itself has no callers in the current
+blueprint runtime.
+
 Provides a decorator to wrap expert forward() calls, logging Invocation
 records to ARC memory with input, output, status, duration, and agent_id.
 Also provides MetricsAggregator for computing per-expert performance metrics.

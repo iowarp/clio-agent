@@ -669,23 +669,20 @@ if __name__ == "__main__":
     if args.command == "doctor":
         sys.exit(run_doctor(json_output=args.json))
 
-    # Tune mode: SIMBA optimization for an expert
+    # Tune mode (#801): the optimizer is a research surface — return the
+    # uniform structured not-implemented stub without half-running LM setup.
     if args.tune:
-        from rich.console import Console as TuneConsole
+        import json as tune_json
 
-        tune_console = TuneConsole()
-        expert_id = args.tune
+        from clio_agent.optimizer.stub import optimizer_not_implemented_payload
 
-        try:
-            setup_dspy(verbose=args.verbose)
-        except Exception as e:
-            tune_console.print(f"[red]Error setting up LM: {e}[/red]")
-            sys.exit(1)
+        tune_payload = {"expert_id": args.tune, **optimizer_not_implemented_payload()}
+        if args.json:
+            print(tune_json.dumps(tune_payload))
+        else:
+            from rich.console import Console as TuneConsole
 
-        del expert_id
-        tune_console.print(
-            "[yellow]/optimize is design-only for Agent Blueprint artifacts in this pass.[/yellow]"
-        )
+            TuneConsole().print(f"[yellow]{tune_payload['message']}[/yellow]")
         sys.exit(2)
 
     # Non-interactive mode
