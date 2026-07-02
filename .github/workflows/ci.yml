@@ -47,3 +47,21 @@ jobs:
       # Coverage flags are explicit here on purpose: pyproject addopts is
       # empty so local pytest runs stay lean (iowarp/clio-agent#773).
       - run: uv run pytest tests/ -m "not integration" --cov=clio_agent --cov-report=term-missing --cov-fail-under=70
+
+  flake-hunt:
+    # Concurrency / shared-state tests (marked ``@pytest.mark.concurrency``) run
+    # under xdist load — ``--dist loadfile`` groups a file's tests onto one worker,
+    # the exact condition #735 reproduced under — repeated x3. A thread-safety
+    # regression (leaked global, cross-thread mutation) that a single serial run
+    # masks surfaces here. Kept separate from ``check`` so its parallel/repeat
+    # flags never touch the coverage-gated main run.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+      - run: uv sync --extra dev --extra optimizers
+      - run: uv run pytest -m concurrency -n 4 --dist loadfile --count 3 -p no:cacheprovider

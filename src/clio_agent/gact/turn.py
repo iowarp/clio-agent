@@ -1117,7 +1117,7 @@ async def _run_turn_in_background(
     async def _run_dynamic_agent_sync(agent_def: "AgentDef", prompt: str) -> Any:
         runner = _blueprint_runner_for_agent(agent_def)
         loop = asyncio.get_running_loop()
-        with _gact_app_context(app), _tool_session_context(sid):
+        with _gact_app_context(app), _tool_session_context(sid, app):
             # The signature is rebuilt inside the executor (via _build_blueprint_dspy_module);
             # its routing Literal[children, "finish"] resolves children from the active
             # blueprint keyed on _ACTIVE_GACT_SESSION_ID. Set it here so the copied context
@@ -2053,7 +2053,7 @@ async def _run_turn_in_background(
                     "native_image_count": len(native_images),
                 },
             )
-            with _cancellation_checker(cancel_requested), _tool_session_context(sid):
+            with _cancellation_checker(cancel_requested), _tool_session_context(sid, app):
                 pred = await _await_turn_work(
                     _try_streamed_forward_compat(
                         app,
@@ -2102,7 +2102,7 @@ async def _run_turn_in_background(
                         "native_image_count": len(native_images),
                     },
                 )
-                with _cancellation_checker(cancel_requested), _tool_session_context(sid):
+                with _cancellation_checker(cancel_requested), _tool_session_context(sid, app):
                     loop = asyncio.get_running_loop()
                     turn_context = contextvars.copy_context()
                     pred = await _await_turn_work(
@@ -2142,7 +2142,7 @@ async def _run_turn_in_background(
             from clio_agent.agent import routing_mode_override as _routing_override  # noqa: PLC0415
 
             with _routing_override(routing_override), _cancellation_checker(cancel_requested):
-                with _tool_session_context(sid):
+                with _tool_session_context(sid, app):
                     llm_actor = {
                         "agent_id": active_agent_id or "orchestrator",
                         "source": "builtin",

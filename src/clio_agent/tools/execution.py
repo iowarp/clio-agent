@@ -49,6 +49,16 @@ ClientFactory = Callable[[Any], MCPClientProtocol]
 # iowarp/clio-agent#7 + #2: process-global hooks. The GACT layer
 # (or any other harness) sets these once and every SyncMCPToolExecutor
 # consults them at call time. None means "no-op".
+#
+# iowarp/clio-agent#735: these bare module globals are rebound per-app by
+# ``set_global_*`` and read from the tool-executor worker thread. Across
+# concurrent apps in one process a turn thread would dereference a SIBLING
+# app's hook (its telemetry landing on the wrong message). The globals are
+# RETAINED as a process-wide FALLBACK for out-of-turn callers, but every
+# read now prefers a per-turn ContextVar override (below) bound in
+# ``_tool_session_context`` from the LIVE app's ``pending_*`` hooks and
+# carried into the executor thread by the turn's ``copy_context()`` snapshot
+# — the same rail the existing ``_ACTIVE_TOOL_WORKSPACE_ROOT`` rides.
 _GLOBAL_PERMISSION_GATE: Optional[Callable[[str, Mapping[str, Any]], str]] = None
 _GLOBAL_TOOL_INTERCEPTOR: Optional[Callable[[str, Mapping[str, Any]], Any | None]] = None
 ToolObserver = Callable[
@@ -62,6 +72,24 @@ _GLOBAL_CANCELLATION_CHECKER: Optional[Callable[[], bool]] = None
 _ACTIVE_TOOL_WORKSPACE_ROOT: contextvars.ContextVar[str] = contextvars.ContextVar(
     "clio_active_tool_workspace_root",
     default="",
+)
+
+# Per-turn overrides for the four hooks above. ``_UNSET_HOOK`` distinguishes
+# "no per-turn binding — use the process-global fallback" from an explicit
+# ``None`` binding ("this turn's app has no such hook"), so a turn never leaks
+# to a sibling app's global.
+_UNSET_HOOK: Any = object()
+_CTX_PERMISSION_GATE: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "clio_tool_permission_gate", default=_UNSET_HOOK
+)
+_CTX_TOOL_OBSERVER: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "clio_tool_observer", default=_UNSET_HOOK
+)
+_CTX_TOOL_INTERCEPTOR: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "clio_tool_interceptor", default=_UNSET_HOOK
+)
+_CTX_CANCELLATION_CHECKER: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "clio_tool_cancellation_checker", default=_UNSET_HOOK
 )
 
 
@@ -80,6 +108,61 @@ def get_active_tool_workspace_root() -> str:
     """Return the active session workspace root, or ``""`` when none is bound."""
 
     return _ACTIVE_TOOL_WORKSPACE_ROOT.get()
+
+
+@contextmanager
+def tool_runtime_hooks_context(
+    *,
+    permission_gate: Any = _UNSET_HOOK,
+    tool_observer: Any = _UNSET_HOOK,
+    tool_interceptor: Any = _UNSET_HOOK,
+    cancellation_checker: Any = _UNSET_HOOK,
+) -> Iterator[None]:
+    """Bind the LIVE app's tool-runtime hooks for the current turn (#735).
+
+    These per-turn bindings take precedence over the process-global fallbacks
+    for the duration of the turn. Entered inside ``_tool_session_context`` —
+    immediately before the turn's ``contextvars.copy_context()`` — so the
+    bindings ride that snapshot into the ``run_in_executor`` thread where
+    ``SyncMCPToolExecutor.call_tool`` reads them, isolating concurrent apps'
+    tool telemetry. An argument left at ``_UNSET_HOOK`` is not bound (the
+    global fallback still applies for that hook).
+    """
+
+    tokens: list[tuple[contextvars.ContextVar[Any], contextvars.Token[Any]]] = []
+    for var, value in (
+        (_CTX_PERMISSION_GATE, permission_gate),
+        (_CTX_TOOL_OBSERVER, tool_observer),
+        (_CTX_TOOL_INTERCEPTOR, tool_interceptor),
+        (_CTX_CANCELLATION_CHECKER, cancellation_checker),
+    ):
+        if value is not _UNSET_HOOK:
+            tokens.append((var, var.set(value)))
+    try:
+        yield
+    finally:
+        for var, token in reversed(tokens):
+            var.reset(token)
+
+
+def _active_permission_gate() -> Optional[Callable[[str, Mapping[str, Any]], str]]:
+    value = _CTX_PERMISSION_GATE.get()
+    return _GLOBAL_PERMISSION_GATE if value is _UNSET_HOOK else value
+
+
+def _active_tool_observer() -> Optional[ToolObserver | LegacyToolObserver]:
+    value = _CTX_TOOL_OBSERVER.get()
+    return _GLOBAL_TOOL_OBSERVER if value is _UNSET_HOOK else value
+
+
+def _active_tool_interceptor() -> Optional[Callable[[str, Mapping[str, Any]], Any | None]]:
+    value = _CTX_TOOL_INTERCEPTOR.get()
+    return _GLOBAL_TOOL_INTERCEPTOR if value is _UNSET_HOOK else value
+
+
+def _active_cancellation_checker() -> Optional[Callable[[], bool]]:
+    value = _CTX_CANCELLATION_CHECKER.get()
+    return _GLOBAL_CANCELLATION_CHECKER if value is _UNSET_HOOK else value
 
 
 def set_global_permission_gate(
@@ -146,9 +229,14 @@ def notify_global_tool_observer(
     error: str | None = None,
     result: Any | None = None,
 ) -> None:
-    """Notify the process-global tool observer, swallowing observer failures."""
+    """Notify the active tool observer (per-turn override, else global fallback).
 
-    notify_tool_observer(_GLOBAL_TOOL_OBSERVER, name, args, phase, error, result)
+    Prefers the current turn's observer so an in-turn caller (a live-observed
+    agent, a native tool shim) reaches THIS app's observer rather than a sibling
+    app's process-global (iowarp/clio-agent#735).
+    """
+
+    notify_tool_observer(_active_tool_observer(), name, args, phase, error, result)
 
 
 def _structured_tool_result_error(result: Any) -> str | None:
@@ -570,9 +658,9 @@ class SyncMCPToolExecutor:
         if self._closed:
             raise RuntimeError("SyncMCPToolExecutor is closed")
 
-        permission_gate = self._permission_gate or _GLOBAL_PERMISSION_GATE
-        tool_observer = self._tool_observer or _GLOBAL_TOOL_OBSERVER
-        cancellation_checker = _GLOBAL_CANCELLATION_CHECKER
+        permission_gate = self._permission_gate or _active_permission_gate()
+        tool_observer = self._tool_observer or _active_tool_observer()
+        cancellation_checker = _active_cancellation_checker()
 
         def raise_if_cancelled(stage: str) -> None:
             if cancellation_checker is not None and cancellation_checker():
@@ -609,7 +697,7 @@ class SyncMCPToolExecutor:
             notify_tool_observer(tool_observer, name, effective_args, "completed", circuit_error)
             raise RepeatedToolFailureError(circuit_error)
 
-        tool_interceptor = _GLOBAL_TOOL_INTERCEPTOR
+        tool_interceptor = _active_tool_interceptor()
         if tool_interceptor is not None:
             intercepted = tool_interceptor(name, dict(effective_args))
             if intercepted is not None:
