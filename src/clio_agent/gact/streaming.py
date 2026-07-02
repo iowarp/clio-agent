@@ -38,6 +38,7 @@ keeps intercepting the turn path unchanged.
 from __future__ import annotations
 
 import inspect
+import logging
 import time
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -50,6 +51,8 @@ from clio_agent.runtime.stream_audit import stream_audit
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+
+_LOG = logging.getLogger(__name__)
 
 
 def _agent_forward_compat(
@@ -216,6 +219,102 @@ def _record_stream_fallback(
 
 def _pop_stream_fallback(app: "FastAPI", sid: str) -> dict[str, Any]:
     return _stream_fallback_reasons(app).pop(sid, {})
+
+
+# --- turn-scoped live streamed-field buffer (#757) ---------------------------
+# ``app.state.live_streamed_field_text`` records the contract-field text that
+# already streamed live so finalize / the tool observer can suppress an exact
+# re-emission (the thinking part, the tool_call.thought). The buffer is scoped
+# to ONE turn: ``{sid: {"turn_id": ..., "agents": {agent: {field: text}}}}``.
+# It is cleared at turn end; a stamped entry from a DIFFERENT turn means that
+# cleanup was missed (crash / early return), so it is dropped with a structured
+# warning rather than silently matched — accumulating across turns both grows
+# without bound and makes later turns' suppression matchers eat legitimate
+# thinking parts that merely repeat an earlier turn's phrasing.
+
+
+def _warn_stale_streamed_field_buffer(sid: str, action: str, stale_turn: str, turn_id: str) -> None:
+    """Structured warning for a live streamed-field buffer left over from a
+    prior turn — end-of-turn cleanup should have removed it (#757)."""
+    _LOG.warning(
+        "live_streamed_field_text: %s stale buffer reason=stale_turn_streamed_field_buffer "
+        "session=%s stale_turn=%s current_turn=%s",
+        action,
+        sid,
+        stale_turn,
+        turn_id,
+    )
+    stream_audit(
+        "live_field_buffer.stale_turn",
+        session_id=sid,
+        action=action,
+        stale_turn_id=stale_turn,
+        turn_id=turn_id,
+        reason="stale_turn_streamed_field_buffer",
+    )
+
+
+def _record_live_streamed_field_text(
+    app: Any,
+    sid: str,
+    turn_id: str,
+    agent: str,
+    field: str,
+    chunk: str,
+) -> None:
+    """Accumulate a streamed contract-field ``chunk`` for the CURRENT turn only."""
+    if not sid or not agent or not chunk:
+        return
+    store = getattr(app.state, "live_streamed_field_text", None)
+    if not isinstance(store, dict):
+        store = {}
+        app.state.live_streamed_field_text = store
+    entry = store.get(sid)
+    if not isinstance(entry, dict) or entry.get("turn_id") != turn_id:
+        if isinstance(entry, dict) and entry.get("agents"):
+            _warn_stale_streamed_field_buffer(
+                sid, "dropped", str(entry.get("turn_id", "")), turn_id
+            )
+        entry = {"turn_id": turn_id, "agents": {}}
+        store[sid] = entry
+    agents = entry.setdefault("agents", {})
+    agent_store = agents.setdefault(agent, {})
+    agent_store[field] = str(agent_store.get(field, "")) + chunk
+
+
+def _live_streamed_field_text_for_turn(
+    app: Any,
+    sid: str,
+    turn_id: str,
+    agent: str,
+    field: str,
+) -> str:
+    """Return the text streamed for ``(agent, field)`` DURING ``turn_id``, or ``""``.
+
+    An entry stamped with a different turn is never matched (per-turn suppression
+    scope, #757); it is reported so the missed cleanup is visible.
+    """
+    if not sid or not agent:
+        return ""
+    store = getattr(app.state, "live_streamed_field_text", None)
+    entry = store.get(sid) if isinstance(store, dict) else None
+    if not isinstance(entry, dict):
+        return ""
+    if entry.get("turn_id") != turn_id:
+        _warn_stale_streamed_field_buffer(sid, "ignored", str(entry.get("turn_id", "")), turn_id)
+        return ""
+    agents = entry.get("agents")
+    agent_store = agents.get(agent, {}) if isinstance(agents, dict) else {}
+    if not isinstance(agent_store, dict):
+        return ""
+    return str(agent_store.get(field, "") or "")
+
+
+def _clear_live_streamed_field_text(app: Any, sid: str) -> None:
+    """Drop the session's streamed-field buffer at turn end (#757)."""
+    store = getattr(app.state, "live_streamed_field_text", None)
+    if isinstance(store, dict):
+        store.pop(sid, None)
 
 
 def _append_stream_listener(

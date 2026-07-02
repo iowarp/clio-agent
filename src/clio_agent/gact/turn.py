@@ -62,6 +62,11 @@ from clio_agent.gact.runtime.globals import (
     _TurnTimedOut,
     _UnsupportedSessionAgent,
 )
+from clio_agent.gact.streaming import (
+    _clear_live_streamed_field_text,
+    _live_streamed_field_text_for_turn,
+    _record_live_streamed_field_text,
+)
 from clio_agent.gact.types import (
     ErrorInfo,
     Message,
@@ -761,21 +766,14 @@ async def _run_turn_in_background(
         return live_parts
 
     def _record_streamed_field_text(agent: str, field: str, chunk: str) -> None:
-        store = getattr(app.state, "live_streamed_field_text", None)
-        if store is None:
-            store = {}
-            app.state.live_streamed_field_text = store
-        session_store = store.setdefault(sid, {})
-        agent_store = session_store.setdefault(agent, {})
-        agent_store[field] = str(agent_store.get(field, "")) + chunk
+        # Turn-scoped buffer (#757): stamped with THIS turn's id and cleared at
+        # turn end, so suppression never matches a previous turn's streamed text.
+        _record_live_streamed_field_text(app, sid, turn_id, agent, field, chunk)
 
     def _streamed_field_contains(agent: str, field: str, text: str) -> bool:
         if not agent or not text.strip():
             return False
-        store = getattr(app.state, "live_streamed_field_text", None) or {}
-        session_store = store.get(sid, {}) if isinstance(store, dict) else {}
-        agent_store = session_store.get(agent, {}) if isinstance(session_store, dict) else {}
-        streamed = str(agent_store.get(field, "") or "") if isinstance(agent_store, dict) else ""
+        streamed = _live_streamed_field_text_for_turn(app, sid, turn_id, agent, field)
         left = " ".join(streamed.split())
         right = " ".join(text.split())
         return bool(left and right and (right in left or left in right))
@@ -3436,6 +3434,9 @@ async def _run_turn_in_background(
     getattr(app.state, "live_assistant_part_keys", {}).pop(sid, None)
     getattr(app.state, "live_stream_text_boundary_hooks", {}).pop(sid, None)
     getattr(app.state, "expert_terminal_answers", {}).pop(sid, None)
+    # #757: the streamed-field buffer is per-turn; leaving it grows without bound
+    # and makes later turns' suppression matchers eat legitimate thinking parts.
+    _clear_live_streamed_field_text(app, sid)
     _update_retry_attempt(
         retry_status,
         metadata_patch={
