@@ -36,6 +36,12 @@ from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.runtime.globals import _jsonish
 from clio_agent.gact.workflow_state.merge import _merge_workflow_state_mapping
+from clio_agent.scientific_suffixes import scientific_suffix_alternation
+
+# Evidence-index suffix vocabulary: the shared scientific vocabulary plus a
+# delegation-local "json" extension (compact summaries must retain config /
+# manifest paths too). Single source of truth — issue #765.
+_EVIDENCE_SUFFIX_PATTERN = scientific_suffix_alternation(extra=("json",))
 
 if TYPE_CHECKING:
     from clio_agent.gact.types import AgentDef
@@ -342,14 +348,14 @@ def _compact_exact_evidence_index(transcript: str) -> str:
 
     quoted = re.findall(r"`([^`]+)`", transcript)
     for item in quoted:
-        if re.search(r"\.(?:h5|hdf5|parquet|csv|bp5|bp4|bp|sac|png|json|tar)\b", item, re.I):
+        if re.search(rf"\.{_EVIDENCE_SUFFIX_PATTERN}\b", item, re.I):
             add_unique(paths, item, limit=40)
         elif re.search(r"[/_]", item) or re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{2,}", item):
             add_unique(identifiers, item, limit=80)
 
     path_pattern = re.compile(
-        r"(?:[A-Za-z]:\\[^\r\n`\"<>|]*?\.(?:h5|hdf5|parquet|csv|bp5|bp4|bp|sac|png|json|tar))"
-        r"|(?:/[^\s`\"<>|]*?\.(?:h5|hdf5|parquet|csv|bp5|bp4|bp|sac|png|json|tar))",
+        rf"(?:[A-Za-z]:\\[^\r\n`\"<>|]*?\.{_EVIDENCE_SUFFIX_PATTERN})"
+        rf"|(?:/[^\s`\"<>|]*?\.{_EVIDENCE_SUFFIX_PATTERN})",
         re.I,
     )
     for match in path_pattern.finditer(transcript):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,16 +43,18 @@ def _default_allowed_roots() -> tuple[Path, ...]:
     long before the agent process settles into its real working dir.
     Result: writes to the agent's actual cwd were rejected as 'outside
     allowed roots'. Defer evaluation so each FileAccessPolicy instance
-    sees the current cwd at the moment it's constructed.
+    sees the current cwd at the moment it's constructed. The temp root is
+    the platform temp dir (a literal ``/tmp`` resolved to ``<drive>:\\tmp``
+    on Windows — issue #765).
     """
-    return (Path.cwd(), Path("/tmp"))
+    return (Path.cwd(), Path(tempfile.gettempdir()))
 
 
 def _active_workspace_root() -> Path | None:
     """The active session's workspace root, when a tool is executing within one.
 
     A session must ALWAYS be able to read/write/shell inside its OWN workspace,
-    even when ``CLIO_ALLOWED_ROOTS`` (default: process cwd + ``/tmp``) does not
+    even when ``CLIO_ALLOWED_ROOTS`` (default: process cwd + temp dir) does not
     name it — otherwise the agent is locked out of the very workspace it was
     launched to work in and is forced to route shell through ``/tmp`` with
     absolute paths. Bound by ``tools.execution.tool_workspace_context`` during

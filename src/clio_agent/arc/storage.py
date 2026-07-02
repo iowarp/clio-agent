@@ -532,16 +532,29 @@ def _kill_daemon_pidfile() -> None:
 
 
 def _stop_runtime_daemon(config_path: str, log_level: str) -> None:
-    """Stop the shared daemon cleanly (``clio_run stop``), with a kill fallback."""
+    """Stop the shared daemon cleanly (``clio_run stop``), with a kill fallback.
+
+    Mirrors the spawn path: the launcher name (``.exe`` on Windows) comes from
+    ``_runtime_launcher_path`` and the shared-library env var (``PATH`` /
+    ``DYLD_LIBRARY_PATH`` / ``LD_LIBRARY_PATH``) from ``_dynamic_library_env_var``,
+    so the clean stop works on every platform the spawn does (issue #765).
+    """
     stopped = False
     try:
         import iowarp_core  # noqa: PLC0415
 
-        exe = os.path.join(iowarp_core.get_bin_dir(), "clio_run")  # type: ignore[attr-defined]
-        if os.path.exists(exe):
+        exe = _runtime_launcher_path(iowarp_core)
+        if exe is None:
+            logger.warning(
+                "clean clio-core daemon stop unavailable "
+                "(reason=launcher_not_found bin_dir=%r); falling back to pidfile kill",
+                iowarp_core.get_bin_dir(),  # type: ignore[attr-defined]
+            )
+        else:
             env = os.environ.copy()
-            env["LD_LIBRARY_PATH"] = (
-                iowarp_core.get_lib_dir() + os.pathsep + env.get("LD_LIBRARY_PATH", "")  # type: ignore[attr-defined]
+            lib_var = _dynamic_library_env_var()
+            env[lib_var] = (
+                iowarp_core.get_lib_dir() + os.pathsep + env.get(lib_var, "")  # type: ignore[attr-defined]
             )
             env.setdefault("CTP_LOG_LEVEL", log_level)
             if config_path:
@@ -556,7 +569,13 @@ def _stop_runtime_daemon(config_path: str, log_level: str) -> None:
                 check=False,
             )
             stopped = True
-    except (subprocess.TimeoutExpired, OSError, ImportError):
+    except (subprocess.TimeoutExpired, OSError, ImportError) as exc:
+        logger.warning(
+            "clean clio-core daemon stop failed (reason=%s: %s); "
+            "falling back to pidfile kill",
+            type(exc).__name__,
+            exc,
+        )
         stopped = False
     # Confirm the port actually freed; fall back to a direct kill if not.
     if not stopped or _runtime_alive(_resolve_runtime_port(config_path)):

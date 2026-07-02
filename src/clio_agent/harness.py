@@ -8,11 +8,13 @@ import time
 import uuid
 from collections.abc import Mapping as MappingABC
 from collections.abc import Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
 from clio_agent.arc.schema import ToolCall
+from clio_agent.scientific_suffixes import scientific_suffix_alternation
 
 RouteTarget = str
 RouteSource = Literal["deterministic", "dspy", "guard", "recovery"]
@@ -21,10 +23,8 @@ ExpertSource = Literal["deterministic", "dspy", "fallback"]
 # Generic path-detection regex: suffixes recognized when extracting candidate
 # file paths from free text. Structural grounding only (is a file referenced),
 # NOT keyword->format inference — no branch depends on which alternative matched.
-SCIENTIFIC_PATH_SUFFIX_PATTERN = (
-    r"(?:hdf5|h5|parquet|csv|bp5|bp4|bp|sac|tar|tgz|gz|"
-    r"fasta|fna|fa|vcf|cif|geojson|png|mzml)"
-)
+# Derived from the shared vocabulary (single source of truth — issue #765).
+SCIENTIFIC_PATH_SUFFIX_PATTERN = scientific_suffix_alternation()
 
 FILE_PATH_RE = re.compile(
     rf"(?P<path>(?:~|/|\.{{1,2}}/)?[^\s'\"`]+?\.{SCIENTIFIC_PATH_SUFFIX_PATTERN})",
@@ -256,7 +256,9 @@ def tool_result_ok(result: Any) -> bool:
     return True
 
 
-def extract_file_paths(question: str, file_context: str, suffixes: set[str]) -> list[Path]:
+def extract_file_paths(
+    question: str, file_context: str, suffixes: AbstractSet[str]
+) -> list[Path]:
     """Extract file paths with one of the requested suffixes.
 
     Paths explicitly provided in the user question are kept even if they do not
