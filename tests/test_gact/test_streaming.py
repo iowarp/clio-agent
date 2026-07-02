@@ -1022,3 +1022,95 @@ def test_streamed_answer_is_cleaned_once_whole_not_per_chunk(
     assert "I identified MTA1 as the nearest ranked station." in body
     assert "Coverage exists in the region." in body
     assert "persisted" not in body
+
+
+def test_streamed_field_buffer_cleared_at_turn_end_and_turn_scoped(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """iowarp/clio-agent#757: ``app.state.live_streamed_field_text`` must be
+    cleared at turn end, and the finalize thinking-part suppression must match
+    only against the CURRENT turn's streamed text.
+
+    Turn 1 streams contract reasoning live; turn 2 streams nothing but its
+    finalize ``reasoning`` repeats turn 1's phrasing. Before the fix the buffer
+    survived turn 1, so turn 2's thinking part was wrongly suppressed as
+    "already streamed" and the dict grew forever.
+    """
+    from .conftest import complete_turn
+
+    repeated = "I will inspect the HDF5 schema before answering the user."
+
+    @dataclass
+    class _ReasoningPred:
+        answer: str = ""
+        selected_expert: str = ""
+        routing_rationale: str = ""
+        reasoning: str = ""
+
+    calls = {"n": 0}
+
+    async def fake_streamed_forward(
+        app: Any,
+        enriched_text: str,
+        sid: str,
+        emit_chunk: Any,
+        session_mode: str = "chat",
+        session_edit_mode: str = "diff",
+    ) -> _ReasoningPred:
+        del app, enriched_text, sid, session_mode, session_edit_mode
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # Turn 1: the reasoning channel streams live -> recorded in the buffer.
+            await emit_chunk(repeated, "main", "reasoning")
+            await emit_chunk("turn one answer", "main", "answer")
+            return _ReasoningPred(answer="turn one answer")
+        # Turn 2: nothing streams; the finalize reasoning repeats turn 1's phrasing.
+        return _ReasoningPred(answer="turn two answer", reasoning=repeated)
+
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent("fallback"))
+    client = TestClient(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+
+    complete_turn(client, sid, "turn one")
+    store = getattr(app.state, "live_streamed_field_text", {}) or {}
+    assert store.get(sid) in (None, {}), (
+        f"live_streamed_field_text must be cleared at turn end, got: {store.get(sid)!r}"
+    )
+
+    assistant2 = complete_turn(client, sid, "turn two")
+    thinking_texts = [p["text"] for p in assistant2["parts"] if p["type"] == "thinking"]
+    assert thinking_texts == [repeated], (
+        "turn 2's thinking part must NOT be suppressed by turn 1's streamed text"
+    )
+    store = getattr(app.state, "live_streamed_field_text", {}) or {}
+    assert store.get(sid) in (None, {})
+
+
+def test_live_streamed_field_buffer_helpers_are_turn_scoped() -> None:
+    """Unit coverage for the #757 turn-scoped buffer helpers: a stale entry from
+    a previous turn is never matched and is dropped (with a structured warning)
+    on the next write; clearing removes the session's entry entirely."""
+    from clio_agent.gact.streaming import (
+        _clear_live_streamed_field_text,
+        _live_streamed_field_text_for_turn,
+        _record_live_streamed_field_text,
+    )
+
+    app = SimpleNamespace(state=SimpleNamespace())
+    sid = "sess_1"
+
+    _record_live_streamed_field_text(app, sid, "turn_1", "main", "reasoning", "alpha ")
+    _record_live_streamed_field_text(app, sid, "turn_1", "main", "reasoning", "beta")
+    assert _live_streamed_field_text_for_turn(app, sid, "turn_1", "main", "reasoning") == (
+        "alpha beta"
+    )
+    # A DIFFERENT turn must never see turn_1's text (per-turn suppression scope).
+    assert _live_streamed_field_text_for_turn(app, sid, "turn_2", "main", "reasoning") == ""
+    # Writing under a new turn drops the stale turn_1 residue instead of appending.
+    _record_live_streamed_field_text(app, sid, "turn_2", "main", "reasoning", "gamma")
+    assert _live_streamed_field_text_for_turn(app, sid, "turn_2", "main", "reasoning") == "gamma"
+    assert _live_streamed_field_text_for_turn(app, sid, "turn_1", "main", "reasoning") == ""
+    # End-of-turn cleanup empties the session's entry.
+    _clear_live_streamed_field_text(app, sid)
+    assert app.state.live_streamed_field_text == {}

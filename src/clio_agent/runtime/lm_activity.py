@@ -83,20 +83,20 @@ def note_lm_answer_delta(text: str, *, field: str = "answer") -> None:
             active_app,
             active_react_scope,
             active_session_id,
+            active_turn_id,
             active_visible_answer_stream,
+        )
+        from clio_agent.gact.streaming import (  # noqa: PLC0415
+            _record_live_streamed_field_text,
         )
 
         agent_id = active_react_scope()
         app = active_app()
         sid = active_session_id()
         if app is not None and sid and agent_id:
-            store = getattr(app.state, "live_streamed_field_text", None)
-            if store is None:
-                store = {}
-                app.state.live_streamed_field_text = store
-            session_store = store.setdefault(sid, {})
-            agent_store = session_store.setdefault(agent_id, {})
-            agent_store[field] = str(agent_store.get(field, "")) + text
+            # Turn-scoped buffer (#757): stamped with the active turn id and
+            # cleared at turn end, so suppression never matches a prior turn.
+            _record_live_streamed_field_text(app, sid, active_turn_id(), agent_id, field, text)
         visible_fields = {"reasoning", "next_thought"}
         if field == "answer" and active_visible_answer_stream():
             visible_fields.add("answer")

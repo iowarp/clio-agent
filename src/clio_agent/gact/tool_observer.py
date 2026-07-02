@@ -47,6 +47,7 @@ from clio_agent.gact.runtime.globals import (
     _new_message_id,
     _resolve_tool_session,
 )
+from clio_agent.gact.streaming import _live_streamed_field_text_for_turn
 from clio_agent.gact.types import Message, Part
 
 if TYPE_CHECKING:
@@ -325,10 +326,11 @@ def _make_tool_observer(app: "FastAPI"):
     def _streamed_field_contains(sid: str, agent_id: str, field: str, text: str) -> bool:
         if not sid or not agent_id or not text.strip():
             return False
-        store = getattr(app.state, "live_streamed_field_text", None) or {}
-        session_store = store.get(sid, {}) if isinstance(store, Mapping) else {}
-        agent_store = session_store.get(agent_id, {}) if isinstance(session_store, Mapping) else {}
-        streamed = str(agent_store.get(field, "") or "") if isinstance(agent_store, Mapping) else ""
+        # Turn-scoped read (#757): only text streamed DURING the active turn can
+        # dedup this thought — a prior turn's phrasing must never suppress it.
+        streamed = _live_streamed_field_text_for_turn(
+            app, sid, _ctx.active_turn_id(), agent_id, field
+        )
         return _streamed_text_matches(streamed, text)
 
     def observe(
