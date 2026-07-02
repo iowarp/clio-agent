@@ -1192,8 +1192,6 @@ from clio_agent.gact.usage import (  # noqa: E402,F401
     _snapshot_lm_history_index,
     _usage_from_dspy_history,
     _usage_from_history_slice,
-    _usage_from_history_slice_legacy,
-    _usage_from_tracker,
 )
 from clio_agent.gact.workspaces import (
     WorkspaceStore,
