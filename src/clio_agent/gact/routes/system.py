@@ -337,8 +337,11 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 permissions=True,  # BBB23 — /v1/permissions + permission.* events
                 subagents=True,  # BBB25 — nanoagent subsessions + subagent.* events
                 session_export=True,  # #16 — /v1/sessions/{sid}/export + import
-                session_summary=True,  # POST /v1/sessions/{sid}/summarize — user-facing TLDR
-                attachments_upload=True,  # POST /v1/sessions/{sid}/attachments — base64 byte upload
+                # #760: no /summarize or /attachments routes exist — advertising
+                # them made the TUI 404 (paired gact-tui issue #224). Flip back
+                # to True only when the routes land.
+                session_summary=False,
+                attachments_upload=False,
                 multimodal_image_parts=True,  # #528 — preserve image parts + provider gate
                 mcp=True,  # #13 — /v1/mcp/servers exposes the gateway namespaces
                 providers=True,  # #15 — /v1/providers catalogs the LM presets

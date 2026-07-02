@@ -95,6 +95,45 @@ def test_capabilities_advertises_v0_2(client: TestClient) -> None:
         assert caps[flag] is True, f"{flag} implemented — must advertise True"
 
 
+def test_capabilities_do_not_advertise_unwired_flags(client: TestClient) -> None:
+    """#760: session_summary/attachments_upload have no routes behind
+    them — advertising them lies to the TUI (gact/types.py contract)."""
+
+    caps = client.get("/v1/capabilities").json()["capabilities"]
+    assert caps["session_summary"] is False, (
+        "no POST /v1/sessions/{sid}/summarize route is registered — must not advertise"
+    )
+    assert caps["attachments_upload"] is False, (
+        "no POST /v1/sessions/{sid}/attachments route is registered — must not advertise"
+    )
+
+
+def test_advertised_capabilities_are_backed_by_registered_routes() -> None:
+    """#760 conformance guard: every advertised flag that maps 1:1 to a
+    route must have that route registered on the app."""
+
+    # Only flags with an unambiguous single-route contract.
+    flag_to_route: dict[str, tuple[str, str]] = {
+        "session_branching": ("POST", "/v1/sessions/{sid}/fork"),
+        "search_messages": ("GET", "/v1/sessions/{sid}/messages/search"),
+        "session_export": ("GET", "/v1/sessions/{sid}/export"),
+        "session_summary": ("POST", "/v1/sessions/{sid}/summarize"),
+        "attachments_upload": ("POST", "/v1/sessions/{sid}/attachments"),
+    }
+    app = build_app()
+    registered = {
+        (method, route.path)
+        for route in app.routes
+        for method in (getattr(route, "methods", None) or ())
+    }
+    caps = TestClient(app).get("/v1/capabilities").json()["capabilities"]
+    for flag, (method, path) in flag_to_route.items():
+        if caps[flag] is True:
+            assert (method, path) in registered, (
+                f"capability {flag}=True advertised but {method} {path} is not registered"
+            )
+
+
 def test_capability_gaps_endpoint_returns_disabled_future_capabilities(
     client: TestClient,
 ) -> None:
