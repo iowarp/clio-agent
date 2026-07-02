@@ -433,9 +433,10 @@ def test_shimmed_producers_emit_identical_stream_as_legacy(tmp_path: Path) -> No
         app.state.turn_transcripts.close(shimmed_sid)
 
 
-def test_no_production_turn_opens_a_transcript_in_pr1(tmp_path: Path) -> None:
-    """PR1 invariant: the registry exists but the turn loop does not open
-    ledgers yet — a full turn leaves the registry empty (pure legacy wire)."""
+def test_turn_loop_settles_the_transcript_registry_after_a_turn(tmp_path: Path) -> None:
+    """PR2: the turn loop opens the ledger at turn start and settles it on
+    every exit path — a completed turn always leaves the registry empty
+    (mid-turn open/settle behavior is covered in test_turn_transcript_pr2)."""
 
     app = _build(tmp_path, "noturn", _PlainAgent("plain answer"))
     with TestClient(app) as client:

@@ -1,4 +1,4 @@
-"""TurnTranscript — the single-writer part ledger for one assistant turn (#767, PR1).
+"""TurnTranscript — the single-writer part ledger for one assistant turn (#767, PR1+PR2).
 
 Implements ``docs/design/turn-transcript.md``: the live SSE stream and the
 persisted assistant message become two projections of ONE append-only ledger.
@@ -8,14 +8,34 @@ open parts, stamps sequence, and returns the ledger verbatim — no rewriting,
 no dedup, no re-publish.
 
 PR1 scope (design §6): this module + the tool-observer/delegation shims in
-:mod:`clio_agent.gact.tool_observer`. Nothing in production opens a turn
-transcript yet — the registry lifecycle belongs to the turn loop, which
-migrates in PR2/PR3 — so the wire behavior of every production turn is
-byte-identical to the legacy path. The full producer API ships now so the
-later PRs only move call sites.
+:mod:`clio_agent.gact.tool_observer`.
 
-Accretion rule: all new transcript logic lives HERE; ``turn.py`` only shrinks
-in later PRs.
+PR2 scope (design §6): the turn loop owns the registry lifecycle — it opens
+the ledger at turn start, the stream tap (``turn.py``'s ``_emit_chunk``, now a
+thin adapter) appends through :meth:`TurnTranscript.append_text_delta`, and
+the loop settles the ledger on EVERY exit path (success, the #756 finalize
+error envelope, and the ask_user early return). During the PR2 window the
+finalize region is still the legacy reader — it re-derives its decisions from
+transcript state queries (:attr:`current_stream_part_id`,
+:meth:`was_closed_live`, :meth:`raw_streamed_text`, :meth:`open_text_part`)
+instead of the deleted ``turn.py`` closure variables — so turn end uses
+:meth:`abandon` (freeze without publishing) rather than :meth:`finalize`;
+PR3 flips finalize into a pure reader of :meth:`finalize`.
+
+THREADING CONTRACT (PR2)
+- The stream tap always enters the ledger ON THE TURN'S EVENT LOOP THREAD:
+  LM taps running in executor threads bridge through
+  ``clio_agent.runtime.lm_activity``'s ``asyncio.run_coroutine_threadsafe``
+  into the turn's async ``_emit_chunk`` adapter — the bridge is explicit,
+  never a direct cross-thread ledger call.
+- The tool observer and the delegation settle paths append from EXECUTOR
+  THREADS (MCPToolBridge worker threads / ``run_in_executor``).
+- One re-entrant lock serializes all of it; events publish while the lock is
+  held, so ledger order == bus order. This requires ``bus.publish`` to be
+  non-blocking (it is: ``queue.put_nowait`` behind ``call_soon_threadsafe``;
+  asserted by test). Lock ordering: transcript -> bus, never the reverse.
+
+Accretion rule: all new transcript logic lives HERE; ``turn.py`` only shrinks.
 """
 
 from __future__ import annotations
@@ -46,14 +66,19 @@ _STREAMED_TEXT_TYPES = {"text", "thinking"}
 
 
 def _transcript_text_field(field_name: str) -> str:
-    """Map DSPy contract fields to public transcript text fields.
-
-    Duplicate of the identical helper in ``turn.py`` (PR1 leaves ``turn.py``
-    untouched by design); PR2 deletes the ``turn.py`` copy when the stream tap
-    migrates here.
-    """
+    """Map DSPy contract fields to public transcript text fields."""
 
     return "answer" if field_name == "answer" else "thought"
+
+
+class TranscriptFrozenError(RuntimeError):
+    """A producer asked a FROZEN, never-minted ledger to mint the message id.
+
+    Minting after :meth:`TurnTranscript.finalize` / :meth:`TurnTranscript.abandon`
+    would attach a fresh assistant identity to a settled turn; returning an
+    empty-string id instead would be a silent fallback. The caller gets a
+    structured error and the op is audited (``transcript.late_op``).
+    """
 
 
 class TranscriptPublisher(Protocol):
@@ -148,6 +173,23 @@ class TurnTranscript:
         # (agent_id, field) -> raw streamed chunks THIS turn (turn-scoped by
         # construction — subsumes app.state.live_streamed_field_text, #757).
         self._streamed: dict[tuple[str, str], list[str]] = {}
+        # Every accepted streamed chunk in arrival order, across agents AND
+        # fields (provider thinking included) — the whole-turn concat the
+        # timeout/StreamingOutputError partials read; byte-identical to the
+        # legacy ``streamed_assistant_buffer`` (design §9 error/cancel partials).
+        self._raw_stream: list[str] = []
+        # Mirrors the legacy ``streamed_assistant_part_id`` closure var: the id
+        # of the last text/thinking part OPENED since the last atomic-part
+        # runtime boundary. Set on open, cleared by :meth:`append_part`, NOT
+        # cleared by close (legacy ``_close_streamed_part`` never reset it) —
+        # finalize's live-vs-batch stream provenance depends on exactly that.
+        self._current_stream_part_id: Optional[str] = None
+        # Ids of streamed text/thinking parts already closed live THIS turn
+        # (empty-after-clean drops included) — replaces the legacy
+        # ``closed_streamed_part_ids`` closure set the finalize publish loop
+        # consults. NOT seeded by :meth:`adopt_carried_state` (the legacy set
+        # was per-invocation, so carried parts were never in it).
+        self._closed_live_part_ids: set[str] = set()
         self._frozen = False
 
     # -- identity ------------------------------------------------------------
@@ -157,6 +199,12 @@ class TurnTranscript:
 
         Whichever producer arrives first triggers the mint; every later call
         returns the same id without re-publishing.
+
+        Raises:
+            TranscriptFrozenError: when the ledger is frozen and no message id
+                was ever minted — minting now would attach a fresh identity to
+                a settled turn, and returning ``""`` would be a silent
+                fallback. The op is audited as ``transcript.late_op`` first.
         """
 
         with self._lock:
@@ -164,7 +212,10 @@ class TurnTranscript:
                 return self.message_id
             if self._frozen:
                 self._audit_late_op("ensure_message")
-                return self.message_id
+                raise TranscriptFrozenError(
+                    "ensure_message on a frozen, never-minted TurnTranscript "
+                    f"(session={self.session_id!r} turn={self.turn_id!r})"
+                )
             self.message_id = _new_message_id("asst")
             now = _iso_from_epoch(time.time())
             self._publisher.publish(
@@ -180,6 +231,54 @@ class TurnTranscript:
                 ).to_wire(),
             )
             return self.message_id
+
+    def adopt_carried_state(
+        self,
+        message_id: str,
+        *,
+        parts: list[Part],
+        once_keys: set[str],
+    ) -> None:
+        """Adopt an ask_user-paused turn's in-flight assistant state (PR2).
+
+        Today an ask_user pause deliberately CARRIES the in-flight assistant
+        message across the question: the resume turn adopts the same message
+        id (no second ``message.created``) and its finalize persists the
+        pre-question live parts into the same assistant message. This method
+        encodes that carry explicitly for a FRESH ledger: set the already-
+        published message id without re-publishing, seed the ledger with the
+        carried parts without re-publishing their ``part.added`` events, and
+        carry the once-key set so carried route banners stay once-per-message.
+
+        This is a deliberate state transfer between two ledgers of the SAME
+        session across a user question — distinct from the leaked-ledger
+        poison class, which :meth:`TurnTranscriptRegistry.open_turn` still
+        evicts loudly.
+
+        Raises:
+            RuntimeError: when called on a non-fresh ledger (already minted,
+                already holding parts, or frozen) — adoption is only defined
+                at turn open.
+        """
+
+        with self._lock:
+            if self._frozen or self.message_id or self._parts or self._once_keys:
+                raise RuntimeError(
+                    "adopt_carried_state requires a fresh TurnTranscript "
+                    f"(session={self.session_id!r} turn={self.turn_id!r})"
+                )
+            self.message_id = str(message_id or "")
+            self._parts.extend(parts)
+            self._once_keys.update(once_keys)
+            logger.info(
+                "turn_transcript adopted carried ask_user state session=%s turn=%s "
+                "message=%s parts=%d once_keys=%d",
+                self.session_id,
+                self.turn_id,
+                self.message_id,
+                len(parts),
+                len(once_keys),
+            )
 
     # -- the ONE producer API --------------------------------------------------
 
@@ -197,6 +296,9 @@ class TurnTranscript:
                 self._audit_late_op("append_part", part_id=part.id, part_type=part.type)
                 return None
             self._close_open_text_locked()
+            # The atomic append IS the runtime boundary (legacy: the
+            # cross-module boundary hook reset ``streamed_assistant_part_id``).
+            self._current_stream_part_id = None
             msg_id = self.ensure_message()
             if not part.id:
                 part.id = _new_part_id()
@@ -284,6 +386,7 @@ class TurnTranscript:
                 self._open_part = part
                 self._open_agent = agent_id
                 self._open_field = field
+                self._current_stream_part_id = part.id
                 self._publisher.publish(
                     "message.part.added",
                     {
@@ -295,6 +398,7 @@ class TurnTranscript:
                 )
             self._buffers[part.id].append(chunk)
             self._streamed.setdefault((agent_id, field), []).append(chunk)
+            self._raw_stream.append(chunk)
             self._publisher.publish(
                 "message.part.delta",
                 {
@@ -397,6 +501,44 @@ class TurnTranscript:
         with self._lock:
             return "".join(self._streamed.get((agent_id, field), []))
 
+    def raw_streamed_text(self) -> str:
+        """Every accepted streamed chunk THIS turn, concatenated in arrival order.
+
+        Whole-turn, across agents and fields, provider thinking included —
+        byte-identical to the legacy ``streamed_assistant_buffer`` join that
+        the timeout / streaming-failure partial-answer paths report. (The
+        per-field :meth:`streamed_text` cannot reproduce this concat, so PR2
+        exposes the aggregate explicitly; disclosed against design §6 PR2.)
+        """
+
+        with self._lock:
+            return "".join(self._raw_stream)
+
+    @property
+    def current_stream_part_id(self) -> Optional[str]:
+        """Id of the last text part opened since the last runtime boundary.
+
+        Legacy-equivalent of the ``streamed_assistant_part_id`` closure var:
+        set when a streamed text/thinking part opens, cleared by an atomic
+        :meth:`append_part` (the runtime boundary), and deliberately NOT
+        cleared by :meth:`close_open_text` — finalize's ``stream_source``
+        live-vs-batch provenance reads exactly that legacy semantic.
+        """
+
+        with self._lock:
+            return self._current_stream_part_id
+
+    def was_closed_live(self, part_id: str) -> bool:
+        """True when ``part_id`` is a streamed part already closed live THIS turn.
+
+        Includes empty-after-clean drops. The finalize publish loop uses this
+        instead of the legacy ``closed_streamed_part_ids`` closure set so live
+        parts are neither re-added nor re-completed.
+        """
+
+        with self._lock:
+            return part_id in self._closed_live_part_ids
+
     def open_text_part(self) -> Optional[Part]:
         """The currently open streamed part, or ``None``."""
 
@@ -455,6 +597,23 @@ class TurnTranscript:
                 self._frozen = True
             return list(self._parts)
 
+    def abandon(self) -> None:
+        """Freeze the ledger WITHOUT closing open text or publishing anything.
+
+        PR2-window settle: the legacy finalize region still owns the terminal
+        wire events (it completes/republishes the open answer part itself), so
+        turn end must retire the ledger without emitting — a transcript-side
+        close here would double-publish ``message.part.completed``. Every turn
+        exit path (success, the #756 finalize error envelope, the ask_user
+        early return) calls this before ``registry.close(sid)`` so late
+        producer ops are rejected + audited instead of silently absorbed.
+        Idempotent. PR3 replaces this with :meth:`finalize` once the loop
+        persists the ledger verbatim.
+        """
+
+        with self._lock:
+            self._frozen = True
+
     # -- internals -------------------------------------------------------------
 
     def _close_open_text_locked(self) -> None:
@@ -465,6 +624,9 @@ class TurnTranscript:
         self._open_agent = ""
         open_field = self._open_field
         self._open_field = ""
+        # Closed live (whether kept or dropped-empty below) — the finalize
+        # publish loop consults this so live parts are never re-published.
+        self._closed_live_part_ids.add(part.id)
         buffered = "".join(self._buffers.pop(part.id, []))
         # Clean the COMPLETE buffer exactly once, at close — never per chunk,
         # never again at finalize (the b1b25d2 invariant, now structural).

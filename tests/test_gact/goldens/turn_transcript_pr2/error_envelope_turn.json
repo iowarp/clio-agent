@@ -1,0 +1,152 @@
+{
+  "events": [
+    {
+      "payload": {
+        "id": "<msg#1>",
+        "metadata": {},
+        "parts": [
+          {
+            "agent_id": "",
+            "id": "<part#3>",
+            "text": "stream then crash",
+            "type": "text"
+          }
+        ],
+        "role": "user",
+        "session_id": "<sess#2>",
+        "stop_reason": "",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.created"
+    },
+    {
+      "payload": {
+        "id": "<msg#4>",
+        "metadata": {},
+        "parts": [],
+        "role": "assistant",
+        "session_id": "<sess#2>",
+        "stop_reason": "",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.created"
+    },
+    {
+      "payload": {
+        "message_id": "<msg#4>",
+        "part": {
+          "agent_id": "main",
+          "id": "<part#5>",
+          "metadata": {
+            "signature_field_name": "answer",
+            "stream_source": "live"
+          },
+          "type": "text"
+        },
+        "stream_source": "live",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.part.added"
+    },
+    {
+      "payload": {
+        "delta": {
+          "text_append": "Partial "
+        },
+        "message_id": "<msg#4>",
+        "part_id": "<part#5>",
+        "signature_field_name": "answer",
+        "stream_source": "live",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.part.delta"
+    },
+    {
+      "payload": {
+        "agent_id": "main",
+        "field": "answer",
+        "part_id": "<part#5>",
+        "text_append": "Partial ",
+        "turn_id": "<msg#1>"
+      },
+      "type": "turn.text.delta"
+    },
+    {
+      "payload": {
+        "delta": {
+          "text_append": "streamed "
+        },
+        "message_id": "<msg#4>",
+        "part_id": "<part#5>",
+        "signature_field_name": "answer",
+        "stream_source": "live",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.part.delta"
+    },
+    {
+      "payload": {
+        "agent_id": "main",
+        "field": "answer",
+        "part_id": "<part#5>",
+        "text_append": "streamed ",
+        "turn_id": "<msg#1>"
+      },
+      "type": "turn.text.delta"
+    },
+    {
+      "payload": {
+        "delta": {
+          "text_append": "answer."
+        },
+        "message_id": "<msg#4>",
+        "part_id": "<part#5>",
+        "signature_field_name": "answer",
+        "stream_source": "live",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.part.delta"
+    },
+    {
+      "payload": {
+        "agent_id": "main",
+        "field": "answer",
+        "part_id": "<part#5>",
+        "text_append": "answer.",
+        "turn_id": "<msg#1>"
+      },
+      "type": "turn.text.delta"
+    },
+    {
+      "payload": {
+        "final_text": "Partial streamed answer.",
+        "message_id": "<msg#4>",
+        "part_id": "<part#5>",
+        "stream_source": "live",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.part.completed"
+    },
+    {
+      "payload": {
+        "error_info": {
+          "details": {
+            "original_error": "RuntimeError",
+            "reason": "turn_finalize_error",
+            "session_id": "<sess#2>",
+            "stage": "finalize",
+            "turn_id": "<msg#1>"
+          },
+          "error": "finalize_error",
+          "message": "turn finalize raised: simulated finalize failure",
+          "recoverable": true
+        },
+        "message_id": "<msg#6>",
+        "stop_reason": "error",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.completed"
+    }
+  ],
+  "persisted_assistant_parts": []
+}

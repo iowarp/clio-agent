@@ -68,6 +68,7 @@ from clio_agent.gact.streaming import (
     _live_streamed_field_text_for_turn,
     _record_live_streamed_field_text,
 )
+from clio_agent.gact.transcript import _transcript_text_field
 from clio_agent.gact.types import (
     ErrorInfo,
     Message,
@@ -378,12 +379,6 @@ def _publish_transcript_event(
     bus.publish(Event(type=event_type, session_id=sid, payload=dict(payload)))
 
 
-def _transcript_text_field(field_name: str) -> str:
-    """Map DSPy contract fields to public transcript text fields."""
-
-    return "answer" if field_name == "answer" else "thought"
-
-
 def _settle_failed_finalize(
     app: "FastAPI",
     sid: str,
@@ -421,6 +416,17 @@ def _settle_failed_finalize(
     )
     if trace.HF_ON:
         trace.hot("TURN-FINALIZE-FAIL", "%s %s: %s", sid, type(exc).__name__, exc)
+
+    # #767 PR2: a failed finalize must still settle the ledger — freeze it
+    # (late producer ops are rejected + audited) and retire it from the
+    # registry so it can never poison the next turn. Runs unconditionally,
+    # before the already-settled early return below.
+    registry = getattr(app.state, "turn_transcripts", None)
+    if registry is not None:
+        transcript = registry.get(sid)
+        if transcript is not None:
+            transcript.abandon()
+        registry.close(sid)
 
     sess = app.state.sessions.get(sid)
     if sess is not None and getattr(sess, "status", "") != "running":
@@ -519,7 +525,6 @@ def _settle_failed_finalize(
     getattr(app.state, "live_assistant_message_ids", {}).pop(sid, None)
     getattr(app.state, "live_assistant_parts", {}).pop(sid, None)
     getattr(app.state, "live_assistant_part_keys", {}).pop(sid, None)
-    getattr(app.state, "live_stream_text_boundary_hooks", {}).pop(sid, None)
     getattr(app.state, "expert_terminal_answers", {}).pop(sid, None)
     # #757: the streamed-field buffer is per-turn; a failed finalize must
     # drop it exactly like the happy-path cleanup or later turns'
@@ -909,28 +914,23 @@ async def _run_turn_in_background(
     # synchronous executor path otherwise. Streaming produces
     # message.part.delta events as chunks arrive — without it the
     # text part lands as one big delta after forward returns.
-    streamed_assistant_part_id: Optional[str] = None
-    streamed_assistant_buffer: list[str] = []
-    streamed_assistant_msg_id: Optional[str] = None
-    # Per-expert live authorship (WS3): the live text stream is split into one part
-    # per generating expert so a child's streamed output is authored to the child,
-    # not frozen to "main". ``streamed_last_agent`` is the author of the currently
-    # open part; ``streamed_part_text`` accumulates each part's own text so it can be
-    # finalized on close; ``closed_streamed_part_ids`` marks parts already completed
-    # live (so the finalize loop neither re-adds nor re-completes them).
-    streamed_last_agent: Optional[str] = None
-    streamed_last_field: str = ""
-    streamed_live_part_ids: set[str] = set()
-    streamed_part_text: dict[str, list[str]] = {}
-    closed_streamed_part_ids: set[str] = set()
-    suppressed_parent_resume_offsets: dict[str, int] = {}
+    #
+    # #767 PR2: the TurnTranscript ledger owns the streamed-part state machine
+    # (lazy message mint, per-(agent, field) part open/close, per-part buffers,
+    # whole-buffer clean at close, the runtime boundary) that used to live here
+    # as ~10 closure vars + _close_streamed_part + the cross-module boundary
+    # hook. The turn loop owns the ledger's LIFECYCLE: opened here, settled on
+    # every exit path (success, the #756 finalize error envelope, the ask_user
+    # early return). ``_emit_chunk`` below is now a thin adapter: semantic
+    # lm.token.delta + the parent-resume suppression gate (PR4 retires it) +
+    # stream_audit, then one transcript call.
+    from clio_agent.gact.tool_observer import (  # noqa: PLC0415
+        _mirror_transcript_state,
+        _open_turn_transcript,
+    )
 
-    def _live_parts_store() -> dict[str, list[Part]]:
-        live_parts = getattr(app.state, "live_assistant_parts", None)
-        if live_parts is None:
-            live_parts = {}
-            app.state.live_assistant_parts = live_parts
-        return live_parts
+    transcript = _open_turn_transcript(app, sid, turn_id)
+    suppressed_parent_resume_offsets: dict[str, int] = {}
 
     def _record_streamed_field_text(agent: str, field: str, chunk: str) -> None:
         # Turn-scoped buffer (#757): stamped with THIS turn's id and cleared at
@@ -945,95 +945,23 @@ async def _run_turn_in_background(
         right = " ".join(text.split())
         return bool(left and right and (right in left or left in right))
 
-    def _close_streamed_part(part_id: str) -> None:
-        """Finalize an open live text part: persist its accumulated text onto the
-        Part and emit ``message.part.completed`` so a client can replace the
-        buffered deltas with the clean text. Idempotent per part."""
-        if part_id in closed_streamed_part_ids:
-            return
-        buffered = "".join(streamed_part_text.get(part_id, []))
-        # Locate the open part so we know its type: only TEXT parts get the
-        # contract-prose clean (provider thinking is shown verbatim), and the
-        # empty-drop path below needs the type too.
-        target_part = next(
-            (
-                part
-                for part in _live_parts_store().get(sid, [])
-                if part.id == part_id and part.type in {"text", "thinking"}
-            ),
-            None,
-        )
-        # B2: clean the COMPLETE buffered answer once, here — never per chunk. On
-        # whole text the block/line regexes match real ```json … workflow_state```
-        # dumps and full contract lines (stripping them), and partial-chunk
-        # truncation can no longer happen. preserve_whitespace keeps the answer's
-        # markdown spacing (lists/code) intact; only contract prose is removed.
-        if target_part is not None and target_part.type == "text" and buffered.strip():
-            buffered = _clean_public_transcript_text(buffered, preserve_whitespace=True)
-        if not buffered.strip():
-            live_parts = _live_parts_store().get(sid, [])
-            _live_parts_store()[sid] = [
-                part
-                for part in live_parts
-                if not (part.id == part_id and part.type in {"text", "thinking"})
-            ]
-            streamed_live_part_ids.discard(part_id)
-            streamed_part_text.pop(part_id, None)
-            closed_streamed_part_ids.add(part_id)
-            trace.HF_ON and trace.hot(
-                "STREAM-SSE",
-                "dropped_empty_streamed_part sid=%s msg=%s part=%s",
-                sid,
-                streamed_assistant_msg_id or "",
-                part_id,
-            )
-            return
-        closed_streamed_part_ids.add(part_id)
-        if target_part is not None:
-            target_part.text = buffered
-        bus.publish(
-            Event(
-                type="message.part.completed",
-                session_id=sid,
-                payload={
-                    "turn_id": turn_id,
-                    "message_id": streamed_assistant_msg_id,
-                    "part_id": part_id,
-                    "stream_source": "live",
-                    "final_text": buffered,
-                },
-            )
-        )
+    def _settle_turn_transcript() -> None:
+        """Retire the turn's ledger (PR2): freeze without publishing, close.
 
-    def _close_streamed_part_at_runtime_boundary() -> None:
-        """Close open streamed text before appending a non-text runtime part.
-
-        A provider may emit the same contract field in multiple chunks across
-        intervening tool calls/results. Persisting that as one mutable text part
-        makes reloads render later text before the intervening tools. Closing the
-        current part at each runtime boundary preserves the append-only order.
+        The legacy finalize region still owns the terminal wire events during
+        the PR2 window, so settling must not emit — ``abandon()`` freezes so
+        late producer ops are rejected + audited instead of silently absorbed
+        into the next turn. Runs on EVERY turn exit path.
         """
-        nonlocal streamed_assistant_part_id, streamed_last_agent, streamed_last_field
-        if streamed_assistant_part_id is None:
-            return
-        _close_streamed_part(streamed_assistant_part_id)
-        streamed_assistant_part_id = None
-        streamed_last_agent = None
-        streamed_last_field = ""
 
-    boundary_hooks = getattr(app.state, "live_stream_text_boundary_hooks", None)
-    if boundary_hooks is None:
-        boundary_hooks = {}
-        app.state.live_stream_text_boundary_hooks = boundary_hooks
-    boundary_hooks[sid] = _close_streamed_part_at_runtime_boundary
+        transcript.abandon()
+        app.state.turn_transcripts.close(sid)
 
     async def _emit_chunk(
         text: str,
         agent_id: Optional[str] = None,
         field_name: str = "answer",
     ) -> None:
-        nonlocal streamed_assistant_part_id, streamed_assistant_msg_id, streamed_last_agent
-        nonlocal streamed_last_field
         # The generating expert (passed by the LM token tap from its react scope);
         # falls back to the turn's selected/invocation agent for the chat path.
         chunk_agent = agent_id or active_agent_id or invocation_agent_id or "main"
@@ -1070,18 +998,7 @@ async def _run_turn_in_background(
                 stream_field,
             )
             return
-        # B2: do NOT run the contract-prose cleaner per streamed chunk. Its block
-        # and full-line regexes (delegation._clean_public_transcript_text) only
-        # match complete ```json … workflow_state``` blocks / whole lines; on a
-        # PARTIAL chunk the multiline ^/$/\n\n anchors hit the chunk boundary and
-        # empty or leading-truncate real answer text (the " station in a…" /
-        # "The acquis…" artifacts). The whole buffered part is cleaned once in
-        # _close_streamed_part instead. Raw chunks flow through here with their
-        # boundary whitespace intact, so concatenation stays "thinking next".
-        resume_output = _latest_parent_resume_output(
-            _live_parts_store().get(sid, []),
-            chunk_agent,
-        )
+        resume_output = _latest_parent_resume_output(transcript.snapshot(), chunk_agent)
         if stream_field == "answer" and resume_output:
             offset = suppressed_parent_resume_offsets.get(chunk_agent, 0)
             after = resume_output[offset + len(text) :]
@@ -1118,158 +1035,38 @@ async def _run_turn_in_background(
                 return
         if not is_provider_thinking:
             _record_streamed_field_text(chunk_agent, stream_field, text)
-        if streamed_assistant_msg_id is None:
-            # Lazily invent the message id the moment the first chunk arrives;
-            # the final assistant message will reuse it.
-            live_ids = getattr(app.state, "live_assistant_message_ids", {}) or {}
-            streamed_assistant_msg_id = str(live_ids.get(sid) or "")
-            created_live_msg = bool(streamed_assistant_msg_id)
-            if not streamed_assistant_msg_id:
-                streamed_assistant_msg_id = _new_message_id("asst")
-                live_ids[sid] = streamed_assistant_msg_id
-                app.state.live_assistant_message_ids = live_ids
-            if not created_live_msg:
-                bus.publish(
-                    Event(
-                        type="message.created",
-                        session_id=sid,
-                        payload=Message(
-                            id=streamed_assistant_msg_id,
-                            turn_id=turn_id,
-                            session_id=sid,
-                            role="assistant",
-                            created_at=_iso_from_epoch(time.time()),
-                            updated_at=_iso_from_epoch(time.time()),
-                            parts=[],
-                        ).to_wire(),
-                    )
-                )
-        # Open a fresh part whenever none is open or the generating expert changed,
-        # closing the prior one so each expert's streamed text is its own authored
-        # part instead of being mashed into a single "main"-frozen part.
-        if (
-            streamed_assistant_part_id is None
-            or chunk_agent != streamed_last_agent
-            or stream_field != streamed_last_field
-        ):
-            if streamed_assistant_part_id is not None:
-                _close_streamed_part(streamed_assistant_part_id)
-            streamed_assistant_part_id = _new_part_id()
-            streamed_last_agent = chunk_agent
-            streamed_last_field = stream_field
-            streamed_live_part_ids.add(streamed_assistant_part_id)
-            streamed_part_text[streamed_assistant_part_id] = []
-            part_type = "thinking" if is_provider_thinking else "text"
-            text_part = Part(
-                id=streamed_assistant_part_id,
-                type=part_type,
-                agent_id=chunk_agent,
-                text="",
-                metadata={
-                    "stream_source": "live",
-                    "signature_field_name": stream_field,
-                    **(
-                        {
-                            "thinking_source": "provider",
-                            "provider_source": stream_field.split(":", 1)[1],
-                            "default_collapsed": True,
-                        }
-                        if is_provider_thinking
-                        else {}
-                    ),
-                },
-            )
-            _live_parts_store().setdefault(sid, []).append(text_part)
-            bus.publish(
-                Event(
-                    type="message.part.added",
-                    session_id=sid,
-                    payload={
-                        "turn_id": turn_id,
-                        "message_id": streamed_assistant_msg_id,
-                        "stream_source": "live",
-                        "part": text_part.to_wire(),
-                    },
-                )
-            )
-        streamed_assistant_buffer.append(text)
-        streamed_part_text[streamed_assistant_part_id].append(text)
-        bus.publish(
-            Event(
-                type="message.part.delta",
-                session_id=sid,
-                payload={
-                    "turn_id": turn_id,
-                    "message_id": streamed_assistant_msg_id,
-                    "part_id": streamed_assistant_part_id,
-                    "stream_source": "live",
-                    "signature_field_name": stream_field,
-                    "delta": {"text_append": text},
-                },
-            )
+        # ONE transcript call: mints the message id on first arrival, opens/
+        # splits parts per (agent, field), cleans the whole buffer once at
+        # close, and publishes message.created/part.added/part.delta plus the
+        # normalized turn.text.delta / turn.trace.delta twin — the state
+        # machine that used to live here.
+        transcript.append_text_delta(chunk_agent, stream_field, text)
+        _mirror_transcript_state(app, sid, transcript)
+        stream_part_id = transcript.current_stream_part_id or ""
+        stream_audit(
+            "sse.normalized_emit",
+            session_id=sid,
+            turn_id=turn_id,
+            agent_id=chunk_agent,
+            part_id=stream_part_id,
+            field=stream_field,
+            **(
+                {}
+                if is_provider_thinking
+                else {"transcript_field": _transcript_text_field(stream_field)}
+            ),
+            normalized_event=("turn.trace.delta" if is_provider_thinking else "turn.text.delta"),
+            chunk_len=len(text),
+            duplicate_suppressed=False,
+            head=text[:120],
+            full_text=text[:12000],
         )
-        if is_provider_thinking:
-            provider_source = stream_field.split(":", 1)[1] if ":" in stream_field else "provider"
-            _publish_transcript_event(
-                bus,
-                sid,
-                "turn.trace.delta",
-                {
-                    "turn_id": turn_id,
-                    "trace_id": f"{turn_id}:{provider_source}",
-                    "trace_kind": "model_aux",
-                    "agent_id": chunk_agent,
-                    "part_id": streamed_assistant_part_id,
-                    "text_append": text,
-                },
-            )
-            stream_audit(
-                "sse.normalized_emit",
-                session_id=sid,
-                turn_id=turn_id,
-                agent_id=chunk_agent,
-                part_id=streamed_assistant_part_id or "",
-                field=stream_field,
-                normalized_event="turn.trace.delta",
-                chunk_len=len(text),
-                duplicate_suppressed=False,
-                head=text[:120],
-                full_text=text[:12000],
-            )
-        else:
-            transcript_field = _transcript_text_field(stream_field)
-            _publish_transcript_event(
-                bus,
-                sid,
-                "turn.text.delta",
-                {
-                    "turn_id": turn_id,
-                    "agent_id": chunk_agent,
-                    "part_id": streamed_assistant_part_id,
-                    "field": transcript_field,
-                    "text_append": text,
-                },
-            )
-            stream_audit(
-                "sse.normalized_emit",
-                session_id=sid,
-                turn_id=turn_id,
-                agent_id=chunk_agent,
-                part_id=streamed_assistant_part_id or "",
-                field=stream_field,
-                transcript_field=transcript_field,
-                normalized_event="turn.text.delta",
-                chunk_len=len(text),
-                duplicate_suppressed=False,
-                head=text[:120],
-                full_text=text[:12000],
-            )
         trace.HF_ON and trace.hot(
             "STREAM-SSE",
             "published_delta sid=%s msg=%s part=%s agent=%s field=%s len=%d head=%r",
             sid,
-            streamed_assistant_msg_id or "",
-            streamed_assistant_part_id or "",
+            transcript.message_id,
+            stream_part_id,
             chunk_agent,
             stream_field,
             len(text),
@@ -2634,6 +2431,14 @@ async def _run_turn_in_background(
                         "stop_reason": "waiting_user",
                     },
                 )
+            # #767 PR2: the ask_user pause exits the turn before the finalize
+            # region — settle the ledger so it can never poison a later turn.
+            # The in-flight assistant identity/parts stay in the legacy dicts
+            # (deliberately NOT popped here, exactly as before) and the resume
+            # turn re-adopts them via _open_turn_transcript's carried-state
+            # adoption, so the resumed turn continues the same assistant
+            # message without a second message.created.
+            _settle_turn_transcript()
             return
         # iowarp/clio-agent#25: data branch reports which execution
         # path it took ("fast" or "expert_loop"). Empty when not
@@ -2791,20 +2596,22 @@ async def _run_turn_in_background(
         tools_called = []
     except _StreamingOutputError as exc:
         original = exc.__cause__ or exc
+        partial_answer = transcript.raw_streamed_text()
         error_info = ErrorInfo(
             error="provider_error",
             message=str(exc),
             details={
                 "original_error": type(original).__name__,
-                "partial_output": bool(streamed_assistant_buffer),
-                "stream_source": ("live" if streamed_assistant_buffer else "batch"),
+                "partial_output": bool(partial_answer),
+                "stream_source": ("live" if partial_answer else "batch"),
             },
             recoverable=True,
         )
-        answer_text = "".join(streamed_assistant_buffer)
+        answer_text = partial_answer
         tools_called = []
     except _TurnTimedOut as exc:
-        partial_output = bool(streamed_assistant_buffer)
+        partial_answer = transcript.raw_streamed_text()
+        partial_output = bool(partial_answer)
         error_info = ErrorInfo(
             error="provider_timeout",
             message=f"agent turn made no progress for {exc.timeout_s:g}s",
@@ -2824,7 +2631,7 @@ async def _run_turn_in_background(
             },
             recoverable=True,
         )
-        answer_text = "".join(streamed_assistant_buffer)
+        answer_text = partial_answer
         tools_called = []
     except _UnsupportedSessionAgent as exc:
         selected_agent = exc.agent_id
@@ -3012,10 +2819,8 @@ async def _run_turn_in_background(
         # its author is the responding expert; otherwise it's closed as-is and the
         # canonical answer lands as its own authored part below.
         reuse_streamed_part_id: Optional[str] = None
-        if (
-            streamed_assistant_part_id is not None
-            and streamed_assistant_part_id not in closed_streamed_part_ids
-        ):
+        open_stream_part = transcript.open_text_part()
+        if open_stream_part is not None:
             # Reuse the still-open part as the canonical answer ONLY when it was actually
             # streaming the answer field. If the last field to stream was a DIFFERENT
             # field (e.g. ``reasoning``/``next_thought``), its buffered text is that
@@ -3026,12 +2831,12 @@ async def _run_turn_in_background(
             # and let the answer land as its own authored part via the fallback below.
             if (
                 answer_text
-                and streamed_last_agent == responder_agent_id
-                and streamed_last_field == "answer"
+                and open_stream_part.agent_id == responder_agent_id
+                and str(open_stream_part.metadata.get("signature_field_name") or "") == "answer"
             ):
-                reuse_streamed_part_id = streamed_assistant_part_id
+                reuse_streamed_part_id = open_stream_part.id
             else:
-                _close_streamed_part(streamed_assistant_part_id)
+                transcript.close_open_text()
         assistant_parts.extend(live_assistant_parts)
         # #733 fallback: a TERMINAL expert whose answer did NOT stream live (a
         # non-streaming provider / blocking path leaves its WS3 text part empty) gets its
@@ -3180,13 +2985,18 @@ async def _run_turn_in_background(
                 "effective_agent_id": selected_agent or turn_agent_id,
                 "scope": "turn",
             }
-        has_live_parts = bool(live_assistant_parts or streamed_assistant_part_id)
+        # ``current_stream_part_id`` keeps the legacy semantic: a text part
+        # opened since the last runtime boundary marks the turn's text as
+        # live-streamed even after it closed (closing never reset the legacy
+        # closure var; only an atomic runtime part did).
+        current_stream_part_id = transcript.current_stream_part_id
+        has_live_parts = bool(live_assistant_parts or current_stream_part_id)
         should_report_stream_provenance = (
             bool(answer_text) or error_info is not None or has_live_parts
         )
         text_stream_source = ""
         if bool(answer_text) or error_info is not None:
-            text_stream_source = "live" if streamed_assistant_part_id is not None else "batch"
+            text_stream_source = "live" if current_stream_part_id is not None else "batch"
         elif has_live_parts:
             text_stream_source = "live"
         if should_report_stream_provenance and text_stream_source:
@@ -3257,12 +3067,11 @@ async def _run_turn_in_background(
                         for r in _reasoning_log
                     ),
                 )
-        # iowarp/clio-agent#6: when streaming actually emitted chunks,
-        # reuse its message_id + part_id so the deltas + final
-        # message line up. Otherwise mint a fresh id (existing path).
-        live_ids = getattr(app.state, "live_assistant_message_ids", {}) or {}
-        live_assistant_msg_id = str(live_ids.get(sid) or "")
-        asst_id = streamed_assistant_msg_id or live_assistant_msg_id or _new_message_id("asst")
+        # iowarp/clio-agent#6: when a producer already minted the live message
+        # id (stream tap or tool observer — both mint through the transcript
+        # now), reuse it so the deltas + final message line up. Otherwise mint
+        # a fresh id (existing path).
+        asst_id = transcript.message_id or _new_message_id("asst")
         if reuse_streamed_part_id is not None and answer_text:
             # Replace the reused (still-open, responder-authored) live part with a stub
             # carrying its streamed part_id + the canonical answer, so the final message
@@ -3460,7 +3269,7 @@ async def _run_turn_in_background(
         # When real streaming already fired the message.created +
         # message.part.added + N deltas (#6), skip re-issuing them so we
         # don't duplicate.
-        if streamed_assistant_msg_id is None and not live_assistant_msg_id:
+        if not transcript.message_id:
             bus.publish(
                 Event(
                     type="message.created",
@@ -3485,7 +3294,7 @@ async def _run_turn_in_background(
                 continue
             # Per-expert child text parts were already streamed AND completed live
             # (WS3); skip them here so they are neither re-added nor re-completed.
-            if part.type == "text" and part.id in closed_streamed_part_ids:
+            if part.type == "text" and transcript.was_closed_live(part.id):
                 continue
             # Delegation handoffs already streamed live: keep them in the persisted
             # message but don't re-publish on the bus (single-source, Principle 6).
@@ -3620,10 +3429,12 @@ async def _run_turn_in_background(
         final_status = "cancelled" if cancelled_turn else ("error" if error_info else "idle")
         retry_status = "cancelled" if cancelled_turn else ("failed" if error_info else "completed")
         _append_session_message(app, sid, assistant_msg)
+        # #767 PR2: settle the ledger on the success path (freeze + close) so
+        # a late producer op is rejected + audited, never absorbed silently.
+        _settle_turn_transcript()
         getattr(app.state, "live_assistant_message_ids", {}).pop(sid, None)
         getattr(app.state, "live_assistant_parts", {}).pop(sid, None)
         getattr(app.state, "live_assistant_part_keys", {}).pop(sid, None)
-        getattr(app.state, "live_stream_text_boundary_hooks", {}).pop(sid, None)
         getattr(app.state, "expert_terminal_answers", {}).pop(sid, None)
         # #757: the streamed-field buffer is per-turn; leaving it grows without bound
         # and makes later turns' suppression matchers eat legitimate thinking parts.

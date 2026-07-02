@@ -68,10 +68,10 @@ _OBSERVER_CALL_T0 = threading.local()
 def _session_turn_transcript(app: "FastAPI", sid: str) -> "Optional[TurnTranscript]":
     """The open TurnTranscript ledger for ``sid``, or ``None`` (#767 PR1).
 
-    When a turn transcript is open, the live-part helpers below shim into it
-    (the ledger owns identity/order/events); when none is open — every
-    production turn until the turn loop migrates in PR2/PR3 — they fall back
-    to the legacy ``app.state`` dict path, byte-for-byte unchanged.
+    Since PR2 every production turn opens a ledger, so during a turn the
+    live-part helpers below shim into it (the ledger owns identity/order/
+    events); with none open — out-of-band tool calls outside any turn — they
+    fall back to the legacy ``app.state`` dict path, byte-for-byte unchanged.
     """
 
     registry = getattr(app.state, "turn_transcripts", None)
@@ -80,18 +80,48 @@ def _session_turn_transcript(app: "FastAPI", sid: str) -> "Optional[TurnTranscri
     return registry.get(sid)
 
 
-def _run_live_stream_boundary_hook(app: "FastAPI", sid: str) -> None:
-    """Close the turn loop's open streamed text part at a runtime boundary.
+def _open_turn_transcript(app: "FastAPI", sid: str, turn_id: str) -> "TurnTranscript":
+    """Open the turn's TurnTranscript ledger (#767 PR2) — turn-loop entrypoint.
 
-    Cross-module callback owned by ``turn.py`` until PR2 moves the stream tap
-    into the transcript; both the legacy and the transcript-shimmed append
-    paths must keep firing it during the migration window."""
+    Opens the registry ledger for ``sid``/``turn_id``, ADOPTS an ask_user-
+    paused turn's carried in-flight assistant state when the legacy dicts hold
+    one (message id + live parts + once-keys survive the pause today — the
+    resume turn continues the SAME assistant message, no second
+    ``message.created``), then aliases the new ledger into the legacy
+    ``app.state`` dicts so untouched finalize reads and the live projection
+    keep working during the PR2/PR3 window.
+    """
 
-    boundary_hooks = getattr(app.state, "live_stream_text_boundary_hooks", None)
-    if isinstance(boundary_hooks, dict):
-        hook = boundary_hooks.get(sid)
-        if callable(hook):
-            hook()
+    from clio_agent.gact.delegation import _clean_public_transcript_text  # noqa: PLC0415
+    from clio_agent.gact.transcript import EventBusTranscriptPublisher  # noqa: PLC0415
+
+    carried_msg_id = str(
+        (getattr(app.state, "live_assistant_message_ids", {}) or {}).get(sid) or ""
+    )
+    carried_parts = list((getattr(app.state, "live_assistant_parts", {}) or {}).get(sid, []))
+    carried_keys = set((getattr(app.state, "live_assistant_part_keys", {}) or {}).get(sid, set()))
+    transcript = app.state.turn_transcripts.open_turn(
+        sid,
+        turn_id,
+        EventBusTranscriptPublisher(app.state.bus, sid),
+        lambda text: _clean_public_transcript_text(text, preserve_whitespace=True),
+    )
+    if carried_msg_id or carried_parts or carried_keys:
+        transcript.adopt_carried_state(
+            carried_msg_id,
+            parts=carried_parts,
+            once_keys=carried_keys,
+        )
+    # Bind the aliases directly: the carried parts now live in the NEW ledger
+    # list, so the plain mirror's "legacy parts present" conflict warning must
+    # not fire for the deliberate ask_user carry.
+    live_parts = getattr(app.state, "live_assistant_parts", None)
+    if live_parts is None:
+        live_parts = {}
+        app.state.live_assistant_parts = live_parts
+    live_parts[sid] = transcript.live_parts_alias()
+    _mirror_transcript_state(app, sid, transcript)
+    return transcript
 
 
 def _mirror_transcript_state(app: "FastAPI", sid: str, transcript: "TurnTranscript") -> None:
@@ -220,8 +250,6 @@ def _ensure_live_assistant_message(app: "FastAPI", sid: str) -> str:
 def _append_live_assistant_part(app: "FastAPI", sid: str, part: Part) -> None:
     """Publish and remember a real runtime part for the active assistant turn."""
 
-    _run_live_stream_boundary_hook(app, sid)
-
     transcript = _session_turn_transcript(app, sid)
     if transcript is not None:
         # #767 PR1: append through the single-writer ledger — it closes its own
@@ -267,12 +295,11 @@ def _append_live_assistant_part_once(
 
     transcript = _session_turn_transcript(app, sid)
     if transcript is not None:
-        # #767 PR1: the idempotency key is turn-scoped ledger state. The
-        # legacy path only fires the stream boundary hook when the key is
-        # fresh (a duplicate banner never closes streamed text) — preserved.
+        # #767 PR1: the idempotency key is turn-scoped ledger state. A
+        # duplicate key never closes streamed text — the boundary close runs
+        # inside append_part only when the key is fresh.
         if transcript.has_part_key(key):
             return False
-        _run_live_stream_boundary_hook(app, sid)
         appended = transcript.append_part_once(key, part)
         _mirror_transcript_state(app, sid, transcript)
         return appended is not None
