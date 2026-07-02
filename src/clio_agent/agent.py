@@ -24,7 +24,6 @@ import contextvars
 import json
 import os
 import re
-import tempfile
 import time
 import uuid
 from collections.abc import Mapping, Sequence
@@ -35,7 +34,6 @@ from typing import Any, Callable, Dict, Iterator, List, Literal
 import dspy
 
 from clio_agent import conf
-from clio_agent.arc.lsm import LSMTree
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.retrieval import ContextRetriever
 from clio_agent.arc.schema import (
@@ -93,9 +91,7 @@ from clio_agent.tools.catalog import (
 from clio_agent.tools.execution import (
     create_sync_tool_executor,
     get_active_tool_workspace_root,
-    notify_global_tool_observer,
 )
-from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError, validate_write_path
 from clio_agent.tools.gateway import build_gateway, build_tool_catalog
 from clio_agent.tools.mcp_config import load_mcp_servers
 
@@ -166,7 +162,6 @@ class ClioAgent(dspy.Module):
         arc: ARC Memory instance
         context_retriever: Context retrieval module
         registry: Agent registry for discovery
-        lsm: LSM Tree for metrics storage
 
     Example:
         >>> agent = ClioAgent()
@@ -214,9 +209,6 @@ class ClioAgent(dspy.Module):
         )
         self.context_retriever = ContextRetriever(self.arc)
 
-        # Initialize LSM Tree for metrics
-        self.lsm = LSMTree(data_dir=f"{data_dir}/arc/lsm")
-
         # Initialize Agent Registry (for discovery, not routing)
         self.registry = AgentRegistry()
 
@@ -254,7 +246,6 @@ class ClioAgent(dspy.Module):
         self.action_planner = dspy.Predict(AgentActionSignature)
         self.answer_synthesizer = dspy.Predict(AgentAnswerSignature)
         self.router = self.action_planner
-        self._active_trace: RunTrace | None = None
 
         # Chat Agent: Predict for conversational responses. This keeps the
         # structured output surface smaller than ChainOfThought, which is more
@@ -303,7 +294,6 @@ class ClioAgent(dspy.Module):
         if self.verbose:
             print(f"[ClioAgent] Registered {self.registry.get_agent_count()} runtime agents")
             print(f"[ClioAgent] ARC Memory initialized at {data_dir}/arc")
-            print(f"[ClioAgent] LSM Tree initialized at {data_dir}/arc/lsm")
 
     def _discover_pack_servers(self) -> dict[str, dict[str, Any]]:
         """Return declared ``mcp_servers`` per discovered blueprint id.
@@ -428,7 +418,7 @@ class ClioAgent(dspy.Module):
 
         Returns:
             dspy.Prediction with answer, selected_expert, session_id,
-            duration_ms, arc_stats, lsm_stats
+            duration_ms, arc_stats
         """
         if cancel_requested is not None:
             with cancellation_checker(cancel_requested):
@@ -455,7 +445,6 @@ class ClioAgent(dspy.Module):
             confidence=0.0,
         )
         trace = RunTrace(route=route)
-        self._active_trace = trace
 
         if self.verbose:
             print(f"[Planner] {question[:50]}...")
@@ -544,7 +533,6 @@ class ClioAgent(dspy.Module):
             trace,
             nanoagents_spawned=nanoagents_spawned,
         )
-        self._active_trace = None
 
         return dspy.Prediction(
             answer=answer,
@@ -560,7 +548,6 @@ class ClioAgent(dspy.Module):
             session_id=session_id,
             duration_ms=duration_ms,
             arc_stats=self.arc.get_cache_stats(),
-            lsm_stats=self.lsm.get_stats(),
             nanoagents_spawned=nanoagents_spawned,
             error_info=error_info,
         )
@@ -1070,7 +1057,6 @@ class ClioAgent(dspy.Module):
             file_context=file_context,
             session_context=session_context,
         )
-        visualization_tools = self._visualization_tool_map()
         known_tools = self._known_tool_names()
 
         if not tool_name or tool_name not in known_tools:
@@ -1085,22 +1071,6 @@ class ClioAgent(dspy.Module):
             }
 
         owner = self._selected_expert_for_tool(tool_name)
-        if tool_name in visualization_tools:
-            result = self._execute_visualization_tool(
-                tool_name,
-                visualization_tools[tool_name],
-                args,
-            )
-            self._record_direct_tool_handoff(
-                trace,
-                expert_id=owner,
-                tool_name=tool_name,
-                args=args,
-                result=result,
-                duration_ms=self._last_tool_duration_ms(trace, tool_name),
-            )
-            return result
-
         start = time.time()
         try:
             raw_result = self._active_tool_executor().call_tool(tool_name, args)
@@ -1126,14 +1096,6 @@ class ClioAgent(dspy.Module):
             duration_ms=duration_ms,
         )
         return result
-
-    @staticmethod
-    def _last_tool_duration_ms(trace: RunTrace, tool_name: str) -> float:
-        """Return the latest recorded duration for a tool in an active trace."""
-        for observation in reversed(trace.tools):
-            if observation.tool == tool_name:
-                return observation.duration_ms
-        return 0.0
 
     def _record_direct_tool_handoff(
         self,
@@ -1271,57 +1233,6 @@ class ClioAgent(dspy.Module):
                 }
             )
         return rows
-
-    def _execute_visualization_tool(self, tool_name: str, tool: Any, args: dict[str, Any]) -> Any:
-        """Execute one local visualization tool with policy-aware artifact defaults."""
-        args = dict(args)
-        self._raise_if_cancelled("visualization_tool_before")
-        filepath = self._coerce_text(args.get("filepath")).strip()
-        if filepath and not self._coerce_text(args.get("output_path")).strip():
-            prepared = self._prepare_visualization_output_path(tool_name, filepath)
-            if isinstance(prepared, dict) and "error" in prepared:
-                start = time.time()
-                notify_global_tool_observer(tool_name, args, "started", None)
-                notify_global_tool_observer(tool_name, args, "completed", repr(prepared["error"]))
-                self._record_tool_call(tool_name, args, prepared, (time.time() - start) * 1000)
-                return prepared
-            args["output_path"] = str(prepared)
-
-        start = time.time()
-        notify_global_tool_observer(tool_name, args, "started", None)
-        try:
-            result = normalize_tool_result(
-                self._call_tool_function(tool, **args),
-                tool=tool_name,
-            )
-            self._raise_if_cancelled("visualization_tool_after")
-        except CancellationError as exc:
-            notify_global_tool_observer(tool_name, args, "completed", repr(exc))
-            raise
-        except Exception as exc:
-            result = {"error": normalize_tool_error(exc, tool=tool_name, code="tool_exception")}
-            notify_global_tool_observer(tool_name, args, "completed", repr(exc))
-        else:
-            notify_global_tool_observer(tool_name, args, "completed", None, result)
-        duration_ms = (time.time() - start) * 1000
-        self._record_tool_call(tool_name, args, result, duration_ms)
-        return result
-
-    def _prepare_visualization_output_path(
-        self, tool_name: str, filepath: str
-    ) -> Path | dict[str, Any]:
-        """Return a safe default chart output path or a normalized policy error."""
-        source_path = Path(filepath).expanduser()
-        artifact_root = self._default_artifact_root(source_path)
-        output_dir = artifact_root / "charts"
-        default_name = f"{tool_name.removeprefix('plot_')}_{source_path.stem}.png"
-        output_path = output_dir / default_name
-        try:
-            validate_write_path(str(artifact_root.parent / f".{artifact_root.name}.probe"))
-            output_dir.mkdir(parents=True, exist_ok=True)
-            return validate_write_path(str(output_path))
-        except FilePolicyError as exc:
-            return {"error": normalize_tool_error(exc.to_result()["error"], tool=tool_name)}
 
     def _synthesize_agent_answer(
         self,
@@ -1546,9 +1457,7 @@ class ClioAgent(dspy.Module):
 
     def _effective_routing_mode(self) -> str:
         """Return the active GACT routing override, if one is set."""
-        mode = str(_ROUTING_MODE_OVERRIDE.get() or "").strip().lower()
-        if not mode:
-            mode = str(getattr(self, "_routing_mode_override", "auto") or "auto").strip().lower()
+        mode = str(_ROUTING_MODE_OVERRIDE.get() or "").strip().lower() or "auto"
         if mode in {"auto", "chat", "experts", "reasoning_only"}:
             return mode
         return "auto"
@@ -1711,30 +1620,16 @@ class ClioAgent(dspy.Module):
         return "; ".join(notes)
 
     def _available_dspy_tools(self) -> list[dspy.Tool]:
-        """Return gateway and local visualization tools visible to the planner."""
+        """Return gateway tools visible to the planner."""
         return [
             tool
-            for tool in [
-                *self._active_tool_executor().to_dspy_tools(),
-                *self._visualization_tool_map().values(),
-            ]
+            for tool in self._active_tool_executor().to_dspy_tools()
             if tool.name not in PLANNER_HIDDEN_TOOL_NAMES
         ]
 
     def _known_tool_names(self) -> set[str]:
         """Return every tool name currently visible to the planner."""
-        return set(self._active_tool_executor().get_tool_names()) | set(
-            self._visualization_tool_map()
-        )
-
-    def _visualization_tool_map(self) -> dict[str, dspy.Tool]:
-        """Return local visualization tools keyed by their stable names.
-
-        Visualization is no longer exposed as a native Python expert. Chart
-        tools may still arrive through the generic tool executor or through a
-        registry-loaded blueprint pack.
-        """
-        return {}
+        return set(self._active_tool_executor().get_tool_names())
 
     def _selected_expert_for_tool(self, tool_name: str) -> str:
         """Resolve a tool's owning expert from the registered capability table."""
@@ -2335,83 +2230,6 @@ class ClioAgent(dspy.Module):
         )
 
     @staticmethod
-    def _default_artifact_root(filepath: Path) -> Path:
-        """Return an artifact root that respects configured file policy roots."""
-        configured = os.environ.get("CLIO_ARTIFACT_DIR", "").strip()
-        if configured:
-            return Path(configured).expanduser()
-
-        if not os.environ.get("CLIO_ALLOWED_ROOTS", "").strip():
-            return Path(tempfile.gettempdir()) / "clio-agent-artifacts"
-
-        policy = FileAccessPolicy.from_env()
-        resolved_file = filepath.expanduser().resolve(strict=False)
-        for root in policy.allowed_roots:
-            try:
-                resolved_file.relative_to(root)
-                return root / ".clio-agent-artifacts"
-            except ValueError:
-                continue
-        return policy.allowed_roots[0] / ".clio-agent-artifacts"
-
-    @staticmethod
-    def _call_tool_function(tool: Any, *args: Any, **kwargs: Any) -> Any:
-        """Call either a FastMCP FunctionTool or a plain Python helper."""
-        fn = getattr(tool, "fn", None) or getattr(tool, "func", None) or tool
-        return fn(*args, **kwargs)
-
-    def _run_local_tool(self, name: str, tool: Any, *args: Any, **kwargs: Any) -> Any:
-        """Run a local tool and record its result in the active harness trace."""
-        params = self._bind_tool_params(tool, args, kwargs)
-        self._raise_if_cancelled("local_tool_before")
-        start = time.time()
-        notify_global_tool_observer(name, params, "started", None)
-        try:
-            result = self._call_tool_function(tool, *args, **kwargs)
-            self._raise_if_cancelled("local_tool_after")
-        except Exception as exc:
-            notify_global_tool_observer(name, params, "completed", repr(exc))
-            raise
-        notify_global_tool_observer(name, params, "completed", None, result)
-        duration_ms = (time.time() - start) * 1000
-        self._record_tool_call(name, params, result, duration_ms)
-        return result
-
-    def _record_tool_call(
-        self,
-        name: str,
-        params: dict[str, Any],
-        result: Any,
-        duration_ms: float,
-    ) -> None:
-        """Record a tool call if a run trace is active."""
-        if self._active_trace is None:
-            return
-        self._active_trace.record_tool(
-            tool=name,
-            params=params,
-            result=result,
-            duration_ms=duration_ms,
-            ok=tool_result_ok(result),
-        )
-
-    @staticmethod
-    def _bind_tool_params(
-        tool: Any, args: tuple[Any, ...], kwargs: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Best-effort conversion of positional tool args into named params."""
-        import inspect
-
-        fn = getattr(tool, "fn", None) or getattr(tool, "func", None) or tool
-        try:
-            bound = inspect.signature(fn).bind_partial(*args, **kwargs)
-            return dict(bound.arguments)
-        except Exception:
-            params: dict[str, Any] = {"args": list(args)}
-            params.update(kwargs)
-            return params
-
-    @staticmethod
     def _coerce_text(value: Any) -> str:
         """Convert model/tool outputs to stable text without noisy serializers."""
         if value is None:
@@ -2606,7 +2424,7 @@ class ClioAgent(dspy.Module):
         trace: RunTrace | None = None,
         nanoagents_spawned: list[dict[str, Any]] | None = None,
     ) -> None:
-        """Store invocation metrics in LSM Tree and ARC Memory.
+        """Store invocation metrics in ARC Memory.
 
         Args:
             question: User's question
@@ -2616,20 +2434,6 @@ class ClioAgent(dspy.Module):
             success: Whether the query succeeded
             error_msg: Error message if failed
         """
-        # Write to LSM Tree
-        self.lsm.write(
-            timestamp=time.time(),
-            metric={
-                "session_id": session_id,
-                "query": question,
-                "selected_expert": selected_expert,
-                "duration_ms": duration_ms,
-                "success": success,
-                "error": error_msg,
-            },
-        )
-
-        # Store invocation in ARC Memory
         invocation_id = trace.trace_id if trace else str(uuid.uuid4())
         invocation = Invocation(
             trace_id=invocation_id,
@@ -2824,10 +2628,6 @@ class ClioAgent(dspy.Module):
         """Get ARC memory statistics."""
         return self.arc.get_cache_stats()
 
-    def get_lsm_stats(self) -> Dict[str, Any]:
-        """Get LSM Tree statistics."""
-        return self.lsm.get_stats()
-
     def get_session_history(self, session_id: str, limit: int = 10) -> List[Conversation]:
         """Get conversation history for session from ARC Memory."""
         return self.arc.get_conversation_history(session_id, limit=limit)
@@ -2836,22 +2636,4 @@ class ClioAgent(dspy.Module):
         """Clean shutdown of ClioAgent resources."""
         if self.verbose:
             print("[ClioAgent] Shutting down...")
-
-        self.lsm.close()
-
-        if self.verbose:
-            print("[ClioAgent] LSM Tree closed")
             print("[ClioAgent] Shutdown complete")
-
-
-def load_optimized_clio_agent(path: str, verbose: bool = False) -> ClioAgent:
-    """Load an optimized ClioAgent agent from disk.
-
-    Args:
-        path: Path to saved ClioAgent JSON
-        verbose: If True, print loading info
-
-    Returns:
-        Optimized ClioAgent instance
-    """
-    raise NotImplementedError("Optimization loading not yet implemented")

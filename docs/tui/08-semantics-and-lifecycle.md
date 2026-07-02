@@ -36,7 +36,6 @@ agent.registry                        # core runtime registry
 # GACT loads Agent Blueprint experts from the registry/marketplace store
 # and compiles them by module.kind at session runtime.
 agent.arc                             # ARCMemory
-agent.lsm                             # LSM tree for metrics
 ```
 
 ### Single turn (happy path)
@@ -53,7 +52,6 @@ Returns `dspy.Prediction` with:
 - `session_id: str`
 - `duration_ms: float`
 - `arc_stats: dict` (cache hits/misses)
-- `lsm_stats: dict`
 - `error_info: dict | None`
 
 `agent.arc.get_conversation(session_id).messages` has `len == 2 * turn_count` (user + assistant).

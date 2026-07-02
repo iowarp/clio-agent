@@ -52,13 +52,6 @@ class TestClioAgent:
         assert agent.arc is not None
         agent.shutdown()
 
-    def test_has_lsm_tree(self):
-        """Test ClioAgent has LSM tree."""
-        agent = ClioAgent()
-        assert hasattr(agent, "lsm")
-        assert agent.lsm is not None
-        agent.shutdown()
-
     def test_has_registry(self):
         """Test ClioAgent has agent registry."""
         agent = ClioAgent()
@@ -91,13 +84,6 @@ class TestClioAgent:
         assert "hit_rate" in stats
         assert "size" in stats
         assert "capacity" in stats
-        agent.shutdown()
-
-    def test_lsm_stats(self):
-        """Test LSM stats are retrievable."""
-        agent = ClioAgent()
-        stats = agent.get_lsm_stats()
-        assert "write_count" in stats
         agent.shutdown()
 
     def test_shutdown(self):

@@ -39,7 +39,7 @@ USER INPUT (question, session_id)
   |
   `-- RETURN dspy.Prediction(
         answer, selected_expert, route_source, route_reason,
-        duration_ms, arc_stats, lsm_stats, error_info
+        duration_ms, arc_stats, error_info
       )
 ```
 
