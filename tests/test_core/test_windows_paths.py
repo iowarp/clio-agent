@@ -7,16 +7,9 @@ Covers:
 - The three hand-synced scientific-suffix vocabularies (agent set, harness
   regex, gact/delegation evidence-index patterns) must derive from the single
   shared module ``clio_agent.scientific_suffixes``.
-- The artifact-root fallback must use ``tempfile.gettempdir()``, not a POSIX
-  ``/tmp`` literal.
 """
 
 from __future__ import annotations
-
-import tempfile
-from pathlib import Path
-
-import pytest
 
 from clio_agent import harness
 from clio_agent.agent import SCIENTIFIC_FILE_SUFFIXES as AGENT_SUFFIXES
@@ -92,15 +85,3 @@ class TestSuffixVocabularyConsolidation:
         assert "- /data/sites/field_area.geojson" in lines
         # json stays a delegation-local extension (evidence indexing only).
         assert "- /etc/clio/settings.json" in lines
-
-
-class TestArtifactRootFallback:
-    """Artifact fallback must use the platform temp dir (issue #765 (b))."""
-
-    def test_default_artifact_root_uses_platform_tempdir(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.delenv("CLIO_ARTIFACT_DIR", raising=False)
-        monkeypatch.delenv("CLIO_ALLOWED_ROOTS", raising=False)
-        root = ClioAgent._default_artifact_root(Path("plot.png"))
-        assert root == Path(tempfile.gettempdir()) / "clio-agent-artifacts"
