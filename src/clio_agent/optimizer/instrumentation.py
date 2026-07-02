@@ -17,11 +17,14 @@ The instrumented data becomes the training set for SIMBA optimization.
 
 import functools
 import json
+import logging
 import time
 import uuid
 from typing import Any, Callable, Dict
 
 from clio_agent.arc.schema import Invocation
+
+logger = logging.getLogger(__name__)
 
 
 def instrumented_forward(arc_memory: Any, agent_id: str) -> Callable:
@@ -153,8 +156,13 @@ def _extract_output(result: Any) -> Dict[str, Any]:
                 val = getattr(result, key, "")
                 if val is not None:
                     output_data[key] = _to_safe_text(val)[:500]
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - instrumentation must not fail the call
+            logger.warning(
+                "prediction fields not captured; invocation record will be incomplete "
+                "reason=prediction_output_capture_failed result_type=%s error=%s",
+                type(result).__name__,
+                exc,
+            )
     else:
         # Fallback: try common expert output fields
         for field in (

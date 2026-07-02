@@ -306,3 +306,21 @@ def test_store_and_get_variant_records():
         analysis_records = arc.get_variant_records("analysis")
         assert len(analysis_records) == 1
         assert analysis_records[0].variant_id == "analysis_v1"
+
+
+def test_extract_output_capture_failure_logs_reason(caplog):
+    """A prediction whose fields cannot be read warns instead of vanishing (#772)."""
+    import logging
+
+    class ExplodingPrediction:
+        def keys(self):
+            raise RuntimeError("fields exploded")
+
+    with caplog.at_level(logging.WARNING, logger="clio_agent.optimizer.instrumentation"):
+        output = _extract_output(ExplodingPrediction())
+
+    assert output == {}
+    matching = [
+        r for r in caplog.records if "reason=prediction_output_capture_failed" in r.getMessage()
+    ]
+    assert matching, "expected a structured prediction_output_capture_failed warning"

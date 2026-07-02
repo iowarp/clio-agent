@@ -29,6 +29,7 @@ always passed explicitly so handlers never close over ``build_app`` locals.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import Mapping
 from dataclasses import asdict
@@ -43,6 +44,8 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
     from clio_agent.gact.types import Message
+
+logger = logging.getLogger(__name__)
 
 
 # ------------------------------------------------------------------------- #
@@ -164,7 +167,14 @@ def _mirror_workspace_session(app: "FastAPI", session_id: str) -> None:
                 loaded = json.loads(path.read_text(encoding="utf-8"))
                 if isinstance(loaded, dict):
                     data = loaded
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 - mirror is best-effort, but say so
+                logger.warning(
+                    "workspace mirror: unreadable sessions.json restarted empty "
+                    "reason=workspace_mirror_corrupt_reset session=%s path=%s error=%s",
+                    session_id,
+                    path,
+                    exc,
+                )
                 data = {}
         data[session_id] = asdict(sess)
         data[session_id].setdefault("metadata", {})
@@ -172,7 +182,14 @@ def _mirror_workspace_session(app: "FastAPI", session_id: str) -> None:
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
         os.replace(tmp, path)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - mirror is best-effort, but say so
+        logger.warning(
+            "workspace mirror: session row not persisted "
+            "reason=workspace_mirror_session_write_failed session=%s path=%s error=%s",
+            session_id,
+            path,
+            exc,
+        )
         return
 
 
@@ -189,7 +206,14 @@ def _mirror_workspace_messages(app: "FastAPI", session_id: str) -> None:
             store.replace_session(session_id, messages)
         else:
             store.delete_session(session_id)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - mirror is best-effort, but say so
+        logger.warning(
+            "workspace mirror: message ledger not persisted "
+            "reason=workspace_mirror_messages_write_failed session=%s root=%s error=%s",
+            session_id,
+            root,
+            exc,
+        )
         return
 
 
@@ -209,7 +233,14 @@ def _remove_workspace_session_mirror(app: "FastAPI", session_id: str) -> None:
                 tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
                 os.replace(tmp, sessions_path)
         MessageStore(root / "messages").delete_session(session_id)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - mirror is best-effort, but say so
+        logger.warning(
+            "workspace mirror: stale session row not removed "
+            "reason=workspace_mirror_remove_failed session=%s root=%s error=%s",
+            session_id,
+            root,
+            exc,
+        )
         return
 
 

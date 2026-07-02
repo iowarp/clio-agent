@@ -665,3 +665,21 @@ def test_sync_mcp_tool_executor_keeps_absolute_output_path(tmp_path):
         executor.close()
     assert "/tmp/keep.png" in result
     assert str(tmp_path / "keep.png") not in result
+
+
+def test_notify_tool_observer_failure_logs_reason(caplog):
+    """An observer that raises is swallowed but leaves a structured warning (#772)."""
+    import logging
+
+    from clio_agent.tools.execution import notify_tool_observer
+
+    def exploding_observer(name, args, phase, error):
+        raise ValueError("observer exploded")
+
+    with caplog.at_level(logging.WARNING, logger="clio_agent.tools.execution"):
+        notify_tool_observer(exploding_observer, "fake_echo", {"value": "x"}, "end")
+
+    matching = [r for r in caplog.records if "reason=tool_observer_failed" in r.getMessage()]
+    assert matching, "expected a structured tool_observer_failed warning"
+    assert "tool=fake_echo" in matching[0].getMessage()
+    assert "phase=end" in matching[0].getMessage()

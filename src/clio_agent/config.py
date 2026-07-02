@@ -26,6 +26,7 @@ Usage:
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from ipaddress import ip_address
@@ -34,6 +35,8 @@ from typing import TYPE_CHECKING, Any, List, Literal, Mapping, Optional
 from urllib.parse import urlparse
 
 from clio_agent.runtime.stream_audit import stream_audit
+
+logger = logging.getLogger(__name__)
 
 # dspy lives behind a lazy import — top-level ``import dspy`` costs
 # ~4 s on Aurora's frameworks Python (litellm + transitive deps), and
@@ -1514,8 +1517,13 @@ def _dump_unparseable_completion(
         }
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(_json.dumps(record) + "\n")
-    except Exception:  # noqa: BLE001 - diagnostic only, never fail a turn
-        pass
+    except Exception as exc:  # noqa: BLE001 - diagnostic only, never fail a turn
+        logger.warning(
+            "unparseable-output dump not written "
+            "reason=unparseable_dump_write_failed path=%s error=%s",
+            path,
+            exc,
+        )
 
 
 _LENIENT_CHAT_ADAPTER_CLS: Any = None
@@ -1865,8 +1873,13 @@ def _strict_guided_json_adapter_cls() -> Any:
                         "response_format": _signature_strict_response_format(signature),
                     }
                     return dspy.ChatAdapter.__call__(self, lm, kwargs, signature, demos, inputs)
-                except Exception:  # noqa: BLE001 - fall back to stock JSONAdapter
-                    pass
+                except Exception as exc:  # noqa: BLE001 - fall back to stock JSONAdapter
+                    logger.warning(
+                        "strict guided-JSON call failed; degrading to stock JSONAdapter "
+                        "reason=strict_response_format_fallback signature=%s error=%s",
+                        getattr(signature, "__name__", signature),
+                        exc,
+                    )
             return dspy.JSONAdapter.__call__(self, lm, lm_kwargs, signature, demos, inputs)
 
         async def acall(self, lm, lm_kwargs, signature, demos, inputs):  # type: ignore[no-untyped-def]
@@ -1877,8 +1890,13 @@ def _strict_guided_json_adapter_cls() -> Any:
                         "response_format": _signature_strict_response_format(signature),
                     }
                     return await dspy.ChatAdapter.acall(self, lm, kwargs, signature, demos, inputs)
-                except Exception:  # noqa: BLE001 - fall back to stock JSONAdapter
-                    pass
+                except Exception as exc:  # noqa: BLE001 - fall back to stock JSONAdapter
+                    logger.warning(
+                        "strict guided-JSON call failed; degrading to stock JSONAdapter "
+                        "reason=strict_response_format_fallback signature=%s error=%s",
+                        getattr(signature, "__name__", signature),
+                        exc,
+                    )
             return await dspy.JSONAdapter.acall(self, lm, lm_kwargs, signature, demos, inputs)
 
     _STRICT_GUIDED_ADAPTER_CLS = StrictGuidedJSONAdapter

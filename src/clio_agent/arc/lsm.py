@@ -16,6 +16,7 @@ Performance Targets:
 See PLAN.md v0.3.0 Task 3 for implementation requirements.
 """
 
+import logging
 import threading
 import time
 import uuid
@@ -25,6 +26,8 @@ from typing import Any, Dict, List, Optional
 
 import msgspec
 from sortedcontainers import SortedDict
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -337,10 +340,13 @@ class LSMTree:
                 if len(self._sstables) >= self._compaction_threshold:
                     try:
                         self._compact_sstables()
-                    except Exception as e:
-                        # Log error but don't crash thread
-                        # In production, would use proper logging
-                        print(f"LSM compaction error: {e}")
+                    except Exception as exc:  # noqa: BLE001 - keep the compaction thread alive
+                        logger.warning(
+                            "LSM compaction skipped this cycle "
+                            "reason=lsm_compaction_failed sstables=%d error=%s",
+                            len(self._sstables),
+                            exc,
+                        )
 
     def _compact_sstables(self) -> None:
         """Merge SSTables to reduce read amplification.
@@ -390,8 +396,13 @@ class LSMTree:
             for sstable in self._sstables:
                 try:
                     sstable.file_path.unlink()
-                except Exception:
-                    pass  # Best effort deletion
+                except Exception as exc:  # noqa: BLE001 - best-effort deletion, but say so
+                    logger.warning(
+                        "LSM compaction left a stale SSTable on disk "
+                        "reason=lsm_sstable_cleanup_failed path=%s error=%s",
+                        sstable.file_path,
+                        exc,
+                    )
 
             # Replace with compacted SSTable
             self._sstables = [compacted_sstable]
