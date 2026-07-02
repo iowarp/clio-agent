@@ -622,11 +622,13 @@ async def _run_turn_in_background(
         retry_attempt_id = str(user_msg.metadata.get("retry_attempt_id") or "")
     turn_id = user_msg.id
     trace_id = _semantic_trace_id(turn_id)
-    # Bare sets, no reset: turn_id/trace_id must stay live for every later
-    # copy_context() snapshot taken during this turn (mirrors the original
-    # turn-scoped leak). app/session are established independently. (#714)
-    _ctx.set_turn_id(turn_id)
-    _ctx.set_trace_id(trace_id)
+    # Bare set, no reset: the whole turn identity (app + session + turn_id +
+    # trace_id) must stay live for every later copy_context() snapshot taken
+    # during this turn (mirrors the original turn-scoped leak). Establishing
+    # app/session here — not only inside the narrow dynamic-agent forward
+    # wrappers — makes active_app()/active_session_id() reliable on the executor
+    # rail for ALL turn paths, incl. the CLIO orchestrator forward (#735 §3).
+    _ctx.set_turn_identity(app=app, session_id=sid, turn_id=turn_id, trace_id=trace_id)
     native_images = _dspy_images_from_parts(user_msg.parts)
     turn_tokens: dict[str, int] = {
         "input": 0,
