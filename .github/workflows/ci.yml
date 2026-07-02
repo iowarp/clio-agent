@@ -31,6 +31,14 @@ jobs:
       - name: "warn: ruff complexity (C901, PLR0915) (#714)"
         run: uv run ruff check --select C901,PLR0915 src/
         continue-on-error: true
+      # Silent-fallback ratchet (iowarp/clio-agent#772). WARN-ONLY for now:
+      # reports BLE001/S110/E722 counts and fails only when the total EXCEEDS
+      # the baseline recorded in the script (which may only ratchet down as
+      # sites are burned down). To be flipped to blocking once the burn-down
+      # settles.
+      - name: "warn: silent-fallback ratchet (BLE001, S110, E722) (#772)"
+        run: uv run python scripts/check_silent_fallbacks.py
+        continue-on-error: true
       - run: bash -n scripts/homelab-env.sh
       - run: uv run mypy src/
       # Coverage floor lowered to 70 as the v0.5 merge brought in
