@@ -1,7 +1,7 @@
-"""Core Agent Registry with capability matching and routing.
+"""Core Agent Registry.
 
-The AgentRegistry provides thread-safe agent registration, discovery, and
-capability-based routing for ClioAgent's 3-tier agent hierarchy.
+The AgentRegistry provides thread-safe agent registration and discovery
+for ClioAgent's 3-tier agent hierarchy.
 
 Example:
     >>> from clio_agent.registry import AgentRegistry, AgentCapability
@@ -18,7 +18,6 @@ Example:
     >>>
     >>> registry.register_agent("data_blueprint", blueprint_agent, capabilities)
     >>> agent = registry.get_agent("data_blueprint")
-    >>> matching = registry.find_agents_by_keyword("hdf5")
 """
 
 import copy
@@ -54,30 +53,12 @@ class AgentCapability:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass
-class RoutingDecision:
-    """Result of routing query to agent.
-
-    Attributes:
-        selected_agent: ID of the agent selected for this query
-        confidence: Routing confidence score (0.0 to 1.0)
-        matched_keywords: Keywords that triggered this agent
-        fallback_agents: List of backup agent IDs if primary fails
-    """
-
-    selected_agent: str
-    confidence: float
-    matched_keywords: List[str]
-    fallback_agents: List[str] = field(default_factory=list)
-
-
 class AgentRegistry:
     """Thread-safe registry for managing agents and their capabilities.
 
     The registry supports:
     - Registration of DSPy agents (Tier 2 experts, Tier 3 nanoagents)
     - Registration of external A2A agents (LangChain, CrewAI, AutoGen)
-    - Capability-based routing via keyword matching
     - Thread-safe operations for multi-agent coordination
 
     Example:
@@ -233,121 +214,6 @@ class AgentRegistry:
         """
         with self._lock:
             return self._capabilities.get(agent_id)
-
-    def find_agents_by_keyword(self, keyword: str) -> List[str]:
-        """Find agents matching a keyword.
-
-        Case-insensitive keyword matching against agent capabilities.
-        Returns agents sorted by priority (highest first).
-
-        Args:
-            keyword: Keyword to search for (case-insensitive)
-
-        Returns:
-            List of agent IDs sorted by priority
-
-        Raises:
-            ValueError: If keyword is empty string
-
-        Example:
-            >>> registry.find_agents_by_keyword("hdf5")
-            ['data_expert']
-            >>> registry.find_agents_by_keyword("compression")
-            ['data_expert', 'storage_expert']
-        """
-        # BUG FIX: Validate non-empty keyword to prevent matching all agents
-        if not keyword or not keyword.strip():
-            raise ValueError(
-                "Keyword cannot be empty. Empty string matches all agents "
-                "and causes incorrect routing."
-            )
-
-        keyword_lower = keyword.lower()
-        matching_agents = []
-
-        with self._lock:
-            for agent_id, caps in self._capabilities.items():
-                # Check if keyword matches any capability keyword
-                for cap_keyword in caps.keywords:
-                    if keyword_lower in cap_keyword.lower():
-                        matching_agents.append((agent_id, caps.priority))
-                        break
-
-        # Sort by priority (lower number = higher priority)
-        matching_agents.sort(key=lambda x: x[1])
-        return [agent_id for agent_id, _ in matching_agents]
-
-    def route_query(self, query: str) -> RoutingDecision:
-        """Route query to best matching agent.
-
-        Uses keyword matching to find the most suitable agent.
-        Falls back to capability_matcher.py for advanced routing
-        (will be implemented in next task).
-
-        Args:
-            query: User query to route
-
-        Returns:
-            RoutingDecision with selected agent and metadata
-
-        Raises:
-            ValueError: If no agents are registered or no match found
-
-        Example:
-            >>> decision = registry.route_query("How do I optimize HDF5 compression?")
-            >>> print(decision.selected_agent)
-            'data_expert'
-            >>> print(decision.matched_keywords)
-            ['hdf5', 'compression', 'optimize']
-        """
-        with self._lock:
-            if not self._agents:
-                raise ValueError("No agents registered")
-
-            # Simple keyword matching for now
-            # TODO: Use CapabilityMatcher for advanced routing (v0.2.0 Task 1.2)
-            query_lower = query.lower()
-            agent_scores: Dict[str, tuple[float, List[str]]] = {}
-
-            for agent_id, caps in self._capabilities.items():
-                matched_keywords = []
-                score = 0.0
-
-                # Check each capability keyword
-                for keyword in caps.keywords:
-                    if keyword.lower() in query_lower:
-                        matched_keywords.append(keyword)
-                        # Weight by keyword length (longer = more specific)
-                        score += len(keyword) / 10.0
-
-                # Adjust score by priority (lower priority = lower score)
-                if score > 0:
-                    if caps.priority == 0:
-                        continue  # Skip zero-priority agents
-                    score = score / caps.priority
-                    agent_scores[agent_id] = (score, matched_keywords)
-
-            if not agent_scores:
-                raise ValueError(
-                    "No registered agent capabilities matched the query. "
-                    "Use an explicit chat/no-op path or provide a more specific task."
-                )
-
-            # Select agent with highest score
-            sorted_agents = sorted(agent_scores.items(), key=lambda x: x[1][0], reverse=True)
-
-            best_agent, (best_score, matched_kw) = sorted_agents[0]
-            fallbacks = [agent_id for agent_id, _ in sorted_agents[1:3]]
-
-            # Normalize confidence to 0.0-1.0 range
-            confidence = min(best_score, 1.0)
-
-            return RoutingDecision(
-                selected_agent=best_agent,
-                confidence=confidence,
-                matched_keywords=matched_kw,
-                fallback_agents=fallbacks,
-            )
 
     def get_all_capabilities(self) -> Dict[str, AgentCapability]:
         """Get capabilities for all registered agents.

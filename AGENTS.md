@@ -3,10 +3,10 @@
 ## Project Structure & Module Organization
 `src/clio_agent/` contains production code, organized by responsibility:
 - `gact/` for the GACT server — the shipped API surface gact-tui talks to (FastAPI app, turn orchestration, SSE streaming, sessions/messages, `routes/`, `agents/`, `runtime/`, `workflow_state/`, `providers/`)
-- `agent.py`, `harness.py`, `conversation_manager.py`, `errors.py` for the Tier-1 planner loop and run tracing
+- `agent.py`, `harness.py`, `errors.py` for the Tier-1 planner loop and run tracing
 - `conf.py`, `config.py`, `paths.py`, `prompts.py` for runtime/LM configuration, canonical paths, and the editable prompt system
-- `experts/`, `registry/`, `signatures/` for native expert tools, capability routing, and DSPy signatures
-- `prompt_packs/` and `agent_blueprints/` for built-in packs and blueprints
+- `experts/`, `registry/`, `signatures/` for generic expert support, the agent registry, and DSPy signatures
+- `prompt_packs/` for built-in prompt packs
 - `arc/` for ARC memory: live context plane, prompt recorder, context compiler, cache/index/LSM/storage/retrieval
 - `tools/` for the FastMCP gateway, tool catalog, file policy, and execution boundary; `tools/servers/` for the FS and shell MCP servers
 - `providers/` for provider auth and LiteLLM bridges (Argonne/ALCF, claude_code, codex) plus `handshake/` model-limit discovery
