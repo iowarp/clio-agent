@@ -100,7 +100,7 @@ For the design rationale (three-tier hierarchy, ARC memory, optimizer layer, IOW
 | [docs/PERMISSIONS.md](docs/PERMISSIONS.md) | Tool permission system |
 | [docs/providers/](docs/providers/) | LM provider configuration |
 | [docs/CAPABILITIES_MATRIX.md](docs/CAPABILITIES_MATRIX.md) | Feature matrix |
-| [PLAN.md](PLAN.md) | Roadmap |
+| [docs/design/roadmap.md](docs/design/roadmap.md) | Roadmap |
 
 ---
 
