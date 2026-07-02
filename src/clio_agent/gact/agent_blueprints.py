@@ -93,17 +93,6 @@ def agent_blueprint_roots(home: Path, cwd: Path) -> list[tuple[Path, str]]:
     ]
 
 
-def builtin_agent_blueprints_root() -> Path:
-    """Return the retired pre-#629 in-repo blueprint root.
-
-    Kept only for migration diagnostics. Runtime discovery intentionally does
-    not include this path; default agents must be installed from the pinned
-    default registry and therefore carry registry install provenance.
-    """
-
-    return Path(__file__).resolve().parents[1] / "agent_blueprints" / "builtin"
-
-
 def default_registry_url() -> str:
     """Resolve the default blueprint registry URL.
 
