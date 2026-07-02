@@ -1,18 +1,22 @@
 """Local model-limits database — the bottom of the limit-resolution cascade.
 
 The handshake resolves a model's limits **provider-live -> models.dev -> this DB**.
-The DB is a single JSON file that:
+The DB is split into two layers:
 
-- **ships a seed in the repo** (so a fresh clone already knows common models, and the
-  lab can share/grow one file), and
-- is **written back on discovery**: whenever the handshake learns a model's context or
-  output limit from a live provider, it is recorded here so a later offline run (or a
-  teammate pulling the file) already has it.
+- a **read-only seed shipped with the package** (``data/model_limits.json``) so a
+  fresh install already knows common models — it is **never written at runtime**
+  (writing it kept the git tree permanently dirty and silently no-oped on read-only
+  pip installs, #763), and
+- a **user DB** under :func:`clio_agent.paths.user_data_dir` (or the ``CLIO_MODEL_DB``
+  override) that is **written back on discovery**: whenever the handshake learns a
+  model's context or output limit from a live provider, it is recorded there so a
+  later offline run already has it. Lookups merge the seed beneath the user DB —
+  user entries win.
 
 When a freshly discovered live value disagrees with a stored one, the disagreement is
 appended to a sibling ``*.mismatches.jsonl`` for review instead of being silently
-overwritten-then-forgotten. Read-only installs (no write permission) degrade to
-seed-only lookups — recording is best-effort and never raises.
+overwritten-then-forgotten. An unwritable DB location degrades to lookup-only —
+recording is best-effort, logs a structured warning, and never raises.
 
 This module replaces the older ``marketplace``/``static`` sources; their seeds live in
 the shipped DB file (``data/model_limits.json``).
@@ -21,27 +25,33 @@ the shipped DB file (``data/model_limits.json``).
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from clio_agent import paths
 from clio_agent.providers.handshake.sources._normalize import (
     iter_id_candidates,
     normalize_id,
 )
 
+_LOGGER = logging.getLogger(__name__)
+
 _LOCK = threading.Lock()
 
-#: Repo-shipped DB (read + written when writable; the lab shares/grows this file).
-_DEFAULT_DB = Path(__file__).resolve().parent / "data" / "model_limits.json"
+#: Packaged read-only seed — never written at runtime (#763).
+_SEED_DB = Path(__file__).resolve().parent / "data" / "model_limits.json"
 
 
 def db_path() -> Path:
-    """The active DB file: ``CLIO_MODEL_DB`` env override, else the repo-shipped file."""
+    """The writable DB file: ``CLIO_MODEL_DB`` env override, else the user data dir."""
     override = os.environ.get("CLIO_MODEL_DB", "").strip()
-    return Path(override).expanduser() if override else _DEFAULT_DB
+    if override:
+        return Path(override).expanduser()
+    return paths.user_data_dir() / "model_limits.json"
 
 
 def _load(path: Path) -> dict[str, dict[str, Any]]:
@@ -50,6 +60,15 @@ def _load(path: Path) -> dict[str, dict[str, Any]]:
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _load_merged(path: Path) -> dict[str, dict[str, Any]]:
+    """The user DB with the packaged seed merged beneath it (user entries win)."""
+    merged = dict(_load(path))
+    if path != _SEED_DB:  # guard: CLIO_MODEL_DB pointed at the seed itself
+        for key, entry in _load(_SEED_DB).items():
+            merged.setdefault(key, entry)
+    return merged
 
 
 def _index(db: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -69,7 +88,7 @@ def _index(db: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
 
 
 def _lookup_field(model_id: str, field: str) -> int | None:
-    db = _load(db_path())
+    db = _load_merged(db_path())
     if not db:
         return None
     index = _index(db)
@@ -100,10 +119,11 @@ def record(
     source: str = "live",
     provider: str = "",
 ) -> None:
-    """Record discovered limits into the DB; log disagreements as mismatches.
+    """Record discovered limits into the user DB; log disagreements as mismatches.
 
-    Best-effort: a read-only DB location (installed package) silently skips
-    persistence — lookups still work from the shipped seed. Never raises.
+    Writes only the user DB (or the ``CLIO_MODEL_DB`` override) — never the packaged
+    seed. Best-effort: an unwritable DB location skips persistence with a structured
+    warning — lookups still work from the shipped seed. Never raises.
     """
     if not (model_id or "").strip() or (not context and not output):
         return
@@ -111,7 +131,9 @@ def record(
     with _LOCK:
         db = _load(path)
         key = normalize_id(model_id)
-        stored = db.get(key)
+        # Compare against the merged view so a live value that disagrees with a
+        # seed entry is still surfaced as a mismatch.
+        stored = _load_merged(path).get(key)
         entry: dict[str, Any] = dict(stored) if isinstance(stored, dict) else {}
         mismatches: list[dict[str, Any]] = []
         for field, value in (("context", context), ("output", output)):
@@ -143,8 +165,16 @@ def record(
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(db, indent=1, sort_keys=True), encoding="utf-8")
-        except OSError:
-            return  # read-only install: seed-only, recording skipped
+        except OSError as exc:
+            # Degraded path: lookups keep working (seed + whatever was readable);
+            # only persistence of the newly discovered limit is lost.
+            _LOGGER.warning(
+                "model_db_record_skipped reason=db_unwritable path=%s model=%s error=%s",
+                path,
+                model_id,
+                exc,
+            )
+            return
         if mismatches:
             _log_mismatches(path, mismatches)
 
