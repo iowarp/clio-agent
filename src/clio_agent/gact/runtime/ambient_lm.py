@@ -61,20 +61,40 @@ _MAX_LEDGER_ENTRIES = 64
 
 
 def _context_lm_bound() -> bool:
-    """Return True when the active ``dspy.context`` binds ``lm`` (an expert/main profile).
+    """Return True when the active ``dspy.context`` binds a *distinct* ``lm`` (an expert/main profile).
 
     ``dspy.settings.lm`` resolves ``thread_local_overrides['lm']`` when a context is
-    active and ``main_thread_config['lm']`` (the boot default) otherwise. ``dspy.context``
-    seeds its overrides from ``main_thread_config`` on entry, so ``"lm" in overrides``
-    is True exactly while a context is active — the precise "not the ambient default"
-    signal.
+    active and ``main_thread_config['lm']`` (the boot default) otherwise.
+
+    A mere ``"lm" in overrides`` test is **not** sufficient: ``dspy.context`` seeds
+    its overrides dict from ``main_thread_config`` (``{**main_thread_config,
+    **original_overrides, **kwargs}``), and ``main_thread_config`` *always* carries
+    the ``lm`` key (default ``None``). So ``"lm" in overrides`` is True inside *any*
+    ``dspy.context(...)`` — even one that binds only an ``adapter`` and no LM. Such a
+    context still reads the boot-default LM, which is precisely the ambient,
+    silently-boot-default read this guard exists to catch (no-silent-fallback rule).
+
+    The exact signal is **object identity**: a genuinely LM-binding context makes
+    ``overrides['lm']`` a *different object* from the boot default
+    (``main_thread_config['lm']``). When no LM was bound (or a nested context inherits
+    the outer bind), ``overrides['lm']`` is the very same object dspy seeded from the
+    default — that is an ambient read. Nested contexts inherit the outer override, so
+    an adapter-only inner context under a real ``lm`` bind stays correctly "bound".
     """
     try:
-        from dspy.dsp.utils.settings import thread_local_overrides  # noqa: PLC0415
+        from dspy.dsp.utils.settings import (  # noqa: PLC0415
+            main_thread_config,
+            thread_local_overrides,
+        )
     except Exception:  # noqa: BLE001 - dspy shape drift must not break metering
         return False
     try:
-        return "lm" in thread_local_overrides.get()
+        overrides = thread_local_overrides.get()
+        if "lm" not in overrides:
+            return False
+        # Bound only when the override LM is a distinct object from the boot default;
+        # equal identity means the context merely inherited the ambient default.
+        return overrides.get("lm") is not main_thread_config.get("lm")
     except Exception:  # noqa: BLE001
         return False
 

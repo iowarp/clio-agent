@@ -111,6 +111,45 @@ def test_active_lm_reports_bound_and_ambient(boot_default: _LM) -> None:
         assert lm2 is bound and ambient2 is False
 
 
+def test_adapter_only_context_is_detected_ambient(boot_default: _LM) -> None:
+    """A ``dspy.context`` that binds ONLY an adapter (no ``lm``) still reads the
+    boot-default LM — it MUST be reported ambient, not silently ``bound``.
+
+    ``dspy.context`` seeds its overrides dict from ``main_thread_config`` (which
+    always carries the ``lm`` key), so a mere ``"lm" in overrides`` test is True
+    inside *any* context. The guard must instead see that the override ``lm`` is
+    the *same object* as the boot default — i.e. no distinct profile was bound.
+    """
+    with dspy.context(adapter=object()):
+        assert ambient_lm._context_lm_bound() is False
+        lm, ambient = active_lm()
+        assert lm is boot_default and ambient is True
+
+
+def test_nested_adapter_context_under_bound_lm_stays_bound(boot_default: _LM) -> None:
+    """An adapter-only inner context nested under a real ``lm``-binding context is
+    still ``bound`` — the outer override ``lm`` (a distinct object) is inherited."""
+    bound = _LM("bound")
+    with dspy.context(lm=bound):
+        with dspy.context(adapter=object()):
+            assert ambient_lm._context_lm_bound() is True
+            lm, ambient = active_lm()
+            assert lm is bound and ambient is False
+
+
+def test_adapter_only_context_records_ambient_reason(boot_default: _LM, session_ctx: Any) -> None:
+    """Reading the LM inside an adapter-only context records the structured
+    ``ambient_lm_default`` reason — the silent boot-default read is now queryable."""
+    got = resolve_active_lm(site="t.adapter_only", app=session_ctx, sid="sess-1")
+    # sanity: with no context the ambient read is flagged (baseline)...
+    assert got is boot_default
+    with dspy.context(adapter=object()):
+        got2 = resolve_active_lm(site="t.adapter_only_ctx", app=session_ctx, sid="sess-1")
+    assert got2 is boot_default
+    sites = [e["message"] for e in ambient_lm_fallbacks(session_ctx)["sess-1"]]
+    assert "t.adapter_only_ctx" in sites
+
+
 # --------------------------------------------------------------------------- #
 # resolve_active_lm + the ledger
 # --------------------------------------------------------------------------- #
