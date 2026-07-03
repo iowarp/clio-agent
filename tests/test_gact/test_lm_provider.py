@@ -683,7 +683,10 @@ def test_put_lm_provider_accepts_codex_sdk_transport(tmp_path: Path, monkeypatch
     assert captured["cfg"].api_key == "x"
     assert captured["cfg"].codex_transport == "sdk"
     assert app.state.lm_config["transport"] == "sdk"
-    assert os.environ["CLIO_CODEX_TRANSPORT"] == "sdk"
+    # Demoted bind (design §5): transport travels on the config / store default,
+    # NOT process-global env. The bind must not stamp CLIO_CODEX_TRANSPORT.
+    assert "CLIO_CODEX_TRANSPORT" not in os.environ
+    assert app.state.provider_profiles.default.transport == "sdk"
 
 
 def test_put_lm_provider_accepts_claude_code_exec_transport(tmp_path: Path, monkeypatch) -> None:
@@ -738,12 +741,12 @@ def test_put_lm_provider_accepts_claude_code_exec_transport(tmp_path: Path, monk
     assert captured["cfg"].api_key == "x"
     assert captured["cfg"].claude_code_transport == "exec"
     assert app.state.lm_config["transport"] == "exec"
-    assert os.environ["CLIO_CLAUDE_CODE_TRANSPORT"] == "exec"
+    # Demoted bind (design §5): no process-global env stamping.
+    assert "CLIO_CLAUDE_CODE_TRANSPORT" not in os.environ
+    assert app.state.provider_profiles.default.transport == "exec"
 
 
-def test_put_lm_provider_defaults_claude_code_to_sdk_transport(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_put_lm_provider_defaults_claude_code_to_sdk_transport(tmp_path: Path, monkeypatch) -> None:
     """Claude Code should use the streaming-capable SDK path unless exec is explicit."""
     monkeypatch.delenv("CLIO_CLAUDE_CODE_TRANSPORT", raising=False)
     captured: dict[str, Any] = {}
@@ -794,7 +797,9 @@ def test_put_lm_provider_defaults_claude_code_to_sdk_transport(
     assert captured["cfg"].api_key == "x"
     assert captured["cfg"].claude_code_transport == "sdk"
     assert app.state.lm_config["transport"] == "sdk"
-    assert os.environ["CLIO_CLAUDE_CODE_TRANSPORT"] == "sdk"
+    # Demoted bind (design §5): no process-global env stamping.
+    assert "CLIO_CLAUDE_CODE_TRANSPORT" not in os.environ
+    assert app.state.provider_profiles.default.transport == "sdk"
 
 
 def test_put_lm_provider_applies_lm_studio_context_length(tmp_path: Path, monkeypatch) -> None:
@@ -1017,7 +1022,12 @@ def test_put_lm_provider_invalid_returns_400(tmp_path: Path, monkeypatch) -> Non
 
 
 def test_put_lm_provider_failed_first_connect_restores_env(tmp_path: Path, monkeypatch) -> None:
-    """A rejected provider swap must not leak failed settings into env."""
+    """A rejected provider swap must not touch process-global env.
+
+    The demoted bind (design §5) no longer stamps ``os.environ`` at all, so a
+    failed connect leaves the pre-existing env untouched by construction — there
+    is nothing to leak and nothing to restore.
+    """
 
     before = {
         "CLIO_LM_PROVIDER": "lm_studio",
@@ -1096,3 +1106,180 @@ def test_turn_timeout_precedence_runtime_over_conf() -> None:
     finally:
         os.environ.pop("CLIO_GACT_TURN_TIMEOUT_S", None)
         conf.reload()
+
+
+# ---- demoted default-only bind (design §5 / §9 step 8) --------------------
+
+
+def _make_stub_agent_cls() -> type:
+    """A minimal ClioAgent stub whose construction needs no live LM.
+
+    Only the ``arc`` surface the bind path touches is provided; the bind hot-swaps
+    ``_provider_config`` / ``_main_lm`` / ``_planner_lm`` / ``_router_lm`` /
+    ``_dspy_adapter`` onto the instance itself.
+    """
+
+    class _StubAgent:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.arc = type(
+                "ARC",
+                (),
+                {
+                    "get_cache_stats": lambda self: {
+                        "hits": 0,
+                        "misses": 0,
+                        "hit_rate": 0.0,
+                        "capacity": 10,
+                    }
+                },
+            )()
+
+        def forward(self, *args: Any, **kwargs: Any) -> Any:
+            return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
+
+    return _StubAgent
+
+
+def _stub_lm_bind(monkeypatch) -> None:
+    """Stub the LM factories + ClioAgent + handshake so a PUT needs no network."""
+
+    monkeypatch.setattr("clio_agent.agent.ClioAgent", _make_stub_agent_cls())
+    monkeypatch.setattr(
+        "clio_agent.config.create_lm", lambda cfg: type("LM", (), {"history": []})()
+    )
+    monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda cfg: object())
+    monkeypatch.setattr("clio_agent.config.create_planner_lm", lambda cfg: object())
+
+    async def _no_handshake(ctx: Any, **kwargs: Any) -> Any:
+        # No network from a unit test; the bind catches this and keeps the static
+        # PROVIDER_DEFAULTS caps (the demoted bind never blocks on a handshake).
+        raise RuntimeError("handshake disabled in test")
+
+    monkeypatch.setattr("clio_agent.providers.handshake.run_handshake", _no_handshake)
+
+
+_REMOVED_BIND_ENV_KEYS = (
+    "CLIO_LM_PROVIDER",
+    "CLIO_LM_API_BASE",
+    "CLIO_LM_MODEL",
+    "CLIO_LM_API_KEY",
+    "CLIO_CODEX_TRANSPORT",
+    "CLIO_CLAUDE_CODE_TRANSPORT",
+)
+
+
+def test_concurrent_default_swaps_yield_one_consistent_snapshot(tmp_path: Path) -> None:
+    """Concurrent default-profile swaps converge on ONE internally-consistent
+    default snapshot — never a torn multi-key mix.
+
+    This is the concurrency-safety proof that replaces the reverted
+    ``lm_bind_lock``'s failing-first test (design §1/§5/§9 step 8). It hammers the
+    exact critical operation the demoted ``_apply_lm_provider`` performs — the RCU
+    pointer swap ``app.state.provider_profiles =
+    app.state.provider_profiles.with_default(spec)`` — from many threads racing on
+    a barrier, against the real per-app store on ``app.state``.
+
+    Because ``with_default`` builds a whole new immutable snapshot and the
+    assignment is a single atomic pointer store under the GIL, the losing writer is
+    fully overwritten (last-writer-wins): the surviving default's ``provider`` /
+    ``model`` / ``api_base`` all belong to the SAME provider, never a half-A/half-B
+    mix. This is precisely the guarantee the reverted ``app.state`` lock could not
+    give (it guarded the *wrong-scoped* process-global ``os.environ`` +
+    ``main_thread_config``); here there is no shared mutable global left to tear, so
+    no lock is needed. We also assert the swap touches no process-global env.
+
+    (Driven at the swap level rather than via two concurrent HTTP PUTs because
+    neither ``TestClient`` nor ``httpx.ASGITransport`` can service two concurrent
+    requests without interleaving their *bodies* — that tears the request, not the
+    store. The store swap here is the route's only shared-mutable-state write; the
+    resolved config/spec are per-call locals that never cross threads.)
+    """
+    import threading
+
+    from clio_agent.gact.providers.profile_store import ProviderProfileStore
+    from clio_agent.providers.lm_spec import LMSpec
+
+    for key in _REMOVED_BIND_ENV_KEYS:
+        os.environ.pop(key, None)
+    env_before = dict(os.environ)
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+
+    # One distinct whole spec per provider (the same immutable ``LMSpec`` shape
+    # ``spec_from_config`` yields in ``_apply_lm_provider``), each carrying a
+    # consistent provider/model/api_base triple.
+    specs = [
+        LMSpec(provider=f"prov{i}", model=f"model-{i}", api_base=f"http://{i}.example/v1")
+        for i in range(12)
+    ]
+    expected = {spec.provider: (spec.api_base, spec.model) for spec in specs}
+
+    barrier = threading.Barrier(len(specs))
+
+    def _swap(spec: LMSpec) -> None:
+        barrier.wait()  # maximise the race window
+        for _ in range(300):
+            store = app.state.provider_profiles
+            app.state.provider_profiles = store.with_default(spec)
+
+    threads = [threading.Thread(target=_swap, args=(spec,)) for spec in specs]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+        assert not thread.is_alive()
+
+    store = app.state.provider_profiles
+    assert isinstance(store, ProviderProfileStore)
+    default = store.default
+    # The surviving default is ONE whole provider's spec, never a torn mix.
+    assert default.provider in expected, default
+    assert (default.api_base, default.model) == expected[default.provider]
+
+    # The RCU swap never touched process-global env.
+    assert dict(os.environ) == env_before
+    for key in _REMOVED_BIND_ENV_KEYS:
+        assert key not in os.environ, key
+
+
+def test_single_provider_bind_reports_ready_from_store_default(tmp_path: Path, monkeypatch) -> None:
+    """Backward-compat: a single-provider bind + GET + /wait still report 'ready'
+    with the bound provider, and the read side reports the store default profile.
+    """
+    _stub_lm_bind(monkeypatch)
+    for key in _REMOVED_BIND_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        resp = c.put(
+            "/v1/providers/lm",
+            json={
+                "provider": "openai",
+                "api_base": "http://single.example/v1",
+                "model": "the-model",
+                "api_key": "key",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+
+        info = c.get("/v1/providers/lm").json()
+        assert info["configured"] is True
+        assert info["provider"] == "openai"
+        assert info["model"] == "the-model"
+        assert info["api_base"] == "http://single.example/v1"
+
+        waited = c.get("/v1/providers/lm/wait").json()
+        assert waited["state"] == "ready"
+        assert waited["provider"] == "openai"
+        assert waited["model"] == "the-model"
+
+    # The read side reports the default profile straight off the per-app store.
+    default = app.state.provider_profiles.default
+    assert default.provider == "openai"
+    assert default.model == "the-model"
+    assert default.api_base == "http://single.example/v1"
+
+    # And no env was stamped by the demoted bind.
+    for key in _REMOVED_BIND_ENV_KEYS:
+        assert key not in os.environ, key

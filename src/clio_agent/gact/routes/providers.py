@@ -15,12 +15,16 @@ drives:
   async ``idle -> configuring -> ready/error`` bind), and block until the bind
   settles.
 
-The write-side bind (``PUT /v1/providers/lm`` -> :func:`_apply_lm_provider`)
-hot-swaps the live agent's LMs and mutates ``dspy.settings.main_thread_config``
-directly to side-step DSPy 3.x's "configure from a different async task" guard,
-snapshotting + restoring ``os.environ`` and the DSPy settings on failure. Those
-nested closures move verbatim with the route -- the env snapshot/restore and the
-``main_thread_config`` writes are *behavior*, not cleanup.
+The write-side bind (``PUT /v1/providers/lm`` -> :func:`_apply_lm_provider`) is a
+demoted **default-profile** action (design ``docs/design/per-expert-provider-lm.md``
+§5): it resolves the request to a config, folds its (cached) handshake, atomically
+swaps the default entry of the per-app
+:class:`~clio_agent.gact.providers.profile_store.ProviderProfileStore` (an immutable
+RCU pointer swap), and rebuilds only the singleton main agent's LMs. It no longer
+mutates ``os.environ`` or dspy ``main_thread_config``: experts select their LM
+per-call via ``dspy.context`` and the boot ``dspy.configure`` default stays a
+harmless fallback. With no shared mutable global left, there is no critical section
+to serialize -- concurrent default binds do a last-writer-wins atomic snapshot swap.
 
 The module imports only leaf packages -- the read-only provider helpers in
 :mod:`clio_agent.gact.providers` (config/auth/lmstudio), the ARC accessors in
@@ -50,6 +54,7 @@ from clio_agent.gact.providers.auth import (
     _resolve_argonne_runtime_api_key,
 )
 from clio_agent.gact.providers.config import (
+    _default_profile_spec,
     _effective_lm_config,
     _provider_runtime_kind,
 )
@@ -68,7 +73,6 @@ from clio_agent.gact.types import (
 )
 
 if TYPE_CHECKING:
-    from clio_agent.config import LMProviderConfig
     from clio_agent.gact.routes.deps import GactDeps
 
 
@@ -601,7 +605,31 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         return status
 
     def _lm_provider_info(*, presets: list[LMProviderPreset] | None = None) -> LMProviderInfo:
-        cfg = _effective_lm_config(app)
+        cfg = dict(_effective_lm_config(app))
+        # Reframed read side (design §5): the GET body reports the per-app store's
+        # default profile. When the live/bound config already names a provider the
+        # store default is a no-op (they are ``spec_from_config``-consistent after
+        # a bind); when nothing is bound yet it surfaces the boot default profile
+        # the store was seeded with, so the picker sees the effective default. This
+        # fills only the identity + sampling fields the spec carries and never
+        # feeds the model-ref / vision route gates (those read _effective_lm_config).
+        default_spec = _default_profile_spec(app)
+        if default_spec is not None:
+            for key in (
+                "provider",
+                "api_base",
+                "model",
+                "temperature",
+                "max_tokens",
+                "thinking_budget",
+            ):
+                if not cfg.get(key):
+                    value = getattr(default_spec, key, None)
+                    if value is not None:
+                        cfg[key] = value
+            spec_transport = getattr(default_spec, "transport", None)
+            if not cfg.get("transport") and spec_transport:
+                cfg["transport"] = spec_transport
         status = _lm_provider_status()
         state = str(status.get("state") or "idle")
         if state not in {"idle", "configuring", "ready", "error"}:
@@ -682,51 +710,6 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         """
 
         req = _normalize_lm_provider_request(req)
-        env_keys = (
-            "CLIO_LM_PROVIDER",
-            "CLIO_LM_API_BASE",
-            "CLIO_LM_MODEL",
-            "CLIO_LM_API_KEY",
-            "CLIO_CODEX_TRANSPORT",
-            "CLIO_CLAUDE_CODE_TRANSPORT",
-        )
-        env_before = {key: os.environ.get(key) for key in env_keys}
-        dspy_settings_before: dict[str, Any] | None = None
-        settings_sentinel = object()
-
-        def _restore_process_env() -> None:
-            for key, value in env_before.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
-
-        def _restore_dspy_settings() -> None:
-            if dspy_settings_before is None:
-                return
-            try:
-                from dspy.dsp.utils.settings import main_thread_config  # noqa: PLC0415
-            except Exception:
-                return
-            for key, value in dspy_settings_before.items():
-                if value is settings_sentinel:
-                    main_thread_config.pop(key, None)
-                else:
-                    main_thread_config[key] = value
-
-        def _stamp_process_env(cfg: "LMProviderConfig", api_key: str) -> None:
-            os.environ["CLIO_LM_PROVIDER"] = req.provider
-            os.environ["CLIO_LM_API_BASE"] = req.api_base
-            os.environ["CLIO_LM_MODEL"] = req.model
-            os.environ["CLIO_LM_API_KEY"] = api_key
-            if req.provider == "codex":
-                os.environ["CLIO_CODEX_TRANSPORT"] = cfg.codex_transport
-            else:
-                os.environ.pop("CLIO_CODEX_TRANSPORT", None)
-            if req.provider == "claude_code":
-                os.environ["CLIO_CLAUDE_CODE_TRANSPORT"] = cfg.claude_code_transport
-            else:
-                os.environ.pop("CLIO_CLAUDE_CODE_TRANSPORT", None)
 
         def _apply_lm_studio_load_config() -> None:
             """Apply LM Studio load-time options before wiring DSPy."""
@@ -851,30 +834,18 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 }
 
         try:
-            import dspy
-
             from clio_agent.agent import ClioAgent
             from clio_agent.config import (
                 LMProviderConfig,
                 create_lm,
             )
 
-            try:
-                from dspy.dsp.utils.settings import main_thread_config  # noqa: PLC0415
-
-                dspy_settings_before = {
-                    "lm": main_thread_config.get("lm", settings_sentinel),
-                    "adapter": main_thread_config.get("adapter", settings_sentinel),
-                }
-            except Exception:
-                dspy_settings_before = None
-
             # Argonne / ALCF: if the TUI didn't ship an api_key, mint
             # one from the user's stored Globus session. ``LMProviderConfig``
             # will do this lazily inside __post_init__ too, but we resolve
-            # eagerly here so the env mirror below carries the real token
-            # for ClioAgent's reconstruction (load_config_from_env reads
-            # CLIO_LM_API_KEY first, before LMProviderConfig defaults run).
+            # eagerly here so the bound ``cfg`` (and the main agent's LMs built
+            # from it) carry the real token, and so a missing token surfaces the
+            # actionable structured 401 below instead of a later opaque LM error.
             resolved_api_key = req.api_key
             if req.provider == "argonne" and _is_placeholder_api_key(resolved_api_key):
                 auth_exc: Exception | None
@@ -949,14 +920,13 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 None,
                 _apply_lm_studio_load_config,
             )
-            # iowarp/clio-agent — DSPy 3.x forbids dspy.configure()
-            # being re-called from a different async task than the
-            # first one. PUT /v1/providers/lm comes from the FastAPI
-            # request task, never the boot task, so the second call
-            # always blew up. Side-step the guard by mutating
-            # ``settings.main_thread_config['lm']`` directly — same
-            # underlying state DSPy's __getattr__ reads, no async
-            # task ownership check.
+            # Build the new LMs + adapter for the singleton main agent. The
+            # process-global dspy default is deliberately NOT rewritten here
+            # (design §5/§6): experts select their LM per-call via
+            # ``dspy.context`` and the boot ``dspy.configure`` default remains a
+            # harmless fallback for any un-wrapped ambient caller. Nothing on this
+            # path mutates ``os.environ`` or dspy ``main_thread_config``, so a
+            # concurrent bind can never leave a torn process-global state.
             new_lm = create_lm(cfg)
             from clio_agent.config import (  # noqa: PLC0415
                 create_chat_adapter,
@@ -965,13 +935,6 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
 
             new_adapter = create_chat_adapter(cfg)
             new_planner_lm = create_planner_lm(cfg)
-            try:
-                from dspy.dsp.utils.settings import main_thread_config  # noqa: PLC0415
-
-                main_thread_config["lm"] = new_lm
-                main_thread_config["adapter"] = new_adapter
-            except Exception:  # pragma: no cover - dspy missing
-                dspy.configure(lm=new_lm, adapter=new_adapter)
             # Hot-swap the LM on the existing agent instead of
             # rebuilding from scratch. ClioAgent's expensive state
             # (ARC retriever, LSM tree, registry, expert instances,
@@ -983,7 +946,8 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             #   * _main_lm           -> chat + answer synthesis use the new lm
             #   * _planner_lm        -> planner runs with the new lm
             #   * _dspy_adapter      -> local backends keep text ChatAdapter mode
-            #   * dspy.settings.lm   -> experts pick it up via dspy.context()
+            # The main agent binds these via ``dspy.context`` on every call; the
+            # process-global dspy default is left untouched (design §5/§6).
             # Only rebuild from scratch when no agent yet exists
             # (first-connect lifecycle: the deferred-construction
             # task hasn't completed).
@@ -996,10 +960,10 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 existing._dspy_adapter = new_adapter
                 agent = existing
             else:
-                # First-time agent construction still reads the provider from
-                # env; restore the snapshot if construction rejects it. Inject the
+                # First-time agent construction reads the ambient boot config
+                # from env; its throwaway LMs are immediately replaced by the
+                # cfg-built ones below, so no env stamping is needed. Inject the
                 # ONE per-process ARC so this build reuses it (no per-bind ARC churn).
-                _stamp_process_env(cfg, resolved_api_key or "x")
                 bound_arc = _process_arc(app)
                 agent = await asyncio.get_running_loop().run_in_executor(
                     None, lambda: ClioAgent(verbose=False, arc=bound_arc)
@@ -1015,13 +979,12 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 agent._dspy_adapter = new_adapter
         except HTTPException:
             # Argonne auth path raises a structured 401 above; keep its
-            # error code intact instead of flattening to a generic 400.
-            _restore_process_env()
-            _restore_dspy_settings()
+            # error code intact instead of flattening to a generic 400. No
+            # process-global state was mutated, so there is nothing to restore.
             raise
         except Exception as exc:  # noqa: BLE001
-            _restore_process_env()
-            _restore_dspy_settings()
+            # Nothing mutated process-global env / dspy settings, so a failed
+            # bind leaves them untouched — no restore needed.
             raise HTTPException(
                 status_code=400,
                 detail=ErrorEnvelope(
@@ -1034,10 +997,28 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             ) from exc
 
+        # Atomic default-profile swap (design §5). The per-app profile store is
+        # immutable; ``with_default`` builds a whole new snapshot and the single
+        # pointer assignment is atomic under the GIL, so a concurrent reader sees
+        # either the old or the new default spec — never a torn multi-key mix.
+        # This is what replaces the reverted ``lm_bind_lock`` + ``os.environ`` /
+        # ``main_thread_config`` mutation: no shared mutable global, no lock.
+        from clio_agent.gact.providers.profile_store import (  # noqa: PLC0415
+            ProviderProfileStore,
+        )
+        from clio_agent.providers.lm_spec import spec_from_config  # noqa: PLC0415
+
+        default_spec = spec_from_config(cfg)
+        store = getattr(app.state, "provider_profiles", None)
+        app.state.provider_profiles = (
+            store.with_default(default_spec)
+            if isinstance(store, ProviderProfileStore)
+            else ProviderProfileStore.seed(default_spec)
+        )
+
         # Swap the agent + ARC atomically. Old agent isn't
         # explicitly closed because we don't know what background
         # state it owns; Python's GC will clean up.
-        _stamp_process_env(cfg, resolved_api_key or "x")
         app.state.agent = agent
         # The bind swaps in a freshly-built agent (new ARCMemory); _set_app_arc
         # re-wires the arc.op op-logger (every real run binds — without it the live
