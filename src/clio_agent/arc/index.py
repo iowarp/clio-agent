@@ -36,12 +36,14 @@ class BTreeIndex:
         """Initialize empty B-tree index."""
         self._index: SortedDict = SortedDict()
 
-    def insert(self, key: Tuple[str, float], value: Any) -> None:
+    def insert(self, key: Tuple[str, float] | Tuple[str, float, str], value: Any) -> None:
         """
         Insert key-value pair into index.
 
         Args:
-            key: Composite key (session_id, timestamp)
+            key: Composite key ``(session_id, timestamp)``, optionally with a
+                trailing tie-breaker (e.g. ``(session_id, timestamp, trace_id)``)
+                so entries that share a timestamp do not collide.
             value: Associated data (Conversation, Invocation, Metric, etc.)
 
         Time Complexity: O(log N)

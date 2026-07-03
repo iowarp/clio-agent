@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from clio_agent import conf
+from clio_agent import conf, paths
 from clio_agent.conf import ConfigStore, as_bool, as_csv, as_float, as_int
 
 
@@ -20,11 +20,13 @@ def _store(
     """Build a hermetic ConfigStore with injected user/workspace YAML + env."""
     home = tmp_path / "home"
     cwd = tmp_path / "cwd"
-    config_home = home / ".config"
-    (config_home / "clio-agent").mkdir(parents=True, exist_ok=True)
+    # Write the user YAML to the OS-correct dir ConfigStore actually reads, using
+    # the SAME env map it will use to discover it (portable across Linux/macOS/Windows).
+    user_dir = paths.user_config_dir_for(home, env or {})
+    user_dir.mkdir(parents=True, exist_ok=True)
     (cwd / ".clio").mkdir(parents=True, exist_ok=True)
     if user is not None:
-        (config_home / "clio-agent" / "config.yaml").write_text(user, encoding="utf-8")
+        (user_dir / "config.yaml").write_text(user, encoding="utf-8")
     if workspace is not None:
         (cwd / ".clio" / "config.yaml").write_text(workspace, encoding="utf-8")
     return ConfigStore(home=home, cwd=cwd, env=env if env is not None else {})
@@ -127,7 +129,7 @@ class TestStoreLifecycle:
         s = _store(tmp_path, user="debug:\n  level: low\n")
         assert s.resolve("debug.level", env="X", default="off") == "low"
         # mutate the user file, then reload
-        (tmp_path / "home" / ".config" / "clio-agent" / "config.yaml").write_text(
+        (paths.user_config_dir_for(tmp_path / "home", {}) / "config.yaml").write_text(
             "debug:\n  level: high\n", encoding="utf-8"
         )
         assert s.resolve("debug.level", env="X", default="off") == "low"  # cached

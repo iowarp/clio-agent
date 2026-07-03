@@ -345,9 +345,12 @@ class ARCMemory:
             # Store in cache
             self._cache.put(cache_key, invocation)
 
-            # Store in index (for session-based queries)
+            # Store in index (for session-based queries). The trace_id is part
+            # of the composite key so two invocations in the same session that
+            # share a timestamp (coarse clocks resolve sub-millisecond calls to
+            # the same tick) do not collide and silently drop one another.
             timestamp = self._parse_timestamp(invocation.started_at)
-            index_key = (session_id, timestamp)
+            index_key = (session_id, timestamp, trace_id)
             self._inv_index.insert(index_key, {"trace_id": trace_id})
 
             # Persist to disk
