@@ -1,5 +1,7 @@
 """Tests for the tool execution boundary."""
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -454,7 +456,10 @@ def test_sync_mcp_tool_executor_repairs_unique_missing_file_arg(
         set_global_tool_observer(None)
         executor.close()
 
-    assert str(good.resolve()) in result
+    # The result is a JSON string; compare the parsed arg with Path equality so
+    # the assertion is independent of separators and JSON backslash escaping.
+    repaired = json.loads(result)["args"]["filepath"]
+    assert Path(repaired) == good.resolve()
     assert observed == [
         ("fake_echo", {"filepath": str(good.resolve())}, "started", None),
         ("fake_echo", {"filepath": str(good.resolve())}, "completed", None),
@@ -485,9 +490,12 @@ def test_sync_mcp_tool_executor_does_not_repair_ambiguous_missing_file_arg(
     finally:
         executor.close()
 
-    assert str(tmp_path / "typo/sample.fasta") in result
-    assert str(first.resolve()) not in result
-    assert str(second.resolve()) not in result
+    # Ambiguous matches stay untouched: the model's original path is preserved
+    # and neither candidate is substituted in.
+    kept = json.loads(result)["args"]["filepath"]
+    assert Path(kept) == tmp_path / "typo" / "sample.fasta"
+    assert Path(kept) != first.resolve()
+    assert Path(kept) != second.resolve()
 
 
 def test_sync_mcp_tool_executor_reports_cooperative_cancel_after_tool_result():
@@ -552,7 +560,8 @@ def test_ground_output_paths_resolves_relative_emitted_path():
         _PLOT_SCHEMA,
         "/work/space",
     )
-    assert grounded["output_path"] == "/work/space/plot.png"
+    # Build the expected value with pathlib so the OS-native separator is used.
+    assert grounded["output_path"] == str(Path("/work/space") / "plot.png")
     # Input path is untouched (not an output-arg name).
     assert grounded["data_path"] == "/data/in.csv"
 
@@ -564,17 +573,20 @@ def test_ground_output_paths_injects_workspace_path_when_omitted():
         _PLOT_SCHEMA,
         "/work/space",
     )
-    assert grounded["output_path"] == "/work/space/timeseries.png"
+    assert grounded["output_path"] == str(Path("/work/space") / "timeseries.png")
 
 
-def test_ground_output_paths_leaves_absolute_emitted_path_untouched():
+def test_ground_output_paths_leaves_absolute_emitted_path_untouched(tmp_path):
     """An absolute output path the model emits is preserved verbatim."""
+    # Only OS-native absolute paths are recognized as absolute by pathlib on
+    # the running platform, so build one from tmp_path rather than a POSIX literal.
+    absolute_out = str(tmp_path / "abs.png")
     grounded = _ground_output_paths(
-        {"data_path": "/data/in.csv", "output_path": "/tmp/abs.png"},
+        {"data_path": "/data/in.csv", "output_path": absolute_out},
         _PLOT_SCHEMA,
         "/work/space",
     )
-    assert grounded["output_path"] == "/tmp/abs.png"
+    assert grounded["output_path"] == absolute_out
 
 
 def test_ground_output_paths_noop_without_workspace_root():
@@ -587,11 +599,12 @@ def test_ground_output_paths_noop_without_workspace_root():
     assert "output_path" not in grounded2
 
 
-def test_ground_output_paths_ignores_absolute_schema_default():
+def test_ground_output_paths_ignores_absolute_schema_default(tmp_path):
     """A schema default that is already absolute is not re-grounded on omit."""
+    # Use an OS-native absolute default; only those are seen as absolute here.
     schema = {
         "properties": {
-            "output_path": {"type": "string", "default": "/etc/fixed/out.png"},
+            "output_path": {"type": "string", "default": str(tmp_path / "fixed" / "out.png")},
         }
     }
     grounded = _ground_output_paths({"data_path": "/data/in.csv"}, schema, "/work/space")
@@ -625,7 +638,8 @@ def test_sync_mcp_tool_executor_grounds_relative_output_path(tmp_path):
             )
     finally:
         executor.close()
-    assert str(tmp_path / "plot.png") in result
+    grounded = json.loads(result)["args"]["output_path"]
+    assert Path(grounded) == tmp_path / "plot.png"
 
 
 def test_sync_mcp_tool_executor_injects_omitted_output_path(tmp_path):
@@ -644,7 +658,8 @@ def test_sync_mcp_tool_executor_injects_omitted_output_path(tmp_path):
             )
     finally:
         executor.close()
-    assert str(tmp_path / "timeseries.png") in result
+    injected = json.loads(result)["args"]["output_path"]
+    assert Path(injected) == tmp_path / "timeseries.png"
 
 
 def test_sync_mcp_tool_executor_keeps_absolute_output_path(tmp_path):
@@ -655,16 +670,21 @@ def test_sync_mcp_tool_executor_keeps_absolute_output_path(tmp_path):
         timeout=1.0,
         client_factory=lambda _: fake_client,
     )
+    # An OS-native absolute path outside the workspace: only these are seen as
+    # absolute by pathlib on the running platform.
+    absolute_out = tmp_path.parent / "keep.png"
     try:
         with tool_workspace_context(tmp_path):
             result = executor.call_tool(
                 "plot_timeseries",
-                {"data_path": "/data/in.csv", "output_path": "/tmp/keep.png"},
+                {"data_path": "/data/in.csv", "output_path": str(absolute_out)},
             )
     finally:
         executor.close()
-    assert "/tmp/keep.png" in result
-    assert str(tmp_path / "keep.png") not in result
+    kept = json.loads(result)["args"]["output_path"]
+    # The absolute path is passed through unchanged, not re-grounded under the workspace.
+    assert Path(kept) == absolute_out
+    assert Path(kept) != tmp_path / "keep.png"
 
 
 def test_notify_tool_observer_failure_logs_reason(caplog):
