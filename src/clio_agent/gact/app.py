@@ -1312,25 +1312,38 @@ async def _construct_agent_async(app: "FastAPI") -> None:
         )
 
         cfg = load_config_from_env()
+        # Boot-time process-global dspy default: a HARMLESS ambient fallback only
+        # (design §6). It is never rewritten on a per-expert path; the main agent
+        # and every expert select their LM per-call via ``dspy.context``. Kept so
+        # any un-wrapped ambient caller still has a valid LM.
         dspy.configure(
             lm=create_lm(cfg),
             adapter=create_chat_adapter(cfg),
         )
-        # Reseed the per-app default profile from the config the agent actually
-        # boots with (design §9 step 4). build_app already seeded a default from
-        # this same env, so this keeps the store consistent with the live boot
-        # cfg via an atomic pointer swap. Shadow-only: nothing reads it yet.
+        # Drop the boot env-handoff (design §9 step 9): hand the ONE boot config to
+        # ClioAgent instead of letting it read the environment a SECOND time. The
+        # main agent binds ``_main_lm`` / ``_planner_lm`` / ``_dspy_adapter`` off
+        # this exact config (credential included — the boot/default config is the
+        # sanctioned env-credential read, design §6), so a GACT booted purely from
+        # ``CLIO_LM_*`` still authenticates.
+        agent = ClioAgent(verbose=False, arc=arc, provider_config=cfg)
+        # Make the ProviderProfileStore the authoritative identity registry:
+        # reseed its default from the agent's FINAL resolved config (post
+        # lm_studio model discovery) so the store's default profile and
+        # ``ClioAgent._main_lm`` are the SAME identity, and every expert inherits
+        # exactly what the main agent runs (design §9 step 9). build_app already
+        # seeded a default; this keeps the store consistent via an atomic swap.
         from clio_agent.gact.providers.profile_store import ProviderProfileStore
         from clio_agent.providers.lm_spec import spec_from_config
 
         existing = getattr(app.state, "provider_profiles", None)
-        default_spec = spec_from_config(cfg)
+        default_spec = spec_from_config(agent._provider_config)
         app.state.provider_profiles = (
             existing.with_default(default_spec)
             if isinstance(existing, ProviderProfileStore)
             else ProviderProfileStore.seed(default_spec)
         )
-        return ClioAgent(verbose=False, arc=arc)
+        return agent
 
     try:
         agent = await loop.run_in_executor(None, _build)
