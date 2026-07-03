@@ -112,7 +112,12 @@ def _patch_handshake(monkeypatch: pytest.MonkeyPatch, report_or_exc: object) -> 
 
 
 def test_golden_equivalence_same_provider(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Same-provider spec materializes to today's ``_dynamic_agent_lm_config`` output."""
+    """``_dynamic_agent_lm_config`` (now a resolver delegate) matches a direct resolve.
+
+    Since step 6 ``_dynamic_agent_lm_config`` builds an ``LMSpec`` and delegates to
+    :func:`resolve_endpoint_and_handshake`, an undeclared same-provider expert must
+    materialize to exactly what a direct resolve of the same base spec yields.
+    """
     from clio_agent.gact.agents.builders import _dynamic_agent_lm_config
 
     base_config = LMProviderConfig(provider="lm_studio", model="qwen-test")
@@ -122,18 +127,21 @@ def test_golden_equivalence_same_provider(monkeypatch: pytest.MonkeyPatch) -> No
     assert base_config.context_window == 262144
     assert base_config.api_key == "lm-studio"  # local-provider placeholder
 
+    # Patch the handshake BEFORE the delegate runs it, and pin active_app to None so
+    # the delegate takes the base-agent fallback (not a leaked profile store).
+    _patch_handshake(monkeypatch, report)
+    monkeypatch.setattr("clio_agent.gact.context.active_app", lambda: None)
+
     base_agent = SimpleNamespace(_provider_config=base_config)
     agent_def = AgentDef(id="expert-a", title="Expert A")  # declares nothing → inherit
 
-    today_cfg = _dynamic_agent_lm_config(base_agent, agent_def)
+    today_cfg = _dynamic_agent_lm_config(base_agent, agent_def).materialize(CredentialResolver())
 
-    # Resolver path: build the spec off the same base + agent_def, fold the same
-    # handshake, resolve the credential fresh.
-    _patch_handshake(monkeypatch, report)
+    # Direct resolver path: build the spec off the same base + agent_def, fold the
+    # same handshake, resolve the credential fresh.
     default_spec = spec_from_config(base_config)
     spec = build_spec(agent_def, default_spec)
-    resolved = resolve_endpoint_and_handshake(spec)
-    new_cfg = resolved.materialize(CredentialResolver())
+    new_cfg = resolve_endpoint_and_handshake(spec).materialize(CredentialResolver())
 
     assert new_cfg.api_base == today_cfg.api_base
     assert new_cfg.model == today_cfg.model

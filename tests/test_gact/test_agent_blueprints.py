@@ -67,6 +67,21 @@ from clio_agent.gact.types import AgentDef
 from tests.test_gact.conftest import complete_turn
 
 
+def _fake_resolved_spec(provider: str, model: str) -> Any:
+    """Stand in for a ``ResolvedLMSpec`` in tests that patch ``_dynamic_agent_lm_config``.
+
+    The per-expert LM path (design §4) makes ``_dynamic_agent_lm_config`` return a
+    ``ResolvedLMSpec`` whose ``materialize`` yields the runnable config. Tests that
+    stub the resolver only care about the provider/model, so this returns a light
+    object exposing the same ``materialize(cred_resolver) -> config`` contract.
+    """
+
+    def _materialize(cred_resolver: Any = None) -> Any:
+        return SimpleNamespace(provider=provider, model=model)
+
+    return SimpleNamespace(materialize=_materialize)
+
+
 class _SinkArc:
     """Minimal ARC-as-source stub for fake-app emit tests.
 
@@ -1125,7 +1140,7 @@ def test_blueprint_compiler_selects_declared_dspy_module_kind(
     monkeypatch.setattr(dspy, "ReAct", FakeReAct)
     monkeypatch.setattr(
         "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
-        lambda base_agent, agent_def: SimpleNamespace(provider="openai", model="gpt-5-mini"),
+        lambda base_agent, agent_def: _fake_resolved_spec("openai", "gpt-5-mini"),
     )
     monkeypatch.setattr(
         "clio_agent.gact.agents.builders._dynamic_agent_tools",
@@ -1227,7 +1242,7 @@ def test_blueprint_module_allows_handoff_only_root_output(monkeypatch: pytest.Mo
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
     monkeypatch.setattr(
         "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
-        lambda base_agent, agent_def: SimpleNamespace(provider="argonne", model="gpt-oss-120b"),
+        lambda base_agent, agent_def: _fake_resolved_spec("argonne", "gpt-oss-120b"),
     )
 
     module = _build_blueprint_dspy_module(
@@ -1264,7 +1279,7 @@ def test_blueprint_module_empty_answer_with_children_enters_repair_path(
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
     monkeypatch.setattr(
         "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
-        lambda base_agent, agent_def: SimpleNamespace(provider="argonne", model="gpt-oss-120b"),
+        lambda base_agent, agent_def: _fake_resolved_spec("argonne", "gpt-oss-120b"),
     )
     monkeypatch.setattr(
         "clio_agent.gact.agents.builders._runtime_dynamic_agent_children_context",
@@ -1318,7 +1333,7 @@ def test_blueprint_react_empty_answer_preserves_tool_trajectory(
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
     monkeypatch.setattr(
         "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
-        lambda base_agent, agent_def: SimpleNamespace(provider="argonne", model="gpt-oss-120b"),
+        lambda base_agent, agent_def: _fake_resolved_spec("argonne", "gpt-oss-120b"),
     )
     monkeypatch.setattr(
         "clio_agent.gact.agents.builders._dynamic_agent_tools", lambda base_agent, agent_def: []

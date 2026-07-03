@@ -105,10 +105,14 @@ def _patch_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object())
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
+    # Step 6: ``_dynamic_agent_lm_config`` returns a ``ResolvedLMSpec`` whose
+    # ``materialize`` yields the runnable config; stub that contract here.
     monkeypatch.setattr(
         "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
         lambda base_agent, agent_def: SimpleNamespace(
-            provider="argonne", model="gpt-oss-120b", temperature=0.0
+            materialize=lambda cred_resolver=None: SimpleNamespace(
+                provider="argonne", model="gpt-oss-120b", temperature=0.0
+            )
         ),
     )
     monkeypatch.setattr(

@@ -361,6 +361,7 @@ def test_dynamic_agent_lm_config_preserves_claude_code_transport() -> None:
         )
     )
 
+    # Step 6: the delegate returns a ResolvedLMSpec; materialize to the config.
     cfg = _dynamic_agent_lm_config(
         base_agent,
         AgentDef(
@@ -369,7 +370,7 @@ def test_dynamic_agent_lm_config_preserves_claude_code_transport() -> None:
             title="EarthScope",
             system_prompt="Use the EarthScope blueprint.",
         ),
-    )
+    ).materialize()
 
     assert cfg.provider == "claude_code"
     assert cfg.claude_code_transport == "exec"

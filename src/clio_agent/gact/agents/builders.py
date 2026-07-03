@@ -78,54 +78,95 @@ from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
     from clio_agent.gact.types import AgentDef
+    from clio_agent.providers.lm_spec import LMSpec
+    from clio_agent.providers.resolver import ResolvedLMSpec
 
 
-def _dynamic_agent_lm_config(base_agent: Any, agent_def: "AgentDef") -> Any:
-    """Build a provider config for a registered dynamic agent."""
-    from clio_agent.config import (  # noqa: PLC0415
-        LMProviderConfig,
-        load_config_from_env,
-    )
-    from clio_agent.gact.app import (  # noqa: PLC0415
-        _user_agent_float_param,
-        _user_agent_int_param,
-    )
+def _default_profile_spec(base_agent: Any) -> "LMSpec":
+    """Return the default-profile :class:`LMSpec` an undeclared expert inherits.
 
+    Reads the active per-app profile store (``app.state.provider_profiles`` — the
+    immutable, RCU-swapped registry from design §3.4) when an app is bound;
+    otherwise falls back to the boot agent's live ``_provider_config`` (or a fresh
+    :func:`load_config_from_env` config) projected to a secret-free spec. That
+    fallback is the byte-identical single-default-LM baseline (RULE 2), so a
+    direct call with no active app resolves exactly as before.
+
+    Args:
+        base_agent: The owning agent; consulted for ``_provider_config`` only when
+            no per-app profile store is available.
+
+    Returns:
+        The default-profile :class:`LMSpec` whose fields undeclared expert fields
+        inherit.
+    """
+    from clio_agent.providers.lm_spec import spec_from_config  # noqa: PLC0415
+
+    app = _ctx.active_app()
+    store = getattr(getattr(app, "state", None), "provider_profiles", None) if app else None
+    if store is not None:
+        default = getattr(store, "default", None)
+        if default is not None:
+            return default
     base_config = getattr(base_agent, "_provider_config", None)
     if base_config is None:
+        from clio_agent.config import load_config_from_env  # noqa: PLC0415
+
         base_config = load_config_from_env()
-    provider = agent_def.default_provider or base_config.provider
-    same_provider = provider == base_config.provider
-    params = agent_def.parameters if isinstance(agent_def.parameters, Mapping) else {}
-    api_base = str(params.get("api_base") or (base_config.api_base if same_provider else ""))
-    api_key = base_config.api_key if same_provider else ""
-    new_config = LMProviderConfig(
-        provider=provider,  # type: ignore[arg-type]
-        api_base=api_base,
-        model=agent_def.default_model or (base_config.model if same_provider else ""),
-        api_key=api_key,
-        temperature=_user_agent_float_param(agent_def, "temperature", base_config.temperature),
-        max_tokens=_user_agent_int_param(agent_def, "max_tokens", base_config.max_tokens),
-        planner_temperature=base_config.planner_temperature,
-        planner_max_tokens=base_config.planner_max_tokens,
-        codex_transport=base_config.codex_transport,
-        claude_code_transport=base_config.claude_code_transport,
-        thinking_budget=_user_agent_int_param(
-            agent_def,
-            "thinking_budget",
-            base_config.thinking_budget,
-        ),
-    )
-    # Propagate the handshake-discovered context window (init=False fields, so the
-    # constructor above leaves them None). Without this the live plane's
-    # auto-compaction has no denominator on the dynamic-agent path, since
-    # apply_handshake is not called here.
-    if same_provider and new_config.model == base_config.model:
-        for _attr in ("context_window", "chosen_context"):
-            _val = getattr(base_config, _attr, None)
-            if _val:
-                setattr(new_config, _attr, _val)
-    return new_config
+    return spec_from_config(base_config)
+
+
+def _dynamic_agent_lm_config(base_agent: Any, agent_def: "AgentDef") -> "ResolvedLMSpec":
+    """Resolve a registered dynamic agent's provider identity to a ``ResolvedLMSpec``.
+
+    Builds a serializable :class:`~clio_agent.providers.lm_spec.LMSpec` from the
+    ``AgentDef`` — inheriting every field it does not declare from the active
+    default profile (:func:`_default_profile_spec`) — then delegates to
+    :func:`~clio_agent.providers.resolver.resolve_endpoint_and_handshake`, the
+    pure endpoint + cached-handshake half (design §3.3/§4). The credential is
+    deliberately NOT resolved here; each expert ``forward()`` resolves it fresh
+    via :meth:`~clio_agent.providers.resolver.ResolvedLMSpec.materialize` because
+    tokens rotate mid-session.
+
+    This drops the former ``same_provider`` gate: a cross-provider expert now
+    authenticates its own provider and gets its own handshake-folded
+    ``context_window`` / context-aware ``max_tokens`` / reasoning + tool flags,
+    instead of the empty credentials and ``None`` context window the gate produced
+    (design §2 "the gap"). The undeclared same-provider expert still resolves to
+    the default profile, preserving the baseline.
+
+    Args:
+        base_agent: The owning agent (source of the default-profile fallback).
+        agent_def: The registered dynamic agent's definition.
+
+    Returns:
+        A :class:`~clio_agent.providers.resolver.ResolvedLMSpec` — the key-less,
+        handshake-populated skeleton plus any structured handshake-fallback
+        reason. Call :meth:`ResolvedLMSpec.materialize` to get the runnable config.
+    """
+    from clio_agent.providers.lm_spec import build_spec  # noqa: PLC0415
+    from clio_agent.providers.resolver import resolve_endpoint_and_handshake  # noqa: PLC0415
+
+    default_spec = _default_profile_spec(base_agent)
+    declared_provider = str(getattr(agent_def, "default_provider", "") or "")
+    if declared_provider and declared_provider != default_spec.provider:
+        # Cross-provider expert: the endpoint / model / credential-ref / transport
+        # are provider-scoped, so inheriting the default provider's values would
+        # point the new provider at the wrong endpoint (and a foreign credential).
+        # Blank them — the resolver fills the new provider's PROVIDER_DEFAULTS and
+        # its own default credential — while the provider-agnostic sampling params
+        # still inherit. This preserves the old ``same_provider`` endpoint/model
+        # semantics (design §2 the gap; §4).
+        default_spec = replace(
+            default_spec,
+            provider=declared_provider,
+            model="",
+            api_base="",
+            credential_ref="",
+            transport="",
+        )
+    spec = build_spec(agent_def, default_spec)
+    return resolve_endpoint_and_handshake(spec)
 
 
 def _prompt_user_agent_signature() -> Any:
@@ -162,12 +203,19 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
         _coerce_expert_handoff_rows,
     )
     from clio_agent.prompts import PromptRegistry  # noqa: PLC0415
+    from clio_agent.providers.credentials import CredentialResolver  # noqa: PLC0415
 
     class PromptUserAgentModule(dspy.Module):
         def __init__(self, base_agent: Any, agent_def: "AgentDef") -> None:
             super().__init__()
             self.agent_def = agent_def
-            self.config = _dynamic_agent_lm_config(base_agent, agent_def)
+            # Per-expert provider identity as data; the credential is resolved
+            # fresh per forward() via ``self._resolved_spec.materialize`` (design
+            # §4). ``self.config`` is the init-time materialization kept for
+            # compatibility (adapter/context-window reads).
+            self._resolved_spec = _dynamic_agent_lm_config(base_agent, agent_def)
+            self._cred_resolver = CredentialResolver()
+            self.config = self._resolved_spec.materialize(self._cred_resolver)
             self._provider_config = self.config
             runtime = PromptRegistry().resolve("clio.runtime.prompt_user_agent")
             runtime_text = str(getattr(runtime, "text", "") or "").strip()
@@ -205,9 +253,12 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
                         executor_work_may_continue=False,
                     )
                 )
+            # Resolve the credential fresh for this call (tokens rotate); the
+            # dspy.context boundary itself is unchanged (design §4).
+            cfg = self._resolved_spec.materialize(self._cred_resolver)
             with dspy.context(
-                lm=create_lm(self.config),
-                adapter=create_chat_adapter(self.config),
+                lm=create_lm(cfg),
+                adapter=create_chat_adapter(cfg),
             ):
                 result = self.answer_synthesizer(
                     system_prompt=self.system_prompt,
@@ -1503,13 +1554,20 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
         _tool_agent_empty_answer_fallback,
         _workflow_state_from_outputs,
     )
+    from clio_agent.providers.credentials import CredentialResolver  # noqa: PLC0415
 
     class BlueprintExpertModule(dspy.Module):
         def __init__(self, base_agent: Any, agent_def: "AgentDef") -> None:
             super().__init__()
             self.agent_def = agent_def
             self.kind = _blueprint_module_kind(agent_def)
-            self.config = _dynamic_agent_lm_config(base_agent, agent_def)
+            # Per-expert provider identity as data; the credential is resolved
+            # fresh per forward() via ``self._resolved_spec.materialize`` (design
+            # §4). ``self.config`` is the init-time materialization kept for
+            # compatibility (adapter/context-window reads).
+            self._resolved_spec = _dynamic_agent_lm_config(base_agent, agent_def)
+            self._cred_resolver = CredentialResolver()
+            self.config = self._resolved_spec.materialize(self._cred_resolver)
             self._provider_config = self.config
             self.signature = _blueprint_runtime_signature(agent_def)
             self.tools: list[Any] = []
@@ -1684,8 +1742,12 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     _ck_q[-500:],
                 )
             try:
-                adapter = create_chat_adapter(self.config)
-                _base_temp = float(getattr(self.config, "temperature", 0.0) or 0.0)
+                # Resolve the credential fresh for this call (tokens rotate); the
+                # dspy.context boundary below is unchanged (design §4). The temp
+                # variants replace() off this per-call config, never self.config.
+                _fwd_config = self._resolved_spec.materialize(self._cred_resolver)
+                adapter = create_chat_adapter(_fwd_config)
+                _base_temp = float(getattr(_fwd_config, "temperature", 0.0) or 0.0)
                 _max_repairs = _extract_repair_attempts()
                 _repair_hint = ""
                 # original attempt + up to _max_repairs bounded SCHEMA-REPAIR retries
@@ -1696,9 +1758,9 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     # -- dspy _warn_zero_temp_rollout).
                     _attempt_temp = _repair_temperature(_base_temp, _repair_attempt)
                     _attempt_config = (
-                        self.config
+                        _fwd_config
                         if _attempt_temp == _base_temp
-                        else replace(self.config, temperature=_attempt_temp)
+                        else replace(_fwd_config, temperature=_attempt_temp)
                     )
                     _call_kwargs = (
                         kwargs
@@ -1762,7 +1824,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                                         _re_temp = _repair_temperature(_base_temp, _re_i)
                                         with dspy.context(
                                             lm=create_lm(
-                                                replace(self.config, temperature=_re_temp)
+                                                replace(_fwd_config, temperature=_re_temp)
                                             ),
                                             adapter=adapter,
                                         ):
@@ -1930,12 +1992,19 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
         _tool_agent_empty_answer_fallback,
     )
     from clio_agent.prompts import PromptRegistry  # noqa: PLC0415
+    from clio_agent.providers.credentials import CredentialResolver  # noqa: PLC0415
 
     class ToolUserAgentModule(dspy.Module):
         def __init__(self, base_agent: Any, agent_def: "AgentDef") -> None:
             super().__init__()
             self.agent_def = agent_def
-            self.config = _dynamic_agent_lm_config(base_agent, agent_def)
+            # Per-expert provider identity as data; the credential is resolved
+            # fresh per forward() via ``self._resolved_spec.materialize`` (design
+            # §4). ``self.config`` is the init-time materialization kept for
+            # compatibility (adapter/context-window reads).
+            self._resolved_spec = _dynamic_agent_lm_config(base_agent, agent_def)
+            self._cred_resolver = CredentialResolver()
+            self.config = self._resolved_spec.materialize(self._cred_resolver)
             self._provider_config = self.config
             self.tools = _dynamic_agent_tools(base_agent, agent_def)
             runtime = PromptRegistry().resolve("clio.runtime.tool_user_agent")
@@ -1997,11 +2066,14 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             try:
                 # track_usage installs the tracker so auto-compaction can read each
                 # call's exact prompt_tokens.
+                # Resolve the credential fresh for this call (tokens rotate); the
+                # dspy.context boundary itself is unchanged (design §4).
+                cfg = self._resolved_spec.materialize(self._cred_resolver)
                 with (
                     dspy.track_usage(),
                     dspy.context(
-                        lm=create_lm(self.config),
-                        adapter=create_chat_adapter(self.config),
+                        lm=create_lm(cfg),
+                        adapter=create_chat_adapter(cfg),
                     ),
                 ):
                     result = self.react_agent(
