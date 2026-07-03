@@ -79,6 +79,49 @@ def _context_lm_bound() -> bool:
         return False
 
 
+def install_process_default_lm(lm: Any, adapter: Any = None) -> bool:
+    """Install/refresh the process-default dspy LM (+ adapter) — the admin bind's job.
+
+    The default/admin bind (``PUT /v1/providers/lm``) is the ONLY writer of the
+    process-global default (design ``per-expert-provider-lm.md`` §6): experts still
+    resolve their own LM per ``dspy.context``, but the ambient consumers this module
+    guards (auto-compaction summarisation, usage/token metering, the turn-end
+    model-id probe) and the deferred-boot / rebind paths need a *valid, current*
+    default to read when no per-profile context is active. Setting it on the first
+    bind fixes the deferred-boot ``lm=None`` hard-503; refreshing it on a rebind
+    fixes the stale-model ambient read.
+
+    Writes ``dspy.dsp.utils.settings.main_thread_config`` **directly** instead of
+    calling :func:`dspy.configure`. The bind runs on an executor worker thread that
+    is not the boot-time ``dspy.configure`` owner thread, and dspy rejects a
+    second-owner ``configure`` with ``RuntimeError``. The direct write is a plain
+    per-key dict assignment (atomic under the GIL) and is exactly the slot
+    ``dspy.settings.lm`` resolves when no ``dspy.context`` override is active
+    (mirroring :func:`_context_lm_bound`). Installing the adapter alongside the LM
+    keeps the ambient ChatAdapter matched to the ambient LM (never a mismatched
+    pair).
+
+    Args:
+        lm: The new process-default dspy LM. ``None`` is a no-op (nothing to install).
+        adapter: The adapter to install alongside it; left unchanged when ``None``.
+
+    Returns:
+        ``True`` when the default LM was installed; ``False`` when ``lm`` is ``None``
+        or dspy's settings module is unavailable.
+    """
+    if lm is None:
+        return False
+    try:
+        from dspy.dsp.utils.settings import main_thread_config  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 - dspy shape drift must not break the bind
+        logger.warning("process-default LM install skipped: dspy settings module unavailable")
+        return False
+    main_thread_config["lm"] = lm
+    if adapter is not None:
+        main_thread_config["adapter"] = adapter
+    return True
+
+
 def active_lm() -> tuple[Any, bool]:
     """Return ``(lm, ambient)``: the active dspy LM and whether it is the boot default.
 

@@ -951,14 +951,27 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             # Only rebuild from scratch when no agent yet exists
             # (first-connect lifecycle: the deferred-construction
             # task hasn't completed).
+            import copy as _copy  # noqa: PLC0415
+
             existing = app.state.agent
             if existing is not None:
-                existing._provider_config = cfg
-                existing._main_lm = new_lm
-                existing._planner_lm = new_planner_lm
-                existing._router_lm = new_planner_lm
-                existing._dspy_adapter = new_adapter
-                agent = existing
+                # Publish atomically (design §5): build the fully-populated agent OFF
+                # TO THE SIDE — a shallow copy that SHARES the expensive, LM-independent
+                # state (ARC retriever, LSM tree, registry, expert instances, tool
+                # gateways) by reference but gets its own ``__dict__`` — set its LM
+                # fields, then swap ``app.state.agent`` to it in ONE pointer assignment
+                # below. A concurrent reader (a turn's ``dspy.context``, a GET) therefore
+                # sees either the whole old agent or the whole new agent, never a
+                # half-updated singleton with ``_main_lm`` from one provider and
+                # ``_dspy_adapter`` from another (the torn-read finding). The shallow
+                # copy is cheap (no expert re-wiring), preserving the hot-swap latency
+                # win over a from-scratch rebuild.
+                agent = _copy.copy(existing)
+                agent._provider_config = cfg
+                agent._main_lm = new_lm
+                agent._planner_lm = new_planner_lm
+                agent._router_lm = new_planner_lm
+                agent._dspy_adapter = new_adapter
             else:
                 # First-time agent construction reads the ambient boot config
                 # from env; its throwaway LMs are immediately replaced by the
@@ -996,6 +1009,24 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             ) from exc
+
+        # Install/refresh the process-global dspy default from the admin bind
+        # (design §6). This is the DEFAULT/admin action — the ONLY sanctioned writer
+        # of the process default; experts still resolve their own LM per
+        # ``dspy.context`` (no per-expert global mutation). Setting it here gives
+        # every AMBIENT consumer (auto-compaction summarisation, usage/token
+        # metering, the turn-end model-id probe) a valid, CURRENT LM to read when no
+        # per-profile context is active. Without it: a deferred-boot GACT (started
+        # without ``CLIO_LM_PROVIDER``, so the boot ``dspy.configure`` never ran) has
+        # ambient ``lm=None`` and manual compaction hard-503s; and a rebind
+        # (PUT A -> PUT B) leaves ambient reads pinned to the stale boot/first model.
+        # Written through ``main_thread_config`` (not ``dspy.configure``) because the
+        # bind runs on an executor worker thread that is not the configure-owner.
+        from clio_agent.gact.runtime.ambient_lm import (  # noqa: PLC0415
+            install_process_default_lm,
+        )
+
+        install_process_default_lm(new_lm, new_adapter)
 
         # Atomic default-profile swap (design §5). The per-app profile store is
         # immutable; ``with_default`` builds a whole new snapshot and the single
@@ -1208,6 +1239,19 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             app.state.lm_config_task = task
             return _lm_provider_info()
 
+        # Register the in-flight bind so the in-progress 409 guard above serialises
+        # concurrent binds for EVERY provider — not only ``lm_studio``/``argonne``.
+        # Cloud providers run this synchronous path; without registering the task a
+        # second concurrent cloud PUT sailed past the guard and both binds mutated
+        # the singleton agent's LM fields non-atomically (the torn-read finding). We
+        # store the current request task (not-done while it awaits the executor
+        # below), so a concurrent PUT arriving mid-bind is rejected with 409 and the
+        # admitted bind wins whole-object (last-writer-wins), never field-torn. There
+        # is no await between the guard check above and this assignment, so the two
+        # requests cannot both observe an idle guard.
+        current_task = asyncio.current_task()
+        if current_task is not None:
+            app.state.lm_config_task = current_task
         info = await asyncio.get_running_loop().run_in_executor(
             None,
             lambda: asyncio.run(_apply_lm_provider(req)),
