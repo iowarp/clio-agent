@@ -1358,7 +1358,7 @@ def _path_like_strings(value: Any, *, ignored_keys: set[str] | None = None) -> l
     """Extract path-like strings from nested tool metadata."""
     if isinstance(value, str):
         return re.findall(
-            r"[A-Za-z]:\\[^\n\r\"']+|/(?:[^\s,\"'`]|\\ )+",
+            r"[A-Za-z]:\\(?:[^\s,\"'`]|\\ )+|/(?:[^\s,\"'`]|\\ )+",
             value,
         )
     if isinstance(value, dict):
