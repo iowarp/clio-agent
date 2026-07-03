@@ -32,9 +32,12 @@ Run:
 from __future__ import annotations
 
 import os
+import tempfile
 import time
 import uuid
+from pathlib import Path
 
+import filelock
 import msgspec
 import pytest
 
@@ -45,6 +48,41 @@ from clio_agent.arc.segments import SegmentStore, segments_to_keys
 from clio_agent.arc.storage import ARC_KINDS, make_arc_store
 
 pytestmark = pytest.mark.integration
+
+
+# ---- serial-only enforcement ----------------------------------------------
+#
+# The CTE runtime backing these tests is a machine-global shared daemon
+# (spawned once, DRAM-backed, attached by every process), and ``CTEStore.clear()``
+# is TOTAL across all kinds/sessions. Under pytest-xdist each worker is a
+# SEPARATE process attached to the SAME daemon, so the two destructive
+# ``clear()`` tests below would wipe records that sibling tests
+# (roundtrip / binary-guard / scope-isolation) are mid-way reading in another
+# worker — producing "roundtrip mismatch", "binary guard failed", and
+# "scan not empty after clear" only under parallelism. This module is
+# serial-only by design (see the module docstring); every test passes serially.
+#
+# ``xdist_group`` cannot enforce that here: it is honored only under
+# ``--dist loadgroup``, whereas the suite's parallel lane runs plain ``-n auto``
+# (``--dist load``), under which the marker is ignored and tests still spread
+# across workers. A cross-process file lock enforces mutual exclusion
+# regardless of the dist mode: every test in this module holds the lock for its
+# full duration, so no two ever run concurrently across xdist workers.
+_CTE_GLOBAL_LOCK = filelock.FileLock(
+    str(Path(tempfile.gettempdir()) / "clio_cte_stress_scale.lock")
+)
+
+
+@pytest.fixture(autouse=True)
+def _serialize_cte_global_daemon():
+    """Serialize every test in this module across processes (xdist workers).
+
+    The tests share one machine-global CTE daemon and two of them call the
+    TOTAL ``clear()``; running any concurrently corrupts the others' data. The
+    lock makes the module effectively serial no matter how the run is sharded.
+    """
+    with _CTE_GLOBAL_LOCK:
+        yield
 
 
 # ---- helpers --------------------------------------------------------------
