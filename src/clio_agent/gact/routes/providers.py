@@ -682,428 +682,424 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         """
 
         req = _normalize_lm_provider_request(req)
-        async with app.state.lm_bind_lock:
-            env_keys = (
-                "CLIO_LM_PROVIDER",
-                "CLIO_LM_API_BASE",
-                "CLIO_LM_MODEL",
-                "CLIO_LM_API_KEY",
-                "CLIO_CODEX_TRANSPORT",
-                "CLIO_CLAUDE_CODE_TRANSPORT",
-            )
-            env_before = {key: os.environ.get(key) for key in env_keys}
-            dspy_settings_before: dict[str, Any] | None = None
-            settings_sentinel = object()
+        env_keys = (
+            "CLIO_LM_PROVIDER",
+            "CLIO_LM_API_BASE",
+            "CLIO_LM_MODEL",
+            "CLIO_LM_API_KEY",
+            "CLIO_CODEX_TRANSPORT",
+            "CLIO_CLAUDE_CODE_TRANSPORT",
+        )
+        env_before = {key: os.environ.get(key) for key in env_keys}
+        dspy_settings_before: dict[str, Any] | None = None
+        settings_sentinel = object()
 
-            def _restore_process_env() -> None:
-                for key, value in env_before.items():
-                    if value is None:
-                        os.environ.pop(key, None)
-                    else:
-                        os.environ[key] = value
-
-            def _restore_dspy_settings() -> None:
-                if dspy_settings_before is None:
-                    return
-                try:
-                    from dspy.dsp.utils.settings import main_thread_config  # noqa: PLC0415
-                except Exception:
-                    return
-                for key, value in dspy_settings_before.items():
-                    if value is settings_sentinel:
-                        main_thread_config.pop(key, None)
-                    else:
-                        main_thread_config[key] = value
-
-            def _stamp_process_env(cfg: "LMProviderConfig", api_key: str) -> None:
-                os.environ["CLIO_LM_PROVIDER"] = req.provider
-                os.environ["CLIO_LM_API_BASE"] = req.api_base
-                os.environ["CLIO_LM_MODEL"] = req.model
-                os.environ["CLIO_LM_API_KEY"] = api_key
-                if req.provider == "codex":
-                    os.environ["CLIO_CODEX_TRANSPORT"] = cfg.codex_transport
+        def _restore_process_env() -> None:
+            for key, value in env_before.items():
+                if value is None:
+                    os.environ.pop(key, None)
                 else:
-                    os.environ.pop("CLIO_CODEX_TRANSPORT", None)
-                if req.provider == "claude_code":
-                    os.environ["CLIO_CLAUDE_CODE_TRANSPORT"] = cfg.claude_code_transport
+                    os.environ[key] = value
+
+        def _restore_dspy_settings() -> None:
+            if dspy_settings_before is None:
+                return
+            try:
+                from dspy.dsp.utils.settings import main_thread_config  # noqa: PLC0415
+            except Exception:
+                return
+            for key, value in dspy_settings_before.items():
+                if value is settings_sentinel:
+                    main_thread_config.pop(key, None)
                 else:
-                    os.environ.pop("CLIO_CLAUDE_CODE_TRANSPORT", None)
+                    main_thread_config[key] = value
 
-            def _apply_lm_studio_load_config() -> None:
-                """Apply LM Studio load-time options before wiring DSPy."""
+        def _stamp_process_env(cfg: "LMProviderConfig", api_key: str) -> None:
+            os.environ["CLIO_LM_PROVIDER"] = req.provider
+            os.environ["CLIO_LM_API_BASE"] = req.api_base
+            os.environ["CLIO_LM_MODEL"] = req.model
+            os.environ["CLIO_LM_API_KEY"] = api_key
+            if req.provider == "codex":
+                os.environ["CLIO_CODEX_TRANSPORT"] = cfg.codex_transport
+            else:
+                os.environ.pop("CLIO_CODEX_TRANSPORT", None)
+            if req.provider == "claude_code":
+                os.environ["CLIO_CLAUDE_CODE_TRANSPORT"] = cfg.claude_code_transport
+            else:
+                os.environ.pop("CLIO_CLAUDE_CODE_TRANSPORT", None)
 
-                if req.provider != "lm_studio" or req.context_length <= 0:
-                    return
+        def _apply_lm_studio_load_config() -> None:
+            """Apply LM Studio load-time options before wiring DSPy."""
 
-                import requests  # noqa: PLC0415
+            if req.provider != "lm_studio" or req.context_length <= 0:
+                return
 
-                root = _lm_studio_api_root(req.api_base)
-                if not root:
-                    raise RuntimeError("LM Studio api_base is empty")
+            import requests  # noqa: PLC0415
 
-                headers = _lm_studio_headers()
-                # Backend concurrency cap (LM Studio "Max Concurrent Predictions").
-                # Default 1: the agent fans out parallel sub-calls and a single-GPU
-                # box wedges when the backend serves them concurrently, so serialize.
-                _lm_studio_parallel = int(req.parallel) if req.parallel and req.parallel > 0 else 1
+            root = _lm_studio_api_root(req.api_base)
+            if not root:
+                raise RuntimeError("LM Studio api_base is empty")
 
-                def _already_loaded_with_requested_context() -> str:
-                    try:
-                        response = requests.get(
-                            f"{root}/api/v1/models",
-                            headers=headers,
-                            timeout=10,
-                        )
-                        if response.status_code >= 400:
-                            return ""
-                        payload = response.json()
-                    except Exception:
-                        return ""
+            headers = _lm_studio_headers()
+            # Backend concurrency cap (LM Studio "Max Concurrent Predictions").
+            # Default 1: the agent fans out parallel sub-calls and a single-GPU
+            # box wedges when the backend serves them concurrently, so serialize.
+            _lm_studio_parallel = int(req.parallel) if req.parallel and req.parallel > 0 else 1
 
-                    models = payload.get("models")
-                    if not isinstance(models, list):
-                        return ""
-                    for item in models:
-                        if not isinstance(item, dict):
-                            continue
-                        key = str(item.get("key") or "")
-                        loaded = item.get("loaded_instances")
-                        if not isinstance(loaded, list):
-                            continue
-                        for instance in loaded:
-                            if not isinstance(instance, dict):
-                                continue
-                            instance_id = str(instance.get("id") or "")
-                            if req.model not in {key, instance_id}:
-                                continue
-                            config = instance.get("config")
-                            if not isinstance(config, dict):
-                                continue
-                            try:
-                                loaded_context = int(config.get("context_length") or 0)
-                            except (TypeError, ValueError):
-                                loaded_context = 0
-                            try:
-                                loaded_parallel = int(config.get("parallel") or 0)
-                            except (TypeError, ValueError):
-                                loaded_parallel = 0
-                            # Reuse only if BOTH the context and the concurrency cap
-                            # already match what we'd load — otherwise a stale
-                            # parallel=4 instance would be kept and keep stalling.
-                            if loaded_context == req.context_length and (
-                                loaded_parallel == _lm_studio_parallel
-                            ):
-                                return instance_id
-                    return ""
-
-                loaded_instance_id = _already_loaded_with_requested_context()
-                if loaded_instance_id:
-                    _release_owned_lm_studio_instance(
-                        app,
-                        skip_instance_id=loaded_instance_id,
-                        raise_on_error=True,
-                    )
-                    return
-
-                _release_owned_lm_studio_instance(app, raise_on_error=True)
-                response = requests.post(
-                    f"{root}/api/v1/models/load",
-                    headers=headers,
-                    json={
-                        "model": req.model,
-                        "context_length": req.context_length,
-                        # LM Studio's "Max Concurrent Predictions". The agent issues
-                        # parallel sub-calls; a single-GPU backend stalls/OOMs when it
-                        # serves them concurrently, so cap it (default 1) and let
-                        # concurrent pipeline calls queue. Overridable via req.parallel.
-                        "parallel": _lm_studio_parallel,
-                        # Flash attention drastically cuts KV-cache memory. Without it,
-                        # a 9B model at a large context (e.g. 65536) on a 16GB card
-                        # fills VRAM as a multi-stage agent run accumulates context and
-                        # LM Studio WEDGES mid-run (the model stops responding even to a
-                        # 1-token probe -> the no-progress watchdog kills the run).
-                        # Enabling it is what makes the shareable local driver survive a
-                        # full pipeline. Opt out with CLIO_LMSTUDIO_FLASH_ATTENTION=0.
-                        "flash_attention": os.environ.get("CLIO_LMSTUDIO_FLASH_ATTENTION", "")
-                        .strip()
-                        .lower()
-                        not in {"0", "false", "no", "off"},
-                        "echo_load_config": True,
-                    },
-                    timeout=180,
-                )
-                if response.status_code >= 400:
-                    raise RuntimeError(
-                        "LM Studio model load failed "
-                        f"({response.status_code}): {(response.text or '')[:300]}"
-                    )
+            def _already_loaded_with_requested_context() -> str:
                 try:
+                    response = requests.get(
+                        f"{root}/api/v1/models",
+                        headers=headers,
+                        timeout=10,
+                    )
+                    if response.status_code >= 400:
+                        return ""
                     payload = response.json()
                 except Exception:
-                    payload = {}
-                instance_id = str(payload.get("instance_id") or "").strip()
-                if instance_id:
-                    app.state.lm_studio_owned_instance = {
-                        "root": root,
-                        "instance_id": instance_id,
-                        "model": req.model,
-                        "context_length": req.context_length,
-                        "created_at": datetime.now(timezone.utc).isoformat(),
-                    }
+                    return ""
+
+                models = payload.get("models")
+                if not isinstance(models, list):
+                    return ""
+                for item in models:
+                    if not isinstance(item, dict):
+                        continue
+                    key = str(item.get("key") or "")
+                    loaded = item.get("loaded_instances")
+                    if not isinstance(loaded, list):
+                        continue
+                    for instance in loaded:
+                        if not isinstance(instance, dict):
+                            continue
+                        instance_id = str(instance.get("id") or "")
+                        if req.model not in {key, instance_id}:
+                            continue
+                        config = instance.get("config")
+                        if not isinstance(config, dict):
+                            continue
+                        try:
+                            loaded_context = int(config.get("context_length") or 0)
+                        except (TypeError, ValueError):
+                            loaded_context = 0
+                        try:
+                            loaded_parallel = int(config.get("parallel") or 0)
+                        except (TypeError, ValueError):
+                            loaded_parallel = 0
+                        # Reuse only if BOTH the context and the concurrency cap
+                        # already match what we'd load — otherwise a stale
+                        # parallel=4 instance would be kept and keep stalling.
+                        if loaded_context == req.context_length and (
+                            loaded_parallel == _lm_studio_parallel
+                        ):
+                            return instance_id
+                return ""
+
+            loaded_instance_id = _already_loaded_with_requested_context()
+            if loaded_instance_id:
+                _release_owned_lm_studio_instance(
+                    app,
+                    skip_instance_id=loaded_instance_id,
+                    raise_on_error=True,
+                )
+                return
+
+            _release_owned_lm_studio_instance(app, raise_on_error=True)
+            response = requests.post(
+                f"{root}/api/v1/models/load",
+                headers=headers,
+                json={
+                    "model": req.model,
+                    "context_length": req.context_length,
+                    # LM Studio's "Max Concurrent Predictions". The agent issues
+                    # parallel sub-calls; a single-GPU backend stalls/OOMs when it
+                    # serves them concurrently, so cap it (default 1) and let
+                    # concurrent pipeline calls queue. Overridable via req.parallel.
+                    "parallel": _lm_studio_parallel,
+                    # Flash attention drastically cuts KV-cache memory. Without it,
+                    # a 9B model at a large context (e.g. 65536) on a 16GB card
+                    # fills VRAM as a multi-stage agent run accumulates context and
+                    # LM Studio WEDGES mid-run (the model stops responding even to a
+                    # 1-token probe -> the no-progress watchdog kills the run).
+                    # Enabling it is what makes the shareable local driver survive a
+                    # full pipeline. Opt out with CLIO_LMSTUDIO_FLASH_ATTENTION=0.
+                    "flash_attention": os.environ.get("CLIO_LMSTUDIO_FLASH_ATTENTION", "")
+                    .strip()
+                    .lower()
+                    not in {"0", "false", "no", "off"},
+                    "echo_load_config": True,
+                },
+                timeout=180,
+            )
+            if response.status_code >= 400:
+                raise RuntimeError(
+                    "LM Studio model load failed "
+                    f"({response.status_code}): {(response.text or '')[:300]}"
+                )
+            try:
+                payload = response.json()
+            except Exception:
+                payload = {}
+            instance_id = str(payload.get("instance_id") or "").strip()
+            if instance_id:
+                app.state.lm_studio_owned_instance = {
+                    "root": root,
+                    "instance_id": instance_id,
+                    "model": req.model,
+                    "context_length": req.context_length,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+
+        try:
+            import dspy
+
+            from clio_agent.agent import ClioAgent
+            from clio_agent.config import (
+                LMProviderConfig,
+                create_lm,
+            )
 
             try:
-                import dspy
+                from dspy.dsp.utils.settings import main_thread_config  # noqa: PLC0415
 
-                from clio_agent.agent import ClioAgent
-                from clio_agent.config import (
-                    LMProviderConfig,
-                    create_lm,
-                )
+                dspy_settings_before = {
+                    "lm": main_thread_config.get("lm", settings_sentinel),
+                    "adapter": main_thread_config.get("adapter", settings_sentinel),
+                }
+            except Exception:
+                dspy_settings_before = None
 
+            # Argonne / ALCF: if the TUI didn't ship an api_key, mint
+            # one from the user's stored Globus session. ``LMProviderConfig``
+            # will do this lazily inside __post_init__ too, but we resolve
+            # eagerly here so the env mirror below carries the real token
+            # for ClioAgent's reconstruction (load_config_from_env reads
+            # CLIO_LM_API_KEY first, before LMProviderConfig defaults run).
+            resolved_api_key = req.api_key
+            if req.provider == "argonne" and _is_placeholder_api_key(resolved_api_key):
+                auth_exc: Exception | None
                 try:
-                    from dspy.dsp.utils.settings import main_thread_config  # noqa: PLC0415
-
-                    dspy_settings_before = {
-                        "lm": main_thread_config.get("lm", settings_sentinel),
-                        "adapter": main_thread_config.get("adapter", settings_sentinel),
-                    }
-                except Exception:
-                    dspy_settings_before = None
-
-                # Argonne / ALCF: if the TUI didn't ship an api_key, mint
-                # one from the user's stored Globus session. ``LMProviderConfig``
-                # will do this lazily inside __post_init__ too, but we resolve
-                # eagerly here so the env mirror below carries the real token
-                # for ClioAgent's reconstruction (load_config_from_env reads
-                # CLIO_LM_API_KEY first, before LMProviderConfig defaults run).
-                resolved_api_key = req.api_key
-                if req.provider == "argonne" and _is_placeholder_api_key(resolved_api_key):
-                    auth_exc: Exception | None
-                    try:
-                        resolved_api_key = _resolve_argonne_runtime_api_key()
-                    except Exception as exc:
-                        resolved_api_key = ""
-                        auth_exc = exc
-                    else:
-                        auth_exc = None
-                    if not resolved_api_key:
-                        raise HTTPException(
-                            status_code=401,
-                            detail=ErrorEnvelope(
-                                error=ErrorInfo(
-                                    error="argonne_auth_required",
-                                    message=(
-                                        "ALCF provider selected but no Globus token "
-                                        "is available. Run "
-                                        "`python -m clio_agent.providers.argonne_auth "
-                                        "authenticate` once, or pass api_key in this "
-                                        "request."
-                                    ),
-                                    recoverable=True,
-                                )
-                            ).model_dump(exclude_none=True),
-                        ) from auth_exc
-
-                cfg = LMProviderConfig(
-                    provider=req.provider,  # type: ignore[arg-type]  # str validated at boundary
-                    api_base=req.api_base,
-                    model=req.model,
-                    api_key=resolved_api_key or "x",
-                    temperature=req.temperature,
-                    max_tokens=req.max_tokens,
-                    top_p=req.top_p,
-                    top_k=req.top_k,
-                    min_p=req.min_p,
-                    presence_penalty=req.presence_penalty,
-                    thinking_budget=req.thinking_budget,
-                    codex_transport=req.transport or "exec",
-                    claude_code_transport=req.transport or "sdk",
-                )
-                # Per-provider handshake: discover connectivity + per-model config and
-                # fold it into cfg — context-aware max_tokens (replacing the static ALCF
-                # 4096 cap on 128-256K-context models), reasoning/tool capability flags,
-                # and the queryable chosen_context. Never block a bind on a handshake
-                # failure: fall back to the static config unchanged.
-                handshake_report = None
-                try:
-                    from clio_agent.providers.handshake import (  # noqa: PLC0415
-                        HandshakeContext,
-                        run_handshake,
-                    )
-
-                    handshake_report = await run_handshake(
-                        HandshakeContext(
-                            provider_id=req.provider,
-                            provider_kind=req.provider,
-                            api_base=req.api_base,
-                            api_key=resolved_api_key or "",
-                            target_model=req.model,
-                            auth_mode="active",
-                        ),
-                        force=True,
-                    )
-                    cfg.apply_handshake(
-                        handshake_report, user_set_max_tokens=(req.max_tokens or 0) > 0
-                    )
-                except Exception:
-                    handshake_report = None
-                app.state.lm_handshake_report = handshake_report
-                await asyncio.get_running_loop().run_in_executor(
-                    None,
-                    _apply_lm_studio_load_config,
-                )
-                # iowarp/clio-agent — DSPy 3.x forbids dspy.configure()
-                # being re-called from a different async task than the
-                # first one. PUT /v1/providers/lm comes from the FastAPI
-                # request task, never the boot task, so the second call
-                # always blew up. Side-step the guard by mutating
-                # ``settings.main_thread_config['lm']`` directly — same
-                # underlying state DSPy's __getattr__ reads, no async
-                # task ownership check.
-                new_lm = create_lm(cfg)
-                from clio_agent.config import (  # noqa: PLC0415
-                    create_chat_adapter,
-                    create_planner_lm,
-                )
-
-                new_adapter = create_chat_adapter(cfg)
-                new_planner_lm = create_planner_lm(cfg)
-                try:
-                    from dspy.dsp.utils.settings import main_thread_config  # noqa: PLC0415
-
-                    main_thread_config["lm"] = new_lm
-                    main_thread_config["adapter"] = new_adapter
-                except Exception:  # pragma: no cover - dspy missing
-                    dspy.configure(lm=new_lm, adapter=new_adapter)
-                # Hot-swap the LM on the existing agent instead of
-                # rebuilding from scratch. ClioAgent's expensive state
-                # (ARC retriever, LSM tree, registry, expert instances,
-                # tool gateways) is LM-independent — rebuilding it for
-                # every Save+Connect costs ~5-10 s and is exactly the
-                # latency the user complained about. These attribute
-                # swaps cover the LM-dependent surface:
-                #   * _provider_config   -> health/config surfaces the new provider
-                #   * _main_lm           -> chat + answer synthesis use the new lm
-                #   * _planner_lm        -> planner runs with the new lm
-                #   * _dspy_adapter      -> local backends keep text ChatAdapter mode
-                #   * dspy.settings.lm   -> experts pick it up via dspy.context()
-                # Only rebuild from scratch when no agent yet exists
-                # (first-connect lifecycle: the deferred-construction
-                # task hasn't completed).
-                existing = app.state.agent
-                if existing is not None:
-                    existing._provider_config = cfg
-                    existing._main_lm = new_lm
-                    existing._planner_lm = new_planner_lm
-                    existing._router_lm = new_planner_lm
-                    existing._dspy_adapter = new_adapter
-                    agent = existing
+                    resolved_api_key = _resolve_argonne_runtime_api_key()
+                except Exception as exc:
+                    resolved_api_key = ""
+                    auth_exc = exc
                 else:
-                    # First-time agent construction still reads the provider from
-                    # env; restore the snapshot if construction rejects it. Inject the
-                    # ONE per-process ARC so this build reuses it (no per-bind ARC churn).
-                    _stamp_process_env(cfg, resolved_api_key or "x")
-                    bound_arc = _process_arc(app)
-                    agent = await asyncio.get_running_loop().run_in_executor(
-                        None, lambda: ClioAgent(verbose=False, arc=bound_arc)
-                    )
-                    # The fresh agent built its config + LMs from env (pre-handshake);
-                    # carry the handshake-applied cfg + cfg-based LMs onto it so the
-                    # context-aware max_tokens / chosen_context are in effect on the
-                    # very first bind, not just on subsequent hot-swaps.
-                    agent._provider_config = cfg
-                    agent._main_lm = new_lm
-                    agent._planner_lm = new_planner_lm
-                    agent._router_lm = new_planner_lm
-                    agent._dspy_adapter = new_adapter
-            except HTTPException:
-                # Argonne auth path raises a structured 401 above; keep its
-                # error code intact instead of flattening to a generic 400.
-                _restore_process_env()
-                _restore_dspy_settings()
-                raise
-            except Exception as exc:  # noqa: BLE001
-                _restore_process_env()
-                _restore_dspy_settings()
-                raise HTTPException(
-                    status_code=400,
-                    detail=ErrorEnvelope(
-                        error=ErrorInfo(
-                            error="config_error",
-                            message=f"failed to configure LM: {exc}",
-                            details={"original_error": type(exc).__name__},
-                            recoverable=True,
-                        )
-                    ).model_dump(exclude_none=True),
-                ) from exc
+                    auth_exc = None
+                if not resolved_api_key:
+                    raise HTTPException(
+                        status_code=401,
+                        detail=ErrorEnvelope(
+                            error=ErrorInfo(
+                                error="argonne_auth_required",
+                                message=(
+                                    "ALCF provider selected but no Globus token "
+                                    "is available. Run "
+                                    "`python -m clio_agent.providers.argonne_auth "
+                                    "authenticate` once, or pass api_key in this "
+                                    "request."
+                                ),
+                                recoverable=True,
+                            )
+                        ).model_dump(exclude_none=True),
+                    ) from auth_exc
 
-            # Swap the agent + ARC atomically. Old agent isn't
-            # explicitly closed because we don't know what background
-            # state it owns; Python's GC will clean up.
-            _stamp_process_env(cfg, resolved_api_key or "x")
-            app.state.agent = agent
-            # The bind swaps in a freshly-built agent (new ARCMemory); _set_app_arc
-            # re-wires the arc.op op-logger (every real run binds — without it the live
-            # path stays unobserved).
-            _set_app_arc(app, agent.arc)
-            deps.install_tool_runtime_hooks(app)
-            transport = (
-                cfg.codex_transport
-                if req.provider == "codex"
-                else cfg.claude_code_transport
-                if req.provider == "claude_code"
-                else None
-            )
-            app.state.lm_config = {
-                "provider": req.provider,
-                "api_base": req.api_base,
-                "model": req.model,
-                "temperature": req.temperature,
-                "max_tokens": req.max_tokens,
-                "context_length": req.context_length,
-                "thinking_budget": req.thinking_budget,
-                "turn_timeout_s": req.turn_timeout_s,
-                "transport": transport,
-            }
-            deps.clear_session_model_refs(app)
-            # Publish so live SSE subscribers see the swap (TUI updates
-            # its model chip without polling).
-            app.state.bus.publish(
-                Event(
-                    type="lm.provider.changed",
-                    session_id="",
-                    payload={
-                        "provider": req.provider,
-                        "model": req.model,
-                        "api_base": req.api_base,
-                        "temperature": req.temperature,
-                        "max_tokens": req.max_tokens,
-                        "context_length": req.context_length,
-                        "transport": transport,
-                    },
-                )
-            )
-            return LMProviderInfo(
-                configured=True,
-                provider=req.provider,
+            cfg = LMProviderConfig(
+                provider=req.provider,  # type: ignore[arg-type]  # str validated at boundary
                 api_base=req.api_base,
                 model=req.model,
+                api_key=resolved_api_key or "x",
                 temperature=req.temperature,
                 max_tokens=req.max_tokens,
-                context_length=req.context_length,
+                top_p=req.top_p,
+                top_k=req.top_k,
+                min_p=req.min_p,
+                presence_penalty=req.presence_penalty,
                 thinking_budget=req.thinking_budget,
-                transport=transport,
-                presets=_lm_presets_with_status(),
+                codex_transport=req.transport or "exec",
+                claude_code_transport=req.transport or "sdk",
             )
+            # Per-provider handshake: discover connectivity + per-model config and
+            # fold it into cfg — context-aware max_tokens (replacing the static ALCF
+            # 4096 cap on 128-256K-context models), reasoning/tool capability flags,
+            # and the queryable chosen_context. Never block a bind on a handshake
+            # failure: fall back to the static config unchanged.
+            handshake_report = None
+            try:
+                from clio_agent.providers.handshake import (  # noqa: PLC0415
+                    HandshakeContext,
+                    run_handshake,
+                )
+
+                handshake_report = await run_handshake(
+                    HandshakeContext(
+                        provider_id=req.provider,
+                        provider_kind=req.provider,
+                        api_base=req.api_base,
+                        api_key=resolved_api_key or "",
+                        target_model=req.model,
+                        auth_mode="active",
+                    ),
+                    force=True,
+                )
+                cfg.apply_handshake(handshake_report, user_set_max_tokens=(req.max_tokens or 0) > 0)
+            except Exception:
+                handshake_report = None
+            app.state.lm_handshake_report = handshake_report
+            await asyncio.get_running_loop().run_in_executor(
+                None,
+                _apply_lm_studio_load_config,
+            )
+            # iowarp/clio-agent — DSPy 3.x forbids dspy.configure()
+            # being re-called from a different async task than the
+            # first one. PUT /v1/providers/lm comes from the FastAPI
+            # request task, never the boot task, so the second call
+            # always blew up. Side-step the guard by mutating
+            # ``settings.main_thread_config['lm']`` directly — same
+            # underlying state DSPy's __getattr__ reads, no async
+            # task ownership check.
+            new_lm = create_lm(cfg)
+            from clio_agent.config import (  # noqa: PLC0415
+                create_chat_adapter,
+                create_planner_lm,
+            )
+
+            new_adapter = create_chat_adapter(cfg)
+            new_planner_lm = create_planner_lm(cfg)
+            try:
+                from dspy.dsp.utils.settings import main_thread_config  # noqa: PLC0415
+
+                main_thread_config["lm"] = new_lm
+                main_thread_config["adapter"] = new_adapter
+            except Exception:  # pragma: no cover - dspy missing
+                dspy.configure(lm=new_lm, adapter=new_adapter)
+            # Hot-swap the LM on the existing agent instead of
+            # rebuilding from scratch. ClioAgent's expensive state
+            # (ARC retriever, LSM tree, registry, expert instances,
+            # tool gateways) is LM-independent — rebuilding it for
+            # every Save+Connect costs ~5-10 s and is exactly the
+            # latency the user complained about. These attribute
+            # swaps cover the LM-dependent surface:
+            #   * _provider_config   -> health/config surfaces the new provider
+            #   * _main_lm           -> chat + answer synthesis use the new lm
+            #   * _planner_lm        -> planner runs with the new lm
+            #   * _dspy_adapter      -> local backends keep text ChatAdapter mode
+            #   * dspy.settings.lm   -> experts pick it up via dspy.context()
+            # Only rebuild from scratch when no agent yet exists
+            # (first-connect lifecycle: the deferred-construction
+            # task hasn't completed).
+            existing = app.state.agent
+            if existing is not None:
+                existing._provider_config = cfg
+                existing._main_lm = new_lm
+                existing._planner_lm = new_planner_lm
+                existing._router_lm = new_planner_lm
+                existing._dspy_adapter = new_adapter
+                agent = existing
+            else:
+                # First-time agent construction still reads the provider from
+                # env; restore the snapshot if construction rejects it. Inject the
+                # ONE per-process ARC so this build reuses it (no per-bind ARC churn).
+                _stamp_process_env(cfg, resolved_api_key or "x")
+                bound_arc = _process_arc(app)
+                agent = await asyncio.get_running_loop().run_in_executor(
+                    None, lambda: ClioAgent(verbose=False, arc=bound_arc)
+                )
+                # The fresh agent built its config + LMs from env (pre-handshake);
+                # carry the handshake-applied cfg + cfg-based LMs onto it so the
+                # context-aware max_tokens / chosen_context are in effect on the
+                # very first bind, not just on subsequent hot-swaps.
+                agent._provider_config = cfg
+                agent._main_lm = new_lm
+                agent._planner_lm = new_planner_lm
+                agent._router_lm = new_planner_lm
+                agent._dspy_adapter = new_adapter
+        except HTTPException:
+            # Argonne auth path raises a structured 401 above; keep its
+            # error code intact instead of flattening to a generic 400.
+            _restore_process_env()
+            _restore_dspy_settings()
+            raise
+        except Exception as exc:  # noqa: BLE001
+            _restore_process_env()
+            _restore_dspy_settings()
+            raise HTTPException(
+                status_code=400,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="config_error",
+                        message=f"failed to configure LM: {exc}",
+                        details={"original_error": type(exc).__name__},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
+
+        # Swap the agent + ARC atomically. Old agent isn't
+        # explicitly closed because we don't know what background
+        # state it owns; Python's GC will clean up.
+        _stamp_process_env(cfg, resolved_api_key or "x")
+        app.state.agent = agent
+        # The bind swaps in a freshly-built agent (new ARCMemory); _set_app_arc
+        # re-wires the arc.op op-logger (every real run binds — without it the live
+        # path stays unobserved).
+        _set_app_arc(app, agent.arc)
+        deps.install_tool_runtime_hooks(app)
+        transport = (
+            cfg.codex_transport
+            if req.provider == "codex"
+            else cfg.claude_code_transport
+            if req.provider == "claude_code"
+            else None
+        )
+        app.state.lm_config = {
+            "provider": req.provider,
+            "api_base": req.api_base,
+            "model": req.model,
+            "temperature": req.temperature,
+            "max_tokens": req.max_tokens,
+            "context_length": req.context_length,
+            "thinking_budget": req.thinking_budget,
+            "turn_timeout_s": req.turn_timeout_s,
+            "transport": transport,
+        }
+        deps.clear_session_model_refs(app)
+        # Publish so live SSE subscribers see the swap (TUI updates
+        # its model chip without polling).
+        app.state.bus.publish(
+            Event(
+                type="lm.provider.changed",
+                session_id="",
+                payload={
+                    "provider": req.provider,
+                    "model": req.model,
+                    "api_base": req.api_base,
+                    "temperature": req.temperature,
+                    "max_tokens": req.max_tokens,
+                    "context_length": req.context_length,
+                    "transport": transport,
+                },
+            )
+        )
+        return LMProviderInfo(
+            configured=True,
+            provider=req.provider,
+            api_base=req.api_base,
+            model=req.model,
+            temperature=req.temperature,
+            max_tokens=req.max_tokens,
+            context_length=req.context_length,
+            thinking_budget=req.thinking_budget,
+            transport=transport,
+            presets=_lm_presets_with_status(),
+        )
 
     async def _run_lm_provider_apply(req: LMProviderRequest, operation_id: str) -> None:
         try:
-            # Serve the bind on the running loop; _apply_lm_provider serializes on
-            # app.state.lm_bind_lock and offloads its own heavy sub-steps (LM Studio
-            # load, agent build) via run_in_executor. The old nested
-            # run_in_executor(asyncio.run(...)) span a second event loop per bind and
-            # left the critical section unserialized across binds.
-            info = await _apply_lm_provider(req)
+            loop = asyncio.get_running_loop()
+            info = await loop.run_in_executor(
+                None,
+                lambda: asyncio.run(_apply_lm_provider(req)),
+            )
         except HTTPException as exc:
             detail = exc.detail
             if isinstance(detail, dict):
@@ -1231,10 +1227,10 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             app.state.lm_config_task = task
             return _lm_provider_info()
 
-        # Serve the bind on the running loop; the lm_bind_lock inside
-        # _apply_lm_provider serializes the critical section, and the heavy
-        # sub-steps still offload to their own executor threads.
-        info = await _apply_lm_provider(req)
+        info = await asyncio.get_running_loop().run_in_executor(
+            None,
+            lambda: asyncio.run(_apply_lm_provider(req)),
+        )
         app.state.lm_config_status = {
             "state": "ready",
             "operation_id": "",

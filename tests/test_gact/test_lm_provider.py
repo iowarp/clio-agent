@@ -4,14 +4,12 @@ without redeploying the GACT process.
 
 from __future__ import annotations
 
-import asyncio
 import os
 import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import httpx
 from fastapi.testclient import TestClient
 
 from clio_agent.config import LMProviderConfig
@@ -743,7 +741,9 @@ def test_put_lm_provider_accepts_claude_code_exec_transport(tmp_path: Path, monk
     assert os.environ["CLIO_CLAUDE_CODE_TRANSPORT"] == "exec"
 
 
-def test_put_lm_provider_defaults_claude_code_to_sdk_transport(tmp_path: Path, monkeypatch) -> None:
+def test_put_lm_provider_defaults_claude_code_to_sdk_transport(
+    tmp_path: Path, monkeypatch
+) -> None:
     """Claude Code should use the streaming-capable SDK path unless exec is explicit."""
     monkeypatch.delenv("CLIO_CLAUDE_CODE_TRANSPORT", raising=False)
     captured: dict[str, Any] = {}
@@ -1061,114 +1061,6 @@ def test_put_lm_provider_failed_first_connect_restores_env(tmp_path: Path, monke
     assert {key: os.environ.get(key) for key in before} == before
     assert get_body["configured"] is False
     assert app.state.lm_config is None
-
-
-async def test_concurrent_lm_binds_serialize_on_lm_bind_lock(tmp_path: Path, monkeypatch) -> None:
-    """Two concurrent binds for different providers must serialize on
-    ``app.state.lm_bind_lock``.
-
-    The snapshot -> mutate ``os.environ`` -> reconfigure dspy -> restore section
-    is process-global; without one serialized owner two concurrent
-    ``PUT /v1/providers/lm`` calls interleave it and leave a mixed final state.
-    With the lock the critical section runs one bind at a time (a single winner)
-    and the binds run directly on the serving loop (no nested-loop ``asyncio.run``,
-    so no nested-loop ``RuntimeError``).
-    """
-
-    # These get stamped by _stamp_process_env via direct os.environ writes;
-    # record them so monkeypatch restores the pre-test values on teardown.
-    for key in ("CLIO_LM_PROVIDER", "CLIO_LM_API_BASE", "CLIO_LM_MODEL", "CLIO_LM_API_KEY"):
-        monkeypatch.delenv(key, raising=False)
-
-    import clio_agent.providers.handshake as handshake_mod
-
-    # Count how many binds sit inside the env-mutating critical section at once.
-    # run_handshake is awaited from within _apply_lm_provider, so it is a fair
-    # sampling point for "are two binds overlapping the critical section".
-    overlap = {"active": 0, "max": 0}
-
-    async def _tracking_handshake(ctx: Any, **kwargs: Any) -> Any:
-        overlap["active"] += 1
-        overlap["max"] = max(overlap["max"], overlap["active"])
-        try:
-            # Yield the loop: a second, unserialized bind would enter here too.
-            await asyncio.sleep(0.05)
-        finally:
-            overlap["active"] -= 1
-        # Skip the real handshake; the bind falls back to the static cfg.
-        raise RuntimeError("handshake disabled in test")
-
-    monkeypatch.setattr(handshake_mod, "run_handshake", _tracking_handshake)
-
-    class _StubAgent:
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            self.arc = type(
-                "ARC",
-                (),
-                {
-                    "get_cache_stats": lambda self: {
-                        "hits": 0,
-                        "misses": 0,
-                        "hit_rate": 0.0,
-                        "capacity": 10,
-                    }
-                },
-            )()
-
-        def forward(self, *args: Any, **kwargs: Any) -> Any:
-            return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
-
-    monkeypatch.setattr("clio_agent.agent.ClioAgent", _StubAgent)
-    monkeypatch.setattr(
-        "clio_agent.config.create_lm", lambda cfg: type("FakeLM", (), {"history": []})()
-    )
-    monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda cfg: object())
-    monkeypatch.setattr("clio_agent.config.create_planner_lm", lambda cfg: object())
-
-    app = build_app(sessions_path=tmp_path / "s.json")
-
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        r1, r2 = await asyncio.gather(
-            client.put(
-                "/v1/providers/lm",
-                json={
-                    "provider": "openai",
-                    "api_base": "http://provider-a/v1",
-                    "model": "model-a",
-                    "api_key": "k",
-                },
-            ),
-            client.put(
-                "/v1/providers/lm",
-                json={
-                    "provider": "openrouter",
-                    "api_base": "http://provider-b/v1",
-                    "model": "model-b",
-                    "api_key": "k",
-                },
-            ),
-        )
-
-    assert r1.status_code == 200, r1.text
-    assert r2.status_code == 200, r2.text
-
-    # Serialized: the critical section never held two binds at once.
-    assert overlap["max"] == 1, f"binds interleaved (max concurrency {overlap['max']})"
-
-    # One winner: model + api_base in os.environ come from the SAME bind.
-    winners = {
-        "model-a": "http://provider-a/v1",
-        "model-b": "http://provider-b/v1",
-    }
-    stamped_model = os.environ["CLIO_LM_MODEL"]
-    assert stamped_model in winners
-    assert os.environ["CLIO_LM_API_BASE"] == winners[stamped_model]
-    assert app.state.lm_config["model"] == stamped_model
-    assert app.state.lm_config["api_base"] == winners[stamped_model]
-
-    # The serialization seam exists and is a plain asyncio.Lock (non-reentrant).
-    assert isinstance(app.state.lm_bind_lock, asyncio.Lock)
 
 
 def test_turn_timeout_precedence_runtime_over_conf() -> None:
