@@ -196,7 +196,7 @@ def _load_command_files_from_disk(
                 "disabled_reason": disabled_reason,
                 "agent_id": agent_id,
                 "agent_source": "command_file",
-                "command_path": str(md),
+                "command_path": md.as_posix(),
                 "command_source": source,
                 "invocation": (
                     "agent"

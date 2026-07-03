@@ -257,10 +257,10 @@ def parse_expert_file(
                 errors.append(f"invalid {field_name} reference: {value}")
     defaults = pack.defaults if pack is not None else {}
     metadata: dict[str, Any] = {
-        "expert_path": str(path),
+        "expert_path": path.as_posix(),
         "expert_scope": scope,
         "expert_layout": "expert_markdown",
-        "definition_path": str(path),
+        "definition_path": path.as_posix(),
     }
     if pack is not None:
         metadata.update(
