@@ -1313,6 +1313,20 @@ async def _construct_agent_async(app: "FastAPI") -> None:
             lm=create_lm(cfg),
             adapter=create_chat_adapter(cfg),
         )
+        # Reseed the per-app default profile from the config the agent actually
+        # boots with (design §9 step 4). build_app already seeded a default from
+        # this same env, so this keeps the store consistent with the live boot
+        # cfg via an atomic pointer swap. Shadow-only: nothing reads it yet.
+        from clio_agent.gact.providers.profile_store import ProviderProfileStore
+        from clio_agent.providers.lm_spec import spec_from_config
+
+        existing = getattr(app.state, "provider_profiles", None)
+        default_spec = spec_from_config(cfg)
+        app.state.provider_profiles = (
+            existing.with_default(default_spec)
+            if isinstance(existing, ProviderProfileStore)
+            else ProviderProfileStore.seed(default_spec)
+        )
         return ClioAgent(verbose=False, arc=arc)
 
     try:
@@ -1705,6 +1719,25 @@ def build_app(
     app.state.lm_config_status = {"state": "idle"}
     app.state.lm_config_task = None
     app.state.lm_studio_owned_instance = None
+    # Per-app provider-profile registry (design §3.4 / §9 step 4). An immutable
+    # snapshot mapping profile-id -> LMSpec with one "default" entry, seeded from
+    # the same boot config the agent builds from (spec_from_config of
+    # load_config_from_env). Per-app so the two-app test topology holds two
+    # independent stores instead of racing one process-global. Additive/shadow:
+    # nothing routes LM resolution through it yet. load_config_from_env may raise
+    # for a misconfigured cloud provider (missing key); that must not fail app
+    # construction (baseline: the deferred agent build tolerates it), so we fall
+    # back to the plain provider-default spec and let the deferred build surface
+    # the real error.
+    from clio_agent.config import LMProviderConfig, load_config_from_env
+    from clio_agent.gact.providers.profile_store import ProviderProfileStore
+    from clio_agent.providers.lm_spec import spec_from_config
+
+    try:
+        _boot_cfg = load_config_from_env()
+    except Exception:  # noqa: BLE001 - misconfig must not break app construction
+        _boot_cfg = LMProviderConfig()
+    app.state.provider_profiles = ProviderProfileStore.seed(spec_from_config(_boot_cfg))
     # CLIO-BBBBBBBBBB-WS: workspaces store. Persisted alongside
     # sessions; seeds a default workspace if none exist so the TUI
     # always has something to render.
