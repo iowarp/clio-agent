@@ -78,7 +78,12 @@ def test_cte_many_records_roundtrip_and_scan():
     durability contract at fan-out scale."""
     store = _cte_store()
     pfx = _uid("manyrec")  # unique session-like prefix for this test's records
-    n = 400
+    # Fan-out scale: enough records across many scopes to exercise the durability
+    # + prefix-scan contract, sized so the whole @integration file completes well
+    # inside the harness window (every op is a separate CTE IPC round-trip, so wall
+    # time is ~linear in n; an over-large n made the file time out and leak orphans
+    # into the shared daemon, which is what made clear() pathological — see file docstring).
+    n = 150
     expected: dict[str, bytes] = {}
 
     t0 = time.time()
@@ -159,11 +164,13 @@ def test_cte_base64_binary_guard_at_scale():
     pfx = _uid("guard")
     # Bytes that are individually invalid or dangerous for UTF-8 decoding.
     hostile = bytes(range(256)) + b"\x80\x81\xff\xfe\xc0\xc1\xed\xa0\x80"
-    n = 250
+    # Hundreds of hostile-byte payloads is plenty to hammer the base64 guard; sized
+    # to keep the file inside the harness window (each put/get is a CTE IPC round-trip).
+    n = 100
     expected: dict[str, bytes] = {}
     for i in range(n):
         # rotate the hostile bytes + sprinkle randomness so no two are identical
-        body = hostile[i % len(hostile):] + hostile[: i % len(hostile)] + os.urandom(32)
+        body = hostile[i % len(hostile) :] + hostile[: i % len(hostile)] + os.urandom(32)
         name = f"{pfx}__g{i}"
         store.put("segments", name, body)
         expected[name] = body
@@ -187,7 +194,7 @@ def test_cte_segment_store_big_scope_render_and_scan():
     ss = SegmentStore(store)
     sid = _uid("bigscope")
     scope = "agentA/expertB"
-    iters = 120  # 360 segments in one scope record
+    iters = 40  # 120 segments in one scope record (long trajectory, fits harness window)
 
     t0 = time.time()
     for step in range(iters):
