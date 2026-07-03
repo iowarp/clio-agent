@@ -407,7 +407,9 @@ class DemoResult:
             verified_path = verified_by_name.get(name)
             if not verified_path:
                 continue
-            if str(Path(visible_path).expanduser()) != verified_path:
+            if str(Path(visible_path).expanduser()) != str(
+                Path(verified_path).expanduser()
+            ):
                 return True
         return False
 
@@ -1289,6 +1291,7 @@ def _artifact_paths(message: dict[str, Any]) -> list[str]:
         if Path(path).name and Path(path).expanduser().exists()
     }
     deduped: list[str] = []
+    seen_normalized: set[str] = set()
     for path in cleaned_candidates:
         basename = Path(path).name
         if (
@@ -1296,7 +1299,9 @@ def _artifact_paths(message: dict[str, Any]) -> list[str]:
             and not Path(path).expanduser().exists()
         ):
             continue
-        if path not in deduped:
+        normalized = str(Path(path).expanduser())
+        if normalized not in seen_normalized:
+            seen_normalized.add(normalized)
             deduped.append(path)
     if deduped:
         return deduped
@@ -1312,7 +1317,9 @@ def _artifact_paths(message: dict[str, Any]) -> list[str]:
             and not Path(path).expanduser().exists()
         ):
             continue
-        if path not in deduped:
+        normalized = str(Path(path).expanduser())
+        if normalized not in seen_normalized:
+            seen_normalized.add(normalized)
             deduped.append(path)
     return deduped
 
