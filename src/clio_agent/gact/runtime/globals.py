@@ -463,9 +463,15 @@ def _active_lm_last_reasoning() -> str:
     our boundary subclass (e.g. a test DummyLM, which carries no reasoning channel)."""
 
     try:
-        import dspy  # noqa: PLC0415
+        from clio_agent.gact.runtime.ambient_lm import resolve_active_lm  # noqa: PLC0415
 
-        lm = dspy.settings.lm
+        # Inside the expert/main ``dspy.context`` this is the bound profile LM whose
+        # call just ran (the normal path). Outside one it falls through to the boot
+        # default AND records an ``ambient_lm_default`` reason so the miss is
+        # queryable rather than a silent ambient read (#818).
+        lm = resolve_active_lm(site="globals._active_lm_last_reasoning")
+        if lm is None:
+            return ""
         stashed = getattr(lm, "_clio_last_reasoning", None)
         if stashed is not None:
             return str(stashed)

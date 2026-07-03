@@ -72,7 +72,13 @@ def _last_prompt_tokens() -> int:
     """
     import dspy  # noqa: PLC0415
 
-    lm = getattr(dspy.settings, "lm", None)
+    from clio_agent.gact.runtime.ambient_lm import resolve_active_lm  # noqa: PLC0415
+
+    # Resolve the LM through the ambient guard: inside an expert/main
+    # ``dspy.context`` this is the bound profile LM (the normal auto-compaction
+    # path); outside one it falls through to the boot default AND records a
+    # structured ``ambient_lm_default`` reason so the miss is queryable (#818).
+    lm = resolve_active_lm(site="context_tokens._last_prompt_tokens")
     model = str(getattr(lm, "model", "") or "")
 
     # 1. Provider-exact prompt_tokens from the usage tracker.
@@ -142,10 +148,14 @@ def _estimate_text_tokens(text: str) -> int:
     if not text:
         return 0
     try:
-        import dspy  # noqa: PLC0415
         import litellm  # noqa: PLC0415
 
-        model = str(getattr(getattr(dspy.settings, "lm", None), "model", "") or "")
+        from clio_agent.gact.runtime.ambient_lm import resolve_active_lm  # noqa: PLC0415
+
+        # Bound profile LM inside a ``dspy.context``; boot default (recorded as an
+        # ``ambient_lm_default`` reason) outside one — never a silent ambient read.
+        lm = resolve_active_lm(site="context_tokens._estimate_text_tokens")
+        model = str(getattr(lm, "model", "") or "")
         if model:
             return int(litellm.token_counter(model=model, text=text))
     except Exception:  # noqa: BLE001

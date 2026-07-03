@@ -52,12 +52,21 @@ def _prediction_structured_metadata(result: Any) -> dict[str, Any]:
 
 def _summarize_segments_llm(segments: list[Any]) -> str:
     """Summarize live segments into a compact text that preserves what's needed to
-    continue the task. Uses the active expert LM (``dspy.settings.lm``). Returns ''
-    on failure (caller then skips compaction and keeps the reactive backstop).
+    continue the task.
+
+    Resolves the LM through :func:`resolve_active_lm` and passes it to
+    ``dspy.Predict`` *explicitly* so the summarisation runs on the active profile's
+    bound LM. When invoked outside any ``dspy.context`` (e.g. the ``/context``
+    compaction route rather than an expert ``forward``) it falls through to the
+    process boot-default LM and records a structured ``ambient_lm_default`` reason,
+    so the miss is queryable and never silent (per the per-expert-provider sweep).
+    Returns '' on failure (caller then skips compaction and keeps the reactive
+    backstop).
     """
     import dspy  # noqa: PLC0415
 
     from clio_agent.arc.schema import segment_text  # noqa: PLC0415
+    from clio_agent.gact.runtime.ambient_lm import resolve_active_lm  # noqa: PLC0415
 
     body = "\n".join(segment_text(s) for s in segments)
     sig = dspy.Signature(
@@ -66,8 +75,12 @@ def _summarize_segments_llm(segments: list[Any]) -> str:
         "compact summary that preserves every fact, result, and decision needed to "
         "continue the task. Be concise but lose no actionable information.",
     )
+    lm = resolve_active_lm(site="agents.runtime._summarize_segments_llm")
     try:
-        result = dspy.Predict(sig)(prior_context=body)
+        predict = dspy.Predict(sig)
+        result = (
+            predict(prior_context=body, lm=lm) if lm is not None else predict(prior_context=body)
+        )
         return str(getattr(result, "summary", "") or "").strip()
     except Exception:  # noqa: BLE001
         logger.warning("arc auto-compaction summary LLM call failed", exc_info=True)

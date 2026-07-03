@@ -1046,12 +1046,15 @@ _turn_start_background_user_turn = _start_background_user_turn
 
 
 def _current_lm_model_id() -> str:
-    """Best-effort: which model is dspy.settings.lm bound to."""
-    try:
-        import dspy  # noqa: PLC0415
-    except Exception:  # pragma: no cover
-        return ""
-    lm = getattr(dspy.settings, "lm", None) if hasattr(dspy, "settings") else None
+    """Best-effort: which model the active dspy LM is bound to.
+
+    Resolves through the ambient guard so that a read outside any per-profile
+    ``dspy.context`` (e.g. turn-end metadata assembly) records a structured
+    ``ambient_lm_default`` reason instead of silently depending on the process
+    boot default (#818)."""
+    from clio_agent.gact.runtime.ambient_lm import resolve_active_lm  # noqa: PLC0415
+
+    lm = resolve_active_lm(site="app._current_lm_model_id")
     return getattr(lm, "model", "") if lm else ""
 
 

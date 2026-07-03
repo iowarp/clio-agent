@@ -56,9 +56,14 @@ def _all_known_lms(app: "FastAPI") -> list[Any]:
 
     lms: list[Any] = []
     try:
-        import dspy  # noqa: PLC0415
+        from clio_agent.gact.runtime.ambient_lm import resolve_active_lm  # noqa: PLC0415
 
-        main = getattr(dspy.settings, "lm", None) if hasattr(dspy, "settings") else None
+        # The global dspy LM: the bound profile inside a ``dspy.context``, else the
+        # process boot default — recorded as a structured ``ambient_lm_default``
+        # reason (queryable), never a silent ambient read. The agent's explicit LMs
+        # gathered below cover the accounting even when this is the boot default, so
+        # removing the global default cannot silently under-count the turn (#818).
+        main = resolve_active_lm(site="usage._all_known_lms", app=app)
         if main is not None:
             lms.append(main)
     except Exception as exc:  # pragma: no cover  # noqa: BLE001 - roll up what we can
@@ -84,11 +89,9 @@ def _snapshot_lm_history_index(app: Optional["FastAPI"] = None) -> dict[int, int
     even if the agent rebinds attributes mid-turn."""
 
     if app is None:
-        try:
-            import dspy  # noqa: PLC0415
-        except Exception:  # pragma: no cover
-            return {}
-        lm = getattr(dspy.settings, "lm", None) if hasattr(dspy, "settings") else None
+        from clio_agent.gact.runtime.ambient_lm import resolve_active_lm  # noqa: PLC0415
+
+        lm = resolve_active_lm(site="usage._snapshot_lm_history_index")
         return {id(lm): len(getattr(lm, "history", None) or [])} if lm else {}
     snapshot: dict[int, int] = {}
     for lm in _all_known_lms(app):
@@ -104,14 +107,12 @@ def _usage_from_history_slice(start: Any, app: Optional["FastAPI"] = None) -> di
     legacy single int for backwards compat with single-LM callers.
     """
 
-    try:
-        import dspy  # noqa: PLC0415
-    except Exception:  # pragma: no cover
-        return {}
     if app is not None:
         lms = _all_known_lms(app)
     else:
-        lm = getattr(dspy.settings, "lm", None) if hasattr(dspy, "settings") else None
+        from clio_agent.gact.runtime.ambient_lm import resolve_active_lm  # noqa: PLC0415
+
+        lm = resolve_active_lm(site="usage._usage_from_history_slice")
         lms = [lm] if lm else []
     if not lms:
         return {}
@@ -186,14 +187,12 @@ def _reasoning_records_from_history_slice(
     tokens are LOGGED, not discarded. Only entries that actually carried
     reasoning are included (non-reasoning models yield an empty list)."""
 
-    try:
-        import dspy  # noqa: PLC0415
-    except Exception:  # pragma: no cover
-        return []
     if app is not None:
         lms = _all_known_lms(app)
     else:
-        lm = getattr(dspy.settings, "lm", None) if hasattr(dspy, "settings") else None
+        from clio_agent.gact.runtime.ambient_lm import resolve_active_lm  # noqa: PLC0415
+
+        lm = resolve_active_lm(site="usage._reasoning_records_from_history_slice")
         lms = [lm] if lm else []
     lms = [lm for lm in lms if lm is not None]
     if not lms:
@@ -234,12 +233,9 @@ def _usage_from_dspy_history() -> dict[str, Any]:
     we already use on the wire.
     """
 
-    try:
-        import dspy  # noqa: PLC0415
-    except Exception:  # pragma: no cover - dspy not present
-        return {}
+    from clio_agent.gact.runtime.ambient_lm import resolve_active_lm  # noqa: PLC0415
 
-    lm = getattr(dspy.settings, "lm", None) if hasattr(dspy, "settings") else None
+    lm = resolve_active_lm(site="usage._usage_from_dspy_history")
     if lm is None:
         return {}
     history = getattr(lm, "history", None)
