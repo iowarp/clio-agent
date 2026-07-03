@@ -222,6 +222,67 @@ def pre_tool(name, args):
         reg.fire("pre_tool", "fs_read_file", {})
 
 
+def test_hook_timeout_per_invocation_thread_not_starved_by_pool(tmp_path: Path) -> None:
+    """A wedged hook must not pin a shared pool: saturating with sleep-forever
+    hooks must still let a new hook time out cleanly (with a structured
+    ``hook_timeout_abandoned`` reason) and must not starve a fast hook."""
+
+    import threading
+    import time as _t
+
+    from clio_agent.runtime.hooks import hook_fallback_reasons
+
+    hooks_dir = _hook_dir(
+        tmp_path,
+        pre_tool="""
+import time
+
+def pre_tool(name, args):
+    time.sleep(60)
+""",
+        pre_message="""
+def pre_message(session_id, text):
+    return "fast-ok"
+""",
+    )
+    reg = HookRegistry(hooks_dir=hooks_dir, timeout_s=0.1)
+
+    # Saturate: fire 5 sleep-forever pre_tool hooks concurrently. Each must
+    # raise a permission-style timeout; on the old shared 4-worker pool the
+    # wedged workers are pinned (future.cancel() is a no-op once running).
+    errors: list[BaseException] = []
+
+    def _fire() -> None:
+        try:
+            reg.fire("pre_tool", "fs_read_file", {})
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_fire) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+    assert len(errors) == 5
+    assert all(isinstance(exc, PermissionError) for exc in errors)
+
+    # A 6th hook still times out cleanly and promptly (not queued behind a
+    # saturated pool), emitting a structured reason.
+    start = _t.monotonic()
+    with pytest.raises(PermissionError, match="exceeded timeout"):
+        reg.fire("pre_tool", "fs_read_file", {})
+    assert _t.monotonic() - start < 5.0
+
+    reasons = [r for r in hook_fallback_reasons() if r.get("reason") == "hook_timeout_abandoned"]
+    assert reasons, "expected a hook_timeout_abandoned structured reason"
+    mine = [r for r in reasons if str(hooks_dir) in str(r.get("hook_path", ""))]
+    assert mine, "structured reason must carry the offending hook path"
+    assert all(r.get("event") == "pre_tool" for r in mine)
+
+    # A fast hook on another event must NOT be starved by the wedged hooks.
+    assert reg.fire("pre_message", "sess", "hi") == ["fast-ok"]
+
+
 def test_capability_advertised(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:

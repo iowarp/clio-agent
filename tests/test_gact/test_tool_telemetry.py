@@ -17,6 +17,10 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+# #735: run under the xdist-load flake-hunt CI job — this file is the one that
+# flaked on cross-app tool-observer contamination.
+pytestmark = pytest.mark.concurrency
+
 
 def _settled_history(
     app, sid: str, *, timeout: float = 5.0, stable_window: float = 0.12, poll: float = 0.02
@@ -129,25 +133,20 @@ def test_propose_edit_falls_back_to_trajectory() -> None:
 
 @pytest.fixture(autouse=True)
 def _isolate_tool_runtime_globals():
-    """Reset the process-global tool-runtime hooks around every test.
+    """Reset the retained app-less tool-runtime fallback around every test.
 
-    Turns run in daemon threads and the tool observer/gate/etc. are process
-    globals that ``build_app(agent=...)`` installs eagerly but that are cleared
-    only on lifespan shutdown. These tests use a bare ``TestClient`` (no ``with``),
-    so without an explicit reset a prior test's lingering daemon turn thread can
-    fire the global observer AFTER the next test has re-pointed it, leaking
-    events into the wrong app's bus and making the live-observer assertions flake
-    nondeterministically. Clearing to None before and after each test makes a
-    late stray call a no-op, so each test's own ``build_app`` install is the
+    Turns run in daemon threads; the in-turn observer/gate resolve per-app from
+    ``active_app().state.pending_*`` (isolated), but the single retained
+    ``_FALLBACK_TOOL_RUNTIME`` bundle is the app-less net and persists across
+    tests. These tests use a bare ``TestClient`` (no ``with``), so clearing the
+    fallback to an empty bundle before and after each test makes a late stray
+    app-less call a no-op, leaving each test's own ``build_app`` install as the
     only authority during its turn.
     """
     from clio_agent.tools import execution  # noqa: PLC0415
 
     def _clear() -> None:
-        execution.set_global_tool_observer(None)
-        execution.set_global_permission_gate(None)
-        execution.set_global_cancellation_checker(None)
-        execution.set_global_tool_interceptor(None)
+        execution.set_tool_runtime_fallback(execution.ToolRuntimeHooks())
 
     _clear()
     yield
@@ -174,22 +173,22 @@ class _Agent:
 
 class _LiveObservedAgent:
     def forward(self, question: str, session_id: str):
-        from clio_agent.tools.execution import _GLOBAL_TOOL_OBSERVER
+        from clio_agent.tools.execution import current_tool_runtime, notify_global_tool_observer
 
-        assert _GLOBAL_TOOL_OBSERVER is not None
-        _GLOBAL_TOOL_OBSERVER("hdf5_list_datasets", {"filepath": "x.h5"}, "started", None)
-        _GLOBAL_TOOL_OBSERVER("hdf5_list_datasets", {"filepath": "x.h5"}, "completed", None)
+        assert current_tool_runtime().tool_observer is not None
+        notify_global_tool_observer("hdf5_list_datasets", {"filepath": "x.h5"}, "started", None)
+        notify_global_tool_observer("hdf5_list_datasets", {"filepath": "x.h5"}, "completed", None)
         return _Pred()
 
 
 class _LiveObservedWithPosthocTraceAgent:
     def forward(self, question: str, session_id: str):
-        from clio_agent.tools.execution import _GLOBAL_TOOL_OBSERVER
+        from clio_agent.tools.execution import current_tool_runtime, notify_global_tool_observer
 
-        assert _GLOBAL_TOOL_OBSERVER is not None
+        assert current_tool_runtime().tool_observer is not None
         args = {"filepath": "x.h5"}
-        _GLOBAL_TOOL_OBSERVER("hdf5_list_datasets", args, "started", None)
-        _GLOBAL_TOOL_OBSERVER("hdf5_list_datasets", args, "completed", None)
+        notify_global_tool_observer("hdf5_list_datasets", args, "started", None)
+        notify_global_tool_observer("hdf5_list_datasets", args, "completed", None)
         return _Pred(
             tools_called=[
                 {
@@ -206,21 +205,21 @@ class _LiveObservedWithPosthocTraceAgent:
 
 class _LiveObservedResultAgent:
     def forward(self, question: str, session_id: str):
-        from clio_agent.tools.execution import _GLOBAL_TOOL_OBSERVER
+        from clio_agent.tools.execution import current_tool_runtime, notify_global_tool_observer
 
-        assert _GLOBAL_TOOL_OBSERVER is not None
+        assert current_tool_runtime().tool_observer is not None
         args = {"filepath": "x.h5"}
         result = {"datasets": ["safe_float"], "checksum": "abc123"}
-        _GLOBAL_TOOL_OBSERVER("hdf5_list_datasets", args, "started", None)
-        _GLOBAL_TOOL_OBSERVER("hdf5_list_datasets", args, "completed", None, result)
+        notify_global_tool_observer("hdf5_list_datasets", args, "started", None)
+        notify_global_tool_observer("hdf5_list_datasets", args, "completed", None, result)
         return _Pred()
 
 
 class _LiveObservedStructuredErrorResultAgent:
     def forward(self, question: str, session_id: str):
-        from clio_agent.tools.execution import _GLOBAL_TOOL_OBSERVER
+        from clio_agent.tools.execution import current_tool_runtime, notify_global_tool_observer
 
-        assert _GLOBAL_TOOL_OBSERVER is not None
+        assert current_tool_runtime().tool_observer is not None
         args = {"output_path": "/missing/plot.png"}
         result = {
             "error": {
@@ -229,8 +228,8 @@ class _LiveObservedStructuredErrorResultAgent:
                 "message": "Output directory does not exist",
             }
         }
-        _GLOBAL_TOOL_OBSERVER("ndp_plot_csv_timeseries", args, "started", None)
-        _GLOBAL_TOOL_OBSERVER(
+        notify_global_tool_observer("ndp_plot_csv_timeseries", args, "started", None)
+        notify_global_tool_observer(
             "ndp_plot_csv_timeseries",
             args,
             "completed",
@@ -312,26 +311,56 @@ def test_live_observed_tool_call_is_not_reemitted_post_turn(tmp_path: Path) -> N
     from .conftest import complete_turn
 
     app = build_app(sessions_path=tmp_path / "s.json", agent=_LiveObservedAgent())
-    client = TestClient(app)
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    assistant = complete_turn(client, sid, "analyze")
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        assistant = complete_turn(client, sid, "analyze")
 
-    history = _settled_history(app, sid)
-    started = [e for e in history if e.type == "tool.call.started"]
-    completed = [e for e in history if e.type == "tool.call.completed"]
+        history = _settled_history(app, sid)
+        started = [e for e in history if e.type == "tool.call.started"]
+        completed = [e for e in history if e.type == "tool.call.completed"]
 
-    assert [e.payload["tool"] for e in started] == ["hdf5_list_datasets"]
-    assert [e.payload["tool"] for e in completed] == ["hdf5_list_datasets"]
-    assert started[0].payload["telemetry_source"] == "live_observer"
-    assert completed[0].payload["telemetry_source"] == "live_observer"
-    # WS1: clio transmits, it does not author UI captions -- the tool-response payload
-    # carries the FACTS (ok/duration_ms/cached/result), not ui_summary/result_summary.
-    assert "ui_summary" not in completed[0].payload
-    assert "result_summary" not in completed[0].payload
-    assert completed[0].payload["ok"] is True
-    assert assistant["metadata"]["tools_called"][0]["name"] == "hdf5_list_datasets"
-    assert assistant["metadata"]["tools_called"][0]["args"] == {"filepath": "x.h5"}
-    assert assistant["metadata"]["tools_called"][0]["telemetry_source"] == "live_observer"
+        assert [e.payload["tool"] for e in started] == ["hdf5_list_datasets"]
+        assert [e.payload["tool"] for e in completed] == ["hdf5_list_datasets"]
+        assert started[0].payload["telemetry_source"] == "live_observer"
+        assert completed[0].payload["telemetry_source"] == "live_observer"
+        # WS1: clio transmits, it does not author UI captions -- the tool-response payload
+        # carries the FACTS (ok/duration_ms/cached/result), not ui_summary/result_summary.
+        assert "ui_summary" not in completed[0].payload
+        assert "result_summary" not in completed[0].payload
+        assert completed[0].payload["ok"] is True
+        assert assistant["metadata"]["tools_called"][0]["name"] == "hdf5_list_datasets"
+        assert assistant["metadata"]["tools_called"][0]["args"] == {"filepath": "x.h5"}
+        assert assistant["metadata"]["tools_called"][0]["telemetry_source"] == "live_observer"
+
+
+def test_concurrent_apps_do_not_cross_tool_telemetry(tmp_path: Path) -> None:
+    """#735: two live-observed apps in ONE process must not share the observer.
+
+    Building app_b rebinds the retained app-less fallback bundle to b's, so a
+    stale reader would attribute a's turn to b. A turn on app_a must STILL land
+    a's ``tools_called`` on a's message — the observer is resolved per tool call
+    from the LIVE app (the installed resolver dispatches on ``active_app()`` into
+    that app's ``pending_*``), never from the last-installed fallback. This is the
+    deterministic form of the cross-file flake: it fails on `develop` (KeyError
+    'tools_called' on whichever app didn't win the global) and passes once the
+    hooks are resolved per-app.
+    """
+    from .conftest import complete_turn
+
+    app_a = build_app(sessions_path=tmp_path / "a.json", agent=_LiveObservedAgent())
+    app_b = build_app(sessions_path=tmp_path / "b.json", agent=_LiveObservedAgent())
+
+    with TestClient(app_a) as client_a, TestClient(app_b) as client_b:
+        sid_a = client_a.post("/v1/sessions", json={"title": "a"}).json()["id"]
+        sid_b = client_b.post("/v1/sessions", json={"title": "b"}).json()["id"]
+        assistant_a = complete_turn(client_a, sid_a, "analyze")
+        assistant_b = complete_turn(client_b, sid_b, "analyze")
+
+    # Each app's telemetry landed on ITS OWN message — no cross-contamination.
+    assert assistant_a["metadata"]["tools_called"][0]["name"] == "hdf5_list_datasets"
+    assert assistant_a["metadata"]["tools_called"][0]["telemetry_source"] == "live_observer"
+    assert assistant_b["metadata"]["tools_called"][0]["name"] == "hdf5_list_datasets"
+    assert assistant_b["metadata"]["tools_called"][0]["telemetry_source"] == "live_observer"
 
 
 def test_live_observer_upgrades_matching_posthoc_trace_metadata(tmp_path: Path) -> None:
@@ -341,22 +370,22 @@ def test_live_observer_upgrades_matching_posthoc_trace_metadata(tmp_path: Path) 
         sessions_path=tmp_path / "s.json",
         agent=_LiveObservedWithPosthocTraceAgent(),
     )
-    client = TestClient(app)
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    assistant = complete_turn(client, sid, "analyze")
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        assistant = complete_turn(client, sid, "analyze")
 
-    history = _settled_history(app, sid)
-    started = [e for e in history if e.type == "tool.call.started"]
-    completed = [e for e in history if e.type == "tool.call.completed"]
-    tools_called = assistant["metadata"]["tools_called"]
+        history = _settled_history(app, sid)
+        started = [e for e in history if e.type == "tool.call.started"]
+        completed = [e for e in history if e.type == "tool.call.completed"]
+        tools_called = assistant["metadata"]["tools_called"]
 
-    assert len(started) == 1
-    assert len(completed) == 1
-    assert tools_called[0]["name"] == "hdf5_list_datasets"
-    assert tools_called[0]["telemetry_source"] == "live_observer"
-    assert tools_called[0]["duration_ms"] != 999.0
-    assert tools_called[0]["cached"] is False
-    assert tools_called[0]["result"] == {"datasets": ["safe_float"], "checksum": "abc123"}
+        assert len(started) == 1
+        assert len(completed) == 1
+        assert tools_called[0]["name"] == "hdf5_list_datasets"
+        assert tools_called[0]["telemetry_source"] == "live_observer"
+        assert tools_called[0]["duration_ms"] != 999.0
+        assert tools_called[0]["cached"] is False
+        assert tools_called[0]["result"] == {"datasets": ["safe_float"], "checksum": "abc123"}
 
 
 def test_live_observer_records_completed_tool_result_evidence(tmp_path: Path) -> None:
@@ -366,31 +395,32 @@ def test_live_observer_records_completed_tool_result_evidence(tmp_path: Path) ->
         sessions_path=tmp_path / "s.json",
         agent=_LiveObservedResultAgent(),
     )
-    client = TestClient(app)
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    assistant = complete_turn(client, sid, "analyze")
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        assistant = complete_turn(client, sid, "analyze")
 
-    history = _settled_history(app, sid)
-    completed = [e for e in history if e.type == "tool.call.completed"]
-    tools_called = assistant["metadata"]["tools_called"]
-    tool_results = [
-        e.payload["part"]
-        for e in history
-        if e.type == "message.part.added" and e.payload.get("part", {}).get("type") == "tool_result"
-    ]
+        history = _settled_history(app, sid)
+        completed = [e for e in history if e.type == "tool.call.completed"]
+        tools_called = assistant["metadata"]["tools_called"]
+        tool_results = [
+            e.payload["part"]
+            for e in history
+            if e.type == "message.part.added"
+            and e.payload.get("part", {}).get("type") == "tool_result"
+        ]
 
-    assert completed[0].payload["result"] == {
-        "datasets": ["safe_float"],
-        "checksum": "abc123",
-    }
-    assert tools_called[0]["result"] == {
-        "datasets": ["safe_float"],
-        "checksum": "abc123",
-    }
-    assert tool_results[0]["metadata"]["result"] == {
-        "datasets": ["safe_float"],
-        "checksum": "abc123",
-    }
+        assert completed[0].payload["result"] == {
+            "datasets": ["safe_float"],
+            "checksum": "abc123",
+        }
+        assert tools_called[0]["result"] == {
+            "datasets": ["safe_float"],
+            "checksum": "abc123",
+        }
+        assert tool_results[0]["metadata"]["result"] == {
+            "datasets": ["safe_float"],
+            "checksum": "abc123",
+        }
 
 
 def test_live_observer_preserves_failed_structured_tool_result_evidence(tmp_path: Path) -> None:
@@ -400,34 +430,35 @@ def test_live_observer_preserves_failed_structured_tool_result_evidence(tmp_path
         sessions_path=tmp_path / "s.json",
         agent=_LiveObservedStructuredErrorResultAgent(),
     )
-    client = TestClient(app)
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    assistant = complete_turn(client, sid, "analyze")
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        assistant = complete_turn(client, sid, "analyze")
 
-    history = _settled_history(app, sid)
-    completed = [e for e in history if e.type == "tool.call.completed"]
-    tools_called = assistant["metadata"]["tools_called"]
-    tool_results = [
-        e.payload["part"]
-        for e in history
-        if e.type == "message.part.added" and e.payload.get("part", {}).get("type") == "tool_result"
-    ]
+        history = _settled_history(app, sid)
+        completed = [e for e in history if e.type == "tool.call.completed"]
+        tools_called = assistant["metadata"]["tools_called"]
+        tool_results = [
+            e.payload["part"]
+            for e in history
+            if e.type == "message.part.added"
+            and e.payload.get("part", {}).get("type") == "tool_result"
+        ]
 
-    expected_result = {
-        "error": {
-            "type": "file_policy",
-            "code": "parent_not_found",
-            "message": "Output directory does not exist",
+        expected_result = {
+            "error": {
+                "type": "file_policy",
+                "code": "parent_not_found",
+                "message": "Output directory does not exist",
+            }
         }
-    }
-    assert completed[0].payload["ok"] is False
-    assert completed[0].payload["error"] == "parent_not_found: Output directory does not exist"
-    assert completed[0].payload["result"] == expected_result
-    assert tools_called[0]["ok"] is False
-    assert tools_called[0]["error"] == "parent_not_found: Output directory does not exist"
-    assert tools_called[0]["result"] == expected_result
-    assert tool_results[0]["is_error"] is True
-    assert tool_results[0]["metadata"]["result"] == expected_result
+        assert completed[0].payload["ok"] is False
+        assert completed[0].payload["error"] == "parent_not_found: Output directory does not exist"
+        assert completed[0].payload["result"] == expected_result
+        assert tools_called[0]["ok"] is False
+        assert tools_called[0]["error"] == "parent_not_found: Output directory does not exist"
+        assert tools_called[0]["result"] == expected_result
+        assert tool_results[0]["is_error"] is True
+        assert tool_results[0]["metadata"]["result"] == expected_result
 
 
 def test_tool_call_merge_does_not_attach_success_result_to_failed_attempt() -> None:

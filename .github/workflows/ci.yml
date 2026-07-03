@@ -47,3 +47,26 @@ jobs:
       # Coverage flags are explicit here on purpose: pyproject addopts is
       # empty so local pytest runs stay lean (iowarp/clio-agent#773).
       - run: uv run pytest tests/ -m "not integration" --cov=clio_agent --cov-report=term-missing --cov-fail-under=70
+
+  flake-hunt:
+    # Concurrency / shared-state tests (marked ``@pytest.mark.concurrency``) run
+    # under xdist load repeated x3. This surfaces GENUINELY-THREADED races that a
+    # single serial run masks: EventBus cross-thread publish (#758) and ARC
+    # concurrent segment writes, whose failure is timing-dependent and only shows
+    # up over repeated interleavings. NOTE: ``--dist loadfile`` isolates each file
+    # to its OWN worker PROCESS, so it does NOT reproduce #735 (a single-process
+    # multi-app module-global clobber) — that class is guarded DETERMINISTICALLY
+    # by test_sync_mcp_tool_executor_prefers_per_turn_observer_over_clobbered_global
+    # and the two-app telemetry test in the serial ``check`` job. Kept separate
+    # from ``check`` so its parallel/repeat flags never touch the coverage-gated
+    # main run.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+      - run: uv sync --extra dev --extra optimizers
+      - run: uv run pytest -m concurrency -n 4 --dist loadfile --count 3 -p no:cacheprovider

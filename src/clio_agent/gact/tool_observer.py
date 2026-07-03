@@ -194,13 +194,6 @@ def _publish_transcript_event(
 def _install_tool_runtime_hooks(app: "FastAPI") -> None:
     """Install permission, cancellation, and telemetry hooks for tool calls."""
 
-    from clio_agent.tools.execution import (  # noqa: PLC0415
-        set_global_cancellation_checker,
-        set_global_permission_gate,
-        set_global_tool_interceptor,
-        set_global_tool_observer,
-    )
-
     checker = getattr(app.state, "pending_cancellation_checker", None)
     if checker is None:
         checker = _make_cancellation_checker(app)
@@ -211,15 +204,19 @@ def _install_tool_runtime_hooks(app: "FastAPI") -> None:
     if observer is None:
         observer = _make_tool_observer(app)
     interceptor = getattr(app.state, "pending_tool_interceptor", None)
-    set_global_cancellation_checker(checker)
-    set_global_permission_gate(gate)
-    set_global_tool_interceptor(interceptor)
-    set_global_tool_observer(observer)
     app.state.pending_cancellation_checker = checker
     app.state.pending_permission_gate = gate
     app.state.pending_tool_interceptor = interceptor
     app.state.pending_tool_observer = observer
     app.state.tool_hooks_installed = True
+    # #735 (unified §1): install ONLY stamps this app's ``pending_*`` hooks. The
+    # in-turn path resolves them per-app via ``resolve_tool_runtime`` (dispatching
+    # on the keystone-bound ``active_app()``). We deliberately do NOT record them
+    # as the process-global ``_FALLBACK_TOOL_RUNTIME``: in a multi-app process the
+    # last install would win, so an app-less resolve would hand one app's call a
+    # SIBLING app's gate/observer — the exact cross-app leak this design forbids.
+    # App-less tool calls resolve to the neutral fallback + a loud
+    # ``tool_runtime_unresolved`` reason instead (never a sibling's value).
 
 
 def _ensure_live_assistant_message(app: "FastAPI", sid: str) -> str:

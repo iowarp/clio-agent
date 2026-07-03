@@ -32,7 +32,7 @@ from clio_agent.gact.catalog import (
     _load_skills_from_disk,
 )
 from clio_agent.gact.expert_packs import load_expert_packs, validate_expert_hierarchy
-from clio_agent.gact.runtime.globals import _ORCHESTRATOR_BRIEFING_CACHE
+from clio_agent.gact.runtime.app_state import per_app_dict
 from clio_agent.gact.types import AgentDef
 from clio_agent.runtime import trace
 
@@ -256,8 +256,11 @@ def _runtime_dynamic_agent_children_context(
         rows = _resolution._runtime_child_agent_rows(app, _aid, session_id=session_id)
     if not rows:
         # Session-less rebuild (the build the model often actually runs): reuse the
-        # briefing rendered on a context-bearing build so the grounding never drops.
-        return _ORCHESTRATOR_BRIEFING_CACHE.get(_aid, "")
+        # briefing rendered on a context-bearing build of THIS app so the grounding
+        # never drops. Keyed on the passed app's ``app.state`` (per_app_dict) — an
+        # app-less rebuild resolves the live turn's app, else a structured empty; it
+        # NEVER inherits a sibling app's cached briefing.
+        return per_app_dict("orchestrator_briefing", app=app).get(_aid, "")
     lines = [
         "## You are an ORCHESTRATOR — route work to your children; do not do it yourself",
         "",
@@ -292,7 +295,7 @@ def _runtime_dynamic_agent_children_context(
     )
     briefing = "\n".join(lines)
     if _aid:
-        _ORCHESTRATOR_BRIEFING_CACHE[_aid] = briefing
+        per_app_dict("orchestrator_briefing", app=app)[_aid] = briefing
     return briefing
 
 

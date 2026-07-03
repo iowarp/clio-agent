@@ -1112,12 +1112,13 @@ def test_post_message_tool_user_agent_executes_registered_agent(
     tool_module = object()
 
     def fake_tool_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
-        from clio_agent.tools.execution import _GLOBAL_TOOL_OBSERVER
+        from clio_agent.tools.execution import current_tool_runtime
 
         calls.append((agent_def.id, question, session_id))
-        assert _GLOBAL_TOOL_OBSERVER is not None
-        _GLOBAL_TOOL_OBSERVER("fs_read_file", {"path": "README.md"}, "started", None)
-        _GLOBAL_TOOL_OBSERVER("fs_read_file", {"path": "README.md"}, "completed", None)
+        observer = current_tool_runtime().tool_observer
+        assert observer is not None
+        observer("fs_read_file", {"path": "README.md"}, "started", None)
+        observer("fs_read_file", {"path": "README.md"}, "completed", None)
         return FakePrediction(
             answer="TOOL_USER_AGENT_OK",
             selected_expert=agent_def.id,

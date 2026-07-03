@@ -164,9 +164,9 @@ class _PlainAgent:
 
 class _ToolCallingAgent(_PlainAgent):
     def forward(self, question: str, session_id: str) -> Any:
-        from clio_agent.tools.execution import _GLOBAL_TOOL_OBSERVER
+        from clio_agent.tools.execution import current_tool_runtime
 
-        observer = _GLOBAL_TOOL_OBSERVER
+        observer = current_tool_runtime().tool_observer
         assert observer is not None, "tool hooks not installed"
         observer("fs_read_file", {"path": "README.md"}, "started", None)
         observer(

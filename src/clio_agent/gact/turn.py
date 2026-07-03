@@ -51,7 +51,6 @@ from clio_agent.gact.runtime.globals import (
     _coerce_error_info,
     _ContextFileAccessError,
     _emit_semantic_event,
-    _gact_app_context,
     _iso_from_epoch,
     _llm_provider_payload,
     _new_message_id,
@@ -622,11 +621,13 @@ async def _run_turn_in_background(
         retry_attempt_id = str(user_msg.metadata.get("retry_attempt_id") or "")
     turn_id = user_msg.id
     trace_id = _semantic_trace_id(turn_id)
-    # Bare sets, no reset: turn_id/trace_id must stay live for every later
-    # copy_context() snapshot taken during this turn (mirrors the original
-    # turn-scoped leak). app/session are established independently. (#714)
-    _ctx.set_turn_id(turn_id)
-    _ctx.set_trace_id(trace_id)
+    # Bare set, no reset: the whole turn identity (app + session + turn_id +
+    # trace_id) must stay live for every later copy_context() snapshot taken
+    # during this turn (mirrors the original turn-scoped leak). Establishing
+    # app/session here — not only inside the narrow dynamic-agent forward
+    # wrappers — makes active_app()/active_session_id() reliable on the executor
+    # rail for ALL turn paths, incl. the CLIO orchestrator forward (#735 §3).
+    _ctx.set_turn_identity(app=app, session_id=sid, turn_id=turn_id, trace_id=trace_id)
     native_images = _dspy_images_from_parts(user_msg.parts)
     turn_tokens: dict[str, int] = {
         "input": 0,
@@ -1117,12 +1118,14 @@ async def _run_turn_in_background(
     async def _run_dynamic_agent_sync(agent_def: "AgentDef", prompt: str) -> Any:
         runner = _blueprint_runner_for_agent(agent_def)
         loop = asyncio.get_running_loop()
-        with _gact_app_context(app), _tool_session_context(sid):
+        with _tool_session_context(sid):
             # The signature is rebuilt inside the executor (via _build_blueprint_dspy_module);
             # its routing Literal[children, "finish"] resolves children from the active
             # blueprint keyed on _ACTIVE_GACT_SESSION_ID. Set it here so the copied context
             # carries it -- otherwise children resolve empty and next_expert collapses to
-            # Literal["finish"], forcing the agent to finish immediately.
+            # Literal["finish"], forcing the agent to finish immediately. The keystone
+            # (set_turn_identity) already binds active_app() for the whole turn, so no
+            # _gact_app_context wrapper is needed here.
             _sid_tok = _ctx.set_session_id(sid)
             try:
                 turn_context = contextvars.copy_context()
@@ -2008,20 +2011,21 @@ async def _run_turn_in_background(
                 dynamic_agent,
                 execution_mode=execution_mode,
             )
-            with _gact_app_context(app):
-                session_token = _ctx.set_session_id(sid)
-                try:
-                    module = (
-                        _build_blueprint_dspy_module(app.state.agent, dynamic_agent)
-                        if _agent_definition_uses_blueprint_runtime(dynamic_agent)
-                        else (
-                            _build_tool_user_agent_module(app.state.agent, dynamic_agent)
-                            if dynamic_agent.tools
-                            else _build_prompt_user_agent_module(app.state.agent, dynamic_agent)
-                        )
+            # The keystone (set_turn_identity) already binds active_app() for the
+            # whole turn, so no _gact_app_context wrapper is needed here.
+            session_token = _ctx.set_session_id(sid)
+            try:
+                module = (
+                    _build_blueprint_dspy_module(app.state.agent, dynamic_agent)
+                    if _agent_definition_uses_blueprint_runtime(dynamic_agent)
+                    else (
+                        _build_tool_user_agent_module(app.state.agent, dynamic_agent)
+                        if dynamic_agent.tools
+                        else _build_prompt_user_agent_module(app.state.agent, dynamic_agent)
                     )
-                finally:
-                    _ctx.reset(session_token)
+                )
+            finally:
+                _ctx.reset(session_token)
             llm_actor = {
                 "agent_id": dynamic_agent.id,
                 "agent_title": dynamic_agent.title,

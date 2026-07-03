@@ -38,15 +38,61 @@ import sys
 import threading
 import traceback
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
 from clio_agent import conf
+from clio_agent.runtime.stream_audit import stream_audit
 
 logger = logging.getLogger(__name__)
+
+
+# --- structured hook-runtime fallback catalog (mirrors the stream_fallback
+# reason catalog): a typed reason, recorded process-wide, queryable after the
+# fact. No-silent-fallback — an abandoned wedged hook thread MUST leave a trace.
+_HOOK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
+    "hook_timeout_abandoned": {
+        "severity": "warning",
+        "detail": "hook exceeded its timeout; its daemon thread was abandoned",
+    },
+}
+
+_HOOK_REASONS_MAX = 256
+_HOOK_REASONS: list[dict[str, Any]] = []
+_HOOK_REASONS_LOCK = threading.Lock()
+
+
+def hook_fallback_reasons() -> list[dict[str, Any]]:
+    """Return a snapshot of recorded hook-runtime fallback reasons.
+
+    Mirrors the ``stream_fallback`` catalog: structured, queryable after the
+    fact. Bounded to the most recent :data:`_HOOK_REASONS_MAX` entries.
+    """
+
+    with _HOOK_REASONS_LOCK:
+        return list(_HOOK_REASONS)
+
+
+def _record_hook_reason(reason: str, **fields: Any) -> dict[str, Any]:
+    """Record a structured hook-runtime fallback reason (no-silent-fallback)."""
+
+    definition = _HOOK_REASON_DEFINITIONS.get(reason)
+    if definition is None:
+        raise ValueError(f"Unknown hook fallback reason: {reason}")
+    payload: dict[str, Any] = {"reason": reason, **definition, **fields}
+    with _HOOK_REASONS_LOCK:
+        _HOOK_REASONS.append(payload)
+        if len(_HOOK_REASONS) > _HOOK_REASONS_MAX:
+            del _HOOK_REASONS[: len(_HOOK_REASONS) - _HOOK_REASONS_MAX]
+    logger.warning(
+        "[clio-hooks] %s event=%s hook_path=%s",
+        reason,
+        fields.get("event"),
+        fields.get("hook_path"),
+    )
+    stream_audit("hook.fallback", **payload)
+    return payload
 
 
 _KNOWN_EVENTS: tuple[str, ...] = (
@@ -113,7 +159,6 @@ class HookRegistry:
             if timeout_s is None
             else float(timeout_s)
         )
-        self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="clio-hooks")
         self._load()
 
     @property
@@ -262,7 +307,7 @@ class HookRegistry:
                 "status": "running",
             }
             try:
-                result = self._call_with_timeout(handler.fn, *args, **kwargs)
+                result = self._call_with_timeout(handler.fn, event, handler.path, *args, **kwargs)
                 results.append(result)
                 record["status"] = "completed"
                 record["result_type"] = type(result).__name__
@@ -297,17 +342,43 @@ class HookRegistry:
             records.append(record)
         return {"results": results, "handlers": records}
 
-    def _call_with_timeout(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    def _call_with_timeout(
+        self,
+        fn: Callable[..., Any],
+        event: str,
+        hook_path: Path,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
         if self._timeout_s <= 0:
             return fn(*args, **kwargs)
-        future = self._executor.submit(fn, *args, **kwargs)
-        try:
-            return future.result(timeout=self._timeout_s)
-        except FutureTimeoutError as exc:
-            future.cancel()
-            raise TimeoutError(
-                f"hook {fn.__name__!r} exceeded timeout {self._timeout_s:g}s"
-            ) from exc
+        # Per-invocation daemon thread (no shared pool): a wedged hook can never
+        # pin a fixed worker set and starve every other hook. On overrun the
+        # daemon is abandoned (there is no safe cancel for a running thread) and
+        # a structured reason is emitted. Mirrors
+        # ``builders.py::_run_external_mcp_tool_sync``.
+        result: dict[str, Any] = {}
+
+        def _runner() -> None:
+            try:
+                result["value"] = fn(*args, **kwargs)
+            except BaseException as exc:  # noqa: BLE001 - re-raised on the caller thread
+                result["error"] = exc
+
+        thread = threading.Thread(target=_runner, name=f"clio-hook-{event}", daemon=True)
+        thread.start()
+        thread.join(self._timeout_s)
+        if thread.is_alive():
+            _record_hook_reason(
+                "hook_timeout_abandoned",
+                event=event,
+                hook_path=str(hook_path),
+                timeout_s=self._timeout_s,
+            )
+            raise TimeoutError(f"hook {fn.__name__!r} exceeded timeout {self._timeout_s:g}s")
+        if "error" in result:
+            raise result["error"]
+        return result.get("value")
 
     @staticmethod
     def _scope_matches(handler_scope: dict[str, str], hook_scope: dict[str, str]) -> bool:
@@ -377,7 +448,6 @@ class DisabledHookRegistry(HookRegistry):
         self._hooks = {event: [] for event in _KNOWN_EVENTS}
         self._lock = threading.Lock()
         self._timeout_s = 0.0
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="clio-hooks-disabled")
 
     def _load(self) -> None:
         return

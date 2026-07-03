@@ -18,6 +18,9 @@ from unittest.mock import patch
 
 import pytest
 
+# #735 flake-hunt: thread-safety regression suite runs under xdist load x3.
+pytestmark = pytest.mark.concurrency
+
 from clio_agent.gact.events import Event, EventBus
 
 
