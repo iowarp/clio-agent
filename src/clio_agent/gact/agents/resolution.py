@@ -107,6 +107,9 @@ def _agent_overlay_patchable_fields() -> set[str]:
         "prompt_profile",
         "default_provider",
         "default_model",
+        "api_base",
+        "credential_ref",
+        "transport",
         "parent_id",
         "tier",
         "specialization",
@@ -244,9 +247,7 @@ def _runtime_active_session_expert_pack_id(app: "FastAPI", session_id: str = "")
     ).strip()
 
 
-def _runtime_active_session_expert_pack_path(
-    app: "FastAPI", session_id: str = ""
-) -> Path | None:
+def _runtime_active_session_expert_pack_path(app: "FastAPI", session_id: str = "") -> Path | None:
     """Return a session's active expert-pack path from its metadata (``None`` if none)."""
 
     if not session_id:
@@ -292,6 +293,9 @@ def _runtime_apply_session_agent_overlay(
         "prompt_profile",
         "default_provider",
         "default_model",
+        "api_base",
+        "credential_ref",
+        "transport",
         "parent_id",
         "tier",
         "specialization",

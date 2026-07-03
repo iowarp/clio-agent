@@ -111,6 +111,71 @@ Write market reports.
     assert row.default_model == "gpt-5.1"
 
 
+def test_parse_expert_file_forwards_provider_identity_fields(tmp_path: Path) -> None:
+    """Frontmatter api_base/credential_ref/transport parse into AgentDef (#818)."""
+
+    path = tmp_path / "cross_provider.md"
+    path.write_text(
+        """---
+id: cross_provider
+title: Cross Provider Expert
+parent_id: main
+tier: 2
+provider: openai
+model: gpt-5.1
+api_base: https://alt.example.com/v1
+credential_ref: openai:acctB
+transport: exec
+prompt_id: clio.expert.cross_provider
+---
+Use a second provider account.
+""",
+        encoding="utf-8",
+    )
+
+    row = parse_expert_file(path, scope="workspace")
+
+    assert row.default_provider == "openai"
+    assert row.default_model == "gpt-5.1"
+    assert row.api_base == "https://alt.example.com/v1"
+    assert row.credential_ref == "openai:acctB"
+    assert row.transport == "exec"
+
+
+def test_parse_expert_file_provider_identity_defaults_empty(tmp_path: Path) -> None:
+    """Absent api_base/credential_ref/transport default to '' (unchanged meaning)."""
+
+    path = tmp_path / "plain.md"
+    path.write_text(
+        """---
+id: plain_expert
+title: Plain Expert
+parent_id: main
+tier: 2
+prompt_id: clio.expert.plain
+---
+No provider overrides.
+""",
+        encoding="utf-8",
+    )
+
+    row = parse_expert_file(path, scope="workspace")
+
+    assert row.api_base == ""
+    assert row.credential_ref == ""
+    assert row.transport == ""
+
+
+def test_agent_def_provider_identity_fields_default_empty() -> None:
+    """A bare AgentDef defaults the new provider-identity fields to '' (backward-compat)."""
+
+    row = AgentDef(id="bare", title="Bare")
+
+    assert row.api_base == ""
+    assert row.credential_ref == ""
+    assert row.transport == ""
+
+
 def test_invalid_expert_file_is_disabled_with_errors(tmp_path: Path) -> None:
     path = tmp_path / "broken.md"
     path.write_text(

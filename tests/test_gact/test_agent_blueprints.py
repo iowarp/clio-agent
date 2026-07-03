@@ -2477,6 +2477,9 @@ def test_session_agent_overlay_is_session_local(tmp_path: Path) -> None:
                     "variant": {
                         "title": "Session A Variant Expert",
                         "default_model": "gpt-5-mini",
+                        "api_base": "https://alt.example.com/v1",
+                        "credential_ref": "openai:acctB",
+                        "transport": "exec",
                     }
                 }
             },
@@ -2487,9 +2490,17 @@ def test_session_agent_overlay_is_session_local(tmp_path: Path) -> None:
 
     assert agent_a["title"] == "Session A Variant Expert"
     assert agent_a["default_model"] == "gpt-5-mini"
+    # Per-expert provider identity (#818) is patchable through the session overlay.
+    assert agent_a["api_base"] == "https://alt.example.com/v1"
+    assert agent_a["credential_ref"] == "openai:acctB"
+    assert agent_a["transport"] == "exec"
     assert agent_a["metadata"]["agent_blueprint_overlay"]["status"] == "applied"
     assert agent_b["title"] == "Variant Expert"
     assert agent_b["default_model"] == ""
+    # A sibling session without the overlay keeps the empty defaults (session-local).
+    assert agent_b["api_base"] == ""
+    assert agent_b["credential_ref"] == ""
+    assert agent_b["transport"] == ""
 
 
 def test_session_agent_overlay_rejects_invalid_contracts(tmp_path: Path) -> None:

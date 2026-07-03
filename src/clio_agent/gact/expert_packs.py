@@ -312,6 +312,16 @@ def parse_expert_file(
         default_model=str(
             meta.get("model") or meta.get("default_model") or defaults.get("model") or ""
         ).strip(),
+        api_base=str(
+            meta.get("api_base") or meta.get("api-base") or defaults.get("api_base") or ""
+        ).strip(),
+        credential_ref=str(
+            meta.get("credential_ref")
+            or meta.get("credential-ref")
+            or defaults.get("credential_ref")
+            or ""
+        ).strip(),
+        transport=str(meta.get("transport") or defaults.get("transport") or "").strip(),
         parameters=_parameters_from_meta(meta),
         module=module,
         signature=signature,
