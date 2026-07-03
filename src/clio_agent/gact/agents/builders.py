@@ -148,6 +148,18 @@ def _dynamic_agent_lm_config(base_agent: Any, agent_def: "AgentDef") -> "Resolve
     from clio_agent.providers.resolver import resolve_endpoint_and_handshake  # noqa: PLC0415
 
     default_spec = _default_profile_spec(base_agent)
+    # The boot/default-profile credential the main agent runs (its resolved
+    # ``_provider_config.api_key``). It is carried onto the DEFAULT-profile path so
+    # an undeclared expert authenticates with the exact key the main agent uses —
+    # even when that key came from the generic ``CLIO_LM_API_KEY`` boot var and the
+    # provider-native var (e.g. ``OPENAI_API_KEY``) is unset or names a different
+    # account (finding #1: RULE-2 main-works/experts-401 asymmetry). The
+    # credential_ref/spec stay secret-free — this key never serializes; it is a
+    # runtime resolution artifact threaded only when the expert resolves to the
+    # boot provider's default profile.
+    base_config = getattr(base_agent, "_provider_config", None)
+    boot_provider = str(getattr(base_config, "provider", "") or "")
+    boot_key = str(getattr(base_config, "api_key", "") or "")
     declared_provider = str(getattr(agent_def, "default_provider", "") or "")
     if declared_provider and declared_provider != default_spec.provider:
         # Cross-provider expert: the endpoint / model / credential-ref / transport
@@ -166,7 +178,16 @@ def _dynamic_agent_lm_config(base_agent: Any, agent_def: "AgentDef") -> "Resolve
             transport="",
         )
     spec = build_spec(agent_def, default_spec)
-    return resolve_endpoint_and_handshake(spec)
+    # Thread the boot credential only when the expert resolves to the boot
+    # provider's default profile. Skip argonne: its default credential is a
+    # short-lived Globus token re-minted fresh per call by the resolver, so a
+    # captured boot token would go stale — the fresh resolution must win there.
+    default_credential = (
+        boot_key
+        if (boot_key and spec.provider == boot_provider and boot_provider != "argonne")
+        else ""
+    )
+    return resolve_endpoint_and_handshake(spec, default_credential=default_credential)
 
 
 def _prompt_user_agent_signature() -> Any:

@@ -237,8 +237,29 @@ The process-global dspy default is kept as a **harmless boot-time fallback only*
   same.
 - `LMProviderConfig.__post_init__`'s credential env-read (`config.py:293`) is
   **confined to the boot/default config**; the resolver supplies `api_key`
-  explicitly on the expert path, so that fallback is never reached for experts. A
-  GACT booted purely from `CLIO_LM_*` still authenticates.
+  explicitly on the expert path, so that fallback is never reached for experts.
+- **The boot credential travels onto the default profile so a GACT booted purely
+  from `CLIO_LM_*` authenticates *experts too*, not just the main agent.** The
+  generic `CLIO_LM_API_KEY` boot var is the documented primary way to set the key
+  (`config.py:442/516`), but the `CredentialResolver` only reads the
+  *provider-native* var (`OPENAI_API_KEY`, …) for the default ref. So
+  `_dynamic_agent_lm_config` carries the main agent's resolved
+  `_provider_config.api_key` (the exact boot key) onto the default-profile path as
+  `ResolvedLMSpec.default_credential`, and `materialize` uses it (winning over the
+  provider-native re-read) for the **default ref of the boot provider**. An
+  undeclared expert therefore ends up with the *exact* key the main agent runs —
+  even when `OPENAI_API_KEY` is unset (previously → empty key → every expert 401)
+  or names a *different* account than the boot key (previously → silent wrong
+  account). It is threaded only for the boot provider's default ref and **not for
+  argonne** (whose short-lived Globus token is re-minted fresh per call), so
+  cross-provider / named-ref / live-token paths keep their authoritative fresh
+  resolution. Regression: `test_undeclared_cloud_expert_inherits_boot_credential`
+  and `test_undeclared_cloud_expert_prefers_boot_over_divergent_native_var`.
+- **Argonne resolves per-ref.** `CredentialResolver.resolve("argonne", ref)` mints
+  the node-local Globus token only for the *default* ref; a NAMED (non-default)
+  argonne ref has no per-account backend and returns `""` (surfacing an actionable
+  auth error) rather than silently authenticating under the node default identity.
+  Regression: `test_argonne_named_ref_does_not_return_default_token`.
 - New `AgentDef` fields default empty → the undeclared case resolves to the exact
   config `_dynamic_agent_lm_config` produces today (golden test).
 

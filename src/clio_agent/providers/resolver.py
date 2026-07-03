@@ -175,12 +175,22 @@ class ResolvedLMSpec:
             ``"lm-studio"`` for a local provider, ``""`` for a cloud provider),
             used by :meth:`materialize` only for the default credential ref so the
             single-default-LM baseline stays byte-identical.
+        default_credential: The **boot/default-profile** credential the executing
+            agent runs (its ``_provider_config.api_key``), carried onto the
+            default-profile path so an undeclared expert authenticates with the
+            exact key the main agent uses — even when that key came from the
+            generic ``CLIO_LM_API_KEY`` boot var rather than the provider-native
+            var (finding #1). Empty for the cross-provider / named-ref / argonne
+            (live-token) paths, where the fresh per-call resolution is
+            authoritative. Consulted by :meth:`materialize` only for the default
+            ref.
     """
 
     spec: "LMSpec"
     config_skeleton: "LMProviderConfig"
     handshake_fallback: dict[str, Any] | None = None
     placeholder_key: str = ""
+    default_credential: str = ""
     _default_ref: bool = field(default=True, repr=False)
 
     def materialize(self, cred_resolver: CredentialResolver | None = None) -> "LMProviderConfig":
@@ -194,15 +204,21 @@ class ResolvedLMSpec:
 
         Credential precedence:
 
-        * A non-empty resolved key wins.
-        * For the **default** credential ref (empty / ``"<provider>:default"``) an
-          empty resolution falls back to ``placeholder_key`` — this is the
-          local-provider placeholder (e.g. ``"lm-studio"``), a provider default
-          rather than a credential, so the single-default-LM baseline is
-          preserved byte-for-byte.
-        * For an **explicit / named** ref, an empty resolution stays empty: the
-          downstream LM call surfaces an actionable auth error rather than
-          silently falling back to a different account's credential.
+        * For the **default** credential ref (empty / ``"<provider>:default"``):
+          the carried ``default_credential`` (the boot/default-profile key the
+          main agent runs) wins when present, so an undeclared expert
+          authenticates with the exact boot identity even if it came from the
+          generic ``CLIO_LM_API_KEY`` var and the provider-native var is unset or
+          names a different account (finding #1); otherwise the freshly resolved
+          key; otherwise ``placeholder_key`` (the local-provider placeholder such
+          as ``"lm-studio"`` — a provider default, not a credential). When
+          ``default_credential`` is empty (cross-provider / argonne live-token /
+          direct resolver use) the fresh resolution is authoritative, so rotated
+          tokens stay current.
+        * For an **explicit / named** ref, only the freshly resolved key is used;
+          an empty resolution stays empty so the downstream LM call surfaces an
+          actionable auth error rather than silently falling back to a different
+          account's credential.
 
         Args:
             cred_resolver: The read-only credential resolver. Defaults to a fresh
@@ -216,10 +232,10 @@ class ResolvedLMSpec:
         resolver = cred_resolver if cred_resolver is not None else CredentialResolver()
         key = resolver.resolve(self.spec.provider, self.spec.credential_ref)
         config = copy.copy(self.config_skeleton)
-        if key:
+        if self._default_ref:
+            config.api_key = self.default_credential or key or self.placeholder_key
+        elif key:
             config.api_key = key
-        elif self._default_ref:
-            config.api_key = self.placeholder_key
         else:
             config.api_key = ""
         return config
@@ -320,6 +336,7 @@ def resolve_endpoint_and_handshake(
     *,
     ttl_s: float = _handshake_cache.DEFAULT_TTL_S,
     force: bool = False,
+    default_credential: str = "",
 ) -> ResolvedLMSpec:
     """Resolve a spec's endpoint + handshake into a key-less config skeleton (design §3.3).
 
@@ -338,6 +355,11 @@ def resolve_endpoint_and_handshake(
         spec: The fully-named :class:`LMSpec` to resolve.
         ttl_s: Handshake cache freshness window (seconds).
         force: Bypass the handshake cache and re-probe.
+        default_credential: The boot/default-profile credential to carry onto the
+            default-ref path (finding #1) so an undeclared expert authenticates
+            with the exact key the main agent runs. Pass ``""`` (the default) for
+            the cross-provider / named-ref / live-token paths where the fresh
+            per-call resolution is authoritative.
 
     Returns:
         A :class:`ResolvedLMSpec` holding the key-less, handshake-populated config
@@ -355,5 +377,6 @@ def resolve_endpoint_and_handshake(
         config_skeleton=skeleton,
         handshake_fallback=fallback,
         placeholder_key=placeholder,
+        default_credential=default_credential if default_ref else "",
         _default_ref=default_ref,
     )

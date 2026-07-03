@@ -92,6 +92,24 @@ class TestArgonneRef:
         monkeypatch.setattr("clio_agent.providers.argonne_auth.tokens_exist", lambda: False)
         assert credentials.resolve("argonne", "") == ""
 
+    def test_argonne_named_ref_does_not_return_default_token(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A NAMED (non-default) argonne ref must NOT silently return the node default token.
+
+        Finding #5: ``resolve`` ignored ``credential_ref`` for argonne and returned
+        the node default Globus token for *any* ref, authenticating the expert under
+        the wrong identity. A named ref with no per-account backend must surface ""
+        so the LM call raises an actionable auth error (no silent default identity).
+        """
+        monkeypatch.setattr(config, "_resolve_argonne_api_key", lambda: "default-globus-token")
+        # The default ref still returns the node default token (unchanged).
+        assert credentials.resolve("argonne", "") == "default-globus-token"
+        assert credentials.resolve("argonne", "argonne:default") == "default-globus-token"
+        # A NAMED ref does not borrow the default identity.
+        assert credentials.resolve("argonne", "argonne:acctB") == ""
+        assert credentials.resolve("argonne", "acctB") == ""
+
 
 class TestNamedAccountRef:
     """A named ref reads a distinct per-account source (two accounts, two keys)."""

@@ -221,6 +221,69 @@ def test_undeclared_expert_is_byte_identical_to_prechange_config(
     assert resolved.handshake_fallback is None
 
 
+def test_undeclared_cloud_expert_inherits_boot_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A GACT booted from CLIO_LM_API_KEY (provider-native var UNSET) still authenticates experts.
+
+    Finding #1 (RULE 2 silent break): booting a cloud provider from
+    ``CLIO_LM_API_KEY`` — the documented primary way to set the key — WITHOUT
+    ``OPENAI_API_KEY`` gave every undeclared expert an EMPTY ``api_key`` (all
+    expert calls 401) while the main agent kept working off ``_provider_config``.
+    The undeclared/default expert MUST end up with the exact boot key.
+
+    This is the strong golden the old ``lm_studio`` test could not be: the
+    provider-native ``OPENAI_API_KEY`` is UNSET, so the coincidental
+    placeholder-match cannot mask the regression — only the boot credential
+    carried onto the default profile makes this pass.
+    """
+    _no_active_app(monkeypatch)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("CLIO_LM_API_KEY", "sk-boot-key-XYZ")
+
+    # The boot/default config resolves its key from CLIO_LM_API_KEY exactly as
+    # ``load_config_from_env`` would (provider-native var absent).
+    base_config = LMProviderConfig(provider="openai", model="gpt-4o", api_key="sk-boot-key-XYZ")
+    assert base_config.api_key == "sk-boot-key-XYZ"
+    base_agent = SimpleNamespace(_provider_config=base_config)
+
+    _patch_handshake(
+        monkeypatch, _report(provider="openai", model_id="gpt-4o", context_window=128000)
+    )
+    agent_def = AgentDef(id="undeclared-cloud", title="Undeclared Cloud")  # inherits everything
+
+    cfg = _dynamic_agent_lm_config(base_agent, agent_def).materialize()
+    assert cfg.provider == "openai"
+    # The exact boot key the main agent runs — not an empty string (401), not the
+    # cloud PROVIDER_DEFAULTS placeholder.
+    assert cfg.api_key == "sk-boot-key-XYZ"
+
+
+def test_undeclared_cloud_expert_prefers_boot_over_divergent_native_var(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When OPENAI_API_KEY names a DIFFERENT account than the boot key, the expert uses the boot key.
+
+    Finding #1 ("Worse" sub-case): if ``OPENAI_API_KEY`` holds a different account
+    than the ``CLIO_LM_API_KEY`` the GACT booted from, an undeclared expert must
+    still authenticate as the SAME identity the main agent runs (the boot key),
+    not silently as the wrong account.
+    """
+    _no_active_app(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-other-account")
+    monkeypatch.setenv("CLIO_LM_API_KEY", "sk-boot-account")
+
+    base_config = LMProviderConfig(provider="openai", model="gpt-4o", api_key="sk-boot-account")
+    base_agent = SimpleNamespace(_provider_config=base_config)
+    _patch_handshake(
+        monkeypatch, _report(provider="openai", model_id="gpt-4o", context_window=128000)
+    )
+    agent_def = AgentDef(id="undeclared-cloud2", title="Undeclared Cloud 2")
+
+    cfg = _dynamic_agent_lm_config(base_agent, agent_def).materialize()
+    assert cfg.api_key == "sk-boot-account"
+
+
 # --------------------------------------------------------------------------- #
 # CONCURRENCY (safe by construction — #818)
 # --------------------------------------------------------------------------- #

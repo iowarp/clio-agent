@@ -137,16 +137,22 @@ def resolve(provider: str, credential_ref: str = "") -> str:
     Returns:
         The resolved API key / bearer token, or ``""`` when none is available.
     """
-    # Argonne mints/looks up a Globus token regardless of account label. Routed
-    # through the config seam so the runtime token-refresh path and existing
-    # monkeypatch points observe the same value. Lazy import avoids the
-    # ``config`` <-> ``credentials`` import cycle.
+    account = _account_of(credential_ref)
+
+    # Argonne mints/looks up ONE node-local Globus token — it is account-agnostic
+    # (``resolve_argonne_token`` / ``_resolve_argonne_api_key`` take no account).
+    # So it may only answer the DEFAULT ref. A NAMED (non-default) argonne ref has
+    # no per-account backend, so returning the default identity would silently
+    # authenticate the expert as the wrong account (finding #5). Gate on the
+    # default account and surface "" for a named ref instead — the LM call then
+    # raises an actionable auth error (no silent default identity, design §3.2).
     if provider == "argonne":
+        if account:
+            return ""
         from clio_agent import config as _config  # noqa: PLC0415
 
         return _config._resolve_argonne_api_key()
 
-    account = _account_of(credential_ref)
     if account:
         # Named per-account credential: a distinct, keyed source. No fallback
         # to the default env var — a missing named credential returns "".
