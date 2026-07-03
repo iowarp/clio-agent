@@ -153,8 +153,14 @@ REMOTE BLUEPRINT ORCHESTRATOR MARKER.
     )
 
 
-def _write_default_registry_blueprint(home: Path) -> Path:
-    root = home / ".config" / "clio-agent" / "agent-blueprints" / DEFAULT_AGENT_BLUEPRINT_ID
+def _write_default_registry_blueprint(config_dir: Path) -> Path:
+    # ``config_dir`` is the resolved per-user config root (the value
+    # ``CLIO_USER_DIR`` resolves to for both ``user_config_dir`` and
+    # ``user_config_dir_for``). Writing the blueprint under
+    # ``<config_dir>/agent-blueprints/<id>`` mirrors the production install root
+    # on every OS, so the test-written blueprint is the one discovered (the
+    # Linux-only ``home/.config`` layout does not take effect on Windows).
+    root = config_dir / "agent-blueprints" / DEFAULT_AGENT_BLUEPRINT_ID
     _write_blueprint(root, blueprint_id=DEFAULT_AGENT_BLUEPRINT_ID)
     root.joinpath(".clio-install.md").write_text(
         "\n".join(
@@ -180,7 +186,12 @@ def test_default_registry_agent_blueprint_is_discoverable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    _write_default_registry_blueprint(tmp_path)
+    # Isolate the per-user config dir with the cross-OS ``CLIO_USER_DIR``
+    # override; the injected ``home=``/XDG layout is Linux-only and would read
+    # the developer's real store on Windows/macOS.
+    user_dir = tmp_path / "user-config"
+    monkeypatch.setenv("CLIO_USER_DIR", str(user_dir))
+    _write_default_registry_blueprint(user_dir)
     blueprints = {
         row.id: row for row in discover_agent_blueprints(home=tmp_path, cwd=tmp_path / "workspace")
     }
@@ -210,7 +221,11 @@ def test_builtin_agents_are_loaded_from_default_registry_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    _write_default_registry_blueprint(tmp_path)
+    # Isolate the per-user config dir with the cross-OS ``CLIO_USER_DIR``
+    # override (Linux-only home/.config layout does not take effect on Windows).
+    user_dir = tmp_path / "user-config"
+    monkeypatch.setenv("CLIO_USER_DIR", str(user_dir))
+    _write_default_registry_blueprint(user_dir)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     agents = {row.id: row for row in _builtin_agents()}
@@ -2707,7 +2722,11 @@ def test_agent_blueprint_marketplace_sources_persist_and_install_by_id(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    # Isolate the per-user config dir (where the source ledger persists) with
+    # the cross-OS ``CLIO_USER_DIR`` override; ``XDG_CONFIG_HOME`` is honored
+    # only on Linux and would let this test read the developer's real store on
+    # Windows/macOS (104 accumulated sources instead of the one written here).
+    monkeypatch.setenv("CLIO_USER_DIR", str(tmp_path / "user-config"))
     marketplace = tmp_path / "marketplace"
     _write_blueprint(marketplace / "genomics")
     workspace = tmp_path / "workspace"
