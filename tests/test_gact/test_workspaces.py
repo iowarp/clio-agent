@@ -163,7 +163,7 @@ def test_workspace_file_read_returns_plain_text_not_json(tmp_path: Path) -> None
     c = _client(tmp_path)
     c.app.state.workspaces.update("ws_default", root_path=str(tmp_path))
     target = tmp_path / "notes.md"
-    target.write_text("hello picker\n", encoding="utf-8")
+    target.write_bytes(b"hello picker\n")
 
     resp = c.get("/v1/workspaces/ws_default/files/read", params={"path": "notes.md"})
 
