@@ -84,7 +84,11 @@ def test_load_precedence_frontmatter_user_workspace(tmp_path):
         yaml.safe_dump({"mcp_servers": {"ndp": "workspace-ndp"}})
     )
 
-    servers = load_mcp_servers(home=home, cwd=cwd, pack_servers=pack_servers, env={})
+    # Point the user-config resolver at the XDG layout this test writes into, so the
+    # fixture is deterministic across OSes (on Windows the resolver otherwise uses
+    # %LOCALAPPDATA%/clio-agent, not home/.config/clio-agent).
+    env = {"XDG_CONFIG_HOME": str(home / ".config")}
+    servers = load_mcp_servers(home=home, cwd=cwd, pack_servers=pack_servers, env=env)
     assert servers["ndp"].command == "workspace-ndp"  # workspace wins
     assert servers["ndp"].source == "workspace"
     assert servers["geo"].command == "pack-geo"  # only in pack frontmatter
