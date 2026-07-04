@@ -47,7 +47,7 @@ from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Literal, Optional, cast
+from typing import Any, AsyncIterator, Optional, cast
 
 from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
@@ -363,6 +363,7 @@ def _enrich_cancellation_error_info(
 # modules are the single source of truth; tests that patch these must target the #
 # owner (``...agents.resolution`` / ``...agents.composition``), not this shim.   #
 # --------------------------------------------------------------------------- #
+from clio_agent.gact.agents import resolution as _resolution  # noqa: E402, F401
 from clio_agent.gact.agents.composition import (  # noqa: E402, F401
     _agent_prompt_request,
     _agent_rows_prompt_render_context,
@@ -376,6 +377,7 @@ from clio_agent.gact.agents.resolution import (  # noqa: E402, F401
     _agent_definition_is_agent_blueprint,
     _agent_definition_uses_blueprint_runtime,
     _agent_overlay_patchable_fields,
+    _agent_with_capability_refs,
     _legacy_native_expert_runtime_enabled,
     _merge_agent_def_rows,
     _resolve_dynamic_agent,
@@ -706,9 +708,6 @@ from clio_agent.gact.runtime.capabilities import (  # noqa: E402,F401
 # decomposition) so routes/catalog.py and the prompt-render-context closure here
 # share one source. Imported under the legacy underscore names the render-context
 # closure already used.
-from clio_agent.gact.runtime.commands import (  # noqa: E402
-    BACKEND_COMMANDS as _BACKEND_COMMANDS,
-)
 from clio_agent.gact.runtime.commands import (  # noqa: E402
     command_cwd_for_request as _command_cwd_for_request,
 )
@@ -1075,9 +1074,7 @@ from clio_agent.gact.agent_blueprints import (
     discover_agent_blueprints,
     load_agent_blueprint_path,
     load_agent_blueprints,
-    load_mcp_descriptors,
     read_install_metadata,
-    validate_agent_hierarchy,
 )
 from clio_agent.gact.catalog import (  # noqa: E402, F401
     _builtin_agents,
@@ -1175,7 +1172,6 @@ from clio_agent.gact.tool_observer import (  # noqa: E402,F401
 )
 from clio_agent.gact.transcript import TurnTranscriptRegistry
 from clio_agent.gact.types import (
-    AgentCapabilityRef,
     AgentDef,
     ErrorEnvelope,
     ErrorInfo,
@@ -2127,81 +2123,20 @@ def build_app(
     # register_messages_routes(app, deps) (see the search pointer above).
 
     # ---- /v1/agents catalog (BBB10) + dynamic registry (#19) ---------
+    #
+    # Effective-agent resolution (blueprint rows + MCP tool-gating + capability
+    # refs + default-blueprint fallback) is owned by
+    # ``clio_agent.gact.agents.resolution``; ``/v1/agents`` (``_agent_rows``) and
+    # the runtime turn path share the ONE ``_runtime_active_agent_blueprint_rows``
+    # seam so they can never disagree (#770 C1). The build_app-local closures kept
+    # here are the thin app-binding wrappers ``deps`` needs (1-arg seams that bind
+    # ``app``) plus the metadata-only readers that are deliberately distinct from
+    # the fallback-aware runtime readers.
 
-    def _agent_with_capability_refs(agent_def: AgentDef) -> AgentDef:
-        """Attach normalized capability metadata to an AgentDef row."""
+    def _agent_with_capability_refs_bound(agent_def: AgentDef) -> AgentDef:
+        """Bind ``app`` for the 1-arg capability-ref seam ``deps`` + routes use."""
 
-        refs: list[AgentCapabilityRef] = [
-            AgentCapabilityRef(kind="tool", id=tool_id, title=tool_id, source="builtin")
-            for tool_id in agent_def.tools
-        ]
-        refs.extend(
-            AgentCapabilityRef(kind="skill", id=skill_id, title=skill_id, source=agent_def.source)
-            for skill_id in agent_def.skills
-        )
-        refs.extend(
-            AgentCapabilityRef(
-                kind="command",
-                id=command_id,
-                title=command_id,
-                source="builtin",
-            )
-            for command_id in agent_def.commands
-        )
-        refs.extend(agent_def.capability_refs)
-
-        if agent_def.id == "main":
-            command_ids = set(agent_def.commands)
-            for row in _BACKEND_COMMANDS:
-                command_id = row["id"]
-                if command_id in command_ids:
-                    continue
-                raw_status = row.get("status")
-                status: Literal["available", "unavailable", "unknown"] = (
-                    raw_status
-                    if raw_status in {"available", "unavailable", "unknown"}
-                    else "available"
-                )
-                refs.append(
-                    AgentCapabilityRef(
-                        kind="command",
-                        id=command_id,
-                        title=row.get("title", command_id),
-                        description=row.get("description", ""),
-                        source=row.get("source", "builtin"),
-                        status=status,
-                        metadata=({"error": row["error"]} if row.get("error") else {}),
-                    )
-                )
-                command_ids.add(command_id)
-            agent_def = agent_def.model_copy(update={"commands": sorted(command_ids)})
-
-        if agent_def.source == "skill" and agent_def.id not in agent_def.skills:
-            refs.append(
-                AgentCapabilityRef(
-                    kind="skill",
-                    id=agent_def.id,
-                    title=agent_def.title,
-                    description=agent_def.description,
-                    source=str(agent_def.metadata.get("skill_source", "skill")),
-                    metadata={
-                        "skill_path": agent_def.metadata.get("skill_path", ""),
-                        "skill_layout": agent_def.metadata.get("skill_layout", ""),
-                    },
-                )
-            )
-            agent_def = agent_def.model_copy(update={"skills": [*agent_def.skills, agent_def.id]})
-
-        deduped: list[AgentCapabilityRef] = []
-        seen: set[tuple[str, str]] = set()
-        for ref in refs:
-            key = (ref.kind, ref.id)
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append(ref)
-
-        return agent_def.model_copy(update={"capability_refs": deduped})
+        return _agent_with_capability_refs(app, agent_def)
 
     def _workspace_catalog_cwd(workspace_id: str = "", session_id: str = "") -> Path | None:
         wid = workspace_id
@@ -2327,242 +2262,28 @@ def build_app(
         overlay = _session_agent_overlay(session_id)
         return _apply_agent_overlay_rows(rows, overlay, session_id=session_id)
 
-    def _enabled_agent_blueprint_mcp_tool_names(blueprint_id: str = "") -> set[str]:
-        names: set[str] = set()
-        for server in (getattr(app.state, "external_mcp_servers", {}) or {}).values():
-            if not isinstance(server, Mapping):
-                continue
-            if str(server.get("status") or "") != "ready":
-                continue
-            if blueprint_id and str(server.get("agent_blueprint_id") or "") != blueprint_id:
-                continue
-            for tool in server.get("tools") or []:
-                if not isinstance(tool, Mapping):
-                    continue
-                if not bool(tool.get("enabled")) or str(tool.get("status") or "") != "ready":
-                    continue
-                tool_name = str(tool.get("name") or tool.get("id") or "").strip()
-                if tool_name:
-                    names.add(tool_name)
-        return names
-
-    def _agent_blueprint_descriptor_tools(rows: list[AgentDef]) -> dict[str, str]:
-        descriptors_by_tool: dict[str, str] = {}
-        roots: dict[str, tuple[str, str]] = {}
-        for row in rows:
-            root_file = str(row.metadata.get("agent_blueprint_definition_path") or "").strip()
-            if not root_file:
-                continue
-            roots[root_file] = (
-                str(row.metadata.get("agent_blueprint_scope") or "session"),
-                str(row.metadata.get("agent_blueprint_id") or ""),
-            )
-        for root_file, (scope, blueprint_id) in sorted(roots.items()):
-            root = Path(root_file).expanduser().parent
-            try:
-                descriptors = load_mcp_descriptors(
-                    root,
-                    scope=scope,
-                    blueprint_id=blueprint_id,
-                )
-            except Exception:
-                continue
-            for descriptor in descriptors:
-                descriptor_id = str(descriptor.get("id") or "")
-                for tool in descriptor.get("tools") or []:
-                    if not isinstance(tool, Mapping):
-                        continue
-                    tool_name = str(tool.get("name") or tool.get("id") or "").strip()
-                    if tool_name:
-                        descriptors_by_tool[tool_name] = descriptor_id
-        return descriptors_by_tool
-
-    def _apply_agent_blueprint_mcp_descriptor_validation(rows: list[AgentDef]) -> list[AgentDef]:
-        descriptor_tools = _agent_blueprint_descriptor_tools(rows)
-        if not descriptor_tools:
-            return rows
-        out: list[AgentDef] = []
-        for row in rows:
-            enabled_tools = _enabled_agent_blueprint_mcp_tool_names(
-                str(row.metadata.get("agent_blueprint_id") or "").strip()
-            )
-            errors = list(row.validation_errors)
-            diagnostics = list(row.metadata.get("tool_diagnostics", []))
-            for tool_name in row.tools:
-                if tool_name not in descriptor_tools or tool_name in enabled_tools:
-                    continue
-                descriptor_id = descriptor_tools[tool_name]
-                message = f"MCP tool requires explicit enablement: {tool_name}" + (
-                    f" (descriptor: {descriptor_id})" if descriptor_id else ""
-                )
-                if message not in errors:
-                    errors.append(message)
-                if not any(
-                    isinstance(diag, Mapping)
-                    and str(diag.get("tool") or "") == tool_name
-                    and str(diag.get("source") or "") == "agent_blueprint_mcp_descriptor"
-                    for diag in diagnostics
-                ):
-                    diagnostics.append(
-                        {
-                            "tool": tool_name,
-                            "status": "disabled",
-                            "source": "agent_blueprint_mcp_descriptor",
-                            "descriptor_id": descriptor_id,
-                        }
-                    )
-            metadata = dict(row.metadata)
-            if diagnostics:
-                metadata["tool_diagnostics"] = diagnostics
-            if errors != list(row.validation_errors):
-                metadata["mcp_descriptor_validation_disabled"] = True
-            out.append(
-                row.model_copy(
-                    update={
-                        "enabled": row.enabled and not errors,
-                        "validation_errors": errors,
-                        "metadata": metadata,
-                    }
-                )
-            )
-        return out
-
-    def _apply_enabled_agent_blueprint_mcp_tools(rows: list[AgentDef]) -> list[AgentDef]:
-        out: list[AgentDef] = []
-        cache: dict[str, set[str]] = {}
-        for row in rows:
-            blueprint_id = str(row.metadata.get("agent_blueprint_id") or "").strip()
-            enabled_tools = cache.setdefault(
-                blueprint_id,
-                _enabled_agent_blueprint_mcp_tool_names(blueprint_id),
-            )
-            if not enabled_tools:
-                out.append(row)
-                continue
-            row_tools = {str(tool).strip() for tool in row.tools if str(tool).strip()}
-            resolved_tools = row_tools & enabled_tools
-            if not resolved_tools:
-                out.append(row)
-                continue
-            errors = [
-                error
-                for error in row.validation_errors
-                if not any(
-                    error.startswith(f"MCP tool requires explicit enablement: {tool}")
-                    for tool in resolved_tools
-                )
-            ]
-            diagnostics = [
-                diag
-                for diag in row.metadata.get("tool_diagnostics", [])
-                if not (
-                    isinstance(diag, Mapping)
-                    and str(diag.get("source") or "") == "agent_blueprint_mcp_descriptor"
-                    and str(diag.get("tool") or "") in resolved_tools
-                )
-            ]
-            metadata = dict(row.metadata)
-            if diagnostics:
-                metadata["tool_diagnostics"] = diagnostics
-            else:
-                metadata.pop("tool_diagnostics", None)
-            disabled_by_mcp_validation = bool(
-                metadata.pop("mcp_descriptor_validation_disabled", False)
-            )
-            out.append(
-                row.model_copy(
-                    update={
-                        "enabled": row.enabled or (disabled_by_mcp_validation and not errors),
-                        "validation_errors": errors,
-                        "metadata": metadata,
-                    }
-                )
-            )
-        return out
-
-    def _active_session_agent_blueprint_rows(
-        session_id: str = "",
-        workspace_id: str = "",
-    ) -> list[AgentDef]:
-        if not session_id:
-            return []
-        rows = _base_session_agent_blueprint_rows(session_id=session_id, workspace_id=workspace_id)
-        if rows:
-            rows = _apply_session_agent_overlay(rows, session_id=session_id)
-            prompt_registry = _prompt_registry_for_request(
-                session_id=session_id,
-                workspace_id=workspace_id,
-            )
-            rows = validate_agent_hierarchy(_merge_agent_def_rows(rows))
-            rows = _apply_agent_blueprint_mcp_descriptor_validation(rows)
-            rows = _apply_enabled_agent_blueprint_mcp_tools(rows)
-            active_blueprint_id = _active_session_agent_blueprint_id(session_id)
-            render_context = _prompt_render_context(app)
-            render_context.update(_agent_rows_prompt_render_context(rows))
-            render_context["session.active_agent_blueprint"] = (
-                active_blueprint_id or "(no active agent blueprint)"
-            )
-            render_context["session.active_pack"] = active_blueprint_id or "(no active expert pack)"
-            return [
-                _apply_prompt_registry_to_agent(
-                    app,
-                    _agent_with_capability_refs(row),
-                    prompt_registry=prompt_registry,
-                    render_context=render_context,
-                )
-                for row in rows
-            ]
-        return []
-
-    def _active_session_agent_blueprint_agent_ids(session_id: str = "") -> set[str]:
-        return {
-            row.id
-            for row in _active_session_agent_blueprint_rows(session_id=session_id)
-            if row.enabled
-        }
-
-    def _active_session_agent_blueprint_root_id(session_id: str = "") -> str:
-        rows = _active_session_agent_blueprint_rows(session_id=session_id)
-        if not rows:
-            return ""
-        requested_root = str(rows[0].metadata.get("agent_blueprint_root_expert") or "").strip()
-        if requested_root and any(row.id == requested_root and row.enabled for row in rows):
-            return requested_root
-        roots = [row for row in rows if row.enabled and not row.parent_id]
-        if len(roots) == 1:
-            return roots[0].id
-        enabled = [row for row in rows if row.enabled]
-        if not enabled:
-            return ""
-        return sorted(enabled, key=lambda row: (row.tier, row.id))[0].id
-
-    # Deliberately shadows the module-level ``agents.resolution`` re-export with a
-    # ``build_app``-closure variant that binds ``app`` + the local
-    # ``_active_session_agent_blueprint_rows``; the re-export above stays for
-    # ``from clio_agent.gact.app import _resolve_runtime_dynamic_agent`` callers +
-    # the import-seam guardrail. (Surfaced as F811 only after the turn engine -- the
-    # other module-level consumer -- moved to gact/turn.py; #714.)
-    def _resolve_runtime_dynamic_agent(  # noqa: F811
-        agent_id: str,
-        *,
-        session_id: str = "",
-        workspace_id: str = "",
-        prompt_registry: PromptRegistry | None = None,
-    ) -> "AgentDef | None":
-        if session_id:
-            for row in _active_session_agent_blueprint_rows(
-                session_id=session_id,
-                workspace_id=workspace_id,
-            ):
-                if row.id == agent_id and row.enabled:
-                    return row
-        return _resolve_dynamic_agent(app, agent_id, prompt_registry=prompt_registry)
-
     def _agent_rows(session_id: str = "", workspace_id: str = "") -> list[AgentDef]:
+        """Resolve the effective agent catalog ``GET /v1/agents`` renders.
+
+        Delegates the active-blueprint branch to the shared
+        :func:`clio_agent.gact.agents.resolution._runtime_active_agent_blueprint_rows`
+        seam (dispatched through the module so a monkeypatch of that ONE function
+        is honoured identically by this route and the runtime turn path), so the
+        list a client sees and the agents that actually execute never diverge
+        (#770 C1). Only when no blueprint resolves does it fall back to the
+        builtin/user/skill/expert-pack hierarchy.
+        """
+
         cwd = _workspace_catalog_cwd(workspace_id=workspace_id, session_id=session_id)
-        rows = _active_session_agent_blueprint_rows(
+        prompt_registry = _prompt_registry_for_request(
             session_id=session_id,
             workspace_id=workspace_id,
+        )
+        rows = _resolution._runtime_active_agent_blueprint_rows(
+            app,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            prompt_registry=prompt_registry,
         )
         if rows:
             return rows
@@ -2580,18 +2301,36 @@ def build_app(
             + load_expert_packs(cwd=cwd, pack_id=active_pack_id)
             + explicit_session_rows
         )
-        prompt_registry = _prompt_registry_for_request(
-            session_id=session_id,
-            workspace_id=workspace_id,
-        )
         return [
             _apply_prompt_registry_to_agent(
                 app,
-                _agent_with_capability_refs(row),
+                _agent_with_capability_refs(app, row),
                 prompt_registry=prompt_registry,
             )
             for row in validate_expert_hierarchy(_merge_agent_def_rows(rows))
         ]
+
+    def _resolve_runtime_dynamic_agent_bound(
+        agent_id: str,
+        *,
+        session_id: str = "",
+        workspace_id: str = "",
+        prompt_registry: PromptRegistry | None = None,
+    ) -> "AgentDef | None":
+        """Bind ``app`` for the 1-arg overlay-aware resolver seam ``deps`` carries.
+
+        Dispatches through the ``resolution`` module so both this seam (command
+        dispatch / planner-command filter) and the runtime turn path share the ONE
+        unified resolver -- the divergent build_app shadow is gone (#770 C1).
+        """
+
+        return _resolution._resolve_runtime_dynamic_agent(
+            app,
+            agent_id,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            prompt_registry=prompt_registry,
+        )
 
     # ---- /v1/agent-blueprints/* + /v1/expert-packs/* lifecycle + session
     # blueprint activation (iowarp/clio-agent#663) -----------------------
@@ -2636,13 +2375,13 @@ def build_app(
         agent_blueprint_activation_metadata=_agent_blueprint_activation_metadata,
         mirror_workspace_session=_mirror_workspace_session,
         agent_rows=_agent_rows,
-        agent_with_capability_refs=_agent_with_capability_refs,
+        agent_with_capability_refs=_agent_with_capability_refs_bound,
         base_session_agent_blueprint_rows=_base_session_agent_blueprint_rows,
         apply_agent_overlay_rows=_apply_agent_overlay_rows,
         append_session_message=_append_session_message,
         delete_session_messages=_delete_session_messages,
         blueprint_runner_for_agent=_blueprint_runner_for_agent,
-        resolve_runtime_dynamic_agent=_resolve_runtime_dynamic_agent,
+        resolve_runtime_dynamic_agent=_resolve_runtime_dynamic_agent_bound,
         start_background_user_turn=_start_background_user_turn,
         remove_workspace_session_mirror=_remove_workspace_session_mirror,
         delete_session_context_files=_delete_session_context_files,
