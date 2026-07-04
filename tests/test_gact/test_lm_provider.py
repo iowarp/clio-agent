@@ -17,6 +17,25 @@ from clio_agent.gact.app import build_app
 from clio_agent.gact.providers.config import _effective_lm_config
 
 
+class _RebindLMStub:
+    """Mixin: a bound ``rebind_lms`` for bind-path ClioAgent stubs.
+
+    The provider bind now calls ``agent.rebind_lms(cfg)`` (on a freshly built agent or
+    a ``copy.copy`` of the existing one), so a stub standing in for ClioAgent needs a
+    real bound method that rebuilds the four LM-surface fields together.
+    """
+
+    def rebind_lms(self, cfg: Any) -> None:
+        self._provider_config = cfg
+        self._main_lm = SimpleNamespace(
+            model=getattr(cfg, "model", ""), provider=getattr(cfg, "provider", ""), history=[]
+        )
+        self._planner_lm = SimpleNamespace(
+            model=getattr(cfg, "model", ""), provider=getattr(cfg, "provider", ""), history=[]
+        )
+        self._dspy_adapter = SimpleNamespace(provider=getattr(cfg, "provider", ""))
+
+
 def _wait_lm_provider_ready(c: TestClient, timeout_s: float = 5.0) -> dict[str, Any]:
     deadline = time.monotonic() + timeout_s
     body: dict[str, Any] = {}
@@ -357,7 +376,7 @@ def test_get_lm_provider_when_configured_via_put(tmp_path: Path, monkeypatch) ->
 
     fake_agent_constructed: dict[str, Any] = {}
 
-    class _StubAgent:
+    class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             fake_agent_constructed["called"] = True
             self.arc = type(
@@ -437,7 +456,7 @@ def test_put_argonne_uses_provider_default_max_tokens_when_omitted(
 
     captured: dict[str, Any] = {}
 
-    class _StubAgent:
+    class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             self.arc = type(
                 "ARC",
@@ -500,7 +519,7 @@ def test_put_argonne_preset_id_normalizes_to_runtime_provider_kind(
 
     captured: dict[str, Any] = {}
 
-    class _StubAgent:
+    class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             self.arc = type(
                 "ARC",
@@ -561,7 +580,7 @@ def test_put_argonne_ignores_placeholder_api_key(tmp_path: Path, monkeypatch) ->
 
     captured: dict[str, Any] = {}
 
-    class _StubAgent:
+    class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             self.arc = type(
                 "ARC",
@@ -615,12 +634,10 @@ def test_argonne_runtime_refresh_updates_live_lm_kwargs(monkeypatch) -> None:
     monkeypatch.setattr("clio_agent.config._resolve_argonne_api_key", lambda: "runtime-token")
     main_lm = SimpleNamespace(kwargs={"api_key": "old-token"})
     planner_lm = SimpleNamespace(kwargs={"api_key": "old-token"})
-    router_lm = SimpleNamespace(kwargs={"api_key": "old-token"})
     agent = SimpleNamespace(
         _provider_config=SimpleNamespace(provider="argonne", api_key="old-token"),
         _main_lm=main_lm,
         _planner_lm=planner_lm,
-        _router_lm=router_lm,
     )
 
     _refresh_argonne_lm_token(agent)
@@ -628,7 +645,6 @@ def test_argonne_runtime_refresh_updates_live_lm_kwargs(monkeypatch) -> None:
     assert agent._provider_config.api_key == "runtime-token"
     assert main_lm.kwargs["api_key"] == "runtime-token"
     assert planner_lm.kwargs["api_key"] == "runtime-token"
-    assert router_lm.kwargs["api_key"] == "runtime-token"
 
 
 def test_put_lm_provider_accepts_codex_sdk_transport(tmp_path: Path, monkeypatch) -> None:
@@ -636,7 +652,7 @@ def test_put_lm_provider_accepts_codex_sdk_transport(tmp_path: Path, monkeypatch
     captured: dict[str, Any] = {}
     monkeypatch.delenv("CLIO_CODEX_TRANSPORT", raising=False)
 
-    class _StubAgent:
+    class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             self.arc = type(
                 "ARC",
@@ -694,7 +710,7 @@ def test_put_lm_provider_accepts_claude_code_exec_transport(tmp_path: Path, monk
     monkeypatch.delenv("CLIO_CLAUDE_CODE_TRANSPORT", raising=False)
     captured: dict[str, Any] = {}
 
-    class _StubAgent:
+    class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             self.arc = type(
                 "ARC",
@@ -751,7 +767,7 @@ def test_put_lm_provider_defaults_claude_code_to_sdk_transport(tmp_path: Path, m
     monkeypatch.delenv("CLIO_CLAUDE_CODE_TRANSPORT", raising=False)
     captured: dict[str, Any] = {}
 
-    class _StubAgent:
+    class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             self.arc = type(
                 "ARC",
@@ -822,7 +838,7 @@ def test_put_lm_provider_applies_lm_studio_context_length(tmp_path: Path, monkey
         def json(self) -> dict[str, Any]:
             return {"instance_id": "qwopus3.5-9b-v3", "status": "loaded"}
 
-    class _StubAgent:
+    class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             self.arc = type(
                 "ARC",
@@ -919,7 +935,7 @@ def test_put_lm_provider_reuses_loaded_lm_studio_model(tmp_path: Path, monkeypat
                 ],
             }
 
-    class _StubAgent:
+    class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             self.arc = type(
                 "ARC",
@@ -1114,12 +1130,12 @@ def test_turn_timeout_precedence_runtime_over_conf() -> None:
 def _make_stub_agent_cls() -> type:
     """A minimal ClioAgent stub whose construction needs no live LM.
 
-    Only the ``arc`` surface the bind path touches is provided; the bind hot-swaps
-    ``_provider_config`` / ``_main_lm`` / ``_planner_lm`` / ``_router_lm`` /
-    ``_dspy_adapter`` onto the instance itself.
+    Only the ``arc`` surface the bind path touches is provided; the bind rebinds
+    ``_provider_config`` / ``_main_lm`` / ``_planner_lm`` / ``_dspy_adapter`` onto the
+    instance via ``rebind_lms``.
     """
 
-    class _StubAgent:
+    class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             self.arc = type(
                 "ARC",

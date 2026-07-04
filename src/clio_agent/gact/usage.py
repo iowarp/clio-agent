@@ -76,7 +76,7 @@ def _all_known_lms(app: "FastAPI") -> list[Any]:
     # Include _main_lm: the agent's primary LM (planner + experts route through it
     # when it is not the global dspy.settings.lm). Missing it under-counts usage
     # AND drops the reasoning trace for the bulk of the turn. Keep the others.
-    for attr in ("_main_lm", "_planner_lm", "_router_lm", "router_lm", "_expert_lm", "main_lm"):
+    for attr in ("_main_lm", "_planner_lm", "_expert_lm", "main_lm"):
         side = getattr(agent, attr, None) if agent is not None else None
         if side is not None and side not in lms:
             lms.append(side)

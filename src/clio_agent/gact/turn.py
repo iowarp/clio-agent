@@ -552,8 +552,6 @@ async def _run_turn_in_background(
         _format_subagent_input,
         _gact_turn_timeout_s,
         _ground_fabricated_local_artifact_paths,
-        _keyword_routed_user_agent,
-        _keyword_user_agent_routing_enabled,
         _latest_delegation_output_summary,
         _latest_parent_resumed_output_summary,
         _merge_tool_call_rows,
@@ -602,7 +600,6 @@ async def _run_turn_in_background(
     rationale = ""
     route_source = ""
     route_reason = ""
-    auto_routed_agent: "AgentDef | None" = None
     agent_runtime: dict[str, Any] = {}
     dynamic_agent_used: "AgentDef | None" = None
     execution_path = ""
@@ -1939,17 +1936,6 @@ async def _run_turn_in_background(
         ):
             active_agent_id = active_blueprint_root_id
         routing_mode = getattr(sess, "routing_mode", "auto") or "auto"
-        auto_routed_agent = None
-        if (
-            _keyword_user_agent_routing_enabled()
-            and not turn_agent_id
-            and not active_blueprint_agent_ids
-            and active_agent_id in {"", "main", "default"}
-            and routing_mode in {"auto", "experts"}
-        ):
-            auto_routed_agent = _keyword_routed_user_agent(app, user_text)
-            if auto_routed_agent is not None:
-                active_agent_id = auto_routed_agent.id
         invocation_agent_id = active_agent_id or "orchestrator"
         _emit_semantic_event(
             app,
@@ -2274,12 +2260,6 @@ async def _run_turn_in_background(
         rationale = getattr(pred, "routing_rationale", "")
         route_source = getattr(pred, "route_source", "") or ""
         route_reason = getattr(pred, "route_reason", "") or rationale
-        if auto_routed_agent is not None:
-            selected_agent = selected_agent or auto_routed_agent.id
-            keyword_reason = f"Matched registered user agent {auto_routed_agent.id!r} by keyword."
-            route_source = "user_agent_keyword"
-            rationale = rationale or keyword_reason
-            route_reason = keyword_reason
         pred_error_info = _coerce_error_info(getattr(pred, "error_info", None))
         if pred_error_info is not None:
             if pred_error_info.error == "cancelled":

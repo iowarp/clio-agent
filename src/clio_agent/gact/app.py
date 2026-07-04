@@ -26,7 +26,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 import time
 
 # Process diagnostics (SIGUSR1 wedge/heap dump) extracted to gact/diagnostics.py
@@ -160,13 +159,6 @@ def _gact_turn_timeout_s(app: Optional["FastAPI"] = None) -> float:
         )
     except (ValueError, TypeError):
         return 900.0
-
-
-def _keyword_user_agent_routing_enabled() -> bool:
-    """Return whether legacy keyword routing into user agents is enabled."""
-
-    raw = os.environ.get("CLIO_ENABLE_KEYWORD_USER_AGENT_ROUTING", "").strip().lower()
-    return raw in {"1", "true", "yes", "on"}
 
 
 def _gact_cors_origins() -> list[str]:
@@ -365,66 +357,6 @@ def _enrich_cancellation_error_info(
 # modules are the single source of truth; tests that patch these must target the #
 # owner (``...agents.resolution`` / ``...agents.composition``), not this shim.   #
 # --------------------------------------------------------------------------- #
-from clio_agent.gact.agents import resolution as _resolution  # noqa: E402, F401
-from clio_agent.gact.agents.composition import (  # noqa: E402, F401
-    _agent_prompt_request,
-    _agent_rows_prompt_render_context,
-    _apply_prompt_registry_to_agent,
-    _prompt_render_context,
-    _prompt_resolution_metadata,
-    _runtime_active_workspace_context,
-    _runtime_dynamic_agent_children_context,
-)
-from clio_agent.gact.agents.resolution import (  # noqa: E402, F401
-    _agent_definition_is_agent_blueprint,
-    _agent_definition_uses_blueprint_runtime,
-    _agent_overlay_patchable_fields,
-    _agent_with_capability_refs,
-    _legacy_native_expert_runtime_enabled,
-    _merge_agent_def_rows,
-    _resolve_dynamic_agent,
-    _resolve_runtime_dynamic_agent,
-    _runtime_active_agent_blueprint_agent_ids,
-    _runtime_active_agent_blueprint_id,
-    _runtime_active_agent_blueprint_path,
-    _runtime_active_agent_blueprint_root_id,
-    _runtime_active_agent_blueprint_rows,
-    _runtime_active_session_expert_pack_id,
-    _runtime_active_session_expert_pack_path,
-    _runtime_apply_session_agent_overlay,
-    _runtime_child_agent_rows,
-    _runtime_declared_child_ids,
-    _runtime_session_agent_overlay,
-    _runtime_workspace_catalog_cwd,
-)
-
-
-def _keyword_routed_user_agent(app: "FastAPI", text: str) -> "AgentDef | None":
-    """Return the best registered user agent whose keyword matches text.
-
-    This intentionally ignores auto-discovered skills for now. Skills can be
-    numerous and global, so implicit routing only uses agents the user
-    registered directly in this CLIO backend.
-    """
-
-    normalized = f" {re.sub(r'[^a-z0-9_+-]+', ' ', text.lower())} "
-    matches: list[tuple[int, str, AgentDef]] = []
-    for row in app.state.user_agents.list():
-        agent = AgentDef(**row.to_wire())
-        for raw_keyword in agent.keywords:
-            keyword = str(raw_keyword or "").strip().lower()
-            if not keyword:
-                continue
-            needle = f" {re.sub(r'[^a-z0-9_+-]+', ' ', keyword)} "
-            if needle.strip() and needle in normalized:
-                matches.append((len(keyword), agent.id, agent))
-                break
-    if not matches:
-        return None
-    matches.sort(key=lambda item: (-item[0], item[1]))
-    return matches[0][2]
-
-
 # --------------------------------------------------------------------------- #
 # Extracted-module re-export shims (#714 decomposition)                         #
 #                                                                               #
@@ -444,6 +376,7 @@ from clio_agent.gact._params import (  # noqa: E402,F401
     _user_agent_int_param,
     _user_agent_param,
 )
+from clio_agent.gact.agents import resolution as _resolution  # noqa: E402, F401
 
 # gact/agents/builders.py + agents/runtime.py -- expert/blueprint runtime engine;
 # the kept turn-handler dispatch wrappers below reach the builders through these.
@@ -479,6 +412,37 @@ from clio_agent.gact.agents.builders import (  # noqa: E402,F401
     _tool_user_agent_max_iters,
     _tool_user_agent_signature,
     _typed_output_repair_hint,
+)
+from clio_agent.gact.agents.composition import (  # noqa: E402, F401
+    _agent_prompt_request,
+    _agent_rows_prompt_render_context,
+    _apply_prompt_registry_to_agent,
+    _prompt_render_context,
+    _prompt_resolution_metadata,
+    _runtime_active_workspace_context,
+    _runtime_dynamic_agent_children_context,
+)
+from clio_agent.gact.agents.resolution import (  # noqa: E402, F401
+    _agent_definition_is_agent_blueprint,
+    _agent_definition_uses_blueprint_runtime,
+    _agent_overlay_patchable_fields,
+    _agent_with_capability_refs,
+    _legacy_native_expert_runtime_enabled,
+    _merge_agent_def_rows,
+    _resolve_dynamic_agent,
+    _resolve_runtime_dynamic_agent,
+    _runtime_active_agent_blueprint_agent_ids,
+    _runtime_active_agent_blueprint_id,
+    _runtime_active_agent_blueprint_path,
+    _runtime_active_agent_blueprint_root_id,
+    _runtime_active_agent_blueprint_rows,
+    _runtime_active_session_expert_pack_id,
+    _runtime_active_session_expert_pack_path,
+    _runtime_apply_session_agent_overlay,
+    _runtime_child_agent_rows,
+    _runtime_declared_child_ids,
+    _runtime_session_agent_overlay,
+    _runtime_workspace_catalog_cwd,
 )
 from clio_agent.gact.agents.runtime import (  # noqa: E402,F401
     _prediction_structured_metadata,
