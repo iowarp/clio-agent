@@ -2011,16 +2011,28 @@ def build_app(
                         f"- {row.get('id')}: {row.get('description') or row.get('title')}"
                         for row in _planner_command_rows(
                             app,
-                            _resolve_runtime_dynamic_agent,
+                            _resolve_runtime_dynamic_agent_bound,
                             agent_id=agent_id,
                             cwd=_command_cwd_for_request(app, session_id),
+                            session_id=session_id,
                         )
                     ]
                     context["commands.agent_invocable"] = (
                         "\n".join(commands) or "(no agent-invocable commands)"
                     )
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001 - enrichment; keep the base list
+                    # No silent fallback: record WHY the agent-scoped command
+                    # enrichment was skipped so an arity/resolver break is
+                    # queryable in the trace instead of silently reverting the
+                    # render context to the un-scoped base command list.
+                    trace.event(
+                        "PROMPT-CTX",
+                        "agent-invocable command enrichment failed for agent %r "
+                        "(session %r): %s; rendering un-scoped base command list",
+                        agent_id,
+                        session_id,
+                        exc,
+                    )
         return context
 
     # ---- /v1/sessions CRUD + delete -----------------------------------
