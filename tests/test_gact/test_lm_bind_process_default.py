@@ -59,6 +59,25 @@ def _fake_adapter(cfg: Any) -> Any:
     return SimpleNamespace(provider=cfg.provider)
 
 
+class _RebindLMStub:
+    """Mixin giving a bind-path stub a bound ``rebind_lms`` mirroring ClioAgent's.
+
+    The provider hot-swap now does ``agent = copy.copy(existing); agent.rebind_lms(cfg)``,
+    so every stub that flows through a bind needs a real bound method — a plain
+    ``SimpleNamespace`` attribute would not receive ``self``.
+    """
+
+    def rebind_lms(self, cfg: Any) -> None:
+        self._provider_config = cfg
+        self._main_lm = _fake_lm(cfg)
+        self._planner_lm = _fake_lm(cfg)
+        self._dspy_adapter = _fake_adapter(cfg)
+
+
+class _StubBindAgent(_RebindLMStub, SimpleNamespace):
+    """SimpleNamespace-style agent stub that survives the hot-swap rebind."""
+
+
 def _install_stub_factories(monkeypatch: pytest.MonkeyPatch, *, create_lm: Any = None) -> None:
     """Stub the LM factories + handshake so a bind needs no network."""
 
@@ -92,7 +111,7 @@ def test_deferred_boot_put_installs_process_default_for_ambient(
 
     real_arc = ARCMemory(data_dir=str(tmp_path / "arc"))
 
-    class _StubAgent:
+    class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, arc: Any = None, **kwargs: Any) -> None:
             # Keep the real injected ARC so the compaction route has live segments.
             self.arc = arc
@@ -165,12 +184,11 @@ def test_rebind_refreshes_ambient_process_default(
     monkeypatch.setitem(main_thread_config, "lm", SimpleNamespace(model="boot-model", history=[]))
     monkeypatch.setitem(main_thread_config, "adapter", SimpleNamespace())
 
-    existing = SimpleNamespace(
+    existing = _StubBindAgent(
         arc=ARCMemory(data_dir=str(tmp_path / "arc")),
         _provider_config=SimpleNamespace(provider="openai", model="boot-model"),
         _main_lm=SimpleNamespace(model="boot-model", provider="openai"),
         _planner_lm=SimpleNamespace(model="boot-model", provider="openai"),
-        _router_lm=SimpleNamespace(model="boot-model", provider="openai"),
         _dspy_adapter=SimpleNamespace(provider="openai"),
     )
     _install_stub_factories(monkeypatch)
@@ -225,12 +243,11 @@ def test_concurrent_cloud_binds_serialized_and_consistent(
 
     # A pre-existing agent so both concurrent binds hit the hot-swap path (the exact
     # site the finding tore field-by-field).
-    existing = SimpleNamespace(
+    existing = _StubBindAgent(
         arc=ARCMemory(data_dir=str(tmp_path / "arc")),
         _provider_config=SimpleNamespace(provider="boot", model="boot-model"),
         _main_lm=SimpleNamespace(model="boot-model", provider="boot"),
         _planner_lm=SimpleNamespace(model="boot-model", provider="boot"),
-        _router_lm=SimpleNamespace(model="boot-model", provider="boot"),
         _dspy_adapter=SimpleNamespace(provider="boot"),
     )
 

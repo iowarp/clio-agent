@@ -13,7 +13,6 @@ from clio_agent.config import (
     LMProviderConfig,
     create_lm,
     create_planner_lm,
-    create_router_lm,
     load_config_from_env,
 )
 
@@ -459,12 +458,6 @@ class TestCreatePlannerLM:
         )
         lm = create_planner_lm(config)
         assert lm.kwargs.get("temperature") == 0.1
-
-    def test_router_lm_alias(self):
-        """create_router_lm remains as a compatibility alias."""
-        config = LMProviderConfig(provider="lm_studio", model="loaded-model")
-        lm = create_router_lm(config)
-        assert isinstance(lm, dspy.LM)
 
 
 class TestSetupDspy:

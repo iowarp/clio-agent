@@ -1275,11 +1275,6 @@ def create_planner_lm(config: LMProviderConfig) -> dspy.LM:
     )
 
 
-def create_router_lm(config: LMProviderConfig) -> dspy.LM:
-    """Backward-compatible alias for create_planner_lm."""
-    return create_planner_lm(config)
-
-
 def _resolve_lm_studio_model_if_needed(config: LMProviderConfig) -> None:
     """Fill a blank LM Studio model from the currently loaded model list."""
     if config.provider == "lm_studio" and not config.model.strip():

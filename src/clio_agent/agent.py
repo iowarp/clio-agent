@@ -273,13 +273,9 @@ class ClioAgent(dspy.Module):
             print(f"[ClioAgent] Expert model: {expert_model}")
 
         # Planner: a model-chosen action loop over live capabilities.
-        self._main_lm = create_lm(self._provider_config)
-        self._planner_lm = create_planner_lm(self._provider_config)
-        self._router_lm = self._planner_lm  # Deprecated alias for older integrations.
-        self._dspy_adapter = create_chat_adapter(self._provider_config)
+        self.rebind_lms(self._provider_config)
         self.action_planner = dspy.Predict(AgentActionSignature)
         self.answer_synthesizer = dspy.Predict(AgentAnswerSignature)
-        self.router = self.action_planner
 
         # Chat Agent: Predict for conversational responses. This keeps the
         # structured output surface smaller than ChainOfThought, which is more
@@ -328,6 +324,19 @@ class ClioAgent(dspy.Module):
         if self.verbose:
             print(f"[ClioAgent] Registered {self.registry.get_agent_count()} runtime agents")
             print(f"[ClioAgent] ARC Memory initialized at {data_dir}/arc")
+
+    def rebind_lms(self, provider_config: LMProviderConfig) -> None:
+        """(Re)build the LM-dependent surface from a provider config.
+
+        The single writer for ``_provider_config`` / ``_main_lm`` / ``_planner_lm`` /
+        ``_dspy_adapter``. Used by ``__init__`` and by the gact LM-bind hot-swap, so the
+        four fields are always rebuilt together (no partial/torn LM surface).
+        """
+
+        self._provider_config = provider_config
+        self._main_lm = create_lm(provider_config)
+        self._planner_lm = create_planner_lm(provider_config)
+        self._dspy_adapter = create_chat_adapter(provider_config)
 
     def _discover_pack_servers(self) -> dict[str, dict[str, Any]]:
         """Return declared ``mcp_servers`` per discovered blueprint id.

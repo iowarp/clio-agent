@@ -47,7 +47,7 @@ def _refresh_argonne_lm_token(agent: Any) -> None:
         return
     token = _resolve_argonne_runtime_api_key()
     cfg.api_key = token
-    for attr in ("_main_lm", "_planner_lm", "_router_lm"):
+    for attr in ("_main_lm", "_planner_lm"):
         lm = getattr(agent, attr, None)
         kwargs = getattr(lm, "kwargs", None)
         if isinstance(kwargs, dict):

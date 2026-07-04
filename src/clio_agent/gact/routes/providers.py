@@ -925,13 +925,9 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             # path mutates ``os.environ`` or dspy ``main_thread_config``, so a
             # concurrent bind can never leave a torn process-global state.
             new_lm = create_lm(cfg)
-            from clio_agent.config import (  # noqa: PLC0415
-                create_chat_adapter,
-                create_planner_lm,
-            )
+            from clio_agent.config import create_chat_adapter  # noqa: PLC0415
 
             new_adapter = create_chat_adapter(cfg)
-            new_planner_lm = create_planner_lm(cfg)
             # Hot-swap the LM on the existing agent instead of
             # rebuilding from scratch. ClioAgent's expensive state
             # (ARC retriever, LSM tree, registry, expert instances,
@@ -964,11 +960,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 # copy is cheap (no expert re-wiring), preserving the hot-swap latency
                 # win over a from-scratch rebuild.
                 agent = _copy.copy(existing)
-                agent._provider_config = cfg
-                agent._main_lm = new_lm
-                agent._planner_lm = new_planner_lm
-                agent._router_lm = new_planner_lm
-                agent._dspy_adapter = new_adapter
+                agent.rebind_lms(cfg)
             else:
                 # First-time agent construction reads the ambient boot config
                 # from env; its throwaway LMs are immediately replaced by the
@@ -982,11 +974,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 # carry the handshake-applied cfg + cfg-based LMs onto it so the
                 # context-aware max_tokens / chosen_context are in effect on the
                 # very first bind, not just on subsequent hot-swaps.
-                agent._provider_config = cfg
-                agent._main_lm = new_lm
-                agent._planner_lm = new_planner_lm
-                agent._router_lm = new_planner_lm
-                agent._dspy_adapter = new_adapter
+                agent.rebind_lms(cfg)
         except HTTPException:
             # Argonne auth path raises a structured 401 above; keep its
             # error code intact instead of flattening to a generic 400. No
