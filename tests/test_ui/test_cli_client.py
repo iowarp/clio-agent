@@ -11,6 +11,7 @@ exits structured when the server cannot be started.
 from __future__ import annotations
 
 import io
+import sys
 from typing import Any
 
 import pytest
@@ -18,7 +19,7 @@ from rich.console import Console
 
 from clio_agent import serve
 from clio_agent.sdk import ClioClient
-from clio_agent.ui.cli import ClioAgentCLI, boot_client
+from clio_agent.ui.cli import ClioAgentCLI, boot_client, main
 
 
 def _recording_console() -> Console:
@@ -90,19 +91,25 @@ def test_ask_question_reuses_one_session_across_turns(client: ClioClient) -> Non
 
 def test_experts_renders_agent_catalog(client: ClioClient) -> None:
     cli, console = _make_cli(client)
+    agents = cli.client.agents()
+    assert agents, "server should expose an agent catalog"
     assert cli.handle_command("/experts") is True
     out = console.export_text()
     assert "Available Experts" in out
-    # Real catalog rows come back with at least one built-in expert id.
-    assert cli.client.agents(), "server should expose an agent catalog"
+    # A real catalog row rendered — the name cell is title-or-id, from live data.
+    assert any((a.title or a.id) in out for a in agents), "no expert row rendered"
 
 
 def test_registry_summary_renders(client: ClioClient) -> None:
     cli, console = _make_cli(client)
+    agents = cli.client.agents()
+    assert agents
     assert cli.handle_command("/registry") is True
     out = console.export_text()
     assert "Registry Status" in out
-    assert "Registered Agents" in out
+    # The count is bound to the live catalog, and a real id surfaces.
+    assert f"Registered Agents: {len(agents)}" in out
+    assert any(a.id in out for a in agents), "no registered agent id rendered"
 
 
 def test_doctor_renders_server_health(client: ClioClient) -> None:
@@ -115,33 +122,59 @@ def test_doctor_renders_server_health(client: ClioClient) -> None:
 
 
 def test_metrics_renders(client: ClioClient) -> None:
-    cli, console = _make_cli(client)
+    cli, _ = _make_cli(client)
+    # Drive one turn so the counters are non-trivial (messages.total >= 1),
+    # otherwise every counter is 0 and "0 in out" would prove nothing.
+    cli.ask_question("warm up the metrics")
+    m = cli.client.metrics()
+    assert m.messages.total >= 1
+    # Render /metrics into a FRESH console so we assert ONLY its output (not the
+    # warm-up answer, which also contains digits).
+    fresh = _recording_console()
+    cli.console = fresh
     assert cli.handle_command("/metrics") is True
-    out = console.export_text()
+    out = fresh.export_text()
     assert "Runtime Metrics" in out
-    assert "Uptime" in out
+    # The exact live counters render — a decode/render regression would break these.
+    assert f"{m.messages.total}" in out
+    assert f"{m.sessions.total}" in out
 
 
 def test_tools_renders(client: ClioClient) -> None:
     cli, console = _make_cli(client)
+    tools = cli.client.tools()
     assert cli.handle_command("/tools") is True
     out = console.export_text()
     assert "Tools" in out
+    # If the server mounts any tools, a real tool row (name or id) rendered.
+    if tools:
+        assert any((t.name or t.id) in out for t in tools), "no tool row rendered"
 
 
 def test_models_renders(client: ClioClient) -> None:
     cli, console = _make_cli(client)
+    prov = cli.client.lm_provider()
     assert cli.handle_command("/models") is True
     out = console.export_text()
     assert "LM Provider" in out
+    # A dynamic SDK-sourced value renders (state is always populated on the wire).
+    assert prov.state and prov.state in out
 
 
 def test_memory_renders(client: ClioClient) -> None:
     cli, console = _make_cli(client)
+    health = cli.client.health()
+    arc_row = next(
+        (i for i in health.integrations if "arc" in i.name.lower() or "memory" in i.name.lower()),
+        None,
+    )
+    assert arc_row is not None, "server health should expose an ARC/memory row in the test env"
     assert cli.handle_command("/memory") is True
     out = console.export_text()
-    # Either the ARC row or the explicit "not reported" note — never a crash.
-    assert out.strip()
+    # The ARC-row branch rendered (not the "not reported" note) with its live fields.
+    assert "ARC Memory Integration" in out
+    assert arc_row.name in out
+    assert arc_row.status in out
 
 
 # --------------------------------------------------------------------------- #
@@ -237,3 +270,36 @@ def test_boot_client_attaches_and_returns_client(monkeypatch: Any) -> None:
     client = boot_client()
     assert isinstance(client, ClioClient)
     client.close()
+
+
+# --------------------------------------------------------------------------- #
+# console-script entry: `clio-agent doctor` runs in-process, never spawns
+# --------------------------------------------------------------------------- #
+
+
+def test_main_doctor_runs_in_process_without_a_server(monkeypatch: Any) -> None:
+    """Regression: the shipped ``clio-agent`` script points at ``main`` (not
+    ``run_cli``), so ``clio-agent doctor`` parses argv and runs the in-process
+    doctor — it must NEVER connect-or-spawn a server (a doctor has to work when
+    the server is down)."""
+    import clio_agent.ui.cli as cli_mod
+
+    def _no_spawn(*_a: Any, **_k: Any) -> str:
+        raise AssertionError("`clio-agent doctor` must not connect-or-spawn a server")
+
+    monkeypatch.setattr(cli_mod.serve, "ensure_server", _no_spawn)
+
+    ran = {"doctor": False}
+
+    def _fake_doctor(json_output: bool = False) -> int:
+        ran["doctor"] = True
+        return 0
+
+    monkeypatch.setattr(cli_mod, "run_doctor", _fake_doctor)
+    monkeypatch.setattr(sys, "argv", ["clio-agent", "doctor"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        main()
+
+    assert excinfo.value.code == 0
+    assert ran["doctor"] is True  # dispatched in-process, no server booted

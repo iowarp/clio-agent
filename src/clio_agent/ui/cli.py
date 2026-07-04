@@ -806,7 +806,16 @@ def run_query(
         client.close()
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Console-script entry point (``clio-agent``): parse argv and dispatch.
+
+    Backs the ``clio-agent`` console script so the *installed* binary honors
+    ``doctor`` / ``--query`` / ``--tune`` and the flags — not only the
+    interactive REPL. ``doctor`` and ``--tune`` run in-process (no server
+    needed); ``--query`` and the default interactive mode connect-or-spawn a
+    server. (``run_cli`` alone never parses argv, so pointing the console script
+    at it made ``clio-agent doctor`` boot a server instead of diagnosing one.)
+    """
     import argparse
 
     parser = argparse.ArgumentParser(
@@ -880,3 +889,7 @@ if __name__ == "__main__":
         )
     else:
         run_cli(verbose=args.verbose, port=args.port, host=args.host)
+
+
+if __name__ == "__main__":
+    main()
