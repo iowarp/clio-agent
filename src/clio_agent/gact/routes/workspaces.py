@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 
+from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.types import (
     CreateWorkspaceRequest,
     ErrorEnvelope,
@@ -162,13 +163,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         Accept partial updates of any of those fields.
         """
 
-        try:
-            body = await request.json()
-        except Exception as exc:
-            trace.event("WORKSPACE", "PATCH %s body parse failed (%s); ignoring body", wid, exc)
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+        body = await json_body(request, route="PATCH /v1/workspaces/{wid}")
         name = body.get("name")
         root_path = body.get("root_path")
         metadata = body.get("metadata")

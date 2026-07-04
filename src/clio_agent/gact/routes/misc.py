@@ -35,6 +35,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
 from clio_agent.gact.events import Event, heartbeat_event
+from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.runtime.constants import GACT_BACKEND_VERSION
 from clio_agent.gact.runtime.globals import _format_sse
 from clio_agent.gact.runtime.retention import enforce_dict_bound
@@ -136,12 +137,7 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+        body = await json_body(request, route="POST /v1/sessions/{sid}/tasks")
         title = (body.get("title") or "").strip()
         if not title:
             raise HTTPException(
@@ -190,12 +186,7 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             )
         _, row = found
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+        body = await json_body(request, route="PATCH /v1/tasks/{tid}")
         if "title" in body and body["title"]:
             row["title"] = str(body["title"])
         if "status" in body and body["status"] in {"pending", "running", "completed", "failed"}:
@@ -301,12 +292,7 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+        body = await json_body(request, route="POST /v1/sessions/{sid}/share")
         ttl_s = int(body.get("ttl_s") or 0)
         token = "shr_" + uuid.uuid4().hex[:24]
         expires_at: str | float = ""

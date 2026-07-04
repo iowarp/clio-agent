@@ -31,6 +31,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 
 from clio_agent.gact.events import Event
+from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.runtime.permission_policies import (
     _PERMISSION_POLICY_ACTIONS,
     _PERMISSION_POLICY_SCOPES,
@@ -115,12 +116,7 @@ def register_permissions_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+        body = await json_body(request, route="POST /v1/permissions/{pid}")
         action = body.get("action") or ""
         if action not in {"allow", "deny", "allow_session", "allow_workspace"}:
             raise HTTPException(
@@ -175,12 +171,7 @@ def register_permissions_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.put("/v1/policies")
     async def put_policies(request: Request) -> dict[str, Any]:
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+        body = await json_body(request, route="PUT /v1/policies")
         policies = body.get("policies")
         if not isinstance(policies, list):
             raise HTTPException(

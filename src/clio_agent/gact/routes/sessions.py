@@ -50,6 +50,7 @@ from fastapi.responses import JSONResponse
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.events import Event
+from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.runtime.globals import (
     _active_semantic_turn_id,
     _emit_semantic_event,
@@ -543,12 +544,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             )
 
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+        body = await json_body(request, route="POST /v1/sessions/{sid}/fork")
         at = body.get("at_message_id") or ""
         title = body.get("title") or f"{sess.title} (fork)"
 
@@ -652,10 +648,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
 
         # Try to extract optional focus instructions from the body.
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
+        body = await json_body(request, route="POST /v1/sessions/{sid}/compact")
         focus = (body.get("focus") or "").strip()
 
         prompt = (

@@ -45,6 +45,7 @@ from clio_agent.gact.catalog import (
     _truthy_command_field,
 )
 from clio_agent.gact.events import Event
+from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.runtime.commands import (
     agent_allowed_command_ids,
     all_command_rows,
@@ -537,12 +538,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             )
 
-        try:
-            request_body = await request.json()
-        except Exception:
-            request_body = {}
-        if not isinstance(request_body, dict):
-            request_body = {}
+        request_body = await json_body(request, route="POST /v1/sessions/{sid}/commands/{cmd}")
         caller = request_body.get("caller")
         caller_meta = caller if isinstance(caller, Mapping) else {}
         caller_type = str(caller_meta.get("type") or request_body.get("caller_type") or "user")

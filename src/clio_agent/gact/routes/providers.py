@@ -63,6 +63,7 @@ from clio_agent.gact.providers.lmstudio import (
     _lm_studio_headers,
     _release_owned_lm_studio_instance,
 )
+from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.runtime.globals import _process_arc, _set_app_arc
 from clio_agent.gact.types import (
     ErrorEnvelope,
@@ -244,11 +245,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             )
 
-        body = {}
-        try:
-            body = await request.json()
-        except Exception:
-            pass
+        body = await json_body(request, route="POST /v1/providers/{provider_id}/auth")
         force = bool(body.get("force", False))
 
         command = [
