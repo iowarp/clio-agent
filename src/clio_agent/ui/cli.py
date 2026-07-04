@@ -1,27 +1,37 @@
 #!/usr/bin/env python
 
-"""
-ClioAgent Command-Line Interface
+"""ClioAgent Command-Line Interface — a thin GACT client.
 
-Interactive ClioAgent Agent Framework TUI for scientific data I/O assistance.
+Interactive TUI for the CLIO scientific-data agent. As of the "one front
+door" work (#799/#800) this CLI holds **no in-process agent**: it does not
+load DSPy, it does not construct a :class:`~clio_agent.agent.ClioAgent`, and
+it never drives an LM directly. Everything runs on the GACT server; the CLI
+speaks to it exclusively through the typed SDK
+(:class:`clio_agent.sdk.ClioClient`).
 
-Features:
-- Planner loop over registered blueprint/runtime agents and tools
-- ChatAgent for conversational responses
-- Rich TUI with syntax highlighting
-- Conversation history
+Boot is separated from logic for testability: :class:`ClioAgentCLI` takes an
+already-built :class:`ClioClient` (tests inject one over an in-process ASGI
+transport), and the module-level :func:`boot_client` connect-or-spawns the
+real server via :func:`clio_agent.serve.ensure_server` and wraps it in a
+client. A server that cannot be reached is a structured, non-zero exit — no
+silent fallback.
+
+The standalone ``doctor`` subcommand is the one exception: it runs the same
+probe engine (:func:`clio_agent.runtime.status.collect_runtime_status`)
+**in-process**, because a doctor must work when no server is up. The in-REPL
+``/doctor`` instead renders the *server's* health view via the SDK. Two access
+paths, one engine.
 
 Example:
-    # Run CLI with LM Studio
+    # Interactive (connect-or-spawn the server, then talk to it)
     $ uv run src/clio_agent/ui/cli.py
 
-    # Or from Python
-    >>> from clio_agent.ui.cli import run_cli
-    >>> run_cli()
+    # Diagnose locally without a server
+    $ uv run src/clio_agent/ui/cli.py doctor
 """
 
-import asyncio
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -38,8 +48,13 @@ _src_root = _current_file.parent.parent.parent  # src/clio_agent/ui/cli.py -> sr
 if str(_src_root) not in sys.path:
     sys.path.insert(0, str(_src_root))
 
-from clio_agent.agent import ClioAgent
-from clio_agent.config import load_config_from_env, load_project_env_file, setup_dspy
+from clio_agent import serve
+from clio_agent.sdk import (
+    ClioClient,
+    ClioSDKError,
+    Health,
+    MessageCompleted,
+)
 
 # ============================================================================
 # CLI CLASS
@@ -47,84 +62,85 @@ from clio_agent.config import load_config_from_env, load_project_env_file, setup
 
 
 class ClioAgentCLI:
-    """Interactive CLI for ClioAgent data I/O expert system.
+    """Interactive CLI that talks to a GACT server through the SDK.
 
-    Demonstrates:
-    - ClioAgent planner loop -> tools/blueprint agents/answer
-    - ChatAgent for conversational queries
-    - Observable reasoning traces
+    The CLI owns no agent, no LM, and no ARC — it is a pure client. All
+    reasoning happens server-side; this class posts messages, consumes the
+    session SSE feed, and renders catalog/metric/health reads.
 
     Attributes:
-        agent: ClioAgent (main agent instance)
-        console: Rich console for pretty output
-        history: Conversation history
+        client: The injected :class:`ClioClient` (real one built by
+            :func:`boot_client`; tests inject an in-process transport).
+        console: Rich console for pretty output.
+        history: Local render history (question/expert/answer rows).
+        verbose: Show routing/latency details.
     """
 
-    def __init__(self, verbose: bool = False):
-        """Initialize ClioAgent CLI.
+    def __init__(
+        self,
+        client: ClioClient,
+        *,
+        verbose: bool = False,
+        console: Console | None = None,
+    ) -> None:
+        """Initialize the CLI over an already-built client.
 
         Args:
-            verbose: Show detailed routing/reasoning
+            client: A connected :class:`ClioClient`. Boot is the caller's
+                responsibility (see :func:`boot_client`) so tests can inject
+                an in-process transport.
+            verbose: Show detailed routing/latency info.
+            console: Optional Rich console (tests pass a recording one).
         """
-        self.console = Console()
+        self.client = client
+        self.console = console or Console()
         self.verbose = verbose
         self.history: list[dict[str, Any]] = []
-        load_project_env_file()
-        # Resolve trace verbosity after .env is loaded (file→env→default) and
-        # install the formatted log handler for this process.
-        from clio_agent.runtime import trace  # noqa: PLC0415
+        # Reused across REPL turns so the conversation shares one session.
+        self._session_id: str | None = None
+        # SSE resume cursor: only events past this id are new to us.
+        self._event_cursor: int | None = None
 
-        trace.configure()
+    # -- session lifecycle -------------------------------------------------
 
-        # Setup LM Studio
-        try:
-            setup_dspy(
-                verbose=False  # Don't spam console during init
-            )
-        except Exception as e:
-            try:
-                config = load_config_from_env()
-            except Exception:
-                config = None
-            self.console.print(f"\n[red]Error setting up LM: {e}[/red]")
-            self.console.print("\n[yellow]Troubleshooting:[/yellow]")
-            if config is not None:
-                self.console.print(
-                    f"- Ensure {self._provider_label(config.provider)} is running at "
-                    f"{config.api_base}"
-                )
-                self.console.print(f"- Ensure model {config.model!r} is available")
-            else:
-                self.console.print("- Check CLIO_LM_* environment variables")
-            sys.exit(1)
+    def _ensure_session(self) -> str:
+        """Return the reused session id, creating one on first use."""
+        if self._session_id is None:
+            session = self.client.sessions.create(title="CLI session")
+            self._session_id = session.id
+        return self._session_id
 
-        # Create ClioAgent agent
-        self.agent = ClioAgent(verbose=False)
+    # -- banner / help -----------------------------------------------------
 
-    def print_banner(self):
-        """Print ClioAgent welcome banner."""
+    def print_banner(self) -> None:
+        """Print the ClioAgent welcome banner."""
         from rich.align import Align
 
-        # ASCII art logo
         logo = """   ____ _     ___ ___
   / ___| |   |_ _/ _ \\
  | |   | |    | | | | |
  | |___| |___ | | |_| |
   \\____|_____|___\\___/ """
 
-        # Create centered logo
         logo_text = Text(logo, style="bold cyan", justify="center")
 
-        # Info section with proper markup
-        config = getattr(self.agent, "_provider_config", None)
-        provider = self._provider_label(getattr(config, "provider", "unknown"))
-        model = getattr(config, "model", "")
-        lm_line = provider if not model else f"{provider} ({model})"
+        lm_line = "server-managed"
+        try:
+            provider = self.client.lm_provider()
+            label = self._provider_label(provider.provider) if provider.provider else ""
+            if provider.model and label:
+                lm_line = f"{label} ({provider.model})"
+            elif label:
+                lm_line = label
+            if not provider.configured:
+                lm_line = f"{lm_line} [not configured]"
+        except ClioSDKError:
+            lm_line = "unavailable (server not reporting a provider)"
 
         info = f"""[dim]Multi-Agent System for Scientific Computing[/dim]
 
 [cyan]Experts:[/cyan] data (HDF5, compression, I/O), analysis (Parquet, statistics), visualization (charts, plots)
-[green]Local LM:[/green] {lm_line}
+[green]LM:[/green] {escape(lm_line)}
 
 [dim]Gnosis Research Center | IOWarp Project[/dim]
 [dim]https://iowarp.ai[/dim]"""
@@ -147,8 +163,8 @@ class ClioAgentCLI:
         }
         return labels.get(provider, provider.replace("_", " ").title())
 
-    def print_help(self):
-        """Print help message."""
+    def print_help(self) -> None:
+        """Print the help table (only commands the client actually backs)."""
         help_table = Table(title="Commands", show_header=True)
         help_table.add_column("Command", style="cyan")
         help_table.add_column("Description")
@@ -156,157 +172,237 @@ class ClioAgentCLI:
         commands = [
             ("/help", "Show this help message"),
             ("/history", "Show conversation history"),
-            ("/experts", "List available experts and capabilities"),
-            ("/registry", "Show agent registry status"),
-            ("/memory", "Display ARC memory statistics"),
-            ("/models", "Show configured local LM model"),
-            ("/tools", "Show available MCP tools"),
-            ("/doctor", "Show runtime integration status"),
-            ("/metrics", "Show per-expert performance metrics"),
-            ("/compare <expert>", "Compare all variants for an expert"),
-            ("/rollback <expert>", "Rollback to previous variant for an expert"),
-            ("/verbose", "Toggle verbose mode (show routing details)"),
+            ("/experts", "List available experts (server agent catalog)"),
+            ("/registry", "Show agent-registry summary"),
+            ("/memory", "Show ARC memory integration status"),
+            ("/models", "Show the server's configured LM provider"),
+            ("/tools", "Show the server's live tool catalog"),
+            ("/doctor", "Show the server's health/integration status"),
+            ("/metrics", "Show aggregate runtime metrics"),
+            ("/compare <expert>", "Optimizer (not implemented — research surface)"),
+            ("/rollback <expert>", "Optimizer (not implemented — research surface)"),
+            ("/verbose", "Toggle verbose mode (routing/latency details)"),
             ("/clear", "Clear conversation history"),
             ("/quit, /exit", "Exit ClioAgent"),
         ]
-
         for cmd, desc in commands:
             help_table.add_row(cmd, desc)
 
         self.console.print(help_table)
 
-    def print_experts(self):
-        """Print available runtime agents and their capabilities."""
-        caps = {
-            agent_id: self.agent.registry.get_capabilities(agent_id)
-            for agent_id in self.agent.registry.list_agents()
-        }
+    # -- catalog / config reads (all via the SDK) --------------------------
 
-        experts_table = Table(title="Available Experts", show_header=True)
-        experts_table.add_column("Expert", style="cyan")
-        experts_table.add_column("Description")
-        experts_table.add_column("Keywords", style="yellow")
+    def print_experts(self) -> None:
+        """Print the server's agent catalog (backs ``/experts``)."""
+        try:
+            agents = self.client.agents()
+        except ClioSDKError as exc:
+            self.console.print(f"[red]Error listing agents: {escape(str(exc))}[/red]")
+            return
 
-        for expert_id, cap in caps.items():
-            if cap is None:
-                continue
-            raw_keywords = getattr(cap, "keywords", [])
-            keywords = ", ".join(str(keyword) for keyword in raw_keywords[:5]) if isinstance(raw_keywords, list) else ""
-            description = str(getattr(cap, "description", "") or "")
-            experts_table.add_row(str(expert_id), description[:60] + "...", keywords)
+        table = Table(title="Available Experts", show_header=True)
+        table.add_column("Expert", style="cyan")
+        table.add_column("Tier", justify="right")
+        table.add_column("Description")
+        table.add_column("Keywords", style="yellow")
 
-        self.console.print(experts_table)
+        for agent in sorted(agents, key=lambda a: (a.tier, a.id)):
+            name = agent.title or agent.id
+            keywords = ", ".join(agent.keywords[:5])
+            desc = agent.description or ""
+            if len(desc) > 60:
+                desc = desc[:60] + "..."
+            table.add_row(
+                escape(str(name)),
+                str(agent.tier) if agent.tier else "-",
+                escape(desc),
+                escape(keywords),
+            )
 
-    def print_registry(self):
-        """Print agent registry status and statistics."""
-        agent_count = self.agent.registry.get_agent_count()
-        agent_ids = self.agent.registry.list_agents()
+        self.console.print(table)
+
+    def print_registry(self) -> None:
+        """Print an agent-registry summary from the server catalog."""
+        try:
+            agents = self.client.agents()
+        except ClioSDKError as exc:
+            self.console.print(f"[red]Error reading registry: {escape(str(exc))}[/red]")
+            return
+
+        agent_ids = [a.id for a in agents]
+        by_tier: dict[int, int] = {}
+        for a in agents:
+            by_tier[a.tier] = by_tier.get(a.tier, 0) + 1
+        tier_summary = ", ".join(f"tier {t}: {n}" for t, n in sorted(by_tier.items())) or "none"
 
         info = f"""[bold]Agent Registry Status[/bold]
 
-Registered Agents: {agent_count}
-Registry Type: Planner-visible experts and tools
-Planner: JSON action loop over chat, data, analysis, visualization, and none
+Registered Agents: {len(agent_ids)}
+By Tier: {tier_summary}
+Source: server agent catalog (GET /v1/agents)
 
 [cyan]Registered Agent IDs:[/cyan]
-{", ".join(agent_ids) if agent_ids else "None"}
+{escape(", ".join(agent_ids)) if agent_ids else "None"}
 
 [dim]Use /experts to see detailed agent capabilities[/dim]"""
 
         self.console.print(Panel(info, title="Registry Status", border_style="blue"))
 
-    def print_memory(self):
-        """Display ARC memory statistics."""
-        stats = self.agent.get_arc_stats()
+    def print_memory(self) -> None:
+        """Show the ARC memory integration status from server health."""
+        try:
+            health = self.client.health()
+        except ClioSDKError as exc:
+            self.console.print(f"[red]Error reading health: {escape(str(exc))}[/red]")
+            return
 
-        table = Table(title="ARC Memory Statistics")
-        table.add_column("Metric", style="cyan")
+        arc_row = None
+        for item in health.integrations:
+            if "arc" in item.name.lower() or "memory" in item.name.lower():
+                arc_row = item
+                break
+
+        if arc_row is None:
+            self.console.print(
+                "[yellow]The server did not report an ARC memory integration.[/yellow]"
+            )
+            return
+
+        table = Table(title="ARC Memory Integration")
+        table.add_column("Field", style="cyan")
         table.add_column("Value", style="green")
+        table.add_row("Name", escape(arc_row.name))
+        table.add_row("Status", escape(arc_row.status))
+        summary = arc_row.summary or arc_row.detail
+        if summary:
+            table.add_row("Summary", escape(summary))
+        if arc_row.config_source:
+            table.add_row("Config Source", escape(arc_row.config_source))
+        if arc_row.endpoint:
+            table.add_row("Endpoint", escape(arc_row.endpoint))
+        if arc_row.next_action:
+            table.add_row("Next Action", escape(arc_row.next_action))
+        self.console.print(table)
 
-        table.add_row("Cache Hit Rate", f"{stats['hit_rate']:.2%}")
-        table.add_row("Cache Size", f"{stats['size']}/{stats['capacity']}")
-        table.add_row("Cache Hits", str(stats["hits"]))
-        table.add_row("Cache Misses", str(stats["misses"]))
-        table.add_row("Disk Reads", str(stats.get("disk_reads", 0)))
-        table.add_row("Disk Writes", str(stats.get("disk_writes", 0)))
+    def print_tools(self) -> None:
+        """Display the server's live tool catalog (backs ``/tools``)."""
+        try:
+            tools = self.client.tools()
+        except ClioSDKError as exc:
+            self.console.print(f"[red]Error listing tools: {escape(str(exc))}[/red]")
+            return
+
+        table = Table(title="Tools (server catalog)", show_header=True)
+        table.add_column("Tool", style="cyan")
+        table.add_column("Server", style="magenta")
+        table.add_column("Description")
+
+        for tool in sorted(tools, key=lambda t: (t.source == "error", t.name or t.id)):
+            desc = tool.description or ""
+            style_name = tool.name or tool.id
+            if tool.source == "error":
+                table.add_row(
+                    f"[red]{escape(style_name)}[/red]",
+                    escape(tool.server_id),
+                    f"[red]{escape(desc[:80])}[/red]",
+                )
+            else:
+                table.add_row(escape(style_name), escape(tool.server_id), escape(desc[:80]))
 
         self.console.print(table)
 
-        # Show performance vs targets
-        hit_rate = stats["hit_rate"]
-        if hit_rate >= 0.85:
-            self.console.print(
-                f"\n[green]Cache hit rate ({hit_rate:.1%}) exceeds target (85%)[/green]"
-            )
-        else:
-            self.console.print(
-                f"\n[yellow]Cache hit rate ({hit_rate:.1%}) below target (85%)[/yellow]"
-            )
-
-    def print_tools(self):
-        """Display available MCP tools from the gateway."""
-        from fastmcp import Client
-
-        from clio_agent.tools.gateway import gateway
-
-        async def _list():
-            async with Client(gateway) as c:
-                return await c.list_tools()
-
+    def print_models(self) -> None:
+        """Display the server's configured LM provider (backs ``/models``)."""
         try:
-            tools = asyncio.run(_list())
-        except Exception as e:
-            self.console.print(f"[red]Error listing tools: {e}[/red]")
+            provider = self.client.lm_provider()
+        except ClioSDKError as exc:
+            self.console.print(f"[red]Error reading LM provider: {escape(str(exc))}[/red]")
             return
 
-        tools_table = Table(title="MCP Tools (via Gateway)", show_header=True)
-        tools_table.add_column("Tool", style="cyan")
-        tools_table.add_column("Description")
-
-        for t in sorted(tools, key=lambda x: x.name):
-            desc = t.description or ""
-            tools_table.add_row(t.name, desc[:80])
-
-        self.console.print(tools_table)
-
-    def print_models(self) -> None:
-        """Display configured LM endpoint and model."""
-        import os
-
-        config = getattr(self.agent, "_provider_config", None) or load_config_from_env()
-        table = Table(title="LM Configuration", show_header=True)
+        table = Table(title="LM Provider (server)", show_header=True)
         table.add_column("Setting", style="cyan")
         table.add_column("Value", style="green")
-        table.add_row("Provider", self._provider_label(config.provider))
-        table.add_row("API Base", config.api_base)
-        table.add_row("Model", config.model)
-        table.add_row("Max Tokens", str(config.max_tokens))
-        table.add_row("Env File", os.environ.get("CLIO_ENV_FILE_LOADED", "not loaded"))
+        table.add_row("Configured", "yes" if provider.configured else "no")
+        table.add_row(
+            "Provider", self._provider_label(provider.provider) if provider.provider else "-"
+        )
+        table.add_row("API Base", provider.api_base or "-")
+        table.add_row("Model", provider.model or "-")
+        table.add_row("Max Tokens", str(provider.max_tokens))
+        if provider.context_length:
+            table.add_row("Context Length", str(provider.context_length))
+        table.add_row("State", provider.state)
+        if provider.status_message:
+            table.add_row("Status", escape(provider.status_message))
+        if provider.error:
+            table.add_row("Error", f"[red]{escape(provider.error)}[/red]")
         self.console.print(table)
 
     def print_doctor(self) -> None:
-        """Display runtime integration status."""
-        from clio_agent.runtime.status import collect_runtime_status
+        """Render the *server's* health view (backs the in-REPL ``/doctor``)."""
+        try:
+            health = self.client.health()
+        except ClioSDKError as exc:
+            self.console.print(f"[red]Error reading health: {escape(str(exc))}[/red]")
+            return
+        render_health(self.console, health)
 
-        report = collect_runtime_status()
-        render_doctor_report(self.console, report)
+    def _handle_metrics(self) -> None:
+        """Handle ``/metrics`` — aggregate runtime counters from the server."""
+        try:
+            metrics = self.client.metrics()
+        except ClioSDKError as exc:
+            self.console.print(f"[red]Error reading metrics: {escape(str(exc))}[/red]")
+            return
+
+        overview = Table(title="Runtime Metrics", show_header=True)
+        overview.add_column("Metric", style="cyan")
+        overview.add_column("Value", justify="right", style="green")
+        overview.add_row("Uptime (s)", str(metrics.uptime_s))
+        overview.add_row("Sessions (total)", str(metrics.sessions.total))
+        overview.add_row("Sessions (active)", str(metrics.sessions.active))
+        overview.add_row("Messages (total)", str(metrics.messages.total))
+        overview.add_row("Tokens in", str(metrics.tokens.input_total))
+        overview.add_row("Tokens out", str(metrics.tokens.output_total))
+        overview.add_row("Cost (USD)", f"{metrics.cost.total_usd:.4f}")
+        self.console.print(overview)
+
+        if metrics.latencies:
+            lat = Table(title="Latencies", show_header=True)
+            lat.add_column("Operation", style="cyan")
+            lat.add_column("Count", justify="right")
+            lat.add_column("p50 (ms)", justify="right")
+            lat.add_column("p95 (ms)", justify="right")
+            lat.add_column("max (ms)", justify="right")
+            for name, stat in sorted(metrics.latencies.items()):
+                lat.add_row(
+                    escape(name),
+                    str(stat.count),
+                    f"{stat.p50_ms:.1f}",
+                    f"{stat.p95_ms:.1f}",
+                    f"{stat.max_ms:.1f}",
+                )
+            self.console.print(lat)
+
+    def _handle_optimizer_stub(self, verb: str) -> None:
+        """Handle ``/compare`` and ``/rollback`` — the optimizer is a research
+        surface, not implemented. Emit the uniform structured message; never
+        touch an in-process optimizer (there is none in the CLI anymore)."""
+        from clio_agent.optimizer.stub import optimizer_not_implemented_payload
+
+        payload = optimizer_not_implemented_payload()
+        self.console.print(f"[yellow]{escape(payload['message'])}[/yellow]")
+
+    # -- command dispatch --------------------------------------------------
 
     def handle_command(self, user_input: str) -> bool:
-        """Handle special commands.
-
-        Args:
-            user_input: User's input
-
-        Returns:
-            True if command was handled, False otherwise
-        """
+        """Handle a slash command. Returns True if it was handled."""
         cmd = user_input.lower().strip()
 
-        if cmd in ["/help", "/h"]:
+        if cmd in ("/help", "/h"):
             self.print_help()
             return True
-
-        elif cmd == "/history":
+        if cmd == "/history":
             if not self.history:
                 self.console.print("[yellow]No history yet[/yellow]")
             else:
@@ -315,180 +411,150 @@ Planner: JSON action loop over chat, data, analysis, visualization, and none
                     self.console.print(f"[cyan]   Expert:[/cyan] {entry['expert']}")
                     self.console.print(f"[green]   A:[/green] {entry['answer'][:100]}...")
             return True
-
-        elif cmd == "/clear":
+        if cmd == "/clear":
             self.history = []
             self.console.clear()
             self.print_banner()
             self.console.print("[green]History cleared[/green]")
             return True
-
-        elif cmd == "/experts":
+        if cmd == "/experts":
             self.print_experts()
             return True
-
-        elif cmd == "/registry":
+        if cmd == "/registry":
             self.print_registry()
             return True
-
-        elif cmd == "/memory":
+        if cmd == "/memory":
             self.print_memory()
             return True
-
-        elif cmd == "/models":
+        if cmd == "/models":
             self.print_models()
             return True
-
-        elif cmd == "/tools":
+        if cmd == "/tools":
             self.print_tools()
             return True
-
-        elif cmd == "/doctor":
+        if cmd == "/doctor":
             self.print_doctor()
             return True
-
-        elif cmd == "/metrics":
+        if cmd == "/metrics":
             self._handle_metrics()
             return True
-
-        elif cmd.startswith("/compare"):
-            parts = cmd.split(None, 1)
-            if len(parts) < 2:
-                self.console.print("[yellow]Usage: /compare <data|analysis|visualization>[/yellow]")
-            else:
-                self._handle_compare(parts[1])
+        if cmd.startswith("/compare"):
+            self._handle_optimizer_stub("compare")
             return True
-
-        elif cmd.startswith("/rollback"):
-            parts = cmd.split(None, 1)
-            if len(parts) < 2:
-                self.console.print(
-                    "[yellow]Usage: /rollback <data|analysis|visualization>[/yellow]"
-                )
-            else:
-                self._handle_rollback(parts[1])
+        if cmd.startswith("/rollback"):
+            self._handle_optimizer_stub("rollback")
             return True
-
-        elif cmd == "/verbose":
+        if cmd == "/verbose":
             self.verbose = not self.verbose
             status = "enabled" if self.verbose else "disabled"
             self.console.print(f"[green]Verbose mode {status}[/green]")
             return True
-
-        elif cmd in ["/quit", "/exit", "/q"]:
+        if cmd in ("/quit", "/exit", "/q"):
             self.console.print("\n[cyan]Thanks for using ClioAgent![/cyan]\n")
             sys.exit(0)
 
         return False
 
-    def _handle_metrics(self) -> None:
-        """Handle /metrics command -- show per-expert performance metrics."""
-        from clio_agent.optimizer.instrumentation import MetricsAggregator
+    # -- main Q&A (post -> SSE -> render) -----------------------------------
 
-        aggregator = MetricsAggregator(self.agent.arc)
+    def ask_question(self, question: str) -> dict[str, Any]:
+        """Ask the server a question: post the message, consume the session
+        SSE feed until the turn completes, and return the rendered result.
 
-        table = Table(title="Expert Performance Metrics", show_header=True)
-        table.add_column("Expert", style="cyan")
-        table.add_column("Success Rate", justify="right")
-        table.add_column("Avg Latency (ms)", justify="right")
-        table.add_column("Total Invocations", justify="right")
-        table.add_column("Cache Hit Rate", justify="right")
-
-        has_data = False
-        for expert_id in ["data", "analysis", "visualization"]:
-            metrics = aggregator.compute_expert_metrics(expert_id)
-            if metrics["total_invocations"] > 0:
-                has_data = True
-            table.add_row(
-                expert_id,
-                f"{metrics['success_rate']:.1%}",
-                f"{metrics['avg_latency_ms']:.1f}",
-                str(metrics["total_invocations"]),
-                f"{metrics['cache_hit_rate']:.1%}",
-            )
-
-        if has_data:
-            self.console.print(table)
-        else:
-            self.console.print("[yellow]No invocation data yet. Run some queries first.[/yellow]")
-
-    def _handle_compare(self, expert_id: str) -> None:
-        """Handle /compare command -- show variant comparison table for an expert."""
-        from clio_agent.optimizer.variants import VariantManager
-
-        vm = VariantManager(self.agent.arc)
-        variants = vm.compare(expert_id)
-
-        if not variants:
-            self.console.print(f"[yellow]No variants found for {expert_id}.[/yellow]")
-            return
-
-        import datetime
-
-        table = Table(title=f"Variants for {expert_id}", show_header=True)
-        table.add_column("Variant ID", style="cyan")
-        table.add_column("Before", justify="right")
-        table.add_column("After", justify="right")
-        table.add_column("Delta", justify="right")
-        table.add_column("p-value", justify="right")
-        table.add_column("Significant", justify="center")
-        table.add_column("Active", justify="center")
-        table.add_column("Created", justify="right")
-
-        for v in variants:
-            created = datetime.datetime.fromtimestamp(v.created_at).strftime("%Y-%m-%d %H:%M")
-            table.add_row(
-                v.variant_id,
-                f"{v.before_score:.2f}",
-                f"{v.after_score:.2f}",
-                f"{v.improvement_delta:+.2f}",
-                f"{v.p_value:.4f}",
-                "[green]Yes[/green]" if v.is_significant else "[red]No[/red]",
-                "[green]Yes[/green]" if v.is_active else "No",
-                created,
-            )
-
-        self.console.print(table)
-
-    def _handle_rollback(self, expert_id: str) -> None:
-        """Handle /rollback command -- revert to previous variant."""
-        from clio_agent.optimizer.variants import VariantManager
-
-        vm = VariantManager(self.agent.arc)
-        restored = vm.rollback(expert_id)
-
-        if restored:
-            self.console.print(f"[green]Rolled back to variant {restored}[/green]")
-        else:
-            self.console.print("[yellow]No previous variant to rollback to.[/yellow]")
-
-    def ask_question(self, question: str) -> dict:
-        """Ask ClioAgent a question via the planner loop.
-
-        Flow:
-            1. Planner chooses tool, expert, answer, or no-op action
-            2. Tool/expert observations are recorded
-            3. Display results with selected handler label
+        The conversation reuses one server session across REPL turns; the SSE
+        cursor advances so each turn only reads its own new events.
 
         Args:
-            question: User's question
+            question: The user's question.
 
         Returns:
-            Dictionary with result including answer, expert, and stats
+            A dict with ``question``, ``expert``, ``answer``, ``error_info``,
+            ``session_id``, and ``duration_ms``.
         """
-        # Show processing spinner
+        session_id = self._ensure_session()
+        start = time.time()
         with self.console.status("[#00B4FF]Running agent loop...[/#00B4FF]", spinner="dots"):
-            result = self.agent(question=question)
+            ack = self.client.messages.post(session_id, text=question)
+            completed, message = self._consume_turn(session_id, ack.message_id)
+        duration_ms = (time.time() - start) * 1000.0
+
+        error_info: dict[str, Any] | None = None
+        answer = ""
+        expert = ""
+        if completed is not None and completed.error_info is not None:
+            error_info = completed.error_info.model_dump()
+            answer = completed.error_info.message
+        elif message is not None:
+            answer = message.text()
+            if message.error_info is not None:
+                error_info = message.error_info.model_dump()
+            for part in message.parts:
+                if part.type == "routing_decision" and part.selected_agent:
+                    expert = part.selected_agent
+                    break
 
         return {
             "question": question,
-            "expert": result.selected_expert,
-            "answer": result.answer,
-            "duration_ms": getattr(result, "duration_ms", 0),
+            "expert": expert,
+            "answer": answer,
+            "error_info": error_info,
+            "session_id": session_id,
+            "duration_ms": duration_ms,
         }
 
-    def run(self):
-        """Run interactive CLI loop with enhanced UX."""
+    def _consume_turn(self, session_id: str, ack_message_id: str) -> tuple[Any, Any]:
+        """Consume the SSE feed until this turn's ``message.completed``.
+
+        Returns ``(completed_event, assistant_message)``. The assistant
+        message is fetched from the ledger once the turn settles so we render
+        the authoritative parts, not buffered deltas.
+        """
+        completed = None
+        with self.client.sessions.events(session_id, last_event_id=self._event_cursor) as stream:
+            for event in stream:
+                if isinstance(event, MessageCompleted):
+                    completed = event
+                    break
+            self._event_cursor = stream.last_event_id
+
+        message = None
+        if completed is not None and completed.message_id:
+            try:
+                message = self.client.messages.get(session_id, completed.message_id)
+            except ClioSDKError:
+                message = None
+        return completed, message
+
+    def _render_answer(self, result: dict[str, Any]) -> None:
+        """Render one Q&A result in the Panel/Markdown house style."""
+        if self.verbose:
+            if result["expert"]:
+                self.console.print(
+                    f"\n[#00B4FF]Agent:[/#00B4FF] [bold]{escape(result['expert'])}[/bold]"
+                )
+            self.console.print(f"[#FF8800]Duration:[/#FF8800] {result['duration_ms']:.0f}ms\n")
+
+        if result["error_info"]:
+            message = str(result["error_info"].get("message") or "CLIO reported an error.")
+            self.console.print(Panel(Markdown(message), title="CLIO Error", border_style="red"))
+            return
+
+        expert_label = (result["expert"] or "CLIO").upper()
+        subtitle = None if self.verbose else "[dim]Agent loop[/dim]"
+        title = "[bold #00FF88]CLIO[/bold #00FF88]"
+        if result["expert"]:
+            title = f"{title} [dim]via {escape(expert_label)}[/dim]"
+        self.console.print(
+            Panel(
+                Markdown(result["answer"] or "_(no answer)_"),
+                title=title,
+                subtitle=subtitle,
+                border_style="#00B4FF",
+            )
+        )
+
+    def run(self) -> None:
+        """Run the interactive REPL loop."""
         from prompt_toolkit import prompt as pt_prompt
         from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
         from prompt_toolkit.history import InMemoryHistory
@@ -498,61 +564,35 @@ Planner: JSON action loop over chat, data, analysis, visualization, and none
             "\n[bold green]Ready[/bold green]  [dim]|[/dim]  Type [cyan]/help[/cyan] for commands\n"
         )
 
-        # Setup prompt toolkit for better input
         history = InMemoryHistory()
 
         while True:
             try:
-                # Get user input with history and auto-suggest
                 user_input = pt_prompt(
                     "You: ", history=history, auto_suggest=AutoSuggestFromHistory()
                 ).strip()
 
-                if not user_input.strip():
+                if not user_input:
                     continue
 
-                # Handle commands
-                if user_input.startswith("/"):
-                    if self.handle_command(user_input):
-                        continue
+                if user_input.startswith("/") and self.handle_command(user_input):
+                    continue
 
-                # Ask question via ClioAgent agent
                 result = self.ask_question(user_input)
-
-                # Show verbose info
-                if self.verbose:
-                    self.console.print(
-                        f"\n[#00B4FF]Agent:[/#00B4FF] [bold]{result['expert']}[/bold]"
-                    )
-                    self.console.print(
-                        f"[#FF8800]Duration:[/#FF8800] {result['duration_ms']:.0f}ms\n"
-                    )
-
-                # Show answer with expert label in panel
-                expert_label = result["expert"].upper()
-                self.console.print(
-                    Panel(
-                        Markdown(result["answer"]),
-                        title=f"[bold #00FF88]CLIO[/bold #00FF88] [dim]via {expert_label}[/dim]",
-                        subtitle="[dim]Agent loop[/dim]" if not self.verbose else None,
-                        border_style="#00B4FF",
-                    )
-                )
-
-                # Add to history
+                self._render_answer(result)
                 self.history.append(result)
 
             except KeyboardInterrupt:
                 self.console.print("\n\n[#FF8800]Use /quit to exit gracefully[/#FF8800]")
                 continue
-
             except EOFError:
-                # Ctrl+D pressed
                 self.console.print("\n[#00FF88]Goodbye![/#00FF88]\n")
                 break
-
-            except Exception as e:
-                self.console.print(f"\n[red]Error: {e}[/red]")
+            except ClioSDKError as e:
+                self.console.print(f"\n[red]Server error: {escape(str(e))}[/red]")
+                continue
+            except Exception as e:  # noqa: BLE001 - REPL must survive one bad turn
+                self.console.print(f"\n[red]Error: {escape(str(e))}[/red]")
                 if self.verbose:
                     import traceback
 
@@ -561,25 +601,99 @@ Planner: JSON action loop over chat, data, analysis, visualization, and none
 
 
 # ============================================================================
-# MAIN ENTRY POINT
+# BOOT + RENDER HELPERS (module level)
 # ============================================================================
 
 
-def run_cli(verbose: bool = False):
-    """Run ClioAgent CLI with agent framework.
+def boot_client(
+    port: int = 8100,
+    host: str = "127.0.0.1",
+    *,
+    console: Console | None = None,
+) -> ClioClient:
+    """Connect-or-spawn the GACT server and return a client for it.
+
+    Delegates to :func:`clio_agent.serve.ensure_server` (attach to a running
+    server or spawn one), then wraps the base URL in a :class:`ClioClient`.
+    A server that cannot be located or started is a structured, non-zero
+    exit — never a silent fallback.
 
     Args:
-        verbose: Show routing reasoning and tool calls
+        port: TCP port to probe/serve on (default 8100).
+        host: Bind/probe host (default ``127.0.0.1``).
+        console: Optional console for the structured error (tests inject one).
 
-    Example:
-        >>> run_cli()  # Uses LM Studio
+    Returns:
+        A connected :class:`ClioClient`.
+
+    Raises:
+        SystemExit: If the server cannot be reached/started (after printing
+            the structured reason).
     """
-    cli = ClioAgentCLI(verbose=verbose)
-    cli.run()
+    console = console or Console()
+    try:
+        base_url = serve.ensure_server(port, host)
+    except serve.ServeError as exc:
+        payload = exc.payload if isinstance(exc.payload, dict) else {}
+        reason = payload.get("reason", "error")
+        detail = payload.get("detail", str(exc))
+        console.print(f"\n[red]Cannot start the CLIO server ({escape(str(reason))}).[/red]")
+        console.print(f"[yellow]{escape(str(detail))}[/yellow]")
+        searched = payload.get("searched")
+        if searched:
+            console.print(f"[dim]Searched: {escape(str(searched))}[/dim]")
+        log = payload.get("log")
+        if log:
+            console.print(f"[dim]Server log: {escape(str(log))}[/dim]")
+        raise SystemExit(1) from exc
+    return ClioClient(base_url)
 
 
-def render_doctor_report(console: Console, report) -> None:
-    """Render a runtime doctor report to a Rich console."""
+def render_health(console: Console, health: Health) -> None:
+    """Render an SDK :class:`~clio_agent.sdk.Health` (the server's doctor view).
+
+    Reads the widened per-integration fields (#800): ``status`` plus
+    ``summary`` / ``config_source`` / ``endpoint`` / ``next_action``. This is
+    the SDK counterpart of :func:`render_doctor_report` (which renders the
+    in-process ``collect_runtime_status`` report object).
+    """
+    status_styles = {
+        "ready": "green",
+        "degraded": "yellow",
+        "unavailable": "red",
+        "misconfigured": "red",
+        "skipped": "cyan",
+    }
+    overall = health.overall_status or ("healthy" if health.healthy else "unhealthy")
+    table = Table(title=f"CLIO Server Health ({overall})", show_header=True)
+    table.add_column("Integration", style="cyan")
+    table.add_column("Status")
+    table.add_column("Summary")
+    table.add_column("Config Source")
+    table.add_column("Endpoint")
+    table.add_column("Next Action")
+
+    for item in health.integrations:
+        style = status_styles.get(item.status, "white")
+        summary = item.summary or item.detail or ""
+        table.add_row(
+            escape(item.name),
+            f"[{style}]{escape(item.status)}[/{style}]",
+            escape(summary),
+            escape(item.config_source or ""),
+            escape(item.endpoint or ""),
+            escape(item.next_action or ""),
+        )
+
+    console.print(table)
+
+
+def render_doctor_report(console: Console, report: Any) -> None:
+    """Render an in-process runtime doctor report (``collect_runtime_status``).
+
+    Reads :class:`~clio_agent.runtime.status.IntegrationStatus.state`; used by
+    the standalone ``doctor`` subcommand, which must run without a server.
+    """
     status_styles = {
         "ready": "green",
         "degraded": "yellow",
@@ -612,7 +726,12 @@ def render_doctor_report(console: Console, report) -> None:
 
 
 def run_doctor(json_output: bool = False) -> int:
-    """Run the non-interactive doctor command."""
+    """Run the non-interactive doctor command IN-PROCESS.
+
+    A doctor must work when no server is up, so this uses the same probe
+    engine the server hosts at ``/v1/health`` directly, via
+    :func:`clio_agent.runtime.status.collect_runtime_status`.
+    """
     from clio_agent.runtime.status import collect_runtime_status
 
     report = collect_runtime_status()
@@ -625,6 +744,68 @@ def run_doctor(json_output: bool = False) -> int:
     return 0
 
 
+# ============================================================================
+# MAIN ENTRY POINT
+# ============================================================================
+
+
+def run_cli(verbose: bool = False, *, port: int = 8100, host: str = "127.0.0.1") -> None:
+    """Boot the server-backed client and run the interactive CLI.
+
+    Args:
+        verbose: Show routing reasoning and latency.
+        port: Server port to connect-or-spawn.
+        host: Server host.
+    """
+    client = boot_client(port, host)
+    try:
+        ClioAgentCLI(client, verbose=verbose).run()
+    finally:
+        client.close()
+
+
+def run_query(
+    query: str,
+    *,
+    session_title: str = "CLI query",
+    json_output: bool = False,
+    verbose: bool = False,
+    port: int = 8100,
+    host: str = "127.0.0.1",
+) -> int:
+    """Non-interactive single-question mode over the server-backed client."""
+    import json
+
+    console = Console()
+    client = boot_client(port, host, console=console)
+    try:
+        cli = ClioAgentCLI(client, verbose=verbose, console=console)
+        result = cli.ask_question(query)
+        if json_output:
+            output = {
+                "question": query,
+                "answer": result["answer"],
+                "selected_expert": result["expert"],
+                "duration_ms": result["duration_ms"],
+                "session_id": result["session_id"],
+                "error_info": result["error_info"],
+                "status": "degraded" if result["error_info"] else "success",
+            }
+            print(json.dumps(output, indent=2))
+        else:
+            console.print(f"\n[bold cyan]Question:[/bold cyan] {escape(query)}")
+            cli._render_answer(result)
+        return 1 if result["error_info"] else 0
+    except ClioSDKError as exc:
+        if json_output:
+            print(json.dumps({"error": str(exc), "status": "failed"}))
+        else:
+            console.print(f"[red]Error: {escape(str(exc))}[/red]")
+        return 1
+    finally:
+        client.close()
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -635,10 +816,10 @@ if __name__ == "__main__":
         "command",
         nargs="?",
         choices=["doctor"],
-        help="Optional command. Use 'doctor' to inspect runtime integrations.",
+        help="Optional command. Use 'doctor' to inspect runtime integrations (in-process).",
     )
     parser.add_argument(
-        "--verbose", "-v", action="store_true", help="Show routing reasoning and tool calls"
+        "--verbose", "-v", action="store_true", help="Show routing reasoning and latency"
     )
     parser.add_argument(
         "--query", "-q", type=str, help="Non-interactive mode: ask single question and exit"
@@ -646,31 +827,34 @@ if __name__ == "__main__":
     parser.add_argument(
         "--session",
         type=str,
-        default="cli_session",
-        help="Session ID for conversation tracking (default: cli_session)",
+        default="CLI query",
+        help="Session title for the non-interactive query (default: 'CLI query')",
     )
     parser.add_argument(
         "--json", action="store_true", help="Output results as JSON (use with --query)"
     )
+    parser.add_argument("--host", type=str, default="127.0.0.1", help="Server host")
+    parser.add_argument("--port", type=int, default=8100, help="Server port")
     parser.add_argument(
         "--tune",
         type=str,
         choices=["data", "analysis", "visualization"],
         metavar="EXPERT_ID",
-        help="Run SIMBA optimization for an expert (data|analysis|visualization)",
+        help="Run optimizer for an expert (not implemented — research surface)",
     )
 
     args = parser.parse_args()
-    load_project_env_file()
+    from clio_agent.config import load_project_env_file  # noqa: PLC0415
     from clio_agent.runtime import trace  # noqa: PLC0415
 
+    load_project_env_file()
     trace.configure()
 
     if args.command == "doctor":
         sys.exit(run_doctor(json_output=args.json))
 
     # Tune mode (#801): the optimizer is a research surface — return the
-    # uniform structured not-implemented stub without half-running LM setup.
+    # uniform structured not-implemented stub. No LM setup, no server needed.
     if args.tune:
         import json as tune_json
 
@@ -680,84 +864,19 @@ if __name__ == "__main__":
         if args.json:
             print(tune_json.dumps(tune_payload))
         else:
-            from rich.console import Console as TuneConsole
-
-            TuneConsole().print(f"[yellow]{tune_payload['message']}[/yellow]")
+            Console().print(f"[yellow]{tune_payload['message']}[/yellow]")
         sys.exit(2)
 
-    # Non-interactive mode
     if args.query:
-        import json
-
-        # Setup LM Studio
-        try:
-            setup_dspy(verbose=args.verbose)
-        except Exception as e:
-            if args.json:
-                print(json.dumps({"error": str(e), "status": "failed"}))
-            else:
-                print(f"Error: {e}")
-            sys.exit(1)
-
-        # Create agent
-        agent = ClioAgent(verbose=args.verbose)
-
-        # Ask question
-        try:
-            result = agent(question=args.query, session_id=args.session)
-            error_info = getattr(result, "error_info", None)
-
-            if args.json:
-                # JSON output
-                output = {
-                    "question": args.query,
-                    "answer": result.answer,
-                    "selected_expert": result.selected_expert,
-                    "route_source": getattr(result, "route_source", ""),
-                    "route_reason": getattr(result, "route_reason", ""),
-                    "duration_ms": getattr(result, "duration_ms", 0.0),
-                    "session_id": getattr(result, "session_id", args.session),
-                    "error_info": error_info,
-                    "status": "degraded" if error_info else "success",
-                }
-                print(json.dumps(output, indent=2))
-            else:
-                # Human-readable output
-                console = Console()
-                console.print(f"\n[bold cyan]Question:[/bold cyan] {args.query}")
-                route_source = getattr(result, "route_source", "")
-                route_reason = getattr(result, "route_reason", "")
-                if route_source:
-                    console.print(
-                        f"[bold green]Agent:[/bold green] {result.selected_expert} "
-                        f"([dim]{route_source}: {route_reason}[/dim])"
-                    )
-                else:
-                    console.print(f"[bold green]Agent:[/bold green] {result.selected_expert}")
-                if error_info:
-                    message = str(error_info.get("message") or "CLIO reported an error.")
-                    console.print(Panel(Markdown(message), title="CLIO Error", border_style="red"))
-                    console.print(
-                        "[dim]Use --json to inspect error_info, then retry, reconfigure "
-                        "the provider, or exit.[/dim]"
-                    )
-                else:
-                    console.print(
-                        Panel(Markdown(result.answer), title="CLIO", border_style="green")
-                    )
-
-        except Exception as e:
-            if args.json:
-                print(json.dumps({"error": str(e), "status": "failed"}))
-            else:
-                console = Console()
-                console.print(f"[red]Error: {e}[/red]")
-                if args.verbose:
-                    import traceback
-
-                    traceback.print_exc()
-            sys.exit(1)
-
+        sys.exit(
+            run_query(
+                args.query,
+                session_title=args.session,
+                json_output=args.json,
+                verbose=args.verbose,
+                port=args.port,
+                host=args.host,
+            )
+        )
     else:
-        # Interactive mode
-        run_cli(verbose=args.verbose)
+        run_cli(verbose=args.verbose, port=args.port, host=args.host)
