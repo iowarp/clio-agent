@@ -429,10 +429,13 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
 # REST-installed / agent-blueprint MCP server routes its construction through
 # :func:`transport_from_spec`, so this set is the one source of truth — no more
 # per-site ``{http}`` vs ``{http, streamable-http}`` vs ``{http, streamable-http,
-# sse}`` divergence. ``sse`` connects over the same StreamableHttp client
-# transport (matching the reconnect path), so it is accepted here and by the
+# sse}`` divergence. ``http``/``streamable-http`` share the Streamable-HTTP wire
+# protocol (``StreamableHttpTransport``); ``sse`` is a DISTINCT FastMCP wire
+# protocol (``SSETransport``) and is constructed separately in
+# :func:`transport_from_spec`. All three are accepted here and by the
 # agent-blueprint descriptor validator alike.
-_HTTP_TRANSPORTS = frozenset({"http", "streamable-http", "sse"})
+_STREAMABLE_HTTP_TRANSPORTS = frozenset({"http", "streamable-http"})
+_HTTP_TRANSPORTS = _STREAMABLE_HTTP_TRANSPORTS | frozenset({"sse"})
 _CANONICAL_TRANSPORTS = frozenset({"stdio"}) | _HTTP_TRANSPORTS
 
 
@@ -447,12 +450,14 @@ def transport_from_spec(spec: Mapping[str, Any]) -> Any:
     path used by the gact routes and agent builders.
 
     Accepted ``transport`` values are the single canonical set
-    ``{stdio, http, streamable-http, sse}``. ``http``/``streamable-http``/``sse``
-    all connect via ``StreamableHttpTransport(url)``; ``stdio`` spawns a
-    subprocess whose command is first wrapped by
-    :func:`pdeathsig_wrapped_command` so a REST-installed stdio child dies with
-    the clio server instead of orphaning on a hard kill (Linux only; a no-op
-    passthrough on Windows/macOS, exactly as that helper guards).
+    ``{stdio, http, streamable-http, sse}``. ``http``/``streamable-http`` connect
+    via ``StreamableHttpTransport(url)``; ``sse`` is a DISTINCT FastMCP wire
+    protocol and connects via ``SSETransport(url)`` — the same class FastMCP's own
+    ``infer_transport`` selects for an ``/sse`` URL, so a real SSE MCP server's
+    tools are actually reachable. ``stdio`` spawns a subprocess whose command is
+    first wrapped by :func:`pdeathsig_wrapped_command` so a REST-installed stdio
+    child dies with the clio server instead of orphaning on a hard kill (Linux
+    only; a no-op passthrough on Windows/macOS, exactly as that helper guards).
 
     Args:
         spec: The stored dict spec. ``transport`` selects the branch; ``command``
@@ -460,8 +465,9 @@ def transport_from_spec(spec: Mapping[str, Any]) -> Any:
             family.
 
     Returns:
-        A ``fastmcp`` ``ClientTransport`` (``StdioTransport`` or
-        ``StreamableHttpTransport``) ready to hand to ``fastmcp.Client``.
+        A ``fastmcp`` ``ClientTransport`` (``StdioTransport``,
+        ``StreamableHttpTransport``, or ``SSETransport``) ready to hand to
+        ``fastmcp.Client``.
 
     Raises:
         MCPTransportError: The spec is unusable — a stdio spec with no
@@ -469,6 +475,7 @@ def transport_from_spec(spec: Mapping[str, Any]) -> Any:
             outside the canonical accepted set.
     """
     from fastmcp.client.transports import (  # noqa: PLC0415
+        SSETransport,
         StdioTransport,
         StreamableHttpTransport,
     )
@@ -490,6 +497,11 @@ def transport_from_spec(spec: Mapping[str, Any]) -> Any:
         url = str(spec.get("url") or "").strip()
         if not url:
             raise MCPTransportError(f"{transport_kind} MCP transport spec requires a 'url'")
+        # SSE and Streamable-HTTP are distinct wire protocols in FastMCP; route
+        # each to its own transport class (matching ``infer_transport``) so the
+        # server's tools are actually reachable.
+        if transport_kind == "sse":
+            return SSETransport(url=url)
         return StreamableHttpTransport(url=url)
     raise MCPTransportError(
         f"unknown MCP transport {transport_kind!r} "

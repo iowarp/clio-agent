@@ -180,18 +180,41 @@ def test_transport_for_unresolved_command_fails_loud():
 # --- transport_from_spec: ONE canonical accepted set (#770 C2) -------------
 
 
-@pytest.mark.parametrize("kind", ["http", "streamable-http", "sse"])
-def test_transport_from_spec_http_family_all_yield_streamable_http(kind: str) -> None:
-    """The whole http family (http | streamable-http | sse) builds ONE transport.
+@pytest.mark.parametrize("kind", ["http", "streamable-http"])
+def test_transport_from_spec_http_family_yield_streamable_http(kind: str) -> None:
+    """``http``/``streamable-http`` build a ``StreamableHttpTransport`` on the url.
 
-    This is the crux of the C2 fix: before, ``streamable-http``/``sse`` were
-    accepted by some call sites and rejected by others (500 / vanished tool).
-    They must now all resolve to a ``StreamableHttpTransport`` on the ``url``.
+    This is the crux of the C2 fix: before, ``streamable-http`` was accepted by
+    some call sites and rejected by others (500 / vanished tool). Both aliases
+    must now resolve to a ``StreamableHttpTransport``. ``sse`` is a DISTINCT wire
+    protocol and is covered separately below.
     """
     from fastmcp.client.transports import StreamableHttpTransport
 
     transport = transport_from_spec({"transport": kind, "url": "https://mcp.example.com/mcp"})
     assert isinstance(transport, StreamableHttpTransport)
+
+
+def test_transport_from_spec_sse_yields_sse_transport() -> None:
+    """``sse`` builds an ``SSETransport`` — NOT a ``StreamableHttpTransport``.
+
+    FastMCP treats SSE and Streamable-HTTP as distinct wire protocols. Routing an
+    ``sse`` descriptor through ``StreamableHttpTransport`` lands a real SSE MCP
+    server in error/no_tools. The construction must match what FastMCP's own
+    ``infer_transport`` selects for an ``/sse`` URL.
+    """
+    from fastmcp.client.transports import (
+        SSETransport,
+        StreamableHttpTransport,
+        infer_transport,
+    )
+
+    url = "https://mcp.example.com/sse"
+    transport = transport_from_spec({"transport": "sse", "url": url})
+    assert isinstance(transport, SSETransport)
+    assert not isinstance(transport, StreamableHttpTransport)
+    # Matches FastMCP's own routing for an /sse URL.
+    assert type(transport) is type(infer_transport(url))
 
 
 def test_transport_from_spec_stdio_yields_stdio_transport() -> None:
