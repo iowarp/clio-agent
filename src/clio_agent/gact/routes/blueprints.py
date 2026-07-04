@@ -612,21 +612,14 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
         if probe:
             try:
                 from fastmcp import Client  # noqa: PLC0415
-                from fastmcp.client.transports import (  # noqa: PLC0415
-                    StdioTransport,
-                    StreamableHttpTransport,
+
+                from clio_agent.tools.mcp_config import (  # noqa: PLC0415
+                    transport_from_spec,
                 )
 
-                transport_kind = str(descriptor.get("transport") or "")
-                if transport_kind == "stdio":
-                    transport = StdioTransport(
-                        command=str(descriptor.get("command") or ""),
-                        args=list(descriptor.get("args") or []),
-                    )
-                elif transport_kind in {"http", "streamable-http"}:
-                    transport = StreamableHttpTransport(url=str(descriptor.get("url") or ""))  # type: ignore[assignment]
-                else:
-                    raise ValueError(f"unsupported MCP descriptor transport: {transport_kind}")
+                # Probe the stored spec through the single canonical helper so the
+                # install-probe accepts exactly what call/list/reconnect accept.
+                transport = transport_from_spec(spec)
                 async with Client(transport) as client:
                     live_tools = await client.list_tools()
                 tools = []

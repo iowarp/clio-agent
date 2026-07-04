@@ -53,10 +53,23 @@ logger = logging.getLogger(__name__)
 # ------------------------------------------------------------------------- #
 
 
+def _metrics_counters(app: "FastAPI") -> Any:
+    """Return the running metrics aggregate, or ``None`` when not wired.
+
+    #770 C3: the four message write seams below keep this aggregate current so
+    ``GET /v1/metrics`` reads a running counter instead of re-walking history.
+    """
+
+    return getattr(app.state, "metrics_counters", None)
+
+
 def _append_session_message(app: "FastAPI", session_id: str, message: "Message") -> None:
     """Append one chronological message to memory and disk."""
 
     app.state.messages.setdefault(session_id, []).append(message)
+    counters = _metrics_counters(app)
+    if counters is not None:
+        counters.add_message(session_id, message)
     store = getattr(app.state, "message_store", None)
     if store is not None:
         store.append(session_id, message)
@@ -73,6 +86,9 @@ def _extend_session_messages(
     if not messages:
         return
     app.state.messages.setdefault(session_id, []).extend(messages)
+    counters = _metrics_counters(app)
+    if counters is not None:
+        counters.add_messages(session_id, messages)
     store = getattr(app.state, "message_store", None)
     if store is not None:
         store.extend(session_id, messages)
@@ -87,6 +103,9 @@ def _replace_session_messages(
     """Replace one session's message ledger in memory and disk."""
 
     app.state.messages[session_id] = list(messages)
+    counters = _metrics_counters(app)
+    if counters is not None:
+        counters.set_session(session_id, messages)
     store = getattr(app.state, "message_store", None)
     if store is not None:
         store.replace_session(session_id, list(messages))
@@ -97,6 +116,9 @@ def _delete_session_messages(app: "FastAPI", session_id: str) -> None:
     """Remove one session's message ledger from memory and disk."""
 
     app.state.messages.pop(session_id, None)
+    counters = _metrics_counters(app)
+    if counters is not None:
+        counters.remove_session(session_id)
     store = getattr(app.state, "message_store", None)
     if store is not None:
         store.delete_session(session_id)

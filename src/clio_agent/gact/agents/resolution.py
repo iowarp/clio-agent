@@ -26,13 +26,14 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from clio_agent.gact.agent_blueprints import (
     DEFAULT_AGENT_BLUEPRINT_ID,
     discover_agent_blueprints,
     load_agent_blueprint_path,
     load_agent_blueprints,
+    load_mcp_descriptors,
     validate_agent_hierarchy,
 )
 from clio_agent.gact.agents.composition import (
@@ -42,7 +43,7 @@ from clio_agent.gact.agents.composition import (
 )
 from clio_agent.gact.catalog import _builtin_agents, _load_skills_from_disk
 from clio_agent.gact.expert_packs import load_expert_packs, validate_expert_hierarchy
-from clio_agent.gact.types import AgentDef
+from clio_agent.gact.types import AgentCapabilityRef, AgentDef
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -329,6 +330,254 @@ def _runtime_apply_session_agent_overlay(
     return out
 
 
+def _agent_with_capability_refs(app: "FastAPI", agent_def: "AgentDef") -> "AgentDef":
+    """Attach normalized capability metadata to an AgentDef row.
+
+    Projects the agent's declared tools/skills/commands into the
+    ``capability_refs`` the TUI renders, folding the backend command table into
+    the ``main`` orchestrator and self-registering a skill-sourced agent as its
+    own skill. Takes ``app`` explicitly (no ``build_app`` closure) so both the
+    ``/v1/agents`` route and the runtime turn path attach identical refs.
+    """
+
+    from clio_agent.gact.runtime.commands import BACKEND_COMMANDS  # noqa: PLC0415
+
+    refs: list[AgentCapabilityRef] = [
+        AgentCapabilityRef(kind="tool", id=tool_id, title=tool_id, source="builtin")
+        for tool_id in agent_def.tools
+    ]
+    refs.extend(
+        AgentCapabilityRef(kind="skill", id=skill_id, title=skill_id, source=agent_def.source)
+        for skill_id in agent_def.skills
+    )
+    refs.extend(
+        AgentCapabilityRef(
+            kind="command",
+            id=command_id,
+            title=command_id,
+            source="builtin",
+        )
+        for command_id in agent_def.commands
+    )
+    refs.extend(agent_def.capability_refs)
+
+    if agent_def.id == "main":
+        command_ids = set(agent_def.commands)
+        for row in BACKEND_COMMANDS:
+            command_id = row["id"]
+            if command_id in command_ids:
+                continue
+            raw_status = row.get("status")
+            status: Literal["available", "unavailable", "unknown"] = (
+                raw_status if raw_status in {"available", "unavailable", "unknown"} else "available"
+            )
+            refs.append(
+                AgentCapabilityRef(
+                    kind="command",
+                    id=command_id,
+                    title=row.get("title", command_id),
+                    description=row.get("description", ""),
+                    source=row.get("source", "builtin"),
+                    status=status,
+                    metadata=({"error": row["error"]} if row.get("error") else {}),
+                )
+            )
+            command_ids.add(command_id)
+        agent_def = agent_def.model_copy(update={"commands": sorted(command_ids)})
+
+    if agent_def.source == "skill" and agent_def.id not in agent_def.skills:
+        refs.append(
+            AgentCapabilityRef(
+                kind="skill",
+                id=agent_def.id,
+                title=agent_def.title,
+                description=agent_def.description,
+                source=str(agent_def.metadata.get("skill_source", "skill")),
+                metadata={
+                    "skill_path": agent_def.metadata.get("skill_path", ""),
+                    "skill_layout": agent_def.metadata.get("skill_layout", ""),
+                },
+            )
+        )
+        agent_def = agent_def.model_copy(update={"skills": [*agent_def.skills, agent_def.id]})
+
+    deduped: list[AgentCapabilityRef] = []
+    seen: set[tuple[str, str]] = set()
+    for ref in refs:
+        key = (ref.kind, ref.id)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(ref)
+
+    return agent_def.model_copy(update={"capability_refs": deduped})
+
+
+def _enabled_agent_blueprint_mcp_tool_names(app: "FastAPI", blueprint_id: str = "") -> set[str]:
+    """Return the names of MCP tools a ready blueprint server currently exposes."""
+
+    names: set[str] = set()
+    for server in (getattr(app.state, "external_mcp_servers", {}) or {}).values():
+        if not isinstance(server, Mapping):
+            continue
+        if str(server.get("status") or "") != "ready":
+            continue
+        if blueprint_id and str(server.get("agent_blueprint_id") or "") != blueprint_id:
+            continue
+        for tool in server.get("tools") or []:
+            if not isinstance(tool, Mapping):
+                continue
+            if not bool(tool.get("enabled")) or str(tool.get("status") or "") != "ready":
+                continue
+            tool_name = str(tool.get("name") or tool.get("id") or "").strip()
+            if tool_name:
+                names.add(tool_name)
+    return names
+
+
+def _agent_blueprint_descriptor_tools(rows: list["AgentDef"]) -> dict[str, str]:
+    """Map each blueprint-declared MCP tool name to its on-disk descriptor id."""
+
+    descriptors_by_tool: dict[str, str] = {}
+    roots: dict[str, tuple[str, str]] = {}
+    for row in rows:
+        root_file = str(row.metadata.get("agent_blueprint_definition_path") or "").strip()
+        if not root_file:
+            continue
+        roots[root_file] = (
+            str(row.metadata.get("agent_blueprint_scope") or "session"),
+            str(row.metadata.get("agent_blueprint_id") or ""),
+        )
+    for root_file, (scope, blueprint_id) in sorted(roots.items()):
+        root = Path(root_file).expanduser().parent
+        try:
+            descriptors = load_mcp_descriptors(root, scope=scope, blueprint_id=blueprint_id)
+        except Exception:  # noqa: BLE001 - disk read; a broken descriptor gates nothing
+            continue
+        for descriptor in descriptors:
+            descriptor_id = str(descriptor.get("id") or "")
+            for tool in descriptor.get("tools") or []:
+                if not isinstance(tool, Mapping):
+                    continue
+                tool_name = str(tool.get("name") or tool.get("id") or "").strip()
+                if tool_name:
+                    descriptors_by_tool[tool_name] = descriptor_id
+    return descriptors_by_tool
+
+
+def _apply_agent_blueprint_mcp_descriptor_validation(
+    app: "FastAPI",
+    rows: list["AgentDef"],
+) -> list["AgentDef"]:
+    """Disable experts whose declared MCP tools require (absent) explicit enablement."""
+
+    descriptor_tools = _agent_blueprint_descriptor_tools(rows)
+    if not descriptor_tools:
+        return rows
+    out: list[AgentDef] = []
+    for row in rows:
+        enabled_tools = _enabled_agent_blueprint_mcp_tool_names(
+            app, str(row.metadata.get("agent_blueprint_id") or "").strip()
+        )
+        errors = list(row.validation_errors)
+        diagnostics = list(row.metadata.get("tool_diagnostics", []))
+        for tool_name in row.tools:
+            if tool_name not in descriptor_tools or tool_name in enabled_tools:
+                continue
+            descriptor_id = descriptor_tools[tool_name]
+            message = f"MCP tool requires explicit enablement: {tool_name}" + (
+                f" (descriptor: {descriptor_id})" if descriptor_id else ""
+            )
+            if message not in errors:
+                errors.append(message)
+            if not any(
+                isinstance(diag, Mapping)
+                and str(diag.get("tool") or "") == tool_name
+                and str(diag.get("source") or "") == "agent_blueprint_mcp_descriptor"
+                for diag in diagnostics
+            ):
+                diagnostics.append(
+                    {
+                        "tool": tool_name,
+                        "status": "disabled",
+                        "source": "agent_blueprint_mcp_descriptor",
+                        "descriptor_id": descriptor_id,
+                    }
+                )
+        metadata = dict(row.metadata)
+        if diagnostics:
+            metadata["tool_diagnostics"] = diagnostics
+        if errors != list(row.validation_errors):
+            metadata["mcp_descriptor_validation_disabled"] = True
+        out.append(
+            row.model_copy(
+                update={
+                    "enabled": row.enabled and not errors,
+                    "validation_errors": errors,
+                    "metadata": metadata,
+                }
+            )
+        )
+    return out
+
+
+def _apply_enabled_agent_blueprint_mcp_tools(
+    app: "FastAPI",
+    rows: list["AgentDef"],
+) -> list["AgentDef"]:
+    """Re-enable experts whose declared MCP tools became ready on a live server."""
+
+    out: list[AgentDef] = []
+    cache: dict[str, set[str]] = {}
+    for row in rows:
+        blueprint_id = str(row.metadata.get("agent_blueprint_id") or "").strip()
+        enabled_tools = cache.setdefault(
+            blueprint_id,
+            _enabled_agent_blueprint_mcp_tool_names(app, blueprint_id),
+        )
+        if not enabled_tools:
+            out.append(row)
+            continue
+        row_tools = {str(tool).strip() for tool in row.tools if str(tool).strip()}
+        resolved_tools = row_tools & enabled_tools
+        if not resolved_tools:
+            out.append(row)
+            continue
+        errors = [
+            error
+            for error in row.validation_errors
+            if not any(
+                error.startswith(f"MCP tool requires explicit enablement: {tool}")
+                for tool in resolved_tools
+            )
+        ]
+        diagnostics = [
+            diag
+            for diag in row.metadata.get("tool_diagnostics", [])
+            if not (
+                isinstance(diag, Mapping)
+                and str(diag.get("source") or "") == "agent_blueprint_mcp_descriptor"
+                and str(diag.get("tool") or "") in resolved_tools
+            )
+        ]
+        metadata = dict(row.metadata)
+        if diagnostics:
+            metadata["tool_diagnostics"] = diagnostics
+        else:
+            metadata.pop("tool_diagnostics", None)
+        disabled_by_mcp_validation = bool(metadata.pop("mcp_descriptor_validation_disabled", False))
+        out.append(
+            row.model_copy(
+                update={
+                    "enabled": row.enabled or (disabled_by_mcp_validation and not errors),
+                    "validation_errors": errors,
+                    "metadata": metadata,
+                }
+            )
+        )
+    return out
+
+
 def _runtime_active_agent_blueprint_rows(
     app: "FastAPI",
     *,
@@ -336,6 +585,18 @@ def _runtime_active_agent_blueprint_rows(
     workspace_id: str = "",
     prompt_registry: "PromptRegistry | None" = None,
 ) -> list["AgentDef"]:
+    """Resolve the effective blueprint AgentDef rows for a session.
+
+    This is the ONE seam both ``GET /v1/agents`` (via ``_agent_rows`` in
+    :mod:`clio_agent.gact.app`) and the runtime turn path share. It applies, in
+    order: the default-blueprint fallback (when a session pinned no explicit
+    blueprint but a discoverable ``DEFAULT_AGENT_BLUEPRINT_ID`` exists), the
+    session agent overlay, hierarchy validation, MCP tool-gating (descriptor
+    validation + live-server re-enable), capability-ref projection, and the
+    prompt registry -- so the route and the executing agent can never disagree
+    on what an agent resolves to.
+    """
+
     if not session_id:
         return []
     cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id, session_id=session_id)
@@ -351,6 +612,8 @@ def _runtime_active_agent_blueprint_rows(
         return []
     rows = _runtime_apply_session_agent_overlay(app, rows, session_id=session_id)
     rows = validate_agent_hierarchy(_merge_agent_def_rows(rows))
+    rows = _apply_agent_blueprint_mcp_descriptor_validation(app, rows)
+    rows = _apply_enabled_agent_blueprint_mcp_tools(app, rows)
     render_context = _prompt_render_context(app)
     render_context.update(_agent_rows_prompt_render_context(rows))
     render_context["session.active_agent_blueprint"] = (
@@ -360,7 +623,7 @@ def _runtime_active_agent_blueprint_rows(
     return [
         _apply_prompt_registry_to_agent(
             app,
-            row,
+            _agent_with_capability_refs(app, row),
             prompt_registry=prompt_registry,
             render_context=render_context,
         )

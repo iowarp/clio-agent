@@ -3383,7 +3383,9 @@ def test_enabled_agent_blueprint_mcp_descriptor_probes_and_calls_tool(
     import fastmcp.client.transports as transports
 
     monkeypatch.setattr(fastmcp, "Client", FakeClient)
-    monkeypatch.setattr(transports, "StdioTransport", lambda command, args: (command, args))
+    monkeypatch.setattr(
+        transports, "StdioTransport", lambda command, args, env=None: (command, args)
+    )
 
     workspace = tmp_path / "workspace"
     root = workspace / ".clio" / "agent-blueprints" / "earth"
@@ -3466,7 +3468,9 @@ def test_enabled_agent_blueprint_mcp_tool_reenables_session_expert(
     import fastmcp.client.transports as transports
 
     monkeypatch.setattr(fastmcp, "Client", FakeClient)
-    monkeypatch.setattr(transports, "StdioTransport", lambda command, args: (command, args))
+    monkeypatch.setattr(
+        transports, "StdioTransport", lambda command, args, env=None: (command, args)
+    )
 
     workspace = tmp_path / "workspace"
     root = workspace / ".clio" / "agent-blueprints" / "earth"

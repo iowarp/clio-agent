@@ -875,7 +875,7 @@ def register_agents_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"agent not found: {agent_id}",
                         recoverable=False,
                     )
@@ -909,7 +909,7 @@ def register_agents_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"agent not found: {agent_id}",
                         recoverable=False,
                     )

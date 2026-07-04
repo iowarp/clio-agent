@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 import yaml
 
 from clio_agent.tools.mcp_config import (
     MCPConfigError,
+    MCPTransportError,
     expand_env,
     load_mcp_servers,
     resolve_expert_servers,
     spec_from_declaration,
     specs_from_mapping,
     transport_for,
+    transport_from_spec,
 )
 
 
@@ -171,3 +175,96 @@ def test_transport_for_unresolved_command_fails_loud():
 
     with pytest.raises(MCPSpawnError, match="not found on PATH"):
         transport_for(spec_from_declaration("geo", "definitely-not-a-real-binary-xyz123 run"))
+
+
+# --- transport_from_spec: ONE canonical accepted set (#770 C2) -------------
+
+
+@pytest.mark.parametrize("kind", ["http", "streamable-http"])
+def test_transport_from_spec_http_family_yield_streamable_http(kind: str) -> None:
+    """``http``/``streamable-http`` build a ``StreamableHttpTransport`` on the url.
+
+    This is the crux of the C2 fix: before, ``streamable-http`` was accepted by
+    some call sites and rejected by others (500 / vanished tool). Both aliases
+    must now resolve to a ``StreamableHttpTransport``. ``sse`` is a DISTINCT wire
+    protocol and is covered separately below.
+    """
+    from fastmcp.client.transports import StreamableHttpTransport
+
+    transport = transport_from_spec({"transport": kind, "url": "https://mcp.example.com/mcp"})
+    assert isinstance(transport, StreamableHttpTransport)
+
+
+def test_transport_from_spec_sse_yields_sse_transport() -> None:
+    """``sse`` builds an ``SSETransport`` — NOT a ``StreamableHttpTransport``.
+
+    FastMCP treats SSE and Streamable-HTTP as distinct wire protocols. Routing an
+    ``sse`` descriptor through ``StreamableHttpTransport`` lands a real SSE MCP
+    server in error/no_tools. The construction must match what FastMCP's own
+    ``infer_transport`` selects for an ``/sse`` URL.
+    """
+    from fastmcp.client.transports import (
+        SSETransport,
+        StreamableHttpTransport,
+        infer_transport,
+    )
+
+    url = "https://mcp.example.com/sse"
+    transport = transport_from_spec({"transport": "sse", "url": url})
+    assert isinstance(transport, SSETransport)
+    assert not isinstance(transport, StreamableHttpTransport)
+    # Matches FastMCP's own routing for an /sse URL.
+    assert type(transport) is type(infer_transport(url))
+
+
+def test_transport_from_spec_stdio_yields_stdio_transport() -> None:
+    from fastmcp.client.transports import StdioTransport
+
+    transport = transport_from_spec({"transport": "stdio", "command": "echo", "args": ["hi"]})
+    assert isinstance(transport, StdioTransport)
+
+
+def test_transport_from_spec_unknown_transport_raises_typed_error() -> None:
+    with pytest.raises(MCPTransportError, match="unknown MCP transport"):
+        transport_from_spec({"transport": "carrier-pigeon", "url": "x"})
+
+
+def test_transport_from_spec_stdio_missing_command_raises() -> None:
+    with pytest.raises(MCPTransportError, match="command"):
+        transport_from_spec({"transport": "stdio", "args": []})
+
+
+def test_transport_from_spec_http_missing_url_raises() -> None:
+    with pytest.raises(MCPTransportError, match="url"):
+        transport_from_spec({"transport": "streamable-http"})
+
+
+def test_transport_from_spec_stdio_pdeathsig_wrapped_on_linux(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stdio child built via the shared helper is setpriv-wrapped on Linux.
+
+    pdeathsig folding is what stops REST-installed stdio servers from orphaning on
+    a hard clio-server kill — and it must apply to EVERY stdio spawn path (install /
+    list / call / reconnect), not just the agent path. Proving it inside the helper
+    proves it for all of them at once.
+    """
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(
+        "clio_agent.tools.mcp_config.shutil.which", lambda _name: "/usr/bin/setpriv"
+    )
+    transport = transport_from_spec({"transport": "stdio", "command": "uvx", "args": ["geo-mcp"]})
+    assert transport.command == "/usr/bin/setpriv"
+    assert list(transport.args) == ["--pdeathsig", "SIGKILL", "--", "uvx", "geo-mcp"]
+
+
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_transport_from_spec_stdio_no_pdeathsig_off_linux(
+    monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    """Cross-platform guard: on Windows/macOS the stdio spawn is an unwrapped
+    passthrough (setpriv is Linux-only), mirroring pdeathsig_wrapped_command."""
+    monkeypatch.setattr(sys, "platform", platform)
+    transport = transport_from_spec({"transport": "stdio", "command": "uvx", "args": ["geo-mcp"]})
+    assert transport.command == "uvx"
+    assert list(transport.args) == ["geo-mcp"]

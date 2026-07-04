@@ -114,7 +114,7 @@ def test_session_context_policy_unknown_session_404s(client: TestClient) -> None
 
     assert resp.status_code == 404
     detail = resp.json()["error"]
-    assert detail["error"] == "internal_error"
+    assert detail["error"] == "not_found"
     assert detail["details"]["session_id"] == "sess_missing"
 
 

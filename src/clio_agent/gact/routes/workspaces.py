@@ -144,7 +144,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"workspace not found: {wid}",
                         details={"workspace_id": wid},
                         recoverable=False,
@@ -162,19 +162,6 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         Accept partial updates of any of those fields.
         """
 
-        ws = app.state.workspaces.get(wid)
-        if ws is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"workspace not found: {wid}",
-                        details={"workspace_id": wid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
         try:
             body = await request.json()
         except Exception as exc:
@@ -188,13 +175,30 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         # The desktop sends `config` as an alias for metadata.
         if metadata is None and isinstance(body.get("config"), dict):
             metadata = body.get("config")
-        if isinstance(name, str) and name.strip():
-            ws.name = name.strip()
-        if isinstance(root_path, str) and root_path.strip():
-            ws.root_path = root_path.strip()
-        if isinstance(metadata, dict):
-            ws.metadata.update(metadata)
-        app.state.workspaces._flush()
+        # Route the mutation through the store so it serialises under the
+        # WorkspaceStore lock (no torn write / flush racing a concurrent
+        # create) and bumps ``updated_at`` — never mutate the live object
+        # returned by ``get()`` outside the lock.
+        ws = app.state.workspaces.update(
+            wid,
+            name=name.strip() if isinstance(name, str) and name.strip() else None,
+            root_path=(
+                root_path.strip() if isinstance(root_path, str) and root_path.strip() else None
+            ),
+            metadata_patch=metadata if isinstance(metadata, dict) else None,
+        )
+        if ws is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"workspace not found: {wid}",
+                        details={"workspace_id": wid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
         return Workspace(**ws.to_wire())
 
     @app.delete("/v1/workspaces/{wid}")
@@ -218,7 +222,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"workspace not found: {wid}",
                         recoverable=False,
                     )

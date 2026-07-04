@@ -57,6 +57,7 @@ from fastapi import HTTPException
 from clio_agent.gact.events import Event
 from clio_agent.gact.runtime.globals import _resolve_tool_session
 from clio_agent.gact.runtime.permission_policies import _permission_path_from_args
+from clio_agent.gact.runtime.retention import enforce_dict_bound
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 if TYPE_CHECKING:
@@ -372,6 +373,7 @@ def _record_resolved_permission(
     }
     if hasattr(app.state, "permissions"):
         app.state.permissions[pid] = row
+        enforce_dict_bound(app, app.state.permissions, "permissions", session_id=session_id)
     if hasattr(app.state, "bus"):
         app.state.bus.publish(
             Event(
@@ -514,6 +516,7 @@ def _make_permission_gate(app: "FastAPI"):
                     "resolved_at": datetime.now(timezone.utc).isoformat(),
                 }
                 app.state.permissions[row["id"]] = row
+                enforce_dict_bound(app, app.state.permissions, "permissions", session_id=sid)
                 app.state.bus.publish(
                     Event(
                         type="permission.resolved",
@@ -577,6 +580,7 @@ def _make_permission_gate(app: "FastAPI"):
         }
         app.state.permissions[pid] = row
         app.state.permission_events[pid] = evt
+        enforce_dict_bound(app, app.state.permissions, "permissions", session_id=sid)
         app.state.bus.publish(
             Event(
                 type="permission.requested",

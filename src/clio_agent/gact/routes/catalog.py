@@ -56,11 +56,13 @@ from clio_agent.gact.runtime.globals import (
     _emit_semantic_event,
     _gact_app_context,
 )
+from clio_agent.gact.runtime.retention import enforce_list_bound
 from clio_agent.gact.types import (
     ErrorEnvelope,
     ErrorInfo,
     ListToolsResponse,
 )
+from clio_agent.tools.mcp_config import MCPTransportError, transport_from_spec
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -133,10 +135,6 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
         if installed:
             try:
                 from fastmcp import Client  # noqa: PLC0415
-                from fastmcp.client.transports import (  # noqa: PLC0415
-                    StdioTransport,
-                    StreamableHttpTransport,
-                )
             except Exception:  # noqa: BLE001
                 Client = None  # type: ignore
             for sid, info in sorted(installed.items()):
@@ -168,14 +166,20 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                 spec = info.get("spec", {})
                 if Client is None:
                     continue
-                if spec.get("transport") == "stdio":
-                    transport = StdioTransport(
-                        command=spec["command"],
-                        args=spec.get("args") or [],
+                try:
+                    transport = transport_from_spec(spec)
+                except MCPTransportError as exc:
+                    # No-silent-fallback: surface the unusable stored spec as a
+                    # structured error row instead of dropping the server.
+                    rows.append(
+                        {
+                            "id": f"{sid}_error",
+                            "name": f"{sid}_error",
+                            "description": f"invalid MCP transport spec for {sid}: {exc}",
+                            "server_id": sid,
+                            "source": "error",
+                        }
                     )
-                elif spec.get("transport") == "http":
-                    transport = StreamableHttpTransport(url=spec["url"])  # type: ignore[assignment]
-                else:
                     continue
                 try:
                     async with Client(transport) as client:
@@ -250,10 +254,6 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
         if installed:
             try:
                 from fastmcp import Client  # noqa: PLC0415
-                from fastmcp.client.transports import (  # noqa: PLC0415
-                    StdioTransport,
-                    StreamableHttpTransport,
-                )
             except Exception:
                 Client = None  # type: ignore
             for sid, info in installed.items():
@@ -282,15 +282,9 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                 if Client is None:
                     break
                 try:
-                    transport = info.get("transport") or "stdio"
-                    if transport == "stdio":
-                        t = StdioTransport(
-                            command=info.get("command") or "",
-                            args=info.get("args") or [],
-                            env=info.get("env") or None,
-                        )
-                    else:
-                        t = StreamableHttpTransport(url=info.get("url") or "")  # type: ignore[assignment]
+                    # Unify onto the spec-based helper (single canonical accepted
+                    # set) instead of the old top-level ``info['transport']`` shape.
+                    t = transport_from_spec(info.get("spec") or {})
                     async with Client(t) as cli:
                         tools = await cli.list_tools()
                     for tt in tools:
@@ -439,6 +433,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         app.state.command_audit.append(row)
+        enforce_list_bound(app, app.state.command_audit, "command_audit", session_id=sid)
         event_status = status if status in {"completed", "failed", "denied"} else "completed"
         _emit_semantic_event(
             app,
@@ -491,7 +486,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"session not found: {sid}",
                         recoverable=False,
                     )

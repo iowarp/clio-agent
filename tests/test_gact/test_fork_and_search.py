@@ -119,4 +119,4 @@ def test_fork_unknown_session_404s(tmp_path: Path) -> None:
     client = _client(tmp_path)
     resp = client.post("/v1/sessions/sess_nope/fork", json={})
     assert resp.status_code == 404
-    assert resp.json()["error"]["error"] == "internal_error"
+    assert resp.json()["error"]["error"] == "not_found"

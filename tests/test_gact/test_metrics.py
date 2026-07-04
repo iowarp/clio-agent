@@ -75,11 +75,17 @@ def test_metrics_reflects_session_and_message_counts(client: TestClient) -> None
 def test_metrics_latencies_aggregate_tool_call_durations(client: TestClient) -> None:
     # iowarp/clio-agent#655: /v1/metrics.latencies must report real recorded
     # tool-call durations (per tool + an overall tool_call bucket), not {}.
+    from clio_agent.gact.app import _append_session_message
     from clio_agent.gact.types import Message
 
     app = client.app
     sid = "sess_metrics"
-    app.state.messages[sid] = [
+    # #770 C3: write through the real session_store seam (production never
+    # mutates app.state.messages directly), so the running metrics_counters
+    # aggregate that /v1/metrics reads is kept in lock-step.
+    _append_session_message(
+        app,
+        sid,
         Message(
             id="m1",
             session_id=sid,
@@ -94,8 +100,8 @@ def test_metrics_latencies_aggregate_tool_call_durations(client: TestClient) -> 
                     {"name": "noisy", "ok": True, "duration_ms": 0},  # dropped (<=0)
                 ]
             },
-        )
-    ]
+        ),
+    )
     lat = client.get("/v1/metrics").json()["latencies"]
     assert lat["tool_call"]["count"] == 3
     assert lat["tool_call"]["max_ms"] == 100.0

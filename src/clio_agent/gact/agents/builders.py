@@ -367,26 +367,22 @@ async def _call_enabled_external_mcp_tool(
 
     try:
         from fastmcp import Client  # noqa: PLC0415
-        from fastmcp.client.transports import (  # noqa: PLC0415
-            StdioTransport,
-            StreamableHttpTransport,
-        )
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(f"fastmcp Client unavailable: {exc!r}") from exc
 
-    spec = info.get("spec", {})
-    if spec.get("transport") == "stdio":
-        from clio_agent.tools.mcp_config import pdeathsig_wrapped_command  # noqa: PLC0415
+    # Single canonical construction site. pdeathsig-wrapping (Linux-only, no-op
+    # elsewhere) now lives INSIDE the helper, so this external MCP child is reaped
+    # when the clio server dies hard -- identically to every other stdio spawn.
+    from clio_agent.tools.mcp_config import (  # noqa: PLC0415
+        MCPTransportError,
+        transport_from_spec,
+    )
 
-        # Reap this external MCP child if the clio server dies hard (SIGKILL/OOM/
-        # crash) -- there is no parent-death link otherwise, so it would orphan to
-        # init. Mirrors transport_for() for the configured/clio-kit servers.
-        cmd, cmd_args = pdeathsig_wrapped_command(spec["command"], spec.get("args") or [])
-        transport = StdioTransport(command=cmd, args=cmd_args)
-    elif spec.get("transport") in {"http", "streamable-http"}:
-        transport = StreamableHttpTransport(url=spec["url"])  # type: ignore[assignment]
-    else:
-        raise RuntimeError(f"unknown stored MCP transport for {server_id}: {spec!r}")
+    spec = info.get("spec", {})
+    try:
+        transport = transport_from_spec(spec)
+    except MCPTransportError as exc:
+        raise RuntimeError(f"unknown stored MCP transport for {server_id}: {spec!r}") from exc
 
     tool_observer = getattr(app.state, "pending_tool_observer", None)
     if tool_observer is None:

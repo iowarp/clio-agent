@@ -28,15 +28,16 @@ from tests.test_sdk.conftest import StreamingASGITransport, _fresh_arc
 
 
 def test_unknown_session_maps_to_not_found_despite_legacy_tag(client: ClioClient) -> None:
-    """Session-lookup 404s still carry the legacy ``internal_error``
-    tag (SPEC §6.0); the SDK must classify by status instead."""
+    """Session-lookup 404s carry the ``not_found`` taxonomy tag; the SDK
+    classifies by status regardless (#770 C4 retagged these off the
+    legacy ``internal_error`` value, which the SDK also tolerates)."""
 
     with pytest.raises(NotFoundError) as excinfo:
         client.sessions.get("sess_missing")
 
     err = excinfo.value
     assert err.status_code == 404
-    assert err.error in {"not_found", "internal_error"}, "both tags are on-contract"
+    assert err.error == "not_found"
     assert isinstance(err.details, dict)
 
 

@@ -61,6 +61,7 @@ from clio_agent.gact.runtime.globals import (
     _session_agent_id,
 )
 from clio_agent.gact.runtime.memory_search import _memory_search_response
+from clio_agent.gact.runtime.retention import enforce_list_bound
 from clio_agent.gact.types import ErrorInfo
 from clio_agent.tools.file_policy import validate_write_path
 from clio_agent.tools.fs_write import write_text_with_policy
@@ -231,7 +232,9 @@ def _record_context_frame(
             else {},
         },
     }
-    app.state.context_frames.setdefault(sid, []).append(frame)
+    frames = app.state.context_frames.setdefault(sid, [])
+    frames.append(frame)
+    enforce_list_bound(app, frames, "context_frames", session_id=sid)
     # NOT on the served UI wire: the context frame ("what the agent saw" — included
     # messages, token estimates) is observability the TUI surfaces on demand, not a
     # ReAct atom it renders inline. It stays queryable via
