@@ -56,6 +56,7 @@ from clio_agent.gact.runtime.globals import (
     _emit_semantic_event,
     _gact_app_context,
 )
+from clio_agent.gact.runtime.retention import enforce_list_bound
 from clio_agent.gact.types import (
     ErrorEnvelope,
     ErrorInfo,
@@ -432,6 +433,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         app.state.command_audit.append(row)
+        enforce_list_bound(app, app.state.command_audit, "command_audit", session_id=sid)
         event_status = status if status in {"completed", "failed", "denied"} else "completed"
         _emit_semantic_event(
             app,

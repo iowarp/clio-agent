@@ -273,6 +273,8 @@ from clio_agent.gact.enrichment import (  # noqa: E402,F401
     _message_text_for_frame,
     _record_context_frame,
 )
+from clio_agent.gact.metrics_counters import MetricsCounters  # noqa: E402
+from clio_agent.gact.runtime.retention import init_retention_state  # noqa: E402
 from clio_agent.gact.session_store import (  # noqa: E402,F401
     _append_session_message,
     _compile_session_conversation_history,
@@ -1571,6 +1573,15 @@ def build_app(
     # JSON ledgers so adapter deletion/redeploy preserves transcripts.
     app.state.message_store = MessageStore(path=session_store_path.parent / "messages")
     app.state.messages = app.state.message_store.load_all()
+    # #770 C3: running metrics aggregate so GET /v1/metrics reads a counter
+    # instead of re-walking every message of every session on each poll. Seeded
+    # once from the loaded ledger, then kept live by the session_store write
+    # seams (_append/_extend/_replace/_delete_session_messages).
+    app.state.metrics_counters = MetricsCounters()
+    app.state.metrics_counters.rebuild(app.state.messages)
+    # #770 C3: bounded eviction-audit trail for the in-memory ledgers below;
+    # every retention drop records a typed reason here (no silent drop).
+    init_retention_state(app)
     # CLIO-BBBBBBBBBB20: cooperative cancellation flags. POST /cancel
     # adds a sid; the POST-message handler checks + clears after the
     # agent returns. Set (not dict) because the flag's presence IS

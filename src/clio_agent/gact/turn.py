@@ -62,6 +62,7 @@ from clio_agent.gact.runtime.globals import (
     _TurnTimedOut,
     _UnsupportedSessionAgent,
 )
+from clio_agent.gact.runtime.retention import enforce_dict_bound, enforce_list_bound
 from clio_agent.gact.streaming import (
     _clear_live_streamed_field_text,
     _record_live_streamed_field_text,
@@ -671,6 +672,7 @@ async def _run_turn_in_background(
             }
         )
         app.state.turn_attempts[retry_attempt_id] = updated
+        enforce_dict_bound(app, app.state.turn_attempts, "turn_attempts", session_id=sid)
         app.state.bus.publish(
             Event(
                 type=f"turn.retry_{status}",
@@ -2503,6 +2505,7 @@ async def _run_turn_in_background(
                 "status": "pending",
             }
             app.state.permissions[pid] = row
+            enforce_dict_bound(app, app.state.permissions, "permissions", session_id=sid)
             _emit_semantic_event(
                 app,
                 sid,
@@ -2990,6 +2993,7 @@ async def _run_turn_in_background(
                     "message_id": assistant_msg.id,
                 }
             )
+        enforce_list_bound(app, bucket, "pending_diffs", session_id=sid)
 
         # Materialise nanoagent spawns + publish their lifecycle events.
         for spawn in nanoagents:

@@ -58,6 +58,7 @@ from clio_agent.gact.runtime.globals import (
     _new_memory_event_id,
     _new_question_id,
 )
+from clio_agent.gact.runtime.retention import enforce_dict_bound
 from clio_agent.gact.types import (
     AnswerUserQuestionRequest,
     CreateSessionRequest,
@@ -1388,6 +1389,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 }
             )
             app.state.turn_attempts[attempt.id] = attempt
+        enforce_dict_bound(app, app.state.turn_attempts, "turn_attempts", session_id=sid)
         app.state.bus.publish(
             Event(
                 type="turn.retry_requested",

@@ -431,27 +431,19 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
             if s.status in {"running", "idle"}:
                 active += 1
 
-        message_total = 0
-        role_counts: dict[str, int] = {}
-        # iowarp/clio-agent#655: aggregate real tool-call latencies (recorded as
-        # duration_ms on each message's tools_called metadata) into the metrics
-        # envelope, keyed per tool plus an overall "tool_call" bucket, so the
-        # endpoint reports live timing instead of an always-empty {}.
-        latency_samples: dict[str, list[float]] = {}
-        for rows in app.state.messages.values():
-            message_total += len(rows)
-            for m in rows:
-                role_counts[m.role] = role_counts.get(m.role, 0) + 1
-                for call in (getattr(m, "metadata", None) or {}).get("tools_called") or []:
-                    if not isinstance(call, dict):
-                        continue
-                    dur = call.get("duration_ms")
-                    if not isinstance(dur, (int, float)) or dur <= 0:
-                        continue
-                    name = str(call.get("name") or call.get("tool") or "tool")
-                    latency_samples.setdefault(f"tool:{name}", []).append(float(dur))
-                    latency_samples.setdefault("tool_call", []).append(float(dur))
-        latencies = {key: _latency_stat(vals) for key, vals in latency_samples.items()}
+        # #770 C3: the message-derived rollups (total, by-role, and the
+        # iowarp/clio-agent#655 per-tool + overall "tool_call" latency buckets)
+        # are maintained incrementally at the session_store write seam
+        # (app.state.metrics_counters), so this handler reads a running counter
+        # instead of re-walking every message of every session on each poll. The
+        # reported values are byte-identical to the old full walk: _latency_stat
+        # sorts its samples, so accumulation order does not matter.
+        counters = app.state.metrics_counters
+        message_total = counters.message_total
+        role_counts = counters.role_counts()
+        latencies = {
+            key: _latency_stat(vals) for key, vals in counters.latency_samples.items()
+        }
 
         # CLIO-BBBBBBBBBB24: tokens + cost rollup across every
         # session's cumulative counters.

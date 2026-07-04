@@ -37,6 +37,7 @@ from fastapi.responses import StreamingResponse
 from clio_agent.gact.events import Event, heartbeat_event
 from clio_agent.gact.runtime.constants import GACT_BACKEND_VERSION
 from clio_agent.gact.runtime.globals import _format_sse
+from clio_agent.gact.runtime.retention import enforce_dict_bound
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Session
 from clio_agent.runtime.stream_audit import stream_audit
 
@@ -316,6 +317,7 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
             "created_at": datetime.now(timezone.utc).isoformat(),
             "expires_at": expires_at,
         }
+        enforce_dict_bound(app, app.state.shared_tokens, "shared_tokens", session_id=sid)
         return {
             "token": token,
             "session_id": sid,
