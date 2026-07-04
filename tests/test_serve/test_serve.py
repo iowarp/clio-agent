@@ -232,6 +232,86 @@ def test_stop_server_refuses_to_kill_not_ours(monkeypatch):
     assert killed == []  # an external server is never killed
 
 
+def test_stop_server_refuses_unverifiable_pid_without_create_time(monkeypatch):
+    """Regression: a pidfile with no create_time fingerprint cannot prove PID identity, so
+    stop_server must REFUSE to kill (a reused PID would otherwise be terminated) and prune the
+    record — not blindly kill on pid-existence alone."""
+    import os
+
+    port = 45990
+    pidfile = serve._pidfile_path(port)
+    serve._write_pidfile(
+        pidfile,
+        pid=os.getpid(),  # a live pid, but no fingerprint to prove it is *our* server
+        create_time=None,
+        host="127.0.0.1",
+        port=port,
+        spawned_by_us=True,
+    )
+    killed: list[int] = []
+    monkeypatch.setattr(serve, "_terminate_tree", lambda pid, **k: killed.append(pid) or True)
+    note = serve.stop_server(port=port)
+    assert note["reason"] == "unverifiable"
+    assert killed == []  # never kill a PID whose identity we cannot verify
+    assert not pidfile.exists()  # the unusable record is pruned
+
+
+def test_ensure_server_reprobes_live_managed_server_before_respawn(monkeypatch):
+    """Regression: a single failed probe against a healthy server WE manage must NOT delete the
+    pidfile and spawn a duplicate (which would fail to bind the held port and orphan the
+    original). ensure_server re-probes with a bounded retry and attaches instead."""
+    import os
+
+    port = 45989
+    pidfile = serve._pidfile_path(port)
+    serve._write_pidfile(
+        pidfile,
+        pid=os.getpid(),
+        create_time=serve._proc_create_time(os.getpid()),
+        host="127.0.0.1",
+        port=port,
+        spawned_by_us=True,
+    )
+    # The fast attach gate misses once (a transient stall), then the bounded retry sees it.
+    calls = {"n": 0}
+
+    def _probe(*_a, **_k):
+        calls["n"] += 1
+        return calls["n"] > 1  # False on the first probe, True on the retry
+
+    monkeypatch.setattr(serve, "_probe_health", _probe)
+    monkeypatch.setattr(serve.time, "sleep", lambda *_a, **_k: None)  # no real 1s wait
+    monkeypatch.setattr(
+        serve.subprocess,
+        "Popen",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not spawn a duplicate")),
+    )
+
+    url = serve.ensure_server(port=port, timeout_s=5.0)
+    assert url == f"http://127.0.0.1:{port}"
+    action = serve.last_action()
+    assert action is not None and action["reason"] == "already_running"
+    assert pidfile.exists()  # the managed record survived the transient stall
+
+
+def test_terminate_tree_trusted_bypasses_liveness_guard(monkeypatch):
+    """Regression: on the crash-teardown path (trusted=True, we still hold the Popen) a dead
+    leader must NOT short-circuit the teardown — otherwise the crashed server's surviving MCP
+    children are orphaned. Untrusted still declines an unverifiable/dead PID."""
+    monkeypatch.setattr(serve, "_pid_alive", lambda *a, **k: False)
+    # Neutralize the real OS group-kill so the test asserts control-flow only, never signals a
+    # real process group that might happen to share the fake pid.
+    if hasattr(serve.os, "killpg"):
+        monkeypatch.setattr(serve.os, "killpg", lambda *_a, **_k: None)
+
+    dead_pid = 987654
+    # Untrusted: identity unverifiable / dead => decline (return False), do not kill.
+    assert serve._terminate_tree(dead_pid, record_create_time=None) is False
+    # Trusted: bypass the guard and proceed to the sweep (finds nothing => True), rather than
+    # bailing and leaving orphans.
+    assert serve._terminate_tree(dead_pid, record_create_time=None, trusted=True) is True
+
+
 # --- real subprocess: spawn -> attach -> stop (bounded, always cleaned up) ----
 
 

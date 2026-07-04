@@ -34,6 +34,7 @@ import contextlib
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -97,6 +98,13 @@ _SERVE_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
     "not_ours": {
         "managed": False,
         "detail": "recorded server was not spawned by us; left it running",
+    },
+    "unverifiable": {
+        "managed": False,
+        "detail": (
+            "pidfile recorded no creation-time fingerprint; refused to kill an "
+            "unverifiable PID (reuse-unsafe) and pruned the record"
+        ),
     },
 }
 
@@ -352,7 +360,31 @@ def ensure_server(
             _record_action(_serve_reason("attached_external", base_url=base_url))
         return base_url
 
-    # A pidfile with no healthy server is a stale/zombie launch — drop it before spawning.
+    # A single failed probe is not proof the server is down: a healthy server WE manage can
+    # stall briefly (GC pause / load spike) within the probe timeout. Before discarding a
+    # managed record and spawning a duplicate (which would fail to bind the still-held port
+    # and orphan the original), re-probe with a bounded retry when the pidfile still points
+    # at a live process we spawned.
+    stale = _read_pidfile(pidfile)
+    if (
+        stale is not None
+        and stale.get("spawned_by_us")
+        and isinstance(stale.get("pid"), int)
+        and _pid_alive(int(stale["pid"]), stale.get("create_time"))
+    ):
+        for _ in range(3):
+            time.sleep(1.0)
+            if _probe_health(base_url, timeout_s=2.0):
+                _record_action(
+                    _serve_reason("already_running", base_url=base_url, pid=stale["pid"])
+                )
+                return base_url
+        # Still unhealthy after retries against a live managed PID: the process is wedged,
+        # not merely slow. Tear it down (identity verified via create_time) before spawning a
+        # replacement so the new server can bind the port.
+        _terminate_tree(int(stale["pid"]), record_create_time=stale.get("create_time"))
+
+    # No healthy server and no live managed process — drop any stale pidfile before spawning.
     _remove_pidfile(pidfile)
 
     server_bin = _server_bin()  # raises ServerBinaryNotFound (structured) if missing
@@ -404,29 +436,52 @@ def ensure_server(
         timeout_s=timeout_s,
         log=str(log_path),
     )
-    _terminate_tree(proc.pid, record_create_time=None)
+    _terminate_tree(proc.pid, record_create_time=None, trusted=True)
     _remove_pidfile(pidfile)
     _record_action(payload)
     raise ServerStartTimeout(payload)
 
 
-def _terminate_tree(pid: int, *, record_create_time: float | None) -> bool:
+def _terminate_tree(pid: int, *, record_create_time: float | None, trusted: bool = False) -> bool:
     """Terminate ``pid`` and its whole descendant tree (SIGTERM then SIGKILL).
 
-    Guarded by the recorded creation time so a reused PID is never killed. Cross-platform
-    via psutil (SIGTERM/SIGKILL on POSIX, ``TerminateProcess`` on Windows).
+    ``trusted=False`` (the :func:`stop_server` path, reading a persisted pidfile): the kill is
+    PID-reuse-guarded by ``record_create_time`` — a recycled PID whose creation time no longer
+    matches the record is left alone. ``trusted=True`` (the :func:`ensure_server` teardown path,
+    where we still hold the live ``Popen`` and identity is certain): the liveness/identity gate
+    is skipped, because a just-crashed leader is already dead yet its MCP children must still be
+    reaped.
+
+    On POSIX the spawned child is a session/group leader (``start_new_session``), so the whole
+    process group is torn down by group id — this reaches every descendant and works **even
+    after the leader itself has died**, the case a parent-tree walk (``proc.children()``) cannot
+    handle. psutil is used as a belt-and-suspenders sweep, and as the primary path on Windows.
 
     Returns:
-        True if a live matching process was found and terminated, False otherwise.
+        True if a kill was attempted, False if the untrusted identity guard declined it.
     """
-    if not _pid_alive(pid, record_create_time):
+    if not trusted and not _pid_alive(pid, record_create_time):
         return False
+
+    # POSIX: group-kill by pgid (== the spawned leader's pid). Survives leader death and reaches
+    # every MCP child, so a crashed-parent teardown no longer orphans the tree.
+    if not sys.platform.startswith("win"):
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(pid, sig)
+            except (ProcessLookupError, OSError):
+                break  # group already gone / not a group leader — fall through to psutil sweep
+            if sig is signal.SIGTERM:
+                time.sleep(1.0)
+
+    # psutil sweep: catch any straggler not in the group (and the primary path on Windows). Safe
+    # if the parent already vanished — enumeration simply yields nothing.
     try:
         import psutil  # noqa: PLC0415
 
         proc = psutil.Process(pid)
-    except Exception:  # noqa: BLE001 - vanished between the liveness check and here
-        return False
+    except Exception:  # noqa: BLE001 - already gone (group-kill above handled it)
+        return True
     try:
         children = proc.children(recursive=True)
     except Exception:  # noqa: BLE001 - process gone; nothing to enumerate
@@ -475,7 +530,7 @@ def stop_server(
 
     Returns:
         A structured note payload (see :data:`_SERVE_REASON_DEFINITIONS`): ``stopped``,
-        ``no_server``, ``dead_pid``, or ``not_ours``.
+        ``no_server``, ``dead_pid``, ``unverifiable``, or ``not_ours``.
     """
     del host, timeout_s  # not load-bearing today; see docstring
     pidfile = _pidfile_path(port)
@@ -493,6 +548,12 @@ def stop_server(
         return _record_action(_serve_reason("no_server"))
 
     create_time = record.get("create_time")
+    if create_time is None:
+        # No creation-time fingerprint was recorded, so we cannot prove this PID is still our
+        # server rather than an unrelated process that reused it. A wrong kill is worse than a
+        # leaked server: refuse, and prune the unusable record.
+        _remove_pidfile(pidfile)
+        return _record_action(_serve_reason("unverifiable", pid=pid))
     if not _pid_alive(pid, create_time):
         _remove_pidfile(pidfile)
         return _record_action(_serve_reason("dead_pid", pid=pid))
