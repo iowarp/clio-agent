@@ -219,6 +219,33 @@ def test_no_cached_handshake_leaves_probe_lm_row(
     assert lm["status"] == "ready"
 
 
+def test_stale_ready_handshake_does_not_mask_live_down_lm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: a cached handshake is a CACHE from an earlier successful bind — it must
+    never flip a live-UNAVAILABLE lm_provider probe back to healthy. A stale READY handshake
+    over a now-down provider keeps the live-down state (and the 503), instead of masking it."""
+
+    def _refused(*a: Any, **k: Any):
+        raise requests.ConnectionError("connection refused")
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    # An earlier successful bind cached a healthy handshake...
+    app.state.lm_handshake_report = HandshakeReport(
+        provider_id="lm_studio",
+        provider_kind="lm_studio",
+        connectivity=ConnectivityState.OK,
+        auth=AuthState.NOT_REQUIRED,
+        models=(ModelProfile(id="qwen"),),
+    )
+    # ...but the live probe now finds the provider unreachable.
+    resp = _health(app, monkeypatch, _ready_probe(tmp_path, http_get=_refused))
+    assert resp.status_code == 503  # NOT masked back to 200 by the stale handshake
+    body = resp.json()
+    assert body["overall_status"] == "unavailable"
+    assert _rows(body)["lm_provider"]["status"] == "unavailable"
+
+
 def test_probe_engine_failure_is_structured_not_silent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

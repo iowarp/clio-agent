@@ -125,6 +125,35 @@ def _health_overall(report: RuntimeReport) -> Literal["ready", "degraded", "unav
     return "ready"
 
 
+#: Severity rank for reconciling two views of the same integration. Higher == worse; the
+#: three wire buckets collapse ready/skipped -> 0, degraded/misconfigured -> 1, unavailable -> 2.
+_STATE_SEVERITY: dict[IntegrationState, int] = {
+    IntegrationState.READY: 0,
+    IntegrationState.SKIPPED: 0,
+    IntegrationState.DEGRADED: 1,
+    IntegrationState.MISCONFIGURED: 1,
+    IntegrationState.UNAVAILABLE: 2,
+}
+
+
+def _fold_handshake_row(live: IntegrationStatus, enriched: IntegrationStatus) -> IntegrationStatus:
+    """Reconcile the LIVE lm_provider probe with the CACHED handshake enrichment.
+
+    The handshake row carries richer LM detail (capabilities / models / context window /
+    config source) but it is a CACHE from an earlier successful bind — it must never mask a
+    provider the live probe now finds down, or a stale ``ready`` handshake would flip a
+    would-be 503 back to 200 and defeat the endpoint's unavailable contract. So when the live
+    probe is STRICTLY worse than the handshake, the live row wins outright (its state and
+    failure summary are the truth right now); otherwise the handshake's richer row is shown —
+    its state is already at least as severe as the live one, so the 503 contract is preserved
+    either way.
+    """
+
+    if _STATE_SEVERITY.get(live.state, 1) > _STATE_SEVERITY.get(enriched.state, 1):
+        return live
+    return enriched
+
+
 def _estimate_message_context_tokens(message: Message) -> int:
     """Estimate the retained-context tokens one message contributes.
 
@@ -251,7 +280,8 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 enriched = None
             if enriched is not None:
                 integrations = [
-                    enriched if item.name == "lm_provider" else item for item in integrations
+                    _fold_handshake_row(item, enriched) if item.name == "lm_provider" else item
+                    for item in integrations
                 ]
                 report = RuntimeReport(integrations=integrations)
 
