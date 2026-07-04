@@ -10,11 +10,24 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import requests
 from fastapi.testclient import TestClient
 
 from clio_agent.config import LMProviderConfig
 from clio_agent.gact.app import build_app
 from clio_agent.gact.providers.config import _effective_lm_config
+from clio_agent.runtime.status import RuntimeProbe
+
+
+def _patch_doctor(monkeypatch: Any, probe: RuntimeProbe) -> None:
+    """Swap the unified doctor engine into /v1/health for a deterministic probe."""
+
+    def _fake(
+        *, api_state: Any = None, api_error: Any = None, env: Any = None, lm_timeout: float = 1.0
+    ):
+        return probe.collect(api_state=api_state, api_error=api_error)
+
+    monkeypatch.setattr("clio_agent.gact.routes.system.collect_runtime_status", _fake)
 
 
 class _RebindLMStub:
@@ -304,12 +317,28 @@ def test_provider_model_catalog_unknown_provider_404(tmp_path: Path) -> None:
     assert resp.status_code == 404
 
 
-def test_health_lm_row_when_unconfigured(tmp_path: Path) -> None:
-    app = build_app(sessions_path=tmp_path / "s.json")
-    with TestClient(app) as c:
-        rows = {r["name"]: r for r in c.get("/v1/health").json()["integrations"]}
-        assert rows["lm"]["status"] == "unavailable"
-        assert "PUT /v1/providers/lm" in rows["lm"]["detail"]
+def test_health_lm_row_is_unified_probe_lm_provider(tmp_path: Path, monkeypatch) -> None:
+    """#800: /v1/health's LM row is the unified doctor's ``lm_provider`` (from the
+    probe engine), not an app.state-derived ``lm`` row. An unreachable local
+    provider surfaces as an unavailable ``lm_provider`` row → 503."""
+
+    def _refused(*a: Any, **k: Any):
+        raise requests.ConnectionError("connection refused")
+
+    probe = RuntimeProbe(
+        env={"CLIO_ARC_STORE": "local", "CLIO_DATA_DIR": str(tmp_path)},
+        http_get=_refused,
+        gateway_lister=lambda: [{"name": "hdf5_x"}],
+        module_checker=lambda name: True,
+        port_checker=lambda port: False,
+        clio_runtime_dir=tmp_path / "clio-home",
+    )
+    _patch_doctor(monkeypatch, probe)
+    resp = TestClient(build_app(sessions_path=tmp_path / "s.json")).get("/v1/health")
+    rows = {r["name"]: r for r in resp.json()["integrations"]}
+    assert "lm" not in rows  # old hand-rolled row is gone
+    assert rows["lm_provider"]["status"] == "unavailable"
+    assert resp.status_code == 503
 
 
 def test_get_lm_provider_when_configured_from_boot_agent(tmp_path: Path) -> None:
@@ -330,8 +359,11 @@ def test_get_lm_provider_when_configured_from_boot_agent(tmp_path: Path) -> None
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     with TestClient(app) as c:
         body = c.get("/v1/providers/lm").json()
-        rows = {r["name"]: r for r in c.get("/v1/health").json()["integrations"]}
 
+    # #800: /v1/health no longer derives its LM row from the boot agent's
+    # _provider_config — the unified doctor probes the real runtime. This test
+    # now only pins the GET /v1/providers/lm surface (the LM-config source of
+    # truth); the health lm_provider row is covered in test_doctor_integrations.
     assert body["configured"] is True
     assert body["provider"] == "lm_studio"
     assert body["api_base"] == "http://127.0.0.1:1234/v1"
@@ -340,34 +372,34 @@ def test_get_lm_provider_when_configured_from_boot_agent(tmp_path: Path) -> None
     assert body["max_tokens"] == 4096
     assert body["context_length"] == 32768
     assert body["transport"] is None
-    assert rows["lm"]["status"] == "ready"
-    assert rows["lm"]["detail"] == "lm_studio/qwopus3.5-9b-v3"
 
 
-def test_health_reports_argonne_token_failure_when_connected(tmp_path: Path, monkeypatch) -> None:
-    """A connected ALCF provider is unavailable if its Globus token is missing."""
+def test_health_surfaces_argonne_token_missing_via_probe(tmp_path: Path, monkeypatch) -> None:
+    """#800: the unified doctor surfaces an ALCF provider with no stored Globus
+    token as a misconfigured ``lm_provider`` row (degraded chip) — the token
+    check now lives in the probe engine, not the health handler."""
 
     monkeypatch.setattr("clio_agent.providers.argonne_auth.tokens_exist", lambda: False)
 
-    agent = SimpleNamespace(
-        _provider_config=SimpleNamespace(
-            provider="argonne",
-            api_base="https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",
-            model="meta-llama/Meta-Llama-3.1-8B-Instruct",
-            temperature=0.0,
-            max_tokens=4096,
-            context_length=0,
-            thinking_budget=0,
-        )
+    probe = RuntimeProbe(
+        env={
+            "CLIO_LM_PROVIDER": "argonne",
+            "CLIO_ARC_STORE": "local",
+            "CLIO_DATA_DIR": str(tmp_path),
+        },
+        gateway_lister=lambda: [{"name": "hdf5_x"}],
+        module_checker=lambda name: True,  # globus_sdk importable
+        port_checker=lambda port: False,
+        clio_runtime_dir=tmp_path / "clio-home",
     )
-    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
-    with TestClient(app) as c:
-        resp = c.get("/v1/health")
+    _patch_doctor(monkeypatch, probe)
+    resp = TestClient(build_app(sessions_path=tmp_path / "s.json")).get("/v1/health")
 
-    assert resp.status_code == 503
-    rows = {r["name"]: r for r in resp.json()["integrations"]}
-    assert rows["lm"]["status"] == "unavailable"
-    assert "token missing" in rows["lm"]["detail"]
+    body = resp.json()
+    rows = {r["name"]: r for r in body["integrations"]}
+    assert rows["lm_provider"]["status"] == "degraded"  # misconfigured -> degraded chip
+    assert "Globus tokens" in rows["lm_provider"]["summary"]
+    assert body["overall_status"] == "degraded"
 
 
 def test_get_lm_provider_when_configured_via_put(tmp_path: Path, monkeypatch) -> None:
@@ -442,11 +474,9 @@ def test_get_lm_provider_when_configured_via_put(tmp_path: Path, monkeypatch) ->
         assert app.state.lm_config["context_length"] == 16384
         refreshed_session = c.get(f"/v1/sessions/{stale_session['id']}").json()
         assert refreshed_session["model"] == {"provider_id": "", "model_id": "", "variant": ""}
-
-        # Health row flips to ready.
-        rows = {r["name"]: r for r in c.get("/v1/health").json()["integrations"]}
-        assert rows["lm"]["status"] == "ready"
-        assert "openai/claude-haiku-4-5-20251001" in rows["lm"]["detail"]
+        # #800: /v1/health no longer mirrors the PUT'd LM config — the unified
+        # doctor probes the real runtime (and folds a cached handshake into the
+        # lm_provider row). That surface is covered in test_doctor_integrations.
 
 
 def test_put_argonne_uses_provider_default_max_tokens_when_omitted(

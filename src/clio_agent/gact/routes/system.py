@@ -25,6 +25,7 @@ never loads :mod:`clio_agent.gact.app`.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal, Optional
@@ -32,7 +33,6 @@ from typing import TYPE_CHECKING, Any, Literal, Optional
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from clio_agent.gact.providers.config import _effective_lm_config
 from clio_agent.gact.runtime.capabilities import (
     _capability_gap_metadata,
     _latency_stat,
@@ -60,9 +60,69 @@ from clio_agent.gact.types import (
     SessionMemoryStats,
     TransportFlags,
 )
+from clio_agent.runtime.status import (
+    IntegrationState,
+    IntegrationStatus,
+    RuntimeReport,
+    collect_runtime_status,
+)
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
+
+
+# The single doctor speaks five probe states; the v0.2 health wire only has
+# three. Map the two extra states to the closest wire chip: SKIPPED (a
+# deliberately-unprobed / not-required row) is not a problem -> ready; a
+# MISCONFIGURED row needs attention but the server is up -> degraded. UNAVAILABLE
+# is the only hard-down that trips the 503 contract (handled in the handler).
+_PROBE_STATE_TO_WIRE: dict[str, Literal["ready", "degraded", "unavailable"]] = {
+    IntegrationState.READY.value: "ready",
+    IntegrationState.SKIPPED.value: "ready",
+    IntegrationState.DEGRADED.value: "degraded",
+    IntegrationState.MISCONFIGURED.value: "degraded",
+    IntegrationState.UNAVAILABLE.value: "unavailable",
+}
+
+
+def _integration_to_wire(item: IntegrationStatus) -> Integration:
+    """Project one probe :class:`IntegrationStatus` to the health wire row.
+
+    Preserves the v0.2 ``name``/``status``/``detail`` triple (``detail`` mirrors
+    the human ``summary`` for back-compat) and carries the richer probe fields so
+    no doctor detail is lost on the gact surface.
+    """
+
+    return Integration(
+        name=item.name,
+        status=_PROBE_STATE_TO_WIRE.get(item.state.value, "degraded"),
+        detail=item.summary,
+        summary=item.summary,
+        config_source=item.config_source or None,
+        next_action=item.next_action or None,
+        endpoint=item.endpoint,
+    )
+
+
+def _health_overall(report: RuntimeReport) -> Literal["ready", "degraded", "unavailable"]:
+    """Collapse a runtime report to the v0.2 health wire status.
+
+    Uses ``RuntimeReport.overall_status`` (the engine's ready/degraded/skipped
+    required-row rollup) for the ready-vs-degraded decision instead of
+    re-deriving it, then layers the finer wire distinction the engine's rollup
+    deliberately does not encode: a *required* integration that is actually
+    UNAVAILABLE is a hard-down and maps to ``unavailable`` so the gact ``/v1/health``
+    503 contract still holds through the unified doctor.
+    """
+
+    hard_down = any(
+        item.required and item.state is IntegrationState.UNAVAILABLE for item in report.integrations
+    )
+    if hard_down:
+        return "unavailable"
+    if report.overall_status == IntegrationState.DEGRADED.value:
+        return "degraded"
+    return "ready"
 
 
 def _estimate_message_context_tokens(message: Message) -> int:
@@ -138,171 +198,70 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health() -> HealthResponse | JSONResponse:
-        """SPEC §3.4 — per-subsystem status feeds the TUI's /doctor
-        modal (v0.2 `integration_health`). We report on whatever is
-        actually wired in this build: the API itself, the session
-        store, the agent (real vs fake vs not-wired), and ARC.
+        """SPEC §3.4 — per-subsystem status feeds the TUI's /doctor modal.
 
-        overall_status collapses the rows to the worst case:
-        ready > degraded > unavailable.
+        #800 collapsed the three divergent doctors into ONE: this endpoint now
+        delegates to the same :func:`collect_runtime_status` probe engine the CLI
+        renders, so the TUI/CLI read a single honest doctor. The rows are the rich
+        real-deployment probes (lm_provider, arc/CTE, gateway, data backends,
+        file_policy, api, clio_core) instead of the old hand-rolled five.
+
+        ``api_state=READY`` reports the API in-process — the probe must never
+        re-HTTP this very endpoint (mirrors ``ui/api.py``). The collection runs in
+        a worker thread so the gateway/backend probes never block the event loop,
+        and never triggers an LM handshake (a polled endpoint must not block on
+        OAuth/model discovery); the LM handshake is folded in from cache only.
+
+        overall_status uses the engine's required-row rollup, mapped to the wire's
+        ready/degraded/unavailable so the 503-on-``unavailable`` contract holds.
         """
 
         uptime = int(time.time() - app.state.started_at)
-        rows: list[Integration] = [
-            Integration(
-                name="api",
-                status="ready",
-                detail=f"clio-agent-gact {GACT_BACKEND_VERSION}",
-            ),
-            Integration(
-                name="sessions",
-                status="ready",
-                detail=f"{len(app.state.sessions.list())} session(s) registered",
-            ),
-        ]
 
-        agent = app.state.agent
-        if agent is None:
-            rows.append(
-                Integration(
-                    name="agent",
-                    status="unavailable",
-                    detail="no ClioAgent wired; POST /messages will 503",
-                )
+        try:
+            report = await asyncio.to_thread(
+                collect_runtime_status,
+                api_state=IntegrationState.READY,
+                lm_timeout=0.5,
             )
-        else:
-            # Heuristic: the production ClioAgent is a class that
-            # imports DSPy under the hood and exposes it via
-            # `agent.__class__.__module__`. The smoke/test fakes
-            # live under 'gact_smoke_server' or '__main__'. Label
-            # them so the /doctor modal is honest about what's
-            # running.
-            mod = type(agent).__module__
-            is_fake = "smoke" in mod or mod == "__main__" or "test" in mod.lower()
-            rows.append(
-                Integration(
-                    name="agent",
-                    status="degraded" if is_fake else "ready",
-                    detail=(
-                        f"{type(agent).__name__} (fake — dev harness)"
-                        if is_fake
-                        else f"{type(agent).__name__} wired"
-                    ),
-                )
+            integrations = list(report.integrations)
+        except Exception as exc:
+            # No silent fallback (cleanup ground rule): a probe engine failure is
+            # surfaced as a structured degraded doctor row, not a bare 200.
+            fallback = IntegrationStatus(
+                name="doctor",
+                state=IntegrationState.DEGRADED,
+                summary=f"runtime status collection failed: {exc!r}",
+                config_source="in-process:collect_runtime_status",
+                next_action="Inspect the gact server logs for the doctor probe failure.",
             )
+            report = RuntimeReport(integrations=[fallback])
+            integrations = list(report.integrations)
 
-        if app.state.arc is None:
-            rows.append(
-                Integration(
-                    name="memory",
-                    status="degraded",
-                    detail="memory layer not wired; /v1/memory/stats returns zeros",
-                )
-            )
-        else:
+        # Fold the CACHED LM handshake into the lm_provider row. NEVER run a
+        # handshake here — that would block a polled endpoint on OAuth/model
+        # discovery (mirrors the "never block a bind on a handshake" rule in
+        # routes/providers.py). Absent a cached report the enrichment is simply
+        # omitted (not-yet-run, not a silent failure).
+        handshake = getattr(app.state, "lm_handshake_report", None)
+        if handshake is not None:
             try:
-                stats = app.state.arc.get_cache_stats()
-                hr = stats.get("hit_rate", 0.0)
-                rows.append(
-                    Integration(
-                        name="memory",
-                        status="ready",
-                        detail=f"cache {int(hr * 100)}% hit rate",
-                    )
-                )
-            except Exception as exc:
-                rows.append(
-                    Integration(
-                        name="memory",
-                        status="unavailable",
-                        detail=f"memory cache stats raised: {exc!r}",
-                    )
-                )
+                enriched = handshake.to_integration_status()
+            except Exception:
+                enriched = None
+            if enriched is not None:
+                integrations = [
+                    enriched if item.name == "lm_provider" else item for item in integrations
+                ]
+                report = RuntimeReport(integrations=integrations)
 
-        # LM row drives the TUI's "configure provider on connect"
-        # decision. ``configured`` mirrors what GET /v1/providers/lm
-        # reports — agent present + last-known config from PUT.
-        cfg = _effective_lm_config(app)
-        lm_config_status = getattr(app.state, "lm_config_status", {}) or {}
-        if lm_config_status.get("state") == "configuring":
-            rows.append(
-                Integration(
-                    name="lm",
-                    status="degraded",
-                    detail=(
-                        "configuring "
-                        f"{lm_config_status.get('provider', '?')}/"
-                        f"{lm_config_status.get('model', '?')}"
-                    ),
-                )
-            )
-        elif lm_config_status.get("state") == "error":
-            rows.append(
-                Integration(
-                    name="lm",
-                    status="unavailable",
-                    detail=str(
-                        lm_config_status.get("message") or "LM provider configuration failed"
-                    ),
-                )
-            )
-        elif app.state.agent is not None and cfg:
-            detail = f"{cfg.get('provider', '?')}/{cfg.get('model', '?')}"
-            lm_status: Literal["ready", "degraded", "unavailable"] = "ready"
-            if cfg.get("provider") == "argonne":
-                try:
-                    from clio_agent.providers import argonne_auth  # noqa: PLC0415
-
-                    if not argonne_auth.tokens_exist():
-                        lm_status = "unavailable"
-                        detail += " (ALCF Globus token missing)"
-                    else:
-                        lm_status = "degraded"
-                        detail += " (ALCF Globus token stored; validate before use)"
-                except Exception as exc:
-                    lm_status = "unavailable"
-                    detail += f" (ALCF auth check failed: {exc})"
-            rows.append(
-                Integration(
-                    name="lm",
-                    status=lm_status,
-                    detail=detail,
-                )
-            )
-        elif app.state.agent is not None:
-            # Agent wired by env at boot; lm_config wasn't recorded
-            # but we know an LM is configured.
-            rows.append(
-                Integration(
-                    name="lm",
-                    status="ready",
-                    detail="configured from env at boot",
-                )
-            )
-        else:
-            rows.append(
-                Integration(
-                    name="lm",
-                    status="unavailable",
-                    detail=(
-                        "no LM configured; PUT /v1/providers/lm or set CLIO_LM_PROVIDER and restart"
-                    ),
-                )
-            )
-
-        # Worst-status wins.
-        statuses = {r.status for r in rows}
-        if "unavailable" in statuses:
-            overall = "unavailable"
-        elif "degraded" in statuses:
-            overall = "degraded"
-        else:
-            overall = "ready"
+        overall = _health_overall(report)
+        rows = [_integration_to_wire(item) for item in integrations]
 
         response = HealthResponse(
             healthy=overall != "unavailable",
             uptime_s=uptime,
-            overall_status=overall,  # type: ignore[arg-type]  # narrowed by branches above
+            overall_status=overall,
             integrations=rows,
         )
         if overall == "unavailable":
@@ -441,9 +400,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
         counters = app.state.metrics_counters
         message_total = counters.message_total
         role_counts = counters.role_counts()
-        latencies = {
-            key: _latency_stat(vals) for key, vals in counters.latency_samples.items()
-        }
+        latencies = {key: _latency_stat(vals) for key, vals in counters.latency_samples.items()}
 
         # CLIO-BBBBBBBBBB24: tokens + cost rollup across every
         # session's cumulative counters.

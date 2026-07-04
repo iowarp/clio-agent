@@ -251,7 +251,13 @@ def test_dispatch_user_command_does_not_block_event_loop(
             "/v1/health blocked while a command turn was running "
             "(command dispatch froze the event loop)"
         )
-        assert health_result["resp"].status_code == 200
+        # #800: /v1/health is the unified doctor — it honestly reports 503 when a
+        # required runtime (e.g. the CTE daemon) is down, which is the norm in a
+        # bare test env. The point here is that the poll COMPLETED (did not block
+        # on the running command), and returned a real doctor body.
+        health_resp = health_result["resp"]
+        assert health_resp.status_code in {200, 503}
+        assert "overall_status" in health_resp.json()
 
         # The synchronous response contract + audit row are preserved.
         resp = command_result["resp"]
@@ -466,7 +472,10 @@ def test_agent_invocable_command_denies_missing_allowlist_and_records_audit(
     body = resp.json()["error"]
     assert body["error"] == "command_denied"
     assert body["details"]["audit"]["status"] == "denied"
-    assert c.app.state.command_audit[-1]["error"] == "command /summarize is not allowed for agent caller"
+    assert (
+        c.app.state.command_audit[-1]["error"]
+        == "command /summarize is not allowed for agent caller"
+    )
 
 
 def test_agent_invocable_command_invalid_args_records_audit(
@@ -636,10 +645,13 @@ Validate {{args.path}} for this QC workflow.
         },
     ).json()["id"]
     sid = c.post("/v1/sessions", json={"title": "t", "workspace_id": wid}).json()["id"]
-    assert c.post(
-        f"/v1/sessions/{sid}/agent-blueprint",
-        json={"blueprint_id": "qc-agent"},
-    ).status_code == 200
+    assert (
+        c.post(
+            f"/v1/sessions/{sid}/agent-blueprint",
+            json={"blueprint_id": "qc-agent"},
+        ).status_code
+        == 200
+    )
 
     workspace_commands = c.get("/v1/commands", params={"workspace_id": wid}).json()["commands"]
     assert "/validate-dataset" not in {row["id"] for row in workspace_commands}
@@ -712,10 +724,12 @@ def test_workspace_commands_do_not_leak_between_workspace_requests(tmp_path: Pat
     ).json()["id"]
 
     ids_a = {
-        row["id"] for row in c.get("/v1/commands", params={"workspace_id": wid_a}).json()["commands"]
+        row["id"]
+        for row in c.get("/v1/commands", params={"workspace_id": wid_a}).json()["commands"]
     }
     ids_b = {
-        row["id"] for row in c.get("/v1/commands", params={"workspace_id": wid_b}).json()["commands"]
+        row["id"]
+        for row in c.get("/v1/commands", params={"workspace_id": wid_b}).json()["commands"]
     }
 
     assert "/a-command" in ids_a

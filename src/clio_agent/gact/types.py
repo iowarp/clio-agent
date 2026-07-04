@@ -23,11 +23,24 @@ from clio_agent.arc.schema import SegmentKind
 
 
 class Integration(BaseModel):
-    """One subsystem row in ``/v1/health.integrations[]`` (v0.2 §3.4)."""
+    """One subsystem row in ``/v1/health.integrations[]`` (v0.2 §3.4).
+
+    ``name``/``status``/``detail`` are the v0.2 back-compat triple the TUI's
+    ``/doctor`` modal already parses. The richer optional fields (#800) carry the
+    full :class:`clio_agent.runtime.status.IntegrationStatus` detail so the single
+    doctor engine loses nothing on the wire and the CLI/TUI can render the same
+    columns as ``render_doctor_report`` (summary / config source / endpoint / next
+    action). They are additive and default to ``None`` so existing readers stay
+    valid; ``detail`` mirrors ``summary`` for clients that only read ``detail``.
+    """
 
     name: str
     status: Literal["ready", "degraded", "unavailable"]
     detail: str = ""
+    summary: Optional[str] = None
+    config_source: Optional[str] = None
+    next_action: Optional[str] = None
+    endpoint: Optional[str] = None
 
 
 class HealthResponse(BaseModel):
