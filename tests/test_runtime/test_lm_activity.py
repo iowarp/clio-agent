@@ -43,6 +43,29 @@ def test_not_in_flight_when_idle():
     assert lm_activity.lm_call_in_flight() is False
 
 
+def test_drained_session_bucket_is_evicted():
+    # #761/#757 no-unbounded-growth: per-session buckets must not accumulate. A
+    # session whose LM calls have all ended leaves NO residual bucket in _STATE.
+    lm_activity.note_lm_start()
+    assert "" in lm_activity._STATE  # unattributed bucket created on start
+    lm_activity.note_lm_end()
+    assert "" not in lm_activity._STATE  # drained -> evicted (was retained before the fix)
+    assert lm_activity.lm_call_in_flight() is False
+
+
+def test_bucket_survives_until_last_overlapping_call_ends():
+    # Eviction must key on the drain, not any end: with two overlapping calls in
+    # one bucket, the bucket persists until the LAST one ends.
+    lm_activity.note_lm_start()
+    lm_activity.note_lm_start()
+    lm_activity.note_lm_end()
+    assert "" in lm_activity._STATE  # one still in flight -> bucket retained
+    assert lm_activity.lm_call_in_flight() is True
+    lm_activity.note_lm_end()
+    assert "" not in lm_activity._STATE  # both ended -> evicted
+    assert lm_activity.lm_call_in_flight() is False
+
+
 def test_in_flight_within_ceiling_no_tokens(monkeypatch):
     clk = _clock(monkeypatch)
     lm_activity.note_lm_start()

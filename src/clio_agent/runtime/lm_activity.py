@@ -386,12 +386,25 @@ def note_lm_activity() -> None:
 
 
 def note_lm_end() -> None:
-    """Release the active session's in-flight count for one completed LM call."""
+    """Release the active session's in-flight count for one completed LM call.
+
+    When the count drains to zero the bucket is DROPPED (it is recreated on the
+    next ``note_lm_start``), so ``_STATE`` cannot grow unbounded across the
+    process lifetime: an idle session must not leave a permanent record. This is
+    the same no-unbounded-growth rule that motivated #757 (iowarp/clio-agent#761
+    made ``_STATE`` per-session, which reintroduced that risk without eviction).
+    """
     key = _active_lm_session()
     with _LOCK:
         st = _bucket(key)
         st["inflight"] = max(0.0, st["inflight"] - 1)
-        st["last"] = time.monotonic()
+        if st["inflight"] <= 0:
+            # Drained -> drop the bucket. A missing bucket reads as not-in-flight
+            # (lm_call_in_flight), and a drained bucket's timestamps are never
+            # consulted as progress, so eviction is semantically transparent.
+            _STATE.pop(key, None)
+        else:
+            st["last"] = time.monotonic()
 
 
 def _bucket_in_flight(st: dict[str, float]) -> bool:
