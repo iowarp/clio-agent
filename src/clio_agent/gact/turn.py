@@ -1087,15 +1087,11 @@ async def _run_turn_in_background(
                 # ceiling inside lm_call_in_flight() still lets it abort a truly
                 # wedged provider. See clio_agent.runtime.lm_activity.
                 #
-                # NOTE: lm_call_in_flight() is deliberately PROCESS-GLOBAL
-                # (unlike the per-session bus-progress stamp above): "is ANY LM
-                # call generating right now" is a coarse liveness net, so an
-                # active call in one session also counts as progress for the
-                # others. That is an accepted imprecision — the per-call
-                # ceiling / inter-token idle gate inside it still bounds a
-                # truly wedged provider (see runtime/lm_activity.py module
-                # docstring; iowarp/clio-agent#761).
-                if _lm_call_in_flight():
+                # Scoped to THIS session (like the bus-progress stamp above): only
+                # an LM call owned by this turn's session counts as its progress,
+                # so a busy neighbor session's in-flight call can no longer keep a
+                # genuinely wedged session alive (iowarp/clio-agent#761 defect 2).
+                if _lm_call_in_flight(sid):
                     last_progress = time.monotonic()
                 if time.monotonic() - last_progress >= turn_progress_timeout_s:
                     turn_cancel_event.set()

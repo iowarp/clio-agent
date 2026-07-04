@@ -21,12 +21,15 @@ from clio_agent.runtime import lm_activity
 
 @pytest.fixture(autouse=True)
 def _reset_state(monkeypatch):
-    # Isolate the module-global tracker between tests and pin the clock.
-    lm_activity._STATE.update({"inflight": 0.0, "started": 0.0, "last": 0.0})
+    # Isolate the per-session tracker between tests and pin the clock. These unit
+    # tests drive note_lm_* with no GACT session bound, so all activity lands in
+    # the unattributed "" bucket and lm_call_in_flight() (no arg) reads it via the
+    # global-any fallback.
+    lm_activity._STATE.clear()
     monkeypatch.delenv("CLIO_MAX_LM_CALL_S", raising=False)
     monkeypatch.delenv("CLIO_LM_INTER_TOKEN_IDLE_S", raising=False)
     yield
-    lm_activity._STATE.update({"inflight": 0.0, "started": 0.0, "last": 0.0})
+    lm_activity._STATE.clear()
 
 
 def _clock(monkeypatch):
