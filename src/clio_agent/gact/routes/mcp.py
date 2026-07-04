@@ -54,6 +54,7 @@ from clio_agent.gact.agent_blueprints import (
 )
 from clio_agent.gact.agents.resolution import _runtime_workspace_catalog_cwd
 from clio_agent.gact.events import Event
+from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.runtime.globals import _tool_session_context
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.tools.mcp_config import MCPTransportError, transport_from_spec
@@ -263,10 +264,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
         Returns the same row shape /v1/mcp/servers does.
         """
 
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
+        body = await json_body(request, route="POST /v1/mcp/servers")
         name = body.get("name") or body.get("id") or "unnamed"
         transport_kind = (body.get("transport") or "stdio").lower()
 
@@ -407,10 +405,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
+        body = await json_body(request, route="POST /v1/mcp/servers/{sid}/call")
         tool_name = body.get("tool")
         tool_args = body.get("args") or {}
         requested_session_id = str(body.get("session_id") or "").strip()

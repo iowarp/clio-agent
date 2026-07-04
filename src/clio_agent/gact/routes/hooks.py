@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 
+from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 if TYPE_CHECKING:
@@ -47,12 +48,7 @@ def register_hooks_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.post("/v1/hooks")
     async def create_hook(request: Request) -> dict[str, Any]:
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+        body = await json_body(request, route="POST /v1/hooks")
         event = (body.get("event") or "").strip()
         if not event:
             raise HTTPException(

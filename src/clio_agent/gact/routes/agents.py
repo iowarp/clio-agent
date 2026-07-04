@@ -51,6 +51,7 @@ from clio_agent.gact.agents.resolution import (
     _runtime_session_agent_overlay,
     _runtime_workspace_catalog_cwd,
 )
+from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.types import (
     AgentDef,
     ErrorEnvelope,
@@ -462,12 +463,7 @@ def register_agents_routes(app: FastAPI, deps: "GactDeps") -> None:
         compilation is deferred — this is the heuristic baseline.
         """
 
-        try:
-            body = await request.json()
-        except Exception:  # noqa: BLE001 - a malformed body is treated as empty
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+        body = await json_body(request, route="POST /v1/agents/extract")
         sids = [s for s in (body.get("session_ids") or []) if isinstance(s, str)]
         new_id = (body.get("agent_id") or "").strip()
         if not sids or not new_id:

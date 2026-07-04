@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 
+from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 if TYPE_CHECKING:
@@ -75,12 +76,7 @@ def register_schedules_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+        body = await json_body(request, route="POST /v1/sessions/{sid}/schedules")
         cron = (body.get("cron") or "").strip()
         question = (body.get("question") or "").strip()
         if not cron or not question:
