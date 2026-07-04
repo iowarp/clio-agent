@@ -12,10 +12,20 @@ turn publishes no bus events for the whole think -- and the no-progress watchdog
 wrongly kills a model that is working as hard as it can (the EarthScope resolver
 hang: >27k reasoning tokens, killed at the 900s window while still generating).
 
-The tracker is process-global on purpose: the watchdog is a coarse liveness net,
-not a per-session SLA, and "is ANY LM call generating right now" is a sound
-liveness proxy. A per-call ceiling bounds a genuinely wedged call so the watchdog
-still fires when a provider truly hangs (no tokens, dead socket).
+The tracker attributes each in-flight call to the session that owns it: the
+``note_lm_*`` callbacks run in the turn/executor context where the GACT session
+id is set (:func:`clio_agent.gact.context.active_session_id`), so the watchdog
+can ask "is THIS session's LM call generating right now" rather than "is ANY
+call generating anywhere". Per-session attribution is required: a global-any
+signal let a busy neighbor session B keep a genuinely wedged session A alive
+forever, disabling the stuck-turn guardrail exactly when a second session was
+active (iowarp/clio-agent#761 defect 2). Calls made off-turn (CLI/optimizer,
+no session in context) land in the unattributed ``""`` bucket; a session-scoped
+query never sees another session's — or the unattributed — bucket.
+
+A per-call ceiling / inter-token idle gate still bounds a genuinely wedged call
+within its own bucket, so the watchdog fires when a provider truly hangs (no
+tokens, dead socket) even for the session that owns the call.
 """
 
 from __future__ import annotations
@@ -31,7 +41,47 @@ from clio_agent.runtime import trace
 from clio_agent.runtime.stream_audit import stream_audit
 
 _LOCK = threading.Lock()
-_STATE: dict[str, float] = {"inflight": 0.0, "started": 0.0, "last": 0.0}
+# Per-session in-flight tracker. Keyed by GACT session id; the ``""`` key holds
+# calls made off-turn (CLI/optimizer) or before a session is bound. Each bucket
+# is an independent ``{inflight, started, last}`` record so one session's call
+# never counts as another's progress (iowarp/clio-agent#761 defect 2).
+_STATE: dict[str, dict[str, float]] = {}
+
+
+def _new_bucket() -> dict[str, float]:
+    """A fresh, empty in-flight record for one session."""
+    return {"inflight": 0.0, "started": 0.0, "last": 0.0}
+
+
+def _bucket(session_id: str) -> dict[str, float]:
+    """Return the mutable in-flight record for ``session_id`` (created on demand).
+
+    Callers must hold ``_LOCK``.
+    """
+    st = _STATE.get(session_id)
+    if st is None:
+        st = _new_bucket()
+        _STATE[session_id] = st
+    return st
+
+
+def _active_lm_session() -> str:
+    """Resolve the GACT session that owns the current LM call.
+
+    Reads the turn/executor context var set by the GACT turn machinery. The
+    import is deferred because ``clio_agent.gact`` transitively imports this
+    module (the turn wires in the DSPy callback), so a module-level import would
+    cycle; by the time any ``note_lm_*`` fires during a turn, ``gact`` is already
+    loaded and this is a cheap ``sys.modules`` hit. Off-turn callers (CLI,
+    optimizer) have no session bound and fall to the unattributed ``""`` bucket.
+    """
+    try:
+        from clio_agent.gact.context import active_session_id  # noqa: PLC0415
+
+        return active_session_id() or ""
+    except Exception:  # noqa: BLE001 - context unavailable off-turn -> unattributed
+        return ""
+
 
 # --- Unified LM token highway (#693) -----------------------------------------
 # The single LM-stream tap (config.IOLoggingLM._clio_streamed_call) feeds the live
@@ -311,33 +361,54 @@ def _emit_lm_call_started(call_id: Any, instance: Any, inputs: Any) -> None:
 
 
 def note_lm_start() -> None:
+    """Register an LM call as in flight, attributed to the active session."""
+    key = _active_lm_session()
     with _LOCK:
-        _STATE["inflight"] += 1
+        st = _bucket(key)
+        st["inflight"] += 1
         now = time.monotonic()
-        _STATE["started"] = now
-        _STATE["last"] = now
+        st["started"] = now
+        st["last"] = now
 
 
 def note_lm_activity() -> None:
-    """Refresh the last-activity timestamp -- called per streamed token/chunk.
+    """Refresh the active session's last-activity timestamp -- called per streamed
+    token/chunk.
 
     When token-liveness streaming is on, this turns ``lm_call_in_flight`` into an
     inter-token-idle gate: a slow-but-generating reasoning model keeps refreshing
     the watchdog on every chunk, while a genuinely frozen call (0 tokens) stops
     refreshing and is aborted fast.
     """
+    key = _active_lm_session()
     with _LOCK:
-        _STATE["last"] = time.monotonic()
+        _bucket(key)["last"] = time.monotonic()
 
 
 def note_lm_end() -> None:
+    """Release the active session's in-flight count for one completed LM call.
+
+    When the count drains to zero the bucket is DROPPED (it is recreated on the
+    next ``note_lm_start``), so ``_STATE`` cannot grow unbounded across the
+    process lifetime: an idle session must not leave a permanent record. This is
+    the same no-unbounded-growth rule that motivated #757 (iowarp/clio-agent#761
+    made ``_STATE`` per-session, which reintroduced that risk without eviction).
+    """
+    key = _active_lm_session()
     with _LOCK:
-        _STATE["inflight"] = max(0.0, _STATE["inflight"] - 1)
-        _STATE["last"] = time.monotonic()
+        st = _bucket(key)
+        st["inflight"] = max(0.0, st["inflight"] - 1)
+        if st["inflight"] <= 0:
+            # Drained -> drop the bucket. A missing bucket reads as not-in-flight
+            # (lm_call_in_flight), and a drained bucket's timestamps are never
+            # consulted as progress, so eviction is semantically transparent.
+            _STATE.pop(key, None)
+        else:
+            st["last"] = time.monotonic()
 
 
-def lm_call_in_flight() -> bool:
-    """True when an LM call is actively in flight and counts as progress.
+def _bucket_in_flight(st: dict[str, float]) -> bool:
+    """True when one session's in-flight record still counts as progress.
 
     Two regimes, picked by whether a token has actually streamed:
     - STREAMING (``last`` > ``started`` -- ``note_lm_activity`` fired): the
@@ -350,17 +421,34 @@ def lm_call_in_flight() -> bool:
       signal, so fall back to the per-call ceiling (wedge backstop). This also
       covers prefill latency before the first token, so a still-prefilling call is
       never false-killed at the idle window.
+    """
+    if st["inflight"] <= 0:
+        return False
+    now = time.monotonic()
+    if st["last"] > st["started"]:
+        return (now - st["last"]) < _inter_token_idle_seconds()
+    return (now - st["started"]) < _max_lm_call_seconds()
 
-    The turn-level no-progress watchdog / turn timeout remain the ultimate backstop
-    above either regime.
+
+def lm_call_in_flight(session_id: str | None = None) -> bool:
+    """True when an LM call is actively in flight and counts as progress.
+
+    When ``session_id`` is given, answers strictly for that session's bucket, so
+    the no-progress watchdog attributes an in-flight call only to the turn that
+    owns it -- a busy neighbor session can never keep a wedged session alive
+    (iowarp/clio-agent#761 defect 2). When ``session_id`` is ``None`` (off-turn
+    callers with no session in hand), falls back to global-any: True if any
+    session's bucket is in flight.
+
+    The per-session regime (streaming inter-token idle vs. non-streaming per-call
+    ceiling) is unchanged; see :func:`_bucket_in_flight`. The turn-level
+    no-progress watchdog / turn timeout remain the ultimate backstop above it.
     """
     with _LOCK:
-        if _STATE["inflight"] <= 0:
-            return False
-        now = time.monotonic()
-        if _STATE["last"] > _STATE["started"]:
-            return (now - _STATE["last"]) < _inter_token_idle_seconds()
-        return (now - _STATE["started"]) < _max_lm_call_seconds()
+        if session_id is not None:
+            st = _STATE.get(session_id)
+            return st is not None and _bucket_in_flight(st)
+        return any(_bucket_in_flight(st) for st in _STATE.values())
 
 
 def build_dspy_callback() -> Any | None:

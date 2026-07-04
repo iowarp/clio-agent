@@ -175,3 +175,65 @@ def test_wedged_session_times_out_while_another_session_is_busy(
 
     assert assistant["stop_reason"] == "error"
     assert assistant["error_info"]["error"] == "provider_timeout"
+
+
+def test_wedged_session_times_out_while_neighbor_holds_lm_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Residual of #761 defect (2): the LM-inflight liveness net must be
+    per-session too, not process-global.
+
+    The watchdog treats an *actively generating* LM call as progress
+    (a deep-reasoning model streams its chain-of-thought with no bus
+    events). If that signal is process-global, a genuinely wedged
+    session A is kept alive forever by a neighbor session B that holds
+    a live LM call — the exact 'guardrail disabled when it matters'
+    shape of #761, just narrowed to the LM-generating case.
+
+    Here session A is wedged (its fake agent makes no LM call and just
+    sleeps past the window) while a neighbor thread simulates session
+    B's long LM call: ``note_lm_start`` + periodic ``note_lm_activity``
+    under session B's context, never ``note_lm_end`` until stop, and
+    no bus publishes at all. With per-session LM attribution, A's
+    watchdog must ignore B's in-flight call and still time out.
+    """
+
+    from clio_agent.gact import context as gact_ctx
+    from clio_agent.runtime import lm_activity
+
+    from .conftest import complete_turn
+
+    monkeypatch.setenv("CLIO_GACT_TURN_TIMEOUT_S", "0.2")
+    agent = _WedgedAgent(delay_s=2.0)
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=agent)
+    with TestClient(app) as client:
+        wedged_sid = client.post("/v1/sessions", json={"title": "wedged"}).json()["id"]
+        busy_sid = client.post("/v1/sessions", json={"title": "busy"}).json()["id"]
+
+        stop = threading.Event()
+
+        def neighbor_lm_call() -> None:
+            # Attribute the in-flight LM call to session B, exactly as the
+            # note_lm_* callbacks do inside session B's turn/executor context.
+            gact_ctx.set_session_id(busy_sid)
+            lm_activity.note_lm_start()
+            try:
+                while not stop.is_set():
+                    lm_activity.note_lm_activity()  # steady tokens: never idles out
+                    time.sleep(0.05)
+            finally:
+                # Always release the global/session inflight state so it can't
+                # leak into other tests.
+                lm_activity.note_lm_end()
+
+        neighbor = threading.Thread(target=neighbor_lm_call, name="neighbor-lm")
+        neighbor.start()
+        try:
+            assistant = complete_turn(client, wedged_sid, "hi", timeout=5.0)
+        finally:
+            stop.set()
+            neighbor.join(timeout=2.0)
+
+    assert assistant["stop_reason"] == "error"
+    assert assistant["error_info"]["error"] == "provider_timeout"
