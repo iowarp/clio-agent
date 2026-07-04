@@ -134,7 +134,7 @@ def test_context_frames_unknown_session_404s(client: TestClient) -> None:
     resp = client.get("/v1/sessions/sess_missing/context/frames")
 
     assert resp.status_code == 404
-    assert resp.json()["error"]["error"] == "internal_error"
+    assert resp.json()["error"]["error"] == "not_found"
 
 
 def test_capabilities_advertise_context_frames(client: TestClient) -> None:

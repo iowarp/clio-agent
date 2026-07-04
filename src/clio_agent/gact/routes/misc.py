@@ -114,7 +114,7 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"session not found: {sid}",
                         recoverable=False,
                     )
@@ -130,7 +130,7 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"session not found: {sid}",
                         recoverable=False,
                     )
@@ -183,7 +183,7 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"task not found: {tid}",
                         recoverable=False,
                     )
@@ -211,7 +211,7 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"task not found: {tid}",
                         recoverable=False,
                     )
@@ -295,7 +295,7 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"session not found: {sid}",
                         recoverable=False,
                     )
@@ -333,7 +333,7 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"share token not found: {token}",
                         recoverable=False,
                     )
@@ -360,7 +360,7 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=(f"underlying session {sid} no longer exists"),
                         recoverable=False,
                     )
@@ -392,7 +392,7 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"session not found: {sid}",
                         details={"session_id": sid},
                         recoverable=False,

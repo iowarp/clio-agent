@@ -114,7 +114,7 @@ def test_create_session_validates_workspace(tmp_path: Path) -> None:
     resp = c.post("/v1/sessions", json={"workspace_id": "ws_nope"})
     assert resp.status_code == 404
     body = resp.json()
-    assert body["error"]["error"] == "internal_error"
+    assert body["error"]["error"] == "not_found"
     assert "ws_nope" in body["error"]["message"]
 
     # ws_default exists at boot, so a no-arg POST works.

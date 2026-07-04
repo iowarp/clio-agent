@@ -70,7 +70,7 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
             status_code=404,
             detail=ErrorEnvelope(
                 error=ErrorInfo(
-                    error="internal_error",
+                    error="not_found",
                     message=f"session not found: {sid}",
                     details={"session_id": sid},
                     recoverable=False,

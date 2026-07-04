@@ -109,7 +109,7 @@ def register_permissions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"permission not found: {pid}",
                         recoverable=False,
                     )

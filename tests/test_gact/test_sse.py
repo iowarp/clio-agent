@@ -235,7 +235,7 @@ def test_sse_endpoint_404s_for_unknown_session(client: TestClient) -> None:
     resp = client.get("/v1/sessions/sess_nope/events")
     assert resp.status_code == 404
     body = resp.json()
-    assert body["error"]["error"] == "internal_error"
+    assert body["error"]["error"] == "not_found"
     assert "session not found" in body["error"]["message"]
 
 
