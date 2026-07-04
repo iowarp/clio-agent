@@ -638,7 +638,7 @@ def load_mcp_descriptors(
             descriptor_id = _fallback_expert_id(path)
         if not transport:
             errors.append("missing required MCP descriptor field: transport")
-        if transport not in {"", "stdio", "http", "streamable-http"}:
+        if transport not in {"", "stdio", "http", "streamable-http", "sse"}:
             errors.append(f"unsupported MCP descriptor transport: {transport}")
         command, args, install_warnings = _mcp_stdio_spec_from_metadata(meta, root=root)
         local_script = _local_mcp_script_from_metadata(meta)
@@ -646,7 +646,10 @@ def load_mcp_descriptors(
             errors.append(f"pack-local MCP launch path not found: {local_script}")
         if transport == "stdio" and not command:
             errors.append("stdio MCP descriptors require command")
-        if transport in {"http", "streamable-http"} and not str(meta.get("url") or "").strip():
+        if (
+            transport in {"http", "streamable-http", "sse"}
+            and not str(meta.get("url") or "").strip()
+        ):
             errors.append(f"{transport} MCP descriptors require url")
         warnings: list[str] = []
         warnings.extend(install_warnings)

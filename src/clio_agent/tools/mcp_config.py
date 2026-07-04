@@ -49,6 +49,8 @@ __all__ = [
     "resolve_expert_servers",
     "load_mcp_servers",
     "transport_for",
+    "transport_from_spec",
+    "MCPTransportError",
 ]
 
 # clio-agent's built-in universal defaults (always present, not declarations).
@@ -60,6 +62,18 @@ _URL_PREFIXES = ("http://", "https://")
 
 class MCPConfigError(ValueError):
     """A declaration could not be parsed (recorded on the spec, not raised)."""
+
+
+class MCPTransportError(ValueError):
+    """A raw ``{transport, command, args, url}`` dict spec cannot become a transport.
+
+    Raised by :func:`transport_from_spec` when the stored spec of a REST-installed
+    or agent-blueprint MCP server is unusable: a stdio spec with no ``command``, an
+    http/streamable-http/sse spec with no ``url``, or an unknown ``transport`` value
+    outside the single canonical accepted set ``{stdio, http, streamable-http,
+    sse}``. Callers map it to a client-actionable 4xx (e.g. ``mcp_spec_invalid``)
+    rather than letting a divergent inline branch 500 or silently drop the server.
+    """
 
 
 class MCPSpawnError(RuntimeError):
@@ -409,3 +423,75 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
             cwd=cwd,
         )
     return spec.url
+
+
+# The single canonical accepted transport set for raw dict specs. Every
+# REST-installed / agent-blueprint MCP server routes its construction through
+# :func:`transport_from_spec`, so this set is the one source of truth — no more
+# per-site ``{http}`` vs ``{http, streamable-http}`` vs ``{http, streamable-http,
+# sse}`` divergence. ``sse`` connects over the same StreamableHttp client
+# transport (matching the reconnect path), so it is accepted here and by the
+# agent-blueprint descriptor validator alike.
+_HTTP_TRANSPORTS = frozenset({"http", "streamable-http", "sse"})
+_CANONICAL_TRANSPORTS = frozenset({"stdio"}) | _HTTP_TRANSPORTS
+
+
+def transport_from_spec(spec: Mapping[str, Any]) -> Any:
+    """Turn a raw ``{transport, command, args, url, env}`` dict into a FastMCP transport.
+
+    This is the ONE construction site for the runtime third-party MCP surface —
+    the REST-installed servers and agent-blueprint MCP descriptors stored on
+    ``app.state.external_mcp_servers[sid]["spec"]``. It complements
+    :func:`transport_for` (which takes the typed :class:`MCPServerSpec` and does
+    ``which()`` / cwd / ``CLIO_KIT_ARTIFACTS`` pinning) by covering the dict-spec
+    path used by the gact routes and agent builders.
+
+    Accepted ``transport`` values are the single canonical set
+    ``{stdio, http, streamable-http, sse}``. ``http``/``streamable-http``/``sse``
+    all connect via ``StreamableHttpTransport(url)``; ``stdio`` spawns a
+    subprocess whose command is first wrapped by
+    :func:`pdeathsig_wrapped_command` so a REST-installed stdio child dies with
+    the clio server instead of orphaning on a hard kill (Linux only; a no-op
+    passthrough on Windows/macOS, exactly as that helper guards).
+
+    Args:
+        spec: The stored dict spec. ``transport`` selects the branch; ``command``
+            (+ optional ``args``/``env``) drives stdio; ``url`` drives the http
+            family.
+
+    Returns:
+        A ``fastmcp`` ``ClientTransport`` (``StdioTransport`` or
+        ``StreamableHttpTransport``) ready to hand to ``fastmcp.Client``.
+
+    Raises:
+        MCPTransportError: The spec is unusable — a stdio spec with no
+            ``command``, an http-family spec with no ``url``, or a ``transport``
+            outside the canonical accepted set.
+    """
+    from fastmcp.client.transports import (  # noqa: PLC0415
+        StdioTransport,
+        StreamableHttpTransport,
+    )
+
+    transport_kind = str(spec.get("transport") or "").strip().lower()
+    if transport_kind == "stdio":
+        command = str(spec.get("command") or "").strip()
+        if not command:
+            raise MCPTransportError("stdio MCP transport spec requires a 'command'")
+        raw_args = spec.get("args") or []
+        raw_env = spec.get("env") or None
+        cmd, cmd_args = pdeathsig_wrapped_command(command, list(raw_args))
+        return StdioTransport(
+            command=cmd,
+            args=cmd_args,
+            env=dict(raw_env) if raw_env else None,
+        )
+    if transport_kind in _HTTP_TRANSPORTS:
+        url = str(spec.get("url") or "").strip()
+        if not url:
+            raise MCPTransportError(f"{transport_kind} MCP transport spec requires a 'url'")
+        return StreamableHttpTransport(url=url)
+    raise MCPTransportError(
+        f"unknown MCP transport {transport_kind!r} "
+        f"(expected one of {sorted(_CANONICAL_TRANSPORTS)})"
+    )

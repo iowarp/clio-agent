@@ -638,7 +638,9 @@ def test_external_mcp_call_policy_allow_executes_without_prompt(
     import fastmcp.client.transports as transports
 
     monkeypatch.setattr(fastmcp, "Client", FakeClient)
-    monkeypatch.setattr(transports, "StdioTransport", lambda command, args: (command, args))
+    monkeypatch.setattr(
+        transports, "StdioTransport", lambda command, args, env=None: (command, args)
+    )
 
     app = build_app(sessions_path=tmp_path / "s.json")
     app.state.external_mcp_servers = {
@@ -704,7 +706,9 @@ def test_external_mcp_call_uses_explicit_session_for_policy_and_telemetry(
     import fastmcp.client.transports as transports
 
     monkeypatch.setattr(fastmcp, "Client", FakeClient)
-    monkeypatch.setattr(transports, "StdioTransport", lambda command, args: (command, args))
+    monkeypatch.setattr(
+        transports, "StdioTransport", lambda command, args, env=None: (command, args)
+    )
 
     app = build_app(sessions_path=tmp_path / "s.json")
     app.state.external_mcp_servers = {
