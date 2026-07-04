@@ -45,6 +45,7 @@ from clio_agent.arc.schema import (
 )
 from clio_agent.arc.storage import make_arc_store
 from clio_agent.config import (
+    LMProviderConfig,
     create_chat_adapter,
     create_lm,
     create_planner_lm,
@@ -192,6 +193,7 @@ class ClioAgent(dspy.Module):
         verbose: bool = False,
         data_dir: str = ".clio/agent",
         arc: ARCMemory | None = None,
+        provider_config: LMProviderConfig | None = None,
     ):
         """Initialize ClioAgent with planner, chat, tool execution, and runtime storage.
 
@@ -206,6 +208,14 @@ class ClioAgent(dspy.Module):
                 ARC already recorded onto the shared durable trace (the trace ⊋ ARC
                 split). ``None`` mints a fresh ARC (the standalone CLI / test path that
                 owns no server-level ARC).
+            provider_config: The default-profile provider config the agent binds its
+                ``_main_lm`` / ``_planner_lm`` / ``_dspy_adapter`` from. The gact
+                server supplies the config resolved off its authoritative
+                ``ProviderProfileStore`` default (design §9 step 9), so the main agent
+                and the store agree on ONE identity rather than each reading the
+                environment independently (the dropped boot env-handoff). ``None``
+                reads :func:`load_config_from_env` directly — the standalone CLI / test
+                baseline, byte-identical to before.
         """
         super().__init__()
         self.verbose = verbose
@@ -229,8 +239,15 @@ class ClioAgent(dspy.Module):
         # Initialize Agent Registry (for discovery, not routing)
         self.registry = AgentRegistry()
 
-        # Load provider-agnostic config from environment
-        self._provider_config = load_config_from_env()
+        # Provider identity: bind the injected default-profile config when the gact
+        # server supplies one (its ``ProviderProfileStore`` default is the
+        # authoritative source — design §9 step 9), so the main agent and the store
+        # share ONE identity instead of each reading the environment independently.
+        # ``None`` reads the environment directly — the standalone CLI / test
+        # baseline, byte-identical to before.
+        self._provider_config = (
+            provider_config if provider_config is not None else load_config_from_env()
+        )
 
         if self._provider_config.provider == "lm_studio" and not has_explicit_model_override():
             # LM Studio without an explicit model pin: discover loaded models

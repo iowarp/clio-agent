@@ -376,7 +376,57 @@ class _SdkSession:
                 self._loop = None
 
 
-_SDK_SESSION = _SdkSession()
+class _SdkSessionPool:
+    """Keyed pool of persistent Claude Agent SDK sessions (#818).
+
+    Maps ``(model, cwd)`` to a dedicated :class:`_SdkSession`, so two experts that
+    want *different* ``claude_code`` models can run concurrently — each holds its own
+    CLI connection (and its own asyncio loop/thread) instead of thrashing one shared
+    ``_SdkSession`` that would tear down and reconnect on every model/cwd flip.
+
+    Same-key calls still share one session and serialize onto its single connection
+    (the SDK client handles one query/receive cycle at a time); distinct-key calls
+    never contend. The per-app profile store (#818) makes concurrent distinct
+    ``claude_code`` experts *expressible*, and this pool makes them *safe*: the pool
+    lock is held only for the O(1) session lookup/creation, never across a completion.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._sessions: dict[tuple[str, str | None], _SdkSession] = {}
+
+    def _session_for(self, model: str, cwd: str | None) -> _SdkSession:
+        """Return (creating if needed) the session bound to ``(model, cwd)``."""
+
+        key = (model, cwd)
+        with self._lock:
+            session = self._sessions.get(key)
+            if session is None:
+                session = _SdkSession()
+                self._sessions[key] = session
+            return session
+
+    def complete(
+        self, *, prompt: str, model: str, timeout: float | None, cwd: str | None
+    ) -> tuple[str, dict[str, Any]]:
+        """Complete one turn on the session keyed by ``(model, cwd)``."""
+
+        return self._session_for(model, cwd).complete(
+            prompt=prompt, model=model, timeout=timeout, cwd=cwd
+        )
+
+    def close(self) -> None:
+        """Tear down every pooled session and drop the pool."""
+
+        with self._lock:
+            sessions = list(self._sessions.values())
+            self._sessions.clear()
+        for session in sessions:
+            session.close()
+
+
+_SDK_SESSION_POOL = _SdkSessionPool()
+atexit.register(_SDK_SESSION_POOL.close)
 
 
 def _run_sdk(
@@ -386,12 +436,13 @@ def _run_sdk(
     timeout: float | None = 180.0,
     cwd: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    """Run one completion via the persistent Claude Agent SDK session (#715).
+    """Run one completion via the keyed Claude Agent SDK session pool (#715, #818).
 
-    Delegates to the process-wide :data:`_SDK_SESSION`, which reuses one CLI connection
-    across calls. Returns ``(text, usage)`` in the same shape as :func:`_run_exec`.
+    Delegates to the process-wide :data:`_SDK_SESSION_POOL`, which keeps one CLI
+    connection per ``(model, cwd)`` so distinct-model experts run concurrently without
+    reconnect thrash. Returns ``(text, usage)`` in the same shape as :func:`_run_exec`.
     """
-    return _SDK_SESSION.complete(prompt=prompt, model=model, timeout=timeout, cwd=cwd)
+    return _SDK_SESSION_POOL.complete(prompt=prompt, model=model, timeout=timeout, cwd=cwd)
 
 
 def _sdk_stream_event_text(event: dict[str, Any]) -> str:
@@ -879,11 +930,10 @@ class ClaudeCodeLLM(CustomLLM):
         clean_model = model.removeprefix("claude_code/").removeprefix("cc-")
         prompt = _messages_to_claude_prompt(messages)
         params = optional_params or {}
-        transport = (
-            params.get("claude_code_transport")
-            or os.environ.get("CLIO_CLAUDE_CODE_TRANSPORT")
-            or DEFAULT_TRANSPORT
-        )
+        # Transport travels per-LM in optional_params (carried on the resolved
+        # LMProviderConfig, #818); no process-global env fallback so concurrent
+        # experts each get their own transport, not a shared ambient one.
+        transport = params.get("claude_code_transport") or DEFAULT_TRANSPORT
         if transport not in ("exec", "sdk"):
             raise ClaudeCodeExecError(
                 f"unknown claude_code transport {transport!r} (expected 'exec' or 'sdk')"
@@ -1068,11 +1118,9 @@ class ClaudeCodeLLM(CustomLLM):
 
         call_index = _next_call_index()
         params = optional_params or {}
-        transport = (
-            params.get("claude_code_transport")
-            or os.environ.get("CLIO_CLAUDE_CODE_TRANSPORT")
-            or DEFAULT_TRANSPORT
-        )
+        # Transport travels per-LM in optional_params (carried on the resolved
+        # LMProviderConfig, #818); no process-global env fallback.
+        transport = params.get("claude_code_transport") or DEFAULT_TRANSPORT
         if transport not in ("exec", "sdk"):
             raise ClaudeCodeExecError(
                 f"unknown claude_code transport {transport!r} (expected 'exec' or 'sdk')"

@@ -94,6 +94,7 @@ def _dspy():
 #                         some gateway paths reject the shared 32 000
 #                         default. Users can override with
 #                         CLIO_LM_MAX_TOKENS for larger-context models.
+from clio_agent.providers import credentials as _credentials
 from clio_agent.providers.registry import (
     as_cloud_api_key_env as _registry_cloud_api_key_env,
 )
@@ -285,16 +286,14 @@ class LMProviderConfig:
         if not self.model:
             self.model = defaults["model"]
         if not self.api_key:
-            # Cloud providers source from a well-known env var. Argonne /
-            # ALCF mints a fresh Globus bearer token on demand — kept lazy
-            # so installs without globus-sdk don't need the dep.
-            env_var = _CLOUD_API_KEY_ENV.get(self.provider)
-            if env_var:
-                self.api_key = os.environ.get(env_var, "")
-            elif self.provider == "argonne":
-                self.api_key = _resolve_argonne_api_key()
-            else:
-                self.api_key = defaults["api_key"]
+            # Credential resolution (cloud well-known env var / Argonne Globus
+            # token) is owned by ``providers.credentials``: read-only, keyed,
+            # returned-not-stamped. Delegate for the default ref so the
+            # per-expert path and this boot/default path share one resolver.
+            # ``or defaults["api_key"]`` preserves the local-provider
+            # placeholder (e.g. "lm-studio") — a provider default, not a
+            # credential — so behaviour stays byte-identical.
+            self.api_key = _credentials.resolve(self.provider, "") or defaults["api_key"]
         # max_tokens=0 is the sentinel "pick a sensible default for
         # this provider" — Argonne/ALCF model availability and context
         # windows vary by running gateway job, and some paths reject
@@ -421,60 +420,13 @@ def _uses_local_reasoning_model_profile(provider: str, model: str) -> bool:
 def _resolve_argonne_api_key() -> str:
     """Return a Globus bearer token for the ALCF inference gateway.
 
-    Two escape hatches before we touch globus-sdk:
-
-    1. ``CLIO_ARGONNE_TOKEN`` — explicit override. Set by automation
-       that already has a token (e.g. a parent agent that ran
-       ``argonne_auth.get_access_token`` and exports the result).
-    2. ``CLIO_LM_API_KEY`` — already handled in ``load_config_from_env``;
-       only see ``__post_init__`` if the user really left it blank.
-
-    Otherwise we go through ``providers.argonne_auth``. The import is
-    deferred so ``globus-sdk`` is only required when this provider is
-    actually selected. We swallow ``GlobusUnavailable`` and return ""
-    so ``__post_init__`` doesn't crash on machines without the dep —
-    the LM call itself will surface the missing-dep error with
-    actionable text once the user issues a query.
+    The implementation now lives in :func:`clio_agent.providers.credentials.
+    resolve_argonne_token`. This thin wrapper is retained as the stable seam
+    that ``gact.providers.auth`` (runtime token refresh) and tests monkeypatch;
+    ``providers.credentials.resolve`` routes the argonne ref back through this
+    name so a patch here is observed everywhere.
     """
-    # Accept either CLIO's own override OR the env var ALCF's own
-    # ecosystem (alcf-agentics-workflow, list_active_models.sh) uses,
-    # since users often already have one of those exported. CLIO_*
-    # wins when both are set so deliberate overrides don't surprise.
-    override = (
-        os.environ.get("CLIO_ARGONNE_TOKEN", "").strip()
-        or os.environ.get("ALCF_INFERENCE_TOKEN", "").strip()
-        or os.environ.get("access_token", "").strip()
-    )
-    if override:
-        return override
-
-    try:
-        from clio_agent.providers.argonne_auth import (  # noqa: PLC0415
-            GlobusUnavailable,
-            get_access_token,
-            tokens_exist,
-        )
-    except Exception:  # pragma: no cover - import-time error
-        return ""
-
-    # Don't trigger an interactive OAuth flow from inside the config
-    # constructor — that path runs from /health, /doctor, and TUI
-    # introspection where blocking on a browser would be hostile.
-    # If there's no stored token, surface "" and let the upstream
-    # validator emit the actionable "run authenticate" message.
-    if not tokens_exist():
-        return ""
-
-    try:
-        return get_access_token()
-    except GlobusUnavailable:
-        # Logged elsewhere; let downstream error message guide the user.
-        return ""
-    except Exception:
-        # OAuth could not complete (network, refresh expired, etc).
-        # Returning "" lets the LM call fail with a clean 401 rather
-        # than masking it behind config-load tracebacks.
-        return ""
+    return _credentials.resolve_argonne_token()
 
 
 def load_config_from_env() -> LMProviderConfig:

@@ -58,6 +58,13 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
     ``app.state.lm_config`` is populated by ``PUT /v1/providers/lm``.
     When GACT boots from ``CLIO_LM_PROVIDER`` instead, the live
     ``ClioAgent`` still carries the effective ``LMProviderConfig``.
+
+    This stays the **gating** read: it reports the live/bound config only, and an
+    unconfigured GACT (no live ``_provider_config``) reports an empty config so
+    the model-ref / vision route gates behave. The per-app store's default profile
+    is reported *separately* by :func:`_default_profile_spec` (used by the GET body
+    builder ``_lm_provider_info``), which never feeds those gates. After a bind the
+    two are ``spec_from_config``-consistent by construction.
     """
 
     cfg = dict(getattr(app.state, "lm_config", None) or {})
@@ -90,6 +97,24 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
         elif provider == "claude_code":
             cfg["transport"] = getattr(provider_config, "claude_code_transport", None)
     return cfg
+
+
+def _default_profile_spec(app: "FastAPI") -> Any:
+    """Return the per-app profile store's default :class:`LMSpec`, or ``None``.
+
+    Read-only: consults ``app.state.provider_profiles`` (the immutable, RCU-swapped
+    :class:`~clio_agent.gact.providers.profile_store.ProviderProfileStore` the admin
+    bind swaps and every undeclared expert inherits — design §3.4/§5). Returns
+    ``None`` when no store is bound (e.g. a bare ``SimpleNamespace`` app in a unit
+    test). This is the read side reading the default **off the store**; it is used
+    by the GET body builder to report the bound default and never feeds the
+    model-ref / vision route gates.
+    """
+
+    store = getattr(getattr(app, "state", None), "provider_profiles", None)
+    if store is None:
+        return None
+    return getattr(store, "default", None)
 
 
 def _model_ref_dict(value: Any) -> dict[str, str]:

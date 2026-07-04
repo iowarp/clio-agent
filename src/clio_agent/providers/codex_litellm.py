@@ -380,11 +380,10 @@ class CodexLLM(CustomLLM):
         params = optional_params or {}
         sandbox = params.get("codex_sandbox", DEFAULT_SANDBOX)
         cwd = params.get("codex_cwd", os.getcwd())
-        transport = (
-            params.get("codex_transport")
-            or os.environ.get("CLIO_CODEX_TRANSPORT")
-            or DEFAULT_TRANSPORT
-        )
+        # Transport travels per-LM in optional_params (carried on the resolved
+        # LMProviderConfig, #818); no process-global env fallback so concurrent
+        # experts each get their own transport, not a shared ambient one.
+        transport = params.get("codex_transport") or DEFAULT_TRANSPORT
         timeout_s = float(timeout) if timeout else 120.0
         if transport == "sdk":
             return _run_sdk(

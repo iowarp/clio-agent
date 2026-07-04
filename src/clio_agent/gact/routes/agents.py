@@ -261,6 +261,9 @@ def _validate_session_agent_overlay_payload(
             "prompt_profile",
             "default_provider",
             "default_model",
+            "api_base",
+            "credential_ref",
+            "transport",
             "parent_id",
             "specialization",
         ):

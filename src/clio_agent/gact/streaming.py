@@ -221,6 +221,54 @@ def _pop_stream_fallback(app: "FastAPI", sid: str) -> dict[str, Any]:
     return _stream_fallback_reasons(app).pop(sid, {})
 
 
+# --- ambient-LM fallback reason catalog (per-expert-provider sweep, #818) ----
+# A SIBLING of the stream_fallback catalog for the ambient ``dspy.settings.lm``
+# call-site sweep: a runtime helper (token accounting / auto-compaction / usage
+# rollup / reasoning capture / model-id probe) resolved the process boot-default
+# LM because no per-profile ``dspy.context`` was bound. Deliberately kept OUT of
+# ``_STREAM_FALLBACK_REASON_DEFINITIONS`` (and its client-facing
+# ``x_clio_stream_fallback_reasons`` capability, an audited *closed set* of
+# live-streaming fallbacks) so an unrelated provider-binding reason cannot break
+# that contract. It follows the same typed, reject-unknowns pattern and is
+# recorded per session in the ambient-LM ledger (``gact.runtime.ambient_lm``) so
+# the miss stays queryable rather than a silent dependency on the global default.
+_AMBIENT_LM_FALLBACK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
+    "ambient_lm_default": {
+        "category": "provider_binding",
+        "recovery_actions": ["bind_active_profile_context", "pass_explicit_lm"],
+        "description": (
+            "A runtime call site resolved the process boot-default LM because no "
+            "per-profile dspy.context was active. The result is valid but "
+            "attributed to the boot default, not an expert/main profile; bind the "
+            "active profile's context (or pass an explicit LM) to remove the "
+            "ambient dependency."
+        ),
+    },
+}
+
+
+def _ambient_lm_fallback_payload(reason: str, message: str = "") -> dict[str, Any]:
+    """Build a structured, typed payload for an ambient boot-default LM read.
+
+    Mirrors :func:`_stream_fallback_payload` (validate against a typed catalog,
+    reject unknowns) for the ambient-LM sweep's dedicated reason catalog, so a
+    miss records a queryable typed reason instead of a bare fallback."""
+
+    definition = _AMBIENT_LM_FALLBACK_REASON_DEFINITIONS.get(reason)
+    if definition is None:
+        raise ValueError(f"Unknown ambient LM fallback reason: {reason}")
+    payload: dict[str, Any] = {
+        "reason": reason,
+        **{
+            key: (list(value) if isinstance(value, list) else value)
+            for key, value in definition.items()
+        },
+    }
+    if message:
+        payload["message"] = message
+    return payload
+
+
 # --- turn-scoped live streamed-field buffer (#757) ---------------------------
 # ``app.state.live_streamed_field_text`` records the contract-field text that
 # already streamed live so finalize / the tool observer can suppress an exact
