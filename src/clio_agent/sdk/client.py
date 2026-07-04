@@ -29,12 +29,16 @@ import httpx
 from clio_agent.sdk.errors import ClioConnectionError, error_from_response
 from clio_agent.sdk.events import EventStream
 from clio_agent.sdk.types import (
+    Agent,
     Capabilities,
     Health,
+    LMProvider,
     Message,
+    Metrics,
     PermissionList,
     PostMessageAck,
     Session,
+    Tool,
     Workspace,
 )
 
@@ -171,6 +175,61 @@ class ClioClient:
         """Shorthand for ``capabilities().supports(flag)``."""
 
         return self.capabilities().supports(flag)
+
+    # -- catalog + config read surfaces -------------------------------- #
+
+    def agents(
+        self,
+        *,
+        tier: int | None = None,
+        session_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> list[Agent]:
+        """GET /v1/agents — the agent catalog (SPEC §6.5).
+
+        Built-in tier-1/2 experts first, then any user/skill agents.
+        ``tier`` filters to one tier server-side; ``session_id`` /
+        ``workspace_id`` scope which user agents are visible. Backs the
+        CLI's ``/experts`` and ``/registry``.
+        """
+
+        params = _drop_missing(
+            {"tier": tier, "session_id": session_id, "workspace_id": workspace_id}
+        )
+        response = self._request("GET", "/v1/agents", params=params or None)
+        return [Agent.model_validate(row) for row in response.json().get("agents", [])]
+
+    def tools(self) -> list[Tool]:
+        """GET /v1/tools — the unified live tool catalog (SPEC §6.5).
+
+        Every tool the bundled gateway and any installed third-party
+        MCP servers expose, flattened with owner/tags/visibility. Backs
+        the CLI's ``/tools``.
+        """
+
+        response = self._request("GET", "/v1/tools")
+        return [Tool.model_validate(row) for row in response.json().get("tools", [])]
+
+    def metrics(self) -> Metrics:
+        """GET /v1/metrics — aggregate runtime counters (SPEC §6.16).
+
+        Session/message rollups, token + cost totals, and per-tool
+        latency buckets. Backs the CLI's ``/metrics``.
+        """
+
+        response = self._request("GET", "/v1/metrics")
+        return Metrics.model_validate(response.json())
+
+    def lm_provider(self) -> LMProvider:
+        """GET /v1/providers/lm — the live LM config + presets.
+
+        Reports whether an agent is wired (``configured``), the bound
+        provider/model/endpoint, and the discovered context budget.
+        Backs the CLI's ``/models``.
+        """
+
+        response = self._request("GET", "/v1/providers/lm")
+        return LMProvider.model_validate(response.json())
 
 
 class SessionsAPI:
