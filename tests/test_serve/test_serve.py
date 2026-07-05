@@ -312,6 +312,20 @@ def test_terminate_tree_trusted_bypasses_liveness_guard(monkeypatch):
     assert serve._terminate_tree(dead_pid, record_create_time=None, trusted=True) is True
 
 
+def test_stop_server_corrupt_pidfile_is_not_a_clean_noop():
+    """Regression: a present-but-corrupt pidfile must NOT be reported as no_server (which would
+    hide a possibly-leaked managed process). It surfaces as corrupt_pidfile and is pruned —
+    distinct from a genuinely absent pidfile."""
+    port = 45988
+    pidfile = serve._pidfile_path(port)
+    pidfile.parent.mkdir(parents=True, exist_ok=True)
+    pidfile.write_text("torn{not json", encoding="utf-8")  # present but unparseable
+
+    note = serve.stop_server(port=port)
+    assert note["reason"] == "corrupt_pidfile"  # NOT "no_server"
+    assert not pidfile.exists()  # the bad record is pruned
+
+
 # --- real subprocess: spawn -> attach -> stop (bounded, always cleaned up) ----
 
 

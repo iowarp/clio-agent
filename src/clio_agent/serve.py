@@ -106,6 +106,13 @@ _SERVE_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
             "unverifiable PID (reuse-unsafe) and pruned the record"
         ),
     },
+    "corrupt_pidfile": {
+        "managed": False,
+        "detail": (
+            "pidfile was present but unparseable; pruned it — a managed process may "
+            "have leaked and can no longer be identified from the record"
+        ),
+    },
 }
 
 
@@ -537,6 +544,12 @@ def stop_server(
     record = _read_pidfile(pidfile)
 
     if record is None:
+        # Distinguish a genuinely absent pidfile from a present-but-corrupt one: a torn
+        # record for a server we spawned may mean we leaked a managed process we can no
+        # longer identify, so it must NOT be reported as a clean no-op.
+        if pidfile.exists():
+            _remove_pidfile(pidfile)
+            return _record_action(_serve_reason("corrupt_pidfile"))
         return _record_action(_serve_reason("no_server"))
 
     if not record.get("spawned_by_us"):
