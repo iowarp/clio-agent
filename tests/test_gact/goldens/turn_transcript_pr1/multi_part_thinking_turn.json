@@ -66,17 +66,6 @@
     },
     {
       "payload": {
-        "agent_id": "main",
-        "part_id": "<part#5>",
-        "text_append": "Weighing the options...",
-        "trace_id": "<msg#1>:anthropic",
-        "trace_kind": "model_aux",
-        "turn_id": "<msg#1>"
-      },
-      "type": "turn.trace.delta"
-    },
-    {
-      "payload": {
         "final_text": "Weighing the options...",
         "message_id": "<msg#4>",
         "part_id": "<part#5>",
@@ -117,16 +106,6 @@
     },
     {
       "payload": {
-        "agent_id": "main",
-        "field": "thought",
-        "part_id": "<part#6>",
-        "text_append": "I should answer directly. ",
-        "turn_id": "<msg#1>"
-      },
-      "type": "turn.text.delta"
-    },
-    {
-      "payload": {
         "delta": {
           "text_append": "Because it is simple."
         },
@@ -137,16 +116,6 @@
         "turn_id": "<msg#1>"
       },
       "type": "message.part.delta"
-    },
-    {
-      "payload": {
-        "agent_id": "main",
-        "field": "thought",
-        "part_id": "<part#6>",
-        "text_append": "Because it is simple.",
-        "turn_id": "<msg#1>"
-      },
-      "type": "turn.text.delta"
     },
     {
       "payload": {
@@ -190,16 +159,6 @@
     },
     {
       "payload": {
-        "agent_id": "main",
-        "field": "answer",
-        "part_id": "<part#7>",
-        "text_append": "The answer ",
-        "turn_id": "<msg#1>"
-      },
-      "type": "turn.text.delta"
-    },
-    {
-      "payload": {
         "delta": {
           "text_append": "is 42."
         },
@@ -210,16 +169,6 @@
         "turn_id": "<msg#1>"
       },
       "type": "message.part.delta"
-    },
-    {
-      "payload": {
-        "agent_id": "main",
-        "field": "answer",
-        "part_id": "<part#7>",
-        "text_append": "is 42.",
-        "turn_id": "<msg#1>"
-      },
-      "type": "turn.text.delta"
     },
     {
       "payload": {

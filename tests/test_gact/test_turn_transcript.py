@@ -136,10 +136,9 @@ def test_text_delta_lifecycle_publishes_added_delta_completed() -> None:
     assert len(parts) == 1
     assert parts[0].text == "Hello world"
 
-    # Normalized twin: one turn.text.delta per chunk from the same transition.
-    normalized = publisher.of_type("turn.text.delta")
-    assert [n[1]["text_append"] for n in normalized] == ["Hello ", "world"]
-    assert all(n[1]["field"] == "answer" for n in normalized)
+    # #767 PR5: the normalized turn.text.delta twin is retired — message.part.*
+    # is the sole transcript wire vocabulary.
+    assert publisher.of_type("turn.text.delta") == []
 
 
 def test_agent_or_field_change_splits_parts_and_closes_prior() -> None:
@@ -162,12 +161,11 @@ def test_agent_or_field_change_splits_parts_and_closes_prior() -> None:
         ("main", "answer"),
         ("child", "answer"),
     ]
-    # Non-answer fields map to the "thought" transcript field on the twin.
-    thought_twins = [n for n in publisher.of_type("turn.text.delta") if n[1]["field"] == "thought"]
-    assert len(thought_twins) == 1
+    # #767 PR5: no normalized turn.text.delta twin is published anymore.
+    assert publisher.of_type("turn.text.delta") == []
 
 
-def test_provider_thinking_opens_thinking_part_verbatim_with_trace_twin() -> None:
+def test_provider_thinking_opens_thinking_part_verbatim() -> None:
     calls: list[str] = []
 
     def spy_clean(text: str) -> str:
@@ -188,10 +186,9 @@ def test_provider_thinking_opens_thinking_part_verbatim_with_trace_twin() -> Non
     # Verbatim: the cleaner NEVER runs on provider thinking.
     assert calls == []
     assert parts[0].text == f"raw {CONTRACT_MARKER} kept"
-    twins = publisher.of_type("turn.trace.delta")
-    assert len(twins) == 2
-    assert all(t[1]["trace_kind"] == "model_aux" for t in twins)
-    assert all(t[1]["trace_id"] == "turn_t:anthropic" for t in twins)
+    # #767 PR5: neither the turn.trace.delta nor the turn.text.delta twin is
+    # published anymore — the thinking part rides message.part.* only.
+    assert publisher.of_type("turn.trace.delta") == []
     assert publisher.of_type("turn.text.delta") == []
 
 

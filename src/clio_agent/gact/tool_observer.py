@@ -180,17 +180,6 @@ def _mirror_transcript_state(app: "FastAPI", sid: str, transcript: "TurnTranscri
         live_parts[sid] = alias
 
 
-def _publish_transcript_event(
-    app: "FastAPI",
-    sid: str,
-    event_type: str,
-    payload: Mapping[str, Any],
-) -> None:
-    """Publish one normalized transcript event alongside legacy tool events."""
-
-    app.state.bus.publish(Event(type=event_type, session_id=sid, payload=dict(payload)))
-
-
 def _install_tool_runtime_hooks(app: "FastAPI") -> None:
     """Install permission, cancellation, and telemetry hooks for tool calls."""
 
@@ -561,22 +550,6 @@ def _make_tool_observer(app: "FastAPI"):
                     metadata={"stream_source": "live", "telemetry_source": "live_observer"},
                 ),
             )
-            _publish_transcript_event(
-                app,
-                sid,
-                "turn.action.added",
-                {
-                    "turn_id": _ctx.active_turn_id(),
-                    "action": {
-                        "kind": "tool_call",
-                        "call_id": call_id,
-                        "agent_id": invoking_expert,
-                        "name": name,
-                        "args": dict(args),
-                        **({"thought": step_thought} if step_thought else {}),
-                    },
-                },
-            )
         elif phase == "completed":
             call_id = getattr(_OBSERVER_CALL_IDS, "value", "") or ""
             t0 = getattr(_OBSERVER_CALL_T0, "value", None)
@@ -693,21 +666,6 @@ def _make_tool_observer(app: "FastAPI"):
                         **cancellation_metadata,
                     },
                 ),
-            )
-            _publish_transcript_event(
-                app,
-                sid,
-                "call.result.delta",
-                {
-                    "call_id": call_id,
-                    "content_type": "text/plain",
-                    "text_append": result_text,
-                    **(
-                        {"value_append": _bounded_tool_call_result(result)}
-                        if result is not None
-                        else {}
-                    ),
-                },
             )
 
     return observe
