@@ -9,6 +9,7 @@ take.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,30 @@ import pytest
 from clio_agent.gact.app import build_app
 from clio_agent.sdk import ClioClient
 from tests.test_sdk.conftest import StreamingASGITransport, StubAgent, _fresh_arc
+
+
+@pytest.fixture(autouse=True)
+def _restore_clio_logger() -> Iterator[None]:
+    """Snapshot + restore the process-global ``clio_agent`` logger state.
+
+    Tests here that call :func:`clio_agent.ui.cli.main` trigger
+    ``trace.configure()``, which sets ``propagate=False`` and installs a handler
+    on the shared ``clio_agent`` logger with no teardown. Left leaked, that
+    breaks ``caplog``-based assertions in later-collected tests (an
+    order-dependent isolation regression). Restore propagate/level/handlers so
+    each test starts from the same logging state.
+    """
+
+    lg = logging.getLogger("clio_agent")
+    saved_propagate = lg.propagate
+    saved_level = lg.level
+    saved_handlers = list(lg.handlers)
+    try:
+        yield
+    finally:
+        lg.propagate = saved_propagate
+        lg.level = saved_level
+        lg.handlers[:] = saved_handlers
 
 
 @pytest.fixture()
