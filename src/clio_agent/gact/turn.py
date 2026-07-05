@@ -534,7 +534,6 @@ async def _run_turn_in_background(
         _current_lm_model_id,
         _delegated_expert_agent_id,
         _delegated_expert_prompt,
-        _delegated_expert_public_prompt,
         _dspy_images_from_parts,
         _dynamic_agent_runtime_provenance,
         _dynamic_parent_resume_prompt,
@@ -970,8 +969,7 @@ async def _run_turn_in_background(
             _record_streamed_field_text(chunk_agent, stream_field, text)
         # ONE transcript call: mints the message id on first arrival, opens/
         # splits parts per (agent, field), cleans the whole buffer once at
-        # close, and publishes message.created/part.added/part.delta plus the
-        # normalized turn.text.delta / turn.trace.delta twin — the state
+        # close, and publishes message.created/part.added/part.delta — the state
         # machine that used to live here.
         transcript.append_text_delta(chunk_agent, stream_field, text)
         if transcript.frozen:
@@ -1323,7 +1321,6 @@ async def _run_turn_in_background(
                 )
                 continue
 
-            public_prompt = _delegated_expert_public_prompt(row, source_text)
             prompt = _append_session_workflow_state_context(
                 app,
                 sid,
@@ -1396,21 +1393,6 @@ async def _run_turn_in_background(
                     text=f"{parent_agent.id} -> {target.id}",
                     metadata={**_handoff_part_metadata(started_row), "stream_source": "live"},
                 ),
-            )
-            _publish_transcript_event(
-                bus,
-                sid,
-                "turn.action.added",
-                {
-                    "turn_id": turn_id,
-                    "action": {
-                        "kind": "agent_call",
-                        "call_id": f"agent_call:{parent_agent.id}:{target.id}:{len(executed)}",
-                        "agent_id": parent_agent.id,
-                        "target_agent": target.id,
-                        "prompt": public_prompt,
-                    },
-                },
             )
             ledger_start = 0
             ledger = getattr(app.state, "tool_call_ledger", None)
@@ -1559,8 +1541,8 @@ async def _run_turn_in_background(
                     "execution_mode": execution_mode,
                     "input": prompt,
                     "output": handoff_output,
-                    # Real, human-readable return summary — same string the live
-                    # turn.action.added return uses, so the reload (/messages)
+                    # Real, human-readable return summary — the same string the
+                    # live delegation-return render shows, so the reload (/messages)
                     # render matches the live render (no change-on-reload).
                     "output_summary": public_return_summary,
                     # The GENUINE structured output for the "details" disclosure on
@@ -1626,26 +1608,6 @@ async def _run_turn_in_background(
                             "visibility": "hidden",
                         },
                     )
-                return_action: dict[str, Any] = {
-                    "kind": "return",
-                    "call_id": (f"return:{target.id}:{parent_agent.id}:{len(executed)}"),
-                    "agent_id": target.id,
-                    "target_agent": parent_agent.id,
-                    "summary": public_return_summary,
-                }
-                # For a structured answer the body shows the readable summary; the
-                # GENUINE raw output rides along as `response` so the client can
-                # reveal it under a "details" disclosure (it's just LLM output —
-                # shown on demand, not hidden). Prose answers ARE the body, so no
-                # separate raw is sent.
-                if _looks_like_structured_answer(output):
-                    return_action["response"] = output
-                _publish_transcript_event(
-                    bus,
-                    sid,
-                    "turn.action.added",
-                    {"turn_id": turn_id, "action": return_action},
-                )
                 completed_row = _sanitize_handoff_tool_metadata(completed_row)
                 executed.append(completed_row)
                 resumed_row = {

@@ -88,11 +88,12 @@ class TranscriptFrozenError(RuntimeError):
 class TranscriptPublisher(Protocol):
     """Injected event sink for ledger transitions.
 
-    The default implementation wraps the app :class:`EventBus` and emits BOTH
-    vocabularies (legacy ``message.part.*`` plus the normalized ``turn.text.delta``
-    / ``turn.trace.delta`` twins) from ONE transition, so gact-tui#232's
-    "decide the normalized channel" choice becomes a publisher config flag
-    (flipped in PR5), not a code hunt.
+    The default implementation wraps the app :class:`EventBus` and emits the
+    ``message.part.*`` transcript vocabulary from each ledger transition. The
+    normalized ``turn.text.delta`` / ``turn.trace.delta`` twins this sink used
+    to mirror were retired in #767 PR5 (they had zero consumers); ``message.part.*``
+    (plus ``message.created`` / ``message.completed``) is now the sole transcript
+    wire vocabulary.
     """
 
     def publish(self, event_type: str, payload: Mapping[str, Any]) -> None:
@@ -348,9 +349,7 @@ class TurnTranscript:
         Opens a new part (type ``thinking`` for ``provider_thinking:*`` fields,
         else ``text``) when ``(agent_id, field)`` changes — closing the prior
         part — publishes ``message.part.added`` on open and
-        ``message.part.delta`` per chunk, plus the normalized twin
-        (``turn.trace.delta`` for provider thinking, ``turn.text.delta``
-        otherwise) from the same transition (design §4 rows 2-3).
+        ``message.part.delta`` per chunk (design §4 rows 2-3).
         """
 
         if not chunk:
@@ -414,30 +413,6 @@ class TurnTranscript:
                     "delta": {"text_append": chunk},
                 },
             )
-            if is_thinking:
-                provider_source = field.split(":", 1)[1] if ":" in field else "provider"
-                self._publisher.publish(
-                    "turn.trace.delta",
-                    {
-                        "turn_id": self.turn_id,
-                        "trace_id": f"{self.turn_id}:{provider_source}",
-                        "trace_kind": "model_aux",
-                        "agent_id": agent_id,
-                        "part_id": part.id,
-                        "text_append": chunk,
-                    },
-                )
-            else:
-                self._publisher.publish(
-                    "turn.text.delta",
-                    {
-                        "turn_id": self.turn_id,
-                        "agent_id": agent_id,
-                        "part_id": part.id,
-                        "field": _transcript_text_field(field),
-                        "text_append": chunk,
-                    },
-                )
 
     def close_open_text(self) -> None:
         """Close the open streamed part.

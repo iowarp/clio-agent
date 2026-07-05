@@ -32,20 +32,18 @@ from fastapi.testclient import TestClient
 GOLDEN_DIR = Path(__file__).parent / "goldens" / "turn_transcript_pr1"
 _GOLDEN_REGEN = os.environ.get("CLIO_TURN_TRANSCRIPT_GOLDEN_REGEN") == "1"
 
-# The transcript wire vocabulary under equivalence (telemetry included: the
-# tool observer emits both channels from the same producer path).
+# The transcript wire vocabulary under equivalence. #767 PR5 retired the
+# normalized turn.text.delta / turn.trace.delta / turn.action.added /
+# call.result.delta twins (they had zero consumers), so they are no longer
+# captured — message.part.* (+ tool.call.* telemetry) is the surviving wire.
 _EVENT_TYPES_UNDER_TEST = (
     "message.created",
     "message.part.added",
     "message.part.delta",
     "message.part.completed",
     "message.completed",
-    "turn.text.delta",
-    "turn.trace.delta",
-    "turn.action.added",
     "tool.call.started",
     "tool.call.completed",
-    "call.result.delta",
 )
 
 # No \b anchors: generated ids embed inside composite ids (live_call_<hex>_result)

@@ -734,7 +734,7 @@ def test_live_streamed_deltas_are_marked_live(
     assert "stream_fallback" not in text_parts[-1]["metadata"]
 
 
-def test_live_streamed_contract_fields_emit_normalized_transcript_events(
+def test_live_streamed_contract_fields_emit_message_part_deltas(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     async def fake_streamed_forward(
@@ -763,20 +763,27 @@ def test_live_streamed_contract_fields_emit_normalized_transcript_events(
 
     history = app.state.bus._history.get(sid, [])
     transcript_events = [e for e in history if e.type.startswith("turn.")]
-    text_deltas = [e for e in history if e.type == "turn.text.delta"]
+    part_deltas = [e for e in history if e.type == "message.part.delta"]
 
+    # #767 PR5: the normalized turn.text.delta twin is retired; the streamed
+    # contract fields ride message.part.delta only.
+    assert [e for e in history if e.type == "turn.text.delta"] == []
     assert transcript_events[0].type == "turn.started"
-    assert [e.payload["field"] for e in text_deltas] == ["thought", "thought", "answer"]
-    assert [e.payload["text_append"] for e in text_deltas] == [
+    assert [e.payload["signature_field_name"] for e in part_deltas] == [
+        "reasoning",
+        "next_thought",
+        "answer",
+    ]
+    assert [e.payload["delta"]["text_append"] for e in part_deltas] == [
         "thinking ",
         "next ",
         "answer",
     ]
     assert transcript_events[-1].type == "turn.completed"
-    assert all("[[ ##" not in e.payload.get("text_append", "") for e in text_deltas)
+    assert all("[[ ##" not in e.payload["delta"].get("text_append", "") for e in part_deltas)
 
 
-def test_provider_aux_streams_as_model_aux_trace_event(
+def test_provider_aux_streams_as_thinking_part(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     async def fake_streamed_forward(
@@ -802,11 +809,27 @@ def test_provider_aux_streams_as_model_aux_trace_event(
     )
 
     history = app.state.bus._history.get(sid, [])
-    trace_deltas = [e for e in history if e.type == "turn.trace.delta"]
 
-    assert len(trace_deltas) == 1
-    assert trace_deltas[0].payload["trace_kind"] == "model_aux"
-    assert trace_deltas[0].payload["text_append"] == "raw provider thought"
+    # #767 PR5: the normalized turn.trace.delta twin is retired; provider aux
+    # rides a message.part.* thinking part.
+    assert [e for e in history if e.type == "turn.trace.delta"] == []
+    thinking_added = [
+        e
+        for e in history
+        if e.type == "message.part.added" and e.payload["part"]["type"] == "thinking"
+    ]
+    assert len(thinking_added) == 1
+    thinking_meta = thinking_added[0].payload["part"]["metadata"]
+    assert thinking_meta["thinking_source"] == "provider"
+    assert thinking_meta["provider_source"] == "claude_code_sdk"
+    thinking_deltas = [
+        e
+        for e in history
+        if e.type == "message.part.delta"
+        and e.payload["signature_field_name"] == "provider_thinking:claude_code_sdk"
+    ]
+    assert len(thinking_deltas) == 1
+    assert thinking_deltas[0].payload["delta"]["text_append"] == "raw provider thought"
 
 
 def _turn_id_of(history: list[Any]) -> str:

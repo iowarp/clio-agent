@@ -63,16 +63,6 @@
     },
     {
       "payload": {
-        "agent_id": "main",
-        "field": "answer",
-        "part_id": "<part#5>",
-        "text_append": "Hello ",
-        "turn_id": "<msg#1>"
-      },
-      "type": "turn.text.delta"
-    },
-    {
-      "payload": {
         "delta": {
           "text_append": "streamed "
         },
@@ -86,16 +76,6 @@
     },
     {
       "payload": {
-        "agent_id": "main",
-        "field": "answer",
-        "part_id": "<part#5>",
-        "text_append": "streamed ",
-        "turn_id": "<msg#1>"
-      },
-      "type": "turn.text.delta"
-    },
-    {
-      "payload": {
         "delta": {
           "text_append": "world."
         },
@@ -106,16 +86,6 @@
         "turn_id": "<msg#1>"
       },
       "type": "message.part.delta"
-    },
-    {
-      "payload": {
-        "agent_id": "main",
-        "field": "answer",
-        "part_id": "<part#5>",
-        "text_append": "world.",
-        "turn_id": "<msg#1>"
-      },
-      "type": "turn.text.delta"
     },
     {
       "payload": {
