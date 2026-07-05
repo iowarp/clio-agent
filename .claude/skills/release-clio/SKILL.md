@@ -59,7 +59,7 @@ git merge --no-ff develop -m "Merge develop: release vX.Y.Z — <summary>"
 ### 5. Verify locally BEFORE tagging (cheap; avoids failed CI cycles)
 ```sh
 uv version --short                     # == X.Y.Z
-uv run python -c "import clio_agent, clio_agent.config, clio_agent.gact.app, clio_agent.ui.api; print('ok')"
+uv run python -c "import clio_agent, clio_agent.config, clio_agent.gact.app, clio_agent.ui.cli; print('ok')"
 uv build && ls -lh dist/               # BOTH wheel AND sdist must be < 100 MB (PyPI limit)
 # confirm no direct/git deps leaked into wheel metadata:
 python3 -c "import zipfile,glob; z=zipfile.ZipFile(glob.glob('dist/*.whl')[0]); m=[n for n in z.namelist() if n.endswith('METADATA')][0]; print('git+ in METADATA:', any('git+' in l for l in z.read(m).decode().splitlines()))"

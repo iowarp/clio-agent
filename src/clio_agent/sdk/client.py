@@ -21,6 +21,7 @@ Example:
 
 from __future__ import annotations
 
+import builtins
 import logging
 from typing import Any, Literal
 
@@ -29,12 +30,17 @@ import httpx
 from clio_agent.sdk.errors import ClioConnectionError, error_from_response
 from clio_agent.sdk.events import EventStream
 from clio_agent.sdk.types import (
+    Agent,
     Capabilities,
     Health,
+    LMProvider,
     Message,
+    Metrics,
     PermissionList,
     PostMessageAck,
     Session,
+    Tool,
+    UserQuestion,
     Workspace,
 )
 
@@ -172,6 +178,61 @@ class ClioClient:
 
         return self.capabilities().supports(flag)
 
+    # -- catalog + config read surfaces -------------------------------- #
+
+    def agents(
+        self,
+        *,
+        tier: int | None = None,
+        session_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> list[Agent]:
+        """GET /v1/agents — the agent catalog (SPEC §6.5).
+
+        Built-in tier-1/2 experts first, then any user/skill agents.
+        ``tier`` filters to one tier server-side; ``session_id`` /
+        ``workspace_id`` scope which user agents are visible. Backs the
+        CLI's ``/experts`` and ``/registry``.
+        """
+
+        params = _drop_missing(
+            {"tier": tier, "session_id": session_id, "workspace_id": workspace_id}
+        )
+        response = self._request("GET", "/v1/agents", params=params or None)
+        return [Agent.model_validate(row) for row in response.json().get("agents", [])]
+
+    def tools(self) -> list[Tool]:
+        """GET /v1/tools — the unified live tool catalog (SPEC §6.5).
+
+        Every tool the bundled gateway and any installed third-party
+        MCP servers expose, flattened with owner/tags/visibility. Backs
+        the CLI's ``/tools``.
+        """
+
+        response = self._request("GET", "/v1/tools")
+        return [Tool.model_validate(row) for row in response.json().get("tools", [])]
+
+    def metrics(self) -> Metrics:
+        """GET /v1/metrics — aggregate runtime counters (SPEC §6.16).
+
+        Session/message rollups, token + cost totals, and per-tool
+        latency buckets. Backs the CLI's ``/metrics``.
+        """
+
+        response = self._request("GET", "/v1/metrics")
+        return Metrics.model_validate(response.json())
+
+    def lm_provider(self) -> LMProvider:
+        """GET /v1/providers/lm — the live LM config + presets.
+
+        Reports whether an agent is wired (``configured``), the bound
+        provider/model/endpoint, and the discovered context budget.
+        Backs the CLI's ``/models``.
+        """
+
+        response = self._request("GET", "/v1/providers/lm")
+        return LMProvider.model_validate(response.json())
+
 
 class SessionsAPI:
     """Session lifecycle (SPEC §6.2) + the per-session SSE feed (§7)."""
@@ -302,6 +363,62 @@ class SessionsAPI:
             reconnect_attempts=reconnect_attempts,
             reconnect_wait_s=reconnect_wait_s,
         )
+
+    # -- ask-user clarifying questions (#333) -------------------------- #
+
+    # NB: ``builtins.list`` because the ``list`` method above shadows the builtin in
+    # annotations that follow it in this class body (a class-scope name collision).
+    def questions(
+        self, session_id: str, *, status: str | None = None
+    ) -> builtins.list[UserQuestion]:
+        """GET /v1/sessions/{sid}/questions — the ask-user question log.
+
+        When the agent pauses a turn to ask the user something, the session
+        moves to ``waiting_user`` and the pending :class:`UserQuestion` lands
+        here. ``status`` filters server-side (e.g. ``"pending"``); rows come
+        back newest-first.
+        """
+
+        params = _drop_missing({"status": status})
+        response = self._client._request(
+            "GET", f"/v1/sessions/{session_id}/questions", params=params or None
+        )
+        return [UserQuestion.model_validate(row) for row in response.json().get("questions", [])]
+
+    def answer_question(
+        self,
+        session_id: str,
+        question_id: str,
+        *,
+        answer: str = "",
+        option_id: str | None = None,
+        selected_options: builtins.list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> UserQuestion:
+        """POST /v1/sessions/{sid}/questions/{qid}/answer — resolve a pending
+        ask-user question.
+
+        Pass ``answer`` for a freeform reply and/or ``option_id`` (or the
+        richer ``selected_options`` list) to pick a choice. Answering the
+        last pending question on a ``resume_on_answer`` question stages a
+        background resume turn on the SAME session that continues the same
+        assistant message — so keep consuming the event feed afterwards.
+        """
+
+        selected = list(selected_options or [])
+        if option_id:
+            selected.append(option_id)
+        body: dict[str, Any] = {
+            "answer": answer,
+            "selected_options": selected,
+            "metadata": metadata or {},
+        }
+        response = self._client._request(
+            "POST",
+            f"/v1/sessions/{session_id}/questions/{question_id}/answer",
+            json=body,
+        )
+        return UserQuestion.model_validate(response.json())
 
 
 class MessagesAPI:

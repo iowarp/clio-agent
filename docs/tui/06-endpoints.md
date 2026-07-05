@@ -1,14 +1,16 @@
 # 06 — Endpoints
 
-> Every surface a TUI can hit today. Source: `src/clio_agent/ui/cli.py`, `ui/api.py`, `pyproject.toml`.
+> Every surface a TUI can hit today. Source: `src/clio_agent/ui/cli.py`, `gact/app.py`, `pyproject.toml`.
 
 ## Console entry points
 
 From `pyproject.toml` (`[project.scripts]`):
 
 ```toml
-clio-agent     = "clio_agent.ui.cli:run_cli"
-clio-agent-api = "clio_agent.ui.api:main"
+clio-agent      = "clio_agent.ui.cli:main"
+clio-agent-gact = "clio_agent.gact.app:main"
+# clio-agent-api is a removed-shim entry point: it prints a pointer to
+# clio-agent-gact and exits non-zero (clio_agent.ui._deprecated_api:main).
 ```
 
 ## CLI — interactive + one-shot
@@ -45,69 +47,21 @@ $ clio-agent --query "Optimize my HDF5?" [--session SID] [--json] [--verbose]
 
 Prints `{"answer","selected_expert","session_id","duration_ms","error_info"}` with `--json`. Handy for scripted integration or testing without a server.
 
-## REST API — `clio-agent-api`
+## REST API — REMOVED (`clio-agent-api`)
 
-Module: `ui/api.py`. FastAPI + Uvicorn. Default `:8000`.
+The legacy `clio-agent-api` REST server (`ui/api.py`, `POST /query`, `GET
+/health`, `GET /experts`, `GET /metrics` on `:8000`) has been **removed**. CLIO
+now has a single HTTP front door: the unified GACT server below. The
+`clio-agent-api` console script survives only as a deprecation shim — it prints
+a pointer to `clio-agent-gact` and exits non-zero.
 
-```
-$ clio-agent-api --host 0.0.0.0 --port 8000 [--reload]
-```
-
-### Lifecycle
-
-On startup (`api.py:103-138`):
-1. `load_config_from_env()` → `LMProviderConfig`
-2. `setup_dspy()`
-3. `ClioAgent()` → attached to `app.state.agent`
-4. `app.state.healthy = True` once init succeeds
-
-On shutdown: `agent.shutdown()` if available.
-
-### Routes
-
-| Method | Path | Body | Response | Status codes |
-|---|---|---|---|---|
-| **POST** | `/query` | `{"question": str, "session_id": str?, "stream": bool?}` | JSON `QueryResponse` **or** SSE stream | 200, 422 (validation), 500, 503 (degraded) |
-| **GET** | `/health` | — | `{status, version, provider, environment, overall_status, integrations[], error?}` | 200 / 503 |
-| **GET** | `/experts` | — | `{experts: [{id, description, keywords, tools}]}` | 200 |
-| **GET** | `/metrics` | — | `{metrics: {agent_id → Metrics}}` | 200 |
-
-### `QueryResponse`
-
-```json
-{
-  "answer": "string",
-  "selected_expert": "data|analysis|visualization|chat|none",
-  "session_id": "string",
-  "duration_ms": 1234.5,
-  "error_info": null | {"error": "expert_error", "message": "...", "details": {...}}
-}
-```
-
-### Legacy SSE completion
-
-When `stream: true`, the legacy `/query` response is still
-`text/event-stream`, but it is not live token streaming. The API emits
-an SSE envelope around a completed answer:
-
-```
-event: routing
-data: {"selected_expert": "data"}
-
-event: done
-data: {"duration_ms": 1234.5, "selected_expert": "data", "stream_source": "batch"}
-```
-
-> **Note:** legacy `/query` no longer emits synthetic `chunk` events.
-> The completed answer is labeled with `stream_source="batch"`
-> and `stream_fallback.reason="legacy_query_sync_path"`. Use native GACT
-> `/v1/sessions/{sid}/events` for best-effort live provider-token streaming.
-
-This section describes the legacy `clio-agent-api` surface. The primary TUI integration uses the native GACT backend below.
+Migration: start `clio-agent-gact --host 0.0.0.0 --port 8100` and use the `/v1`
+API. Health moved from `/health` to `/v1/health`; per-session live streaming is
+at `/v1/sessions/{sid}/events`.
 
 ## GACT API — `clio-agent-gact`
 
-Module: `gact/app.py`. FastAPI + Uvicorn. It is a peer of `clio-agent-api`, not a thin translator over `/query`.
+Module: `gact/app.py`. FastAPI + Uvicorn. The single HTTP front door.
 
 ```
 $ clio-agent-gact --host 127.0.0.1 --port 17800

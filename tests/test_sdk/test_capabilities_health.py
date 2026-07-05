@@ -56,6 +56,10 @@ def test_health_is_typed_with_integrations(client: ClioClient) -> None:
     assert health.overall_status in {"ready", "degraded", "unavailable"}
     assert health.integrations, "v0.2 health must include integrations[]"
     names = {row.name for row in health.integrations}
-    assert "sessions" in names
+    # #800 unified /v1/health onto the runtime doctor: the rows are now the rich
+    # probe set (api/arc/lm_provider/file_policy/gateway/...) instead of the old
+    # hand-rolled api/sessions/agent/memory five. ``api`` is the always-present
+    # row (api_state=READY is reported in-process on every call).
+    assert "api" in names
     for row in health.integrations:
         assert row.status in {"ready", "degraded", "unavailable"}

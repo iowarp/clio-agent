@@ -13,10 +13,10 @@ Or::
 
     uvicorn clio_agent.gact.app:app --host 127.0.0.1 --port 8100
 
-This is a peer of ``clio_agent.ui.api`` (the native CLIO REST API),
-not a replacement — both can run side-by-side. The TUI integration
-target is the GACT app; existing CLI + direct-Python callers keep
-using the native API unchanged.
+This is CLIO's single HTTP front door. The legacy ``clio_agent.ui.api``
+REST server has been removed; the ``clio-agent-api`` console script is now
+a deprecation shim that points here. The CLI (``clio-agent``) is a client
+of this same GACT surface.
 """
 
 from __future__ import annotations
@@ -2644,6 +2644,55 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+def run_server(
+    host: str = "127.0.0.1",
+    port: int = 8100,
+    *,
+    reload: bool = False,
+    no_agent: bool = False,
+) -> None:
+    """Build the GACT app and run it in the foreground via uvicorn.
+
+    This is the single foreground-serve path shared by the
+    ``clio-agent-gact`` console script (:func:`main`) and the
+    ``clio-agent serve`` subcommand. It blocks until the server exits.
+
+    When ``CLIO_LM_PROVIDER`` is set (and ``no_agent`` is False) the real
+    ``ClioAgent`` is constructed by the lifespan startup task so POST
+    /messages drives a real LM; otherwise the app runs agent-less (fine for
+    capability introspection, 503s on /messages).
+
+    Args:
+        host: Bind host.
+        port: Bind port.
+        reload: uvicorn auto-reload on source changes (dev only).
+        no_agent: Skip ClioAgent construction even when LM env is configured.
+    """
+    import uvicorn
+
+    # Resolve trace verbosity (file→env→default) and install the formatted log
+    # handler for the server process, now that the environment is settled.
+    trace.configure()
+
+    # Always build a fresh app here — the module-level ``app`` symbol is
+    # intentionally lazy (see __getattr__ above) so that just importing
+    # ``clio_agent.gact.app`` doesn't pay build_app's cost. When the env
+    # requests an agent we set want_agent so the lifespan startup task
+    # constructs ClioAgent in the background — uvicorn binds the port
+    # immediately, beating gact-tui's 3-second deploy probe. POST /messages
+    # 503s until app.state.agent is stamped by the background task.
+    app_to_run: FastAPI = build_app()
+    if not no_agent and os.environ.get("CLIO_LM_PROVIDER"):
+        app_to_run.state.want_agent = True
+
+    uvicorn.run(
+        app_to_run,
+        host=host,
+        port=port,
+        reload=reload,
+    )
+
+
 def main() -> None:
     """Console-script entry point.
 
@@ -2652,8 +2701,6 @@ def main() -> None:
     Otherwise the module-level ``app`` (no agent wired) runs, which
     is fine for capability introspection but 503s on /messages.
     """
-
-    import uvicorn
 
     parser = argparse.ArgumentParser(
         prog="clio-agent-gact",
@@ -2689,25 +2736,9 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Resolve trace verbosity (file→env→default) and install the formatted log
-    # handler for the server process, now that the environment is settled.
-    trace.configure()
-
-    # Always build a fresh app inside main() — the module-level
-    # ``app`` symbol is intentionally lazy (see __getattr__ above) so
-    # that just importing ``clio_agent.gact.app`` doesn't pay
-    # build_app's cost. When the env requests an agent we set
-    # want_agent so the lifespan startup task constructs ClioAgent
-    # in the background — uvicorn binds the port immediately, beating
-    # gact-tui's 3-second deploy probe. POST /messages 503s until
-    # app.state.agent is stamped by the background task.
-    app_to_run: FastAPI = build_app()
-    if not args.no_agent and os.environ.get("CLIO_LM_PROVIDER"):
-        app_to_run.state.want_agent = True
-
-    uvicorn.run(
-        app_to_run,
+    run_server(
         host=args.host,
         port=args.port,
         reload=args.reload,
+        no_agent=args.no_agent,
     )

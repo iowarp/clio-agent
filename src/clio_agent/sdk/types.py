@@ -57,11 +57,24 @@ class ErrorInfo(_WireModel):
 
 
 class Integration(_WireModel):
-    """One subsystem row in ``/v1/health.integrations[]`` (SPEC §3.4)."""
+    """One subsystem row in ``/v1/health.integrations[]`` (SPEC §3.4).
+
+    ``name``/``status``/``detail`` are the back-compat triple every
+    reader already parses. The richer optional fields (#800) carry the
+    full doctor detail (``clio_agent.gact.types.Integration`` widened it
+    at the wire) so ``client.health().integrations`` renders the same
+    columns as the server's ``render_doctor_report`` — summary, config
+    source, endpoint, next action. All additive and default ``None`` so
+    older backends (which omit them) still deserialize.
+    """
 
     name: str
     status: str  # "ready" | "degraded" | "unavailable"
     detail: str = ""
+    summary: str | None = None
+    config_source: str | None = None
+    next_action: str | None = None
+    endpoint: str | None = None
 
 
 class Health(_WireModel):
@@ -294,3 +307,203 @@ class PermissionList(_WireModel):
 
     permissions: list[PermissionRequest] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+# --------------------------------------------------------------------------- #
+# ask-user / clarifying-question protocol (#333)
+# --------------------------------------------------------------------------- #
+
+
+class UserQuestionOption(_WireModel):
+    """One selectable option on a ``choice``/``confirmation`` question."""
+
+    label: str = ""
+    value: str = ""
+    description: str = ""
+
+
+class UserQuestion(_WireModel):
+    """A clarifying question the agent paused the turn to ask.
+
+    Mirrors the server's ``clio_agent.gact.types.UserQuestion`` wire shape
+    (only the client-relevant subset is declared; anything richer is
+    preserved via ``extra="allow"``). Returned by
+    ``GET /v1/sessions/{sid}/questions`` and the answer endpoint. While a
+    question is ``pending`` the session sits in ``waiting_user``; answering
+    the last pending question resumes the turn on the same session.
+    """
+
+    id: str
+    session_id: str = ""
+    prompt: str = ""
+    status: str = "pending"
+    kind: str = "freeform"
+    options: list[UserQuestionOption] = Field(default_factory=list)
+    created_at: str = ""
+    updated_at: str = ""
+    expires_at: str = ""
+    source: str = "orchestrator"
+    turn_id: str = ""
+    attempt_id: str = ""
+    answer: str = ""
+    selected_options: list[str] = Field(default_factory=list)
+    answer_metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+# --------------------------------------------------------------------------- #
+# §6.5 — agent catalog
+# --------------------------------------------------------------------------- #
+
+
+class Agent(_WireModel):
+    """One row in ``GET /v1/agents`` (SPEC §6.5 + v0.2 §4.3.1).
+
+    Mirrors the client-relevant subset of the server's ``AgentDef``:
+    the display triple (``id``/``title``/``description``), the routing
+    metadata the CLI's ``/experts`` and ``/registry`` render (``tier``/
+    ``specialization``/``keywords``), and the curated surface lists.
+    Anything richer on the wire (e.g. ``capability_refs``, ``module``,
+    ``signature``) is preserved via ``extra="allow"``.
+
+    Note the wire key is ``title``, not ``name`` — the CLI shows
+    :attr:`title` (falling back to :attr:`id`) as the agent's name.
+    """
+
+    id: str
+    source: str = "builtin"
+    title: str = ""
+    description: str = ""
+    parent_id: str = ""
+    tier: int = 0
+    specialization: str = ""
+    keywords: list[str] = Field(default_factory=list)
+    tools: list[str] = Field(default_factory=list)
+    skills: list[str] = Field(default_factory=list)
+    commands: list[str] = Field(default_factory=list)
+    enabled: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+# --------------------------------------------------------------------------- #
+# §6.5 / §6.6 — unified tool catalog
+# --------------------------------------------------------------------------- #
+
+
+class Tool(_WireModel):
+    """One row in the unified ``GET /v1/tools`` catalog (SPEC §6.5).
+
+    Flattens every tool the bundled in-process gateway and any installed
+    third-party MCP servers expose. ``server_id``/``source`` say where a
+    tool comes from; error rows (a server that failed introspection) set
+    ``source="error"`` and carry the reason in ``description`` — surfaced,
+    never dropped (no silent fallback).
+    """
+
+    id: str = ""
+    name: str = ""
+    description: str = ""
+    server_id: str = ""
+    source: str = ""
+    permission_default: str = "ask"
+    owner: str = ""
+    tags: list[str] = Field(default_factory=list)
+    visible_to: list[str] = Field(default_factory=list)
+    input_schema: dict[str, Any] = Field(default_factory=dict)
+    output_schema: dict[str, Any] = Field(default_factory=dict)
+
+
+# --------------------------------------------------------------------------- #
+# §6.16 — /v1/metrics
+# --------------------------------------------------------------------------- #
+
+
+class MetricsSessions(_WireModel):
+    total: int = 0
+    active: int = 0
+    by_status: dict[str, int] = Field(default_factory=dict)
+
+
+class MetricsMessages(_WireModel):
+    total: int = 0
+    by_role: dict[str, int] = Field(default_factory=dict)
+
+
+class MetricsTokens(_WireModel):
+    input_total: int = 0
+    output_total: int = 0
+    cache_read_total: int = 0
+    cache_write_total: int = 0
+
+
+class MetricsCost(_WireModel):
+    total_usd: float = 0.0
+    by_provider: dict[str, float] = Field(default_factory=dict)
+
+
+class MetricsLatencyStat(_WireModel):
+    count: int = 0
+    p50_ms: float = 0.0
+    p95_ms: float = 0.0
+    max_ms: float = 0.0
+
+
+class Metrics(_WireModel):
+    """GET /v1/metrics body — SPEC §6.16. Aggregate runtime counters."""
+
+    uptime_s: int = 0
+    sessions: MetricsSessions = Field(default_factory=MetricsSessions)
+    messages: MetricsMessages = Field(default_factory=MetricsMessages)
+    tokens: MetricsTokens = Field(default_factory=MetricsTokens)
+    cost: MetricsCost = Field(default_factory=MetricsCost)
+    latencies: dict[str, MetricsLatencyStat] = Field(default_factory=dict)
+
+
+# --------------------------------------------------------------------------- #
+# §6 — /v1/providers/lm (LM config)
+# --------------------------------------------------------------------------- #
+
+
+class LMProviderPreset(_WireModel):
+    """One row in the provider picker (subset of the server's shape)."""
+
+    id: str = ""
+    label: str = ""
+    provider: str = ""
+    api_base: str = ""
+    suggested_model: str = ""
+    requires_api_key: bool = True
+    auth_method: str = "api_key"
+    is_authenticated: bool = False
+    description: str = ""
+    status: str = "unknown"
+    status_message: str = ""
+
+
+class LMProvider(_WireModel):
+    """GET /v1/providers/lm body (server type ``LMProviderInfo``).
+
+    Reports the live LM config the CLI's ``/models`` renders: whether an
+    agent is wired (``configured``), the bound provider/model/endpoint,
+    the sampling + context budget, and the enumerated ``presets`` the
+    picker offers. ``api_key`` is never on the wire.
+    """
+
+    configured: bool = False
+    provider: str = ""
+    api_base: str = ""
+    model: str = ""
+    temperature: float = 0.0
+    max_tokens: int = 0
+    context_length: int = 0
+    chosen_context: int | None = None
+    context_window: int | None = None
+    is_reasoning: bool = False
+    native_tool_calling: bool = False
+    thinking_budget: int = 0
+    transport: str | None = None
+    state: str = "idle"
+    status_message: str = ""
+    error: str = ""
+    operation_id: str = ""
+    presets: list[LMProviderPreset] = Field(default_factory=list)

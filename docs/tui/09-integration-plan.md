@@ -29,7 +29,7 @@ clio-agent-gact (FastAPI, src/clio_agent/gact/app.py)
 ClioAgent
 ```
 
-The legacy `clio-agent-api` process still exposes `/query`, `/health`, `/experts`, and `/metrics`, but it is not the primary TUI integration surface.
+The legacy `clio-agent-api` process (`/query`, `/health`, `/experts`, `/metrics`) has been removed; its console script is now a deprecation shim pointing at `clio-agent-gact`. The GACT `/v1` surface below is the single TUI integration front door.
 
 ## Native GACT Mapping
 

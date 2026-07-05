@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from clio_agent.sdk import ClioClient, NotFoundError, Session
+from clio_agent.sdk import ClioClient, NotFoundError, Session, UserQuestion
 
 
 def test_session_lifecycle_round_trip(client: ClioClient) -> None:
@@ -64,3 +64,56 @@ def test_session_fork_sets_parent_and_store_defaults(client: ClioClient) -> None
 def test_fork_unknown_session_raises_not_found(client: ClioClient) -> None:
     with pytest.raises(NotFoundError):
         client.sessions.fork("sess_missing")
+
+
+def test_questions_and_answer_round_trip(client: ClioClient) -> None:
+    """The ask-user question surface round-trips through the SDK: a seeded
+    pending question is listed, answered, and then no longer pending."""
+
+    sess = client.sessions.create(title="ask-user round trip")
+    # Seed a pending question the way the orchestrator would (no
+    # resume_on_answer, so answering just settles the session — no agent
+    # needed for this SDK-level check).
+    created = client._request(
+        "POST",
+        f"/v1/sessions/{sess.id}/questions",
+        json={"prompt": "Which dataset should I analyze?", "kind": "freeform"},
+    )
+    assert created.status_code == 201
+
+    pending = client.sessions.questions(sess.id, status="pending")
+    assert len(pending) == 1
+    assert isinstance(pending[0], UserQuestion)
+    assert pending[0].prompt == "Which dataset should I analyze?"
+    assert pending[0].status == "pending"
+
+    answered = client.sessions.answer_question(sess.id, pending[0].id, answer="the HDF5 one")
+    assert isinstance(answered, UserQuestion)
+    assert answered.status == "answered"
+    assert answered.answer == "the HDF5 one"
+
+    assert client.sessions.questions(sess.id, status="pending") == []
+
+
+def test_answer_question_with_option_selection(client: ClioClient) -> None:
+    """``option_id`` is sent as a selected option and validated server-side."""
+
+    sess = client.sessions.create(title="choice question")
+    created = client._request(
+        "POST",
+        f"/v1/sessions/{sess.id}/questions",
+        json={
+            "prompt": "Pick a compressor",
+            "kind": "choice",
+            "options": [
+                {"label": "GZIP", "value": "gzip"},
+                {"label": "LZF", "value": "lzf"},
+            ],
+        },
+    )
+    assert created.status_code == 201
+    qid = created.json()["id"]
+
+    answered = client.sessions.answer_question(sess.id, qid, option_id="lzf")
+    assert answered.status == "answered"
+    assert "lzf" in answered.selected_options
