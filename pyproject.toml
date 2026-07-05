@@ -143,7 +143,7 @@ Issues = "https://github.com/iowarp/clio-agent/issues"
 
 [project.scripts]
 clio-agent = "clio_agent.ui.cli:main"
-clio-agent-api = "clio_agent.ui.api:main"
+clio-agent-api = "clio_agent.ui._deprecated_api:main"
 # GACT v0.2 surface. Peer of clio-agent-api; runs on its own port.
 # See docs/tui/ for the integration spec. Wired in CLIO-BBBBBBBBBB6;
 # real endpoints come online in CLIO-BBBBBBBBBB7-12.

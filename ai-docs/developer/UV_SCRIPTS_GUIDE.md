@@ -1079,7 +1079,7 @@ all = [
 
 [project.scripts]
 clio-agent = "clio_agent.ui.cli:run_cli"
-clio-agent-api = "clio_agent.ui.api:main"
+clio-agent-gact = "clio_agent.gact.app:main"
 ```
 
 ### Installing CLIO Agent

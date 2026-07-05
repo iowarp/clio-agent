@@ -236,7 +236,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
         file_policy, api, clio_core) instead of the old hand-rolled five.
 
         ``api_state=READY`` reports the API in-process — the probe must never
-        re-HTTP this very endpoint (mirrors ``ui/api.py``). The collection runs in
+        re-HTTP this very endpoint. The collection runs in
         a worker thread so the gateway/backend probes never block the event loop,
         and never triggers an LM handshake (a polled endpoint must not block on
         OAuth/model discovery); the LM handshake is folded in from cache only.

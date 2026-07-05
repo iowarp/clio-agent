@@ -70,8 +70,8 @@ User query (CLI / REST / A2A)
 | Mode | Entry point | Protocol | State |
 |---|---|---|---|
 | Interactive CLI | `uv run src/clio_agent/ui/cli.py` | Rich terminal UI | live |
-| REST API | `uv run src/clio_agent/ui/api.py --host 127.0.0.1 --port 8000` | HTTP (FastAPI/Uvicorn) | live, basic endpoints |
-| Docker | `docker-compose up` / `Dockerfile` | HTTP :8000 | live |
+| REST API | `clio-agent-gact --host 127.0.0.1 --port 8100` | HTTP (FastAPI/Uvicorn) | live, `/v1` API |
+| Docker | `docker-compose up` / `Dockerfile` | HTTP :8100 | live |
 | Python library | `from clio_agent import ClioAgent` | in-process | planned |
 | A2A | future HTTP task API | HTTP / formal A2A | v0.8 |
 
@@ -114,8 +114,8 @@ Natural-language prompts route through the Main Agent → Expert → tools, stre
 ### REST API (secondary)
 
 ```
-$ uv run src/clio_agent/ui/api.py --host 127.0.0.1 --port 8000
-$ curl -X POST http://localhost:8000/query \
+$ clio-agent-gact --host 127.0.0.1 --port 8100
+$ curl -X POST http://localhost:8100/v1/sessions/default/messages \
     -H "Content-Type: application/json" \
     -d '{"question": "What datasets are in /tmp/clio-agent-demo/clio_demo.h5?"}'
 ```

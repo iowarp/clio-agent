@@ -66,7 +66,7 @@ CLIO is **both**:
 - **MCP server** — the `gateway` object can be served as a standalone MCP endpoint:
   - in-memory (`async with Client(gateway)`) — used in tests.
   - stdio subprocess.
-  - HTTP: `gateway.http_app()` wrapped in Uvicorn (default not exposed by `clio-agent-api`).
+  - HTTP: `gateway.http_app()` wrapped in Uvicorn (not exposed by the `clio-agent-gact` front door by default).
 
 **For the TUI:** if CLIO ever exposes its MCP over HTTP/SSE, the TUI could drive tools directly without going through the expert-dispatch layer — but today it's internal.
 

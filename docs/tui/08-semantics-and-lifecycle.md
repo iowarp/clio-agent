@@ -103,12 +103,9 @@ Current limitation: the chat `answer` path can stream live when the upstream DSP
 
 Tests: `tests/test_gact/test_streaming.py`.
 
-The legacy `clio-agent-api` `/query` endpoint still has its own SSE
-shape (`routing`, `done`) and returns a completed answer with
-`stream_source="batch"` plus
-`stream_fallback.reason="legacy_query_sync_path"`. It does not emit live
-provider-token deltas or synthetic chunk events; use native GACT events
-for best-effort live streaming.
+The legacy `clio-agent-api` `/query` endpoint has been **removed** (its
+console script is now a deprecation shim). Use native GACT events
+(`/v1/sessions/{sid}/events`) for best-effort live streaming.
 
 ## Error semantics
 
@@ -292,8 +289,8 @@ agent.shutdown()                                 # flush ARC + close LSM
 For a server-mode equivalent:
 
 ```bash
-$ clio-agent-api --host 127.0.0.1 --port 8000 &
-$ curl -s -X POST http://127.0.0.1:8000/query \
+$ clio-agent-gact --host 127.0.0.1 --port 8100 &
+$ curl -s -X POST http://127.0.0.1:8100/v1/sessions/abc/messages \
     -H 'Content-Type: application/json' \
     -d '{"question":"Hi","session_id":"abc"}'
 # → {"answer":"...","selected_expert":"chat","session_id":"abc","duration_ms":...,"error_info":null}

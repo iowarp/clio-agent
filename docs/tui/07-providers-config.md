@@ -114,8 +114,8 @@ If a reasoning model still cannot produce valid planner JSON, CLIO should surfac
 | Mode | Start | State |
 |---|---|---|
 | Interactive CLI | `clio-agent` or `uv run src/clio_agent/ui/cli.py` | live |
-| REST API | `clio-agent-api --host 0.0.0.0 --port 8000` | live |
-| Docker | `docker compose up` | live (Uvicorn on :8000, health every 30 s) |
+| REST API | `clio-agent-gact --host 0.0.0.0 --port 8100` | live |
+| Docker | `docker compose up` | live (Uvicorn on :8100, health every 30 s) |
 | Python library | `from clio_agent import ClioAgent` | live (sync) |
 | A2A task API | — | v0.8 |
 

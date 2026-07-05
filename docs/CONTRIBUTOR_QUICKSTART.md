@@ -33,7 +33,7 @@ export CLIO_ALLOWED_ROOTS=/home/akougkas/iowarp/clio-agent:/tmp
 uv run src/clio_agent/ui/cli.py doctor
 uv run scripts/create_demo_data.py --output-dir /tmp/clio-agent-demo
 uv run src/clio_agent/ui/cli.py
-uv run src/clio_agent/ui/api.py --port 8000
+uv run clio-agent-gact --host 0.0.0.0 --port 8100
 ```
 
 ## 4) Where to put code

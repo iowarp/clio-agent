@@ -25,7 +25,7 @@ Use `uv` for environment and command execution:
 - `uv run pytest tests/` runs the full test suite with coverage output.
 - `uv run src/clio_agent/ui/cli.py doctor` reports runtime truth for LM, tools, file policy, API, and `clio-core`.
 - `uv run src/clio_agent/ui/cli.py` starts the interactive CLI.
-- `uv run src/clio_agent/ui/api.py --port 8000` starts the REST API locally.
+- `uv run clio-agent-gact --host 0.0.0.0 --port 8100` starts the unified GACT server (the `/v1` REST/SSE API, health at `/v1/health`).
 
 ## Coding Style & Naming Conventions
 Target Python 3.12 with 4-space indentation and type hints on public interfaces. Keep lines readable within the configured `line-length = 100`. Follow existing naming:
