@@ -303,3 +303,48 @@ def test_main_doctor_runs_in_process_without_a_server(monkeypatch: Any) -> None:
 
     assert excinfo.value.code == 0
     assert ran["doctor"] is True  # dispatched in-process, no server booted
+
+
+def test_main_serve_runs_gact_server_in_foreground(monkeypatch: Any) -> None:
+    """``clio-agent serve --host --port`` must dispatch to the gact foreground
+    runner with the parsed host/port — running the SAME server the
+    ``clio-agent-gact`` console script runs, in-process. It must NEVER
+    connect-or-spawn a client server, and NEVER actually bind a socket (the
+    gact runner is monkeypatched)."""
+    import clio_agent.gact.app as gact_app
+    import clio_agent.ui.cli as cli_mod
+
+    def _no_spawn(*_a: Any, **_k: Any) -> str:
+        raise AssertionError("`clio-agent serve` must not connect-or-spawn a client server")
+
+    monkeypatch.setattr(cli_mod.serve, "ensure_server", _no_spawn)
+    monkeypatch.setattr(cli_mod, "boot_client", _no_spawn)
+
+    calls: list[dict[str, Any]] = []
+
+    def _fake_run_server(host: str = "127.0.0.1", port: int = 8100, **kwargs: Any) -> None:
+        # Records the args and returns immediately — never binds a socket.
+        calls.append({"host": host, "port": port, **kwargs})
+
+    monkeypatch.setattr(gact_app, "run_server", _fake_run_server)
+    monkeypatch.setattr(sys, "argv", ["clio-agent", "serve", "--port", "0", "--host", "127.0.0.1"])
+
+    # serve returns (no SystemExit) after the foreground runner returns.
+    main()
+
+    assert calls == [{"host": "127.0.0.1", "port": 0}]
+
+
+def test_serve_is_a_parser_choice() -> None:
+    """``serve`` must be an accepted positional command (alongside ``doctor``),
+    so argparse does not reject it with exit 2."""
+    import argparse
+
+    # Mirror cli.main()'s positional command spec.
+    parser = argparse.ArgumentParser()
+    parser.add_argument("command", nargs="?", choices=["doctor", "serve"])
+    args = parser.parse_args(["serve"])
+    assert args.command == "serve"
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["nonsense-command"])

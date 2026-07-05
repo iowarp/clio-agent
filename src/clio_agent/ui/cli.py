@@ -22,12 +22,20 @@ probe engine (:func:`clio_agent.runtime.status.collect_runtime_status`)
 ``/doctor`` instead renders the *server's* health view via the SDK. Two access
 paths, one engine.
 
+The ``serve`` subcommand is the front door's serve verb: it runs the GACT
+server in the foreground on this process (the same server the
+``clio-agent-gact`` console script runs), so a single ``clio-agent`` binary is
+both the client and the server launcher.
+
 Example:
     # Interactive (connect-or-spawn the server, then talk to it)
     $ uv run src/clio_agent/ui/cli.py
 
     # Diagnose locally without a server
     $ uv run src/clio_agent/ui/cli.py doctor
+
+    # Run the GACT server in the foreground
+    $ uv run src/clio_agent/ui/cli.py serve --host 0.0.0.0 --port 8100
 """
 
 import sys
@@ -764,6 +772,23 @@ def run_cli(verbose: bool = False, *, port: int = 8100, host: str = "127.0.0.1")
         client.close()
 
 
+def run_serve(*, host: str = "127.0.0.1", port: int = 8100) -> None:
+    """Run the GACT server IN THE FOREGROUND on this process.
+
+    ``clio-agent serve`` is the single front door's serve verb: it runs the
+    exact same server the ``clio-agent-gact`` console script runs, by calling
+    that module's foreground runner directly (no re-exec, no background spawn).
+    Blocks until the server exits.
+
+    Args:
+        host: Bind host.
+        port: Bind port.
+    """
+    from clio_agent.gact.app import run_server
+
+    run_server(host=host, port=port)
+
+
 def run_query(
     query: str,
     *,
@@ -824,8 +849,12 @@ def main() -> None:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=["doctor"],
-        help="Optional command. Use 'doctor' to inspect runtime integrations (in-process).",
+        choices=["doctor", "serve"],
+        help=(
+            "Optional command. 'doctor' inspects runtime integrations "
+            "(in-process); 'serve' runs the GACT server in the foreground "
+            "(same server as clio-agent-gact; honors --host/--port)."
+        ),
     )
     parser.add_argument(
         "--verbose", "-v", action="store_true", help="Show routing reasoning and latency"
@@ -861,6 +890,13 @@ def main() -> None:
 
     if args.command == "doctor":
         sys.exit(run_doctor(json_output=args.json))
+
+    # Serve mode: run the GACT server in the foreground on this process,
+    # calling the gact app's foreground runner directly (no server spawn /
+    # client boot). Blocks until the server exits.
+    if args.command == "serve":
+        run_serve(host=args.host, port=args.port)
+        return
 
     # Tune mode (#801): the optimizer is a research surface — return the
     # uniform structured not-implemented stub. No LM setup, no server needed.
