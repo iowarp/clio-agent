@@ -1,10 +1,32 @@
 # System Cleanup Program — 2026-07 Audit
 
-**Status:** planned · **Origin:** 2026-07-01 nine-reviewer architecture & code-quality audit of
+**Status:** Phases 0–1 complete (2026-07-05); Phases 2–4 open · **Origin:** 2026-07-01 nine-reviewer
+architecture & code-quality audit of
 `clio-agent` + `gact-tui` · **Tracking:** [clio-agent umbrella #775](https://github.com/iowarp/clio-agent/issues/775),
 [gact-tui umbrella #237](https://github.com/iowarp/gact-tui/issues/237) · all issues labeled `audit-2026-07`.
 
 This is the master plan. The gact-tui pointer doc is `docs/system-cleanup-2026-07.md` in that repo.
+
+---
+
+## 0. Execution status (living)
+
+Kept current as work lands; the running per-PR log is the umbrella #775.
+
+- **Phase 0 — surgical fixes: ✅ COMPLETE.** All P0s #755–#766 closed. Most were already fixed in
+  earlier PRs and only needed closing (confirm-still-present caught this); #761 needed real work.
+- **Phase 1 — deletion release: ✅ COMPLETE (2026-07-05).** #768 landed in full — the banned
+  deterministic guards and dead layers are grep-verified gone from `develop`. It bundled #766 and
+  the rest of #765 (both closed in the Phase 0 sweep). #768's three "explicit decisions" became
+  their own issues, all now closed: **#799** (one front door — the CLI is a gact client, `ui/api.py`
+  removed, entry points unified), **#800** (one doctor — `/v1/health` on the single
+  `collect_runtime_status` probe engine), **#801** (optimizer = honest not-implemented stub).
+  Closing PRs: #795–#798, #828, and #829 (#799 + #800 shipped as one unit). The writer-less ARC
+  structs (`DatasetProfile`/`ProceduralMemory`) were descoped by the owner (kept as useful).
+- **Phases 2–4 — open.** Phase 2: #767 (TurnTranscript — PRs 1–3 landed, PR-4+ open) + gact-tui
+  #232. Phase 3: #769 / #771 / #772 / #773 + gact-tui #233. Phase 4: #774 + gact-tui #234/#235 +
+  **#830** (converge the server entry point → one `clio-agent` executable + one container
+  port/healthcheck — a #829 follow-up).
 
 ---
 
@@ -35,7 +57,7 @@ This is the master plan. The gact-tui pointer doc is `docs/system-cleanup-2026-0
 ## 2. Exit criteria (measurable)
 
 - [ ] Live transcript == reloaded transcript, by construction (single-writer ledger; no client-side dedup) — #767, gact-tui #232
-- [ ] Zero prose-keyword routing/completion/veto heuristics in core (⚑ principle 1 clean) — #768
+- [x] Zero prose-keyword routing/completion/veto heuristics in core (⚑ principle 1 clean) — #768 ✅
 - [ ] `grep -c "except Exception" src/` classified; zero unlogged degraded paths; ruff BLE001/S110/E722 enforced — #772
 - [ ] 100% of read env vars documented; `CLIO_LM_*` through `conf.resolve`; `.env.example` exists — #769
 - [ ] `git status` clean after a normal run (no model_limits churn, no root artifacts) — #763, #774
@@ -103,6 +125,7 @@ Full evidence lives in the issue bodies; one line each here.
 | [#772](https://github.com/iowarp/clio-agent/issues/772) | Silent-fallback sweep |
 | [#773](https://github.com/iowarp/clio-agent/issues/773) | Test depth |
 | [#774](https://github.com/iowarp/clio-agent/issues/774) | Repo & meta-doc hygiene |
+| [#830](https://github.com/iowarp/clio-agent/issues/830) | Converge server entry points: one `clio-agent` exe + one container port/healthcheck (Phase 4; #829 follow-up) |
 
 ### gact-tui — P0 defects
 
@@ -129,13 +152,15 @@ Full evidence lives in the issue bodies; one line each here.
 
 ## 5. Phasing
 
-**Phase 0 — surgical fixes (days).** The P0 one-liners and small patches, each individually
+**Phase 0 — surgical fixes (days). ✅ DONE.** The P0 one-liners and small patches, each individually
 testable: #755 #756 #757 #758 #759 #760+#224 #761 #763 #764 #765 (partial) · gact-tui #225 #226
 #227 #231 #230 (via the helper if #234 starts, else minimal). Also: strip pytest `addopts`,
 delete root junk (both in #774/#235 but safe now).
 
-**Phase 1 — deletion release (about a week).** #768 in full, plus #766 and the rest of #765.
-Shrinks the surface before structural work so Phase 2 refactors less code.
+**Phase 1 — deletion release (about a week). ✅ DONE (2026-07-05; PRs #795–#798, #828, #829).**
+#768 in full, plus #766 and the rest of #765 (the latter two closed in the Phase 0 sweep). The
+three explicit decisions shipped as #799 (one front door) / #800 (one doctor) / #801 (optimizer
+stub). Shrinks the surface before structural work so Phase 2 refactors less code.
 
 **Phase 2 — the two keystones (the real work).**
 - clio #767: single-writer TurnTranscript + turn.py decomposition + EarthScope-vocabulary
@@ -150,7 +175,9 @@ Shrinks the surface before structural work so Phase 2 refactors less code.
 after #232 settles the channel) and #236.
 
 **Phase 4 — repo restructure.** #774 and #235 (docs taxonomy, CLAUDE.md rewrites, media
-filter-repo + LFS, test-tree split, tui package split #234 — mechanical, large, low-risk last).
+filter-repo + LFS, test-tree split, tui package split #234), plus #830 (converge the server entry
+point → one `clio-agent` executable + one container port/healthcheck) — mechanical, large,
+low-risk last.
 
 ## 6. Audit provenance
 
