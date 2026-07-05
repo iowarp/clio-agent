@@ -62,6 +62,8 @@ from clio_agent.sdk import (
     ClioSDKError,
     Health,
     MessageCompleted,
+    PermissionRequested,
+    SessionStatusChanged,
 )
 
 # ============================================================================
@@ -111,10 +113,15 @@ class ClioAgentCLI:
 
     # -- session lifecycle -------------------------------------------------
 
-    def _ensure_session(self) -> str:
-        """Return the reused session id, creating one on first use."""
+    def _ensure_session(self, title: str = "CLI session") -> str:
+        """Return the reused session id, creating one on first use.
+
+        ``title`` names the session only on the *first* call (when the
+        server session is actually created); later turns reuse the same
+        session id and ignore it.
+        """
         if self._session_id is None:
-            session = self.client.sessions.create(title="CLI session")
+            session = self.client.sessions.create(title=title)
             self._session_id = session.id
         return self._session_id
 
@@ -465,25 +472,51 @@ Source: server agent catalog (GET /v1/agents)
 
     # -- main Q&A (post -> SSE -> render) -----------------------------------
 
-    def ask_question(self, question: str) -> dict[str, Any]:
+    #: Hard cap on ask-user / permission pause rounds within a single turn.
+    #: A well-behaved server settles a turn in a handful of pauses; this
+    #: bound guarantees a misbehaving one can never spin the CLI forever.
+    MAX_PAUSE_ROUNDS = 16
+
+    def ask_question(
+        self,
+        question: str,
+        *,
+        session_title: str = "CLI session",
+        interactive: bool = True,
+    ) -> dict[str, Any]:
         """Ask the server a question: post the message, consume the session
         SSE feed until the turn completes, and return the rendered result.
 
         The conversation reuses one server session across REPL turns; the SSE
-        cursor advances so each turn only reads its own new events.
+        cursor advances so each turn only reads its own new events. If the
+        agent pauses to ask a clarifying question or request a tool
+        permission, the consume loop handles the pause (prompting when
+        ``interactive``) and resumes — it never blocks indefinitely.
 
         Args:
             question: The user's question.
+            session_title: Title for the session, applied only when the
+                session is first created (see :meth:`_ensure_session`).
+            interactive: Whether the CLI may prompt the user to resolve a
+                pause. ``False`` (the ``--query`` path) auto-denies
+                permissions and aborts an ask-user pause with a structured
+                error rather than hanging on a prompt it cannot show.
 
         Returns:
             A dict with ``question``, ``expert``, ``answer``, ``error_info``,
             ``session_id``, and ``duration_ms``.
         """
-        session_id = self._ensure_session()
+        session_id = self._ensure_session(session_title)
         start = time.time()
-        with self.console.status("[#00B4FF]Running agent loop...[/#00B4FF]", spinner="dots"):
+        status = self.console.status("[#00B4FF]Running agent loop...[/#00B4FF]", spinner="dots")
+        status.start()
+        try:
             ack = self.client.messages.post(session_id, text=question)
-            completed, message = self._consume_turn(session_id, ack.message_id)
+            completed, message, consume_error = self._consume_turn(
+                session_id, ack.message_id, interactive=interactive, status=status
+            )
+        finally:
+            status.stop()
         duration_ms = (time.time() - start) * 1000.0
 
         error_info: dict[str, Any] | None = None
@@ -500,6 +533,13 @@ Source: server agent catalog (GET /v1/agents)
                 if part.type == "routing_decision" and part.selected_agent:
                     expert = part.selected_agent
                     break
+        # A structured consume-time failure (pause abort, pause-limit, or a
+        # failed authoritative message fetch) must reach the user — never a
+        # silently empty answer (no-silent-fallback).
+        if error_info is None and consume_error is not None:
+            error_info = consume_error
+            if not answer:
+                answer = str(consume_error.get("message", ""))
 
         return {
             "question": question,
@@ -510,28 +550,213 @@ Source: server agent catalog (GET /v1/agents)
             "duration_ms": duration_ms,
         }
 
-    def _consume_turn(self, session_id: str, ack_message_id: str) -> tuple[Any, Any]:
-        """Consume the SSE feed until this turn's ``message.completed``.
+    def _consume_turn(
+        self,
+        session_id: str,
+        ack_message_id: str,
+        *,
+        interactive: bool = True,
+        status: Any = None,
+    ) -> tuple[Any, Any, dict[str, Any] | None]:
+        """Consume the SSE feed until this turn settles, driving any pauses.
 
-        Returns ``(completed_event, assistant_message)``. The assistant
-        message is fetched from the ledger once the turn settles so we render
-        the authoritative parts, not buffered deltas.
+        The loop reads events until one of three things happens:
+
+        * ``message.completed`` — the turn settled; we fetch the authoritative
+          assistant message and return.
+        * ``session.status_changed`` → ``waiting_user`` — the agent asked a
+          clarifying question; we resolve it (:meth:`_resolve_waiting_user`),
+          then re-open the feed from the advanced cursor to pick up the
+          resumed turn.
+        * ``permission.requested`` — a tool needs authorization; we resolve it
+          (:meth:`_resolve_permission`) and resume the same way.
+
+        Pause rounds are bounded by :attr:`MAX_PAUSE_ROUNDS` so a server that
+        never settles cannot hang the CLI — exceeding the bound returns a
+        structured error instead.
+
+        Returns ``(completed_event, assistant_message, error_info)``. The
+        ``error_info`` dict is set only for structured consume-time failures
+        (pause abort / pause-limit / message-fetch failure); it is ``None`` on
+        the normal path.
         """
         completed = None
-        with self.client.sessions.events(session_id, last_event_id=self._event_cursor) as stream:
-            for event in stream:
-                if isinstance(event, MessageCompleted):
-                    completed = event
-                    break
-            self._event_cursor = stream.last_event_id
+        error_info: dict[str, Any] | None = None
+        rounds = 0
+
+        while True:
+            pause_kind: str | None = None
+            pause_permission: Any = None
+            stream_ended = True
+            with self.client.sessions.events(
+                session_id, last_event_id=self._event_cursor
+            ) as stream:
+                for event in stream:
+                    if isinstance(event, MessageCompleted):
+                        completed = event
+                        stream_ended = False
+                        break
+                    if isinstance(event, SessionStatusChanged) and event.status == "waiting_user":
+                        pause_kind = "waiting_user"
+                        stream_ended = False
+                        break
+                    if isinstance(event, PermissionRequested):
+                        pause_kind = "permission"
+                        pause_permission = event.permission
+                        stream_ended = False
+                        break
+                self._event_cursor = stream.last_event_id
+
+            if completed is not None:
+                break
+            if pause_kind is None:
+                # The feed ended without a terminal event and without a
+                # pause — surface it structurally rather than returning a
+                # silently empty answer.
+                if stream_ended:
+                    error_info = {
+                        "error": "stream_ended",
+                        "message": (
+                            "The event stream ended before the turn completed; "
+                            "the answer could not be retrieved."
+                        ),
+                    }
+                break
+
+            rounds += 1
+            if rounds > self.MAX_PAUSE_ROUNDS:
+                error_info = {
+                    "error": "too_many_pauses",
+                    "message": (
+                        f"The turn did not complete after {self.MAX_PAUSE_ROUNDS} "
+                        "clarification/permission rounds; aborting to avoid an "
+                        "unbounded wait."
+                    ),
+                }
+                break
+
+            if pause_kind == "waiting_user":
+                abort = self._resolve_waiting_user(
+                    session_id, interactive=interactive, status=status
+                )
+            else:
+                abort = self._resolve_permission(
+                    pause_permission, interactive=interactive, status=status
+                )
+            if abort is not None:
+                error_info = abort
+                break
+            # Loop back to re-open the feed and consume the resumed turn.
 
         message = None
         if completed is not None and completed.message_id:
             try:
                 message = self.client.messages.get(session_id, completed.message_id)
-            except ClioSDKError:
-                message = None
-        return completed, message
+            except ClioSDKError as exc:
+                # The turn completed cleanly but the authoritative message
+                # fetch failed. Do NOT degrade to an empty answer — surface a
+                # structured reason so it reaches the user (no-silent-fallback).
+                error_info = {
+                    "error": "message_fetch_failed",
+                    "message": (f"The turn completed but its message could not be fetched: {exc}"),
+                }
+        return completed, message, error_info
+
+    # -- pause resolution (ask-user / permission) --------------------------
+
+    def _prompt(self, message: str, *, status: Any = None) -> str:
+        """Prompt the user for one line of input (the seam tests monkeypatch).
+
+        Suspends the running status spinner (if any) so the prompt renders
+        cleanly, then restarts it.
+        """
+        from prompt_toolkit import prompt as pt_prompt
+
+        if status is not None:
+            status.stop()
+        try:
+            return pt_prompt(message)
+        finally:
+            if status is not None:
+                status.start()
+
+    def _resolve_waiting_user(
+        self, session_id: str, *, interactive: bool, status: Any = None
+    ) -> dict[str, Any] | None:
+        """Resolve a ``waiting_user`` pause: fetch the pending question, prompt
+        the user, and submit the answer.
+
+        Returns ``None`` once handled (so the turn can resume), or a structured
+        error dict when the pause cannot be resolved (e.g. non-interactive mode
+        cannot show a prompt).
+        """
+        pending = [q for q in self.client.sessions.questions(session_id) if q.status == "pending"]
+        if not pending:
+            # Already resolved out-of-band — nothing to do; just resume.
+            return None
+        question = pending[0]
+
+        if not interactive:
+            return {
+                "error": "input_required",
+                "message": (
+                    "The agent asked a clarifying question but the CLI is running "
+                    "non-interactively and cannot prompt for an answer: "
+                    f"{question.prompt}"
+                ),
+            }
+
+        body = f"[bold]{escape(question.prompt)}[/bold]"
+        if question.options:
+            lines = "\n".join(
+                f"  - {escape(opt.value or opt.label)}: {escape(opt.label)}"
+                for opt in question.options
+            )
+            body = f"{body}\n\n[dim]Options:[/dim]\n{lines}"
+        self.console.print(
+            Panel(body, title="[#FFAA00]CLIO needs your input[/#FFAA00]", border_style="#FFAA00")
+        )
+        answer = self._prompt("Your answer: ", status=status).strip()
+        self.client.sessions.answer_question(session_id, question.id, answer=answer)
+        return None
+
+    def _resolve_permission(
+        self, permission: Any, *, interactive: bool, status: Any = None
+    ) -> dict[str, Any] | None:
+        """Resolve a ``permission.requested`` pause: prompt allow/deny and
+        respond.
+
+        Non-interactive mode auto-denies (a safe default that still lets the
+        turn continue), which is a deliberate policy, not a silent failure —
+        the denial is announced. Returns ``None`` once handled.
+        """
+        tool_name = permission.tool_call.tool_name or "(unknown tool)"
+        summary = permission.summary or ""
+
+        if not interactive:
+            self.console.print(
+                f"[#FFAA00]Auto-denying tool permission for '{escape(tool_name)}' "
+                "(non-interactive mode).[/#FFAA00]"
+            )
+            self.client.permissions.respond(permission.id, "deny")
+            return None
+
+        body = f"[bold]Tool:[/bold] {escape(tool_name)}"
+        if summary:
+            body = f"{body}\n{escape(summary)}"
+        self.console.print(
+            Panel(
+                body,
+                title="[#FFAA00]CLIO requests permission[/#FFAA00]",
+                border_style="#FFAA00",
+            )
+        )
+        choice = self._prompt("Allow this tool? [y/N]: ", status=status).strip().lower()
+        if choice in {"y", "yes", "allow"}:
+            self.client.permissions.respond(permission.id, "allow")
+        else:
+            self.client.permissions.respond(permission.id, "deny")
+        return None
 
     def _render_answer(self, result: dict[str, Any]) -> None:
         """Render one Q&A result in the Panel/Markdown house style."""
@@ -805,7 +1030,7 @@ def run_query(
     client = boot_client(port, host, console=console)
     try:
         cli = ClioAgentCLI(client, verbose=verbose, console=console)
-        result = cli.ask_question(query)
+        result = cli.ask_question(query, session_title=session_title, interactive=False)
         if json_output:
             output = {
                 "question": query,

@@ -72,6 +72,8 @@ from clio_agent.sdk.types import (
     Session,
     Tokens,
     Tool,
+    UserQuestion,
+    UserQuestionOption,
     Workspace,
 )
 
@@ -129,6 +131,8 @@ __all__ = [
     "ToolCallCompleted",
     "ToolCallStarted",
     "UnsupportedError",
+    "UserQuestion",
+    "UserQuestionOption",
     "Workspace",
     "WorkspacesAPI",
 ]

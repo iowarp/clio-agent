@@ -310,6 +310,48 @@ class PermissionList(_WireModel):
 
 
 # --------------------------------------------------------------------------- #
+# ask-user / clarifying-question protocol (#333)
+# --------------------------------------------------------------------------- #
+
+
+class UserQuestionOption(_WireModel):
+    """One selectable option on a ``choice``/``confirmation`` question."""
+
+    label: str = ""
+    value: str = ""
+    description: str = ""
+
+
+class UserQuestion(_WireModel):
+    """A clarifying question the agent paused the turn to ask.
+
+    Mirrors the server's ``clio_agent.gact.types.UserQuestion`` wire shape
+    (only the client-relevant subset is declared; anything richer is
+    preserved via ``extra="allow"``). Returned by
+    ``GET /v1/sessions/{sid}/questions`` and the answer endpoint. While a
+    question is ``pending`` the session sits in ``waiting_user``; answering
+    the last pending question resumes the turn on the same session.
+    """
+
+    id: str
+    session_id: str = ""
+    prompt: str = ""
+    status: str = "pending"
+    kind: str = "freeform"
+    options: list[UserQuestionOption] = Field(default_factory=list)
+    created_at: str = ""
+    updated_at: str = ""
+    expires_at: str = ""
+    source: str = "orchestrator"
+    turn_id: str = ""
+    attempt_id: str = ""
+    answer: str = ""
+    selected_options: list[str] = Field(default_factory=list)
+    answer_metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+# --------------------------------------------------------------------------- #
 # §6.5 — agent catalog
 # --------------------------------------------------------------------------- #
 

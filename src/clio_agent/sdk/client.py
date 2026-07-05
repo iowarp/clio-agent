@@ -21,6 +21,7 @@ Example:
 
 from __future__ import annotations
 
+import builtins
 import logging
 from typing import Any, Literal
 
@@ -39,6 +40,7 @@ from clio_agent.sdk.types import (
     PostMessageAck,
     Session,
     Tool,
+    UserQuestion,
     Workspace,
 )
 
@@ -361,6 +363,62 @@ class SessionsAPI:
             reconnect_attempts=reconnect_attempts,
             reconnect_wait_s=reconnect_wait_s,
         )
+
+    # -- ask-user clarifying questions (#333) -------------------------- #
+
+    # NB: ``builtins.list`` because the ``list`` method above shadows the builtin in
+    # annotations that follow it in this class body (a class-scope name collision).
+    def questions(
+        self, session_id: str, *, status: str | None = None
+    ) -> builtins.list[UserQuestion]:
+        """GET /v1/sessions/{sid}/questions — the ask-user question log.
+
+        When the agent pauses a turn to ask the user something, the session
+        moves to ``waiting_user`` and the pending :class:`UserQuestion` lands
+        here. ``status`` filters server-side (e.g. ``"pending"``); rows come
+        back newest-first.
+        """
+
+        params = _drop_missing({"status": status})
+        response = self._client._request(
+            "GET", f"/v1/sessions/{session_id}/questions", params=params or None
+        )
+        return [UserQuestion.model_validate(row) for row in response.json().get("questions", [])]
+
+    def answer_question(
+        self,
+        session_id: str,
+        question_id: str,
+        *,
+        answer: str = "",
+        option_id: str | None = None,
+        selected_options: builtins.list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> UserQuestion:
+        """POST /v1/sessions/{sid}/questions/{qid}/answer — resolve a pending
+        ask-user question.
+
+        Pass ``answer`` for a freeform reply and/or ``option_id`` (or the
+        richer ``selected_options`` list) to pick a choice. Answering the
+        last pending question on a ``resume_on_answer`` question stages a
+        background resume turn on the SAME session that continues the same
+        assistant message — so keep consuming the event feed afterwards.
+        """
+
+        selected = list(selected_options or [])
+        if option_id:
+            selected.append(option_id)
+        body: dict[str, Any] = {
+            "answer": answer,
+            "selected_options": selected,
+            "metadata": metadata or {},
+        }
+        response = self._client._request(
+            "POST",
+            f"/v1/sessions/{session_id}/questions/{question_id}/answer",
+            json=body,
+        )
+        return UserQuestion.model_validate(response.json())
 
 
 class MessagesAPI:
