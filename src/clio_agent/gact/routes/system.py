@@ -26,6 +26,7 @@ never loads :mod:`clio_agent.gact.app`.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal, Optional
@@ -69,6 +70,8 @@ from clio_agent.runtime.status import (
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
+
+logger = logging.getLogger("clio_agent.gact.routes.system")
 
 
 # The single doctor speaks five probe states; the v0.2 health wire only has
@@ -276,7 +279,11 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
         if handshake is not None:
             try:
                 enriched = handshake.to_integration_status()
-            except Exception:
+            except Exception as exc:
+                # No silent fallback: the enrichment is additive, but a failure to build
+                # it must reach the logs/trace rather than vanish (mirrors the sibling
+                # doctor-probe failure branch above).
+                logger.warning("lm handshake enrichment failed: %r", exc)
                 enriched = None
             if enriched is not None:
                 integrations = [

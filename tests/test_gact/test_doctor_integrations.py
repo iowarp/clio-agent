@@ -246,6 +246,28 @@ def test_stale_ready_handshake_does_not_mask_live_down_lm(
     assert _rows(body)["lm_provider"]["status"] == "unavailable"
 
 
+def test_handshake_enrichment_failure_is_logged_not_silent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Regression: if the cached handshake's to_integration_status() raises, the fold must LOG
+    (non-silent) and fall back to the un-enriched probe lm_provider row — not vanish."""
+    import logging
+
+    class _BoomHandshake:
+        def to_integration_status(self) -> Any:
+            raise RuntimeError("handshake render exploded")
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    app.state.lm_handshake_report = _BoomHandshake()
+    with caplog.at_level(logging.WARNING, logger="clio_agent.gact.routes.system"):
+        resp = _health(app, monkeypatch, _ready_probe(tmp_path))
+    assert resp.status_code == 200
+    # The un-enriched env-probe row is served (config_source is not the handshake's).
+    assert _rows(resp.json())["lm_provider"]["config_source"] != "handshake"
+    # ...and the failure reached the logs rather than being swallowed.
+    assert any("handshake enrichment failed" in r.message for r in caplog.records)
+
+
 def test_probe_engine_failure_is_structured_not_silent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
