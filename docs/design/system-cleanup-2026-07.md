@@ -23,10 +23,21 @@ Kept current as work lands; the running per-PR log is the umbrella #775.
   `collect_runtime_status` probe engine), **#801** (optimizer = honest not-implemented stub).
   Closing PRs: #795–#798, #828, and #829 (#799 + #800 shipped as one unit). The writer-less ARC
   structs (`DatasetProfile`/`ProceduralMemory`) were descoped by the owner (kept as useful).
-- **Phases 2–4 — open.** Phase 2: #767 (TurnTranscript — PRs 1–3 landed, PR-4+ open) + gact-tui
-  #232. Phase 3: #769 / #771 / #772 / #773 + gact-tui #233. Phase 4: #774 + gact-tui #234/#235 +
-  **#830** (converge the server entry point → one `clio-agent` executable + one container
-  port/healthcheck — a #829 follow-up).
+- **Phase 2 — in progress.** clio #767: PRs 1–3 **and PR-5** landed (PR #833, 2026-07-05) — the
+  `TurnTranscript` ledger owns part identity, finalize is a pure reader, and `message.part.*` is
+  the **sole** transcript wire vocabulary (the zero-consumer `turn.*` twins are gone). **PR-4
+  (single dedup owner) is parked** under **#832**: the owner ruled the server must emit a clean
+  stream (the UI never owns dedup/validity), which rejects the tag+client-collapse design; final
+  resolution at the post-Phase-4 website review. Remaining on #767: the `_run_turn_in_background`
+  decomposition (+ the #714 app↔turn cycle) — in progress — and the EarthScope vocabulary
+  extraction (#646/#648). gact-tui #232: SPEC reconciled to reality with conformance asserts
+  (tui #247) and the wire layers synced (tui #248); remaining: drift-impossible CI + client sync
+  to the final vocabulary (the dedup-owner step waits on #832).
+- **Phases 3–4 — open** (Phase 3 opportunistically started: **#770 closed**, the #772 ratchet is
+  live via #810/#827, and gact-tui parity phase 1 landed as tui #249; tui P0s #224–#231 verified
+  closed in the Phase 0 sweep). Phase 3: #769 / #771 / #772 / #773 + gact-tui #233/#236. Phase 4:
+  #774 + gact-tui #234/#235 + **#830** (converge the server entry point → one `clio-agent`
+  executable + one container port/healthcheck — a #829 follow-up).
 
 ---
 
