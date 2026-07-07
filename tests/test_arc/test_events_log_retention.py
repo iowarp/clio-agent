@@ -105,3 +105,67 @@ class TestTraceEnabledStillErases:
         arc.flush_and_release()
 
         assert arc.render_segments("s1", EVENTS_SCOPE) == []
+
+
+def _multi_turn(sid: str = "s1", n: int = 5) -> list[SemanticEvent]:
+    """``n`` distinct ``turn.started`` events for one session (each its own turn)."""
+    return [
+        SemanticEvent(
+            event_type="turn.started",
+            session_id=sid,
+            trace_id=f"trace_t{i}",
+            turn_id=f"t{i}",
+            occurred_at=f"2026-06-14T00:{i:02d}:00+00:00",
+            payload={"input": f"q{i}"},
+        )
+        for i in range(n)
+    ]
+
+
+class TestRetentionSpansTheWholeChunkFamily:
+    """The #762 gating must cover EVERY chunk of the rolled ``_events`` family, not just
+    chunk 1 — retain all when the trace is disabled, erase all when it is enabled."""
+
+    def _arc_with_three_chunks(self, tmp_path, monkeypatch):
+        # chunk 2 -> 5 events roll into 3 chunks [2, 2, 1].
+        monkeypatch.setenv("CLIO_ARC_EVENTS_CHUNK_SEGMENTS", "2")
+        arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+        for e in _multi_turn(n=5):
+            arc.record_semantic_event(e)
+        assert arc._live.events_scopes("s1") == ["_events", "_events/2", "_events/3"]
+        return arc
+
+    def test_release_retains_all_chunks_when_trace_disabled(
+        self, tmp_path, monkeypatch, hermetic_conf
+    ):
+        arc = self._arc_with_three_chunks(tmp_path, monkeypatch)
+        monkeypatch.delenv("CLIO_SEMANTIC_TRACE_BACKEND", raising=False)
+
+        result = arc.release_session("s1")
+
+        # Every chunk of the only copy survives (#762) and nothing was erased.
+        assert arc._live.events_scopes("s1") == ["_events", "_events/2", "_events/3"]
+        assert result["live"] == 0
+
+    def test_release_erases_all_chunks_when_trace_enabled(
+        self, tmp_path, monkeypatch, hermetic_conf
+    ):
+        arc = self._arc_with_three_chunks(tmp_path, monkeypatch)
+        monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "file")
+
+        arc.release_session("s1")
+
+        # The WHOLE family is gone (not just chunk 1).
+        assert arc._live.events_scopes("s1") == []
+        for scope in ("_events", "_events/2", "_events/3"):
+            assert arc.render_segments("s1", scope) == []
+
+    def test_flush_and_release_erases_all_chunks_when_trace_enabled(
+        self, tmp_path, monkeypatch, hermetic_conf
+    ):
+        arc = self._arc_with_three_chunks(tmp_path, monkeypatch)
+        monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "file")
+
+        arc.flush_and_release()
+
+        assert arc._live.events_scopes("s1") == []

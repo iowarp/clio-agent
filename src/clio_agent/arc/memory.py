@@ -23,7 +23,14 @@ from typing import Any, Callable, Dict, List, Optional, cast
 from clio_agent import conf
 from clio_agent.arc.cache import LRUCache
 from clio_agent.arc.index import BTreeIndex
-from clio_agent.arc.live import EVENTS_SCOPE, LiveRuntimeContext, build_event_content
+from clio_agent.arc.live import (
+    EVENTS_SCOPE,
+    LiveRuntimeContext,
+    build_event_content,
+    events_chunk_index,
+    events_chunk_scope,
+    is_events_scope,
+)
 from clio_agent.arc.lsm import LSMTree
 from clio_agent.arc.schema import (
     Conversation,
@@ -148,8 +155,28 @@ class ARCMemory:
         # ReAct loop reads its prompt from each iteration. It also holds ARC's ONE
         # persisted semantic-event log (the reserved ``_events`` scope). The op_logger
         # that mirrors each op into the durable Trace is injected later by the gact app
-        # via set_segment_op_logger (keeps arc/ free of any gact/ import).
-        self._segments = SegmentStore(self._store)
+        # via set_segment_op_logger (keeps arc/ free of any gact/ import). The
+        # ``search_indexed`` predicate keeps the reserved ``_events`` chunk family out of
+        # the plain-text search companion so the semantic-event log can never pollute
+        # scope search (gact ``/context/search``).
+        self._segments = SegmentStore(
+            self._store, search_indexed=lambda scope: not is_events_scope(scope)
+        )
+
+        # Per-session writer cursor for the ``_events`` chunk family:
+        # ``session_id -> (chunk_index, segments_in_chunk)``. The append path rolls to
+        # the next chunk once the active one reaches ``events_chunk_segments`` segments,
+        # so a single event re-encodes only the active chunk (O(chunk)) instead of the
+        # whole log (O(N) => O(N²)/session). Recovered lazily on first append after a
+        # restart by scanning the persisted family (:meth:`_events_chunk_for_append`).
+        self._events_chunk_segments = conf.resolve(
+            "arc.events_chunk_segments",
+            env="CLIO_ARC_EVENTS_CHUNK_SEGMENTS",
+            default=512,
+            cast=conf.as_int,
+        )
+        self._events_writer: dict[str, tuple[int, int]] = {}
+        self._events_writer_lock = threading.Lock()
 
         # Live runtime context: PROJECTS the canonical semantic-event stream into
         # per-session turn records so Invocation/Conversation are projections of the
@@ -947,20 +974,65 @@ class ARCMemory:
 
     def _append_event_segment(self, event: Any, etype: str, sid: str) -> None:
         """Build (via the shared :func:`~clio_agent.arc.live.build_event_content`) +
-        append the lean ``semantic_event`` segment. ONE builder is shared with the
-        standalone observer so the persisted log is identical regardless of path."""
+        append the lean ``semantic_event`` segment to the session's ACTIVE ``_events``
+        chunk. ONE builder is shared with the standalone observer so the persisted log
+        is identical regardless of path. The chunk cursor (:meth:`_events_chunk_for_append`)
+        bounds each append's re-encode to one chunk instead of the whole log."""
         content = build_event_content(event)
         if content is None:
             return
+        scope = self._events_chunk_for_append(sid)
         self._segments.append(
             sid,
-            EVENTS_SCOPE,
+            scope,
             cast(SegmentKind, "semantic_event"),
             content,
             step=-1,
             turn_id=str(getattr(event, "turn_id", "") or ""),
             expert_span_id=str(getattr(event, "expert_span_id", "") or ""),
         )
+
+    def _events_chunk_for_append(self, sid: str) -> str:
+        """Reserve a slot in the session's active ``_events`` chunk and return its scope.
+
+        Advances the per-session cursor, rolling to the next chunk once the active one
+        has reached ``events_chunk_segments`` segments (so appends stay O(chunk)). On the
+        first append after a restart the cursor is recovered from the persisted family
+        (:meth:`_recover_events_writer`) so the log resumes at its last chunk instead of
+        overwriting or fragmenting it. Guarded by ``_events_writer_lock`` — the cursor is
+        the sole shared mutable state and events can arrive from multiple threads."""
+        with self._events_writer_lock:
+            state = self._events_writer.get(sid)
+            if state is None:
+                state = self._recover_events_writer(sid)
+            index, count = state
+            if count >= self._events_chunk_segments:
+                index += 1
+                count = 0
+            self._events_writer[sid] = (index, count + 1)
+            return events_chunk_scope(index)
+
+    def _recover_events_writer(self, sid: str) -> tuple[int, int]:
+        """Cold-start cursor for a session: resume at the highest persisted chunk.
+
+        Scans the session's ``_events`` family; with none persisted the cursor starts at
+        chunk 1 empty, otherwise at the max chunk index with its current segment count
+        (so the next append continues that chunk until it rolls). Called under
+        ``_events_writer_lock``."""
+        indices = [
+            events_chunk_index(s)
+            for s in self._segments.scan_scopes(sid, EVENTS_SCOPE)
+            if is_events_scope(s)
+        ]
+        if not indices:
+            return (1, 0)
+        max_index = max(indices)
+        count = len(
+            self._segments.list_segments(
+                sid, events_chunk_scope(max_index), include_tombstoned=True
+            )
+        )
+        return (max_index, count)
 
     def on_semantic_event(self, event: Any) -> None:
         """Persist one RAW semantic event as the single ``_events`` log record.
@@ -1232,6 +1304,10 @@ class ARCMemory:
             )
         else:
             live = self._live.release(session_id)
+            # The chunk family is gone; drop the write cursor so the next event for this
+            # session recovers to a fresh chunk 1 (retention keeps it — same chunk continues).
+            with self._events_writer_lock:
+                self._events_writer.pop(session_id, None)
             logger.info(
                 "arc: erased _events log session=%s reason=durable_trace_enabled "
                 "backend=%r turns=%d (the durable trace keeps the full history)",
@@ -1285,6 +1361,8 @@ class ARCMemory:
                 backend,
             )
             self._live.clear()
+            with self._events_writer_lock:
+                self._events_writer.clear()
         self._segments.clear()
 
     def clear_cache(self) -> None:
@@ -1319,6 +1397,11 @@ class ARCMemory:
 
             # Drop the in-memory segment plane (store already cleared above)
             self._segments.clear()
+
+            # The _events chunk family is gone from disk; reset the write cursors so the
+            # next event for any session recovers to a fresh chunk 1.
+            with self._events_writer_lock:
+                self._events_writer.clear()
 
             # Reset counters
             self._disk_reads = 0
