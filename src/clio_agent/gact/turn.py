@@ -56,7 +56,6 @@ from clio_agent.gact.runtime.globals import (
     _new_message_id,
     _new_part_id,
     _new_question_id,
-    _semantic_trace_id,
     _tool_session_context,
     _TurnCancelled,
     _TurnTimedOut,
@@ -68,6 +67,7 @@ from clio_agent.gact.streaming import (
     _record_live_streamed_field_text,
 )
 from clio_agent.gact.transcript import _transcript_text_field
+from clio_agent.gact.turn_state import new_turn_state
 from clio_agent.gact.types import (
     ErrorInfo,
     Message,
@@ -534,7 +534,6 @@ async def _run_turn_in_background(
         _current_lm_model_id,
         _delegated_expert_agent_id,
         _delegated_expert_prompt,
-        _dspy_images_from_parts,
         _dynamic_agent_runtime_provenance,
         _dynamic_parent_resume_prompt,
         _enrich_cancellation_error_info,
@@ -593,56 +592,29 @@ async def _run_turn_in_background(
         # would crash and pollute logs with no client to notify.
         return
 
-    error_info: Optional[ErrorInfo] = None
-    answer_text = ""
-    selected_agent = ""
-    rationale = ""
-    route_source = ""
-    route_reason = ""
-    agent_runtime: dict[str, Any] = {}
-    dynamic_agent_used: "AgentDef | None" = None
-    execution_path = ""
-    # The expert/agent generating this turn's assistant parts. Set once the active
-    # agent is resolved inside the forward try-block; pre-seeded so the final
-    # part-assembly always has a value even when forward errors early.
-    invocation_agent_id = ""
-    active_agent_id = ""
-    tools_called: list[dict[str, Any]] = []
-    expert_handoffs: list[dict[str, Any]] = []
-    prompt_resolution: dict[str, Any] = {}
-    proposed_diffs: list[Any] = []
-    nanoagents: list[Any] = []
-    thinking_text = ""
-    retry_attempt_id = ""
-    if isinstance(user_msg.metadata, dict):
-        retry_attempt_id = str(user_msg.metadata.get("retry_attempt_id") or "")
-    turn_id = user_msg.id
-    trace_id = _semantic_trace_id(turn_id)
-    # Bare set, no reset: the whole turn identity (app + session + turn_id +
-    # trace_id) must stay live for every later copy_context() snapshot taken
-    # during this turn (mirrors the original turn-scoped leak). Establishing
-    # app/session here — not only inside the narrow dynamic-agent forward
-    # wrappers — makes active_app()/active_session_id() reliable on the executor
-    # rail for ALL turn paths, incl. the CLIO orchestrator forward (#735 §3).
-    _ctx.set_turn_identity(app=app, session_id=sid, turn_id=turn_id, trace_id=trace_id)
-    native_images = _dspy_images_from_parts(user_msg.parts)
-    turn_tokens: dict[str, int] = {
-        "input": 0,
-        "output": 0,
-        "cache_read": 0,
-        "cache_write": 0,
-    }
-    turn_cost = 0.0
+    # #767 Phase B: the turn's whole working set lives on one mutable ``TurnState``
+    # threaded through the closures + body (formerly ~40 function-scope locals).
+    # ``new_turn_state`` runs the former inline init: retry-attempt id, turn/trace
+    # ids, the turn-identity contextvar bind, and native-image pre-extraction.
+    state = new_turn_state(
+        app,
+        sid,
+        user_text,
+        user_msg,
+        turn_agent_id,
+        sess=sess,
+        bus=bus,
+    )
 
     def _drain_observed_tool_calls(
         current_rows: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         """Merge completed live-observer tool calls into turn metadata rows."""
 
-        ledger = getattr(app.state, "tool_call_ledger", None)
+        ledger = getattr(state.app.state, "tool_call_ledger", None)
         if ledger is None:
             return current_rows
-        observed = ledger.pop(sid, [])
+        observed = ledger.pop(state.sid, [])
         if not observed:
             return current_rows
         return _merge_tool_call_rows(current_rows, observed)
@@ -652,9 +624,9 @@ async def _run_turn_in_background(
         *,
         metadata_patch: Optional[dict[str, Any]] = None,
     ) -> None:
-        if not retry_attempt_id:
+        if not state.retry_attempt_id:
             return
-        attempt = app.state.turn_attempts.get(retry_attempt_id)
+        attempt = state.app.state.turn_attempts.get(state.retry_attempt_id)
         if attempt is None:
             return
         metadata = dict(attempt.metadata)
@@ -667,40 +639,40 @@ async def _run_turn_in_background(
                 "metadata": metadata,
             }
         )
-        app.state.turn_attempts[retry_attempt_id] = updated
-        enforce_dict_bound(app, app.state.turn_attempts, "turn_attempts", session_id=sid)
-        app.state.bus.publish(
+        state.app.state.turn_attempts[state.retry_attempt_id] = updated
+        enforce_dict_bound(state.app, state.app.state.turn_attempts, "turn_attempts", session_id=state.sid)
+        state.app.state.bus.publish(
             Event(
                 type=f"turn.retry_{status}",
-                session_id=sid,
+                session_id=state.sid,
                 payload=updated.model_dump(exclude_none=True),
             )
         )
 
-    if retry_attempt_id:
+    if state.retry_attempt_id:
         _update_retry_attempt(
             "running",
-            metadata_patch={"executed_user_message_id": user_msg.id},
+            metadata_patch={"executed_user_message_id": state.user_msg.id},
         )
     _emit_semantic_event(
-        app,
-        sid,
+        state.app,
+        state.sid,
         "turn.started",
-        turn_id=turn_id,
-        trace_id=trace_id,
+        turn_id=state.turn_id,
+        trace_id=state.trace_id,
         status="running",
         summary="User turn accepted and CLIO runtime started.",
         actor={"role": "user"},
-        subject={"message_id": user_msg.id},
-        payload={"text": user_text, "retry_attempt_id": retry_attempt_id},
+        subject={"message_id": state.user_msg.id},
+        payload={"text": state.user_text, "retry_attempt_id": state.retry_attempt_id},
     )
     _publish_transcript_event(
-        bus,
-        sid,
+        state.bus,
+        state.sid,
         "turn.started",
         {
-            "turn_id": turn_id,
-            "agent_id": turn_agent_id or _session_agent_id(sess) or "main",
+            "turn_id": state.turn_id,
+            "agent_id": state.turn_agent_id or _session_agent_id(state.sess) or "main",
         },
     )
 
@@ -709,43 +681,43 @@ async def _run_turn_in_background(
     # Plain text concat — keeps the agent.py interface untouched and
     # works regardless of which expert handles the turn.
     context_file_error: ErrorInfo | None = None
-    context_file_provenance = _context_file_turn_provenance(app, sid, status="prepared")
-    memory_search_metadata: dict[str, Any] = {}
+    state.context_file_provenance = _context_file_turn_provenance(state.app, state.sid, status="prepared")
+    state.memory_search_metadata = {}
     try:
-        enriched_text = _enrich_with_context_files(app, sid, user_text)
-        enriched_text, memory_search_metadata = _enrich_with_requested_memory_search(
-            app,
-            sid,
-            enriched_text,
-            user_msg,
+        state.enriched_text = _enrich_with_context_files(state.app, state.sid, state.user_text)
+        state.enriched_text, state.memory_search_metadata = _enrich_with_requested_memory_search(
+            state.app,
+            state.sid,
+            state.enriched_text,
+            state.user_msg,
         )
         # Carry prior turns of this session so a follow-up ("now plot it") can reuse
         # the region/stations/paths already resolved. No-op on the first turn.
-        enriched_text = _compile_session_conversation_history(app, sid, enriched_text)
+        state.enriched_text = _compile_session_conversation_history(state.app, state.sid, state.enriched_text)
     except _ContextFileAccessError as exc:
-        enriched_text = user_text
+        state.enriched_text = state.user_text
         context_file_error = exc.error_info
-        context_file_provenance = _context_file_turn_provenance(app, sid, status="error")
-    context_frame = _record_context_frame(
-        app,
-        sid,
-        sess,
-        user_msg,
-        user_text=user_text,
-        enriched_text=enriched_text,
+        state.context_file_provenance = _context_file_turn_provenance(state.app, state.sid, status="error")
+    state.context_frame = _record_context_frame(
+        state.app,
+        state.sid,
+        state.sess,
+        state.user_msg,
+        user_text=state.user_text,
+        enriched_text=state.enriched_text,
         context_error=context_file_error,
     )
-    if memory_search_metadata:
+    if state.memory_search_metadata:
         _emit_semantic_event(
-            app,
-            sid,
+            state.app,
+            state.sid,
             "memory.search.completed",
-            turn_id=turn_id,
-            trace_id=trace_id,
+            turn_id=state.turn_id,
+            trace_id=state.trace_id,
             summary="Requested memory search was injected into turn context.",
             actor={"role": "runtime", "component": "memory"},
-            subject={"message_id": user_msg.id},
-            payload=memory_search_metadata,
+            subject={"message_id": state.user_msg.id},
+            payload=state.memory_search_metadata,
         )
     # iowarp/clio-agent#20: pre_message hook can transform the
     # input or veto the turn. PermissionError → cancelled-style
@@ -755,66 +727,66 @@ async def _run_turn_in_background(
             from clio_agent.runtime.hooks import fire as _fire_hook
 
             _emit_semantic_event(
-                app,
-                sid,
+                state.app,
+                state.sid,
                 "hook.invocation.started",
-                turn_id=turn_id,
-                trace_id=trace_id,
+                turn_id=state.turn_id,
+                trace_id=state.trace_id,
                 status="running",
                 summary="pre_message hook dispatch started.",
                 actor={"hook": "pre_message"},
-                subject={"message_id": user_msg.id},
-                payload={"input": enriched_text},
+                subject={"message_id": state.user_msg.id},
+                payload={"input": state.enriched_text},
             )
             hook_scope = {
-                "session_id": sid,
-                "workspace_id": getattr(sess, "workspace_id", ""),
-                "blueprint_id": _runtime_active_agent_blueprint_id(app, sid),
+                "session_id": state.sid,
+                "workspace_id": getattr(state.sess, "workspace_id", ""),
+                "blueprint_id": _runtime_active_agent_blueprint_id(state.app, state.sid),
             }
-            _fire_hook("pre_message", sid, enriched_text, hook_scope=hook_scope)
+            _fire_hook("pre_message", state.sid, state.enriched_text, hook_scope=hook_scope)
             _emit_semantic_event(
-                app,
-                sid,
+                state.app,
+                state.sid,
                 "hook.invocation.completed",
-                turn_id=turn_id,
-                trace_id=trace_id,
+                turn_id=state.turn_id,
+                trace_id=state.trace_id,
                 summary="pre_message hook dispatch completed.",
                 actor={"hook": "pre_message"},
-                subject={"message_id": user_msg.id},
+                subject={"message_id": state.user_msg.id},
                 payload={},
             )
         except PermissionError as exc:
             _emit_semantic_event(
-                app,
-                sid,
+                state.app,
+                state.sid,
                 "hook.pre_message.blocked",
-                turn_id=turn_id,
-                trace_id=trace_id,
+                turn_id=state.turn_id,
+                trace_id=state.trace_id,
                 status="blocked",
                 summary="pre_message hook blocked the turn.",
                 actor={"hook": "pre_message"},
-                subject={"message_id": user_msg.id},
+                subject={"message_id": state.user_msg.id},
                 payload={"error": str(exc)},
             )
             _emit_semantic_event(
-                app,
-                sid,
+                state.app,
+                state.sid,
                 "turn.failed",
-                turn_id=turn_id,
-                trace_id=trace_id,
+                turn_id=state.turn_id,
+                trace_id=state.trace_id,
                 status="blocked",
                 summary="CLIO turn was blocked by pre_message hook.",
                 actor={"hook": "pre_message"},
-                subject={"message_id": user_msg.id},
+                subject={"message_id": state.user_msg.id},
                 payload={"error": str(exc)},
             )
-            bus.publish(
+            state.bus.publish(
                 Event(
                     type="message.completed",
-                    session_id=sid,
+                    session_id=state.sid,
                     payload={
-                        "turn_id": turn_id,
-                        "message_id": user_msg.id,
+                        "turn_id": state.turn_id,
+                        "message_id": state.user_msg.id,
                         "stop_reason": "blocked",
                         "error_info": {
                             "error": "permission_error",
@@ -824,20 +796,20 @@ async def _run_turn_in_background(
                     },
                 )
             )
-            app.state.sessions.update(sid, status="error")
+            state.app.state.sessions.update(state.sid, status="error")
             _update_retry_attempt(
                 "failed",
                 metadata_patch={
                     "execution_error": "permission_error",
-                    "executed_user_message_id": user_msg.id,
+                    "executed_user_message_id": state.user_msg.id,
                 },
             )
-            bus.publish(
+            state.bus.publish(
                 Event(
                     type="session.status_changed",
-                    session_id=sid,
+                    session_id=state.sid,
                     payload={
-                        "session_id": sid,
+                        "session_id": state.sid,
                         "status": "error",
                         "prev_status": "running",
                         "reason": "pre_message hook blocked turn",
@@ -866,15 +838,15 @@ async def _run_turn_in_background(
         _open_turn_transcript,
     )
 
-    transcript = _open_turn_transcript(app, sid, turn_id)
-    suppressed_parent_resume_offsets: dict[str, int] = {}
+    state.transcript = _open_turn_transcript(state.app, state.sid, state.turn_id)
+    state.suppressed_parent_resume_offsets = {}
 
     def _record_streamed_field_text(agent: str, field: str, chunk: str) -> None:
         # Turn-scoped buffer (#757): stamped with THIS turn's id and cleared at
         # turn end, so the tool observer's thought dedup never matches a
         # previous turn's streamed text. Retires in PR4 (#767) in favor of
         # ``transcript.streamed_text``.
-        _record_live_streamed_field_text(app, sid, turn_id, agent, field, chunk)
+        _record_live_streamed_field_text(state.app, state.sid, state.turn_id, agent, field, chunk)
 
     def _settle_turn_transcript() -> None:
         """Retire the turn's ledger: freeze (no-op after finalize), close.
@@ -886,8 +858,8 @@ async def _run_turn_in_background(
         error envelope settles through ``_settle_failed_finalize``).
         """
 
-        transcript.abandon()
-        app.state.turn_transcripts.close(sid)
+        state.transcript.abandon()
+        state.app.state.turn_transcripts.close(state.sid)
 
     async def _emit_chunk(
         text: str,
@@ -896,7 +868,7 @@ async def _run_turn_in_background(
     ) -> None:
         # The generating expert (passed by the LM token tap from its react scope);
         # falls back to the turn's selected/invocation agent for the chat path.
-        chunk_agent = agent_id or active_agent_id or invocation_agent_id or "main"
+        chunk_agent = agent_id or state.active_agent_id or state.invocation_agent_id or "main"
         stream_field = str(field_name or "answer")
         is_provider_thinking = stream_field.startswith("provider_thinking:")
         try:
@@ -906,15 +878,15 @@ async def _run_turn_in_background(
             )
 
             _emit_semantic_event(
-                app,
-                sid,
+                state.app,
+                state.sid,
                 LM_TOKEN_DELTA,
-                turn_id=turn_id,
-                trace_id=trace_id,
+                turn_id=state.turn_id,
+                trace_id=state.trace_id,
                 status="running",
                 summary="LM token delta.",
                 actor={"agent_id": chunk_agent, "role": "expert"},
-                provider=_llm_provider_payload(app, chunk_agent),
+                provider=_llm_provider_payload(state.app, chunk_agent),
                 payload=lm_token_delta_payload(content=text, field=stream_field),
                 # Capture/derive through ARC-as-source without adding a second
                 # served transcript event; message.part.delta remains the UI stream.
@@ -930,9 +902,9 @@ async def _run_turn_in_background(
                 stream_field,
             )
             return
-        resume_output = _latest_parent_resume_output(transcript.snapshot(), chunk_agent)
+        resume_output = _latest_parent_resume_output(state.transcript.snapshot(), chunk_agent)
         if stream_field == "answer" and resume_output:
-            offset = suppressed_parent_resume_offsets.get(chunk_agent, 0)
+            offset = state.suppressed_parent_resume_offsets.get(chunk_agent, 0)
             after = resume_output[offset + len(text) :]
             # Only suppress a duplicated chunk when it ends on a WORD BOUNDARY in
             # the resume output. Otherwise, when the parent's text diverges from
@@ -943,7 +915,7 @@ async def _run_turn_in_background(
             # the client's dedupeRepeatedText).
             chunk_ends_word = (not after) or after[:1].isspace() or text[-1:].isspace()
             if resume_output[offset:].startswith(text) and chunk_ends_word:
-                suppressed_parent_resume_offsets[chunk_agent] = offset + len(text)
+                state.suppressed_parent_resume_offsets[chunk_agent] = offset + len(text)
                 trace.HF_ON and trace.hot(
                     "STREAM-SSE",
                     "suppressed_parent_resume_duplicate agent=%s len=%d head=%r",
@@ -953,8 +925,8 @@ async def _run_turn_in_background(
                 )
                 stream_audit(
                     "sse.normalized_emit",
-                    session_id=sid,
-                    turn_id=turn_id,
+                    session_id=state.sid,
+                    turn_id=state.turn_id,
                     agent_id=chunk_agent,
                     field=stream_field,
                     normalized_event="turn.text.delta",
@@ -971,19 +943,19 @@ async def _run_turn_in_background(
         # splits parts per (agent, field), cleans the whole buffer once at
         # close, and publishes message.created/part.added/part.delta — the state
         # machine that used to live here.
-        transcript.append_text_delta(chunk_agent, stream_field, text)
-        if transcript.frozen:
+        state.transcript.append_text_delta(chunk_agent, stream_field, text)
+        if state.transcript.frozen:
             # Settled turn: the ledger rejected + audited this late chunk.
             # Do NOT mirror — re-populating the popped legacy dicts would hand
             # the dead turn's identity to the next turn's carried-state
             # adoption (the poison class the settle exists to prevent).
             return
-        _mirror_transcript_state(app, sid, transcript)
-        stream_part_id = transcript.current_stream_part_id or ""
+        _mirror_transcript_state(state.app, state.sid, state.transcript)
+        stream_part_id = state.transcript.current_stream_part_id or ""
         stream_audit(
             "sse.normalized_emit",
-            session_id=sid,
-            turn_id=turn_id,
+            session_id=state.sid,
+            turn_id=state.turn_id,
             agent_id=chunk_agent,
             part_id=stream_part_id,
             field=stream_field,
@@ -1001,8 +973,8 @@ async def _run_turn_in_background(
         trace.HF_ON and trace.hot(
             "STREAM-SSE",
             "published_delta sid=%s msg=%s part=%s agent=%s field=%s len=%d head=%r",
-            sid,
-            transcript.message_id,
+            state.sid,
+            state.transcript.message_id,
             stream_part_id,
             chunk_agent,
             stream_field,
@@ -1028,29 +1000,29 @@ async def _run_turn_in_background(
     # unreliable from worker threads), but ``lm.history`` IS shared
     # across threads — list.append under the GIL gives us a clean,
     # thread-safe ledger. We diff history[start:end] post-turn.
-    history_start = _snapshot_lm_history_index(app)
-    _pop_stream_fallback(app, sid)
-    turn_cancel_event = threading.Event()
-    app.state.cancel_events[sid] = turn_cancel_event
-    if sid in app.state.cancel_flags:
-        turn_cancel_event.set()
+    state.history_start = _snapshot_lm_history_index(state.app)
+    _pop_stream_fallback(state.app, state.sid)
+    state.turn_cancel_event = threading.Event()
+    state.app.state.cancel_events[state.sid] = state.turn_cancel_event
+    if state.sid in state.app.state.cancel_flags:
+        state.turn_cancel_event.set()
     # No-progress watchdog, not a hard wall: CLIO_GACT_TURN_TIMEOUT_S bounds the
     # gap BETWEEN observable progress events, never the total turn duration. A
     # long-but-progressing turn (a multi-phase EarthScope pipeline: filter ->
     # stage -> profile -> plot, each emitting bus events) must run to completion;
     # only a turn that goes silent for the whole window is wedged and aborted.
     # See [[clio-no-session-timeout]].
-    turn_progress_timeout_s = _gact_turn_timeout_s(app)
+    state.turn_progress_timeout_s = _gact_turn_timeout_s(state.app)
     # Poll the progress heartbeat on a short cadence so abort latency after the
     # turn truly wedges stays small without busy-waiting. Cap by the window so a
     # tiny configured timeout still polls at least as often.
-    _watchdog_poll_s = min(2.0, turn_progress_timeout_s) if turn_progress_timeout_s > 0 else 2.0
+    state._watchdog_poll_s = min(2.0, state.turn_progress_timeout_s) if state.turn_progress_timeout_s > 0 else 2.0
 
     def cancel_requested() -> bool:
-        return turn_cancel_event.is_set()
+        return state.turn_cancel_event.is_set()
 
     async def _await_turn_work(awaitable: Any) -> Any:
-        if turn_progress_timeout_s <= 0:
+        if state.turn_progress_timeout_s <= 0:
             return await awaitable
         # Drive the work as a task and poll for completion. asyncio.wait (unlike
         # wait_for) does NOT cancel the task when the poll interval elapses, so a
@@ -1061,15 +1033,15 @@ async def _run_turn_in_background(
         # attributed per-session on purpose: folding other sessions' publishes
         # in (the old global "" stamp) kept a genuinely wedged session alive as
         # long as any other session was busy (iowarp/clio-agent#761).
-        bus = app.state.bus
+        state.bus = state.app.state.bus
         task = asyncio.ensure_future(awaitable)
         last_progress = time.monotonic()
         try:
             while True:
-                done, _pending = await asyncio.wait({task}, timeout=_watchdog_poll_s)
+                done, _pending = await asyncio.wait({task}, timeout=state._watchdog_poll_s)
                 if done:
                     return task.result()
-                heartbeat = bus.last_publish_monotonic(sid)
+                heartbeat = state.bus.last_publish_monotonic(state.sid)
                 if heartbeat > last_progress:
                     last_progress = heartbeat
                 # An LM call that is actively generating IS progress, even when it
@@ -1086,16 +1058,16 @@ async def _run_turn_in_background(
                 # an LM call owned by this turn's session counts as its progress,
                 # so a busy neighbor session's in-flight call can no longer keep a
                 # genuinely wedged session alive (iowarp/clio-agent#761 defect 2).
-                if _lm_call_in_flight(sid):
+                if _lm_call_in_flight(state.sid):
                     last_progress = time.monotonic()
-                if time.monotonic() - last_progress >= turn_progress_timeout_s:
-                    turn_cancel_event.set()
+                if time.monotonic() - last_progress >= state.turn_progress_timeout_s:
+                    state.turn_cancel_event.set()
                     task.cancel()
                     try:
                         await task
                     except BaseException:  # noqa: BLE001 - swallow during abort
                         pass
-                    raise _TurnTimedOut(turn_progress_timeout_s) from None
+                    raise _TurnTimedOut(state.turn_progress_timeout_s) from None
         except asyncio.CancelledError:
             # If the work already finished, the cancellation targeted *us* (the
             # watchdog wrapper) after the result was ready -- e.g. event-loop
@@ -1111,7 +1083,7 @@ async def _run_turn_in_background(
     async def _run_dynamic_agent_sync(agent_def: "AgentDef", prompt: str) -> Any:
         runner = _blueprint_runner_for_agent(agent_def)
         loop = asyncio.get_running_loop()
-        with _tool_session_context(sid):
+        with _tool_session_context(state.sid):
             # The signature is rebuilt inside the executor (via _build_blueprint_dspy_module);
             # its routing Literal[children, "finish"] resolves children from the active
             # blueprint keyed on _ACTIVE_GACT_SESSION_ID. Set it here so the copied context
@@ -1119,7 +1091,7 @@ async def _run_turn_in_background(
             # Literal["finish"], forcing the agent to finish immediately. The keystone
             # (set_turn_identity) already binds active_app() for the whole turn, so no
             # _gact_app_context wrapper is needed here.
-            _sid_tok = _ctx.set_session_id(sid)
+            _sid_tok = _ctx.set_session_id(state.sid)
             try:
                 turn_context = contextvars.copy_context()
             finally:
@@ -1130,10 +1102,10 @@ async def _run_turn_in_background(
                 lambda: turn_context.run(
                     _run_dynamic_agent_compat,
                     runner,
-                    app.state.agent,
+                    state.app.state.agent,
                     agent_def,
                     prompt,
-                    sid,
+                    state.sid,
                     cancel_requested,
                 ),
             ),
@@ -1169,11 +1141,11 @@ async def _run_turn_in_background(
         # correlated by actor agent_id and the parent_expert in blueprint.
         _agent_meta = getattr(agent_def, "metadata", {}) or {}
         _emit_semantic_event(
-            app,
-            sid,
+            state.app,
+            state.sid,
             "expert.response.completed",
-            turn_id=turn_id,
-            trace_id=trace_id,
+            turn_id=state.turn_id,
+            trace_id=state.trace_id,
             summary=f"Expert {getattr(agent_def, 'id', '?')} produced a response.",
             actor={"agent_id": str(getattr(agent_def, "id", "") or "")},
             blueprint={
@@ -1189,11 +1161,11 @@ async def _run_turn_in_background(
         _workflow_state = _prediction_workflow_state(_pred)
         if _workflow_state:
             _publish_transcript_event(
-                bus,
-                sid,
+                state.bus,
+                state.sid,
                 "state.updated",
                 {
-                    "turn_id": turn_id,
+                    "turn_id": state.turn_id,
                     "value": _workflow_state,
                     "visibility": "hidden",
                 },
@@ -1213,16 +1185,16 @@ async def _run_turn_in_background(
         _answer_text = str(getattr(_pred, "answer", "") or "").strip()
         _next_expert = str(getattr(_pred, "next_expert", "") or "").strip()
         _is_terminal = _next_expert not in _runtime_declared_child_ids(
-            app, _expert_id, session_id=sid
+            state.app, _expert_id, session_id=state.sid
         )
         if (
             _answer_text
             and _is_terminal
             and _expert_id
-            and _expert_id != invocation_agent_id
+            and _expert_id != state.invocation_agent_id
             and not _looks_like_structured_answer(_answer_text)
         ):
-            transcript.field_stream(_expert_id, "answer").finish(fallback_text=_answer_text)
+            state.transcript.field_stream(_expert_id, "answer").finish(fallback_text=_answer_text)
         # WS2: capture a TERMINAL CoT/predict expert's reasoning + answer in its own
         # ARC scope. Delegating rounds are written by the settle loop's
         # _arc_write_orchestrator_route (route per round); ReAct leaves self-write.
@@ -1233,9 +1205,9 @@ async def _run_turn_in_background(
             _kind = _blueprint_module_kind(agent_def)
             if _kind and _kind != "react":
                 _next = str(getattr(_pred, "next_expert", "") or "").strip()
-                _declared = _runtime_declared_child_ids(app, agent_def.id, session_id=sid)
+                _declared = _runtime_declared_child_ids(state.app, agent_def.id, session_id=state.sid)
                 if _next not in _declared:  # terminal round (finish/empty/non-route)
-                    _arc_write_terminal_expert(app, sid, agent_def.id, _pred, turn_id)
+                    _arc_write_terminal_expert(state.app, state.sid, agent_def.id, _pred, state.turn_id)
         return _pred
 
     async def _execute_delegated_experts(
@@ -1282,7 +1254,7 @@ async def _run_turn_in_background(
                     }
                 )
                 continue
-            target = _resolve_runtime_dynamic_agent(app, target_id, session_id=sid)
+            target = _resolve_runtime_dynamic_agent(state.app, target_id, session_id=state.sid)
             if target is None or target.source != "expert_pack" or not target.enabled:
                 executed.append(
                     {
@@ -1322,8 +1294,8 @@ async def _run_turn_in_background(
                 continue
 
             prompt = _append_session_workflow_state_context(
-                app,
-                sid,
+                state.app,
+                state.sid,
                 _delegated_expert_prompt(row, source_text),
             )
             target_kind = (
@@ -1361,11 +1333,11 @@ async def _run_turn_in_background(
                 "execution_mode": execution_mode,
             }
             _emit_semantic_event(
-                app,
-                sid,
+                state.app,
+                state.sid,
                 f"{delegation_event_prefix}.started",
-                turn_id=turn_id,
-                trace_id=trace_id,
+                turn_id=state.turn_id,
+                trace_id=state.trace_id,
                 status="running",
                 summary=f"{parent_agent.id} delegated sync work to {target.id}.",
                 actor={"agent_id": parent_agent.id, "role": "parent_expert"},
@@ -1378,8 +1350,8 @@ async def _run_turn_in_background(
                 payload=started_row,
             )
             _append_live_assistant_part(
-                app,
-                sid,
+                state.app,
+                state.sid,
                 Part(
                     id=f"live_handoff_{uuid.uuid4().hex[:12]}",
                     type="expert_handoff",
@@ -1395,9 +1367,9 @@ async def _run_turn_in_background(
                 ),
             )
             ledger_start = 0
-            ledger = getattr(app.state, "tool_call_ledger", None)
+            ledger = getattr(state.app.state, "tool_call_ledger", None)
             if isinstance(ledger, dict):
-                session_rows = ledger.get(sid)
+                session_rows = ledger.get(state.sid)
                 if isinstance(session_rows, list):
                     ledger_start = len(session_rows)
             try:
@@ -1462,9 +1434,9 @@ async def _run_turn_in_background(
                     )
                 ):
                     declared_target_child_ids = _runtime_declared_child_ids(
-                        app,
+                        state.app,
                         target.id,
-                        session_id=sid,
+                        session_id=state.sid,
                     )
                     output = (
                         _bubbled_child_evidence_output_summary(
@@ -1479,7 +1451,7 @@ async def _run_turn_in_background(
                 # it is NOT appended to output text anymore.
                 child_tools_called = _extract_tools_called(pred_child)
                 if isinstance(ledger, dict):
-                    session_rows = ledger.get(sid)
+                    session_rows = ledger.get(state.sid)
                     if isinstance(session_rows, list) and len(session_rows) > ledger_start:
                         child_tools_called = _merge_tool_call_rows(
                             child_tools_called,
@@ -1564,11 +1536,11 @@ async def _run_turn_in_background(
                 # It flows to the parent resume prompt + live Part; capture
                 # (trace/ARC) carries the same full output.
                 _emit_semantic_event(
-                    app,
-                    sid,
+                    state.app,
+                    state.sid,
                     f"{delegation_event_prefix}.completed",
-                    turn_id=turn_id,
-                    trace_id=trace_id,
+                    turn_id=state.turn_id,
+                    trace_id=state.trace_id,
                     summary=public_return_summary,
                     actor={"agent_id": target.id, "role": "child_expert"},
                     subject={"agent_id": parent_agent.id, "role": "parent_expert"},
@@ -1580,8 +1552,8 @@ async def _run_turn_in_background(
                     payload=dict(completed_row),
                 )
                 _append_live_assistant_part(
-                    app,
-                    sid,
+                    state.app,
+                    state.sid,
                     Part(
                         id=f"live_handoff_{uuid.uuid4().hex[:12]}",
                         type="expert_handoff",
@@ -1599,11 +1571,11 @@ async def _run_turn_in_background(
                 )
                 if workflow_state:
                     _publish_transcript_event(
-                        bus,
-                        sid,
+                        state.bus,
+                        state.sid,
                         "state.updated",
                         {
-                            "turn_id": turn_id,
+                            "turn_id": state.turn_id,
                             "value": workflow_state,
                             "visibility": "hidden",
                         },
@@ -1623,11 +1595,11 @@ async def _run_turn_in_background(
                     "workflow_state": workflow_state,
                 }
                 _emit_semantic_event(
-                    app,
-                    sid,
+                    state.app,
+                    state.sid,
                     f"{delegation_event_prefix}.parent_resumed",
-                    turn_id=turn_id,
-                    trace_id=trace_id,
+                    turn_id=state.turn_id,
+                    trace_id=state.trace_id,
                     summary=f"{parent_agent.id} resumed after {target.id}.",
                     actor={"agent_id": parent_agent.id, "role": "parent_expert"},
                     subject={"agent_id": target.id, "role": "child_expert"},
@@ -1635,8 +1607,8 @@ async def _run_turn_in_background(
                     payload=resumed_row,
                 )
                 _append_live_assistant_part(
-                    app,
-                    sid,
+                    state.app,
+                    state.sid,
                     Part(
                         id=f"live_handoff_{uuid.uuid4().hex[:12]}",
                         type="expert_handoff",
@@ -1658,7 +1630,7 @@ async def _run_turn_in_background(
             except Exception as exc:  # noqa: BLE001
                 child_tools_called = []
                 if isinstance(ledger, dict):
-                    session_rows = ledger.get(sid)
+                    session_rows = ledger.get(state.sid)
                     if isinstance(session_rows, list) and len(session_rows) > ledger_start:
                         child_tools_called = _merge_tool_call_rows(
                             child_tools_called,
@@ -1706,11 +1678,11 @@ async def _run_turn_in_background(
                     "tools_called": child_tools_called,
                 }
                 _emit_semantic_event(
-                    app,
-                    sid,
+                    state.app,
+                    state.sid,
                     f"{delegation_event_prefix}.failed",
-                    turn_id=turn_id,
-                    trace_id=trace_id,
+                    turn_id=state.turn_id,
+                    trace_id=state.trace_id,
                     status="failed",
                     summary=f"{target.id} failed during sync delegation.",
                     actor={"agent_id": target.id, "role": "child_expert"},
@@ -1723,8 +1695,8 @@ async def _run_turn_in_background(
                     payload=_sanitize_handoff_tool_metadata(failed_row),
                 )
                 _append_live_assistant_part(
-                    app,
-                    sid,
+                    state.app,
+                    state.sid,
                     Part(
                         id=f"live_handoff_{uuid.uuid4().hex[:12]}",
                         type="expert_handoff",
@@ -1769,7 +1741,7 @@ async def _run_turn_in_background(
         max_rounds = max(1, min(max_rounds, 16))
         completed_child_ids: set[str] = set()
         completed_child_outputs: dict[str, str] = {}
-        declared_child_ids = _runtime_declared_child_ids(app, parent_agent.id, session_id=sid)
+        declared_child_ids = _runtime_declared_child_ids(state.app, parent_agent.id, session_id=state.sid)
 
         for _round in range(max_rounds):
             # AGENT-DRIVEN ROUTING. The parent emitted, at the end of its run, a typed
@@ -1806,7 +1778,7 @@ async def _run_turn_in_background(
             # (where ``app.state.arc`` is reliably bound and ``latest_pred`` carries the
             # reasoning), not in the streamed executor forward (no app contextvar).
             _arc_write_orchestrator_route(
-                app, sid, parent_agent.id, latest_pred, next_expert, next_task, turn_id
+                state.app, state.sid, parent_agent.id, latest_pred, next_expert, next_task, state.turn_id
             )
             requested_rows = [
                 {
@@ -1877,70 +1849,70 @@ async def _run_turn_in_background(
         if context_file_error is not None:
             raise _ContextFileAccessError(context_file_error)
 
-        if sid in app.state.cancel_flags:
-            app.state.cancel_flags.discard(sid)
+        if state.sid in state.app.state.cancel_flags:
+            state.app.state.cancel_flags.discard(state.sid)
             raise _TurnCancelled(
                 _cancelled_error_info(
-                    sid,
+                    state.sid,
                     execution_cancellation="turn_boundary",
                     executor_work_may_continue=False,
                 )
             )
 
-        session_agent_id = _session_agent_id(sess)
-        active_agent_id = turn_agent_id or session_agent_id
-        active_blueprint_root_id = _runtime_active_agent_blueprint_root_id(app, sid)
-        active_blueprint_agent_ids = _runtime_active_agent_blueprint_agent_ids(app, sid)
+        session_agent_id = _session_agent_id(state.sess)
+        state.active_agent_id = state.turn_agent_id or session_agent_id
+        active_blueprint_root_id = _runtime_active_agent_blueprint_root_id(state.app, state.sid)
+        active_blueprint_agent_ids = _runtime_active_agent_blueprint_agent_ids(state.app, state.sid)
         if (
-            not turn_agent_id
+            not state.turn_agent_id
             and active_blueprint_root_id
-            and active_agent_id in {"", "main", "default"}
+            and state.active_agent_id in {"", "main", "default"}
         ):
-            active_agent_id = active_blueprint_root_id
-        routing_mode = getattr(sess, "routing_mode", "auto") or "auto"
-        invocation_agent_id = active_agent_id or "orchestrator"
+            state.active_agent_id = active_blueprint_root_id
+        routing_mode = getattr(state.sess, "routing_mode", "auto") or "auto"
+        state.invocation_agent_id = state.active_agent_id or "orchestrator"
         _emit_semantic_event(
-            app,
-            sid,
+            state.app,
+            state.sid,
             "agent.invocation.started",
-            turn_id=turn_id,
-            trace_id=trace_id,
+            turn_id=state.turn_id,
+            trace_id=state.trace_id,
             status="running",
-            summary=f"Invoking {invocation_agent_id}.",
-            actor={"agent_id": invocation_agent_id},
-            subject={"message_id": user_msg.id},
+            summary=f"Invoking {state.invocation_agent_id}.",
+            actor={"agent_id": state.invocation_agent_id},
+            subject={"message_id": state.user_msg.id},
             payload={
                 "routing_mode": routing_mode,
                 "session_agent_id": session_agent_id,
-                "turn_agent_id": turn_agent_id,
+                "turn_agent_id": state.turn_agent_id,
                 "active_blueprint_root_id": active_blueprint_root_id,
                 "active_blueprint_agent_ids": active_blueprint_agent_ids,
             },
         )
         from clio_agent.agent import cancellation_checker as _cancellation_checker  # noqa: PLC0415
 
-        _refresh_argonne_lm_token(app.state.agent)
+        _refresh_argonne_lm_token(state.app.state.agent)
 
         if (
-            active_agent_id not in _EXECUTABLE_SESSION_AGENT_IDS
-            or active_agent_id in active_blueprint_agent_ids
+            state.active_agent_id not in _EXECUTABLE_SESSION_AGENT_IDS
+            or state.active_agent_id in active_blueprint_agent_ids
         ):
-            prompt_registry_factory = getattr(app.state, "prompt_registry_for_request", None)
+            prompt_registry_factory = getattr(state.app.state, "prompt_registry_for_request", None)
             prompt_registry = (
-                prompt_registry_factory(session_id=sid)
+                prompt_registry_factory(session_id=state.sid)
                 if callable(prompt_registry_factory)
                 else None
             )
             dynamic_agent = _resolve_runtime_dynamic_agent(
-                app,
-                active_agent_id,
-                session_id=sid,
+                state.app,
+                state.active_agent_id,
+                session_id=state.sid,
                 prompt_registry=prompt_registry,
             )
             if dynamic_agent is None:
-                raise _UnsupportedSessionAgent(active_agent_id)
-            prompt_resolution = dict(dynamic_agent.metadata.get("prompt_resolution") or {})
-            dynamic_agent_used = dynamic_agent
+                raise _UnsupportedSessionAgent(state.active_agent_id)
+            state.prompt_resolution = dict(dynamic_agent.metadata.get("prompt_resolution") or {})
+            state.dynamic_agent_used = dynamic_agent
             runner = _blueprint_runner_for_agent(dynamic_agent)
             dynamic_kind = (
                 _blueprint_module_kind(dynamic_agent)
@@ -1952,22 +1924,22 @@ async def _run_turn_in_background(
                 if dynamic_kind
                 else ("tool_agent" if dynamic_agent.tools else "prompt_agent")
             )
-            agent_runtime = _dynamic_agent_runtime_provenance(
-                app,
+            state.agent_runtime = _dynamic_agent_runtime_provenance(
+                state.app,
                 dynamic_agent,
                 execution_mode=execution_mode,
             )
             # The keystone (set_turn_identity) already binds active_app() for the
             # whole turn, so no _gact_app_context wrapper is needed here.
-            session_token = _ctx.set_session_id(sid)
+            session_token = _ctx.set_session_id(state.sid)
             try:
                 module = (
-                    _build_blueprint_dspy_module(app.state.agent, dynamic_agent)
+                    _build_blueprint_dspy_module(state.app.state.agent, dynamic_agent)
                     if _agent_definition_uses_blueprint_runtime(dynamic_agent)
                     else (
-                        _build_tool_user_agent_module(app.state.agent, dynamic_agent)
+                        _build_tool_user_agent_module(state.app.state.agent, dynamic_agent)
                         if dynamic_agent.tools
-                        else _build_prompt_user_agent_module(app.state.agent, dynamic_agent)
+                        else _build_prompt_user_agent_module(state.app.state.agent, dynamic_agent)
                     )
                 )
             finally:
@@ -1981,106 +1953,106 @@ async def _run_turn_in_background(
             llm_subject = {
                 "prompt_id": dynamic_agent.prompt_id,
                 "prompt_profile": dynamic_agent.prompt_profile,
-                "message_id": user_msg.id,
+                "message_id": state.user_msg.id,
             }
             _emit_semantic_event(
-                app,
-                sid,
+                state.app,
+                state.sid,
                 "llm.request.started",
-                turn_id=turn_id,
-                trace_id=trace_id,
+                turn_id=state.turn_id,
+                trace_id=state.trace_id,
                 status="running",
                 summary=f"LLM request started for {dynamic_agent.id}.",
                 actor=llm_actor,
                 subject=llm_subject,
-                blueprint=dict(agent_runtime.get("agent_blueprint") or {}),
-                provider=_llm_provider_payload(app, dynamic_agent.id),
+                blueprint=dict(state.agent_runtime.get("agent_blueprint") or {}),
+                provider=_llm_provider_payload(state.app, dynamic_agent.id),
                 payload={
                     "request_mode": "streamed",
-                    "input": enriched_text,
-                    "prompt_resolution": prompt_resolution,
-                    "agent_runtime": agent_runtime,
-                    "native_image_count": len(native_images),
+                    "input": state.enriched_text,
+                    "prompt_resolution": state.prompt_resolution,
+                    "agent_runtime": state.agent_runtime,
+                    "native_image_count": len(state.native_images),
                 },
             )
-            with _cancellation_checker(cancel_requested), _tool_session_context(sid):
-                pred = await _await_turn_work(
+            with _cancellation_checker(cancel_requested), _tool_session_context(state.sid):
+                state.pred = await _await_turn_work(
                     _try_streamed_forward_compat(
-                        app,
-                        enriched_text,
-                        sid,
+                        state.app,
+                        state.enriched_text,
+                        state.sid,
                         _emit_chunk,
-                        session_mode=getattr(sess, "mode", "chat"),
-                        session_edit_mode=getattr(sess, "edit_mode", "diff"),
+                        session_mode=getattr(state.sess, "mode", "chat"),
+                        session_edit_mode=getattr(state.sess, "edit_mode", "diff"),
                         agent_override=module,
-                        images=native_images,
+                        images=state.native_images,
                         cancel_requested=cancel_requested,
                     )
                 )
-            if pred is not None:
+            if state.pred is not None:
                 _emit_semantic_event(
-                    app,
-                    sid,
+                    state.app,
+                    state.sid,
                     "llm.response.completed",
-                    turn_id=turn_id,
-                    trace_id=trace_id,
+                    turn_id=state.turn_id,
+                    trace_id=state.trace_id,
                     summary=f"LLM response completed for {dynamic_agent.id}.",
                     actor=llm_actor,
                     subject=llm_subject,
-                    blueprint=dict(agent_runtime.get("agent_blueprint") or {}),
-                    provider=_llm_provider_payload(app, dynamic_agent.id),
-                    payload=_prediction_summary(pred),
+                    blueprint=dict(state.agent_runtime.get("agent_blueprint") or {}),
+                    provider=_llm_provider_payload(state.app, dynamic_agent.id),
+                    payload=_prediction_summary(state.pred),
                 )
-            if pred is None:
+            if state.pred is None:
                 _emit_semantic_event(
-                    app,
-                    sid,
+                    state.app,
+                    state.sid,
                     "llm.request.started",
-                    turn_id=turn_id,
-                    trace_id=trace_id,
+                    turn_id=state.turn_id,
+                    trace_id=state.trace_id,
                     status="running",
                     summary=f"Synchronous LLM request started for {dynamic_agent.id}.",
                     actor=llm_actor,
                     subject=llm_subject,
-                    blueprint=dict(agent_runtime.get("agent_blueprint") or {}),
-                    provider=_llm_provider_payload(app, dynamic_agent.id),
+                    blueprint=dict(state.agent_runtime.get("agent_blueprint") or {}),
+                    provider=_llm_provider_payload(state.app, dynamic_agent.id),
                     payload={
                         "request_mode": "sync",
-                        "input": enriched_text,
-                        "prompt_resolution": prompt_resolution,
-                        "agent_runtime": agent_runtime,
-                        "native_image_count": len(native_images),
+                        "input": state.enriched_text,
+                        "prompt_resolution": state.prompt_resolution,
+                        "agent_runtime": state.agent_runtime,
+                        "native_image_count": len(state.native_images),
                     },
                 )
-                with _cancellation_checker(cancel_requested), _tool_session_context(sid):
+                with _cancellation_checker(cancel_requested), _tool_session_context(state.sid):
                     loop = asyncio.get_running_loop()
                     turn_context = contextvars.copy_context()
-                    pred = await _await_turn_work(
+                    state.pred = await _await_turn_work(
                         loop.run_in_executor(
                             None,
                             lambda: turn_context.run(
                                 _run_dynamic_agent_compat,
                                 runner,
-                                app.state.agent,
+                                state.app.state.agent,
                                 dynamic_agent,
-                                enriched_text,
-                                sid,
+                                state.enriched_text,
+                                state.sid,
                                 cancel_requested,
                             ),
                         ),
                     )
                 _emit_semantic_event(
-                    app,
-                    sid,
+                    state.app,
+                    state.sid,
                     "llm.response.completed",
-                    turn_id=turn_id,
-                    trace_id=trace_id,
+                    turn_id=state.turn_id,
+                    trace_id=state.trace_id,
                     summary=f"Synchronous LLM response completed for {dynamic_agent.id}.",
                     actor=llm_actor,
                     subject=llm_subject,
-                    blueprint=dict(agent_runtime.get("agent_blueprint") or {}),
-                    provider=_llm_provider_payload(app, dynamic_agent.id),
-                    payload=_prediction_summary(pred),
+                    blueprint=dict(state.agent_runtime.get("agent_blueprint") or {}),
+                    provider=_llm_provider_payload(state.app, dynamic_agent.id),
+                    payload=_prediction_summary(state.pred),
                 )
         else:
             # Honour the session's routing override. routing_mode "chat"
@@ -2092,145 +2064,145 @@ async def _run_turn_in_background(
             from clio_agent.agent import routing_mode_override as _routing_override  # noqa: PLC0415
 
             with _routing_override(routing_override), _cancellation_checker(cancel_requested):
-                with _tool_session_context(sid):
+                with _tool_session_context(state.sid):
                     llm_actor = {
-                        "agent_id": active_agent_id or "orchestrator",
+                        "agent_id": state.active_agent_id or "orchestrator",
                         "source": "builtin",
                         "execution_mode": "clio_agent_forward",
                     }
-                    llm_subject = {"message_id": user_msg.id}
+                    llm_subject = {"message_id": state.user_msg.id}
                     _emit_semantic_event(
-                        app,
-                        sid,
+                        state.app,
+                        state.sid,
                         "llm.request.started",
-                        turn_id=turn_id,
-                        trace_id=trace_id,
+                        turn_id=state.turn_id,
+                        trace_id=state.trace_id,
                         status="running",
                         summary="LLM request started for CLIO orchestrator.",
                         actor=llm_actor,
                         subject=llm_subject,
-                        provider=_llm_provider_payload(app, active_agent_id or "orchestrator"),
+                        provider=_llm_provider_payload(state.app, state.active_agent_id or "orchestrator"),
                         payload={
                             "request_mode": "streamed",
                             "routing_mode": routing_override,
-                            "session_mode": getattr(sess, "mode", "chat"),
-                            "edit_mode": getattr(sess, "edit_mode", "diff"),
-                            "input": enriched_text,
-                            "native_image_count": len(native_images),
+                            "session_mode": getattr(state.sess, "mode", "chat"),
+                            "edit_mode": getattr(state.sess, "edit_mode", "diff"),
+                            "input": state.enriched_text,
+                            "native_image_count": len(state.native_images),
                         },
                     )
-                    pred = await _await_turn_work(
+                    state.pred = await _await_turn_work(
                         _try_streamed_forward_compat(
-                            app,
-                            enriched_text,
-                            sid,
+                            state.app,
+                            state.enriched_text,
+                            state.sid,
                             _emit_chunk,
-                            session_mode=getattr(sess, "mode", "chat"),
-                            session_edit_mode=getattr(sess, "edit_mode", "diff"),
-                            images=native_images,
+                            session_mode=getattr(state.sess, "mode", "chat"),
+                            session_edit_mode=getattr(state.sess, "edit_mode", "diff"),
+                            images=state.native_images,
                             cancel_requested=cancel_requested,
                         )
                     )
-                    if pred is not None:
+                    if state.pred is not None:
                         _emit_semantic_event(
-                            app,
-                            sid,
+                            state.app,
+                            state.sid,
                             "llm.response.completed",
-                            turn_id=turn_id,
-                            trace_id=trace_id,
+                            turn_id=state.turn_id,
+                            trace_id=state.trace_id,
                             summary="LLM response completed for CLIO orchestrator.",
                             actor=llm_actor,
                             subject=llm_subject,
-                            provider=_llm_provider_payload(app, active_agent_id or "orchestrator"),
-                            payload=_prediction_summary(pred),
+                            provider=_llm_provider_payload(state.app, state.active_agent_id or "orchestrator"),
+                            payload=_prediction_summary(state.pred),
                         )
-                    if pred is None:
+                    if state.pred is None:
                         _emit_semantic_event(
-                            app,
-                            sid,
+                            state.app,
+                            state.sid,
                             "llm.request.started",
-                            turn_id=turn_id,
-                            trace_id=trace_id,
+                            turn_id=state.turn_id,
+                            trace_id=state.trace_id,
                             status="running",
                             summary="Synchronous LLM request started for CLIO orchestrator.",
                             actor=llm_actor,
                             subject=llm_subject,
-                            provider=_llm_provider_payload(app, active_agent_id or "orchestrator"),
+                            provider=_llm_provider_payload(state.app, state.active_agent_id or "orchestrator"),
                             payload={
                                 "request_mode": "sync",
                                 "routing_mode": routing_override,
-                                "session_mode": getattr(sess, "mode", "chat"),
-                                "edit_mode": getattr(sess, "edit_mode", "diff"),
-                                "input": enriched_text,
-                                "native_image_count": len(native_images),
+                                "session_mode": getattr(state.sess, "mode", "chat"),
+                                "edit_mode": getattr(state.sess, "edit_mode", "diff"),
+                                "input": state.enriched_text,
+                                "native_image_count": len(state.native_images),
                             },
                         )
                         loop = asyncio.get_running_loop()
                         turn_context = contextvars.copy_context()
-                        pred = await _await_turn_work(
+                        state.pred = await _await_turn_work(
                             loop.run_in_executor(
                                 None,
                                 lambda: turn_context.run(
                                     _agent_forward_compat,
-                                    app.state.agent,
-                                    enriched_text,
-                                    sid,
-                                    getattr(sess, "mode", "chat"),
-                                    getattr(sess, "edit_mode", "diff"),
+                                    state.app.state.agent,
+                                    state.enriched_text,
+                                    state.sid,
+                                    getattr(state.sess, "mode", "chat"),
+                                    getattr(state.sess, "edit_mode", "diff"),
                                     cancel_requested,
-                                    native_images,
+                                    state.native_images,
                                 ),
                             ),
                         )
                         _emit_semantic_event(
-                            app,
-                            sid,
+                            state.app,
+                            state.sid,
                             "llm.response.completed",
-                            turn_id=turn_id,
-                            trace_id=trace_id,
+                            turn_id=state.turn_id,
+                            trace_id=state.trace_id,
                             summary="Synchronous LLM response completed for CLIO orchestrator.",
                             actor=llm_actor,
                             subject=llm_subject,
-                            provider=_llm_provider_payload(app, active_agent_id or "orchestrator"),
-                            payload=_prediction_summary(pred),
+                            provider=_llm_provider_payload(state.app, state.active_agent_id or "orchestrator"),
+                            payload=_prediction_summary(state.pred),
                         )
-        if dynamic_agent_used is not None and dynamic_agent_used.source == "expert_pack":
-            pred, expert_handoffs = await _settle_dynamic_agent_delegations(
-                dynamic_agent_used,
-                pred,
-                source_text=enriched_text,
+        if state.dynamic_agent_used is not None and state.dynamic_agent_used.source == "expert_pack":
+            state.pred, state.expert_handoffs = await _settle_dynamic_agent_delegations(
+                state.dynamic_agent_used,
+                state.pred,
+                source_text=state.enriched_text,
             )
         _emit_semantic_event(
-            app,
-            sid,
+            state.app,
+            state.sid,
             "agent.invocation.completed",
-            turn_id=turn_id,
-            trace_id=trace_id,
-            summary=f"{invocation_agent_id} returned a prediction.",
-            actor={"agent_id": invocation_agent_id},
-            subject={"message_id": user_msg.id},
+            turn_id=state.turn_id,
+            trace_id=state.trace_id,
+            summary=f"{state.invocation_agent_id} returned a prediction.",
+            actor={"agent_id": state.invocation_agent_id},
+            subject={"message_id": state.user_msg.id},
             payload={
-                "selected_expert": getattr(pred, "selected_expert", "") or "",
-                "route_source": getattr(pred, "route_source", "") or "",
-                "has_answer": bool(getattr(pred, "answer", "") or ""),
-                "has_error_info": bool(getattr(pred, "error_info", None)),
+                "selected_expert": getattr(state.pred, "selected_expert", "") or "",
+                "route_source": getattr(state.pred, "route_source", "") or "",
+                "has_answer": bool(getattr(state.pred, "answer", "") or ""),
+                "has_error_info": bool(getattr(state.pred, "error_info", None)),
             },
         )
 
-        answer_text = getattr(pred, "answer", "")
-        selected_agent = getattr(pred, "selected_expert", "") or ""
-        rationale = getattr(pred, "routing_rationale", "")
-        route_source = getattr(pred, "route_source", "") or ""
-        route_reason = getattr(pred, "route_reason", "") or rationale
-        pred_error_info = _coerce_error_info(getattr(pred, "error_info", None))
+        state.answer_text = getattr(state.pred, "answer", "")
+        state.selected_agent = getattr(state.pred, "selected_expert", "") or ""
+        state.rationale = getattr(state.pred, "routing_rationale", "")
+        state.route_source = getattr(state.pred, "route_source", "") or ""
+        state.route_reason = getattr(state.pred, "route_reason", "") or state.rationale
+        pred_error_info = _coerce_error_info(getattr(state.pred, "error_info", None))
         if pred_error_info is not None:
             if pred_error_info.error == "cancelled":
-                pred_error_info.details.setdefault("session_id", sid)
-            error_info = pred_error_info
-            if not error_info.details.get("partial", False):
-                answer_text = ""
-        ask_user_action = _coerce_ask_user_action(pred)
-        if error_info is None and ask_user_action:
+                pred_error_info.details.setdefault("session_id", state.sid)
+            state.error_info = pred_error_info
+            if not state.error_info.details.get("partial", False):
+                state.answer_text = ""
+        ask_user_action = _coerce_ask_user_action(state.pred)
+        if state.error_info is None and ask_user_action:
             now_iso = datetime.now(timezone.utc).isoformat()
             options = _ask_user_options_from_action(ask_user_action)
             kind_raw = str(ask_user_action.get("kind") or "").strip()
@@ -2243,7 +2215,7 @@ async def _run_turn_in_background(
                 )
             question = UserQuestion(
                 id=_new_question_id(),
-                session_id=sid,
+                session_id=state.sid,
                 prompt=str(ask_user_action["question"]),
                 status="pending",
                 kind=kind,  # type: ignore[arg-type]
@@ -2251,60 +2223,60 @@ async def _run_turn_in_background(
                 created_at=now_iso,
                 updated_at=now_iso,
                 source="orchestrator_action",
-                turn_id=user_msg.id,
-                attempt_id=retry_attempt_id,
+                turn_id=state.user_msg.id,
+                attempt_id=state.retry_attempt_id,
                 metadata={
                     **dict(ask_user_action.get("metadata") or {}),
                     "reason": ask_user_action.get("reason", ""),
                     "caller": ask_user_action.get("caller", {}),
                     "resume_on_answer": True,
-                    "source_user_message_id": user_msg.id,
-                    "source_user_text": user_text,
-                    "selected_agent": selected_agent,
-                    "route_source": route_source,
-                    "route_reason": route_reason,
+                    "source_user_message_id": state.user_msg.id,
+                    "source_user_text": state.user_text,
+                    "selected_agent": state.selected_agent,
+                    "route_source": state.route_source,
+                    "route_reason": state.route_reason,
                 },
             )
-            app.state.user_questions[question.id] = question
+            state.app.state.user_questions[question.id] = question
             _emit_semantic_event(
-                app,
-                sid,
+                state.app,
+                state.sid,
                 "user_question.created",
-                turn_id=turn_id,
-                trace_id=trace_id,
+                turn_id=state.turn_id,
+                trace_id=state.trace_id,
                 status="waiting_user",
                 summary="Agent requested user input before continuing.",
-                actor={"agent_id": selected_agent or invocation_agent_id},
+                actor={"agent_id": state.selected_agent or state.invocation_agent_id},
                 subject={"question_id": question.id},
                 payload=question.model_dump(exclude_none=True),
             )
-            updated = app.state.sessions.update(
-                sid,
+            updated = state.app.state.sessions.update(
+                state.sid,
                 status="waiting_user",
-                message_count=len(app.state.messages.get(sid, [])),
+                message_count=len(state.app.state.messages.get(state.sid, [])),
                 metadata_patch={"pending_user_question_id": question.id},
             )
             _finalize_context_frame(
-                app,
-                sid,
-                context_frame["id"],
+                state.app,
+                state.sid,
+                state.context_frame["id"],
                 "",
                 "completed",
                 error_info=None,
             )
-            bus.publish(
+            state.bus.publish(
                 Event(
                     type="user_question.created",
-                    session_id=sid,
+                    session_id=state.sid,
                     payload=question.model_dump(exclude_none=True),
                 )
             )
-            bus.publish(
+            state.bus.publish(
                 Event(
                     type="session.status_changed",
-                    session_id=sid,
+                    session_id=state.sid,
                     payload={
-                        "session_id": sid,
+                        "session_id": state.sid,
                         "status": "waiting_user",
                         "prev_status": "running",
                         "updated_at": updated.updated_at if updated is not None else "",
@@ -2312,7 +2284,7 @@ async def _run_turn_in_background(
                     },
                 )
             )
-            if retry_attempt_id:
+            if state.retry_attempt_id:
                 _update_retry_attempt(
                     "completed",
                     metadata_patch={
@@ -2333,53 +2305,53 @@ async def _run_turn_in_background(
         # path it took ("fast" or "expert_loop"). Empty when not
         # populated by ClioAgent.forward (older code paths, non-data
         # branches not yet migrated).
-        execution_path = getattr(pred, "execution_path", "") or ""
-        tools_called = _extract_tools_called(pred)
-        top_level_workflow_state = _prediction_workflow_state(pred)
+        state.execution_path = getattr(state.pred, "execution_path", "") or ""
+        state.tools_called = _extract_tools_called(state.pred)
+        top_level_workflow_state = _prediction_workflow_state(state.pred)
         if top_level_workflow_state:
             _publish_transcript_event(
-                bus,
-                sid,
+                state.bus,
+                state.sid,
                 "state.updated",
                 {
-                    "turn_id": turn_id,
+                    "turn_id": state.turn_id,
                     "value": top_level_workflow_state,
                     "visibility": "hidden",
                 },
             )
-        raw_handoffs = getattr(pred, "expert_handoffs", None) or []
-        if not expert_handoffs:
-            expert_handoffs = _coerce_expert_handoff_rows(raw_handoffs)
-        tools_called = _merge_tool_call_rows(
-            tools_called,
-            _tool_calls_from_handoff_rows(expert_handoffs),
+        raw_handoffs = getattr(state.pred, "expert_handoffs", None) or []
+        if not state.expert_handoffs:
+            state.expert_handoffs = _coerce_expert_handoff_rows(raw_handoffs)
+        state.tools_called = _merge_tool_call_rows(
+            state.tools_called,
+            _tool_calls_from_handoff_rows(state.expert_handoffs),
         )
         # Drain the per-session observer ledger so direct-tool short-
         # circuits (HDF5/Parquet/fs experts that bypass ReAct) still
         # report tools_called on the assistant message metadata.
-        tools_called = _drain_observed_tool_calls(tools_called)
+        state.tools_called = _drain_observed_tool_calls(state.tools_called)
         # iowarp/clio-agent#17 — surface DSPy reasoning as a
         # `thinking` Part. ChainOfThought predictions expose
         # ``.reasoning`` (single string); ReAct exposes
         # ``.trajectory`` (step-by-step trace). Fall back to the
         # generic `_trace` Prediction wraps either of them in.
-        thinking_text = (
-            getattr(pred, "reasoning", "")
-            or _format_react_trajectory(getattr(pred, "trajectory", None))
+        state.thinking_text = (
+            getattr(state.pred, "reasoning", "")
+            or _format_react_trajectory(getattr(state.pred, "trajectory", None))
             or ""
         )
         # CLIO-BBBBBBBBBB24: cost + token rollup. Real DSPy
         # predictions don't always populate .tokens / .cost_usd
         # directly — pull from the per-turn UsageTracker first
         # (works across threads + streaming), then LM history.
-        raw_tokens = getattr(pred, "tokens", None)
+        raw_tokens = getattr(state.pred, "tokens", None)
         if raw_tokens is not None:
-            for key in turn_tokens:
+            for key in state.turn_tokens:
                 if isinstance(raw_tokens, dict):
                     v = raw_tokens.get(key, 0)
                 else:
                     v = getattr(raw_tokens, key, 0)
-                turn_tokens[key] = int(v or 0)
+                state.turn_tokens[key] = int(v or 0)
         else:
             # Diff the LM history slice for this turn first — captures
             # planner + expert + chat calls cleanly. Falls back to
@@ -2387,43 +2359,43 @@ async def _run_turn_in_background(
             # character-based estimate when the upstream proxy
             # reports zero (some OpenAI-compatible proxies don't
             # populate usage on chunked replies).
-            history_end = _snapshot_lm_history_index(app)
+            history_end = _snapshot_lm_history_index(state.app)
             history_made_calls = any(
-                history_end.get(k, 0) > history_start.get(k, 0)
-                for k in {*history_start.keys(), *history_end.keys()}
+                history_end.get(k, 0) > state.history_start.get(k, 0)
+                for k in {*state.history_start.keys(), *history_end.keys()}
             )
-            usage = _usage_from_history_slice(history_start, app)
+            usage = _usage_from_history_slice(state.history_start, state.app)
             if not usage.get("output"):
                 usage = _usage_from_dspy_history()
-            for key in turn_tokens:
-                turn_tokens[key] = int(usage.get(key, 0) or 0)
-            turn_cost = float(usage.get("cost_usd", 0.0) or 0.0)
+            for key in state.turn_tokens:
+                state.turn_tokens[key] = int(usage.get(key, 0) or 0)
+            state.turn_cost = float(usage.get("cost_usd", 0.0) or 0.0)
             # Char-based fallback only when the LM actually fired
             # this turn (history grew) but the upstream proxy
             # reported zero usage. Don't synthesize numbers when
             # there was no real call (e.g. unit tests with a fake
             # agent that bypasses dspy.LM entirely).
             if history_made_calls:
-                if turn_tokens["output"] == 0 and answer_text:
-                    turn_tokens["output"] = max(1, len(answer_text) // 4)
-                if turn_tokens["input"] == 0 and enriched_text:
-                    turn_tokens["input"] = max(1, len(enriched_text) // 4)
-                if turn_cost == 0.0:
-                    turn_cost = _estimate_cost_usd(
+                if state.turn_tokens["output"] == 0 and state.answer_text:
+                    state.turn_tokens["output"] = max(1, len(state.answer_text) // 4)
+                if state.turn_tokens["input"] == 0 and state.enriched_text:
+                    state.turn_tokens["input"] = max(1, len(state.enriched_text) // 4)
+                if state.turn_cost == 0.0:
+                    state.turn_cost = _estimate_cost_usd(
                         _current_lm_model_id(),
-                        turn_tokens["input"],
-                        turn_tokens["output"],
+                        state.turn_tokens["input"],
+                        state.turn_tokens["output"],
                     )
-        if not turn_cost:
-            turn_cost = float(getattr(pred, "cost_usd", 0.0) or 0.0)
-        proposed_diffs = list(getattr(pred, "file_diffs", None) or [])
-        if not proposed_diffs:
+        if not state.turn_cost:
+            state.turn_cost = float(getattr(state.pred, "cost_usd", 0.0) or 0.0)
+        state.proposed_diffs = list(getattr(state.pred, "file_diffs", None) or [])
+        if not state.proposed_diffs:
             # Dynamic tool agents call fs_propose_edit as a TOOL and never set
             # pred.file_diffs; promote those results so they materialize as
             # file_diff parts + pending /diffs rows (iowarp/clio-agent#674).
-            proposed_diffs = _propose_edit_diffs_from_pred(pred)
-        nanoagents = list(getattr(pred, "nanoagents_spawned", None) or [])
-        for req in getattr(pred, "permissions_requested", None) or []:
+            state.proposed_diffs = _propose_edit_diffs_from_pred(state.pred)
+        state.nanoagents = list(getattr(state.pred, "nanoagents_spawned", None) or [])
+        for req in getattr(state.pred, "permissions_requested", None) or []:
             src = (
                 req
                 if isinstance(req, dict)
@@ -2436,58 +2408,58 @@ async def _run_turn_in_background(
             pid = src.get("id") or f"perm_{uuid.uuid4().hex[:12]}"
             row = {
                 "id": pid,
-                "session_id": sid,
+                "session_id": state.sid,
                 "tool_call": src.get("tool_call") or {},
                 "summary": src.get("summary", ""),
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "status": "pending",
             }
-            app.state.permissions[pid] = row
-            enforce_dict_bound(app, app.state.permissions, "permissions", session_id=sid)
+            state.app.state.permissions[pid] = row
+            enforce_dict_bound(state.app, state.app.state.permissions, "permissions", session_id=state.sid)
             _emit_semantic_event(
-                app,
-                sid,
+                state.app,
+                state.sid,
                 "permission.requested",
-                turn_id=turn_id,
-                trace_id=trace_id,
+                turn_id=state.turn_id,
+                trace_id=state.trace_id,
                 status="pending",
                 summary="Tool execution requested user permission.",
-                actor={"agent_id": selected_agent or invocation_agent_id},
+                actor={"agent_id": state.selected_agent or state.invocation_agent_id},
                 subject={"permission_id": pid},
                 payload=row,
             )
-            bus.publish(
+            state.bus.publish(
                 Event(
                     type="permission.requested",
-                    session_id=sid,
+                    session_id=state.sid,
                     payload=row,
                 )
             )
-        if sid in app.state.cancel_flags:
-            app.state.cancel_flags.discard(sid)
-            error_info = _cancelled_error_info(
-                sid,
+        if state.sid in state.app.state.cancel_flags:
+            state.app.state.cancel_flags.discard(state.sid)
+            state.error_info = _cancelled_error_info(
+                state.sid,
                 execution_cancellation="turn_boundary",
                 executor_work_may_continue=False,
             )
-            answer_text = ""
-            tools_called = []
+            state.answer_text = ""
+            state.tools_called = []
     except _TurnCancelled as exc:
-        error_info = exc.error_info
-        answer_text = ""
-        tools_called = []
+        state.error_info = exc.error_info
+        state.answer_text = ""
+        state.tools_called = []
     except asyncio.CancelledError:
-        error_info = _cancelled_error_info(
-            sid,
+        state.error_info = _cancelled_error_info(
+            state.sid,
             execution_cancellation="best_effort",
             executor_work_may_continue=True,
         )
-        answer_text = ""
-        tools_called = []
+        state.answer_text = ""
+        state.tools_called = []
     except _StreamingOutputError as exc:
         original = exc.__cause__ or exc
-        partial_answer = transcript.raw_streamed_text()
-        error_info = ErrorInfo(
+        partial_answer = state.transcript.raw_streamed_text()
+        state.error_info = ErrorInfo(
             error="provider_error",
             message=str(exc),
             details={
@@ -2497,16 +2469,16 @@ async def _run_turn_in_background(
             },
             recoverable=True,
         )
-        answer_text = partial_answer
-        tools_called = []
+        state.answer_text = partial_answer
+        state.tools_called = []
     except _TurnTimedOut as exc:
-        partial_answer = transcript.raw_streamed_text()
+        partial_answer = state.transcript.raw_streamed_text()
         partial_output = bool(partial_answer)
-        error_info = ErrorInfo(
+        state.error_info = ErrorInfo(
             error="provider_timeout",
             message=f"agent turn made no progress for {exc.timeout_s:g}s",
             details={
-                "session_id": sid,
+                "session_id": state.sid,
                 "no_progress_timeout_s": exc.timeout_s,
                 "timeout_s": exc.timeout_s,
                 "partial_output": partial_output,
@@ -2521,15 +2493,15 @@ async def _run_turn_in_background(
             },
             recoverable=True,
         )
-        answer_text = partial_answer
-        tools_called = []
+        state.answer_text = partial_answer
+        state.tools_called = []
     except _UnsupportedSessionAgent as exc:
-        selected_agent = exc.agent_id
-        rationale = (
+        state.selected_agent = exc.agent_id
+        state.rationale = (
             "Session selected an agent that is registered but not executable "
             "by CLIO's current runtime."
         )
-        error_info = ErrorInfo(
+        state.error_info = ErrorInfo(
             error="not_implemented",
             message=(f"Session agent {exc.agent_id!r} cannot be executed yet."),
             details={
@@ -2548,14 +2520,14 @@ async def _run_turn_in_background(
             },
             recoverable=True,
         )
-        answer_text = ""
-        tools_called = []
+        state.answer_text = ""
+        state.tools_called = []
     except _ContextFileAccessError as exc:
-        error_info = exc.error_info
-        answer_text = ""
-        tools_called = []
+        state.error_info = exc.error_info
+        state.answer_text = ""
+        state.tools_called = []
     except Exception as exc:  # noqa: BLE001
-        error_info = ErrorInfo(
+        state.error_info = ErrorInfo(
             error="agent_error",
             message=f"agent.forward raised: {exc}",
             details={"original_error": type(exc).__name__},
@@ -2568,8 +2540,8 @@ async def _run_turn_in_background(
     # pops in_flight_turns) and wedge the session in 'running' with no
     # completion event. Run it under the turn's error envelope instead.
     try:
-        if error_info is None and not answer_text and expert_handoffs:
-            answer_text = _fallback_answer_from_delegation(expert_handoffs)
+        if state.error_info is None and not state.answer_text and state.expert_handoffs:
+            state.answer_text = _fallback_answer_from_delegation(state.expert_handoffs)
 
         # Final user-facing text only: correct any fabricated local artifact (csv/png)
         # path the answer presents as produced — whether the synthesizing expert
@@ -2578,29 +2550,29 @@ async def _run_turn_in_background(
         # grounding it against the run's verified on-disk artifacts in the merged
         # typed workflow_state. Generic (typed state + filesystem only), applied once
         # on the assembled answer, never on intermediate child rows.
-        if answer_text and expert_handoffs:
-            answer_text = _ground_fabricated_local_artifact_paths(
-                answer_text,
-                _workflow_state_from_handoff_rows(expert_handoffs),
+        if state.answer_text and state.expert_handoffs:
+            state.answer_text = _ground_fabricated_local_artifact_paths(
+                state.answer_text,
+                _workflow_state_from_handoff_rows(state.expert_handoffs),
             )
 
         # Build assistant parts — routing_decision (v0.2) first when we
         # got a selected_agent, then optional thinking trace, then the
         # text answer, then any file_diffs.
         if (
-            error_info is None
-            and not answer_text
-            and not thinking_text
-            and not proposed_diffs
-            and not nanoagents
+            state.error_info is None
+            and not state.answer_text
+            and not state.thinking_text
+            and not state.proposed_diffs
+            and not state.nanoagents
         ):
-            error_info = ErrorInfo(
+            state.error_info = ErrorInfo(
                 error="empty_response",
                 message="Agent completed without user-visible output.",
                 details={
-                    "session_id": sid,
-                    "routing_mode": getattr(sess, "routing_mode", "auto"),
-                    "selected_agent": selected_agent,
+                    "session_id": state.sid,
+                    "routing_mode": getattr(state.sess, "routing_mode", "auto"),
+                    "selected_agent": state.selected_agent,
                 },
                 recoverable=True,
             )
@@ -2615,8 +2587,8 @@ async def _run_turn_in_background(
         # Capture stream provenance BEFORE any finalize-time append: an atomic
         # append is the runtime boundary and clears ``current_stream_part_id``
         # (the legacy closure var was only reset by mid-turn boundaries).
-        current_stream_part_id = transcript.current_stream_part_id
-        live_assistant_parts = transcript.snapshot()
+        current_stream_part_id = state.transcript.current_stream_part_id
+        live_assistant_parts = state.transcript.snapshot()
         has_live_parts = bool(live_assistant_parts or current_stream_part_id)
         live_tool_calls = {
             p.call_id: p for p in live_assistant_parts if p.type == "tool_call" and p.call_id
@@ -2627,7 +2599,7 @@ async def _run_turn_in_background(
             call_part = live_tool_calls.get(part.call_id)
             if call_part is None:
                 continue
-            for row in tools_called:
+            for row in state.tools_called:
                 if str(row.get("name") or "") != call_part.tool_name:
                     continue
                 if row.get("args") != call_part.input:
@@ -2645,7 +2617,7 @@ async def _run_turn_in_background(
 
         # The expert that produced this turn's thinking/answer/diff parts: the routed
         # expert when one was selected, else the active orchestrator.
-        responder_agent_id = selected_agent or invocation_agent_id or "main"
+        responder_agent_id = state.selected_agent or state.invocation_agent_id or "main"
         # Take the canonical-answer channel FIRST: its exactly-once identity seeds
         # from the pre-append ledger (the still-open streamed answer part included).
         # It covers the responder PLUS the stream tap's attribution fallback label
@@ -2653,35 +2625,35 @@ async def _run_turn_in_background(
         # answer can stream under either; a delegated child's channel is NOT
         # covered (its deliverable settled at its LM-call site and must never
         # suppress the responder's distinct final answer).
-        answer_channel = transcript.turn_answer_stream(
+        answer_channel = state.transcript.turn_answer_stream(
             responder_agent_id,
-            active_agent_id or invocation_agent_id or "main",
+            state.active_agent_id or state.invocation_agent_id or "main",
         )
         # Mechanism 1 replaced: the once-key IS the identity — the same
         # ``route:{agent}`` key the live tool observer uses, so the banner lands
         # exactly once whether it streamed live or lands here.
-        if selected_agent:
-            transcript.append_part_once(
-                f"route:{selected_agent}",
+        if state.selected_agent:
+            state.transcript.append_part_once(
+                f"route:{state.selected_agent}",
                 Part(
                     id=_new_part_id(),
                     type="routing_decision",
                     # The decision is MADE by the orchestrator; ``selected_agent`` is the
                     # CHOSEN expert.
-                    agent_id=invocation_agent_id or "main",
+                    agent_id=state.invocation_agent_id or "main",
                     metadata={
                         k: v
                         for k, v in {
-                            "route_source": route_source,
-                            "route_reason": route_reason,
+                            "route_source": state.route_source,
+                            "route_reason": state.route_reason,
                         }.items()
                         if v
                     },
-                    selected_agent=selected_agent,
-                    rationale=rationale,
+                    selected_agent=state.selected_agent,
+                    rationale=state.rationale,
                     confidence=0.0,
                     heuristic=False,
-                    execution_path=execution_path,
+                    execution_path=state.execution_path,
                 ),
                 stream_source="batch",
             )
@@ -2706,14 +2678,14 @@ async def _run_turn_in_background(
         # NOT reset ``current_stream_part_id`` (captured above), so the
         # live-vs-batch stream provenance below is unchanged; the canonical
         # answer channel was taken above, while its part could still be open.
-        transcript.close_open_text()
-        if thinking_text and not transcript.has_closed_text(responder_agent_id, "reasoning"):
-            transcript.append_part(
+        state.transcript.close_open_text()
+        if state.thinking_text and not state.transcript.has_closed_text(responder_agent_id, "reasoning"):
+            state.transcript.append_part(
                 Part(
                     id=_new_part_id(),
                     type="thinking",
                     agent_id=responder_agent_id,
-                    text=thinking_text,
+                    text=state.thinking_text,
                 ),
                 stream_source="batch",
             )
@@ -2725,23 +2697,23 @@ async def _run_turn_in_background(
         # (the streamed part's close already carried the cleaned buffer as
         # final_text — there is nothing to swap). Structured (JSON) answers stay
         # out of the visible transcript, as before.
-        stream_fallback = _pop_stream_fallback(app, sid)
+        stream_fallback = _pop_stream_fallback(state.app, state.sid)
         batch_turn_text = current_stream_part_id is None
         if (
             batch_turn_text
-            and (bool(answer_text) or error_info is not None)
+            and (bool(state.answer_text) or state.error_info is not None)
             and not stream_fallback
         ):
             stream_fallback = _stream_fallback_payload("sync_execution_path")
         answer_channel.finish(
             fallback_text=(
-                "" if _looks_like_structured_answer(answer_text) else str(answer_text or "")
+                "" if _looks_like_structured_answer(state.answer_text) else str(state.answer_text or "")
             ),
             fallback_metadata=(
                 {"stream_fallback": stream_fallback} if stream_fallback and batch_turn_text else {}
             ),
         )
-        for row in proposed_diffs:
+        for row in state.proposed_diffs:
             if isinstance(row, dict):
                 getf = row.get
             else:
@@ -2774,15 +2746,15 @@ async def _run_turn_in_background(
                 lines_added=lines_added,
                 lines_removed=lines_removed,
             )
-            transcript.append_part(diff_part, stream_source="batch")
+            state.transcript.append_part(diff_part, stream_source="batch")
             _emit_semantic_event(
-                app,
-                sid,
+                state.app,
+                state.sid,
                 "artifact.proposed",
-                turn_id=turn_id,
-                trace_id=trace_id,
+                turn_id=state.turn_id,
+                trace_id=state.trace_id,
                 summary=f"Agent proposed a file diff for {path}.",
-                actor={"agent_id": selected_agent or invocation_agent_id},
+                actor={"agent_id": state.selected_agent or state.invocation_agent_id},
                 subject={"path": path, "part_id": diff_part.id, "artifact_type": "file_diff"},
                 payload={
                     "path": path,
@@ -2794,20 +2766,20 @@ async def _run_turn_in_background(
                 },
             )
 
-        error_info = _enrich_cancellation_error_info(app, sid, error_info)
-        cancelled_turn = error_info is not None and error_info.error == "cancelled"
-        if cancelled_turn:
-            app.state.cancel_flags.discard(sid)
-            ledger = getattr(app.state, "tool_call_ledger", None)
+        state.error_info = _enrich_cancellation_error_info(state.app, state.sid, state.error_info)
+        state.cancelled_turn = state.error_info is not None and state.error_info.error == "cancelled"
+        if state.cancelled_turn:
+            state.app.state.cancel_flags.discard(state.sid)
+            ledger = getattr(state.app.state, "tool_call_ledger", None)
             if ledger is not None:
-                ledger.pop(sid, None)
+                ledger.pop(state.sid, None)
 
-        assistant_metadata: dict[str, Any] = {}
-        if turn_agent_id:
-            assistant_metadata["agent_override"] = {
-                "requested_agent_id": turn_agent_id,
-                "session_agent_id": _session_agent_id(sess),
-                "effective_agent_id": selected_agent or turn_agent_id,
+        state.assistant_metadata = {}
+        if state.turn_agent_id:
+            state.assistant_metadata["agent_override"] = {
+                "requested_agent_id": state.turn_agent_id,
+                "session_agent_id": _session_agent_id(state.sess),
+                "effective_agent_id": state.selected_agent or state.turn_agent_id,
                 "scope": "turn",
             }
         # ``current_stream_part_id`` (captured BEFORE the finalize appends above)
@@ -2817,39 +2789,39 @@ async def _run_turn_in_background(
         # part carries the provenance its producer appended it with (#767 PR3:
         # finalize never rewrites the ledger).
         should_report_stream_provenance = (
-            bool(answer_text) or error_info is not None or has_live_parts
+            bool(state.answer_text) or state.error_info is not None or has_live_parts
         )
         text_stream_source = ""
-        if bool(answer_text) or error_info is not None:
+        if bool(state.answer_text) or state.error_info is not None:
             text_stream_source = "live" if current_stream_part_id is not None else "batch"
         elif has_live_parts:
             text_stream_source = "live"
         if should_report_stream_provenance and text_stream_source:
-            assistant_metadata["stream_source"] = text_stream_source
-        if text_stream_source == "batch" and (bool(answer_text) or error_info is not None):
-            assistant_metadata["stream_fallback"] = stream_fallback
+            state.assistant_metadata["stream_source"] = text_stream_source
+        if text_stream_source == "batch" and (bool(state.answer_text) or state.error_info is not None):
+            state.assistant_metadata["stream_fallback"] = stream_fallback
         # A live observer completion can arrive after the immediate post-forward drain
         # but before the assistant message is persisted. Reconcile once more at the
         # final metadata boundary so reloads retain the same tool facts as the live bus.
-        if not cancelled_turn:
-            tools_called = _drain_observed_tool_calls(tools_called)
-        tools_called = _sanitize_tools_called_metadata(tools_called)
-        if tools_called:
-            assistant_metadata["tools_called"] = tools_called
-        if expert_handoffs:
-            expert_handoffs = [
+        if not state.cancelled_turn:
+            state.tools_called = _drain_observed_tool_calls(state.tools_called)
+        state.tools_called = _sanitize_tools_called_metadata(state.tools_called)
+        if state.tools_called:
+            state.assistant_metadata["tools_called"] = state.tools_called
+        if state.expert_handoffs:
+            state.expert_handoffs = [
                 _sanitize_handoff_tool_metadata(row) if isinstance(row, Mapping) else row
-                for row in expert_handoffs
+                for row in state.expert_handoffs
             ]
-            assistant_metadata["expert_handoffs"] = expert_handoffs
-        if context_file_provenance["files"]:
-            assistant_metadata["context_files"] = context_file_provenance
-        if memory_search_metadata:
-            assistant_metadata["memory_search"] = memory_search_metadata
-        if agent_runtime:
-            assistant_metadata["agent_runtime"] = agent_runtime
-        if prompt_resolution:
-            assistant_metadata["prompt_resolution"] = prompt_resolution
+            state.assistant_metadata["expert_handoffs"] = state.expert_handoffs
+        if state.context_file_provenance["files"]:
+            state.assistant_metadata["context_files"] = state.context_file_provenance
+        if state.memory_search_metadata:
+            state.assistant_metadata["memory_search"] = state.memory_search_metadata
+        if state.agent_runtime:
+            state.assistant_metadata["agent_runtime"] = state.agent_runtime
+        if state.prompt_resolution:
+            state.assistant_metadata["prompt_resolution"] = state.prompt_resolution
         # Reasoning capture: log the chain-of-thought tokens for EVERY LM call this
         # turn (planner + each expert + chat), extracted from dspy.lm.history. Most
         # stacks discard reasoning_content; we persist (question, reasoning, response)
@@ -2863,11 +2835,11 @@ async def _run_turn_in_background(
             "off",
         }:
             try:
-                _reasoning_log = _reasoning_records_from_history_slice(history_start, app)
+                _reasoning_log = _reasoning_records_from_history_slice(state.history_start, state.app)
             except Exception:  # noqa: BLE001 - reasoning capture is best-effort, never fail a turn
                 _reasoning_log = []
             if _reasoning_log:
-                assistant_metadata["reasoning_log"] = _reasoning_log
+                state.assistant_metadata["reasoning_log"] = _reasoning_log
                 trace.event(
                     "REASONING",
                     "captured %d call(s): %s",
@@ -2881,40 +2853,40 @@ async def _run_turn_in_background(
         # message id — reuse it when a producer already minted it (stream tap /
         # tool observer / the finalize appends above); a turn with no parts at
         # all mints + publishes message.created here, exactly once.
-        asst_id = transcript.ensure_message()
+        asst_id = state.transcript.ensure_message()
         # #767 PR3: persist the ledger VERBATIM. finalize() closes any still-open
         # streamed part (publishing its completed event with the cleaned buffer),
         # stamps the 1-based arrival-order ``sequence`` (#731: reload order IS
         # stream order, by construction), freezes the ledger against late
         # producers, and returns the parts. No text rewriting, no dedup, no
         # re-publish — live and reload are two projections of this one ledger.
-        assistant_parts = transcript.finalize()
+        assistant_parts = state.transcript.finalize()
         assistant_msg = Message(
             id=asst_id,
             # Correlate the assistant reply to the user-turn that produced it (#711).
-            turn_id=turn_id,
-            session_id=sid,
+            turn_id=state.turn_id,
+            session_id=state.sid,
             role="assistant",
             created_at=_iso_from_epoch(time.time()),
             updated_at=_iso_from_epoch(time.time()),
             parts=assistant_parts,
-            tokens=Tokens(**turn_tokens),
-            cost_usd=turn_cost,
-            stop_reason="cancelled" if cancelled_turn else ("error" if error_info else "end_turn"),
-            error_info=error_info,
-            metadata=assistant_metadata,
+            tokens=Tokens(**state.turn_tokens),
+            cost_usd=state.turn_cost,
+            stop_reason="cancelled" if state.cancelled_turn else ("error" if state.error_info else "end_turn"),
+            error_info=state.error_info,
+            metadata=state.assistant_metadata,
         )
         _finalize_context_frame(
-            app,
-            sid,
-            context_frame["id"],
+            state.app,
+            state.sid,
+            state.context_frame["id"],
             assistant_msg.id,
-            "cancelled" if cancelled_turn else ("error" if error_info else "completed"),
-            error_info=error_info,
+            "cancelled" if state.cancelled_turn else ("error" if state.error_info else "completed"),
+            error_info=state.error_info,
         )
 
         # Index file_diff parts so /diffs/apply + /diffs/reject find them.
-        bucket = app.state.pending_diffs.setdefault(sid, [])
+        bucket = state.app.state.pending_diffs.setdefault(state.sid, [])
         for p in assistant_parts:
             if p.type != "file_diff":
                 continue
@@ -2931,10 +2903,10 @@ async def _run_turn_in_background(
                     "message_id": assistant_msg.id,
                 }
             )
-        enforce_list_bound(app, bucket, "pending_diffs", session_id=sid)
+        enforce_list_bound(state.app, bucket, "pending_diffs", session_id=state.sid)
 
         # Materialise nanoagent spawns + publish their lifecycle events.
-        for spawn in nanoagents:
+        for spawn in state.nanoagents:
             get = (
                 spawn.get
                 if isinstance(spawn, dict)
@@ -2943,19 +2915,19 @@ async def _run_turn_in_background(
             agent_id = get("agent_id") or get("agent") or "nanoagent"
             spawn_input = get("input") or {}
             answer = get("answer") or ""
-            tools_called = get("tools_called") or get("tools") or []
-            subsess = app.state.sessions.create(
-                workspace_id=sess.workspace_id,
+            state.tools_called = get("tools_called") or get("tools") or []
+            subsess = state.app.state.sessions.create(
+                workspace_id=state.sess.workspace_id,
                 title=f"{agent_id} subagent",
-                parent_session_id=sid,
+                parent_session_id=state.sid,
                 agent={"id": str(agent_id), "mode": "subagent"},
                 metadata={
                     "session_type": "nanoagent",
                     "agent_id": str(agent_id),
-                    "parent_session_id": sid,
+                    "parent_session_id": state.sid,
                     "spawned_by_message_id": assistant_msg.id,
-                    "spawned_by_agent": selected_agent,
-                    "tool_count": len(tools_called) if isinstance(tools_called, list) else 0,
+                    "spawned_by_agent": state.selected_agent,
+                    "tool_count": len(state.tools_called) if isinstance(state.tools_called, list) else 0,
                 },
             )
             sub_now = time.time()
@@ -2974,7 +2946,7 @@ async def _run_turn_in_background(
                 ],
                 metadata={
                     "subagent_input": spawn_input,
-                    "parent_session_id": sid,
+                    "parent_session_id": state.sid,
                     "spawned_by_message_id": assistant_msg.id,
                 },
             )
@@ -2990,33 +2962,33 @@ async def _run_turn_in_background(
                     else []
                 ),
                 stop_reason="end_turn",
-                metadata={"tools_called": tools_called} if tools_called else {},
+                metadata={"tools_called": state.tools_called} if state.tools_called else {},
             )
-            _extend_session_messages(app, subsess.id, [sub_user, sub_asst])
-            app.state.sessions.update(subsess.id, message_count=2, status="idle")
+            _extend_session_messages(state.app, subsess.id, [sub_user, sub_asst])
+            state.app.state.sessions.update(subsess.id, message_count=2, status="idle")
             _emit_semantic_event(
-                app,
-                sid,
+                state.app,
+                state.sid,
                 "subagent.started",
-                turn_id=turn_id,
-                trace_id=trace_id,
+                turn_id=state.turn_id,
+                trace_id=state.trace_id,
                 status="running",
                 summary=f"Spawned subagent {agent_id}.",
-                actor={"agent_id": selected_agent or "orchestrator"},
+                actor={"agent_id": state.selected_agent or "orchestrator"},
                 subject={"agent_id": str(agent_id), "session_id": subsess.id},
                 payload={
-                    "parent_session_id": sid,
+                    "parent_session_id": state.sid,
                     "child_session_id": subsess.id,
                     "agent_id": agent_id,
                     "spawned_by_message_id": assistant_msg.id,
                 },
             )
-            bus.publish(
+            state.bus.publish(
                 Event(
                     type="subagent.started",
-                    session_id=sid,
+                    session_id=state.sid,
                     payload={
-                        "parent_session_id": sid,
+                        "parent_session_id": state.sid,
                         "child_session_id": subsess.id,
                         "agent_id": agent_id,
                         "spawned_by_message_id": assistant_msg.id,
@@ -3024,16 +2996,16 @@ async def _run_turn_in_background(
                 )
             )
             _emit_semantic_event(
-                app,
-                sid,
+                state.app,
+                state.sid,
                 "subagent.completed",
-                turn_id=turn_id,
-                trace_id=trace_id,
+                turn_id=state.turn_id,
+                trace_id=state.trace_id,
                 summary=f"Subagent {agent_id} completed.",
                 actor={"agent_id": str(agent_id), "session_id": subsess.id},
-                subject={"session_id": sid},
+                subject={"session_id": state.sid},
                 payload={
-                    "parent_session_id": sid,
+                    "parent_session_id": state.sid,
                     "child_session_id": subsess.id,
                     "agent_id": agent_id,
                     "duration_ms": float(get("duration_ms", 0.0) or 0.0),
@@ -3041,12 +3013,12 @@ async def _run_turn_in_background(
                     "cost_usd": float(get("cost_usd", 0.0) or 0.0),
                 },
             )
-            bus.publish(
+            state.bus.publish(
                 Event(
                     type="subagent.completed",
-                    session_id=sid,
+                    session_id=state.sid,
                     payload={
-                        "parent_session_id": sid,
+                        "parent_session_id": state.sid,
                         "child_session_id": subsess.id,
                         "agent_id": agent_id,
                         "duration_ms": float(get("duration_ms", 0.0) or 0.0),
@@ -3064,18 +3036,18 @@ async def _run_turn_in_background(
         # after the turn, because that makes post-hoc facts look like live tool
         # timing.
         completed_payload: dict[str, Any] = {
-            "turn_id": turn_id,
+            "turn_id": state.turn_id,
             "message_id": assistant_msg.id,
             "stop_reason": "cancelled"
-            if cancelled_turn
-            else ("error" if error_info else "end_turn"),
-            "tokens": dict(turn_tokens),
-            "cost_usd": turn_cost,
+            if state.cancelled_turn
+            else ("error" if state.error_info else "end_turn"),
+            "tokens": dict(state.turn_tokens),
+            "cost_usd": state.turn_cost,
         }
-        if error_info is not None:
-            completed_payload["error_info"] = error_info.model_dump(exclude_none=True)
-        if assistant_metadata:
-            completed_payload["metadata"] = assistant_metadata
+        if state.error_info is not None:
+            completed_payload["error_info"] = state.error_info.model_dump(exclude_none=True)
+        if state.assistant_metadata:
+            completed_payload["metadata"] = state.assistant_metadata
         # Embed the full final assistant message in the DURABLE turn.completed so the
         # messages store is derivable from the canonical trace (the trace is the
         # source of truth). final_message is in SENSITIVE_KEYS, so the SSE projection
@@ -3085,78 +3057,78 @@ async def _run_turn_in_background(
             "final_message": assistant_msg.model_dump(exclude_none=True),
         }
         _emit_semantic_event(
-            app,
-            sid,
-            "turn.completed" if error_info is None else "turn.failed",
-            turn_id=turn_id,
-            trace_id=trace_id,
-            status="completed" if error_info is None else "failed",
+            state.app,
+            state.sid,
+            "turn.completed" if state.error_info is None else "turn.failed",
+            turn_id=state.turn_id,
+            trace_id=state.trace_id,
+            status="completed" if state.error_info is None else "failed",
             summary=(
                 "CLIO turn completed."
-                if error_info is None
-                else f"CLIO turn failed: {error_info.error}."
+                if state.error_info is None
+                else f"CLIO turn failed: {state.error_info.error}."
             ),
-            actor={"agent_id": selected_agent or "orchestrator"},
+            actor={"agent_id": state.selected_agent or "orchestrator"},
             subject={"message_id": assistant_msg.id},
             payload=semantic_completed_payload,
         )
         _publish_transcript_event(
-            bus,
-            sid,
+            state.bus,
+            state.sid,
             "turn.completed",
-            {"turn_id": turn_id},
+            {"turn_id": state.turn_id},
         )
-        bus.publish(
+        state.bus.publish(
             Event(
                 type="message.completed",
-                session_id=sid,
+                session_id=state.sid,
                 payload=completed_payload,
             )
         )
 
         # Persist + settle.
-        final_status = "cancelled" if cancelled_turn else ("error" if error_info else "idle")
-        retry_status = "cancelled" if cancelled_turn else ("failed" if error_info else "completed")
-        _append_session_message(app, sid, assistant_msg)
+        final_status = "cancelled" if state.cancelled_turn else ("error" if state.error_info else "idle")
+        retry_status = "cancelled" if state.cancelled_turn else ("failed" if state.error_info else "completed")
+        _append_session_message(state.app, state.sid, assistant_msg)
         # #767 PR3: the ledger is already frozen by transcript.finalize(); settle
         # retires it from the registry so a late producer op is rejected +
         # audited, never absorbed silently.
         _settle_turn_transcript()
-        getattr(app.state, "live_assistant_message_ids", {}).pop(sid, None)
-        getattr(app.state, "live_assistant_parts", {}).pop(sid, None)
-        getattr(app.state, "live_assistant_part_keys", {}).pop(sid, None)
+        getattr(state.app.state, "live_assistant_message_ids", {}).pop(state.sid, None)
+        getattr(state.app.state, "live_assistant_parts", {}).pop(state.sid, None)
+        getattr(state.app.state, "live_assistant_part_keys", {}).pop(state.sid, None)
         # #757: the streamed-field buffer is per-turn; leaving it grows without bound
         # and makes later turns' suppression matchers eat legitimate thinking parts.
-        _clear_live_streamed_field_text(app, sid)
+        _clear_live_streamed_field_text(state.app, state.sid)
         _update_retry_attempt(
             retry_status,
             metadata_patch={
-                "executed_user_message_id": user_msg.id,
+                "executed_user_message_id": state.user_msg.id,
                 "assistant_message_id": assistant_msg.id,
                 "stop_reason": completed_payload["stop_reason"],
             },
         )
-        app.state.sessions.update(
-            sid,
+        state.app.state.sessions.update(
+            state.sid,
             status=final_status,
-            message_count=sess.message_count + 2,
-            add_tokens_input=turn_tokens["input"],
-            add_tokens_output=turn_tokens["output"],
-            add_cost_usd=turn_cost,
+            message_count=state.sess.message_count + 2,
+            add_tokens_input=state.turn_tokens["input"],
+            add_tokens_output=state.turn_tokens["output"],
+            add_cost_usd=state.turn_cost,
         )
         cancellation_status: dict[str, Any] = {}
-        if cancelled_turn and error_info is not None:
+        if state.cancelled_turn and state.error_info is not None:
             cancellation_status = {
-                "execution_cancellation": error_info.details.get("execution_cancellation"),
-                "executor_work_may_continue": error_info.details.get("executor_work_may_continue"),
-                "cancellation_attempt": error_info.details.get("cancellation_attempt", {}),
+                "execution_cancellation": state.error_info.details.get("execution_cancellation"),
+                "executor_work_may_continue": state.error_info.details.get("executor_work_may_continue"),
+                "cancellation_attempt": state.error_info.details.get("cancellation_attempt", {}),
             }
-        bus.publish(
+        state.bus.publish(
             Event(
                 type="session.status_changed",
-                session_id=sid,
+                session_id=state.sid,
                 payload={
-                    "session_id": sid,
+                    "session_id": state.sid,
                     "status": final_status,
                     "prev_status": "running",
                     **cancellation_status,
@@ -3170,11 +3142,11 @@ async def _run_turn_in_background(
             from clio_agent.runtime.hooks import fire as _fire_hook
 
             _emit_semantic_event(
-                app,
-                sid,
+                state.app,
+                state.sid,
                 "hook.invocation.started",
-                turn_id=turn_id,
-                trace_id=trace_id,
+                turn_id=state.turn_id,
+                trace_id=state.trace_id,
                 status="running",
                 summary="post_message hook dispatch started.",
                 actor={"hook": "post_message"},
@@ -3183,20 +3155,20 @@ async def _run_turn_in_background(
             )
             _fire_hook(
                 "post_message",
-                sid,
+                state.sid,
                 assistant_msg.model_dump(exclude_none=True),
                 hook_scope={
-                    "session_id": sid,
-                    "workspace_id": getattr(sess, "workspace_id", ""),
-                    "blueprint_id": _runtime_active_agent_blueprint_id(app, sid),
+                    "session_id": state.sid,
+                    "workspace_id": getattr(state.sess, "workspace_id", ""),
+                    "blueprint_id": _runtime_active_agent_blueprint_id(state.app, state.sid),
                 },
             )
             _emit_semantic_event(
-                app,
-                sid,
+                state.app,
+                state.sid,
                 "hook.invocation.completed",
-                turn_id=turn_id,
-                trace_id=trace_id,
+                turn_id=state.turn_id,
+                trace_id=state.trace_id,
                 summary="post_message hook dispatch completed.",
                 actor={"hook": "post_message"},
                 subject={"message_id": assistant_msg.id},
@@ -3204,11 +3176,11 @@ async def _run_turn_in_background(
             )
         except Exception:  # noqa: BLE001
             _emit_semantic_event(
-                app,
-                sid,
+                state.app,
+                state.sid,
                 "hook.invocation.failed",
-                turn_id=turn_id,
-                trace_id=trace_id,
+                turn_id=state.turn_id,
+                trace_id=state.trace_id,
                 status="failed",
                 summary="post_message hook dispatch failed and was swallowed by policy.",
                 actor={"hook": "post_message"},
@@ -3217,21 +3189,21 @@ async def _run_turn_in_background(
             )
             pass
         if not (
-            cancelled_turn
-            and error_info is not None
-            and error_info.details.get("execution_cancellation") == "best_effort"
+            state.cancelled_turn
+            and state.error_info is not None
+            and state.error_info.details.get("execution_cancellation") == "best_effort"
         ):
-            if app.state.cancel_events.get(sid) is turn_cancel_event:
-                app.state.cancel_events.pop(sid, None)
+            if state.app.state.cancel_events.get(state.sid) is state.turn_cancel_event:
+                state.app.state.cancel_events.pop(state.sid, None)
     except Exception as finalize_exc:  # noqa: BLE001 - detached task: settle, no re-raise
         _settle_failed_finalize(
-            app,
-            sid,
-            turn_id=turn_id,
-            trace_id=trace_id,
-            turn_tokens=turn_tokens,
-            turn_cost=turn_cost,
-            turn_cancel_event=turn_cancel_event,
+            state.app,
+            state.sid,
+            turn_id=state.turn_id,
+            trace_id=state.trace_id,
+            turn_tokens=state.turn_tokens,
+            turn_cost=state.turn_cost,
+            turn_cancel_event=state.turn_cancel_event,
             update_retry_attempt=_update_retry_attempt,
             exc=finalize_exc,
         )
