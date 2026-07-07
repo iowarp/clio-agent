@@ -1079,8 +1079,18 @@ async def _construct_agent_async(app: "FastAPI") -> None:
     # installed at construction time.
     try:
         _install_tool_runtime_hooks(app)
-    except Exception:  # pragma: no cover - defensive
-        pass
+    except Exception as exc:
+        # HIGHEST-SEVERITY silent fallback (#772): a failed install leaves the
+        # server running WITHOUT a permission gate or tool observer — tools would
+        # execute ungated and unobserved. Never swallow: flip the flag, capture the
+        # error, and log a structured reason so /v1/health and the trace show it.
+        app.state.tool_hooks_installed = False
+        app.state.tool_hooks_install_error = repr(exc)
+        logger.error(
+            "tool runtime hooks failed to install "
+            "reason=tool_runtime_hooks_install_failed error=%r",
+            exc,
+        )
 
     print("[clio-agent-gact] agent ready.", flush=True)
 
@@ -1410,10 +1420,24 @@ def build_app(
     if agent is not None:
         try:
             _install_tool_runtime_hooks(app)
-        except Exception:  # pragma: no cover - defensive
-            pass
+        except Exception as exc:
+            # HIGHEST-SEVERITY silent fallback (#772): see the sibling handler in
+            # _finish_agent_init. A swallowed install failure = an ungated,
+            # unobserved tool surface. Fail loud: flip the flag, capture the
+            # error, and log a structured reason.
+            app.state.tool_hooks_installed = False
+            app.state.tool_hooks_install_error = repr(exc)
+            logger.error(
+                "tool runtime hooks failed to install "
+                "reason=tool_runtime_hooks_install_failed error=%r",
+                exc,
+            )
     else:
-        app.state.tool_hooks_installed = False
+        # Deferred-agent boot (production main()): hooks are installed later by
+        # _construct_agent_async. ``None`` = not-yet-determined; ``False`` is
+        # reserved EXCLUSIVELY for an install failure so /v1/health never
+        # reports a normal startup window as an ungated tool surface (#772).
+        app.state.tool_hooks_installed = None
         app.state.pending_cancellation_checker = _make_cancellation_checker(app)
         app.state.pending_permission_gate = _make_permission_gate(app)
         app.state.pending_tool_observer = _make_tool_observer(app)

@@ -50,6 +50,15 @@ class HealthResponse(BaseModel):
     uptime_s: int
     overall_status: Optional[Literal["ready", "degraded", "unavailable"]] = None
     integrations: Optional[list[Integration]] = None
+    # #772: whether the tool-runtime hooks (permission gate + tool observer) are
+    # installed. ``False`` means the install *failed* — tools would run ungated/
+    # unobserved, the highest-severity silent fallback, now surfaced so operators
+    # can see the degraded gate (the error itself is captured in
+    # ``app.state.tool_hooks_install_error`` and logged as
+    # ``reason=tool_runtime_hooks_install_failed``). ``None`` means
+    # not-yet-determined: deferred agent init hasn't installed the hooks yet
+    # (or the agent itself failed to construct — see ``agent_init_error``).
+    tool_hooks_installed: Optional[bool] = None
 
 
 class BackendInfo(BaseModel):
