@@ -213,7 +213,7 @@ def _lenient_chat_adapter_cls() -> Any:
                         annotation = signature.output_fields[k].annotation
                         try:
                             fields[k] = parse_value(v, annotation)
-                        except Exception:
+                        except Exception:  # noqa: BLE001 - documented lenient repair of local-model JSON malformations
                             # Recover structural malformations local models produce on
                             # JSON-object fields -- a dropped brace, a constructor-repr,
                             # or a self-named envelope ({"workflow_state": {...}}). All

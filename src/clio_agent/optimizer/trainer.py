@@ -183,7 +183,7 @@ class TrainingSetGenerator:
                     recommendations=recommendations,
                 ).with_inputs("question", "file_context")
 
-        except Exception:
+        except Exception:  # noqa: BLE001 - example construction failure yields None (skipped)
             return None
 
 

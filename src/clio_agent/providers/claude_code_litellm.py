@@ -657,7 +657,7 @@ async def _astream_sdk(
                             note_lm_provider_thinking_delta(
                                 provider_thinking, provider="claude_code_sdk"
                             )
-                    except Exception:  # noqa: BLE001 - debug stream must not break provider
+                    except Exception:  # noqa: BLE001,S110 - debug stream must not break provider
                         pass
                     if promoted_text:
                         promoted_contract_text += promoted_text
@@ -733,7 +733,7 @@ async def _astream_sdk(
                         note_lm_provider_thinking_delta(
                             provider_thinking_marker_tail, provider="claude_code_sdk"
                         )
-                    except Exception:  # noqa: BLE001 - debug stream must not break provider
+                    except Exception:  # noqa: BLE001,S110 - debug stream must not break provider
                         pass
                     provider_thinking_marker_tail = ""
                 parts = [b.text for b in msg.content if isinstance(b, TextBlock)]

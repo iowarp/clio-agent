@@ -337,7 +337,7 @@ class RuntimeProbe:
         models_url = config.api_base.rstrip("/") + "/models"
         try:
             response = self.http_get(models_url, timeout=self.lm_timeout)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - surfaced in IntegrationStatus (degraded doctor row)
             return IntegrationStatus(
                 name="lm_provider",
                 state=IntegrationState.UNAVAILABLE,
@@ -447,7 +447,7 @@ class RuntimeProbe:
         details = {"provider": "argonne", "model": config.model}
         try:
             from clio_agent.providers import argonne_auth  # noqa: PLC0415
-        except Exception as exc:  # pragma: no cover - import bug
+        except Exception as exc:  # pragma: no cover - import bug  # noqa: BLE001 - surfaced in IntegrationStatus (degraded doctor row)
             return IntegrationStatus(
                 name="lm_provider",
                 state=IntegrationState.UNAVAILABLE,
@@ -675,7 +675,7 @@ class RuntimeProbe:
             probe_file = arc_dir / ".doctor_probe"
             probe_file.write_text("ok", encoding="utf-8")
             probe_file.unlink(missing_ok=True)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - surfaced in IntegrationStatus (degraded doctor row)
             return IntegrationStatus(
                 name="arc",
                 state=IntegrationState.UNAVAILABLE,
@@ -710,7 +710,7 @@ class RuntimeProbe:
         """Probe FastMCP gateway tool discovery."""
         try:
             capabilities = self.gateway_lister()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - surfaced in IntegrationStatus (degraded doctor row)
             return IntegrationStatus(
                 name="gateway",
                 state=IntegrationState.UNAVAILABLE,
@@ -855,7 +855,7 @@ class RuntimeProbe:
         health_url = endpoint.rstrip("/") + "/v1/health"
         try:
             response = self.http_get(health_url, timeout=self.api_timeout)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - surfaced in IntegrationStatus (degraded doctor row)
             return IntegrationStatus(
                 name="api",
                 state=IntegrationState.UNAVAILABLE,
@@ -873,7 +873,7 @@ class RuntimeProbe:
         unhealthy: list[str] = []
         try:
             body = response.json()
-        except Exception:
+        except Exception:  # noqa: BLE001 - unparseable body treated as None; reflected in status
             body = None
         if isinstance(body, dict):
             overall_status = str(body.get("overall_status", ""))
@@ -918,7 +918,7 @@ class RuntimeProbe:
                 caps_error = f"HTTP {caps_status}"
             else:
                 caps_body = caps_response.json()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - probe error captured in caps_error and surfaced
             caps_error = str(exc)
         if caps_error or not isinstance(caps_body, dict):
             return IntegrationStatus(

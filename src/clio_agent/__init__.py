@@ -91,7 +91,7 @@ def _avoid_windows_wmi_platform_probe() -> None:
                 ptype,
                 True,
             )
-    except Exception:
+    except Exception:  # noqa: BLE001 - optional runtime registration; skip on any failure
         return
 
 

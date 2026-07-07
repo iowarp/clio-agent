@@ -317,7 +317,7 @@ def _fold_handshake(
             ttl_s=ttl_s,
             force=force,
         )
-    except Exception as exc:  # run_handshake_sync should never raise, but be safe.
+    except Exception as exc:  # run_handshake_sync should never raise, but be safe.  # noqa: BLE001 - surfaced via handshake_fallback_payload(reason=handshake_error)
         return handshake_fallback_payload("handshake_error", f"{detail}: {exc}")
 
     if report is None or not getattr(report, "ok", False):

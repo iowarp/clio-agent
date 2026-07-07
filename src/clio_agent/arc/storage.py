@@ -525,7 +525,7 @@ def _kill_daemon_pidfile() -> None:
             proc.wait(timeout=5.0)
         except psutil.TimeoutExpired:
             proc.kill()
-    except Exception:  # noqa: BLE001 - process already gone / no permission: best-effort
+    except Exception:  # noqa: BLE001,S110 - process already gone / no permission: best-effort
         pass
     with contextlib.suppress(OSError):
         pidfile.unlink()

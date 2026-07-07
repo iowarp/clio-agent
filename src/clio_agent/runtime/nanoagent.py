@@ -148,7 +148,7 @@ def spawn_many(
 
     try:
         import dspy
-    except Exception:  # pragma: no cover - dspy not present
+    except Exception:  # pragma: no cover - dspy not present  # noqa: BLE001 - dspy unavailable; falls back to the non-dspy spawn path
         return [
             spawn_one(
                 agent_factory,

@@ -107,7 +107,7 @@ async def _probe_one(spec: Any, *, timeout_s: float) -> MCPServerReport:
             error=f"did not respond within {timeout_s:g}s",
             latency_ms=(time.monotonic() - started) * 1000.0,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - surfaced in MCPServerReport.error
         return MCPServerReport(
             name=spec.name,
             connectivity=ConnectivityState.UNREACHABLE,

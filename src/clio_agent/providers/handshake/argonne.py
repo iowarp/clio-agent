@@ -104,7 +104,7 @@ class ArgonneHandshake(ProviderHandshake):
             return None
         try:
             token = argonne_auth.get_access_token(False, allow_interactive=False)
-        except Exception:
+        except Exception:  # noqa: BLE001 - offline-invalid token treated as deferred (see comment)
             # A stored token that fails to validate offline (expired refresh,
             # missing globus-sdk) is treated as "deferred, not usable now".
             return None
@@ -144,7 +144,7 @@ class ArgonneHandshake(ProviderHandshake):
 
             try:
                 refreshed = argonne_auth.get_access_token(False, allow_interactive=False)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - token refresh failure surfaced as SKIPPED connectivity
                 return ConnectivityResult(
                     connectivity=ConnectivityState.SKIPPED,
                     auth=AuthState.MISSING,
@@ -208,7 +208,7 @@ class ArgonneHandshake(ProviderHandshake):
             jobs_resp = await client.get(f"{gateway_root}/{cluster}/jobs", headers=headers)
             jobs_resp.raise_for_status()
             jobs = jobs_resp.json()
-        except Exception:
+        except Exception:  # noqa: BLE001 - job listing failure yields an empty set
             return set()
 
         hot: set[str] = set()

@@ -121,7 +121,7 @@ def _builtin_profile_policies() -> dict[str, str]:
             profile = next(iter(parsed.profiles.values()), None)
             if profile is not None:
                 rows[parsed.id] = profile.text
-    except Exception:
+    except Exception:  # noqa: BLE001 - prompt parse failure yields an empty mapping
         return {}
     return rows
 
@@ -147,7 +147,7 @@ def _builtin_alignment_requirements() -> dict[str, tuple[str, ...]]:
                 for line in profile.text.splitlines()
                 if line.strip().startswith("- ")
             )
-    except Exception:
+    except Exception:  # noqa: BLE001 - prompt parse failure yields an empty mapping
         return {}
     return rows
 
@@ -206,7 +206,7 @@ def builtin_prompt_definitions() -> dict[str, PromptDefinition]:
             rows[parsed.id].description = parsed.description
             rows[parsed.id].source_path = parsed.source_path
             rows[parsed.id].metadata.update(parsed.metadata)
-    except Exception as exc:  # pragma: no cover - defensive import guard
+    except Exception as exc:  # pragma: no cover - defensive import guard  # noqa: BLE001 - import failure surfaced as an error prompt to the user
         text = (
             "CLIO built-in prompt files could not be imported. Check packaged "
             f"prompt resources before running prompt alignment. Error: {type(exc).__name__}"

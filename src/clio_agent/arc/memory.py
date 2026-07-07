@@ -442,7 +442,7 @@ class ARCMemory:
                     try:
                         inv = decode_invocation(encoded)
                         self._disk_reads += 1
-                    except Exception:
+                    except Exception:  # noqa: BLE001 - corrupt/undecodable invocation row skipped; disk read continues
                         continue
                     if inv.session_id == session_id:
                         invocations.append(inv)
@@ -767,7 +767,7 @@ class ARCMemory:
                         continue
 
                     invocations.append(inv)
-                except Exception:
+                except Exception:  # noqa: BLE001 - corrupt/undecodable invocation row skipped
                     continue
 
         # Sort by started_at descending (most recent first)
@@ -787,7 +787,7 @@ class ARCMemory:
                 try:
                     invocations.append(decode_invocation(encoded))
                     self._disk_reads += 1
-                except Exception:
+                except Exception:  # noqa: BLE001 - corrupt/undecodable invocation row skipped
                     continue
         return invocations
 
@@ -845,7 +845,7 @@ class ARCMemory:
 
                     if record.agent_id == agent_id:
                         records.append(record)
-                except Exception:
+                except Exception:  # noqa: BLE001 - corrupt/undecodable record skipped
                     continue
 
         # Sort by created_at descending (most recent first)
@@ -1332,7 +1332,7 @@ class ARCMemory:
 
         try:
             lsm.close()
-        except Exception:
+        except Exception:  # noqa: BLE001,S110 - destructors must not raise during shutdown/tmpdir cleanup
             # Destructors must not raise during interpreter shutdown or tmpdir cleanup.
             pass
 

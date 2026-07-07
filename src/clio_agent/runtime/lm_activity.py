@@ -191,7 +191,7 @@ def note_lm_answer_delta(text: str, *, field: str = "answer") -> None:
             text[:80],
         )
         asyncio.run_coroutine_threadsafe(emit_coro(text, agent_id or None, field), loop)
-    except Exception:  # noqa: BLE001 - live streaming is best-effort, never break the call
+    except Exception:  # noqa: BLE001,S110 - live streaming is best-effort, never break the call
         pass
 
 
@@ -230,7 +230,7 @@ def note_lm_provider_thinking_delta(text: str, *, provider: str = "") -> None:
             full_text=text[:12000],
         )
         asyncio.run_coroutine_threadsafe(emit_coro(text, agent_id or None, field), loop)
-    except Exception:  # noqa: BLE001 - live streaming is best-effort, never break the call
+    except Exception:  # noqa: BLE001,S110 - live streaming is best-effort, never break the call
         pass
 
 
@@ -270,7 +270,7 @@ def note_lm_token_event(content: str, reasoning: str, *, field: str = "answer") 
             payload=lm_token_delta_payload(content=content, reasoning=reasoning, field=field),
             detail_level="semantic",
         )
-    except Exception:  # noqa: BLE001 - capture must never break a call
+    except Exception:  # noqa: BLE001,S110 - capture must never break a call
         pass
 
 
@@ -356,7 +356,7 @@ def _emit_lm_call_started(call_id: Any, instance: Any, inputs: Any) -> None:
             payload={"call_id": str(call_id), "model": model, "messages": messages},
             detail_level="off",
         )
-    except Exception:  # noqa: BLE001 - capture must never break a call
+    except Exception:  # noqa: BLE001,S110 - capture must never break a call
         pass
 
 
@@ -490,7 +490,7 @@ def build_dspy_callback() -> Any | None:
                         len(items),
                         " || ".join(parts),
                     )
-                except Exception:  # noqa: BLE001 - diagnostic only
+                except Exception:  # noqa: BLE001,S110 - diagnostic only
                     pass
 
     return _LMActivityCallback()

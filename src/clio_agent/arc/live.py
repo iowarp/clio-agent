@@ -223,7 +223,7 @@ class LiveRuntimeContext:
         """
         try:
             self._record(event)
-        except Exception:  # noqa: BLE001 - a live record must never break a turn
+        except Exception:  # noqa: BLE001,S110 - a live record must never break a turn
             pass
 
     def _record(self, event: Any) -> None:

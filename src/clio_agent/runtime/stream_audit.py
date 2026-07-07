@@ -57,5 +57,5 @@ def stream_audit(stage: str, **fields: Any) -> None:
             with path.open("a", encoding="utf-8") as f:
                 f.write(line)
                 f.write("\n")
-    except Exception:
+    except Exception:  # noqa: BLE001 - audit-log write best-effort; skipped on failure
         return

@@ -190,14 +190,14 @@ def _to_safe_text(value: Any) -> str:
     if isinstance(value, (list, dict)):
         try:
             return json.dumps(value, ensure_ascii=False)
-        except Exception:
+        except Exception:  # noqa: BLE001 - value->JSON coercion falls back to str()
             return str(value)
 
     if hasattr(value, "model_dump"):
         try:
             dumped = value.model_dump(mode="json", warnings="none")
             return json.dumps(dumped, ensure_ascii=False)
-        except Exception:
+        except Exception:  # noqa: BLE001,S110 - value coercion cascade; falls through
             pass
 
     content = getattr(value, "content", None)

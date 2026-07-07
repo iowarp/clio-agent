@@ -270,7 +270,7 @@ def check_auth_status() -> bool:
         return True
     except GlobusUnavailable:
         return False
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - probe failure logged (ALCF auth probe failed); treated as unauthenticated
         logger.info("ALCF auth probe failed: %s", exc)
         return False
 

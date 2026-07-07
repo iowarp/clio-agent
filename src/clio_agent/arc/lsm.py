@@ -492,7 +492,7 @@ class LSMTree:
 
                 self._sstables.append(sstable)
 
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - reason=sstable_corrupt_skipped logged below
                 # Skip corrupted SSTables, but surface a structured reason so a
                 # silently-dropped SSTable is observable in the trace.
                 logger.warning(

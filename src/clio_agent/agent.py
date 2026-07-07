@@ -509,7 +509,7 @@ class ClioAgent(dspy.Module):
             )
             trace.route = route
             success = True
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - routing failure recorded on the trace (success=False + inferred expert)
             success = False
             inferred_selected = self._selected_expert_from_trace(trace)
             if selected == "chat" and inferred_selected != "chat":
@@ -1120,7 +1120,7 @@ class ClioAgent(dspy.Module):
             result = normalize_tool_result(self._decode_tool_result(raw_result), tool=tool_name)
         except CancellationError:
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - error surfaced in result['error'] via normalize_tool_error
             result = {"error": normalize_tool_error(exc, tool=tool_name, code="tool_exception")}
         duration_ms = (time.time() - start) * 1000
         trace.record_tool(
@@ -2273,7 +2273,7 @@ class ClioAgent(dspy.Module):
         if isinstance(value, (list, dict)):
             try:
                 return json.dumps(value, ensure_ascii=False)
-            except Exception:
+            except Exception:  # noqa: BLE001 - value->JSON coercion falls back to str(); never fatal
                 return str(value)
 
         # Pydantic v2 models: avoid warning-emitting serialization paths.
@@ -2281,7 +2281,7 @@ class ClioAgent(dspy.Module):
             try:
                 dumped = value.model_dump(mode="json", warnings="none")
                 return json.dumps(dumped, ensure_ascii=False)
-            except Exception:
+            except Exception:  # noqa: BLE001,S110 - value coercion cascade; falls through to the next strategy
                 pass
 
         # Common chat/message object shape from LM backends.

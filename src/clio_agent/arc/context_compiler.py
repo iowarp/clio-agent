@@ -147,7 +147,7 @@ class ContextCompiler:
         if callable(live_getter):
             try:
                 live = live_getter(session_id) or {}
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - degradation logged: reason=context_section_unavailable
                 logger.warning(
                     "context compile degraded: reason=context_section_unavailable "
                     "section=live_conversation session=%s error=%r",
@@ -219,7 +219,7 @@ class ContextCompiler:
                 }
                 for p in profiles
             ]
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - degradation logged: reason=context_section_unavailable
             logger.warning(
                 "context compile degraded: reason=context_section_unavailable "
                 "section=profiles session=%s error=%r",
@@ -239,7 +239,7 @@ class ContextCompiler:
                 }
                 for m in memories
             ]
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - degradation logged: reason=context_section_unavailable
             logger.warning(
                 "context compile degraded: reason=context_section_unavailable "
                 "section=procedural session=%s error=%r",
@@ -421,7 +421,7 @@ class ContextCompiler:
                     caps = [c for c in caps if tool_visible_to(c["name"], tool_scope)]
             tool_lines = [f"{c['name']}: {c['description']}" for c in caps]
             enriched["tools"] = "\n".join(tool_lines)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - degradation logged: reason=context_section_unavailable
             logger.warning(
                 "context compile degraded: reason=context_section_unavailable "
                 "section=tools error=%r",
