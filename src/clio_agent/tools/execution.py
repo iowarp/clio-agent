@@ -1082,7 +1082,12 @@ def _repair_missing_file_arguments(
     records: list[dict[str, str]] = []
     try:
         policy = FileAccessPolicy.from_env()
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - degradation surfaced via structured log below
+        logger.warning(
+            "file-argument repair skipped: file policy unavailable "
+            "reason=file_policy_unavailable error=%r",
+            exc,
+        )
         return repaired, records
 
     scanned = 0

@@ -618,6 +618,27 @@ def test_repair_deadline_bound_leaves_args_unchanged(
     assert records == []
 
 
+def test_repair_logs_reason_when_file_policy_unavailable(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+):
+    """A file-policy load failure surfaces a structured reason, not a silent skip."""
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("policy exploded")
+
+    monkeypatch.setattr(
+        "clio_agent.tools.execution.FileAccessPolicy.from_env", _boom
+    )
+
+    requested = "/nowhere/reference.fasta"
+    with caplog.at_level("WARNING", logger="clio_agent.tools.execution"):
+        repaired, records = _repair_missing_file_arguments({"filepath": requested})
+
+    assert repaired == {"filepath": requested}
+    assert records == []
+    assert "reason=file_policy_unavailable" in caplog.text
+
+
 def test_sync_mcp_tool_executor_reports_cooperative_cancel_after_tool_result():
     """Cancellation after a tool returns should not publish normal success telemetry."""
     fake_client = FakeClient()
