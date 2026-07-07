@@ -100,7 +100,6 @@ from clio_agent.gact.messaging import (
     _agent_accepts_images,
     _ask_user_options_from_action,
     _coerce_ask_user_action,
-    _format_subagent_input,
     _image_part_summaries,
     _prediction_summary,
     _user_message_parts,
@@ -126,7 +125,6 @@ from clio_agent.gact.runtime.retention import enforce_dict_bound, enforce_list_b
 from clio_agent.gact.runtime.type_parsing import _blueprint_module_kind
 from clio_agent.gact.session_store import (
     _compile_session_conversation_history,
-    _extend_session_messages,
 )
 from clio_agent.gact.streaming import (
     _agent_forward_compat,
@@ -146,6 +144,7 @@ from clio_agent.gact.tool_observer import (
     _tool_calls_from_handoff_rows,
 )
 from clio_agent.gact.transcript import _transcript_text_field
+from clio_agent.gact.turn_nanoagents import spawn_nanoagents
 from clio_agent.gact.turn_state import new_turn_state
 from clio_agent.gact.turn_usage import roll_up_usage
 from clio_agent.gact.types import (
@@ -2893,127 +2892,7 @@ async def _run_turn_in_background(
         enforce_list_bound(state.app, bucket, "pending_diffs", session_id=state.sid)
 
         # Materialise nanoagent spawns + publish their lifecycle events.
-        for spawn in state.nanoagents:
-            get = (
-                spawn.get
-                if isinstance(spawn, dict)
-                else (lambda k, default=None, _s=spawn: getattr(_s, k, default))
-            )
-            agent_id = get("agent_id") or get("agent") or "nanoagent"
-            spawn_input = get("input") or {}
-            answer = get("answer") or ""
-            state.tools_called = get("tools_called") or get("tools") or []
-            subsess = state.app.state.sessions.create(
-                workspace_id=state.sess.workspace_id,
-                title=f"{agent_id} subagent",
-                parent_session_id=state.sid,
-                agent={"id": str(agent_id), "mode": "subagent"},
-                metadata={
-                    "session_type": "nanoagent",
-                    "agent_id": str(agent_id),
-                    "parent_session_id": state.sid,
-                    "spawned_by_message_id": assistant_msg.id,
-                    "spawned_by_agent": state.selected_agent,
-                    "tool_count": len(state.tools_called) if isinstance(state.tools_called, list) else 0,
-                },
-            )
-            sub_now = time.time()
-            sub_user = Message(
-                id=_new_message_id("user"),
-                session_id=subsess.id,
-                role="user",
-                created_at=_iso_from_epoch(sub_now),
-                updated_at=_iso_from_epoch(sub_now),
-                parts=[
-                    Part(
-                        id=_new_part_id(),
-                        type="text",
-                        text=_format_subagent_input(spawn_input),
-                    )
-                ],
-                metadata={
-                    "subagent_input": spawn_input,
-                    "parent_session_id": state.sid,
-                    "spawned_by_message_id": assistant_msg.id,
-                },
-            )
-            sub_asst = Message(
-                id=_new_message_id("asst"),
-                session_id=subsess.id,
-                role="assistant",
-                created_at=_iso_from_epoch(sub_now),
-                updated_at=_iso_from_epoch(sub_now),
-                parts=(
-                    [Part(id=_new_part_id(), type="text", agent_id=str(agent_id), text=answer)]
-                    if answer
-                    else []
-                ),
-                stop_reason="end_turn",
-                metadata={"tools_called": state.tools_called} if state.tools_called else {},
-            )
-            _extend_session_messages(state.app, subsess.id, [sub_user, sub_asst])
-            state.app.state.sessions.update(subsess.id, message_count=2, status="idle")
-            _emit_semantic_event(
-                state.app,
-                state.sid,
-                "subagent.started",
-                turn_id=state.turn_id,
-                trace_id=state.trace_id,
-                status="running",
-                summary=f"Spawned subagent {agent_id}.",
-                actor={"agent_id": state.selected_agent or "orchestrator"},
-                subject={"agent_id": str(agent_id), "session_id": subsess.id},
-                payload={
-                    "parent_session_id": state.sid,
-                    "child_session_id": subsess.id,
-                    "agent_id": agent_id,
-                    "spawned_by_message_id": assistant_msg.id,
-                },
-            )
-            state.bus.publish(
-                Event(
-                    type="subagent.started",
-                    session_id=state.sid,
-                    payload={
-                        "parent_session_id": state.sid,
-                        "child_session_id": subsess.id,
-                        "agent_id": agent_id,
-                        "spawned_by_message_id": assistant_msg.id,
-                    },
-                )
-            )
-            _emit_semantic_event(
-                state.app,
-                state.sid,
-                "subagent.completed",
-                turn_id=state.turn_id,
-                trace_id=state.trace_id,
-                summary=f"Subagent {agent_id} completed.",
-                actor={"agent_id": str(agent_id), "session_id": subsess.id},
-                subject={"session_id": state.sid},
-                payload={
-                    "parent_session_id": state.sid,
-                    "child_session_id": subsess.id,
-                    "agent_id": agent_id,
-                    "duration_ms": float(get("duration_ms", 0.0) or 0.0),
-                    "tokens": get("tokens") or {},
-                    "cost_usd": float(get("cost_usd", 0.0) or 0.0),
-                },
-            )
-            state.bus.publish(
-                Event(
-                    type="subagent.completed",
-                    session_id=state.sid,
-                    payload={
-                        "parent_session_id": state.sid,
-                        "child_session_id": subsess.id,
-                        "agent_id": agent_id,
-                        "duration_ms": float(get("duration_ms", 0.0) or 0.0),
-                        "tokens": get("tokens") or {},
-                        "cost_usd": float(get("cost_usd", 0.0) or 0.0),
-                    },
-                )
-            )
+        spawn_nanoagents(state, state.nanoagents, assistant_msg, state.sess)
 
         # #767 PR3: finalize re-publishes NOTHING — every part's message.created /
         # part.added / part.delta / part.completed already went out at append
