@@ -218,8 +218,15 @@
     x64: ["x64", "x86_64", "amd64"]
   };
 
+  // Every desktop download control resolves to a Tauri desktop-app asset, whose
+  // name always begins with "CLIO.Desktop" (the Windows-ARM lite build is
+  // "clio-desktop-…"). Restricting candidates to this family is what keeps the
+  // terminal-UI binaries (clio-tui-…-amd64.exe) from ever being handed out as a
+  // "desktop installer".
+  var DESKTOP_ASSET_RE = /^clio.desktop/i;
+
   // Each download link maps to the file extension(s) of its release asset,
-  // in priority order. The first matching asset wins.
+  // in priority order.
   var DL_EXT = {
     "windows-msi": [".msi"],
     "windows-exe": [".exe"],
@@ -229,28 +236,61 @@
     "linux-rpm": [".rpm"]
   };
 
+  // A "bundled" build embeds the CLIO backend and runs standalone; a "lite"
+  // build is attach-only and needs a separately running clio-agent. The release
+  // pipeline appends "-bundled" right before the extension for bundled builds.
+  function isBundled(name) {
+    return name.indexOf("-bundled") !== -1;
+  }
+
+  // Pure: resolve the best desktop-app asset for a set of candidate extensions
+  // (priority order) and the detected arch. Returns { url, variant } where
+  // variant is "bundled" or "lite", or null when nothing matches.
+  //
+  // Selection order per extension set: bundled+arch → bundled → lite+arch →
+  // lite. Preferring the bundled installer means the primary download works
+  // without a separate backend; the arch fallbacks keep every card populated.
   function pickAsset(assets, extensions, arch) {
     var tokens = ARCH_TOKENS[arch] || [];
-    // 1) Prefer an asset matching BOTH extension and the detected arch.
-    for (var e = 0; e < extensions.length; e++) {
-      var ext = extensions[e].toLowerCase();
-      for (var a = 0; a < assets.length; a++) {
-        var name = (assets[a].name || "").toLowerCase();
-        if (!name.endsWith(ext)) continue;
-        for (var t = 0; t < tokens.length; t++) {
-          if (name.indexOf(tokens[t]) !== -1) return assets[a].browser_download_url;
+    // Restrict to desktop-app assets (see DESKTOP_ASSET_RE) so a TUI binary can
+    // never masquerade as a desktop installer.
+    var candidates = [];
+    for (var i = 0; i < assets.length; i++) {
+      if (DESKTOP_ASSET_RE.test(assets[i].name || "")) candidates.push(assets[i]);
+    }
+
+    function find(wantBundled, wantArch) {
+      for (var e = 0; e < extensions.length; e++) {
+        var ext = extensions[e].toLowerCase();
+        for (var c = 0; c < candidates.length; c++) {
+          var name = (candidates[c].name || "").toLowerCase();
+          if (!name.endsWith(ext)) continue;
+          if (isBundled(name) !== wantBundled) continue;
+          if (wantArch) {
+            var archMatch = false;
+            for (var t = 0; t < tokens.length; t++) {
+              if (name.indexOf(tokens[t]) !== -1) { archMatch = true; break; }
+            }
+            if (!archMatch) continue;
+          }
+          return candidates[c].browser_download_url;
         }
       }
+      return null;
     }
-    // 2) Fall back to any asset with a matching extension.
-    for (var e2 = 0; e2 < extensions.length; e2++) {
-      var ext2 = extensions[e2].toLowerCase();
-      for (var a2 = 0; a2 < assets.length; a2++) {
-        var name2 = (assets[a2].name || "").toLowerCase();
-        if (name2.endsWith(ext2)) return assets[a2].browser_download_url;
-      }
-    }
+
+    var url = find(true, true) || find(true, false);
+    if (url) return { url: url, variant: "bundled" };
+    url = find(false, true) || find(false, false);
+    if (url) return { url: url, variant: "lite" };
     return null;
+  }
+
+  // Human caption for a resolved variant; drives the per-download honesty note.
+  function variantNote(variant) {
+    if (variant === "bundled") return "Includes the CLIO backend — runs standalone.";
+    if (variant === "lite") return "Attach-only build — requires a running clio-agent.";
+    return "";
   }
 
   function initDesktop() {
@@ -279,14 +319,28 @@
       })
       .then(function (data) {
         var assets = (data && data.assets) || [];
+        var variantByKey = {};
         document.querySelectorAll("[data-dl]").forEach(function (link) {
           var key = link.getAttribute("data-dl");
           var exts = DL_EXT[key];
           if (!exts) return;
-          var url = pickAsset(assets, exts, arch);
+          var picked = pickAsset(assets, exts, arch);
           // Resolve to the exact asset when found; otherwise fall back to the
           // releases page so every control always works and no card looks empty.
-          link.href = url || RELEASES_PAGE;
+          link.href = (picked && picked.url) || RELEASES_PAGE;
+          var variant = picked ? picked.variant : "";
+          variantByKey[key] = variant;
+          // Expose the resolved variant and label each control honestly, so an
+          // attach-only build is never presented as self-contained.
+          if (variant) {
+            link.setAttribute("data-variant", variant);
+            link.setAttribute("title", variantNote(variant));
+          }
+        });
+        // Per-card caption under the primary button, driven by that card's
+        // primary download key.
+        document.querySelectorAll("[data-dl-note]").forEach(function (note) {
+          note.textContent = variantNote(variantByKey[note.getAttribute("data-dl-note")]);
         });
       })
       .catch(function () {
@@ -320,9 +374,18 @@
     initOsCards();
   }
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", init);
-  } else {
-    init();
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", init);
+    } else {
+      init();
+    }
+  }
+
+  // Expose the pure asset-resolution helpers for a Node dry-run/test harness.
+  // Guarded so it is inert in the browser (GitHub Pages), where `module` is
+  // undefined.
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = { pickAsset: pickAsset, variantNote: variantNote, DL_EXT: DL_EXT };
   }
 })();
