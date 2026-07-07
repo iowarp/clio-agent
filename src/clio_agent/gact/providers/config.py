@@ -235,3 +235,16 @@ def _image_part_error(
             recoverable=True,
         )
     )
+
+
+def _current_lm_model_id() -> str:
+    """Best-effort: which model the active dspy LM is bound to.
+
+    Resolves through the ambient guard so that a read outside any per-profile
+    ``dspy.context`` (e.g. turn-end metadata assembly) records a structured
+    ``ambient_lm_default`` reason instead of silently depending on the process
+    boot default (#818)."""
+    from clio_agent.gact.runtime.ambient_lm import resolve_active_lm  # noqa: PLC0415
+
+    lm = resolve_active_lm(site="app._current_lm_model_id")
+    return getattr(lm, "model", "") if lm else ""

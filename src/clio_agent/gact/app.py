@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import logging
 import os
 import time
@@ -93,6 +92,7 @@ from clio_agent.gact.runtime.globals import (  # noqa: E402, F401
     _active_semantic_turn_id,
     _BlueprintTerminalWorkflowState,
     _build_semantic_event,
+    _cancelled_error_info,
     _coerce_error_info,
     _CompatVar,
     _ContextFileAccessError,
@@ -130,35 +130,6 @@ _EXECUTABLE_SESSION_AGENT_IDS = {
     "main",
     "default",
 }
-
-
-def _gact_turn_timeout_s(app: Optional["FastAPI"] = None) -> float:
-    """Return the per-turn no-progress timeout in seconds; <=0 disables it.
-
-    Precedence: a RUNTIME value set via ``PUT /v1/providers/lm`` (``turn_timeout_s``,
-    stored on ``app.state.lm_config``) wins, so a client configures this on the
-    SAME channel it configures the LM — no disconnected server-launch env. When
-    unset (0/absent), fall back to the conf pathway (file → ``CLIO_GACT_TURN_TIMEOUT_S``
-    → 900s default).
-    """
-    if app is not None:
-        cfg = getattr(getattr(app, "state", None), "lm_config", None)
-        if isinstance(cfg, Mapping):
-            try:
-                runtime = conf.as_float(cfg.get("turn_timeout_s") or 0)
-            except (ValueError, TypeError):
-                runtime = 0.0
-            if runtime > 0:
-                return runtime
-    try:
-        return conf.resolve(
-            "limits.turn_timeout_s",
-            env="CLIO_GACT_TURN_TIMEOUT_S",
-            default=900.0,
-            cast=conf.as_float,
-        )
-    except (ValueError, TypeError):
-        return 900.0
 
 
 def _gact_cors_origins() -> list[str]:
@@ -285,24 +256,6 @@ from clio_agent.gact.session_store import (  # noqa: E402,F401
 )
 
 
-def _cancelled_error_info(
-    sid: str,
-    *,
-    execution_cancellation: str,
-    executor_work_may_continue: bool,
-) -> "ErrorInfo":
-    return ErrorInfo(
-        error="cancelled",
-        message="turn cancelled by client",
-        details={
-            "session_id": sid,
-            "execution_cancellation": execution_cancellation,
-            "executor_work_may_continue": executor_work_may_continue,
-        },
-        recoverable=True,
-    )
-
-
 def _cancellation_attempt_summary(attempt: Mapping[str, Any] | None) -> dict[str, Any]:
     if not attempt:
         return {}
@@ -371,6 +324,7 @@ def _enrich_cancellation_error_info(
 # --------------------------------------------------------------------------- #
 # gact/_params.py -- user-agent generation-parameter parsing.
 from clio_agent.gact._params import (  # noqa: E402,F401
+    _gact_turn_timeout_s,
     _user_agent_bool_param,
     _user_agent_float_param,
     _user_agent_int_param,
@@ -466,6 +420,7 @@ from clio_agent.gact.delegation import (  # noqa: E402,F401
     _expert_handoff_summary,
     _failed_child_delegation_output_summary,
     _failed_child_delegation_workflow_state,
+    _fallback_answer_from_delegation,
     _iter_delegation_return_rows,
     _json_objects_from_text,
     _latest_completed_child_output_summary,
@@ -473,6 +428,7 @@ from clio_agent.gact.delegation import (  # noqa: E402,F401
     _latest_final_child_output_summary,
     _latest_parent_resumed_output_summary,
     _merge_workflow_state_from_value,
+    _prediction_workflow_state,
     _should_execute_delegated_handoff,
     _workflow_state_from_handoff_rows,
     _workflow_state_from_outputs,
@@ -508,71 +464,6 @@ from clio_agent.gact.messaging import (  # noqa: E402,F401
     _user_message_parts,
 )
 
-# gact/workflow_state/merge.py -- pure workflow_state merge/normalize helpers.
-from clio_agent.gact.workflow_state.merge import (  # noqa: E402,F401
-    _TRAJECTORY_TOOL_ARGS_KEYS,
-    _TRAJECTORY_TOOL_NAME_KEYS,
-    _TRAJECTORY_TOOL_RESULT_KEYS,
-    _UNICODE_PATH_HYPHENS,
-    _merge_inferred_workflow_state,
-    _merge_non_empty_mapping,
-    _merge_workflow_state_mapping,
-    _normalize_pathlike_text,
-    _normalize_workflow_state_scalar,
-    _normalize_workflow_state_section,
-    _trajectory_key_index,
-    _value_has_semantic_content,
-    _workflow_status_rank,
-)
-
-
-def _prediction_workflow_state(result: Any) -> dict[str, Any]:
-    """Return a prediction's first-class typed ``workflow_state`` as a Mapping.
-
-    ``workflow_state`` is the ONE load-bearing structured output on the dynamic
-    expert signature. This is the STRUCTURED twin of the (now removed) prose
-    append: instead of serializing the typed field into the answer text and
-    re-parsing it back out (which polluted the user-facing answer), callers read
-    the typed field directly via this helper and carry it on the structured
-    carrier (the completed/handoff/ledger row's ``workflow_state`` Mapping).
-
-    A typed ``workflow_state`` field may arrive as a Pydantic model (when a pack
-    declares it as a nested object signature field), a JSON string, or a plain
-    dict. Each is normalized to a plain ``{section: ...}`` mapping. Generic for
-    all packs.
-    """
-
-    raw_state = getattr(result, "workflow_state", None)
-    if raw_state in (None, ""):
-        return {}
-    if isinstance(raw_state, str):
-        text = raw_state.strip()
-        if not text:
-            return {}
-        return _workflow_state_from_outputs([text])
-    normalized_state = _jsonish(raw_state)
-    if isinstance(normalized_state, Mapping):
-        inner = normalized_state.get("workflow_state")
-        if isinstance(inner, Mapping):
-            return dict(inner)
-        return dict(normalized_state)
-    return {}
-
-
-def _fallback_answer_from_delegation(handoffs: list[dict[str, Any]]) -> str:
-    """Return the latest compact parent-resume output as answer fallback."""
-
-    for row in reversed(handoffs):
-        if str(row.get("stage") or "") != "parent.resumed":
-            continue
-        if str(row.get("status") or "") not in {"", "completed"}:
-            continue
-        text = str(row.get("output") or row.get("output_summary") or "").strip()
-        if text:
-            return text
-    return ""
-
-
 # Provider / LM-bind helpers moved to gact/providers/ (#714 decomposition step 6).
 # Re-exported here so existing ``from clio_agent.gact.app import <name>`` callers +
 # the import-seam guardrail (``_refresh_argonne_lm_token`` pinned) stay green; the
@@ -586,6 +477,7 @@ from clio_agent.gact.providers.auth import (  # noqa: E402,F401
 from clio_agent.gact.providers.config import (  # noqa: E402,F401
     _active_lm_model_ref,
     _active_lm_supports_vision,
+    _current_lm_model_id,
     _effective_lm_config,
     _image_part_error,
     _model_ref_dict,
@@ -742,6 +634,23 @@ from clio_agent.gact.runtime.type_parsing import (  # noqa: E402,F401
     _sanitize_model_name,
 )
 
+# gact/workflow_state/merge.py -- pure workflow_state merge/normalize helpers.
+from clio_agent.gact.workflow_state.merge import (  # noqa: E402,F401
+    _TRAJECTORY_TOOL_ARGS_KEYS,
+    _TRAJECTORY_TOOL_NAME_KEYS,
+    _TRAJECTORY_TOOL_RESULT_KEYS,
+    _UNICODE_PATH_HYPHENS,
+    _merge_inferred_workflow_state,
+    _merge_non_empty_mapping,
+    _merge_workflow_state_mapping,
+    _normalize_pathlike_text,
+    _normalize_workflow_state_scalar,
+    _normalize_workflow_state_section,
+    _trajectory_key_index,
+    _value_has_semantic_content,
+    _workflow_status_rank,
+)
+
 
 def _run_blueprint_dspy_agent(
     base_agent: Any,
@@ -808,165 +717,6 @@ def _run_tool_user_agent(
         _ctx.reset(token)
 
 
-def _tool_call_event_key(call: Mapping[str, Any]) -> tuple[str, str]:
-    """Return a stable identity for de-duplicating tool telemetry events."""
-    call_id = str(call.get("call_id") or "").strip()
-    if call_id:
-        return "__call_id__", call_id
-    return _tool_call_name_args_key(call)
-
-
-def _tool_call_name_args_key(call: Mapping[str, Any]) -> tuple[str, str]:
-    """Return a tool-name/arguments identity for posthoc trajectory rows."""
-
-    name = str(call.get("name") or call.get("tool") or "")
-    args = call.get("args")
-    if args is None:
-        args = call.get("arguments")
-    if args is None:
-        args = call.get("params")
-    try:
-        encoded_args = json.dumps(args or {}, sort_keys=True, default=str)
-    except TypeError:
-        encoded_args = str(args or {})
-    return name, encoded_args
-
-
-def _tool_call_has_result_evidence(call: Mapping[str, Any]) -> bool:
-    """Return whether a tool-call row carries auditable result evidence."""
-
-    for key in ("result", "observation", "output", "response", "result_preview"):
-        value = call.get(key)
-        if value in (None, "", [], {}):
-            continue
-        return True
-    return False
-
-
-def _normalize_tool_call_row(call: Mapping[str, Any]) -> dict[str, Any]:
-    """Normalize a tool-call row while preserving bounded result evidence."""
-
-    row: dict[str, Any] = {}
-    call_id = str(call.get("call_id") or "").strip()
-    if call_id:
-        row["call_id"] = call_id
-    name = call.get("name") or call.get("tool")
-    if name:
-        row["name"] = str(name)
-    args = call.get("args")
-    if args is None:
-        args = call.get("arguments")
-    if args is None:
-        args = call.get("params")
-    if args is not None:
-        row["args"] = args
-    for key in ("ok", "duration_ms", "cached", "error", "telemetry_source"):
-        if key in call:
-            row[key] = call[key]
-    for key in ("result", "observation", "output", "response", "result_preview"):
-        if key not in call:
-            continue
-        value = call.get(key)
-        if value in (None, "", [], {}):
-            continue
-        if key == "result":
-            row["result"] = _bounded_tool_call_result(value)
-        else:
-            row[key] = _bounded_tool_call_result(value)
-        break
-    if row and "telemetry_source" not in row:
-        row["telemetry_source"] = "posthoc_prediction"
-    return row
-
-
-def _merge_tool_call_rows(
-    primary_rows: list[dict[str, Any]],
-    supplemental_rows: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Merge tool-call telemetry without dropping richer result evidence."""
-
-    merged: list[dict[str, Any]] = [_normalize_tool_call_row(row) for row in primary_rows if row]
-    by_key: dict[tuple[str, str], list[int]] = {}
-    by_name_args: dict[tuple[str, str], list[int]] = {}
-    for index, row in enumerate(merged):
-        by_key.setdefault(_tool_call_event_key(row), []).append(index)
-        by_name_args.setdefault(_tool_call_name_args_key(row), []).append(index)
-
-    for raw_supplemental in supplemental_rows:
-        supplemental = _normalize_tool_call_row(raw_supplemental)
-        if not supplemental:
-            continue
-        key = _tool_call_event_key(supplemental)
-        candidate_index: int | None = None
-        supplemental_has_result = _tool_call_has_result_evidence(supplemental)
-        supplemental_ok = supplemental.get("ok")
-        candidate_indexes = list(by_key.get(key, []))
-        if not candidate_indexes:
-            fallback_indexes = by_name_args.get(_tool_call_name_args_key(supplemental), [])
-            if supplemental_has_result:
-                fallback_indexes = [
-                    index for index in fallback_indexes if merged[index].get("ok") is not False
-                ]
-            if fallback_indexes:
-                candidate_indexes = fallback_indexes
-        for index in candidate_indexes:
-            existing = merged[index]
-            existing_ok = existing.get("ok")
-            if key[0] == "__call_id__":
-                candidate_index = index
-                break
-            if supplemental_has_result and existing_ok is False and supplemental_ok is not False:
-                continue
-            if supplemental_has_result and not _tool_call_has_result_evidence(existing):
-                candidate_index = index
-                break
-            if not supplemental_has_result:
-                candidate_index = index
-                break
-        if candidate_index is None:
-            by_key.setdefault(key, []).append(len(merged))
-            by_name_args.setdefault(_tool_call_name_args_key(supplemental), []).append(len(merged))
-            merged.append(supplemental)
-            continue
-
-        existing = merged[candidate_index]
-        old_key = _tool_call_event_key(existing)
-        for field_name, value in supplemental.items():
-            if field_name in {"result", "observation", "output", "response", "result_preview"}:
-                if not _tool_call_has_result_evidence(existing):
-                    existing[field_name] = value
-                continue
-            if value in (None, "", [], {}):
-                continue
-            if field_name not in existing or existing[field_name] in (None, "", [], {}):
-                existing[field_name] = value
-            elif field_name in {"duration_ms", "cached", "telemetry_source", "ok", "error"}:
-                existing[field_name] = value
-        new_key = _tool_call_event_key(existing)
-        if new_key != old_key and candidate_index not in by_key.get(new_key, []):
-            by_key.setdefault(new_key, []).append(candidate_index)
-    return merged
-
-
-def _tool_calls_from_handoff_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return nested child tool-call evidence from delegation rows."""
-
-    tool_rows: list[dict[str, Any]] = []
-
-    def visit(row: Any) -> None:
-        if not isinstance(row, Mapping):
-            return
-        for call in row.get("tools_called") or []:
-            if isinstance(call, Mapping):
-                tool_rows.append(_normalize_tool_call_row(call))
-        for child in row.get("children") or []:
-            visit(child)
-
-    for row in rows:
-        visit(row)
-    return tool_rows
-
-
 def _clear_session_model_refs(app: "FastAPI") -> None:
     """Clear per-session model refs after a global LM provider swap.
 
@@ -1008,19 +758,6 @@ from clio_agent.gact.turn import (  # noqa: E402,F401
 # engine; the unaliased name above is the module-level re-export the import-seam
 # guardrail + ``from clio_agent.gact.app import _start_background_user_turn`` use.
 _turn_start_background_user_turn = _start_background_user_turn
-
-
-def _current_lm_model_id() -> str:
-    """Best-effort: which model the active dspy LM is bound to.
-
-    Resolves through the ambient guard so that a read outside any per-profile
-    ``dspy.context`` (e.g. turn-end metadata assembly) records a structured
-    ``ambient_lm_default`` reason instead of silently depending on the process
-    boot default (#818)."""
-    from clio_agent.gact.runtime.ambient_lm import resolve_active_lm  # noqa: PLC0415
-
-    lm = resolve_active_lm(site="app._current_lm_model_id")
-    return getattr(lm, "model", "") if lm else ""
 
 
 # gact/usage.py -- usage/cost metering: per-LM history-diff + UsageTracker
@@ -1135,6 +872,12 @@ from clio_agent.gact.tool_observer import (  # noqa: E402,F401
     _ensure_live_assistant_message,
     _install_tool_runtime_hooks,
     _make_tool_observer,
+    _merge_tool_call_rows,
+    _normalize_tool_call_row,
+    _tool_call_event_key,
+    _tool_call_has_result_evidence,
+    _tool_call_name_args_key,
+    _tool_calls_from_handoff_rows,
 )
 from clio_agent.gact.transcript import TurnTranscriptRegistry
 from clio_agent.gact.types import (

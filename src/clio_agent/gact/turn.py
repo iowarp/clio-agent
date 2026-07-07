@@ -18,12 +18,15 @@ one agent turn end to end:
 It was carved verbatim out of ``clio_agent.gact.app.build_app`` so the route
 factories (post-message, question-answer, retry-attempt, schedules) and the
 scheduler tick can share the entrypoint via ``GactDeps`` without importing back
-into the 24k-line app module. To keep the import graph acyclic, the many
-app-resident turn helpers this engine calls are imported *lazily* (function-local
-``from clio_agent.gact.app import ...``) — the same cycle-break pattern
-``clio_agent.gact.agents.builders`` uses. The cross-concern funnel + id/exception
-helpers come from :mod:`clio_agent.gact.runtime.globals`, which imports only
-leaf modules and never ``app``.
+into the 24k-line app module. To keep the import graph acyclic (#714), the turn
+helpers this engine calls are imported at module top from their true *leaf*
+owners (``delegation``/``streaming``/``enrichment``/``evidence``/``usage``/
+``messaging``/``session_store``/``agents.resolution``/``runtime.globals`` …) —
+so turn.py has ZERO top-level ``clio_agent.gact.app`` imports. Only the
+agent-builder + blueprint-runner seams and ``_enrich_cancellation_error_info``
+(the "danger set" retargeted by ~83 ``app._X`` test monkeypatches) are still
+resolved through ``app`` via a *function-local* import at their single call site,
+the same cycle-break pattern ``clio_agent.gact.agents.builders`` uses.
 
 Behavior is byte-for-byte identical to the in-``build_app`` original: the
 threading/executor handoff, cooperative + hard cancellation, turn timeout, the
@@ -46,8 +49,66 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.gact import context as _ctx
+from clio_agent.gact._params import (
+    _gact_turn_timeout_s,
+    _user_agent_bool_param,
+    _user_agent_int_param,
+)
+from clio_agent.gact.agents.resolution import (
+    _agent_definition_uses_blueprint_runtime,
+    _resolve_runtime_dynamic_agent,
+    _runtime_active_agent_blueprint_agent_ids,
+    _runtime_active_agent_blueprint_id,
+    _runtime_active_agent_blueprint_root_id,
+    _runtime_declared_child_ids,
+)
+from clio_agent.gact.delegation import (
+    _append_accumulated_workflow_state_context,
+    _append_session_workflow_state_context,
+    _bubbled_child_evidence_output_summary,
+    _clean_public_transcript_text,
+    _coerce_expert_handoff_rows,
+    _delegated_expert_agent_id,
+    _delegated_expert_prompt,
+    _dynamic_parent_resume_prompt,
+    _failed_child_delegation_output_summary,
+    _failed_child_delegation_workflow_state,
+    _fallback_answer_from_delegation,
+    _latest_delegation_output_summary,
+    _latest_parent_resumed_output_summary,
+    _prediction_workflow_state,
+    _should_execute_delegated_handoff,
+    _workflow_state_from_handoff_rows,
+    _workflow_state_from_outputs,
+)
+from clio_agent.gact.enrichment import (
+    _context_file_turn_provenance,
+    _enrich_with_context_files,
+    _enrich_with_requested_memory_search,
+    _finalize_context_frame,
+    _record_context_frame,
+)
 from clio_agent.gact.events import Event, EventBus
+from clio_agent.gact.evidence import (
+    _dynamic_agent_runtime_provenance,
+    _ground_fabricated_local_artifact_paths,
+    _propose_edit_diffs_from_pred,
+    _tool_agent_empty_answer_fallback,
+    _tool_result_preview,
+)
+from clio_agent.gact.messaging import (
+    _agent_accepts_images,
+    _ask_user_options_from_action,
+    _coerce_ask_user_action,
+    _format_subagent_input,
+    _image_part_summaries,
+    _prediction_summary,
+    _user_message_parts,
+)
+from clio_agent.gact.providers.auth import _refresh_argonne_lm_token
+from clio_agent.gact.providers.config import _current_lm_model_id
 from clio_agent.gact.runtime.globals import (
+    _cancelled_error_info,
     _coerce_error_info,
     _ContextFileAccessError,
     _emit_semantic_event,
@@ -56,15 +117,34 @@ from clio_agent.gact.runtime.globals import (
     _new_message_id,
     _new_part_id,
     _new_question_id,
+    _session_agent_id,
     _tool_session_context,
     _TurnCancelled,
     _TurnTimedOut,
     _UnsupportedSessionAgent,
 )
 from clio_agent.gact.runtime.retention import enforce_dict_bound, enforce_list_bound
+from clio_agent.gact.runtime.type_parsing import _blueprint_module_kind
+from clio_agent.gact.session_store import (
+    _compile_session_conversation_history,
+    _extend_session_messages,
+)
 from clio_agent.gact.streaming import (
+    _agent_forward_compat,
     _clear_live_streamed_field_text,
+    _extract_tools_called,
+    _format_react_trajectory,
+    _pop_stream_fallback,
     _record_live_streamed_field_text,
+    _run_dynamic_agent_compat,
+    _stream_fallback_payload,
+    _StreamingOutputError,
+    _try_streamed_forward_compat,
+)
+from clio_agent.gact.tool_observer import (
+    _append_live_assistant_part,
+    _merge_tool_call_rows,
+    _tool_calls_from_handoff_rows,
 )
 from clio_agent.gact.transcript import _transcript_text_field
 from clio_agent.gact.turn_state import new_turn_state
@@ -76,19 +156,27 @@ from clio_agent.gact.types import (
     Tokens,
     UserQuestion,
 )
+from clio_agent.gact.usage import (
+    _estimate_cost_usd,
+    _reasoning_records_from_history_slice,
+    _snapshot_lm_history_index,
+    _usage_from_dspy_history,
+    _usage_from_history_slice,
+)
+from clio_agent.gact.workflow_state.merge import _merge_workflow_state_mapping
 from clio_agent.runtime import trace
 from clio_agent.runtime.lm_activity import lm_call_in_flight as _lm_call_in_flight
 from clio_agent.runtime.stream_audit import stream_audit
 
-# NOTE: The agent-builder / agent-resolution / provider-auth / workflow-state
-# helpers this engine drives are imported *lazily* from
-# :mod:`clio_agent.gact.app` (function-local, below) rather than from their owning
-# modules. The turn loop originally lived in ``app.py`` and resolved them through
-# the ``app`` module namespace (the re-export shims), so tests monkeypatch e.g.
-# ``clio_agent.gact.app._build_tool_user_agent_module``. Reading them back through
-# ``app`` at call time keeps that monkeypatch contract -- and behavior -- exactly
-# as it was before the move. The funnel/id/exception helpers above come from
-# ``runtime.globals`` (their single owner + the documented test-patch site).
+# NOTE (#714): every turn helper above is imported from its true *leaf* owner,
+# not from ``clio_agent.gact.app``. The turn loop originally lived in ``app.py``
+# and resolved these through the ``app`` re-export shims; only the agent-builder /
+# blueprint-runner seams + ``_enrich_cancellation_error_info`` (the "danger set"
+# that tests monkeypatch as e.g. ``clio_agent.gact.app._build_tool_user_agent_module``)
+# are still read back through ``app`` at call time — via a function-local import at
+# their single call site — to preserve that monkeypatch contract with zero test
+# edits. That is the ONLY ``app`` import in this module, and it is function-local,
+# so the import graph stays acyclic.
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -345,6 +433,9 @@ def _settle_failed_finalize(
     best-effort step below logs its reason when it fails.
     """
 
+    # #714 danger set: bind through app at call time so test monkeypatches of
+    # clio_agent.gact.app._append_session_message (e.g. the live==reload
+    # property fixture) keep intercepting assistant persistence.
     from clio_agent.gact.app import _append_session_message  # noqa: PLC0415
 
     logger.error(
@@ -510,78 +601,21 @@ async def _run_turn_in_background(
     the failure live. We never re-raise; the request that started us
     is long gone.
     """
+    # #714 DANGER SET: the agent-builder + blueprint-runner seams and the
+    # cancellation-enricher are resolved through ``app`` via a *function-local*
+    # import so the ~83 ``app._X`` test monkeypatches (which retarget these at
+    # call time) keep working with zero test edits. ``_EXECUTABLE_SESSION_AGENT_IDS``
+    # is an ``app``-owned module constant kept here too (not relocated). Every
+    # other former app helper is now imported at module top from its true leaf
+    # owner (#714), so turn.py has ZERO top-level ``app`` imports.
     from clio_agent.gact.app import (  # noqa: PLC0415
         _EXECUTABLE_SESSION_AGENT_IDS,
-        _agent_definition_uses_blueprint_runtime,
-        _agent_forward_compat,
-        _append_accumulated_workflow_state_context,
-        _append_live_assistant_part,
         _append_session_message,
-        _append_session_workflow_state_context,
-        _ask_user_options_from_action,
-        _blueprint_module_kind,
         _blueprint_runner_for_agent,
-        _bubbled_child_evidence_output_summary,
         _build_blueprint_dspy_module,
         _build_prompt_user_agent_module,
         _build_tool_user_agent_module,
-        _cancelled_error_info,
-        _clean_public_transcript_text,
-        _coerce_ask_user_action,
-        _coerce_expert_handoff_rows,
-        _compile_session_conversation_history,
-        _context_file_turn_provenance,
-        _current_lm_model_id,
-        _delegated_expert_agent_id,
-        _delegated_expert_prompt,
-        _dynamic_agent_runtime_provenance,
-        _dynamic_parent_resume_prompt,
         _enrich_cancellation_error_info,
-        _enrich_with_context_files,
-        _enrich_with_requested_memory_search,
-        _estimate_cost_usd,
-        _extend_session_messages,
-        _extract_tools_called,
-        _failed_child_delegation_output_summary,
-        _failed_child_delegation_workflow_state,
-        _fallback_answer_from_delegation,
-        _finalize_context_frame,
-        _format_react_trajectory,
-        _format_subagent_input,
-        _gact_turn_timeout_s,
-        _ground_fabricated_local_artifact_paths,
-        _latest_delegation_output_summary,
-        _latest_parent_resumed_output_summary,
-        _merge_tool_call_rows,
-        _merge_workflow_state_mapping,
-        _pop_stream_fallback,
-        _prediction_summary,
-        _prediction_workflow_state,
-        _propose_edit_diffs_from_pred,
-        _reasoning_records_from_history_slice,
-        _record_context_frame,
-        _refresh_argonne_lm_token,
-        _resolve_runtime_dynamic_agent,
-        _run_dynamic_agent_compat,
-        _runtime_active_agent_blueprint_agent_ids,
-        _runtime_active_agent_blueprint_id,
-        _runtime_active_agent_blueprint_root_id,
-        _runtime_declared_child_ids,
-        _session_agent_id,
-        _should_execute_delegated_handoff,
-        _snapshot_lm_history_index,
-        _stream_fallback_payload,
-        _StreamingOutputError,
-        _tool_agent_empty_answer_fallback,
-        _tool_calls_from_handoff_rows,
-        _tool_result_preview,
-        _try_streamed_forward_compat,
-        _usage_from_dspy_history,
-        _usage_from_history_slice,
-        _user_agent_bool_param,
-        _user_agent_int_param,
-        _workflow_state_from_handoff_rows,
-        _workflow_state_from_outputs,
     )
 
     bus: EventBus = app.state.bus
@@ -3345,13 +3379,9 @@ def _start_background_user_turn(
     importing back into :mod:`clio_agent.gact.app`; ``app`` is now an explicit
     first argument instead of a closure capture.
     """
-    from clio_agent.gact.app import (  # noqa: PLC0415
-        _agent_accepts_images,
-        _append_session_message,
-        _image_part_summaries,
-        _session_agent_id,
-        _user_message_parts,
-    )
+    # #714 danger set: bind through app at call time so test monkeypatches of
+    # clio_agent.gact.app._append_session_message keep intercepting persistence.
+    from clio_agent.gact.app import _append_session_message  # noqa: PLC0415
 
     now = time.time()
     user_metadata = dict(metadata or {})

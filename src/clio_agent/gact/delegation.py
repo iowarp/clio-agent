@@ -803,3 +803,50 @@ def _failed_child_delegation_output_summary(
         f"Child expert {child_agent_id!r} failed while delegated from "
         f"{parent_agent_id!r}: {error}. {message}"
     )
+
+
+def _prediction_workflow_state(result: Any) -> dict[str, Any]:
+    """Return a prediction's first-class typed ``workflow_state`` as a Mapping.
+
+    ``workflow_state`` is the ONE load-bearing structured output on the dynamic
+    expert signature. This is the STRUCTURED twin of the (now removed) prose
+    append: instead of serializing the typed field into the answer text and
+    re-parsing it back out (which polluted the user-facing answer), callers read
+    the typed field directly via this helper and carry it on the structured
+    carrier (the completed/handoff/ledger row's ``workflow_state`` Mapping).
+
+    A typed ``workflow_state`` field may arrive as a Pydantic model (when a pack
+    declares it as a nested object signature field), a JSON string, or a plain
+    dict. Each is normalized to a plain ``{section: ...}`` mapping. Generic for
+    all packs.
+    """
+
+    raw_state = getattr(result, "workflow_state", None)
+    if raw_state in (None, ""):
+        return {}
+    if isinstance(raw_state, str):
+        text = raw_state.strip()
+        if not text:
+            return {}
+        return _workflow_state_from_outputs([text])
+    normalized_state = _jsonish(raw_state)
+    if isinstance(normalized_state, Mapping):
+        inner = normalized_state.get("workflow_state")
+        if isinstance(inner, Mapping):
+            return dict(inner)
+        return dict(normalized_state)
+    return {}
+
+
+def _fallback_answer_from_delegation(handoffs: list[dict[str, Any]]) -> str:
+    """Return the latest compact parent-resume output as answer fallback."""
+
+    for row in reversed(handoffs):
+        if str(row.get("stage") or "") != "parent.resumed":
+            continue
+        if str(row.get("status") or "") not in {"", "completed"}:
+            continue
+        text = str(row.get("output") or row.get("output_summary") or "").strip()
+        if text:
+            return text
+    return ""
