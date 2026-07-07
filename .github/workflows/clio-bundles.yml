@@ -250,6 +250,16 @@ jobs:
             echo "::error::brand assert: CLIO marker absent from $dist (neutral web build)"
             exit 1
           fi
+      - name: Apply CLIO icons
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Copy the CLIO icon family over the neutral gact-tui icons so the
+          # overlay's relative "icons/..." paths resolve to branded art. A
+          # copy-over is more robust than "../../../.." paths in the overlay.
+          src="${{ github.workspace }}/branding/clio/icons"
+          dst="external/gact-tui/apps/desktop/src-tauri/icons"
+          cp -f "$src"/* "$dst"/
       - name: Tauri release build
         working-directory: external/gact-tui/apps
         shell: bash
