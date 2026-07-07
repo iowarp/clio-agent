@@ -251,10 +251,13 @@ def _active_workflow_state_schema(
     The result is cached per (session, active-blueprint identity) on
     ``app.state.workflow_state_schemas`` so a blueprint switch re-resolves.
 
-    (Slice B is the minimal resolver: the loud, queryable
-    ``workflow_state_schema_absent`` recording is wired into this seam in Slice E,
-    and malformed declarations are rejected at blueprint load — also Slice E — so
-    they never reach here.)
+    Falling back to GENERIC records a loud, queryable
+    ``workflow_state_schema_absent`` reason in the dedicated per-app ledger
+    (``app.state.workflow_schema_fallbacks``; Slice E, no-silent-fallback rule).
+    The cache guarantees the reason is recorded at most once per (session,
+    active-blueprint identity). Malformed declarations are rejected at blueprint
+    load (the blueprint is disabled with a ``validation_errors`` entry) and so
+    never reach here — only an absent / bool-only declaration falls through.
     """
 
     if app is None or not session_id or getattr(app, "state", None) is None:
@@ -291,6 +294,21 @@ def _active_workflow_state_schema(
         schema = WorkflowStateSchema.model_validate(declaration)
     else:
         schema = GENERIC_WORKFLOW_STATE_SCHEMA
+        # Loud, queryable degradation (no-silent-fallback): the active blueprint
+        # declares no workflow_state schema, so the generic presence-only engine
+        # runs. Recorded once per (session, blueprint) — the cache below dedupes
+        # re-resolutions. Lazy import mirrors the ambient-LM ledger seam and keeps
+        # this resolution leaf free of a top-level ``streaming`` dependency.
+        from clio_agent.gact.streaming import (  # noqa: PLC0415
+            _record_workflow_schema_fallback,
+        )
+
+        _record_workflow_schema_fallback(
+            app,
+            session_id,
+            "workflow_state_schema_absent",
+            f"active blueprint {blueprint_id or '(none)'} declares no workflow_state schema",
+        )
     cache[session_id] = (key, schema)
     return schema
 
