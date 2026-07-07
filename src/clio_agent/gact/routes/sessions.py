@@ -38,7 +38,6 @@ private rollback + ask-user/retry helpers live here.
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 import uuid
 from collections.abc import Mapping
@@ -50,7 +49,7 @@ from fastapi.responses import JSONResponse
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.events import Event
-from clio_agent.gact.routes._body import json_body
+from clio_agent.gact.routes._body import NonObjectBodyError, json_body
 from clio_agent.gact.runtime.globals import (
     _active_semantic_turn_id,
     _emit_semantic_event,
@@ -377,13 +376,16 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         if sess is None:
             raise _session_not_found(sid)
         _reject_rollback_while_active(sid, sess)
+        # Optional free-form body: a malformed or ``null`` payload is treated as
+        # ``{}`` (unchanged behavior, now with a structured
+        # ``request_body_unparseable`` reason in the trace), but a valid-JSON
+        # non-object payload keeps its pre-#772 422 -- undo is destructive and
+        # must not proceed on a wrong-shaped body coerced to defaults.
         try:
-            body = await request.json()
-        except json.JSONDecodeError:
-            body = {}
-        if body is None:
-            body = {}
-        if not isinstance(body, dict):
+            body = await json_body(
+                request, route="POST /v1/sessions/{sid}/undo", non_object="raise"
+            )
+        except NonObjectBodyError:
             raise HTTPException(
                 status_code=422,
                 detail=ErrorEnvelope(
@@ -394,7 +396,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                         recoverable=True,
                     )
                 ).model_dump(exclude_none=True),
-            )
+            ) from None
         raw_count = body.get("count", body.get("message_count", 1))
         try:
             count = int(raw_count) if isinstance(raw_count, str | int | float) else 1
@@ -437,11 +439,19 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         if sess is None:
             raise _session_not_found(sid)
         _reject_rollback_while_active(sid, sess)
+        # A malformed body is treated as ``{}`` (unchanged behavior, now with a
+        # structured ``request_body_unparseable`` reason in the trace), but a
+        # valid-JSON non-object payload -- including ``null``, which rewind's
+        # pre-#772 guard never coerced -- keeps its 422: rewind is destructive
+        # and must not proceed on a wrong-shaped body coerced to defaults.
         try:
-            body = await request.json()
-        except json.JSONDecodeError:
-            body = {}
-        if not isinstance(body, dict):
+            body = await json_body(
+                request,
+                route="POST /v1/sessions/{sid}/rewind",
+                non_object="raise",
+                null_is_empty=False,
+            )
+        except NonObjectBodyError:
             raise HTTPException(
                 status_code=422,
                 detail=ErrorEnvelope(
@@ -452,7 +462,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                         recoverable=True,
                     )
                 ).model_dump(exclude_none=True),
-            )
+            ) from None
         target_message_id = str(
             body.get("message_id")
             or body.get("target_message_id")
