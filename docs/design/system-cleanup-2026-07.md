@@ -51,7 +51,10 @@ Kept current as work lands; the running per-PR log is the umbrella #775.
   live via #810/#827, and gact-tui parity phase 1 landed as tui #249; tui P0s #224–#231 verified
   closed in the Phase 0 sweep). Phase 3: #769 / #771 / #772 / #773 + gact-tui #233/#236. Phase 4:
   #774 + gact-tui #234/#235 + **#830** (converge the server entry point → one `clio-agent`
-  executable + one container port/healthcheck — a #829 follow-up).
+  executable + one container port/healthcheck — a #829 follow-up) + **#841** (release/distribution
+  hygiene: the pages download must hand out the bundled desktop installer — a user got the
+  backend-less lite MSI — and the CLIO brand must be current across installer art, app icons, and
+  in-app splash/error surfaces, with a CI assertion so a lite/bundled mixup can't ship).
 
 ---
 
@@ -151,6 +154,7 @@ Full evidence lives in the issue bodies; one line each here.
 | [#773](https://github.com/iowarp/clio-agent/issues/773) | Test depth |
 | [#774](https://github.com/iowarp/clio-agent/issues/774) | Repo & meta-doc hygiene |
 | [#830](https://github.com/iowarp/clio-agent/issues/830) | Converge server entry points: one `clio-agent` exe + one container port/healthcheck (Phase 4; #829 follow-up) |
+| [#841](https://github.com/iowarp/clio-agent/issues/841) | Release/distribution hygiene: download page serves the bundled installer, current CLIO branding on all installer/app surfaces, CI-asserted (Phase 4; user-reported) |
 
 ### gact-tui — P0 defects
 
@@ -200,7 +204,9 @@ stub). Shrinks the surface before structural work so Phase 2 refactors less code
 after #232 settles the channel) and #236.
 
 **Phase 4 — repo restructure.** #774 and #235 (docs taxonomy, CLAUDE.md rewrites, media
-filter-repo + LFS, test-tree split, tui package split #234), plus #830 (converge the server entry
+filter-repo + LFS, test-tree split, tui package split #234), plus #841 (release/distribution
+hygiene — bundled-vs-lite download correctness + current branding + a packaging CI assertion;
+user-reported) and #830 (converge the server entry
 point → one `clio-agent` executable + one container port/healthcheck) — mechanical, large,
 low-risk last.
 
