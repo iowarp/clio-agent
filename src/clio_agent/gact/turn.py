@@ -106,7 +106,6 @@ from clio_agent.gact.messaging import (
     _user_message_parts,
 )
 from clio_agent.gact.providers.auth import _refresh_argonne_lm_token
-from clio_agent.gact.providers.config import _current_lm_model_id
 from clio_agent.gact.runtime.globals import (
     _cancelled_error_info,
     _coerce_error_info,
@@ -148,6 +147,7 @@ from clio_agent.gact.tool_observer import (
 )
 from clio_agent.gact.transcript import _transcript_text_field
 from clio_agent.gact.turn_state import new_turn_state
+from clio_agent.gact.turn_usage import roll_up_usage
 from clio_agent.gact.types import (
     ErrorInfo,
     Message,
@@ -157,11 +157,8 @@ from clio_agent.gact.types import (
     UserQuestion,
 )
 from clio_agent.gact.usage import (
-    _estimate_cost_usd,
     _reasoning_records_from_history_slice,
     _snapshot_lm_history_index,
-    _usage_from_dspy_history,
-    _usage_from_history_slice,
 )
 from clio_agent.gact.workflow_state.merge import _merge_workflow_state_mapping
 from clio_agent.runtime import trace
@@ -2374,54 +2371,10 @@ async def _run_turn_in_background(
             or _format_react_trajectory(getattr(state.pred, "trajectory", None))
             or ""
         )
-        # CLIO-BBBBBBBBBB24: cost + token rollup. Real DSPy
-        # predictions don't always populate .tokens / .cost_usd
-        # directly — pull from the per-turn UsageTracker first
-        # (works across threads + streaming), then LM history.
-        raw_tokens = getattr(state.pred, "tokens", None)
-        if raw_tokens is not None:
-            for key in state.turn_tokens:
-                if isinstance(raw_tokens, dict):
-                    v = raw_tokens.get(key, 0)
-                else:
-                    v = getattr(raw_tokens, key, 0)
-                state.turn_tokens[key] = int(v or 0)
-        else:
-            # Diff the LM history slice for this turn first — captures
-            # planner + expert + chat calls cleanly. Falls back to
-            # ``last entry only`` for older code paths, then to a
-            # character-based estimate when the upstream proxy
-            # reports zero (some OpenAI-compatible proxies don't
-            # populate usage on chunked replies).
-            history_end = _snapshot_lm_history_index(state.app)
-            history_made_calls = any(
-                history_end.get(k, 0) > state.history_start.get(k, 0)
-                for k in {*state.history_start.keys(), *history_end.keys()}
-            )
-            usage = _usage_from_history_slice(state.history_start, state.app)
-            if not usage.get("output"):
-                usage = _usage_from_dspy_history()
-            for key in state.turn_tokens:
-                state.turn_tokens[key] = int(usage.get(key, 0) or 0)
-            state.turn_cost = float(usage.get("cost_usd", 0.0) or 0.0)
-            # Char-based fallback only when the LM actually fired
-            # this turn (history grew) but the upstream proxy
-            # reported zero usage. Don't synthesize numbers when
-            # there was no real call (e.g. unit tests with a fake
-            # agent that bypasses dspy.LM entirely).
-            if history_made_calls:
-                if state.turn_tokens["output"] == 0 and state.answer_text:
-                    state.turn_tokens["output"] = max(1, len(state.answer_text) // 4)
-                if state.turn_tokens["input"] == 0 and state.enriched_text:
-                    state.turn_tokens["input"] = max(1, len(state.enriched_text) // 4)
-                if state.turn_cost == 0.0:
-                    state.turn_cost = _estimate_cost_usd(
-                        _current_lm_model_id(),
-                        state.turn_tokens["input"],
-                        state.turn_tokens["output"],
-                    )
-        if not state.turn_cost:
-            state.turn_cost = float(getattr(state.pred, "cost_usd", 0.0) or 0.0)
+        # CLIO-BBBBBBBBBB24: cost + token rollup — mutate
+        # state.turn_tokens / state.turn_cost from the prediction
+        # or the per-turn LM history slice (see turn_usage.py).
+        roll_up_usage(state, state.pred)
         state.proposed_diffs = list(getattr(state.pred, "file_diffs", None) or [])
         if not state.proposed_diffs:
             # Dynamic tool agents call fs_propose_edit as a TOOL and never set
