@@ -2,9 +2,9 @@
 set -eu
 
 CLIO_HOST="${CLIO_GACT_HOST:-127.0.0.1}"
-CLIO_PORT="${CLIO_GACT_PORT:-7777}"
+CLIO_PORT="${CLIO_GACT_PORT:-8100}"
 
-clio-agent-gact --host "$CLIO_HOST" --port "$CLIO_PORT" &
+clio-agent serve --host "$CLIO_HOST" --port "$CLIO_PORT" &
 clio_pid=$!
 
 shutdown() {

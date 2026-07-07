@@ -18,7 +18,7 @@ LABEL org.opencontainers.image.title="CLIO Web" \
       org.opencontainers.image.licenses="BSD-3-Clause"
 ENV PYTHONUNBUFFERED=1 \
     CLIO_GACT_HOST=127.0.0.1 \
-    CLIO_GACT_PORT=7777 \
+    CLIO_GACT_PORT=8100 \
     HOME=/home/clio
 
 WORKDIR /app
