@@ -55,6 +55,60 @@ if TYPE_CHECKING:
 _LOG = logging.getLogger(__name__)
 
 
+def _select_accepted_kwargs(func: Any, candidate: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the subset of ``candidate`` keyword args that ``func`` accepts.
+
+    Signature inspection replaces the old TypeError-message sniffing: we decide
+    which optional kwargs a callee understands *before* invoking it, so the call
+    happens exactly once and any ``TypeError`` raised from inside the callee
+    propagates as-is rather than being mistaken for a signature mismatch.
+
+    Returns ``None`` when ``func`` cannot be introspected (some C-level /
+    builtin callables raise ``ValueError``/``TypeError`` from
+    :func:`inspect.signature`); the caller then makes a single best-effort
+    attempt with the full candidate set instead of guessing.
+    """
+
+    try:
+        sig = inspect.signature(func)
+    except (ValueError, TypeError):
+        return None
+    params = sig.parameters.values()
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params):
+        return dict(candidate)
+    accepted = {
+        p.name
+        for p in params
+        if p.kind
+        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    }
+    return {name: value for name, value in candidate.items() if name in accepted}
+
+
+def _callable_positional_slots(func: Any, count: int) -> bool:
+    """Whether ``func`` accepts at least ``count`` positional arguments.
+
+    Signature-inspection replacement for the old positional/argument message
+    sniffing in :func:`_run_dynamic_agent_compat`. Uninspectable callables are
+    assumed to accept the full arg list (single best-effort attempt).
+    """
+
+    try:
+        sig = inspect.signature(func)
+    except (ValueError, TypeError):
+        return True
+    slots = 0
+    for param in sig.parameters.values():
+        if param.kind is inspect.Parameter.VAR_POSITIONAL:
+            return True
+        if param.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            slots += 1
+    return slots >= count
+
+
 def _agent_forward_compat(
     agent: Any,
     question: str,
@@ -64,47 +118,27 @@ def _agent_forward_compat(
     cancel_requested: Any | None = None,
     images: list[Any] | None = None,
 ) -> Any:
-    """Call agent.forward, threading session_mode + session_edit_mode
-    when the agent accepts them, falling back to the legacy
+    """Call agent.forward, threading session_mode + session_edit_mode + the
+    optional ``images``/``cancel_requested`` kwargs *only when the agent's
+    signature accepts them*, falling back to the legacy
     ``(question, session_id)`` signature for fakes / older builds.
 
-    Lets us add new optional kwargs to the contract without breaking
-    every test fixture that hand-rolled a minimal forward signature.
+    The callee is inspected once up front and invoked exactly once: no
+    TypeError-message sniffing and no double-run, so a ``TypeError`` raised
+    from inside ``forward`` propagates unchanged.
     """
 
-    optional_kwargs: dict[str, Any] = {
+    candidate: dict[str, Any] = {
+        "session_id": session_id,
+        "session_mode": session_mode,
+        "session_edit_mode": session_edit_mode,
         "images": images or [],
         "cancel_requested": cancel_requested,
     }
-    attempts = [
-        optional_kwargs,
-        {"cancel_requested": cancel_requested},
-        {"images": images or []},
-        {},
-    ]
-    last_type_error: TypeError | None = None
-    for optional in attempts:
-        try:
-            return agent.forward(
-                question,
-                session_id=session_id,
-                session_mode=session_mode,
-                session_edit_mode=session_edit_mode,
-                **optional,
-            )
-        except TypeError as exc:
-            message = str(exc)
-            if "images" not in message and "cancel_requested" not in message:
-                last_type_error = exc
-                break
-            last_type_error = exc
-
-    try:
-        return agent.forward(question, session_id=session_id)
-    except TypeError as exc:
-        if last_type_error is not None:
-            raise last_type_error from exc
-        raise
+    selected = _select_accepted_kwargs(agent.forward, candidate)
+    if selected is None:
+        return agent.forward(question, **candidate)
+    return agent.forward(question, **selected)
 
 
 async def _try_streamed_forward_compat(
@@ -126,38 +160,19 @@ async def _try_streamed_forward_compat(
     # keeps intercepting the turn path after the streaming extraction.
     from clio_agent.gact.app import _try_streamed_forward  # noqa: PLC0415
 
-    base_kwargs: dict[str, Any] = {
+    candidate: dict[str, Any] = {
         "session_mode": session_mode,
         "session_edit_mode": session_edit_mode,
+        "images": images or [],
+        "cancel_requested": cancel_requested,
     }
     if agent_override is not None:
-        base_kwargs["agent_override"] = agent_override
+        candidate["agent_override"] = agent_override
 
-    optional_attempts: list[dict[str, Any]] = [
-        {"images": images or [], "cancel_requested": cancel_requested},
-        {"cancel_requested": cancel_requested},
-        {"images": images or []},
-        {},
-    ]
-    last_type_error: TypeError | None = None
-    for optional in optional_attempts:
-        try:
-            return await _try_streamed_forward(
-                app,
-                enriched_text,
-                sid,
-                emit_chunk,
-                **base_kwargs,
-                **optional,
-            )
-        except TypeError as exc:
-            message = str(exc)
-            if "cancel_requested" not in message and "images" not in message:
-                raise
-            last_type_error = exc
-    if last_type_error is not None:
-        raise last_type_error
-    return None
+    selected = _select_accepted_kwargs(_try_streamed_forward, candidate)
+    if selected is None:
+        return await _try_streamed_forward(app, enriched_text, sid, emit_chunk, **candidate)
+    return await _try_streamed_forward(app, enriched_text, sid, emit_chunk, **selected)
 
 
 def _run_dynamic_agent_compat(
@@ -168,14 +183,18 @@ def _run_dynamic_agent_compat(
     sid: str,
     cancel_requested: Any | None,
 ) -> Any:
-    """Run a dynamic agent while preserving older runner call signatures."""
+    """Run a dynamic agent while preserving older runner call signatures.
 
-    try:
-        return runner(base_agent, dynamic_agent, question, sid, cancel_requested)
-    except TypeError as exc:
-        if "positional" not in str(exc) and "argument" not in str(exc):
-            raise
-        return runner(base_agent, dynamic_agent, question, sid)
+    The runner's arity is inspected up front so it is invoked exactly once:
+    5-arg runners receive ``cancel_requested``, legacy 4-arg runners do not.
+    No positional/argument message sniffing, no double-run — an internal
+    ``TypeError`` propagates on the single call.
+    """
+
+    args: list[Any] = [base_agent, dynamic_agent, question, sid, cancel_requested]
+    if not _callable_positional_slots(runner, len(args)):
+        args = args[:-1]
+    return runner(*args)
 
 
 class _StreamingOutputError(RuntimeError):
