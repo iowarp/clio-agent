@@ -8,7 +8,6 @@ on:
 env:
   PNPM_VERSION: "9.15.9"
   NODE_VERSION: "20.x"
-  GACT_BRAND: clio
 
 jobs:
   installers:
@@ -87,10 +86,14 @@ jobs:
       - name: Install
         working-directory: external/gact-tui/apps
         run: pnpm install --frozen-lockfile=false
+      - name: Select CLIO brand (gact-tui config-file mechanism)
+        shell: bash
+        run: |
+          root="${GITHUB_WORKSPACE//\\//}/branding"
+          printf '{ "profile": "clio", "brandingRoot": "%s" }\n' "$root" \
+            > external/gact-tui/apps/brand.config.local.json
       - name: Build CLIO web
         working-directory: external/gact-tui/apps
-        env:
-          GACT_BRAND_ROOT: ${{ github.workspace }}/branding
         run: pnpm --filter @clio/web build
       - name: Package
         run: |
@@ -219,16 +222,21 @@ jobs:
         run: ./scripts/build-clio-runtime.ps1 -Ref $env:CLIO_REF
         env:
           CLIO_REF: ${{ github.ref_name }}
+      - name: Select CLIO brand (gact-tui config-file mechanism)
+        shell: bash
+        run: |
+          root="${GITHUB_WORKSPACE//\\//}/branding"
+          printf '{ "profile": "clio", "brandingRoot": "%s" }\n' "$root" \
+            > external/gact-tui/apps/brand.config.local.json
       - name: Build web
         working-directory: external/gact-tui/apps
-        env:
-          GACT_BRAND_ROOT: ${{ github.workspace }}/branding
         run: pnpm --filter @clio/web build
+      - name: Generate brand backend descriptor
+        working-directory: external/gact-tui/apps
+        run: pnpm --filter @clio/desktop run gen-brand-backend
       - name: Tauri release build
         working-directory: external/gact-tui/apps
         shell: bash
-        env:
-          GACT_BRAND_ROOT: ${{ github.workspace }}/branding
         run: |
           set -euo pipefail
           brand="${{ github.workspace }}/branding/clio/tauri.clio.conf.json"
