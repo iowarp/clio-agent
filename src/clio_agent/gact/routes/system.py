@@ -306,10 +306,12 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
             tool_hooks_installed=getattr(app.state, "tool_hooks_installed", None),
         )
         if overall == "unavailable":
-            return JSONResponse(
-                status_code=503,
-                content=response.model_dump(mode="json", exclude_none=True),
-            )
+            content = response.model_dump(mode="json", exclude_none=True)
+            # The hooks flag is tri-state (True / False / None = "agent not
+            # constructed yet") — the deferred-boot window reports exactly
+            # None over this 503 path, so exclude_none must not drop it (#772).
+            content["tool_hooks_installed"] = response.tool_hooks_installed
+            return JSONResponse(status_code=503, content=content)
         return response
 
     @app.get("/v1/capabilities", response_model=Capabilities)

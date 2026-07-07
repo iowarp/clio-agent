@@ -5,6 +5,7 @@
 Coverage belongs to CI, which must pass its flags explicitly.
 """
 
+import re
 import tomllib
 from pathlib import Path
 
@@ -23,4 +24,8 @@ def test_ci_passes_coverage_flags_explicitly() -> None:
     """CI must not rely on addopts for coverage collection (#773)."""
     ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "--cov=clio_agent" in ci, "CI must enable coverage explicitly"
-    assert "--cov-fail-under=70" in ci, "CI must keep the coverage floor"
+    floor = re.search(r"--cov-fail-under=(\d+)", ci)
+    assert floor is not None, "CI must keep an explicit coverage floor"
+    # The floor is a ratchet: it may rise (e.g. 70 -> 78 with --cov-branch,
+    # #773 slice 18) but must never drop below the program's original 70.
+    assert int(floor.group(1)) >= 70, "CI coverage floor must not ratchet down"
