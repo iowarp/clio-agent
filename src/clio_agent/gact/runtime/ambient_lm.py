@@ -6,7 +6,7 @@ which model to meter, compact, or probe: token accounting
 (:mod:`clio_agent.gact.usage`), reasoning capture
 (:mod:`clio_agent.gact.runtime.globals`), auto-compaction summarisation
 (:mod:`clio_agent.gact.agents.runtime`) and the model-id probe
-(``clio_agent.gact.app._current_lm_model_id``).
+(:func:`clio_agent.gact.providers.config._current_lm_model_id`).
 
 During a turn that read resolves the *actively bound* expert/main LM, because
 every expert ``forward`` and the main agent enter

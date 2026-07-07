@@ -23,6 +23,7 @@ particular ``build_app`` wires ``app.state.make_tool_observer`` and the
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -50,6 +51,7 @@ from clio_agent.gact.runtime.globals import (
 )
 from clio_agent.gact.streaming import _live_streamed_field_text_for_turn
 from clio_agent.gact.types import Message, Part
+from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -63,6 +65,165 @@ logger = logging.getLogger(__name__)
 # worker thread, so threading-locals (not contextvars) are the right scope.
 _OBSERVER_CALL_IDS = threading.local()
 _OBSERVER_CALL_T0 = threading.local()
+
+
+def _tool_call_event_key(call: Mapping[str, Any]) -> tuple[str, str]:
+    """Return a stable identity for de-duplicating tool telemetry events."""
+    call_id = str(call.get("call_id") or "").strip()
+    if call_id:
+        return "__call_id__", call_id
+    return _tool_call_name_args_key(call)
+
+
+def _tool_call_name_args_key(call: Mapping[str, Any]) -> tuple[str, str]:
+    """Return a tool-name/arguments identity for posthoc trajectory rows."""
+
+    name = str(call.get("name") or call.get("tool") or "")
+    args = call.get("args")
+    if args is None:
+        args = call.get("arguments")
+    if args is None:
+        args = call.get("params")
+    try:
+        encoded_args = json.dumps(args or {}, sort_keys=True, default=str)
+    except TypeError:
+        encoded_args = str(args or {})
+    return name, encoded_args
+
+
+def _tool_call_has_result_evidence(call: Mapping[str, Any]) -> bool:
+    """Return whether a tool-call row carries auditable result evidence."""
+
+    for key in ("result", "observation", "output", "response", "result_preview"):
+        value = call.get(key)
+        if value in (None, "", [], {}):
+            continue
+        return True
+    return False
+
+
+def _normalize_tool_call_row(call: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalize a tool-call row while preserving bounded result evidence."""
+
+    row: dict[str, Any] = {}
+    call_id = str(call.get("call_id") or "").strip()
+    if call_id:
+        row["call_id"] = call_id
+    name = call.get("name") or call.get("tool")
+    if name:
+        row["name"] = str(name)
+    args = call.get("args")
+    if args is None:
+        args = call.get("arguments")
+    if args is None:
+        args = call.get("params")
+    if args is not None:
+        row["args"] = args
+    for key in ("ok", "duration_ms", "cached", "error", "telemetry_source"):
+        if key in call:
+            row[key] = call[key]
+    for key in ("result", "observation", "output", "response", "result_preview"):
+        if key not in call:
+            continue
+        value = call.get(key)
+        if value in (None, "", [], {}):
+            continue
+        if key == "result":
+            row["result"] = _bounded_tool_call_result(value)
+        else:
+            row[key] = _bounded_tool_call_result(value)
+        break
+    if row and "telemetry_source" not in row:
+        row["telemetry_source"] = "posthoc_prediction"
+    return row
+
+
+def _merge_tool_call_rows(
+    primary_rows: list[dict[str, Any]],
+    supplemental_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge tool-call telemetry without dropping richer result evidence."""
+
+    merged: list[dict[str, Any]] = [_normalize_tool_call_row(row) for row in primary_rows if row]
+    by_key: dict[tuple[str, str], list[int]] = {}
+    by_name_args: dict[tuple[str, str], list[int]] = {}
+    for index, row in enumerate(merged):
+        by_key.setdefault(_tool_call_event_key(row), []).append(index)
+        by_name_args.setdefault(_tool_call_name_args_key(row), []).append(index)
+
+    for raw_supplemental in supplemental_rows:
+        supplemental = _normalize_tool_call_row(raw_supplemental)
+        if not supplemental:
+            continue
+        key = _tool_call_event_key(supplemental)
+        candidate_index: int | None = None
+        supplemental_has_result = _tool_call_has_result_evidence(supplemental)
+        supplemental_ok = supplemental.get("ok")
+        candidate_indexes = list(by_key.get(key, []))
+        if not candidate_indexes:
+            fallback_indexes = by_name_args.get(_tool_call_name_args_key(supplemental), [])
+            if supplemental_has_result:
+                fallback_indexes = [
+                    index for index in fallback_indexes if merged[index].get("ok") is not False
+                ]
+            if fallback_indexes:
+                candidate_indexes = fallback_indexes
+        for index in candidate_indexes:
+            existing = merged[index]
+            existing_ok = existing.get("ok")
+            if key[0] == "__call_id__":
+                candidate_index = index
+                break
+            if supplemental_has_result and existing_ok is False and supplemental_ok is not False:
+                continue
+            if supplemental_has_result and not _tool_call_has_result_evidence(existing):
+                candidate_index = index
+                break
+            if not supplemental_has_result:
+                candidate_index = index
+                break
+        if candidate_index is None:
+            by_key.setdefault(key, []).append(len(merged))
+            by_name_args.setdefault(_tool_call_name_args_key(supplemental), []).append(len(merged))
+            merged.append(supplemental)
+            continue
+
+        existing = merged[candidate_index]
+        old_key = _tool_call_event_key(existing)
+        for field_name, value in supplemental.items():
+            if field_name in {"result", "observation", "output", "response", "result_preview"}:
+                if not _tool_call_has_result_evidence(existing):
+                    existing[field_name] = value
+                continue
+            if value in (None, "", [], {}):
+                continue
+            if field_name not in existing or existing[field_name] in (None, "", [], {}):
+                existing[field_name] = value
+            elif field_name in {"duration_ms", "cached", "telemetry_source", "ok", "error"}:
+                existing[field_name] = value
+        new_key = _tool_call_event_key(existing)
+        if new_key != old_key and candidate_index not in by_key.get(new_key, []):
+            by_key.setdefault(new_key, []).append(candidate_index)
+    return merged
+
+
+def _tool_calls_from_handoff_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return nested child tool-call evidence from delegation rows."""
+
+    tool_rows: list[dict[str, Any]] = []
+
+    def visit(row: Any) -> None:
+        if not isinstance(row, Mapping):
+            return
+        for call in row.get("tools_called") or []:
+            if isinstance(call, Mapping):
+                tool_rows.append(_normalize_tool_call_row(call))
+        for child in row.get("children") or []:
+            visit(child)
+
+    for row in rows:
+        visit(row)
+    return tool_rows
 
 
 def _session_turn_transcript(app: "FastAPI", sid: str) -> "Optional[TurnTranscript]":
@@ -669,3 +830,132 @@ def _make_tool_observer(app: "FastAPI"):
             )
 
     return observe
+
+
+_INTERNAL_METADATA_TOOL_NAMES = frozenset(
+    {
+        "clio_prior_workflow_state",
+        "finish",
+    }
+)
+
+
+def _tool_metadata_name(row: Mapping[str, Any]) -> str:
+    """Return the display tool name for a metadata row."""
+
+    return str(row.get("name") or row.get("tool") or "").strip()
+
+
+def _tool_metadata_name_args_key(row: Mapping[str, Any]) -> tuple[str, str]:
+    """Return a user-visible identity for metadata-level tool summaries."""
+
+    args = row.get("args")
+    if args is None:
+        args = row.get("arguments")
+    if args is None:
+        args = row.get("params")
+    try:
+        encoded_args = json.dumps(args or {}, sort_keys=True, default=str)
+    except TypeError:
+        encoded_args = str(args or {})
+    return _tool_metadata_name(row), encoded_args
+
+
+def _tool_metadata_has_result(row: Mapping[str, Any]) -> bool:
+    """Return whether a metadata row has result evidence worth preserving."""
+
+    for key in ("result", "observation", "output", "response", "result_preview"):
+        if row.get(key) not in (None, "", [], {}):
+            return True
+    return False
+
+
+def _sanitize_tools_called_metadata(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop internal tool-summary rows and de-duplicate equivalent public rows."""
+
+    cleaned: list[dict[str, Any]] = []
+    by_key: dict[tuple[str, str], int] = {}
+    dropped_internal = 0
+    merged_duplicates = 0
+    for raw_row in rows:
+        if not isinstance(raw_row, Mapping):
+            continue
+        name = _tool_metadata_name(raw_row)
+        if not name or name in _INTERNAL_METADATA_TOOL_NAMES:
+            dropped_internal += 1
+            continue
+        row = dict(raw_row)
+        key = _tool_metadata_name_args_key(row)
+        existing_index = by_key.get(key)
+        if existing_index is None:
+            by_key[key] = len(cleaned)
+            cleaned.append(row)
+            continue
+        merged_duplicates += 1
+        existing = cleaned[existing_index]
+        for field_name, value in row.items():
+            if value in (None, "", [], {}):
+                continue
+            if field_name in {"result", "observation", "output", "response", "result_preview"}:
+                if not _tool_metadata_has_result(existing):
+                    existing[field_name] = value
+                continue
+            if field_name not in existing or existing[field_name] in (None, "", [], {}):
+                existing[field_name] = value
+            elif field_name in {"duration_ms", "cached", "ok", "error"}:
+                existing[field_name] = value
+    if rows and (dropped_internal or merged_duplicates or len(cleaned) != len(rows)):
+        trace.HF_ON and trace.hot(
+            "STREAM-SSE",
+            "sanitized_tools_called input=%d output=%d dropped_internal=%d merged_duplicates=%d",
+            len(rows),
+            len(cleaned),
+            dropped_internal,
+            merged_duplicates,
+        )
+    return cleaned
+
+
+def _sanitize_handoff_tool_metadata(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a handoff row with public ``tools_called`` metadata normalized."""
+
+    cleaned = dict(row)
+    tools = cleaned.get("tools_called")
+    if isinstance(tools, list):
+        public_tools = _sanitize_tools_called_metadata(
+            [dict(tool) for tool in tools if isinstance(tool, Mapping)]
+        )
+        if public_tools:
+            cleaned["tools_called"] = public_tools
+        else:
+            cleaned.pop("tools_called", None)
+    children = cleaned.get("children")
+    if isinstance(children, list):
+        cleaned["children"] = [
+            _sanitize_handoff_tool_metadata(child) if isinstance(child, Mapping) else child
+            for child in children
+        ]
+    return cleaned
+
+
+def _handoff_part_metadata(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Return metadata for a display handoff part.
+
+    Tool calls/results are emitted as explicit ordered parts. Keeping the same
+    rows inside handoff metadata makes the UI render duplicate tools, so handoff
+    parts carry delegation state only.
+    """
+
+    cleaned = _sanitize_handoff_tool_metadata(row)
+    cleaned.pop("tools_called", None)
+    children = cleaned.get("children")
+    if isinstance(children, list):
+        display_children: list[Any] = []
+        for child in children:
+            if isinstance(child, Mapping):
+                child_clean = _handoff_part_metadata(child)
+                display_children.append(child_clean)
+            else:
+                display_children.append(child)
+        cleaned["children"] = display_children
+    return cleaned

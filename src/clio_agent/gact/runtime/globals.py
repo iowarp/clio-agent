@@ -902,3 +902,22 @@ def _not_implemented(capability: str) -> ErrorEnvelope:
             recoverable=False,
         )
     )
+
+
+def _cancelled_error_info(
+    sid: str,
+    *,
+    execution_cancellation: str,
+    executor_work_may_continue: bool,
+) -> "ErrorInfo":
+    """Return the structured ``ErrorInfo`` for a client-cancelled turn."""
+    return ErrorInfo(
+        error="cancelled",
+        message="turn cancelled by client",
+        details={
+            "session_id": sid,
+            "execution_cancellation": execution_cancellation,
+            "executor_work_may_continue": executor_work_may_continue,
+        },
+        recoverable=True,
+    )
