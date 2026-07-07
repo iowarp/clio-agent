@@ -33,7 +33,6 @@ import hashlib
 import importlib.util
 import json
 import logging
-import os
 import sys
 import threading
 import traceback
@@ -484,15 +483,21 @@ def build_hook_registry() -> HookRegistry:
     ``fire()``, ``count()``, and ``metadata()`` methods.
     """
 
-    backend = os.environ.get("CLIO_HOOKS_BACKEND", "local_python").strip().lower()
+    backend = (
+        conf.resolve("hooks.backend", env="CLIO_HOOKS_BACKEND", default="local_python", cast=conf.as_str)
+        .strip()
+        .lower()
+    )
     if backend in {"", "local", "local_python", "python", "file", "filesystem"}:
-        raw_dir = os.environ.get("CLIO_HOOKS_DIR", "").strip()
+        raw_dir = conf.resolve("hooks.dir", env="CLIO_HOOKS_DIR", default="", cast=conf.as_str).strip()
         hooks_dir = Path(raw_dir).expanduser() if raw_dir else None
         return HookRegistry(hooks_dir=hooks_dir)
     if backend in {"none", "off", "disabled"}:
         return DisabledHookRegistry()
     if backend in {"factory", "python_factory", "custom"}:
-        factory_path = os.environ.get("CLIO_HOOKS_FACTORY", "").strip()
+        factory_path = conf.resolve(
+            "hooks.factory", env="CLIO_HOOKS_FACTORY", default="", cast=conf.as_str
+        ).strip()
         if not factory_path:
             raise ValueError("CLIO_HOOKS_FACTORY is required when CLIO_HOOKS_BACKEND=factory")
         factory = _load_factory(factory_path)

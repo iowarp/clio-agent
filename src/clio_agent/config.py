@@ -1282,6 +1282,26 @@ def _resolve_lm_studio_model_if_needed(config: LMProviderConfig) -> None:
         config.model, _ = select_models_for_agents(models)
 
 
+def _thinking_disabled() -> bool:
+    """Whether reasoning ("thinking") is disabled for the active LM.
+
+    Resolved via ``lm.disable_thinking`` / ``CLIO_LM_DISABLE_THINKING``
+    (file → env → default False). Shared by the sampling-kwargs path
+    (``_provider_lm_kwargs``) and the output-discipline prompt injection in
+    ``gact.agents.builders`` so both honour a single knob and one truthy rule.
+    """
+    from clio_agent import conf  # noqa: PLC0415 - keep config.py a leaf module
+
+    return bool(
+        conf.resolve(
+            "lm.disable_thinking",
+            env="CLIO_LM_DISABLE_THINKING",
+            default=False,
+            cast=conf.as_bool,
+        )
+    )
+
+
 def _provider_lm_kwargs(config: LMProviderConfig) -> dict[str, Any]:
     """Return provider-specific LiteLLM kwargs for dspy.LM construction."""
     extras = _thinking_kwargs(config)
@@ -1291,7 +1311,7 @@ def _provider_lm_kwargs(config: LMProviderConfig) -> dict[str, Any]:
     # no tool call). Structured routing does not need chain-of-thought, so disable
     # thinking when CLIO_LM_DISABLE_THINKING is set. enable_thinking=false is honored
     # by Qwen chat templates (verified: 8327 reasoning chars/43s → 0 chars/0.8s).
-    if os.environ.get("CLIO_LM_DISABLE_THINKING", "").strip().lower() in {"1", "true", "yes"}:
+    if _thinking_disabled():
         body = dict(extras.get("extra_body") or {})
         body["chat_template_kwargs"] = {
             **body.get("chat_template_kwargs", {}),
@@ -1323,10 +1343,21 @@ def _provider_lm_kwargs(config: LMProviderConfig) -> dict[str, Any]:
     # stop sequences: generation halts the instant regurgitation starts and the
     # valid leading fields survive. Override with CLIO_LM_STOP_SEQUENCES (||-joined).
     if _reasoning_model_capability(config) and "stop" not in extras:
-        env_stop = os.environ.get("CLIO_LM_STOP_SEQUENCES", "").strip()
+        from clio_agent import conf  # noqa: PLC0415 - keep config.py a leaf module
+
+        # File layer accepts a YAML list; the env override stays ``||``-joined (a
+        # comma is a legal stop token, so csv-splitting would be wrong here).
+        raw_stop = conf.resolve("lm.stop_sequences", env="CLIO_LM_STOP_SEQUENCES", default=None)
+        override_stop: list[str]
+        if isinstance(raw_stop, (list, tuple)):
+            override_stop = [str(s) for s in raw_stop if str(s)]
+        elif raw_stop:
+            override_stop = [s for s in str(raw_stop).split("||") if s]
+        else:
+            override_stop = []
         extras["stop"] = (
-            [s for s in env_stop.split("||") if s]
-            if env_stop
+            override_stop
+            if override_stop
             else [
                 "[[ ## observation",
                 "[[ ## thought_",
@@ -1448,7 +1479,11 @@ def _dump_unparseable_completion(
     directly instead of inferred. Gated by ``CLIO_DUMP_UNPARSEABLE`` (a file path);
     no-op when unset. Never raises.
     """
-    path = os.environ.get("CLIO_DUMP_UNPARSEABLE", "").strip()
+    from clio_agent import conf  # noqa: PLC0415 - keep config.py a leaf module
+
+    path = conf.resolve(
+        "debug.dump_unparseable", env="CLIO_DUMP_UNPARSEABLE", default="", cast=conf.as_str
+    ).strip()
     if not path:
         return
     try:
@@ -1646,13 +1681,13 @@ def _guided_output_enabled() -> bool:
                 cast=conf.as_bool,
             )
         )
-    except Exception:
-        return os.environ.get("CLIO_LM_GUIDED_OUTPUT", "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
+    except Exception:  # noqa: BLE001 - never let config break adapter construction
+        from clio_agent import conf  # noqa: PLC0415
+
+        try:
+            return conf.as_bool(os.environ.get("CLIO_LM_GUIDED_OUTPUT", ""))
+        except ValueError:
+            return False
 
 
 def _live_streaming_enabled() -> bool:
@@ -1688,10 +1723,7 @@ def _live_streaming_enabled() -> bool:
                 cast=conf.as_bool,
             )
         )
-    except Exception:
-        raw = os.environ.get("CLIO_LIVE_STREAMING", "").strip().lower()
-        if raw in {"0", "false", "no", "off"}:
-            return False
+    except Exception:  # noqa: BLE001 - never let config break streaming; default on
         return True
 
 
@@ -1710,11 +1742,16 @@ def _reasoning_model_capability(config: LMProviderConfig) -> bool:
     detection that reliably identifies qwopus/qwen) decides. This is the interim
     home for what tasks #33/#34 move into the model DB.
     """
-    raw = os.environ.get("CLIO_LM_REASONING_MODEL", "").strip().lower()
-    if raw in {"1", "true", "yes", "on"}:
-        return True
-    if raw in {"0", "false", "no", "off"}:
-        return False
+    from clio_agent import conf  # noqa: PLC0415 - keep config.py a leaf module
+
+    # Tri-state: an explicit file/env value forces the flag; absence falls through
+    # to the per-model capability detection below.
+    raw = conf.resolve("lm.reasoning_model", env="CLIO_LM_REASONING_MODEL", default=None)
+    if raw is not None:
+        try:
+            return conf.as_bool(raw)
+        except ValueError:
+            pass
     if bool(getattr(config, "is_reasoning", False)):
         return True
     return _uses_local_reasoning_model_profile(config.provider, config.model)
@@ -1725,11 +1762,15 @@ def _parse_retry_attempts(config: LMProviderConfig) -> int:
     failure. Per-model: reasoning models (temp>0, independent re-draws) benefit;
     greedy/non-reasoning models would just repeat the same bad draw, so 0.
     Override with ``CLIO_LM_PARSE_RETRY_ATTEMPTS``."""
-    raw = os.environ.get("CLIO_LM_PARSE_RETRY_ATTEMPTS", "").strip()
-    if raw:
+    from clio_agent import conf  # noqa: PLC0415 - keep config.py a leaf module
+
+    raw = conf.resolve(
+        "limits.lm_parse_retry_attempts", env="CLIO_LM_PARSE_RETRY_ATTEMPTS", default=None
+    )
+    if raw is not None:
         try:
-            return max(0, int(raw))
-        except ValueError:
+            return max(0, conf.as_int(raw))
+        except (ValueError, TypeError):
             pass
     return 2 if _reasoning_model_capability(config) else 0
 
@@ -1875,11 +1916,14 @@ def create_chat_adapter(config: LMProviderConfig) -> Any:
     if _guided_output_enabled():
         return _strict_guided_json_adapter_cls()()
     use_json_fallback = not is_local_openai_compatible_backend(config)
-    if os.environ.get("CLIO_DISABLE_JSON_ADAPTER_FALLBACK", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-    }:
+    from clio_agent import conf  # noqa: PLC0415 - keep config.py a leaf module
+
+    if conf.resolve(
+        "lm.disable_json_adapter_fallback",
+        env="CLIO_DISABLE_JSON_ADAPTER_FALLBACK",
+        default=False,
+        cast=conf.as_bool,
+    ):
         use_json_fallback = False
     adapter = _lenient_chat_adapter_cls()(use_json_adapter_fallback=use_json_fallback)
     # Per-model bounded re-sample on an unrecoverable parse failure (reasoning

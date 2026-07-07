@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
 import threading
 import time
@@ -1735,11 +1734,9 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             # generate unboundedly (→ truncation / >900s wedge). Tell them to output only
             # the required fields and stop. Env-gated so it rides with CLIO_LM_DISABLE_THINKING
             # and never touches the well-behaved remote models.
-            if os.environ.get("CLIO_LM_DISABLE_THINKING", "").strip().lower() in {
-                "1",
-                "true",
-                "yes",
-            }:
+            from clio_agent.config import _thinking_disabled  # noqa: PLC0415
+
+            if _thinking_disabled():
                 runtime_system_prompt = (
                     runtime_system_prompt
                     + "\n\nOUTPUT DISCIPLINE: Produce ONLY the required output fields, each "

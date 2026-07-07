@@ -16,6 +16,21 @@ of truth and the environment is the fallback used only when a key is absent from
 the file. This is the inverse of the 12-factor "env overrides file" convention,
 and is a deliberate project decision (see the logging/config plan).
 
+**Deliberately NOT resolved through this store** (they stay bare ``os.environ``
+reads on purpose, so a config file cannot silently redirect them):
+
+- *Bootstrap tier* — read before this store (or its file discovery) exists, so a
+  ``resolve`` call here would recurse or read a not-yet-loaded layer:
+  ``CLIO_USER_DIR`` (``clio_agent.paths``; :meth:`ConfigStore._load` imports
+  ``paths``), ``CLIO_ENV_FILE`` / ``CLIO_ENV_FILE_LOADED`` (the dotenv loader in
+  ``clio_agent.config``), and ``XDG_CONFIG_HOME`` (drives the file discovery).
+- *Secret tier* — never committed to a shared config file; env-only by policy:
+  ``CLIO_LM_API_KEY``, ``CLIO_ARGONNE_TOKEN``, ``ALCF_INFERENCE_TOKEN``, and the
+  ``CLIO_CRED_*`` credential vars.
+- *Provider auth-status probes* — presence-of-env checks that drive the auth UI
+  in ``clio_agent.gact.routes.providers`` must reflect the real process env, not
+  a file layer, so they stay env-direct.
+
 Usage::
 
     from clio_agent import conf

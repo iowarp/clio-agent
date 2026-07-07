@@ -159,7 +159,16 @@ class FileAccessPolicy:
 
     @classmethod
     def from_mapping(cls, env: Mapping[str, str]) -> "FileAccessPolicy":
-        """Build policy from an environment-like mapping."""
+        """Build policy from an explicitly-injected environment-like mapping.
+
+        This is the injected-mapping path (used by tests and callers that pass an
+        explicit ``env``); it deliberately does NOT consult the config file layer.
+        The process-default path is :meth:`from_env`, which resolves through
+        ``clio_agent.conf`` (file → env → default). The truthy coercion still
+        routes through ``conf.as_bool`` so there is one truthy rule everywhere.
+        """
+        from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
         roots_raw = env.get("CLIO_ALLOWED_ROOTS", "")
         roots = _coerce_roots(roots_raw) if roots_raw.strip() else _default_allowed_roots()
 
@@ -170,11 +179,10 @@ class FileAccessPolicy:
             else DEFAULT_MAX_FILE_SIZE_BYTES
         )
 
-        allow_symlinks = env.get("CLIO_ALLOW_SYMLINKS", "false").lower() in {
-            "1",
-            "true",
-            "yes",
-        }
+        try:
+            allow_symlinks = conf.as_bool(env.get("CLIO_ALLOW_SYMLINKS", "false"))
+        except ValueError:
+            allow_symlinks = False
         return cls(
             allowed_roots=_with_active_workspace([_resolve_root(root) for root in roots]),
             max_file_size_bytes=max_size,

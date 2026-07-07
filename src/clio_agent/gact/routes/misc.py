@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
@@ -58,7 +57,9 @@ def _sse_wire_tap(sid: str, frame: bytes, event: Event | None = None) -> None:
     same Event objects to all subscribers. Used to get a 1-1 replica of the UI
     stream for ordering/quality debugging. Best-effort: never breaks the feed.
     """
-    path = os.environ.get("CLIO_SSE_WIRE_TAP")
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    path = conf.resolve("debug.sse_wire_tap", env="CLIO_SSE_WIRE_TAP", default="", cast=conf.as_str)
     if path:
         try:
             with open(path, "ab") as fh:
@@ -78,7 +79,9 @@ def _sse_wire_tap(sid: str, frame: bytes, event: Event | None = None) -> None:
         "frame_bytes": len(frame),
         "payload_keys": sorted(event.payload.keys()),
     }
-    event_log = os.environ.get("CLIO_SSE_EVENT_LOG", "").strip()
+    event_log = conf.resolve(
+        "debug.sse_event_log", env="CLIO_SSE_EVENT_LOG", default="", cast=conf.as_str
+    ).strip()
     if event_log:
         try:
             log_path = Path(event_log).expanduser()

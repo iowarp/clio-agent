@@ -77,6 +77,24 @@ if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
 
 
+def _lmstudio_flash_attention_enabled() -> bool:
+    """Whether LM Studio model loads request flash attention (default on).
+
+    Flash attention drastically cuts KV-cache memory; without it a large-context
+    load can wedge LM Studio mid-run (see the load-config comment in the bind
+    route). Opt out via ``lm.lmstudio_flash_attention`` /
+    ``CLIO_LMSTUDIO_FLASH_ATTENTION=0``.
+    """
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    return conf.resolve(
+        "lm.lmstudio_flash_attention",
+        env="CLIO_LMSTUDIO_FLASH_ATTENTION",
+        default=True,
+        cast=conf.as_bool,
+    )
+
+
 def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
     """Register the ``/v1/providers*`` catalog + LM-bind routes on ``app``.
 
@@ -803,10 +821,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                     # 1-token probe -> the no-progress watchdog kills the run).
                     # Enabling it is what makes the shareable local driver survive a
                     # full pipeline. Opt out with CLIO_LMSTUDIO_FLASH_ATTENTION=0.
-                    "flash_attention": os.environ.get("CLIO_LMSTUDIO_FLASH_ATTENTION", "")
-                    .strip()
-                    .lower()
-                    not in {"0", "false", "no", "off"},
+                    "flash_attention": _lmstudio_flash_attention_enabled(),
                     "echo_load_config": True,
                 },
                 timeout=180,

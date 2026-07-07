@@ -216,12 +216,12 @@ def ensure_default_registry_bootstrap(
     blueprint row instead of silently falling back to bundled domain experts.
     """
 
-    if str(os.environ.get(_DEFAULT_BOOTSTRAP_ENV) or "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }:
+    if conf.resolve(
+        "agents.disable_default_registry_bootstrap",
+        env=_DEFAULT_BOOTSTRAP_ENV,
+        default=False,
+        cast=conf.as_bool,
+    ):
         return ""
     home = home or Path.home()
     cwd = cwd or Path(os.getcwd())

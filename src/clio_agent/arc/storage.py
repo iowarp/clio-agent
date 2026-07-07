@@ -255,14 +255,16 @@ def _resolve_runtime_port(config_path: str) -> int:
     order (``$CLIO_SERVER_CONF`` / ``$CHI_SERVER_CONF``, the passed ``config_path``,
     ``~/.clio/clio.yaml``), defaulting to :data:`_DEFAULT_RUNTIME_PORT`.
     """
-    override = os.environ.get("CLIO_CORE_PORT", "").strip()
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    override = conf.resolve("arc.core_port", env="CLIO_CORE_PORT", default="", cast=conf.as_str).strip()
     if override:
         try:
             return int(override)
         except ValueError:
             logger.warning("ignoring non-integer CLIO_CORE_PORT=%r", override)
     candidates = [
-        os.environ.get("CLIO_SERVER_CONF", "").strip(),
+        conf.resolve("arc.server_conf", env="CLIO_SERVER_CONF", default="", cast=conf.as_str).strip(),
         os.environ.get("CHI_SERVER_CONF", "").strip(),
         config_path,
         str(Path.home() / ".clio" / "clio.yaml"),
@@ -937,11 +939,17 @@ def make_arc_store(
     that ARC is no longer on clio-core). ``LocalFSStore`` is used ONLY when ``"local"``
     is selected explicitly (``CLIO_ARC_STORE=local`` or ``backend="local"``).
     """
-    choice = (backend or os.environ.get("CLIO_ARC_STORE", "cte")).strip().lower()
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    choice = (
+        backend or conf.resolve("arc.store", env="CLIO_ARC_STORE", default="cte", cast=conf.as_str)
+    ).strip().lower()
     if choice == "local":
         return LocalFSStore(data_dir)
     if choice == "cte":
-        cfg = config_path or os.environ.get("CLIO_ARC_STORE_CONFIG", "")
+        cfg = config_path or conf.resolve(
+            "arc.store_config", env="CLIO_ARC_STORE_CONFIG", default="", cast=conf.as_str
+        )
         if not cfg:
             # Prefer a per-workspace clio-core config under ``.clio/core`` if present;
             # otherwise seed/use the default DRAM↔disk hierarchy on the OS data dir.

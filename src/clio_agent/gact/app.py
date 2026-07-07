@@ -166,6 +166,16 @@ def _gact_cors_origins() -> list[str]:
     return [origin for origin in raw if origin]
 
 
+def _web_dir() -> str:
+    """Directory of the built web-UI bundle (``paths.web_dir`` / ``CLIO_WEB_DIR``).
+
+    Empty string (the default) means web mode is disabled and the server stays
+    headless/TUI-only. Resolved file → env → default like every other knob.
+    """
+
+    return conf.resolve("paths.web_dir", env="CLIO_WEB_DIR", default="", cast=conf.as_str).strip()
+
+
 def _agent_not_available_error(app: "FastAPI", sid: str) -> "ErrorEnvelope":
     """Return a typed error when no executable CLIO agent is ready for a turn."""
 
@@ -2344,8 +2354,8 @@ def build_app(
     # (history) routing works. The bundle's API calls are same-origin (relative
     # /v1/...), so no CORS/proxy is needed — this is the in-process equivalent of
     # the docker clio-web nginx setup.
-    _web_dir = os.environ.get("CLIO_WEB_DIR", "").strip()
-    if _web_dir and (Path(_web_dir) / "index.html").is_file():
+    web_dir = _web_dir()
+    if web_dir and (Path(web_dir) / "index.html").is_file():
         from fastapi.staticfiles import StaticFiles
         from starlette.responses import FileResponse
 
@@ -2355,10 +2365,10 @@ def build_app(
                     return await super().get_response(path, scope)
                 except StarletteHTTPException as exc:
                     if exc.status_code == 404:
-                        return FileResponse(Path(_web_dir) / "index.html")
+                        return FileResponse(Path(web_dir) / "index.html")
                     raise
 
-        app.mount("/", _SPAStaticFiles(directory=_web_dir, html=True), name="web")
+        app.mount("/", _SPAStaticFiles(directory=web_dir, html=True), name="web")
 
     return app
 

@@ -23,7 +23,6 @@ in turn reaches back into this module through the package namespace at call time
 
 from __future__ import annotations
 
-import os
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -167,12 +166,16 @@ def _agent_definition_is_agent_blueprint(agent_def: "AgentDef") -> bool:
 
 
 def _legacy_native_expert_runtime_enabled() -> bool:
-    return os.environ.get("CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS", "").lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    return bool(
+        conf.resolve(
+            "agents.enable_legacy_native_experts",
+            env="CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS",
+            default=False,
+            cast=conf.as_bool,
+        )
+    )
 
 
 def _agent_definition_uses_blueprint_runtime(agent_def: "AgentDef") -> bool:
