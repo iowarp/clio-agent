@@ -15,6 +15,7 @@ from clio_agent.gact.expert_packs import (
     parse_expert_file,
 )
 from clio_agent.gact.types import AgentDef
+from tests.test_gact.earthscope_schema import EARTHSCOPE_WORKFLOW_STATE_SCHEMA
 
 
 @pytest.fixture()
@@ -266,7 +267,7 @@ def test_delegated_expert_public_prompt_excludes_parent_evidence_and_state() -> 
     )
 
     execution_prompt = _delegated_expert_prompt(row, fallback)
-    public_prompt = _delegated_expert_public_prompt(row, fallback)
+    public_prompt = _delegated_expert_public_prompt(row, fallback, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
 
     assert "Parent evidence available for this delegated task" in execution_prompt
     assert "workflow_state" in execution_prompt
@@ -288,6 +289,7 @@ def test_delegated_expert_public_prompt_strips_clio_output_contract() -> None:
             ),
         },
         "",
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
 
     assert public_prompt == "Discover stations and stage a real CSV."
@@ -306,6 +308,7 @@ def test_delegated_expert_public_prompt_strips_workflow_state_orphans() -> None:
             ),
         },
         "",
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
     child_prompt = _delegated_expert_public_prompt(
         {
@@ -316,6 +319,7 @@ def test_delegated_expert_public_prompt_strips_workflow_state_orphans() -> None:
             ),
         },
         "",
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
     middle_prompt = _delegated_expert_public_prompt(
         {
@@ -327,6 +331,7 @@ def test_delegated_expert_public_prompt_strips_workflow_state_orphans() -> None:
             ),
         },
         "",
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
 
     assert (
@@ -357,6 +362,7 @@ def test_delegated_expert_public_prompt_strips_structured_state_field_mentions()
             ),
         },
         "",
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
 
     assert (
@@ -374,7 +380,7 @@ def test_public_transcript_text_strips_clio_contract_mentions() -> None:
         "guide the next hop. Continue with data discovery."
     )
 
-    cleaned = _clean_public_transcript_text(text)
+    cleaned = _clean_public_transcript_text(text, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
 
     assert cleaned == "Resolve the region from tool evidence. Continue with data discovery."
     assert "workflow_state" not in cleaned
@@ -391,7 +397,7 @@ def test_public_transcript_text_strips_structured_state_field_mentions() -> None
         "I have no tools and cannot fabricate station facts."
     )
 
-    cleaned = _clean_public_transcript_text(text)
+    cleaned = _clean_public_transcript_text(text, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
 
     assert (
         cleaned == "The parent has resolved the geospatial region. "
@@ -411,7 +417,7 @@ def test_public_transcript_text_strips_parenthesized_state_field_mentions() -> N
         "2. earthscope_station_catalog will rank nearby stations\n"
     )
 
-    cleaned = _clean_public_transcript_text(text)
+    cleaned = _clean_public_transcript_text(text, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
 
     assert "acquisition.metadata_path" not in cleaned
     assert "stage the catalog" in cleaned
@@ -428,7 +434,7 @@ def test_public_transcript_text_strips_return_state_leaks() -> None:
         '{"workflow_state": {"acquisition": {"analysis_ready": false}}}'
     )
 
-    cleaned = _clean_public_transcript_text(text)
+    cleaned = _clean_public_transcript_text(text, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
 
     assert cleaned == "The staged catalog exists and can be used for station ranking."
     assert "workflow_state" not in cleaned
@@ -460,13 +466,13 @@ def test_public_transcript_text_strips_leaked_dspy_field_markers() -> None:
         ),
     ]
     for raw, expected in cases:
-        cleaned = _clean_public_transcript_text(raw)
+        cleaned = _clean_public_transcript_text(raw, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
         assert "[[ ##" not in cleaned
         assert cleaned == expected
 
     # ordinary double-brackets and real emphasis are NOT markers -- leave them be.
     prose = "This is **bold** with [[ brackets ]] that are fine."
-    assert _clean_public_transcript_text(prose) == prose
+    assert _clean_public_transcript_text(prose, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA) == prose
 
 
 def test_public_transcript_text_strips_state_assignment_clause_from_live_thought() -> None:
@@ -481,7 +487,7 @@ def test_public_transcript_text_strips_state_assignment_clause_from_live_thought
         "be set as acquisition.metadata_path in the final workflow_state."
     )
 
-    cleaned = _clean_public_transcript_text(text)
+    cleaned = _clean_public_transcript_text(text, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
 
     assert cleaned == (
         "STEP 3: Running the shell_bash clean command to normalize the raw "
@@ -505,7 +511,7 @@ def test_public_transcript_text_strips_blocked_metadata_path_sentence() -> None:
         "advancing to the ranking and station resolution phase."
     )
 
-    cleaned = _clean_public_transcript_text(text)
+    cleaned = _clean_public_transcript_text(text, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
 
     assert cleaned == (
         "STEP 3 (shell_bash cleanup) BLOCKED by permission gate: The mandatory "
@@ -534,7 +540,7 @@ def test_public_transcript_text_strips_bare_state_field_paragraphs() -> None:
         "The correct action is to surface this blocker and stop the data branch."
     )
 
-    cleaned = _clean_public_transcript_text(text)
+    cleaned = _clean_public_transcript_text(text, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
 
     assert "metadata_path" not in cleaned
     assert "analysis_ready" not in cleaned
@@ -557,7 +563,7 @@ def test_delegated_expert_public_prompt_strips_numbered_state_update_clause() ->
         "region; rank and return the filtered station list."
     )
 
-    cleaned = _clean_public_delegation_prompt(text)
+    cleaned = _clean_public_delegation_prompt(text, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
 
     assert "acquisition.metadata_path" not in cleaned
     assert "workflow_state" not in cleaned
@@ -578,7 +584,7 @@ def test_delegated_expert_public_prompt_strips_state_path_clause_after_decimal_c
         "candidate station IDs ordered by spatial coverage and data freshness."
     )
 
-    cleaned = _clean_public_delegation_prompt(text)
+    cleaned = _clean_public_delegation_prompt(text, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
 
     assert cleaned == (
         "Filter and rank EarthScope GNSS stations within the LA region "
@@ -600,7 +606,7 @@ def test_public_transcript_text_strips_workflow_state_code_fence() -> None:
         "```"
     )
 
-    cleaned = _clean_public_transcript_text(text)
+    cleaned = _clean_public_transcript_text(text, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
 
     assert cleaned == (
         'The geo_geocode tool successfully resolved "Los Angeles" to an administrative '

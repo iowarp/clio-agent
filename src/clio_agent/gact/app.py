@@ -645,10 +645,8 @@ from clio_agent.gact.workflow_state.merge import (  # noqa: E402,F401
     _merge_workflow_state_mapping,
     _normalize_pathlike_text,
     _normalize_workflow_state_scalar,
-    _normalize_workflow_state_section,
     _trajectory_key_index,
     _value_has_semantic_content,
-    _workflow_status_rank,
 )
 
 

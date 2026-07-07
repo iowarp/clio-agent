@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from clio_agent.gact.workflow_state.schema import WorkflowStateSchema
 
 
 def _merge_inferred_workflow_state(
@@ -71,108 +73,19 @@ def _normalize_workflow_state_scalar(key: str, value: Any) -> Any:
     return value
 
 
-def _workflow_status_rank(section: str, value: Mapping[str, Any]) -> int:
-    """Return semantic progress rank for workflow-state merge precedence."""
+def _merge_workflow_state_mapping(
+    target: dict[str, Any],
+    incoming: Mapping[str, Any],
+    *,
+    schema: "WorkflowStateSchema",
+) -> None:
+    """Merge typed workflow state while preserving progressed semantic state.
 
-    status = str(value.get("status") or "").strip().lower()
-    if section == "acquisition":
-        local_path = str(value.get("local_path") or value.get("path") or "").strip()
-        if (
-            status == "staged"
-            and value.get("analysis_ready") is True
-            and local_path.startswith(("/", "~"))
-            and not Path(local_path).expanduser().is_file()
-        ):
-            return 1
-        if status == "staged" and value.get("analysis_ready") is True:
-            return 5
-        if status == "staged":
-            return 4
-        if status == "metadata_only":
-            return 3
-        if status in {"blocked", "missing"}:
-            return 2
-        if status:
-            return 1
-        return 0
-    if section == "resource_candidate":
-        if status == "selected":
-            return 4
-        if status == "metadata_only":
-            return 3
-        if status in {"missing", "blocked"}:
-            return 2
-        if status:
-            return 1
-        return 0
-    if section in {"profile", "visualization", "artifact", "network_analysis"}:
-        if status in {"complete", "completed", "created", "plotted"}:
-            return 4
-        if status in {"blocked", "missing"}:
-            return 2
-        if status:
-            return 1
-        return 0
-    if section == "catalog":
-        if status in {"candidates_found", "metadata_found"}:
-            return 3
-        if status == "search_incomplete":
-            return 2
-        if status in {"no_candidates", "blocked"}:
-            return 2
-        if status:
-            return 1
-        return 0
-    if section == "resource_discovery":
-        if status in {"resource_found", "candidate_found"}:
-            return 4
-        if status == "search_required":
-            return 3
-        if status in {"search_exhausted", "blocked"}:
-            return 2
-        if status:
-            return 1
-        return 0
-    return 0
-
-
-def _normalize_workflow_state_section(section: str, value: Mapping[str, Any]) -> dict[str, Any]:
-    normalized = {str(k): _normalize_workflow_state_scalar(str(k), v) for k, v in value.items()}
-    if section != "acquisition":
-        return normalized
-    status = str(normalized.get("status") or "").strip().lower()
-    local_path = str(normalized.get("local_path") or normalized.get("path") or "").strip()
-    metadata_path = str(normalized.get("metadata_path") or "").strip()
-    # A metadata/catalog file is not an analysis-ready data resource. When the
-    # analysis-ready local_path is the SAME file the expert recorded as the
-    # discovery metadata_path, the expert reused the catalog instead of staging a
-    # distinct data resource -- so it cannot be analysis-ready. This compares two
-    # typed fields the schema already carries; it hardcodes no domain/file names.
-    reused_metadata_as_data = bool(local_path) and local_path == metadata_path
-    if normalized.get("analysis_ready") is True and (
-        status != "staged" or not local_path or reused_metadata_as_data
-    ):
-        normalized["analysis_ready"] = False
-        if status in {"blocked", "missing", "metadata_only"}:
-            normalized["status"] = status
-        elif reused_metadata_as_data:
-            normalized["status"] = "metadata_only"
-        else:
-            normalized["status"] = "candidate_found"
-        normalized.setdefault(
-            "blocker",
-            "analysis-ready acquisition requires a staged data resource distinct "
-            "from the discovery metadata catalog"
-            if reused_metadata_as_data
-            else "analysis-ready acquisition requires a staged local CSV path",
-        )
-    elif normalized.get("analysis_ready") is True and status == "staged" and local_path:
-        normalized.pop("blocker", None)
-    return normalized
-
-
-def _merge_workflow_state_mapping(target: dict[str, Any], incoming: Mapping[str, Any]) -> None:
-    """Merge typed workflow state while preserving progressed semantic state."""
+    Precedence, normalization, and sticky-field rules are all declared by the
+    pack ``schema`` (rank / normalize_section / sticky_true_fields_for); this
+    function contributes only the generic merge mechanics (provenance flattening,
+    higher-rank-wins, non-empty overwrite).
+    """
 
     for raw_key, raw_value in incoming.items():
         key = str(raw_key)
@@ -183,23 +96,23 @@ def _merge_workflow_state_mapping(target: dict[str, Any], incoming: Mapping[str,
                 if str(provenance_key) != "provenance" and isinstance(provenance_value, Mapping)
             }
             if provenance_state:
-                _merge_workflow_state_mapping(target, provenance_state)
+                _merge_workflow_state_mapping(target, provenance_state, schema=schema)
         if isinstance(raw_value, Mapping):
-            incoming_value = _normalize_workflow_state_section(key, raw_value)
+            incoming_value = schema.normalize_section(key, raw_value)
             current = target.get(key)
             if isinstance(current, Mapping):
-                incoming_rank = _workflow_status_rank(key, incoming_value)
-                current_rank = _workflow_status_rank(key, current)
+                incoming_rank = schema.rank(key, incoming_value)
+                current_rank = schema.rank(key, current)
                 if incoming_rank < current_rank:
                     continue
                 merged = dict(current)
-                if (
-                    key == "resource_candidate"
-                    and current.get("geographically_grounded") is True
-                    and incoming_value.get("geographically_grounded") is False
-                ):
-                    incoming_value = dict(incoming_value)
-                    incoming_value.pop("geographically_grounded", None)
+                stripped_incoming = False
+                for sticky_field in schema.sticky_true_fields_for(key):
+                    if current.get(sticky_field) is True and incoming_value.get(sticky_field) is False:
+                        if not stripped_incoming:
+                            incoming_value = dict(incoming_value)
+                            stripped_incoming = True
+                        incoming_value.pop(sticky_field, None)
                 _merge_non_empty_mapping(merged, incoming_value)
                 target[key] = merged
             else:

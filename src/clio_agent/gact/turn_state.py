@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from clio_agent.gact.events import EventBus
     from clio_agent.gact.transcript import TurnTranscript
     from clio_agent.gact.types import AgentDef, ErrorInfo, Message, Session
+    from clio_agent.gact.workflow_state.schema import WorkflowStateSchema
 
 
 @dataclass(kw_only=True)
@@ -65,6 +66,10 @@ class TurnState:
     # --- Turn-scoped infra (set once, early, in the linear body) ---
     transcript: "TurnTranscript" = field(init=False)
     turn_cancel_event: "threading.Event" = field(init=False)
+    # #767 Phase C: the turn's active pack workflow_state schema, resolved once
+    # (the single resolver seam) in the linear body just before the transcript
+    # opens; every delegation/grounding/scrub seam reads it off ``state``.
+    workflow_schema: "WorkflowStateSchema" = field(init=False)
     # #767 Phase B: the no-progress watchdog reads these off ``state`` — the
     # progress-timeout window + poll cadence are derived by
     # :func:`~clio_agent.gact.turn_watchdog.make_turn_cancel_event`, and

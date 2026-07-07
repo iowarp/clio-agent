@@ -1236,6 +1236,9 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
 
     import dspy  # noqa: PLC0415
 
+    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+        _active_workflow_state_schema,
+    )
     from clio_agent.gact.app import (  # noqa: PLC0415
         _append_session_workflow_state_context,
         _blueprint_runner_for_agent,
@@ -1253,6 +1256,7 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
         if child.parent_id != parent.id:
             raise RuntimeError(f"{child.id!r} is not a declared child of {parent.id!r}")
         app_state = getattr(app, "state", None)
+        schema = _active_workflow_state_schema(app, session_id)
 
         _emit_semantic_event(
             app,
@@ -1281,6 +1285,7 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
             app,
             session_id,
             question,
+            schema=schema,
         )
         try:
             with _tool_session_context(session_id):
@@ -1322,11 +1327,11 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
         # Seed from the child's typed workflow_state output field (structural twin
         # of the removed prose append); merge tool-row state. State rides the
         # payload's ``workflow_state`` Mapping below, NOT the output text.
-        workflow_state = _prediction_workflow_state(pred)
+        workflow_state = _prediction_workflow_state(pred, schema=schema)
         for tool_row in tools_called:
             row_state = tool_row.get("workflow_state")
             if isinstance(row_state, Mapping):
-                _merge_workflow_state_mapping(workflow_state, row_state)
+                _merge_workflow_state_mapping(workflow_state, row_state, schema=schema)
         payload = {
             "agent_id": child.id,
             "parent_id": parent.id,
@@ -1706,8 +1711,13 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 trace.hot("FWD-A", "%s child-context+seed-done", getattr(self.agent_def, "id", "?"))
             blueprint_tool_rows: list[dict[str, Any]] = []
             if self.kind == "react":
+                from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+                    _active_workflow_state_schema,
+                )
+
                 prior_workflow_state = _workflow_state_from_outputs(
-                    [question, runtime_system_prompt]
+                    [question, runtime_system_prompt],
+                    schema=_active_workflow_state_schema(active_app, active_session_id),
                 )
                 if trace.HF_ON:
                     trace.hot(

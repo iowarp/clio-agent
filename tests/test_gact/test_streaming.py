@@ -25,6 +25,7 @@ from clio_agent.gact.app import (
     build_app,
 )
 from clio_agent.gact.types import AgentDef
+from tests.test_gact.earthscope_schema import EARTHSCOPE_WORKFLOW_STATE_SCHEMA
 
 
 @dataclass
@@ -989,12 +990,12 @@ def test_streamed_answer_is_cleaned_once_whole_not_per_chunk(
         "persisted. Coverage exists in the region.",
     ]
     sub_full = "".join(sub_chunks)
-    sub_whole = _clean_public_transcript_text(sub_full, preserve_whitespace=True)
+    sub_whole = _clean_public_transcript_text(sub_full, preserve_whitespace=True, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
 
     def _per_chunk(cs: list[str]) -> str:
         out: list[str] = []
         for c in cs:
-            t = _clean_public_transcript_text(c, preserve_whitespace=True)
+            t = _clean_public_transcript_text(c, preserve_whitespace=True, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
             if t:
                 out.append(t)
         return "".join(out)

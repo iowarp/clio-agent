@@ -334,6 +334,11 @@ def parse_agent_blueprint_root(root: Path, *, scope: str) -> AgentBlueprintDefin
             else {},
             "includes": _list_field(meta, "includes"),
             "blueprint": meta.get("blueprint") if isinstance(meta.get("blueprint"), dict) else {},
+            # Raw pack-declared workflow_state vocabulary (#646/#648, Phase C).
+            # Stamped verbatim (dict / bool / None); the resolver compiles the
+            # Mapping form into a typed WorkflowStateSchema. Slice E validates it
+            # here and disables the blueprint on a malformed declaration.
+            "workflow_state": meta.get("workflow_state"),
             "install": install_metadata
             or (meta.get("install") if isinstance(meta.get("install"), dict) else {}),
             "default_registry": default_registry_metadata()
