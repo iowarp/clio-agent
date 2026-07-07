@@ -91,7 +91,7 @@ def _known_agent_overlay_tool_names(app: FastAPI) -> set[str]:
                 name = str(getattr(tool, "name", "") or "").strip()
                 if name:
                     names.add(name)
-        except Exception:  # noqa: BLE001 - a broken executor must not block validation
+        except Exception:  # noqa: BLE001,S110 - a broken executor must not block validation
             pass
     for server in (getattr(app.state, "external_mcp_servers", {}) or {}).values():
         if not isinstance(server, Mapping):

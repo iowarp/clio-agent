@@ -93,7 +93,7 @@ def _load_agent_blueprint_sources() -> list[dict[str, Any]]:
         return []
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception:  # noqa: BLE001 - unreadable/invalid sources file yields no rows
         return []
     rows = payload.get("sources") if isinstance(payload, dict) else payload
     if not isinstance(rows, list):
@@ -158,7 +158,7 @@ def _refresh_agent_blueprint_source(row: Mapping[str, Any]) -> dict[str, Any]:
                     text=True,
                     stderr=subprocess.DEVNULL,
                 ).strip()
-            except Exception:
+            except Exception:  # noqa: BLE001 - display commit left blank when git rev-parse unavailable
                 refreshed["commit"] = ""
             refreshed["available_blueprints"] = _agent_blueprint_candidates(source_path)
             return refreshed

@@ -95,7 +95,7 @@ def _last_prompt_tokens() -> int:
             pt = int(entries[-1].get("prompt_tokens", 0) or 0) if entries else 0
             if pt > 0:
                 return pt
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001,S110 - cached prompt-token lookup best-effort; falls through
             pass
 
     # 2. Provider didn't report prompt_tokens: count the last call's real messages.
@@ -106,7 +106,7 @@ def _last_prompt_tokens() -> int:
             import litellm  # noqa: PLC0415
 
             return int(litellm.token_counter(model=model, messages=messages))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001,S110 - litellm token_counter optional; returns 0
         pass
     return 0
 
@@ -158,7 +158,7 @@ def _estimate_text_tokens(text: str) -> int:
         model = str(getattr(lm, "model", "") or "")
         if model:
             return int(litellm.token_counter(model=model, text=text))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001,S110 - tokenizer optional; falls back to ~4-chars/token
         pass
     return max(1, len(text) // 4)
 
@@ -185,7 +185,7 @@ def _resolve_expert_context_window(cfg: Any) -> int:
         v = info.get("max_input_tokens") or info.get("max_tokens")
         if v:
             return int(v)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001,S110 - litellm model-info optional; tries the next source
         pass
     try:
         import json  # noqa: PLC0415
@@ -205,6 +205,6 @@ def _resolve_expert_context_window(cfg: Any) -> int:
         v = entry.get("context")
         if v:
             return int(v)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001,S110 - bundled model_limits lookup best-effort; returns 0 (auto-compaction off)
         pass
     return 0

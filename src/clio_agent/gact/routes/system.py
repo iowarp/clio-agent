@@ -258,7 +258,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 lm_timeout=0.5,
             )
             integrations = list(report.integrations)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - surfaced as a degraded doctor row (see comment)
             # No silent fallback (cleanup ground rule): a probe engine failure is
             # surfaced as a structured degraded doctor row, not a bare 200.
             fallback = IntegrationStatus(
@@ -280,7 +280,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
         if handshake is not None:
             try:
                 enriched = handshake.to_integration_status()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - enrichment failure surfaced to logs/trace (see comment)
                 # No silent fallback: the enrichment is additive, but a failure to build
                 # it must reach the logs/trace rather than vanish (mirrors the sibling
                 # doctor-probe failure branch above).

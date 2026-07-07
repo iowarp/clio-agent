@@ -1490,7 +1490,7 @@ def _build_fanout_tool(base_agent: Any, parent: "AgentDef", children: list["Agen
                         "structured": _prediction_structured_metadata(pred),
                     }
                 )
-            except Exception as exc:  # pragma: no cover - exercised by state-space tests
+            except Exception as exc:  # pragma: no cover - exercised by state-space tests  # noqa: BLE001 - failure surfaced as status=partial_failure in results
                 status = "partial_failure"
                 results.append(
                     {
@@ -1606,7 +1606,7 @@ def _emit_blueprint_llm_failure(agent_def: "AgentDef", kind: str, exc: BaseExcep
             provider=_llm_provider_payload(app, agent_id),
             payload=payload,
         )
-    except Exception:  # noqa: BLE001 - capture must never break the repair flow
+    except Exception:  # noqa: BLE001,S110 - capture must never break the repair flow
         pass
 
 

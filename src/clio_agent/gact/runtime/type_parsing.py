@@ -77,7 +77,7 @@ def _is_optional_annotation(annotation: Any) -> bool:
         import types as _types  # noqa: PLC0415
 
         union_types = (typing.Union, _types.UnionType)
-    except Exception:  # noqa: BLE001 - older interpreters
+    except Exception:  # noqa: BLE001,S110 - older interpreters
         pass
     return origin in union_types and type(None) in typing.get_args(annotation)
 

@@ -282,7 +282,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
 
             policy = FileAccessPolicy.from_mapping(os.environ)
             allow_symlinks = policy.allow_symlinks
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - failure recorded via trace.event
             trace.event(
                 "WORKSPACE",
                 "file policy unavailable for %s (%s); symlinks stay excluded",
@@ -431,7 +431,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         root = Path(ws.root_path or os.getcwd()).expanduser().resolve()
         try:
             target = (root / path).resolve()
-        except Exception:
+        except Exception:  # noqa: BLE001 - path resolution failure surfaced as HTTP 400
             raise HTTPException(
                 status_code=400,
                 detail=ErrorEnvelope(
@@ -473,7 +473,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
 
             policy = FileAccessPolicy.from_mapping(os.environ)
             max_bytes = policy.max_file_size_bytes
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - failure recorded via trace.event
             trace.event(
                 "WORKSPACE",
                 "file policy unavailable reading %s (%s); using 1 GiB size cap",

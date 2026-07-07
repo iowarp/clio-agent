@@ -627,7 +627,7 @@ def _config_is_reasoning_model(provider_config: Any) -> bool:
         from clio_agent.config import _reasoning_model_capability  # noqa: PLC0415
 
         return bool(_reasoning_model_capability(provider_config))
-    except Exception:
+    except Exception:  # noqa: BLE001 - reasoning-capability probe falls back to the provider flag
         return bool(getattr(provider_config, "is_reasoning", False))
 
 
@@ -700,7 +700,7 @@ async def _try_streamed_forward(
         if _guided_output_enabled():
             _record_stream_fallback(app, sid, "stream_disabled_guided_output")
             return None
-    except Exception:  # noqa: BLE001 - never let this gate break the turn
+    except Exception:  # noqa: BLE001,S110 - never let this gate break the turn
         pass
 
     # Some reasoning-model + provider combos stream the answer entirely on the
@@ -715,7 +715,7 @@ async def _try_streamed_forward(
         if not _live_streaming_enabled():
             _record_stream_fallback(app, sid, "stream_disabled_live_streaming")
             return None
-    except Exception:  # noqa: BLE001 - never let this gate break the turn
+    except Exception:  # noqa: BLE001,S110 - never let this gate break the turn
         pass
 
     try:
@@ -724,7 +724,7 @@ async def _try_streamed_forward(
         from dspy.streaming.streamify import streamify
         from dspy.streaming.streaming_listener import StreamListener  # noqa: PLC0415
         from litellm.types.utils import ModelResponseStream  # noqa: F401
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - recorded via _record_stream_fallback (stream deps unavailable)
         _record_stream_fallback(
             app,
             sid,
@@ -761,7 +761,7 @@ async def _try_streamed_forward(
             stream_listeners=listeners,
             is_async_program=has_async_forward,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - stream-bind failure falls back to the canonical sync path (recorded)
         # Stream binding is best-effort. If DSPy cannot attach the
         # listener to this program shape, let the canonical sync path
         # run and surface any real agent/provider error from there.
@@ -907,7 +907,7 @@ async def _try_streamed_forward(
                                 payload={"stream_source": "reasoning"},
                             )
                         )
-                    except Exception:  # noqa: BLE001 - heartbeat is best-effort
+                    except Exception:  # noqa: BLE001,S110 - heartbeat is best-effort
                         pass
     except Exception as exc:
         detail = _describe_stream_exc(exc)
@@ -975,7 +975,7 @@ def _chunk_reasoning_text(piece: Any) -> str:
                 )
                 if reasoning:
                     return str(reasoning)
-    except Exception:  # noqa: BLE001 - best-effort extraction
+    except Exception:  # noqa: BLE001,S110 - best-effort extraction
         pass
     return ""
 
@@ -999,7 +999,7 @@ def _chunk_text(piece: Any) -> str:
                 content = getattr(delta, "content", None)
                 if content:
                     return str(content)
-    except Exception:
+    except Exception:  # noqa: BLE001,S110 - content extraction best-effort; falls through
         pass
     if isinstance(piece, dict):
         # OpenAI-style dict.

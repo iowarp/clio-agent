@@ -246,7 +246,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                         "tags": _tool_tags_for_catalog(tool_id),
                         "visible_to": _tool_visible_to_for_catalog(tool_id),
                     }
-        except Exception:
+        except Exception:  # noqa: BLE001,S110 - catalog enrichment best-effort; partial rows returned
             pass
 
         # Fall back to installed third-party MCP servers — heavier
@@ -255,7 +255,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
         if installed:
             try:
                 from fastmcp import Client  # noqa: PLC0415
-            except Exception:
+            except Exception:  # noqa: BLE001 - optional fastmcp client; None when unavailable
                 Client = None  # type: ignore
             for sid, info in installed.items():
                 for declared in info.get("tools") or []:
@@ -307,7 +307,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                                 "tags": _tool_tags_for_catalog(tool_id),
                                 "visible_to": _tool_visible_to_for_catalog(tool_id),
                             }
-                except Exception:
+                except Exception:  # noqa: BLE001 - per-server catalog probe failure skipped
                     continue
 
         raise HTTPException(

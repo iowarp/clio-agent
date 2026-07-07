@@ -189,7 +189,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                             "enabled": False,
                         }
                     )
-        except Exception:
+        except Exception:  # noqa: BLE001,S110 - row assembly best-effort; partial rows returned
             pass
         return rows
 
@@ -209,7 +209,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                 servers = blueprint.metadata.get("mcp_servers")
                 if isinstance(servers, Mapping) and servers:
                     pack_servers[blueprint.id] = {str(k): v for k, v in servers.items()}
-        except Exception:  # noqa: BLE001 - pack discovery is best-effort
+        except Exception:  # noqa: BLE001,S110 - pack discovery is best-effort
             pass
         return load_mcp_servers(cwd=cwd, pack_servers=pack_servers)
 
@@ -800,7 +800,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
             from clio_agent.tools.gateway import list_capabilities
 
             caps = list_capabilities()
-        except Exception:
+        except Exception:  # noqa: BLE001 - gateway capabilities optional; empty on failure
             return []
         out = []
         for tool in caps:

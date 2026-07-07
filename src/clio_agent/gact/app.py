@@ -968,7 +968,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         t.cancel()
         try:
             await t
-        except (asyncio.CancelledError, Exception):
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001,S110 - shutdown task drain; cancellation/errors ignored on teardown
             pass
     try:
         loop = asyncio.get_running_loop()
@@ -976,7 +976,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             None,
             lambda: _release_owned_lm_studio_instance(app, raise_on_error=False),
         )
-    except Exception:
+    except Exception:  # noqa: BLE001,S110 - best-effort LM-Studio instance release on shutdown
         pass
     # Drain + stop the off-loop semantic-trace writer so no events are lost on shutdown.
     _trace_backend = getattr(app.state, "semantic_trace_backend", None)
@@ -984,7 +984,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     if callable(_trace_close):
         try:
             _trace_close()
-        except Exception:  # pragma: no cover - defensive shutdown cleanup
+        except Exception:  # pragma: no cover - defensive shutdown cleanup  # noqa: BLE001,S110 - defensive shutdown cleanup
             pass
     # NOTE: the shared clio-core runtime client is released (last-one-out stop) via the
     # atexit hook registered in CTEStore — NOT here. uvicorn handles SIGTERM by exiting
@@ -1079,7 +1079,7 @@ async def _construct_agent_async(app: "FastAPI") -> None:
     # installed at construction time.
     try:
         _install_tool_runtime_hooks(app)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - logged reason=tool_runtime_hooks_install_failed + state flag set (see below)
         # HIGHEST-SEVERITY silent fallback (#772): a failed install leaves the
         # server running WITHOUT a permission gate or tool observer — tools would
         # execute ungated and unobserved. Never swallow: flip the flag, capture the
@@ -1420,7 +1420,7 @@ def build_app(
     if agent is not None:
         try:
             _install_tool_runtime_hooks(app)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - logged reason=tool_runtime_hooks_install_failed + state flag set (see below)
             # HIGHEST-SEVERITY silent fallback (#772): see the sibling handler in
             # _finish_agent_init. A swallowed install failure = an ungated,
             # unobserved tool surface. Fail loud: flip the flag, capture the
@@ -1466,7 +1466,7 @@ def build_app(
             app.state.runtime_hook_registry_metadata = (
                 _current_registry.metadata() if hasattr(_current_registry, "metadata") else {}
             )
-    except Exception:  # pragma: no cover - defensive
+    except Exception:  # pragma: no cover - defensive  # noqa: BLE001 - registry-metadata unavailability recorded in app.state
         app.state.runtime_hook_registry_metadata = {
             "backend": "unavailable",
             "enabled": False,
@@ -1728,7 +1728,7 @@ def build_app(
                     )
                     or "(no enabled experts)"
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001,S110 - enabled-experts prompt hint is best-effort; planner proceeds without it
                 pass
             if session_id:
                 pack_id = ""

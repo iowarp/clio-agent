@@ -156,7 +156,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                     and importlib.util.find_spec("globus_sdk") is not None
                     and argonne_auth.check_auth_status()
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 - auth probe failure treated as not-authed
                 authed = False
             return ["oauth"], authed
 
@@ -545,7 +545,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 return preset.model_copy(update=update)
             try:
                 from clio_agent.providers import argonne_auth  # noqa: PLC0415
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - argonne unavailability surfaced in status/status_message
                 update["status"] = "unavailable"
                 update["status_message"] = f"argonne auth unavailable: {exc}"
                 update["is_authenticated"] = False
@@ -753,7 +753,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                     if response.status_code >= 400:
                         return ""
                     payload = response.json()
-                except Exception:
+                except Exception:  # noqa: BLE001 - unparseable instance response yields empty id
                     return ""
 
                 models = payload.get("models")
@@ -832,7 +832,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 )
             try:
                 payload = response.json()
-            except Exception:
+            except Exception:  # noqa: BLE001 - unparseable response body treated as empty payload
                 payload = {}
             instance_id = str(payload.get("instance_id") or "").strip()
             if instance_id:
@@ -862,7 +862,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 auth_exc: Exception | None
                 try:
                     resolved_api_key = _resolve_argonne_runtime_api_key()
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - auth failure captured in auth_exc and surfaced
                     resolved_api_key = ""
                     auth_exc = exc
                 else:
@@ -924,7 +924,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                     force=True,
                 )
                 cfg.apply_handshake(handshake_report, user_set_max_tokens=(req.max_tokens or 0) > 0)
-            except Exception:
+            except Exception:  # noqa: BLE001 - handshake failure recorded as a None report
                 handshake_report = None
             app.state.lm_handshake_report = handshake_report
             await asyncio.get_running_loop().run_in_executor(

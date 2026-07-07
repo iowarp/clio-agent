@@ -64,7 +64,7 @@ class UserAgentStore:
             import json
 
             data = json.loads(self._path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception:  # noqa: BLE001 - unreadable user-agents store ignored
             return
         for row in data.get("agents", []):
             try:
@@ -94,7 +94,7 @@ class UserAgentStore:
                         "metadata": dict(row.get("metadata", {})),
                     }
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 - malformed user-agent row skipped
                 continue
 
     def _flush(self) -> None:

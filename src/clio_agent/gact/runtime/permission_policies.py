@@ -133,7 +133,7 @@ def _load_permission_policies(path: Path | None) -> list[dict[str, Any]]:
         return []
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception:  # noqa: BLE001 - unreadable/invalid policy file yields no policies
         return []
     raw = data.get("policies", []) if isinstance(data, Mapping) else []
     if not isinstance(raw, list):

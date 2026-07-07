@@ -914,7 +914,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             try:
                 msg = Message(**{**m, "session_id": new_sess.id})
                 msg_rows.append(msg)
-            except Exception:
+            except Exception:  # noqa: BLE001 - malformed message row skipped during rewind copy
                 continue
         deps.replace_session_messages(app, new_sess.id, msg_rows)
         context_files: dict[str, dict[str, Any]] = {}

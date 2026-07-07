@@ -522,7 +522,7 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
         parsed = yaml.safe_load(frontmatter) or {}
         if isinstance(parsed, dict):
             return {str(key): value for key, value in parsed.items()}, body
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001,S110 - yaml unavailable/invalid; falls back to the line parser below
         pass
     meta: dict[str, Any] = {}
     cur_key = ""

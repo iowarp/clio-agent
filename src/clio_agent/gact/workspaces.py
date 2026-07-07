@@ -98,7 +98,7 @@ class WorkspaceStore:
             import json
 
             data = json.loads(self._path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception:  # noqa: BLE001 - unreadable workspaces store ignored
             return
         for row in data.get("workspaces", []):
             try:
@@ -106,7 +106,7 @@ class WorkspaceStore:
                     row = {key: value for key, value in row.items() if key != "storage_root"}
                 ws = Workspace(**row)
                 self._workspaces[ws.id] = ws
-            except Exception:
+            except Exception:  # noqa: BLE001 - malformed workspace row skipped
                 continue
 
     def _flush(self) -> None:
