@@ -16,6 +16,7 @@ from __future__ import annotations
 import pytest
 
 from clio_agent import config as cfg
+from clio_agent.lm import io_logging
 from clio_agent.runtime import lm_activity
 
 
@@ -239,8 +240,8 @@ def test_is_transient_provider_error_classifies():
 
 def test_call_retries_transient_then_succeeds(monkeypatch):
     lm = cfg._io_logging_lm_cls()(model="openai/dummy")
-    monkeypatch.setattr(cfg, "_lm_transient_retries", lambda: 2)
-    monkeypatch.setattr(cfg, "_lm_transient_backoff_s", lambda: 0.0)
+    monkeypatch.setattr(io_logging, "_lm_transient_retries", lambda: 2)
+    monkeypatch.setattr(io_logging, "_lm_transient_backoff_s", lambda: 0.0)
 
     calls = {"n": 0}
 
@@ -258,8 +259,8 @@ def test_call_retries_transient_then_succeeds(monkeypatch):
 
 def test_call_does_not_retry_non_transient(monkeypatch):
     lm = cfg._io_logging_lm_cls()(model="openai/dummy")
-    monkeypatch.setattr(cfg, "_lm_transient_retries", lambda: 3)
-    monkeypatch.setattr(cfg, "_lm_transient_backoff_s", lambda: 0.0)
+    monkeypatch.setattr(io_logging, "_lm_transient_retries", lambda: 3)
+    monkeypatch.setattr(io_logging, "_lm_transient_backoff_s", lambda: 0.0)
 
     calls = {"n": 0}
 
@@ -275,8 +276,8 @@ def test_call_does_not_retry_non_transient(monkeypatch):
 
 def test_call_exhausts_transient_retries_then_raises(monkeypatch):
     lm = cfg._io_logging_lm_cls()(model="openai/dummy")
-    monkeypatch.setattr(cfg, "_lm_transient_retries", lambda: 2)
-    monkeypatch.setattr(cfg, "_lm_transient_backoff_s", lambda: 0.0)
+    monkeypatch.setattr(io_logging, "_lm_transient_retries", lambda: 2)
+    monkeypatch.setattr(io_logging, "_lm_transient_backoff_s", lambda: 0.0)
 
     calls = {"n": 0}
 
