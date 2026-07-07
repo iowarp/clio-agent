@@ -50,6 +50,7 @@ from fastapi.responses import JSONResponse
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.events import Event
 from clio_agent.gact.routes._body import NonObjectBodyError, json_body
+from clio_agent.gact.runtime.constants import _installed_clio_agent_version
 from clio_agent.gact.runtime.globals import (
     _active_semantic_turn_id,
     _emit_semantic_event,
@@ -762,7 +763,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                         messages=[arc_summary],
                         routing_decisions=[],
                         metadata={
-                            "clio_agent_version": "0.2.0",
+                            "clio_agent_version": _installed_clio_agent_version(),
                             "arc_enabled": True,
                             "compacted_by": "gact",
                         },

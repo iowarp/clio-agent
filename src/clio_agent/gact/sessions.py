@@ -5,8 +5,8 @@ app owns a small registry of ``Session`` records:
 
 - in-memory dict keyed by session id
 - optional JSON persistence so sessions survive ``clio-agent-gact``
-  restarts (default: ``~/.config/clio-agent/sessions.json``; the path
-  is configurable for tests)
+  restarts (default: ``<cwd>/.clio/agent/sessions.json`` per
+  :func:`_default_store_path`; ``CLIO_SESSIONS_PATH`` overrides the full path)
 
 The registry is thread-safe for the workload we expect (FastAPI
 serves requests concurrently but each request either reads or writes
@@ -210,10 +210,14 @@ class SessionStore:
             return
         self._path.parent.mkdir(parents=True, exist_ok=True)
         payload = {sid: asdict(s) for sid, s in self._sessions.items()}
-        # temp-file + rename = atomic on POSIX so a mid-write crash
-        # can't leave a partial JSON blob on disk.
+        # write+fsync to a temp file, then atomic rename: the fsync forces the
+        # bytes to disk before the rename publishes them, so a mid-write crash
+        # can't leave a partial JSON blob on disk (temp-file + rename is atomic).
         tmp = self._path.with_suffix(self._path.suffix + ".tmp")
-        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True))
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, indent=2, sort_keys=True))
+            fh.flush()
+            os.fsync(fh.fileno())
         os.replace(tmp, self._path)
 
     # ---- CRUD ---------------------------------------------------------

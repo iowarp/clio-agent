@@ -3,14 +3,15 @@
 This module provides the ARCMemory class which serves as the main interface
 for all ARC (Adaptive Retrieval Cache) operations. It integrates:
     - LRUCache for hot data (O(1) access)
-    - BTreeIndex for O(log N) retrieval
-    - msgspec for efficient serialization
-    - Thread-safe operations
+    - BTreeIndex for retrieval index
+    - a pluggable ARCStore backend (clio-core CTE or LocalFS; see storage.py)
+      for durable records, an LSM tree (lsm.py) for write-heavy invocation
+      metrics, and a SegmentStore (segments.py) for the live context plane
+    - msgspec for serialization
 
-Performance Targets:
-    - Cache hit rate > 85%
-    - Retrieval latency < 10ms
-    - Thread-safe concurrent access
+Concurrency: ``ARCMemory._lock`` guards only the in-process hot structures
+(cache, invocation index, counters); it is never held across store or LSM I/O
+(each of those self-locks). See the invariant note at the lock's declaration.
 
 See docs/ARC_MEMORY_LAYER.md for architecture details.
 """
@@ -516,7 +517,6 @@ class ARCMemory:
         Examples:
             >>> stats = arc.get_tool_cache_stats()
             >>> print(f"Tool cache hit rate: {stats['tool_cache_hit_rate']:.2%}")
-            >>> print(f"Target: {stats['target_hit_rate']:.2%}")
         """
         stats = self._cache.stats()
         return {
@@ -524,7 +524,6 @@ class ARCMemory:
             "tool_cache_hits": stats["hits"],
             "tool_cache_misses": stats["misses"],
             "tool_cache_size": stats["size"],
-            "target_hit_rate": 0.50,  # >50% per PLAN.md
         }
 
     def get_lsm_stats(self) -> Dict[str, Any]:
@@ -1002,7 +1001,7 @@ class ARCMemory:
         ONE skip decision (:meth:`_event_skip_reason`) gates the persist; every
         persist/skip is logged via ``runtime.trace`` (HF_ON-guarded ``ARC-EVENTS`` hot
         tag) so a dropped event is one ``CLIO_DEBUG=high`` line. Builds a lean content
-        dict from the SemanticEvent's fields (large text capped), correlated by the
+        dict from the SemanticEvent's fields (stored verbatim, no caps), correlated by the
         event's trajectory span ids, and appends ONE segment under the reserved
         ``_events`` scope. Never rendered into a prompt (own scope + non-working-set
         kind)."""

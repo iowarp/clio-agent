@@ -97,6 +97,25 @@ from clio_agent.tools.mcp_config import load_mcp_servers
 
 logger = logging.getLogger(__name__)
 
+
+def _clio_agent_version() -> str:
+    """Return the installed clio-agent package version.
+
+    Stamped into ARC conversation metadata so persisted records carry the
+    build that wrote them. Falls back to the in-tree ``__version__`` when the
+    distribution metadata is unavailable (e.g. a non-installed source tree).
+    """
+
+    from importlib import metadata  # noqa: PLC0415 - local to keep import list lean
+
+    try:
+        return metadata.version("clio-agent")
+    except metadata.PackageNotFoundError:
+        import clio_agent  # noqa: PLC0415
+
+        return str(getattr(clio_agent, "__version__", "0.0.0"))
+
+
 PLANNER_HIDDEN_TOOL_NAMES = {"fs_read_file", "fs_apply_edit_write"}
 
 # Action kinds the agent loop can execute. Enum validation happens at the
@@ -2686,7 +2705,7 @@ class ClioAgent(dspy.Module):
                 status="active",
                 messages=[user_msg, assistant_msg],
                 routing_decisions=[],
-                metadata={"clio_agent_version": "0.2.0", "arc_enabled": True},
+                metadata={"clio_agent_version": _clio_agent_version(), "arc_enabled": True},
                 storage_tier="warm",
             )
             self.arc.store_conversation(conv)

@@ -1,23 +1,32 @@
-"""IOWarp CTE (Convergent Tiered Environment) storage backend for ARC.
+"""Persistent record backends for ARC.
 
-Integrates ARC Memory with IOWarp's multi-tier storage system for automatic
-data migration across tiers based on access patterns.
+This module defines the storage seam ARC records go through and the two
+concrete backends that implement it. It is the durable tier beneath the
+in-memory hot layer (``LRUCache`` + ``BTreeIndex`` in ``memory.py``); it does
+NOT do access-pattern-driven tier migration -- there is no hot/warm/cold/archive
+mover here.
 
-Architecture:
-    - Hot tier: In-memory cache (handled by LRUCache in memory.py)
-    - Warm tier: SSD/local disk (default for active data)
-    - Cold tier: Network storage/HDF5 (for historical data)
-    - Archive tier: Tape/long-term storage (for old data)
+The seam -- :class:`ARCStore` (a ``Protocol``):
+    ``put(kind, name, data, search_text=...)`` / ``get(kind, name)`` /
+    ``scan(kind, prefix)`` over opaque ``bytes`` keyed by ``(kind, name)``.
+    Any backend that satisfies it plugs in.
 
-Tier Migration Policy:
-    - Hot → Warm: 1 day (handled by LRU cache eviction)
-    - Warm → Cold: 7 days (infrequent access)
-    - Cold → Archive: 30 days (historical data)
+Backends:
+    - :class:`LocalFSStore` -- plain files under ``<data_dir>``: one
+      ``<kind>/<name>.msgpack`` record per key plus a ``<kind>/<name>.search``
+      plain-text companion for the degraded keyword-overlap search. Durable on
+      disk; no external process.
+    - :class:`CTEStore` -- the clio-core CTE (Convergent Tiered Environment)
+      binding, connecting to a shared per-user daemon (connect-or-spawn, stopped
+      at interpreter exit via ``atexit``). Its DRAM tier is the live working set;
+      a file tier (``<user_data_dir>/cte/storage.bin``) backs it. On-disk
+      recovery of the file tier is still WIP, so for guaranteed disk durability
+      today prefer ``CLIO_ARC_STORE=local``.
 
-Graceful Degradation:
-    If IOWarp is unavailable, falls back to local filesystem storage.
-
-See PLAN.md v0.3.0 Task 2 for requirements.
+Backend selection is FAIL-LOUD, not a silent fallback: see :func:`make_arc_store`.
+``"cte"`` is the default; if its binding is absent or fails to init it RAISES --
+it does not quietly degrade to ``LocalFSStore``. ``LocalFSStore`` is used only
+when ``CLIO_ARC_STORE=local`` (or ``backend="local"``) is selected explicitly.
 """
 
 import atexit

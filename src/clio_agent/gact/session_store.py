@@ -354,12 +354,15 @@ def _flush_context_files(app: "FastAPI") -> None:
         return
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    # write+fsync to a temp file, then atomic rename: fsync forces the bytes to
+    # disk before the rename publishes them, so a crash can't leave a partial
+    # ledger behind.
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(
-        json.dumps({"sessions": app.state.context_files}, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
-    tmp.replace(path)
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"sessions": app.state.context_files}, indent=2, sort_keys=True))
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
 
 
 def _delete_session_context_files(app: "FastAPI", session_id: str) -> None:
