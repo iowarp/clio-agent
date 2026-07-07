@@ -438,7 +438,11 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
                 f"PATH for the clio-agent process. source={spec.source or 'unknown'}"
             )
 
-        env: dict[str, str] | None = dict(spec.env) or None
+        # Merge ``os.environ`` under the spec vars whenever we hand the subprocess
+        # an explicit env, so PATH (and the rest of the parent environment) survives.
+        # A bare ``dict(spec.env)`` would give the child ONLY the spec vars and drop
+        # PATH -> anything it execs by name fails with ``os error 2``.
+        env: dict[str, str] | None = {**os.environ, **dict(spec.env)} if spec.env else None
         if cwd:
             # Pin clio-kit's artifacts root to the workspace so staged resources
             # and generated artifacts land in the workspace even when the
