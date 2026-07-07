@@ -56,6 +56,7 @@ from clio_agent.gact.events import Event
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.runtime.globals import _tool_session_context
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
+from clio_agent.tools.execution import notify_tool_observer
 from clio_agent.tools.mcp_config import MCPTransportError, transport_from_spec
 
 if TYPE_CHECKING:
@@ -511,11 +512,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
             tool_observer = getattr(app.state, "pending_tool_observer", None)
             if tool_observer is None:
                 tool_observer = app.state.make_tool_observer()
-            if tool_observer is not None:
-                try:
-                    tool_observer(observer_name, tool_args, "started", None)
-                except Exception:
-                    pass
+            notify_tool_observer(tool_observer, observer_name, tool_args, "started")
             try:
                 async with Client(transport) as client:
                     result = await client.call_tool(tool_name, tool_args)
@@ -528,11 +525,9 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                         }
                     )
             except Exception as exc:  # noqa: BLE001
-                if tool_observer is not None:
-                    try:
-                        tool_observer(observer_name, tool_args, "completed", repr(exc))
-                    except Exception:
-                        pass
+                notify_tool_observer(
+                    tool_observer, observer_name, tool_args, "completed", error=repr(exc)
+                )
                 raise HTTPException(
                     status_code=502,
                     detail=ErrorEnvelope(
@@ -543,19 +538,17 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                         )
                     ).model_dump(exclude_none=True),
                 ) from exc
-            if tool_observer is not None:
-                try:
-                    tool_result_text = "\n".join(str(item.get("text", item)) for item in content)
-                    if not tool_result_text:
-                        data = getattr(result, "data", None)
-                        tool_result_text = (
-                            json.dumps(data, sort_keys=True, default=str)
-                            if isinstance(data, Mapping)
-                            else str(data if data is not None else result)
-                        )
-                    tool_observer(observer_name, tool_args, "completed", None, tool_result_text)
-                except Exception:
-                    pass
+            tool_result_text = "\n".join(str(item.get("text", item)) for item in content)
+            if not tool_result_text:
+                data = getattr(result, "data", None)
+                tool_result_text = (
+                    json.dumps(data, sort_keys=True, default=str)
+                    if isinstance(data, Mapping)
+                    else str(data if data is not None else result)
+                )
+            notify_tool_observer(
+                tool_observer, observer_name, tool_args, "completed", result=tool_result_text
+            )
             return {
                 "server_id": sid,
                 "tool": tool_name,
