@@ -44,7 +44,12 @@ jobs:
       # to ratchet back up to 80% as the new code gets tests.
       # Coverage flags are explicit here on purpose: pyproject addopts is
       # empty so local pytest runs stay lean (iowarp/clio-agent#773).
-      - run: uv run pytest tests/ -m "not integration" --cov=clio_agent --cov-report=term-missing --cov-fail-under=70
+      # --cov-branch measures branch coverage (not just line): the floor is
+      # anchored one point below the measured combined line+branch total
+      # (measured 79% on develop @ 2026-07-07; floor 78) so a genuine
+      # regression fails CI while normal noise does not. Ratchet intent:
+      # raise this toward the 80% target as gact code gains tests (#31/#773).
+      - run: uv run pytest tests/ -m "not integration" --cov=clio_agent --cov-branch --cov-report=term-missing --cov-fail-under=78
 
   flake-hunt:
     # Concurrency / shared-state tests (marked ``@pytest.mark.concurrency``) run
