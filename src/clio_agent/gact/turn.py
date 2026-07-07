@@ -46,6 +46,7 @@ import time
 import uuid
 from collections.abc import Mapping
 from datetime import datetime, timezone
+from functools import partial
 from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.gact import context as _ctx
@@ -132,7 +133,6 @@ from clio_agent.gact.streaming import (
     _extract_tools_called,
     _format_react_trajectory,
     _pop_stream_fallback,
-    _record_live_streamed_field_text,
     _run_dynamic_agent_compat,
     _stream_fallback_payload,
     _StreamingOutputError,
@@ -143,9 +143,13 @@ from clio_agent.gact.tool_observer import (
     _merge_tool_call_rows,
     _tool_calls_from_handoff_rows,
 )
-from clio_agent.gact.transcript import _transcript_text_field
 from clio_agent.gact.turn_nanoagents import spawn_nanoagents
 from clio_agent.gact.turn_state import new_turn_state
+from clio_agent.gact.turn_stream import (
+    bind_live_emitter,
+    emit_chunk,
+    settle_turn_transcript,
+)
 from clio_agent.gact.turn_usage import roll_up_usage
 from clio_agent.gact.types import (
     ErrorInfo,
@@ -162,7 +166,6 @@ from clio_agent.gact.usage import (
 from clio_agent.gact.workflow_state.merge import _merge_workflow_state_mapping
 from clio_agent.runtime import trace
 from clio_agent.runtime.lm_activity import lm_call_in_flight as _lm_call_in_flight
-from clio_agent.runtime.stream_audit import stream_audit
 
 # NOTE (#714): every turn helper above is imported from its true *leaf* owner,
 # not from ``clio_agent.gact.app``. The turn loop originally lived in ``app.py``
@@ -182,23 +185,6 @@ if TYPE_CHECKING:
     from clio_agent.gact.types import AgentDef  # noqa: F401
 
 logger = logging.getLogger(__name__)
-
-
-def _latest_parent_resume_output(parts: list[Part], agent_id: str) -> str:
-    """Return the latest child output already handed back to ``agent_id``."""
-
-    if not agent_id:
-        return ""
-    for part in reversed(parts):
-        if part.type != "expert_handoff" or part.stage != "parent.resumed":
-            continue
-        if part.agent_id != agent_id:
-            continue
-        metadata = part.metadata if isinstance(part.metadata, Mapping) else {}
-        output = str(metadata.get("output") or "").strip()
-        if output:
-            return output
-    return ""
 
 
 def _looks_like_structured_answer(text: str) -> bool:
@@ -860,169 +846,26 @@ async def _run_turn_in_background(
     # as ~10 closure vars + _close_streamed_part + the cross-module boundary
     # hook. The turn loop owns the ledger's LIFECYCLE: opened here, settled on
     # every exit path (success, the #756 finalize error envelope, the ask_user
-    # early return). ``_emit_chunk`` below is now a thin adapter: semantic
+    # early return). :func:`~clio_agent.gact.turn_stream.emit_chunk` (extracted to
+    # turn_stream.py, #767 Phase B Slice 3) is now a thin adapter: semantic
     # lm.token.delta + the parent-resume suppression gate (PR4 retires it) +
     # stream_audit, then one transcript call.
-    from clio_agent.gact.tool_observer import (  # noqa: PLC0415
-        _mirror_transcript_state,
-        _open_turn_transcript,
-    )
+    from clio_agent.gact.tool_observer import _open_turn_transcript  # noqa: PLC0415
 
     state.transcript = _open_turn_transcript(state.app, state.sid, state.turn_id)
     state.suppressed_parent_resume_offsets = {}
-
-    def _record_streamed_field_text(agent: str, field: str, chunk: str) -> None:
-        # Turn-scoped buffer (#757): stamped with THIS turn's id and cleared at
-        # turn end, so the tool observer's thought dedup never matches a
-        # previous turn's streamed text. Retires in PR4 (#767) in favor of
-        # ``transcript.streamed_text``.
-        _record_live_streamed_field_text(state.app, state.sid, state.turn_id, agent, field, chunk)
-
-    def _settle_turn_transcript() -> None:
-        """Retire the turn's ledger: freeze (no-op after finalize), close.
-
-        ``abandon()`` freezes without publishing so late producer ops are
-        rejected + audited instead of silently absorbed into the next turn; on
-        the success path ``transcript.finalize()`` already froze the ledger.
-        Runs on EVERY turn exit path (success, ask_user early return; the #756
-        error envelope settles through ``_settle_failed_finalize``).
-        """
-
-        state.transcript.abandon()
-        state.app.state.turn_transcripts.close(state.sid)
-
-    async def _emit_chunk(
-        text: str,
-        agent_id: Optional[str] = None,
-        field_name: str = "answer",
-    ) -> None:
-        # The generating expert (passed by the LM token tap from its react scope);
-        # falls back to the turn's selected/invocation agent for the chat path.
-        chunk_agent = agent_id or state.active_agent_id or state.invocation_agent_id or "main"
-        stream_field = str(field_name or "answer")
-        is_provider_thinking = stream_field.startswith("provider_thinking:")
-        try:
-            from clio_agent.gact.semantic_events import (  # noqa: PLC0415
-                LM_TOKEN_DELTA,
-                lm_token_delta_payload,
-            )
-
-            _emit_semantic_event(
-                state.app,
-                state.sid,
-                LM_TOKEN_DELTA,
-                turn_id=state.turn_id,
-                trace_id=state.trace_id,
-                status="running",
-                summary="LM token delta.",
-                actor={"agent_id": chunk_agent, "role": "expert"},
-                provider=_llm_provider_payload(state.app, chunk_agent),
-                payload=lm_token_delta_payload(content=text, field=stream_field),
-                # Capture/derive through ARC-as-source without adding a second
-                # served transcript event; message.part.delta remains the UI stream.
-                detail_level="off",
-            )
-        except Exception:  # noqa: BLE001 - transcript streaming must not fail a turn
-            pass
-        if not text:
-            trace.HF_ON and trace.hot(
-                "STREAM-SSE",
-                "ignored_empty_delta agent=%s field=%s",
-                chunk_agent,
-                stream_field,
-            )
-            return
-        resume_output = _latest_parent_resume_output(state.transcript.snapshot(), chunk_agent)
-        if stream_field == "answer" and resume_output:
-            offset = state.suppressed_parent_resume_offsets.get(chunk_agent, 0)
-            after = resume_output[offset + len(text) :]
-            # Only suppress a duplicated chunk when it ends on a WORD BOUNDARY in
-            # the resume output. Otherwise, when the parent's text diverges from
-            # the child's mid-word (e.g. parent paraphrases after "Los An|geles"),
-            # we'd drop "Los An" and emit "geles" — a corrupted mid-word fragment
-            # that also gets stored and breaks reload. Emitting the chunk instead
-            # keeps the text intact (any true full-line duplication is deduped by
-            # the client's dedupeRepeatedText).
-            chunk_ends_word = (not after) or after[:1].isspace() or text[-1:].isspace()
-            if resume_output[offset:].startswith(text) and chunk_ends_word:
-                state.suppressed_parent_resume_offsets[chunk_agent] = offset + len(text)
-                trace.HF_ON and trace.hot(
-                    "STREAM-SSE",
-                    "suppressed_parent_resume_duplicate agent=%s len=%d head=%r",
-                    chunk_agent,
-                    len(text),
-                    text[:80],
-                )
-                stream_audit(
-                    "sse.normalized_emit",
-                    session_id=state.sid,
-                    turn_id=state.turn_id,
-                    agent_id=chunk_agent,
-                    field=stream_field,
-                    normalized_event="turn.text.delta",
-                    chunk_len=len(text),
-                    duplicate_suppressed=True,
-                    duplicate_reason="parent_resume_duplicate",
-                    head=text[:120],
-                    full_text=text[:12000],
-                )
-                return
-        if not is_provider_thinking:
-            _record_streamed_field_text(chunk_agent, stream_field, text)
-        # ONE transcript call: mints the message id on first arrival, opens/
-        # splits parts per (agent, field), cleans the whole buffer once at
-        # close, and publishes message.created/part.added/part.delta — the state
-        # machine that used to live here.
-        state.transcript.append_text_delta(chunk_agent, stream_field, text)
-        if state.transcript.frozen:
-            # Settled turn: the ledger rejected + audited this late chunk.
-            # Do NOT mirror — re-populating the popped legacy dicts would hand
-            # the dead turn's identity to the next turn's carried-state
-            # adoption (the poison class the settle exists to prevent).
-            return
-        _mirror_transcript_state(state.app, state.sid, state.transcript)
-        stream_part_id = state.transcript.current_stream_part_id or ""
-        stream_audit(
-            "sse.normalized_emit",
-            session_id=state.sid,
-            turn_id=state.turn_id,
-            agent_id=chunk_agent,
-            part_id=stream_part_id,
-            field=stream_field,
-            **(
-                {}
-                if is_provider_thinking
-                else {"transcript_field": _transcript_text_field(stream_field)}
-            ),
-            normalized_event=("turn.trace.delta" if is_provider_thinking else "turn.text.delta"),
-            chunk_len=len(text),
-            duplicate_suppressed=False,
-            head=text[:120],
-            full_text=text[:12000],
-        )
-        trace.HF_ON and trace.hot(
-            "STREAM-SSE",
-            "published_delta sid=%s msg=%s part=%s agent=%s field=%s len=%d head=%r",
-            state.sid,
-            state.transcript.message_id,
-            stream_part_id,
-            chunk_agent,
-            stream_field,
-            len(text),
-            text[:80],
-        )
+    # TRICKY #1 (Phase B spec): bind the emitter over ``state`` so its LATE reads
+    # of state.active_agent_id / state.invocation_agent_id see the forward seam's
+    # IN-PLACE mutations. The same bound callable feeds the streamed-forward sites
+    # below, so both paths resolve the generating agent identically.
+    live_emit = partial(emit_chunk, state)
 
     # Unified LM token highway (#693): bind this turn's loop + chat publisher so a
     # blueprint/expert LM call streamed in an executor thread feeds the SAME
-    # _emit_chunk — one streaming path for chat AND blueprint turns, instead of
-    # the old executor drain-and-discard. The executor inherits this binding via
-    # the contextvars.copy_context() at the forward sites below.
-    try:
-        from clio_agent.runtime.lm_activity import set_live_chunk_emitter  # noqa: PLC0415
-
-        set_live_chunk_emitter(asyncio.get_running_loop(), _emit_chunk)
-    except Exception:  # noqa: BLE001 - live-stream wiring is best-effort
-        pass
+    # emitter — one streaming path for chat AND blueprint turns, instead of the
+    # old executor drain-and-discard. The executor inherits this binding via the
+    # contextvars.copy_context() at the forward sites below.
+    bind_live_emitter(state, asyncio.get_running_loop())
 
     # iowarp/clio-agent#8: snapshot LM history before the turn so we
     # can sum every call this turn made. ContextVars don't propagate
@@ -2011,7 +1854,7 @@ async def _run_turn_in_background(
                         state.app,
                         state.enriched_text,
                         state.sid,
-                        _emit_chunk,
+                        live_emit,
                         session_mode=getattr(state.sess, "mode", "chat"),
                         session_edit_mode=getattr(state.sess, "edit_mode", "diff"),
                         agent_override=module,
@@ -2126,7 +1969,7 @@ async def _run_turn_in_background(
                             state.app,
                             state.enriched_text,
                             state.sid,
-                            _emit_chunk,
+                            live_emit,
                             session_mode=getattr(state.sess, "mode", "chat"),
                             session_edit_mode=getattr(state.sess, "edit_mode", "diff"),
                             images=state.native_images,
@@ -2329,7 +2172,7 @@ async def _run_turn_in_background(
             # turn re-adopts them via _open_turn_transcript's carried-state
             # adoption, so the resumed turn continues the same assistant
             # message without a second message.created.
-            _settle_turn_transcript()
+            settle_turn_transcript(state)
             return
         # iowarp/clio-agent#25: data branch reports which execution
         # path it took ("fast" or "expert_loop"). Empty when not
@@ -2607,7 +2450,7 @@ async def _run_turn_in_background(
         # Take the canonical-answer channel FIRST: its exactly-once identity seeds
         # from the pre-append ledger (the still-open streamed answer part included).
         # It covers the responder PLUS the stream tap's attribution fallback label
-        # (``_emit_chunk``'s chat-path default) — the same top-level LM call's
+        # (``emit_chunk``'s chat-path default) — the same top-level LM call's
         # answer can stream under either; a delegated child's channel is NOT
         # covered (its deliverable settled at its LM-call site and must never
         # suppress the responder's distinct final answer).
@@ -2959,7 +2802,7 @@ async def _run_turn_in_background(
         # #767 PR3: the ledger is already frozen by transcript.finalize(); settle
         # retires it from the registry so a late producer op is rejected +
         # audited, never absorbed silently.
-        _settle_turn_transcript()
+        settle_turn_transcript(state)
         getattr(state.app.state, "live_assistant_message_ids", {}).pop(state.sid, None)
         getattr(state.app.state, "live_assistant_parts", {}).pop(state.sid, None)
         getattr(state.app.state, "live_assistant_part_keys", {}).pop(state.sid, None)
