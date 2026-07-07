@@ -5,6 +5,7 @@ Tests the filter -> compact -> enrich -> assemble context compilation pipeline
 with token budgets per tier.
 """
 
+import logging
 import time
 
 from clio_agent.arc.context_compiler import ContextCompiler
@@ -471,3 +472,50 @@ class TestCompileEndToEnd:
         assert isinstance(result, str)
         # Either has tools or "No prior context"
         assert len(result) > 0
+
+
+class TestSectionUnavailableReasons:
+    """A failing ARC section must degrade with a logged reason, not silently (#772)."""
+
+    def test_profiles_section_failure_logs_reason(self, tmp_path, caplog, monkeypatch):
+        """A raising get_session_profiles degrades but the section is logged."""
+        arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+
+        def _boom(*_args, **_kwargs):
+            raise RuntimeError("profiles backend down")
+
+        monkeypatch.setattr(arc, "get_session_profiles", _boom)
+        compiler = ContextCompiler(arc)
+
+        with caplog.at_level(
+            logging.WARNING, logger="clio_agent.arc.context_compiler"
+        ):
+            result = compiler.compile("analyze data", "sess", tier=2)
+
+        # Compilation still returns a usable context string.
+        assert isinstance(result, str)
+        assert len(result) > 0
+        # The missing section was surfaced with a structured reason.
+        assert "context_section_unavailable" in caplog.text
+        assert "profiles" in caplog.text
+
+    def test_procedural_section_failure_logs_reason(
+        self, tmp_path, caplog, monkeypatch
+    ):
+        """A raising get_procedural_memories degrades but the section is logged."""
+        arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+
+        def _boom(*_args, **_kwargs):
+            raise RuntimeError("procedural backend down")
+
+        monkeypatch.setattr(arc, "get_procedural_memories", _boom)
+        compiler = ContextCompiler(arc)
+
+        with caplog.at_level(
+            logging.WARNING, logger="clio_agent.arc.context_compiler"
+        ):
+            result = compiler.compile("analyze data", "sess", tier=2)
+
+        assert isinstance(result, str)
+        assert "context_section_unavailable" in caplog.text
+        assert "procedural" in caplog.text

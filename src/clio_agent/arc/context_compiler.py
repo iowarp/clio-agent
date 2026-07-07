@@ -19,9 +19,12 @@ Token budgets:
 See docs/CLIO_AGENT_ARCHITECTURE.md for context compilation rationale.
 """
 
+import logging
 from typing import Any, Dict, Optional
 
 from clio_agent.arc.memory import ARCMemory
+
+logger = logging.getLogger(__name__)
 
 
 class ContextCompiler:
@@ -144,7 +147,13 @@ class ContextCompiler:
         if callable(live_getter):
             try:
                 live = live_getter(session_id) or {}
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "context compile degraded: reason=context_section_unavailable "
+                    "section=live_conversation session=%s error=%r",
+                    session_id,
+                    exc,
+                )
                 live = {}
 
         if live.get("turns"):
@@ -210,8 +219,13 @@ class ContextCompiler:
                 }
                 for p in profiles
             ]
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "context compile degraded: reason=context_section_unavailable "
+                "section=profiles session=%s error=%r",
+                session_id,
+                exc,
+            )
 
         # Get procedural memories for this session
         try:
@@ -225,8 +239,13 @@ class ContextCompiler:
                 }
                 for m in memories
             ]
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "context compile degraded: reason=context_section_unavailable "
+                "section=procedural session=%s error=%r",
+                session_id,
+                exc,
+            )
 
         return raw
 
@@ -402,7 +421,12 @@ class ContextCompiler:
                     caps = [c for c in caps if tool_visible_to(c["name"], tool_scope)]
             tool_lines = [f"{c['name']}: {c['description']}" for c in caps]
             enriched["tools"] = "\n".join(tool_lines)
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "context compile degraded: reason=context_section_unavailable "
+                "section=tools error=%r",
+                exc,
+            )
             enriched["tools"] = ""
 
         # Extract query keywords

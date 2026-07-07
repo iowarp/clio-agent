@@ -492,8 +492,14 @@ class LSMTree:
 
                 self._sstables.append(sstable)
 
-            except Exception:
-                # Skip corrupted SSTables
+            except Exception as exc:
+                # Skip corrupted SSTables, but surface a structured reason so a
+                # silently-dropped SSTable is observable in the trace.
+                logger.warning(
+                    "arc lsm degraded: reason=sstable_corrupt_skipped path=%s error=%r",
+                    sstable_path,
+                    exc,
+                )
                 continue
 
     def get_stats(self) -> Dict[str, Any]:
