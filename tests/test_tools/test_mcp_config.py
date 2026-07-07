@@ -66,6 +66,26 @@ def test_mapping_form_advanced_env_headers():
     assert http.transport == "http" and http.headers["Authorization"] == "Bearer t"
 
 
+def test_underscore_server_name_is_rejected_with_structured_error():
+    """An ``_`` in a server name breaks ``_namespace_of`` — reject at declaration."""
+    spec = spec_from_declaration("my_server", "uvx clio-kit run x")
+    assert not spec.usable
+    assert any("my_server" in e and "namespace" in e for e in spec.validation_errors)
+
+
+def test_non_lowercase_alnum_server_name_is_rejected():
+    """Names outside ``[a-z0-9-]`` (uppercase, dots) are rejected too."""
+    assert not spec_from_declaration("MyServer", "uvx x").usable
+    assert not spec_from_declaration("srv.one", "uvx x").usable
+    assert not spec_from_declaration("", "uvx x").usable
+
+
+def test_valid_hyphen_and_digit_server_names_stay_usable():
+    """Legal ``[a-z0-9-]`` names remain usable — no false positives."""
+    assert spec_from_declaration("ndp-geo2", "uvx clio-kit run x").usable
+    assert spec_from_declaration("fs", "uvx x").usable
+
+
 def test_specs_from_mapping():
     specs = specs_from_mapping(
         {"ndp": "uvx clio-kit run ndp", "geo": "uvx clio-kit run geo"}, source="pack:p"

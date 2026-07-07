@@ -77,7 +77,11 @@ def _default_store_path() -> Path:
     The directory is created lazily on first write.
     """
 
-    override = os.environ.get("CLIO_SESSIONS_PATH", "").strip()
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    override = conf.resolve(
+        "paths.sessions", env="CLIO_SESSIONS_PATH", default="", cast=conf.as_str
+    ).strip()
     if override:
         return Path(override).expanduser()
     from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load

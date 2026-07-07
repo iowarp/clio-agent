@@ -33,6 +33,29 @@ from typing import Any
 _MEMPROF_STATE: dict[str, Any] = {"prev": None, "n": 0}
 
 
+def _memprof_out() -> str:
+    """Output-file stem for memprof dumps (``debug.memprof_out`` /
+    ``CLIO_DEBUG_MEMPROF_OUT``); empty (the default) means dump to stderr."""
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    return conf.resolve(
+        "debug.memprof_out", env="CLIO_DEBUG_MEMPROF_OUT", default="", cast=conf.as_str
+    ).strip()
+
+
+def _memprof_frames() -> int:
+    """tracemalloc stack depth (``debug.memprof_frames`` /
+    ``CLIO_DEBUG_MEMPROF_FRAMES``, default 20)."""
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    return conf.resolve(
+        "debug.memprof_frames",
+        env="CLIO_DEBUG_MEMPROF_FRAMES",
+        default=20,
+        cast=conf.as_int,
+    )
+
+
 def _memprof_dump(signum: Any, frame: Any) -> None:
     """SIGUSR1 handler (when ``debug.memprof`` is on): dump a tracemalloc
     snapshot of the top allocations + a gc type histogram, for heap attribution.
@@ -81,7 +104,7 @@ def _memprof_dump(signum: Any, frame: Any) -> None:
         _MEMPROF_STATE["n"] += 1
 
         report = "\n".join(lines) + "\n"
-        out = os.environ.get("CLIO_DEBUG_MEMPROF_OUT", "").strip()
+        out = _memprof_out()
         if out:
             with open(f"{out}.{_MEMPROF_STATE['n']}.txt", "w", encoding="utf-8") as fh:
                 fh.write(report)
@@ -120,8 +143,7 @@ def _install_sigusr1_diagnostic() -> None:
         try:
             import tracemalloc
 
-            frames = int(os.environ.get("CLIO_DEBUG_MEMPROF_FRAMES", "20") or "20")
-            tracemalloc.start(frames)
+            tracemalloc.start(_memprof_frames())
         except Exception:  # noqa: BLE001
             pass
         try:

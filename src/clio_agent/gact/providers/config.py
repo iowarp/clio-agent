@@ -42,7 +42,7 @@ def _provider_runtime_kind(provider_id: str) -> str:
     if not provider_id:
         return ""
     try:
-        from clio_agent.providers.registry import get_provider  # noqa: PLC0415
+        from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
 
         provider = get_provider(provider_id)
     except Exception:

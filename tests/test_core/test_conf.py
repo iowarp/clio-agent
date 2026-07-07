@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -147,6 +148,30 @@ class TestStoreLifecycle:
         s = _store(tmp_path, user="this: : : not valid yaml\n")
         # malformed file degrades to {} rather than raising
         assert s.resolve("this", env="X", default="d") == "d"
+
+    def test_no_home_directory_skips_user_layer(self, tmp_path, monkeypatch, caplog):
+        """Regression (#769 Slice 2): a cold store must not crash when no home
+        directory is resolvable — on Windows ``Path.home()`` raises
+        ``RuntimeError`` when USERPROFILE/HOME are absent (scrubbed test envs).
+        The user layer degrades to absent with a logged reason; workspace file,
+        env, and defaults still resolve."""
+        cwd = tmp_path / "cwd"
+        (cwd / ".clio").mkdir(parents=True)
+        (cwd / ".clio" / "config.yaml").write_text("debug:\n  level: high\n", encoding="utf-8")
+
+        def _no_home() -> Path:
+            raise RuntimeError("Could not determine home directory.")
+
+        monkeypatch.setattr(Path, "home", staticmethod(_no_home))
+        s = ConfigStore(cwd=cwd, env={"CLIO_ONLY_ENV": "from-env"})
+        with caplog.at_level(logging.DEBUG, logger="clio_agent.conf"):
+            # Workspace file layer survives the missing user layer.
+            assert s.resolve("debug.level", env="X", default="low") == "high"
+        # The degradation is surfaced, not silent.
+        assert any("no home directory" in rec.getMessage() for rec in caplog.records)
+        # Env + default tiers keep working.
+        assert s.resolve("some.key", env="CLIO_ONLY_ENV", default="d") == "from-env"
+        assert s.resolve("missing.key", env="MISSING", default="d") == "d"
 
     def test_xdg_config_home_honoured(self, tmp_path):
         home = tmp_path / "home"

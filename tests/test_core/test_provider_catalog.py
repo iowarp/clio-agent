@@ -1,4 +1,4 @@
-"""Tests for the provider registry — the single source of truth for
+"""Tests for the provider catalog — the single source of truth for
 LM provider metadata in clio-agent.
 
 These tests guard the invariants downstream code relies on:
@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import pytest
 
-from clio_agent.providers.registry import (
+from clio_agent.providers.catalog import (
     PROVIDERS,
     Provider,
     as_cloud_api_key_env,

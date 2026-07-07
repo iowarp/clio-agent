@@ -109,7 +109,7 @@ def _known_agent_overlay_tool_names(app: FastAPI) -> set[str]:
 def _known_agent_overlay_provider_ids() -> set[str]:
     """Provider ids an overlay may legitimately assign as ``default_provider``."""
 
-    from clio_agent.providers.registry import as_lm_presets  # noqa: PLC0415
+    from clio_agent.providers.catalog import as_lm_presets  # noqa: PLC0415
 
     presets = as_lm_presets()
     providers = {str(row.id) for row in presets if str(row.id).strip()}

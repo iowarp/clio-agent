@@ -1,6 +1,7 @@
 """Local model-limits database — the bottom of the limit-resolution cascade.
 
-The handshake resolves a model's limits **provider-live -> models.dev -> this DB**.
+The handshake resolves a model's limits **provider-self-reported -> models.dev ->
+litellm catalog -> this DB**.
 The DB is split into two layers:
 
 - a **read-only seed shipped with the package** (``data/model_limits.json``) so a
@@ -26,7 +27,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,7 +48,11 @@ _SEED_DB = Path(__file__).resolve().parent / "data" / "model_limits.json"
 
 def db_path() -> Path:
     """The writable DB file: ``CLIO_MODEL_DB`` env override, else the user data dir."""
-    override = os.environ.get("CLIO_MODEL_DB", "").strip()
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    override = conf.resolve(
+        "paths.model_db", env="CLIO_MODEL_DB", default="", cast=conf.as_str
+    ).strip()
     if override:
         return Path(override).expanduser()
     return paths.user_data_dir() / "model_limits.json"

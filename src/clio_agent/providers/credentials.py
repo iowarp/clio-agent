@@ -33,7 +33,7 @@ from __future__ import annotations
 import os
 import re
 
-from clio_agent.providers.registry import as_cloud_api_key_env
+from clio_agent.providers.catalog import as_cloud_api_key_env
 
 # Environment variable names for the well-known per-provider cloud API keys.
 # Sourced from the provider registry (kind defaults) — the same mapping
@@ -77,9 +77,11 @@ def resolve_argonne_token() -> str:
 
     1. ``CLIO_ARGONNE_TOKEN`` — explicit override. Set by automation that
        already has a token (e.g. a parent agent that ran
-       ``argonne_auth.get_access_token`` and exports the result). The env vars
-       ALCF's own ecosystem uses (``ALCF_INFERENCE_TOKEN`` / ``access_token``)
-       are also accepted, since users often already have one exported.
+       ``argonne_auth.get_access_token`` and exports the result). The ALCF
+       ecosystem's own ``ALCF_INFERENCE_TOKEN`` is also accepted, since users
+       often already have one exported. (A bare, un-namespaced ``access_token``
+       is deliberately NOT read — it is far too generic to claim as an ALCF
+       bearer and risked hijacking an unrelated process env var.)
     2. Otherwise go through ``providers.argonne_auth``. The import is deferred
        so ``globus-sdk`` is only required when this provider is actually
        selected.
@@ -92,7 +94,6 @@ def resolve_argonne_token() -> str:
     override = (
         os.environ.get("CLIO_ARGONNE_TOKEN", "").strip()
         or os.environ.get("ALCF_INFERENCE_TOKEN", "").strip()
-        or os.environ.get("access_token", "").strip()
     )
     if override:
         return override

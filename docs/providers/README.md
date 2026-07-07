@@ -1,7 +1,7 @@
 # LM providers
 
 clio-agent supports several LM provider backends. The catalog lives in
-[`src/clio_agent/providers/registry.py`][registry] — a single source of
+[`src/clio_agent/providers/catalog.py`][catalog] — a single source of
 truth shared by `LMProviderConfig.__post_init__` (wire defaults) and
 the `GET /v1/providers/lm` endpoint (gact's modal). Adding a new
 provider is one new `Provider(...)` entry; see
@@ -89,4 +89,4 @@ Validated baseline:
 [ADDING_A_PROVIDER.md](ADDING_A_PROVIDER.md) — step-by-step walkthrough
 with codex as the worked example.
 
-[registry]: ../../src/clio_agent/providers/registry.py
+[catalog]: ../../src/clio_agent/providers/catalog.py

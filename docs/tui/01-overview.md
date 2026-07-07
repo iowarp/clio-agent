@@ -136,7 +136,7 @@ export CLIO_LM_API_BASE=http://127.0.0.1:11434/v1
 export CLIO_LM_MODEL=llama3.1:8b
 
 # OpenAI / Anthropic / Google / Custom — pattern is the same:
-#   CLIO_LM_PROVIDER, CLIO_LM_API_KEY (or CLIO_LM_ENDPOINT), CLIO_LM_MODEL
+#   CLIO_LM_PROVIDER, CLIO_LM_API_KEY (or CLIO_LM_API_BASE), CLIO_LM_MODEL
 ```
 
 (`src/clio_agent/config.py`; `README.md` L405–442)
@@ -152,10 +152,11 @@ Empty → falls back to CWD (dev) or `/tmp` (prod). Prevents tools touching arbi
 ### Runtime knobs
 
 ```sh
-export CLIO_ENVIRONMENT=production        # or development
-export CLIO_ARC_BACKEND=local             # or cte (future)
-export CLIO_LOG_LEVEL=INFO                # or DEBUG / WARNING / ERROR
+export CLIO_ENVIRONMENT=production        # or dev / staging
+export CLIO_ARC_STORE=cte                 # clio-core (default); or "local" for file-based
 ```
+
+See [ENVIRONMENT.md](../ENVIRONMENT.md) for the full generated knob reference.
 
 ### Install
 

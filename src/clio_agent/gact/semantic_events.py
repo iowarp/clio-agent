@@ -10,7 +10,6 @@ live SSE, durable trace logging, and user hooks.
 from __future__ import annotations
 
 import json
-import os
 import queue
 import threading
 import uuid
@@ -490,13 +489,17 @@ def build_trace_backend(default_root: Path) -> SemanticTraceBackend:
         path = Path(raw_path).expanduser() if raw_path else default_root
         return FileSemanticTraceBackend(path)
     if backend in {"factory", "python_factory", "custom"}:
-        factory_path = os.environ.get("CLIO_SEMANTIC_TRACE_FACTORY", "").strip()
+        factory_path = conf.resolve(
+            "trace.semantic_factory", env="CLIO_SEMANTIC_TRACE_FACTORY", default="", cast=conf.as_str
+        ).strip()
         if not factory_path:
             raise ValueError(
                 "CLIO_SEMANTIC_TRACE_FACTORY is required when CLIO_SEMANTIC_TRACE_BACKEND=factory"
             )
         factory = _load_factory(factory_path)
-        raw_config = os.environ.get("CLIO_SEMANTIC_TRACE_CONFIG", "").strip()
+        raw_config = conf.resolve(
+            "trace.semantic_config", env="CLIO_SEMANTIC_TRACE_CONFIG", default="", cast=conf.as_str
+        ).strip()
         config = json.loads(raw_config) if raw_config else {}
         result = factory(default_root=default_root, config=config)
         if not callable(getattr(result, "emit", None)):

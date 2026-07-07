@@ -18,7 +18,7 @@ the documented, default surface.
 
 Scopes (highest precedence wins, merged by name): workspace
 ``<cwd>/.clio/mcp.yaml`` > user ``<config>/clio-agent/mcp.yaml`` > pack
-``AGENT.md`` frontmatter ``mcp_servers:`` > built-in defaults (fs/shell/web).
+``AGENT.md`` frontmatter ``mcp_servers:`` > built-in defaults (fs/shell).
 
 This module is parsing only; ``transport_for`` is the single FastMCP glue that
 turns a spec into a transport the existing ``execution.py`` machinery accepts.
@@ -54,10 +54,35 @@ __all__ = [
 ]
 
 # clio-agent's built-in universal defaults (always present, not declarations).
-BUILTIN_SERVER_NAMES = frozenset({"fs", "shell", "web"})
+# These MUST match what ``tools.gateway._mount_builtins`` actually mounts: a name
+# listed here but not mounted is silently un-mountable as a user server (the
+# gateway skips it as "builtin") — that phantom ``"web"`` bug is why this set is
+# kept in lockstep with the mounts, not aspirational.
+BUILTIN_SERVER_NAMES = frozenset({"fs", "shell"})
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\}")
 _URL_PREFIXES = ("http://", "https://")
+
+# A server name becomes the tool-namespace prefix, and ``tools.gateway._namespace_of``
+# derives that namespace by splitting a namespaced tool name on the FIRST ``_``. A
+# name containing ``_`` (or any char outside ``[a-z0-9-]``) therefore yields a wrong
+# namespace (``my_server`` -> ``my``) and misclassifies its tools. Validate at
+# declaration so the break surfaces as a structured spec error, not a silent
+# downstream mis-namespacing.
+_VALID_SERVER_NAME = re.compile(r"^[a-z0-9-]+$")
+
+
+def _validate_server_name(name: str) -> str | None:
+    """Return a structured error string if ``name`` is not a legal MCP server name."""
+    if not name:
+        return "MCP server name must be non-empty"
+    if not _VALID_SERVER_NAME.match(name):
+        return (
+            f"invalid MCP server name {name!r}: names must match [a-z0-9-] with no "
+            "'_' (underscore delimits the tool namespace; see "
+            "tools.gateway._namespace_of)"
+        )
+    return None
 
 
 class MCPConfigError(ValueError):
@@ -246,15 +271,22 @@ def spec_from_declaration(
 ) -> MCPServerSpec:
     """Normalize one ``mcp_servers`` value (string command/url, or mapping)."""
     if isinstance(value, str):
-        return _spec_from_string(name, value, source=source, env=env)
-    if isinstance(value, Mapping):
-        return _spec_from_mapping(name, value, source=source, env=env)
-    return MCPServerSpec(
-        name=name,
-        transport="stdio",
-        source=source,
-        validation_errors=(f"unsupported mcp_servers value for {name!r}: {type(value).__name__}",),
-    )
+        spec = _spec_from_string(name, value, source=source, env=env)
+    elif isinstance(value, Mapping):
+        spec = _spec_from_mapping(name, value, source=source, env=env)
+    else:
+        spec = MCPServerSpec(
+            name=name,
+            transport="stdio",
+            source=source,
+            validation_errors=(
+                f"unsupported mcp_servers value for {name!r}: {type(value).__name__}",
+            ),
+        )
+    name_error = _validate_server_name(name)
+    if name_error:
+        spec = replace(spec, validation_errors=(name_error, *spec.validation_errors))
+    return spec
 
 
 def specs_from_mapping(
@@ -333,7 +365,7 @@ def load_mcp_servers(
     Precedence (highest wins, merged whole by name): workspace
     ``<cwd>/.clio/mcp.yaml`` > user ``<config>/clio-agent/mcp.yaml`` > pack
     frontmatter (``pack_servers`` = ``{pack_id: {name: declaration}}``). Built-in
-    ``fs``/``shell``/``web`` are provided by core, not part of this map.
+    ``fs``/``shell`` are provided by core, not part of this map.
     """
     home = home or Path.home()
     cwd = cwd or Path.cwd()

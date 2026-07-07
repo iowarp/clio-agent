@@ -16,6 +16,21 @@ of truth and the environment is the fallback used only when a key is absent from
 the file. This is the inverse of the 12-factor "env overrides file" convention,
 and is a deliberate project decision (see the logging/config plan).
 
+**Deliberately NOT resolved through this store** (they stay bare ``os.environ``
+reads on purpose, so a config file cannot silently redirect them):
+
+- *Bootstrap tier* — read before this store (or its file discovery) exists, so a
+  ``resolve`` call here would recurse or read a not-yet-loaded layer:
+  ``CLIO_USER_DIR`` (``clio_agent.paths``; :meth:`ConfigStore._load` imports
+  ``paths``), ``CLIO_ENV_FILE`` / ``CLIO_ENV_FILE_LOADED`` (the dotenv loader in
+  ``clio_agent.config``), and ``XDG_CONFIG_HOME`` (drives the file discovery).
+- *Secret tier* — never committed to a shared config file; env-only by policy:
+  ``CLIO_LM_API_KEY``, ``CLIO_ARGONNE_TOKEN``, ``ALCF_INFERENCE_TOKEN``, and the
+  ``CLIO_CRED_*`` credential vars.
+- *Provider auth-status probes* — presence-of-env checks that drive the auth UI
+  in ``clio_agent.gact.routes.providers`` must reflect the real process env, not
+  a file layer, so they stay env-direct.
+
 Usage::
 
     from clio_agent import conf
@@ -26,6 +41,7 @@ Usage::
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from collections.abc import Callable, Mapping
@@ -35,6 +51,8 @@ from typing import Any, TypeVar
 import yaml
 
 T = TypeVar("T")
+
+logger = logging.getLogger(__name__)
 
 _USER_CONFIG_RELPATH = ("clio-agent", "config.yaml")
 _WORKSPACE_CONFIG_RELPATH = (".clio", "config.yaml")
@@ -162,11 +180,22 @@ class ConfigStore:
     def _load(self) -> dict[str, Any]:
         from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
 
-        home = self._home or Path.home()
         cwd = self._cwd or Path.cwd()
         env = self._env_map()
-        # OS-correct per-user config dir (honors injected home/env for tests).
-        user = _read_yaml_mapping(paths.user_config_dir_for(home, env) / _USER_CONFIG_RELPATH[-1])
+        user: dict[str, Any] = {}
+        try:
+            home = self._home or Path.home()
+            # OS-correct per-user config dir (honors injected home/env for tests).
+            user_dir = paths.user_config_dir_for(home, env)
+        except RuntimeError as exc:
+            # No resolvable home directory — e.g. on Windows, ``Path.home()``
+            # raises when USERPROFILE/HOME are absent from the environment
+            # (scrubbed test envs, hardened services). The per-user config
+            # layer is then explicitly absent: emit the reason (no silent
+            # fallback) and resolve from workspace file → env → default.
+            logger.debug("user config layer skipped: no home directory resolvable (%s)", exc)
+        else:
+            user = _read_yaml_mapping(user_dir / _USER_CONFIG_RELPATH[-1])
         workspace = _read_yaml_mapping(cwd.joinpath(*_WORKSPACE_CONFIG_RELPATH))
         return _deep_merge(user, workspace)
 

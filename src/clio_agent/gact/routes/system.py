@@ -44,6 +44,7 @@ from clio_agent.gact.runtime.constants import (
     CONTRACT_VERSION,
     GACT_BACKEND_VERSION,
 )
+from clio_agent.gact.runtime.context_tokens import _resolve_expert_context_window
 from clio_agent.gact.types import (
     AuthInfo,
     BackendInfo,
@@ -517,7 +518,11 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                     _estimate_context_file_tokens(row) for row in context_files
                 )
                 tokens_retained = transcript_tokens + context_file_tokens
-                tokens_budget = 4000
+                cfg = getattr(app.state.agent, "_provider_config", None)
+                tokens_budget = _resolve_expert_context_window(cfg)
+                metadata["tokens_budget_source"] = (
+                    "handshake_window" if tokens_budget > 0 else "unknown"
+                )
                 pressure, threshold_state, compact_recommended = _context_pressure_state(
                     tokens_retained,
                     tokens_budget,

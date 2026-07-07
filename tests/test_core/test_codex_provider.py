@@ -172,6 +172,13 @@ class TestRunExec:
                 _run_exec(prompt="hi", model="gpt-5")
 
     def test_timeout_raises(self, tmp_path: Path):
+        """A timeout raises AND the last-message temp file is unlinked.
+
+        Regression guard for the #769 leak fix: the old ``finally: pass``
+        left ``codex-out-<uuid>.txt`` on disk when ``subprocess.run``
+        raised ``TimeoutExpired``. Pin the uuid so we can pre-create the
+        file (as a half-written codex would) and assert cleanup happened.
+        """
         with (
             patch(
                 "clio_agent.providers.codex_litellm._resolve_codex_binary",
@@ -182,10 +189,18 @@ class TestRunExec:
                 "clio_agent.providers.codex_litellm.tempfile.gettempdir",
                 return_value=str(tmp_path),
             ),
+            patch(
+                "clio_agent.providers.codex_litellm.uuid.uuid4",
+                return_value=MagicMock(hex="deadbeef"),
+            ),
         ):
             run_mock.side_effect = subprocess.TimeoutExpired(cmd="codex", timeout=1.0)
+            last_msg_path = tmp_path / "codex-out-deadbeef.txt"
+            # Simulate codex having written partial output before timing out.
+            last_msg_path.write_text("partial", encoding="utf-8")
             with pytest.raises(CodexExecError, match="timed out"):
                 _run_exec(prompt="hi", model="gpt-5", timeout=1.0)
+            assert not last_msg_path.exists()
 
     def test_missing_output_file_raises(self, tmp_path: Path):
         with (

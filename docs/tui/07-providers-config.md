@@ -76,8 +76,7 @@ All overridable with `CLIO_LM_API_BASE`, `CLIO_LM_MODEL`, `CLIO_LM_API_KEY`.
 | `CLIO_LM_PLANNER_MAX_TOKENS` | `CLIO_LM_MAX_TOKENS` | planner-only token cap for structured JSON actions |
 | `CLIO_LM_MAX_TOKENS` | `32000` | per-response cap |
 | `CLIO_ENVIRONMENT` | `dev` | `dev` / `staging` / `production` |
-| `CLIO_ARC_BACKEND` | `local` | `local` or `cte` (future) |
-| `CLIO_LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
+| `CLIO_ARC_STORE` | `cte` | `cte` (clio-core) or `local` (file-based) |
 | **File policy** | | |
 | `CLIO_ALLOWED_ROOTS` | `$(pwd):$(pwd)/tmp` | colon-separated whitelist of paths tools may read |
 | `CLIO_MAX_FILE_SIZE_BYTES` | `1073741824` (1 GB) | per-file cap |

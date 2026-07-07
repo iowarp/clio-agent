@@ -39,7 +39,6 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import json
-import os
 import uuid
 from collections.abc import Mapping
 from contextlib import nullcontext
@@ -73,10 +72,16 @@ def _mcp_reconnect_timeout_s() -> float:
     ``CLIO_GACT_MCP_RECONNECT_TIMEOUT_S``. A non-positive or unparseable
     value falls back to the 15s default rather than disabling the guard."""
 
-    raw = os.environ.get("CLIO_GACT_MCP_RECONNECT_TIMEOUT_S", "15").strip()
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
     try:
-        value = float(raw)
-    except ValueError:
+        value = conf.resolve(
+            "limits.mcp_reconnect_timeout_s",
+            env="CLIO_GACT_MCP_RECONNECT_TIMEOUT_S",
+            default=15.0,
+            cast=conf.as_float,
+        )
+    except (ValueError, TypeError):
         return 15.0
     return value if value > 0 else 15.0
 

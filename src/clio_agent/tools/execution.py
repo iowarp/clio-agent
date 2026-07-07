@@ -7,9 +7,11 @@ import concurrent.futures
 import contextvars
 import json
 import logging
+import os
 import threading
+import time
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -702,7 +704,7 @@ class SyncMCPToolExecutor:
                     },
                 )
 
-        effective_args = _repair_missing_file_arguments(args)
+        effective_args, repair_records = _repair_missing_file_arguments(args)
         effective_args = _ground_output_paths(
             effective_args,
             getattr(self._mcp_tools.get(name), "inputSchema", None),
@@ -765,6 +767,8 @@ class SyncMCPToolExecutor:
             self._record_tool_success(name)
             notify_tool_observer(tool_observer, name, effective_args, "completed", None, result)
 
+        if repair_records:
+            return _prepend_repair_notes(repair_records, result)
         return result
 
     def _repeated_transient_failure_error(self, name: str) -> str | None:
@@ -1001,21 +1005,88 @@ def _ground_output_paths(
     return grounded
 
 
-def _repair_missing_file_arguments(args: Mapping[str, Any]) -> dict[str, Any]:
+# Bounds on the allowed-root basename scan: a mistyped path must not turn a tool
+# call into an unbounded filesystem walk. Both are hard ceilings — hitting either
+# aborts the scan and leaves the argument UNCHANGED, because a partial scan cannot
+# prove a match is unique.
+_REPAIR_SCAN_LIMIT = 20_000
+_REPAIR_DEADLINE_S = 2.0
+
+
+def _bounded_basename_matches(
+    roots: Sequence[Path],
+    basename: str,
+    scanned: int,
+    deadline: float,
+) -> tuple[list[Path], int, bool]:
+    """Walk ``roots`` for files named ``basename``, bounding every entry visited.
+
+    Unlike ``Path.rglob``, which only yields name-matches (so a no-match basename
+    over a huge tree would traverse it exhaustively before any bound could be
+    consulted), this walk increments ``scanned`` and checks the wall-clock
+    ``deadline`` for EVERY directory entry visited. Directory symlinks are not
+    followed, matching ``rglob``'s non-recursing behavior and avoiding cycles.
+
+    Returns:
+        ``(matches, scanned, aborted)``: resolved file matches (the walk stops
+        after a second match, which already disproves uniqueness), the updated
+        entry count, and whether a bound aborted the walk.
+    """
+    matches: list[Path] = []
+    for root in roots:
+        stack: list[str] = [str(root)]
+        while stack:
+            directory = stack.pop()
+            try:
+                entries = os.scandir(directory)
+            except OSError:
+                continue
+            with entries:
+                for entry in entries:
+                    scanned += 1
+                    if scanned > _REPAIR_SCAN_LIMIT or time.monotonic() > deadline:
+                        return matches, scanned, True
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(entry.path)
+                        elif entry.name == basename and entry.is_file():
+                            matches.append(Path(entry.path).resolve())
+                            if len(matches) > 1:
+                                return matches, scanned, False
+                    except OSError:
+                        continue
+    return matches, scanned, False
+
+
+def _repair_missing_file_arguments(
+    args: Mapping[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
     """Repair obvious missing file-path typos to a unique allowed-root match.
 
     Model-generated tool calls occasionally mistype a directory component while
     preserving the target basename. Retrying a unique basename match under the
     configured allowed roots keeps the repair inside the existing file policy:
     no outside-root access, and no ambiguous guessing.
+
+    The allowed-root walk is bounded (``_REPAIR_SCAN_LIMIT`` entries across roots,
+    ``_REPAIR_DEADLINE_S`` seconds); exceeding either bound aborts the scan and
+    leaves the argument unchanged, since a partial scan cannot prove uniqueness.
+
+    Returns:
+        The (possibly repaired) argument dict, and a list of substitution records
+        ``{"argument", "requested", "used"}`` — one per actually-substituted
+        argument — so the caller can surface every repair in the tool result.
     """
 
     repaired = dict(args)
+    records: list[dict[str, str]] = []
     try:
         policy = FileAccessPolicy.from_env()
     except Exception:
-        return repaired
+        return repaired, records
 
+    scanned = 0
+    deadline = time.monotonic() + _REPAIR_DEADLINE_S
     for key, value in list(repaired.items()):
         if key not in _FILE_ARGUMENT_NAMES or not isinstance(value, str) or not value.strip():
             continue
@@ -1025,22 +1096,33 @@ def _repair_missing_file_arguments(args: Mapping[str, Any]) -> dict[str, Any]:
         basename = candidate.name
         if not basename or basename in {".", ".."}:
             continue
-        matches: list[Path] = []
-        for root in policy.allowed_roots:
-            try:
-                for found in root.rglob(basename):
-                    if found.is_file():
-                        matches.append(found.resolve())
-                        if len(matches) > 1:
-                            break
-            except OSError:
-                continue
-            if len(matches) > 1:
-                break
+        matches, scanned, aborted = _bounded_basename_matches(
+            policy.allowed_roots, basename, scanned, deadline
+        )
+        if aborted:
+            # A partial scan can't prove uniqueness — leave the argument as-is.
+            continue
         unique = sorted(set(matches))
         if len(unique) == 1:
-            repaired[key] = str(unique[0])
-    return repaired
+            used = str(unique[0])
+            repaired[key] = used
+            records.append({"argument": key, "requested": value, "used": used})
+    return repaired, records
+
+
+def _prepend_repair_notes(records: Sequence[Mapping[str, str]], result: str) -> str:
+    """Prepend a human-readable ``[path-repair]`` note per substitution to ``result``.
+
+    Every file-argument substitution the executor made is surfaced verbatim in the
+    tool result the model reads back, so a silently-corrected path is never
+    invisible — the repair is auditable in the trace and to the model itself.
+    """
+    notes = "".join(
+        f"[path-repair] argument '{rec['argument']}': '{rec['requested']}' not found; "
+        f"substituted unique match '{rec['used']}'\n"
+        for rec in records
+    )
+    return f"{notes}\n{result}"
 
 
 def _make_dspy_tools(

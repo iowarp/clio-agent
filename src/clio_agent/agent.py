@@ -22,7 +22,6 @@ Usage:
 import contextvars
 import json
 import logging
-import os
 import re
 import time
 import uuid
@@ -1426,16 +1425,41 @@ class ClioAgent(dspy.Module):
     @staticmethod
     def _transient_provider_retry_delays() -> tuple[float, ...]:
         """Return configured transient provider retry delays in seconds."""
-        raw = os.environ.get("CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS", "5,15").strip()
-        if raw.lower() in {"", "false", "off", "none", "disabled"}:
+        items: list[str] | None = conf.resolve(
+            "limits.transient_provider_retry_delays",
+            env="CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS",
+            default=None,
+            cast=conf.as_csv,
+        )
+        if items is None:
+            # conf treats a set-but-empty env var as "unset" (it falls through
+            # to the default), but this knob's documented disable contract is
+            # that CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS="" (set, empty) turns
+            # retries OFF. Preserve it: only a truly absent variable falls back
+            # to the 5s/15s default. A file-layer value still wins when present
+            # (resolve returned it above before we ever got here).
+            import os  # noqa: PLC0415 - only needed on this fallthrough
+
+            raw_env = os.environ.get("CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS")
+            if raw_env is not None and raw_env.strip() == "":
+                return ()
+            items = ["5", "15"]
+        # Explicit disable sentinel (a lone false/off/none/disabled token) -> no
+        # retries.
+        if len(items) == 1 and str(items[0]).strip().lower() in {
+            "false",
+            "off",
+            "none",
+            "disabled",
+        }:
             return ()
         delays: list[float] = []
-        for item in raw.split(","):
-            item = item.strip()
-            if not item:
+        for item in items:
+            token = str(item).strip()
+            if not token:
                 continue
             try:
-                delay = float(item)
+                delay = float(token)
             except ValueError:
                 continue
             delays.append(max(0.0, min(delay, 60.0)))

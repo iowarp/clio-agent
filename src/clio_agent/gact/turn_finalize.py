@@ -38,7 +38,6 @@ call site so those monkeypatches keep intercepting with zero test edits.
 from __future__ import annotations
 
 import logging
-import os
 import threading
 import time
 from collections.abc import Mapping
@@ -101,6 +100,19 @@ if TYPE_CHECKING:
     from clio_agent.gact.turn_state import TurnState
 
 logger = logging.getLogger(__name__)
+
+
+def _capture_reasoning_enabled() -> bool:
+    """Whether finalize persists per-call reasoning onto assistant metadata.
+
+    ``runtime.capture_reasoning`` / ``CLIO_CAPTURE_REASONING`` (default on);
+    set to 0 to avoid the metadata growth.
+    """
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    return conf.resolve(
+        "runtime.capture_reasoning", env="CLIO_CAPTURE_REASONING", default=True, cast=conf.as_bool
+    )
 
 
 def maybe_pause_for_user(
@@ -543,12 +555,7 @@ def finalize_turn(
     # on the assistant message metadata because the reasoning has scientific
     # value for analysing how the model reached its answer. Gated by
     # CLIO_CAPTURE_REASONING (default on); set to 0 to avoid the metadata growth.
-    if os.environ.get("CLIO_CAPTURE_REASONING", "").strip().lower() not in {
-        "0",
-        "false",
-        "no",
-        "off",
-    }:
+    if _capture_reasoning_enabled():
         try:
             _reasoning_log = _reasoning_records_from_history_slice(state.history_start, state.app)
         except Exception:  # noqa: BLE001 - reasoning capture is best-effort, never fail a turn
