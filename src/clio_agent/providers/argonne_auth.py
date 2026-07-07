@@ -96,7 +96,7 @@ def _require_globus() -> Any:
     return globus_sdk
 
 
-def _domain_error_handler(app: Any, error: Any) -> None:
+def _domain_error_handler(app: Any, error: Any, *, allow_interactive: bool = True) -> None:
     """Force the user back through OAuth into an ALCF-allowed domain.
 
     Globus authorises arbitrary identity providers, but ALCF's
@@ -104,7 +104,23 @@ def _domain_error_handler(app: Any, error: Any) -> None:
     identities. Re-driving login with ``session_required_single_domain``
     keeps the user from picking, e.g., a personal Google identity that
     the gateway will then 403.
+
+    When ``allow_interactive`` is ``False`` (passive probes such as
+    ``check_auth_status`` / the handshake), we must never pop a browser:
+    instead we raise :class:`GlobusAuthError` with a structured
+    ``reason=argonne_login_required`` so the caller can report
+    "login required" rather than block the server on an interactive flow.
     """
+    if not allow_interactive:
+        logger.warning(
+            "Globus auth error %r — interactive login disabled "
+            "(reason=argonne_login_required)",
+            error,
+        )
+        raise GlobusAuthError(
+            "argonne login required: interactive Globus login is disabled for "
+            "passive probes (reason=argonne_login_required)"
+        )
     globus_sdk = _require_globus()
     logger.warning("Globus auth error %r — re-running login flow", error)
     auth_params = globus_sdk.gare.GlobusAuthorizationParameters(
@@ -118,19 +134,23 @@ def _domain_error_handler(app: Any, error: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _build_user_app(force: bool = False) -> Any:
+def _build_user_app(force: bool = False, *, allow_interactive: bool = True) -> Any:
     """Instantiate (and optionally re-login) the Globus ``UserApp``.
 
     The UserApp persists tokens at ``TOKENS_PATH`` (managed by Globus
     SDK). On first call without an existing token, the SDK prints a
     URL the user must visit and paste back a code; afterwards the
     refresh token keeps things going for ~6 months.
+
+    ``allow_interactive`` is threaded into the token-validation error
+    handler so passive callers (health / doctor / handshake) get a
+    ``reason=argonne_login_required`` error instead of a blocking login.
     """
     globus_sdk = _require_globus()
 
     class _Handler:
         def __call__(self, app: Any, error: Any) -> None:
-            _domain_error_handler(app, error)
+            _domain_error_handler(app, error, allow_interactive=allow_interactive)
 
     app = globus_sdk.UserApp(
         APP_NAME,
@@ -151,9 +171,9 @@ def _build_user_app(force: bool = False) -> Any:
     return app
 
 
-def _get_authorizer(force: bool = False) -> Any:
+def _get_authorizer(force: bool = False, *, allow_interactive: bool = True) -> Any:
     """Return a ``RefreshTokenAuthorizer`` bound to the gateway scope."""
-    app = _build_user_app(force=force)
+    app = _build_user_app(force=force, allow_interactive=allow_interactive)
     return app.get_authorizer(GATEWAY_CLIENT_ID)
 
 
@@ -205,20 +225,25 @@ def tokens_exist() -> bool:
     return any(os.path.isfile(path) for path in token_paths())
 
 
-def get_access_token(force_refresh: bool = False) -> str:
+def get_access_token(force_refresh: bool = False, *, allow_interactive: bool = True) -> str:
     """Return a valid bearer token for the ALCF inference gateway.
 
     Args:
         force_refresh: Re-drive OAuth even if a stored token exists.
             Use after an explicit logout or when the user reports a
             403 they suspect is auth-related.
+        allow_interactive: When ``False`` (passive probes: health /
+            doctor / handshake), an expired refresh token raises
+            :class:`GlobusAuthError` with ``reason=argonne_login_required``
+            instead of blocking on an interactive Globus login.
 
     Raises:
         GlobusUnavailable: ``globus-sdk`` isn't installed.
-        GlobusAuthError: OAuth flow failed (bad creds, network, …).
+        GlobusAuthError: OAuth flow failed (bad creds, network, …) or a
+            passive probe needs an interactive login.
     """
     try:
-        authorizer = _get_authorizer(force=force_refresh)
+        authorizer = _get_authorizer(force=force_refresh, allow_interactive=allow_interactive)
         # ensure_valid_token refreshes silently when within the
         # refresh-token lifetime; otherwise it triggers the
         # token_validation_error_handler we registered above.
@@ -240,7 +265,7 @@ def check_auth_status() -> bool:
     try:
         if not tokens_exist():
             return False
-        authorizer = _get_authorizer(force=False)
+        authorizer = _get_authorizer(force=False, allow_interactive=False)
         authorizer.ensure_valid_token()
         return True
     except GlobusUnavailable:

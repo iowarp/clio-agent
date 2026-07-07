@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
 import pytest
 
@@ -104,6 +105,77 @@ class TestArgonneRef:
     def test_argonne_missing_token_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("clio_agent.providers.argonne_auth.tokens_exist", lambda: False)
         assert credentials.resolve("argonne", "") == ""
+
+    def test_resolve_argonne_token_never_goes_interactive(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stored-but-expired refresh token must surface "" — never a login.
+
+        ``resolve_argonne_token`` is a passive probe (it runs from server boot
+        via ``LMConfig`` init, ``/health``, ``/doctor`` and TUI introspection).
+        With ``tokens_exist()`` true and an expired refresh token, globus-sdk's
+        ``ensure_valid_token`` invokes the registered validation-error handler;
+        the interactive default would BLOCK the server on ``app.login()``. The
+        probe must pass ``allow_interactive=False`` so the handler raises
+        ``GlobusAuthError`` (reason=argonne_login_required) instead, which this
+        resolver swallows into ``""`` for a clean downstream 401.
+        """
+        from clio_agent.providers import argonne_auth
+
+        login_calls: list[Any] = []
+
+        class _FakeAuthParams:
+            def __init__(self, session_required_single_domain: Any = None) -> None:
+                self.session_required_single_domain = session_required_single_domain
+
+        class _FakeGare:
+            GlobusAuthorizationParameters = _FakeAuthParams
+
+        class _FakeConfig:
+            def __init__(
+                self,
+                request_refresh_tokens: bool = False,
+                token_validation_error_handler: Any = None,
+            ) -> None:
+                self.token_validation_error_handler = token_validation_error_handler
+
+        class _FakeAuthorizer:
+            def __init__(self, app: Any) -> None:
+                self._app = app
+                self.access_token = "fresh-token"
+
+            def ensure_valid_token(self) -> None:
+                # Expired refresh token: globus-sdk calls the registered
+                # token_validation_error_handler, exactly as the real SDK does.
+                handler = self._app.config.token_validation_error_handler
+                handler(self._app, RuntimeError("token expired"))
+
+        class _FakeUserApp:
+            def __init__(
+                self,
+                name: str,
+                client_id: Any = None,
+                scope_requirements: Any = None,
+                config: Any = None,
+            ) -> None:
+                self.config = config
+
+            def get_authorizer(self, client_id: Any) -> _FakeAuthorizer:
+                return _FakeAuthorizer(self)
+
+            def login(self, auth_params: Any = None) -> None:
+                login_calls.append(auth_params)
+
+        class _FakeGlobus:
+            UserApp = _FakeUserApp
+            GlobusAppConfig = _FakeConfig
+            gare = _FakeGare
+
+        monkeypatch.setattr(argonne_auth, "_require_globus", lambda: _FakeGlobus)
+        monkeypatch.setattr(argonne_auth, "tokens_exist", lambda: True)
+
+        assert credentials.resolve_argonne_token() == ""
+        assert login_calls == [], "passive probe must never drive app.login()"
 
     def test_argonne_named_ref_does_not_return_default_token(
         self, monkeypatch: pytest.MonkeyPatch

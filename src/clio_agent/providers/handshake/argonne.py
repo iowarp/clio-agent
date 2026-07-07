@@ -103,7 +103,7 @@ class ArgonneHandshake(ProviderHandshake):
         if not argonne_auth.tokens_exist():
             return None
         try:
-            token = argonne_auth.get_access_token(False)
+            token = argonne_auth.get_access_token(False, allow_interactive=False)
         except Exception:
             # A stored token that fails to validate offline (expired refresh,
             # missing globus-sdk) is treated as "deferred, not usable now".
@@ -143,7 +143,7 @@ class ArgonneHandshake(ProviderHandshake):
             from clio_agent.providers import argonne_auth  # noqa: PLC0415
 
             try:
-                refreshed = argonne_auth.get_access_token(False)
+                refreshed = argonne_auth.get_access_token(False, allow_interactive=False)
             except Exception as exc:
                 return ConnectivityResult(
                     connectivity=ConnectivityState.SKIPPED,
