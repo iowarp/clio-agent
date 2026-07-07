@@ -32,9 +32,9 @@ The refactor is byte-for-byte behavior-preserving. ``run_dynamic_agent_sync``
 resolves the blueprint-runner seam through ``app`` via a *function-local* import
 (the #714 danger-set idiom) so the ``app._blueprint_runner_for_agent`` test
 monkeypatch keeps intercepting with zero test edits. The no-progress watchdog
-(``state.await_turn_work`` / ``state.cancel_requested``) is still owned by the
-turn.py closures until Slice 5 extracts ``turn_watchdog.py``; it is reached here
-off ``state`` (see :mod:`clio_agent.gact.turn_state`).
+(:func:`~clio_agent.gact.turn_watchdog.await_turn_work` /
+:func:`~clio_agent.gact.turn_watchdog.cancel_requested`) is driven off ``state``
+via those free functions (Slice 5 extracted ``turn_watchdog.py``).
 """
 
 from __future__ import annotations
@@ -44,6 +44,7 @@ import contextvars
 import time
 import uuid
 from collections.abc import Mapping
+from functools import partial
 from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.gact import context as _ctx
@@ -91,6 +92,7 @@ from clio_agent.gact.tool_observer import (
     _sanitize_handoff_tool_metadata,
     _sanitize_tools_called_metadata,
 )
+from clio_agent.gact.turn_watchdog import await_turn_work, cancel_requested
 from clio_agent.gact.types import Part
 from clio_agent.gact.workflow_state.merge import _merge_workflow_state_mapping
 from clio_agent.runtime import trace
@@ -237,7 +239,8 @@ async def run_dynamic_agent_sync(
             turn_context = contextvars.copy_context()
         finally:
             _ctx.reset(_sid_tok)
-    _pred = await state.await_turn_work(
+    _pred = await await_turn_work(
+        state,
         loop.run_in_executor(
             None,
             lambda: turn_context.run(
@@ -247,7 +250,7 @@ async def run_dynamic_agent_sync(
                 agent_def,
                 prompt,
                 state.sid,
-                state.cancel_requested,
+                partial(cancel_requested, state),
             ),
         ),
     )

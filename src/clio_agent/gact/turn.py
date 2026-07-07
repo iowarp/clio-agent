@@ -38,7 +38,6 @@ are all preserved unchanged.
 from __future__ import annotations
 
 import asyncio
-import contextvars
 import logging
 import os
 import threading
@@ -46,19 +45,10 @@ import time
 import uuid
 from collections.abc import Mapping
 from datetime import datetime, timezone
-from functools import partial
 from typing import TYPE_CHECKING, Any, Optional
 
-from clio_agent.gact import context as _ctx
-from clio_agent.gact._params import (
-    _gact_turn_timeout_s,
-)
 from clio_agent.gact.agents.resolution import (
-    _agent_definition_uses_blueprint_runtime,
-    _resolve_runtime_dynamic_agent,
-    _runtime_active_agent_blueprint_agent_ids,
     _runtime_active_agent_blueprint_id,
-    _runtime_active_agent_blueprint_root_id,
 )
 from clio_agent.gact.delegation import (
     _coerce_expert_handoff_rows,
@@ -76,7 +66,6 @@ from clio_agent.gact.enrichment import (
 )
 from clio_agent.gact.events import Event, EventBus, _publish_transcript_event
 from clio_agent.gact.evidence import (
-    _dynamic_agent_runtime_provenance,
     _ground_fabricated_local_artifact_paths,
     _propose_edit_diffs_from_pred,
     _tool_result_preview,
@@ -86,41 +75,33 @@ from clio_agent.gact.messaging import (
     _ask_user_options_from_action,
     _coerce_ask_user_action,
     _image_part_summaries,
-    _prediction_summary,
     _user_message_parts,
 )
-from clio_agent.gact.providers.auth import _refresh_argonne_lm_token
 from clio_agent.gact.runtime.globals import (
     _cancelled_error_info,
     _coerce_error_info,
     _ContextFileAccessError,
     _emit_semantic_event,
     _iso_from_epoch,
-    _llm_provider_payload,
     _new_message_id,
     _new_part_id,
     _new_question_id,
     _session_agent_id,
-    _tool_session_context,
     _TurnCancelled,
     _TurnTimedOut,
     _UnsupportedSessionAgent,
 )
 from clio_agent.gact.runtime.retention import enforce_dict_bound, enforce_list_bound
-from clio_agent.gact.runtime.type_parsing import _blueprint_module_kind
 from clio_agent.gact.session_store import (
     _compile_session_conversation_history,
 )
 from clio_agent.gact.streaming import (
-    _agent_forward_compat,
     _clear_live_streamed_field_text,
     _extract_tools_called,
     _format_react_trajectory,
     _pop_stream_fallback,
-    _run_dynamic_agent_compat,
     _stream_fallback_payload,
     _StreamingOutputError,
-    _try_streamed_forward_compat,
 )
 from clio_agent.gact.tool_observer import (
     _merge_tool_call_rows,
@@ -128,15 +109,15 @@ from clio_agent.gact.tool_observer import (
     _sanitize_tools_called_metadata,
     _tool_calls_from_handoff_rows,
 )
-from clio_agent.gact.turn_delegation import settle_dynamic_agent_delegations
+from clio_agent.gact.turn_forward import forward_turn
 from clio_agent.gact.turn_nanoagents import spawn_nanoagents
 from clio_agent.gact.turn_state import new_turn_state
 from clio_agent.gact.turn_stream import (
     bind_live_emitter,
-    emit_chunk,
     settle_turn_transcript,
 )
 from clio_agent.gact.turn_usage import roll_up_usage
+from clio_agent.gact.turn_watchdog import make_turn_cancel_event
 from clio_agent.gact.types import (
     ErrorInfo,
     Message,
@@ -150,7 +131,6 @@ from clio_agent.gact.usage import (
     _snapshot_lm_history_index,
 )
 from clio_agent.runtime import trace
-from clio_agent.runtime.lm_activity import lm_call_in_flight as _lm_call_in_flight
 
 # NOTE (#714): every turn helper above is imported from its true *leaf* owner,
 # not from ``clio_agent.gact.app``. The turn loop originally lived in ``app.py``
@@ -366,20 +346,18 @@ async def _run_turn_in_background(
     the failure live. We never re-raise; the request that started us
     is long gone.
     """
-    # #714 DANGER SET: the agent-builder + blueprint-runner seams and the
-    # cancellation-enricher are resolved through ``app`` via a *function-local*
-    # import so the ~83 ``app._X`` test monkeypatches (which retarget these at
-    # call time) keep working with zero test edits. ``_EXECUTABLE_SESSION_AGENT_IDS``
-    # is an ``app``-owned module constant kept here too (not relocated). Every
-    # other former app helper is now imported at module top from its true leaf
-    # owner (#714), so turn.py has ZERO top-level ``app`` imports.
+    # #714 DANGER SET: the assistant-persist + cancellation-enricher seams are
+    # resolved through ``app`` via a *function-local* import so the ~83 ``app._X``
+    # test monkeypatches (which retarget these at call time) keep working with
+    # zero test edits. ``_EXECUTABLE_SESSION_AGENT_IDS`` is an ``app``-owned module
+    # constant kept here too (read by the except-chain). The agent-builder /
+    # blueprint-runner danger-set seams moved with the forward orchestration to
+    # ``turn_forward.py`` (#767 Phase B Slice 5), which keeps its own function-local
+    # ``app`` import. Every other former app helper is imported at module top from
+    # its true leaf owner (#714), so turn.py has ZERO top-level ``app`` imports.
     from clio_agent.gact.app import (  # noqa: PLC0415
         _EXECUTABLE_SESSION_AGENT_IDS,
         _append_session_message,
-        _blueprint_runner_for_agent,
-        _build_blueprint_dspy_module,
-        _build_prompt_user_agent_module,
-        _build_tool_user_agent_module,
         _enrich_cancellation_error_info,
     )
 
@@ -639,9 +617,10 @@ async def _run_turn_in_background(
     state.suppressed_parent_resume_offsets = {}
     # TRICKY #1 (Phase B spec): bind the emitter over ``state`` so its LATE reads
     # of state.active_agent_id / state.invocation_agent_id see the forward seam's
-    # IN-PLACE mutations. The same bound callable feeds the streamed-forward sites
-    # below, so both paths resolve the generating agent identically.
-    live_emit = partial(emit_chunk, state)
+    # IN-PLACE mutations. ``forward_turn`` reconstructs the same
+    # ``partial(emit_chunk, state)`` for its streamed-forward sites, so both the
+    # executor rail and the streamed forward resolve the generating agent
+    # identically.
 
     # Unified LM token highway (#693): bind this turn's loop + chat publisher so a
     # blueprint/expert LM call streamed in an executor thread feeds the SAME
@@ -658,91 +637,12 @@ async def _run_turn_in_background(
     # thread-safe ledger. We diff history[start:end] post-turn.
     state.history_start = _snapshot_lm_history_index(state.app)
     _pop_stream_fallback(state.app, state.sid)
-    state.turn_cancel_event = threading.Event()
-    state.app.state.cancel_events[state.sid] = state.turn_cancel_event
-    if state.sid in state.app.state.cancel_flags:
-        state.turn_cancel_event.set()
-    # No-progress watchdog, not a hard wall: CLIO_GACT_TURN_TIMEOUT_S bounds the
-    # gap BETWEEN observable progress events, never the total turn duration. A
-    # long-but-progressing turn (a multi-phase EarthScope pipeline: filter ->
-    # stage -> profile -> plot, each emitting bus events) must run to completion;
-    # only a turn that goes silent for the whole window is wedged and aborted.
-    # See [[clio-no-session-timeout]].
-    state.turn_progress_timeout_s = _gact_turn_timeout_s(state.app)
-    # Poll the progress heartbeat on a short cadence so abort latency after the
-    # turn truly wedges stays small without busy-waiting. Cap by the window so a
-    # tiny configured timeout still polls at least as often.
-    state._watchdog_poll_s = min(2.0, state.turn_progress_timeout_s) if state.turn_progress_timeout_s > 0 else 2.0
-
-    def cancel_requested() -> bool:
-        return state.turn_cancel_event.is_set()
-
-    async def _await_turn_work(awaitable: Any) -> Any:
-        if state.turn_progress_timeout_s <= 0:
-            return await awaitable
-        # Drive the work as a task and poll for completion. asyncio.wait (unlike
-        # wait_for) does NOT cancel the task when the poll interval elapses, so a
-        # still-running turn is never disturbed by the watchdog tick. We seed the
-        # no-progress clock at "now" so a turn that publishes nothing at all is
-        # still bounded by one window; every bus publish for THIS session
-        # refreshes it via EventBus.last_publish_monotonic. Progress is
-        # attributed per-session on purpose: folding other sessions' publishes
-        # in (the old global "" stamp) kept a genuinely wedged session alive as
-        # long as any other session was busy (iowarp/clio-agent#761).
-        state.bus = state.app.state.bus
-        task = asyncio.ensure_future(awaitable)
-        last_progress = time.monotonic()
-        try:
-            while True:
-                done, _pending = await asyncio.wait({task}, timeout=state._watchdog_poll_s)
-                if done:
-                    return task.result()
-                heartbeat = state.bus.last_publish_monotonic(state.sid)
-                if heartbeat > last_progress:
-                    last_progress = heartbeat
-                # An LM call that is actively generating IS progress, even when it
-                # publishes no bus events for the watchdog to see -- a deep-
-                # reasoning model streams its chain-of-thought on a separate
-                # channel (invisible to DSPy's answer-content listeners) and an
-                # expert child runs the call synchronously in an executor (no live
-                # deltas at all). Treating an in-flight LM call as progress stops
-                # the watchdog from killing a working model mid-think; a per-call
-                # ceiling inside lm_call_in_flight() still lets it abort a truly
-                # wedged provider. See clio_agent.runtime.lm_activity.
-                #
-                # Scoped to THIS session (like the bus-progress stamp above): only
-                # an LM call owned by this turn's session counts as its progress,
-                # so a busy neighbor session's in-flight call can no longer keep a
-                # genuinely wedged session alive (iowarp/clio-agent#761 defect 2).
-                if _lm_call_in_flight(state.sid):
-                    last_progress = time.monotonic()
-                if time.monotonic() - last_progress >= state.turn_progress_timeout_s:
-                    state.turn_cancel_event.set()
-                    task.cancel()
-                    try:
-                        await task
-                    except BaseException:  # noqa: BLE001 - swallow during abort
-                        pass
-                    raise _TurnTimedOut(state.turn_progress_timeout_s) from None
-        except asyncio.CancelledError:
-            # If the work already finished, the cancellation targeted *us* (the
-            # watchdog wrapper) after the result was ready -- e.g. event-loop
-            # teardown cancelling pending tasks. Surface the completed result
-            # rather than masking a finished turn as a cancellation.
-            if task.done() and not task.cancelled():
-                exc = task.exception()
-                if exc is None:
-                    return task.result()
-            task.cancel()
-            raise
-
-    # #767 Phase B (Slice 4->5 bridge): the delegation settle engine lives in
-    # ``turn_delegation.py`` but the no-progress watchdog is still owned by these
-    # closures until Slice 5 extracts ``turn_watchdog.py``. Publish the two
-    # closures onto ``state`` so the extracted free functions reach them off the
-    # threaded state (they close over only ``state``, so this is aliasing-safe).
-    state.cancel_requested = cancel_requested
-    state.await_turn_work = _await_turn_work
+    # #767 Phase B Slice 5: mint + register the cancel event and derive the
+    # no-progress watchdog cadence onto ``state`` (formerly the inline setup
+    # block); the watchdog itself is now the free functions
+    # ``cancel_requested`` / ``await_turn_work`` in ``turn_watchdog.py`` that the
+    # forward + delegation seams drive off ``state``.
+    make_turn_cancel_event(state)
 
     try:
         if context_file_error is not None:
@@ -758,336 +658,13 @@ async def _run_turn_in_background(
                 )
             )
 
-        session_agent_id = _session_agent_id(state.sess)
-        state.active_agent_id = state.turn_agent_id or session_agent_id
-        active_blueprint_root_id = _runtime_active_agent_blueprint_root_id(state.app, state.sid)
-        active_blueprint_agent_ids = _runtime_active_agent_blueprint_agent_ids(state.app, state.sid)
-        if (
-            not state.turn_agent_id
-            and active_blueprint_root_id
-            and state.active_agent_id in {"", "main", "default"}
-        ):
-            state.active_agent_id = active_blueprint_root_id
-        routing_mode = getattr(state.sess, "routing_mode", "auto") or "auto"
-        state.invocation_agent_id = state.active_agent_id or "orchestrator"
-        _emit_semantic_event(
-            state.app,
-            state.sid,
-            "agent.invocation.started",
-            turn_id=state.turn_id,
-            trace_id=state.trace_id,
-            status="running",
-            summary=f"Invoking {state.invocation_agent_id}.",
-            actor={"agent_id": state.invocation_agent_id},
-            subject={"message_id": state.user_msg.id},
-            payload={
-                "routing_mode": routing_mode,
-                "session_agent_id": session_agent_id,
-                "turn_agent_id": state.turn_agent_id,
-                "active_blueprint_root_id": active_blueprint_root_id,
-                "active_blueprint_agent_ids": active_blueprint_agent_ids,
-            },
-        )
-        from clio_agent.agent import cancellation_checker as _cancellation_checker  # noqa: PLC0415
-
-        _refresh_argonne_lm_token(state.app.state.agent)
-
-        if (
-            state.active_agent_id not in _EXECUTABLE_SESSION_AGENT_IDS
-            or state.active_agent_id in active_blueprint_agent_ids
-        ):
-            prompt_registry_factory = getattr(state.app.state, "prompt_registry_for_request", None)
-            prompt_registry = (
-                prompt_registry_factory(session_id=state.sid)
-                if callable(prompt_registry_factory)
-                else None
-            )
-            dynamic_agent = _resolve_runtime_dynamic_agent(
-                state.app,
-                state.active_agent_id,
-                session_id=state.sid,
-                prompt_registry=prompt_registry,
-            )
-            if dynamic_agent is None:
-                raise _UnsupportedSessionAgent(state.active_agent_id)
-            state.prompt_resolution = dict(dynamic_agent.metadata.get("prompt_resolution") or {})
-            state.dynamic_agent_used = dynamic_agent
-            runner = _blueprint_runner_for_agent(dynamic_agent)
-            dynamic_kind = (
-                _blueprint_module_kind(dynamic_agent)
-                if _agent_definition_uses_blueprint_runtime(dynamic_agent)
-                else ""
-            )
-            execution_mode = (
-                f"blueprint_{dynamic_kind}"
-                if dynamic_kind
-                else ("tool_agent" if dynamic_agent.tools else "prompt_agent")
-            )
-            state.agent_runtime = _dynamic_agent_runtime_provenance(
-                state.app,
-                dynamic_agent,
-                execution_mode=execution_mode,
-            )
-            # The keystone (set_turn_identity) already binds active_app() for the
-            # whole turn, so no _gact_app_context wrapper is needed here.
-            session_token = _ctx.set_session_id(state.sid)
-            try:
-                module = (
-                    _build_blueprint_dspy_module(state.app.state.agent, dynamic_agent)
-                    if _agent_definition_uses_blueprint_runtime(dynamic_agent)
-                    else (
-                        _build_tool_user_agent_module(state.app.state.agent, dynamic_agent)
-                        if dynamic_agent.tools
-                        else _build_prompt_user_agent_module(state.app.state.agent, dynamic_agent)
-                    )
-                )
-            finally:
-                _ctx.reset(session_token)
-            llm_actor = {
-                "agent_id": dynamic_agent.id,
-                "agent_title": dynamic_agent.title,
-                "source": dynamic_agent.source,
-                "execution_mode": execution_mode,
-            }
-            llm_subject = {
-                "prompt_id": dynamic_agent.prompt_id,
-                "prompt_profile": dynamic_agent.prompt_profile,
-                "message_id": state.user_msg.id,
-            }
-            _emit_semantic_event(
-                state.app,
-                state.sid,
-                "llm.request.started",
-                turn_id=state.turn_id,
-                trace_id=state.trace_id,
-                status="running",
-                summary=f"LLM request started for {dynamic_agent.id}.",
-                actor=llm_actor,
-                subject=llm_subject,
-                blueprint=dict(state.agent_runtime.get("agent_blueprint") or {}),
-                provider=_llm_provider_payload(state.app, dynamic_agent.id),
-                payload={
-                    "request_mode": "streamed",
-                    "input": state.enriched_text,
-                    "prompt_resolution": state.prompt_resolution,
-                    "agent_runtime": state.agent_runtime,
-                    "native_image_count": len(state.native_images),
-                },
-            )
-            with _cancellation_checker(cancel_requested), _tool_session_context(state.sid):
-                state.pred = await _await_turn_work(
-                    _try_streamed_forward_compat(
-                        state.app,
-                        state.enriched_text,
-                        state.sid,
-                        live_emit,
-                        session_mode=getattr(state.sess, "mode", "chat"),
-                        session_edit_mode=getattr(state.sess, "edit_mode", "diff"),
-                        agent_override=module,
-                        images=state.native_images,
-                        cancel_requested=cancel_requested,
-                    )
-                )
-            if state.pred is not None:
-                _emit_semantic_event(
-                    state.app,
-                    state.sid,
-                    "llm.response.completed",
-                    turn_id=state.turn_id,
-                    trace_id=state.trace_id,
-                    summary=f"LLM response completed for {dynamic_agent.id}.",
-                    actor=llm_actor,
-                    subject=llm_subject,
-                    blueprint=dict(state.agent_runtime.get("agent_blueprint") or {}),
-                    provider=_llm_provider_payload(state.app, dynamic_agent.id),
-                    payload=_prediction_summary(state.pred),
-                )
-            if state.pred is None:
-                _emit_semantic_event(
-                    state.app,
-                    state.sid,
-                    "llm.request.started",
-                    turn_id=state.turn_id,
-                    trace_id=state.trace_id,
-                    status="running",
-                    summary=f"Synchronous LLM request started for {dynamic_agent.id}.",
-                    actor=llm_actor,
-                    subject=llm_subject,
-                    blueprint=dict(state.agent_runtime.get("agent_blueprint") or {}),
-                    provider=_llm_provider_payload(state.app, dynamic_agent.id),
-                    payload={
-                        "request_mode": "sync",
-                        "input": state.enriched_text,
-                        "prompt_resolution": state.prompt_resolution,
-                        "agent_runtime": state.agent_runtime,
-                        "native_image_count": len(state.native_images),
-                    },
-                )
-                with _cancellation_checker(cancel_requested), _tool_session_context(state.sid):
-                    loop = asyncio.get_running_loop()
-                    turn_context = contextvars.copy_context()
-                    state.pred = await _await_turn_work(
-                        loop.run_in_executor(
-                            None,
-                            lambda: turn_context.run(
-                                _run_dynamic_agent_compat,
-                                runner,
-                                state.app.state.agent,
-                                dynamic_agent,
-                                state.enriched_text,
-                                state.sid,
-                                cancel_requested,
-                            ),
-                        ),
-                    )
-                _emit_semantic_event(
-                    state.app,
-                    state.sid,
-                    "llm.response.completed",
-                    turn_id=state.turn_id,
-                    trace_id=state.trace_id,
-                    summary=f"Synchronous LLM response completed for {dynamic_agent.id}.",
-                    actor=llm_actor,
-                    subject=llm_subject,
-                    blueprint=dict(state.agent_runtime.get("agent_blueprint") or {}),
-                    provider=_llm_provider_payload(state.app, dynamic_agent.id),
-                    payload=_prediction_summary(state.pred),
-                )
-        else:
-            # Honour the session's routing override. routing_mode "chat"
-            # forces the chat path (no /chat prefix needed); "experts"
-            # rejects chat/none classifications. Keep the override scoped
-            # to this turn context so concurrent sessions do not mutate the
-            # shared ClioAgent instance.
-            routing_override = routing_mode
-            from clio_agent.agent import routing_mode_override as _routing_override  # noqa: PLC0415
-
-            with _routing_override(routing_override), _cancellation_checker(cancel_requested):
-                with _tool_session_context(state.sid):
-                    llm_actor = {
-                        "agent_id": state.active_agent_id or "orchestrator",
-                        "source": "builtin",
-                        "execution_mode": "clio_agent_forward",
-                    }
-                    llm_subject = {"message_id": state.user_msg.id}
-                    _emit_semantic_event(
-                        state.app,
-                        state.sid,
-                        "llm.request.started",
-                        turn_id=state.turn_id,
-                        trace_id=state.trace_id,
-                        status="running",
-                        summary="LLM request started for CLIO orchestrator.",
-                        actor=llm_actor,
-                        subject=llm_subject,
-                        provider=_llm_provider_payload(state.app, state.active_agent_id or "orchestrator"),
-                        payload={
-                            "request_mode": "streamed",
-                            "routing_mode": routing_override,
-                            "session_mode": getattr(state.sess, "mode", "chat"),
-                            "edit_mode": getattr(state.sess, "edit_mode", "diff"),
-                            "input": state.enriched_text,
-                            "native_image_count": len(state.native_images),
-                        },
-                    )
-                    state.pred = await _await_turn_work(
-                        _try_streamed_forward_compat(
-                            state.app,
-                            state.enriched_text,
-                            state.sid,
-                            live_emit,
-                            session_mode=getattr(state.sess, "mode", "chat"),
-                            session_edit_mode=getattr(state.sess, "edit_mode", "diff"),
-                            images=state.native_images,
-                            cancel_requested=cancel_requested,
-                        )
-                    )
-                    if state.pred is not None:
-                        _emit_semantic_event(
-                            state.app,
-                            state.sid,
-                            "llm.response.completed",
-                            turn_id=state.turn_id,
-                            trace_id=state.trace_id,
-                            summary="LLM response completed for CLIO orchestrator.",
-                            actor=llm_actor,
-                            subject=llm_subject,
-                            provider=_llm_provider_payload(state.app, state.active_agent_id or "orchestrator"),
-                            payload=_prediction_summary(state.pred),
-                        )
-                    if state.pred is None:
-                        _emit_semantic_event(
-                            state.app,
-                            state.sid,
-                            "llm.request.started",
-                            turn_id=state.turn_id,
-                            trace_id=state.trace_id,
-                            status="running",
-                            summary="Synchronous LLM request started for CLIO orchestrator.",
-                            actor=llm_actor,
-                            subject=llm_subject,
-                            provider=_llm_provider_payload(state.app, state.active_agent_id or "orchestrator"),
-                            payload={
-                                "request_mode": "sync",
-                                "routing_mode": routing_override,
-                                "session_mode": getattr(state.sess, "mode", "chat"),
-                                "edit_mode": getattr(state.sess, "edit_mode", "diff"),
-                                "input": state.enriched_text,
-                                "native_image_count": len(state.native_images),
-                            },
-                        )
-                        loop = asyncio.get_running_loop()
-                        turn_context = contextvars.copy_context()
-                        state.pred = await _await_turn_work(
-                            loop.run_in_executor(
-                                None,
-                                lambda: turn_context.run(
-                                    _agent_forward_compat,
-                                    state.app.state.agent,
-                                    state.enriched_text,
-                                    state.sid,
-                                    getattr(state.sess, "mode", "chat"),
-                                    getattr(state.sess, "edit_mode", "diff"),
-                                    cancel_requested,
-                                    state.native_images,
-                                ),
-                            ),
-                        )
-                        _emit_semantic_event(
-                            state.app,
-                            state.sid,
-                            "llm.response.completed",
-                            turn_id=state.turn_id,
-                            trace_id=state.trace_id,
-                            summary="Synchronous LLM response completed for CLIO orchestrator.",
-                            actor=llm_actor,
-                            subject=llm_subject,
-                            provider=_llm_provider_payload(state.app, state.active_agent_id or "orchestrator"),
-                            payload=_prediction_summary(state.pred),
-                        )
-        if state.dynamic_agent_used is not None and state.dynamic_agent_used.source == "expert_pack":
-            state.pred, state.expert_handoffs = await settle_dynamic_agent_delegations(
-                state,
-                state.dynamic_agent_used,
-                state.pred,
-                source_text=state.enriched_text,
-            )
-        _emit_semantic_event(
-            state.app,
-            state.sid,
-            "agent.invocation.completed",
-            turn_id=state.turn_id,
-            trace_id=state.trace_id,
-            summary=f"{state.invocation_agent_id} returned a prediction.",
-            actor={"agent_id": state.invocation_agent_id},
-            subject={"message_id": state.user_msg.id},
-            payload={
-                "selected_expert": getattr(state.pred, "selected_expert", "") or "",
-                "route_source": getattr(state.pred, "route_source", "") or "",
-                "has_answer": bool(getattr(state.pred, "answer", "") or ""),
-                "has_error_info": bool(getattr(state.pred, "error_info", None)),
-            },
-        )
+        # #767 Phase B Slice 5: agent resolve -> module build -> streamed/sync
+        # forward -> expert-pack delegation settle lives in ``turn_forward.py``.
+        # It sets state.active_agent_id / invocation_agent_id (IN PLACE, TRICKY
+        # #1) / agent_runtime / prompt_resolution / dynamic_agent_used /
+        # expert_handoffs and returns the prediction (TRICKY #2: pred is a seam
+        # return value, ``state.pred = forward_turn(state)``).
+        state.pred = await forward_turn(state)
 
         state.answer_text = getattr(state.pred, "answer", "")
         state.selected_agent = getattr(state.pred, "selected_expert", "") or ""
