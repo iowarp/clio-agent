@@ -2433,7 +2433,9 @@ def run_server(
     # immediately, beating gact-tui's 3-second deploy probe. POST /messages
     # 503s until app.state.agent is stamped by the background task.
     app_to_run: FastAPI = build_app()
-    if not no_agent and os.environ.get("CLIO_LM_PROVIDER"):
+    if not no_agent and conf.resolve(
+        "lm.provider", env="CLIO_LM_PROVIDER", default="", cast=conf.as_str
+    ) != "":
         app_to_run.state.want_agent = True
 
     uvicorn.run(

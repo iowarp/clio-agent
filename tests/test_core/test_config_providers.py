@@ -4,11 +4,13 @@ Tests for multi-provider LM configuration.
 Tests LMProviderConfig, load_config_from_env, create_lm, and create_planner_lm.
 """
 
+from pathlib import Path
 from unittest.mock import patch
 
 import dspy
 import pytest
 
+from clio_agent import conf
 from clio_agent.config import (
     LMProviderConfig,
     create_lm,
@@ -166,6 +168,26 @@ class TestLoadConfigFromEnv:
             assert config.provider == "lm_studio"
             assert config.api_base == "http://127.0.0.1:1234/v1"
 
+    def test_cold_conf_cache_without_home_dir(self, monkeypatch):
+        """Regression (#769 Slice 2): with the conf file-layer cache cold AND no
+        resolvable home directory (on Windows ``Path.home()`` raises when the
+        scrubbed environment lacks USERPROFILE/HOME), ``load_config_from_env``
+        must degrade to env/default tiers instead of crashing with RuntimeError.
+        ``Path.home`` is forced to raise so the Windows chain is exercised
+        deterministically on every platform."""
+
+        def _no_home() -> Path:
+            raise RuntimeError("Could not determine home directory.")
+
+        monkeypatch.setattr(Path, "home", staticmethod(_no_home))
+        conf.reload()  # force the next resolve to hit ConfigStore._load
+        try:
+            with patch.dict("os.environ", {}, clear=True):
+                config = load_config_from_env()
+        finally:
+            conf.reload()  # drop the degraded cache so later tests re-read fresh
+        assert config.provider == "lm_studio"
+
     def test_ollama_provider_from_env(self):
         """CLIO_LM_PROVIDER=ollama should configure ollama defaults."""
         with patch.dict("os.environ", {"CLIO_LM_PROVIDER": "ollama"}, clear=True):
@@ -290,6 +312,119 @@ class TestLoadConfigFromEnv:
         with patch.dict("os.environ", env, clear=True):
             config = load_config_from_env()
             assert config.claude_code_transport == "exec"
+
+
+class TestLoadConfigFileLayerWins:
+    """Slice 2: LM boot config resolves file → env → default.
+
+    A committed ``.clio``/user ``config.yaml`` ``lm.*`` key wins over the matching
+    ``CLIO_LM_*`` environment variable; the secret ``CLIO_LM_API_KEY`` stays env-only.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _fresh_store(self):
+        from clio_agent import conf
+
+        conf.reload()
+        yield
+        conf.reload()
+
+    @staticmethod
+    def _write_user_config(body: str) -> None:
+        import os
+        from pathlib import Path
+
+        from clio_agent import conf
+
+        xdg = os.environ["XDG_CONFIG_HOME"]  # per-test tmp dir from conftest
+        target = Path(xdg) / "clio-agent" / "config.yaml"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(body, encoding="utf-8")
+        conf.reload()
+
+    def test_provider_file_wins_over_env(self, monkeypatch):
+        monkeypatch.setenv("CLIO_LM_PROVIDER", "openai")
+        monkeypatch.setenv("CLIO_LM_API_KEY", "sk-x")  # openai would need a key
+        self._write_user_config("lm:\n  provider: ollama\n")
+        config = load_config_from_env()
+        assert config.provider == "ollama"
+
+    def test_model_file_wins_over_env(self, monkeypatch):
+        monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")
+        monkeypatch.setenv("CLIO_LM_MODEL", "env/model")
+        self._write_user_config("lm:\n  model: file/model\n")
+        config = load_config_from_env()
+        assert config.model == "file/model"
+
+    def test_max_tokens_file_wins_over_env(self, monkeypatch):
+        monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")
+        monkeypatch.setenv("CLIO_LM_MAX_TOKENS", "1234")
+        self._write_user_config("lm:\n  max_tokens: 4321\n")
+        config = load_config_from_env()
+        assert config.max_tokens == 4321
+
+    def test_environment_file_wins_over_env(self, monkeypatch):
+        monkeypatch.setenv("CLIO_ENVIRONMENT", "staging")
+        self._write_user_config("runtime:\n  environment: production\n")
+        config = load_config_from_env()
+        assert config.environment == "production"
+
+    def test_planner_temperature_router_legacy_env_only(self, monkeypatch):
+        # No file/primary env → the legacy CLIO_LM_ROUTER_TEMPERATURE alias applies.
+        monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")
+        monkeypatch.setenv("CLIO_LM_MODEL", "plain/model")  # avoid a profile override
+        monkeypatch.delenv("CLIO_LM_PLANNER_TEMPERATURE", raising=False)
+        monkeypatch.setenv("CLIO_LM_ROUTER_TEMPERATURE", "0.42")
+        config = load_config_from_env()
+        assert config.planner_temperature == 0.42
+
+    def test_api_key_stays_env_only(self, monkeypatch):
+        # A config file must NOT be able to supply the secret API key.
+        monkeypatch.setenv("CLIO_LM_PROVIDER", "openai")
+        monkeypatch.delenv("CLIO_LM_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        self._write_user_config("lm:\n  api_key: sk-from-file\n")
+        with pytest.raises(ValueError, match="requires an API key"):
+            load_config_from_env()
+
+
+class TestHasExplicitModelOverride:
+    """Slice 2: ``has_explicit_model_override`` honors the file layer."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_store(self):
+        from clio_agent import conf
+
+        conf.reload()
+        yield
+        conf.reload()
+
+    def test_env_sets_override(self, monkeypatch):
+        from clio_agent.config import has_explicit_model_override
+
+        monkeypatch.setenv("CLIO_LM_MODEL", "some/model")
+        assert has_explicit_model_override() is True
+
+    def test_unset_is_false(self, monkeypatch):
+        from clio_agent.config import has_explicit_model_override
+
+        monkeypatch.delenv("CLIO_LM_MODEL", raising=False)
+        assert has_explicit_model_override(env={}) is False
+
+    def test_file_layer_counts_as_override(self, monkeypatch):
+        import os
+        from pathlib import Path
+
+        from clio_agent import conf
+        from clio_agent.config import has_explicit_model_override
+
+        xdg = os.environ["XDG_CONFIG_HOME"]
+        target = Path(xdg) / "clio-agent" / "config.yaml"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("lm:\n  model: file/model\n", encoding="utf-8")
+        conf.reload()
+        # Even with the env var absent, the pinned file model is an override.
+        assert has_explicit_model_override(env={}) is True
 
 
 class TestCreateLM:

@@ -430,50 +430,85 @@ def _resolve_argonne_api_key() -> str:
 
 
 def load_config_from_env() -> LMProviderConfig:
-    """Load LM configuration from environment variables.
+    """Load LM boot configuration via ``conf`` (file → env → default).
 
-    Reads CLIO_* environment variables with fallback to provider defaults.
+    Every knob resolves with the project precedence: a shared config file
+    (``.clio/config.yaml`` / user ``config.yaml``) wins over the matching
+    ``CLIO_LM_*`` environment variable, which wins over the in-code provider
+    default. See :mod:`clio_agent.conf` for the precedence rationale.
 
-    Environment variables:
-        CLIO_LM_PROVIDER: Provider name (lm_studio, ollama, openai, anthropic,
-            argonne, codex, claude_code)
-        CLIO_LM_API_BASE: Override API base URL
-        CLIO_LM_MODEL: Override model identifier
-        CLIO_LM_API_KEY: Override API key
-        CLIO_LM_TEMPERATURE: Override reasoner/chat temperature
-        CLIO_LM_PLANNER_TEMPERATURE: Override planner temperature
-        CLIO_LM_PLANNER_MAX_TOKENS: Override planner token cap
-        CLIO_LM_MAX_TOKENS: Override max tokens
-        CLIO_CODEX_TRANSPORT: Codex transport mode (exec or sdk)
-        CLIO_CLAUDE_CODE_TRANSPORT: Claude Code transport mode (exec)
-        CLIO_ENVIRONMENT: Deployment environment (dev/staging/production)
+    Config keys → environment variables:
+        ``lm.provider`` / CLIO_LM_PROVIDER: Provider name (lm_studio, ollama,
+            openai, anthropic, argonne, codex, claude_code)
+        ``lm.api_base`` / CLIO_LM_API_BASE: Override API base URL
+        ``lm.model`` / CLIO_LM_MODEL: Override model identifier
+        ``lm.temperature`` / CLIO_LM_TEMPERATURE: Override reasoner/chat temperature
+        ``lm.planner_temperature`` / CLIO_LM_PLANNER_TEMPERATURE: planner temperature
+            (legacy CLIO_LM_ROUTER_TEMPERATURE is honored env-tier only)
+        ``lm.planner_max_tokens`` / CLIO_LM_PLANNER_MAX_TOKENS: planner token cap
+        ``lm.max_tokens`` / CLIO_LM_MAX_TOKENS: Override max tokens
+        ``lm.top_p`` / ``lm.top_k`` / ``lm.min_p`` / ``lm.presence_penalty``: sampling
+        ``lm.codex_transport`` / CLIO_CODEX_TRANSPORT: Codex transport (exec or sdk)
+        ``lm.claude_code_transport`` / CLIO_CLAUDE_CODE_TRANSPORT: Claude Code transport
+        ``runtime.environment`` / CLIO_ENVIRONMENT: Deployment environment
+
+    ``CLIO_LM_API_KEY`` is deliberately **NOT** routed through ``conf``: it is a
+    secret and stays env-only (a shared config file must never carry a key). See
+    the secret-tier note in :mod:`clio_agent.conf`.
 
     Returns:
-        LMProviderConfig with env-based settings
+        LMProviderConfig with resolved settings
 
     Raises:
         ValueError: If cloud provider is selected without API key
     """
-    provider = os.environ.get("CLIO_LM_PROVIDER", "lm_studio")
-    api_base = os.environ.get("CLIO_LM_API_BASE", "")
-    model = os.environ.get("CLIO_LM_MODEL", "")
-    api_key = os.environ.get("CLIO_LM_API_KEY", "")
-    environment = os.environ.get("CLIO_ENVIRONMENT", "dev")
-    codex_transport = os.environ.get("CLIO_CODEX_TRANSPORT", "").strip().lower()
-    claude_code_transport = os.environ.get("CLIO_CLAUDE_CODE_TRANSPORT", "").strip().lower()
+    from clio_agent import conf  # noqa: PLC0415 - keep config.py a leaf; lazy per-call
 
-    # Parse numeric env vars
-    temperature_str = os.environ.get("CLIO_LM_TEMPERATURE", "")
-    planner_temperature_str = os.environ.get(
-        "CLIO_LM_PLANNER_TEMPERATURE",
-        os.environ.get("CLIO_LM_ROUTER_TEMPERATURE", ""),
+    provider = conf.resolve(
+        "lm.provider", env="CLIO_LM_PROVIDER", default="lm_studio", cast=conf.as_str
     )
-    planner_max_tokens_str = os.environ.get("CLIO_LM_PLANNER_MAX_TOKENS", "")
-    max_tokens_str = os.environ.get("CLIO_LM_MAX_TOKENS", "")
-    top_p_str = os.environ.get("CLIO_LM_TOP_P", "")
-    top_k_str = os.environ.get("CLIO_LM_TOP_K", "")
-    min_p_str = os.environ.get("CLIO_LM_MIN_P", "")
-    presence_penalty_str = os.environ.get("CLIO_LM_PRESENCE_PENALTY", "")
+    api_base = conf.resolve("lm.api_base", env="CLIO_LM_API_BASE", default="", cast=conf.as_str)
+    model = conf.resolve("lm.model", env="CLIO_LM_MODEL", default="", cast=conf.as_str)
+    # Secret tier: API key stays env-only, never file-resolved (see conf docstring).
+    api_key = os.environ.get("CLIO_LM_API_KEY", "")
+    environment = conf.resolve(
+        "runtime.environment", env="CLIO_ENVIRONMENT", default="dev", cast=conf.as_str
+    )
+    codex_transport = conf.resolve(
+        "lm.codex_transport", env="CLIO_CODEX_TRANSPORT", default="", cast=conf.as_str
+    ).strip().lower()
+    claude_code_transport = conf.resolve(
+        "lm.claude_code_transport", env="CLIO_CLAUDE_CODE_TRANSPORT", default="", cast=conf.as_str
+    ).strip().lower()
+
+    # Numeric knobs: default ``None`` means "unset" → the LMProviderConfig
+    # provider default applies. cast is applied only to a real file/env value.
+    temperature = conf.resolve(
+        "lm.temperature", env="CLIO_LM_TEMPERATURE", default=None, cast=conf.as_float
+    )
+    planner_temperature = conf.resolve(
+        "lm.planner_temperature",
+        env="CLIO_LM_PLANNER_TEMPERATURE",
+        default=None,
+        cast=conf.as_float,
+    )
+    if planner_temperature is None:
+        # Legacy alias, env-tier only (below file + CLIO_LM_PLANNER_TEMPERATURE).
+        router_temperature = os.environ.get("CLIO_LM_ROUTER_TEMPERATURE", "")
+        if router_temperature.strip():
+            planner_temperature = conf.as_float(router_temperature)
+    planner_max_tokens = conf.resolve(
+        "lm.planner_max_tokens", env="CLIO_LM_PLANNER_MAX_TOKENS", default=None, cast=conf.as_int
+    )
+    max_tokens = conf.resolve(
+        "lm.max_tokens", env="CLIO_LM_MAX_TOKENS", default=None, cast=conf.as_int
+    )
+    top_p = conf.resolve("lm.top_p", env="CLIO_LM_TOP_P", default=None, cast=conf.as_float)
+    top_k = conf.resolve("lm.top_k", env="CLIO_LM_TOP_K", default=None, cast=conf.as_int)
+    min_p = conf.resolve("lm.min_p", env="CLIO_LM_MIN_P", default=None, cast=conf.as_float)
+    presence_penalty = conf.resolve(
+        "lm.presence_penalty", env="CLIO_LM_PRESENCE_PENALTY", default=None, cast=conf.as_float
+    )
 
     kwargs: dict = {
         "provider": provider,
@@ -485,22 +520,22 @@ def load_config_from_env() -> LMProviderConfig:
         kwargs["model"] = model
     if api_key:
         kwargs["api_key"] = api_key
-    if temperature_str:
-        kwargs["temperature"] = float(temperature_str)
-    if planner_temperature_str:
-        kwargs["planner_temperature"] = float(planner_temperature_str)
-    if planner_max_tokens_str:
-        kwargs["planner_max_tokens"] = int(planner_max_tokens_str)
-    if max_tokens_str:
-        kwargs["max_tokens"] = int(max_tokens_str)
-    if top_p_str:
-        kwargs["top_p"] = float(top_p_str)
-    if top_k_str:
-        kwargs["top_k"] = int(top_k_str)
-    if min_p_str:
-        kwargs["min_p"] = float(min_p_str)
-    if presence_penalty_str:
-        kwargs["presence_penalty"] = float(presence_penalty_str)
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+    if planner_temperature is not None:
+        kwargs["planner_temperature"] = planner_temperature
+    if planner_max_tokens is not None:
+        kwargs["planner_max_tokens"] = planner_max_tokens
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+    if top_p is not None:
+        kwargs["top_p"] = top_p
+    if top_k is not None:
+        kwargs["top_k"] = top_k
+    if min_p is not None:
+        kwargs["min_p"] = min_p
+    if presence_penalty is not None:
+        kwargs["presence_penalty"] = presence_penalty
     if codex_transport:
         kwargs["codex_transport"] = codex_transport
     if claude_code_transport:
@@ -533,8 +568,19 @@ def load_config_from_env() -> LMProviderConfig:
 
 
 def has_explicit_model_override(env: Mapping[str, str] | None = None) -> bool:
-    """Return whether CLIO_LM_MODEL was explicitly set."""
-    current_env = env or os.environ
+    """Return whether the LM model was explicitly pinned (file OR env).
+
+    True when either the config-file layer sets a non-empty ``lm.model`` or the
+    ``CLIO_LM_MODEL`` environment variable is set. The injected ``env`` mapping
+    (used by tests) overrides the process environment for the env-tier check but
+    does not affect the file layer.
+    """
+    from clio_agent import conf  # noqa: PLC0415 - keep config.py a leaf; lazy per-call
+
+    file_model = conf.store().file_value("lm.model")
+    if isinstance(file_model, str) and file_model.strip():
+        return True
+    current_env = env if env is not None else os.environ
     return bool(current_env.get("CLIO_LM_MODEL", "").strip())
 
 

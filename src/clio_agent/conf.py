@@ -41,6 +41,7 @@ Usage::
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from collections.abc import Callable, Mapping
@@ -50,6 +51,8 @@ from typing import Any, TypeVar
 import yaml
 
 T = TypeVar("T")
+
+logger = logging.getLogger(__name__)
 
 _USER_CONFIG_RELPATH = ("clio-agent", "config.yaml")
 _WORKSPACE_CONFIG_RELPATH = (".clio", "config.yaml")
@@ -177,11 +180,22 @@ class ConfigStore:
     def _load(self) -> dict[str, Any]:
         from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
 
-        home = self._home or Path.home()
         cwd = self._cwd or Path.cwd()
         env = self._env_map()
-        # OS-correct per-user config dir (honors injected home/env for tests).
-        user = _read_yaml_mapping(paths.user_config_dir_for(home, env) / _USER_CONFIG_RELPATH[-1])
+        user: dict[str, Any] = {}
+        try:
+            home = self._home or Path.home()
+            # OS-correct per-user config dir (honors injected home/env for tests).
+            user_dir = paths.user_config_dir_for(home, env)
+        except RuntimeError as exc:
+            # No resolvable home directory — e.g. on Windows, ``Path.home()``
+            # raises when USERPROFILE/HOME are absent from the environment
+            # (scrubbed test envs, hardened services). The per-user config
+            # layer is then explicitly absent: emit the reason (no silent
+            # fallback) and resolve from workspace file → env → default.
+            logger.debug("user config layer skipped: no home directory resolvable (%s)", exc)
+        else:
+            user = _read_yaml_mapping(user_dir / _USER_CONFIG_RELPATH[-1])
         workspace = _read_yaml_mapping(cwd.joinpath(*_WORKSPACE_CONFIG_RELPATH))
         return _deep_merge(user, workspace)
 
