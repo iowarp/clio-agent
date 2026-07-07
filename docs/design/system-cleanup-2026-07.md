@@ -28,11 +28,19 @@ Kept current as work lands; the running per-PR log is the umbrella #775.
   the **sole** transcript wire vocabulary (the zero-consumer `turn.*` twins are gone). **PR-4
   (single dedup owner) is parked** under **#832**: the owner ruled the server must emit a clean
   stream (the UI never owns dedup/validity), which rejects the tag+client-collapse design; final
-  resolution at the post-Phase-4 website review. Remaining on #767: the `_run_turn_in_background`
-  decomposition (+ the #714 app↔turn cycle) — in progress — and the EarthScope vocabulary
-  extraction (#646/#648). gact-tui #232: SPEC reconciled to reality with conformance asserts
-  (tui #247) and the wire layers synced (tui #248); remaining: drift-impossible CI + client sync
-  to the final vocabulary (the dedup-owner step waits on #832).
+  resolution at the post-Phase-4 website review. **The decomposition landed (PR #836,
+  2026-07-07):** `_run_turn_in_background` is decomposed — `turn.py` 3,451 → 806 lines, explicit
+  `TurnState` + seam modules (`turn_stream`/`turn_delegation`/`turn_forward`/`turn_watchdog`/
+  `turn_usage`/`turn_nanoagents`/`turn_finalize`), pure refactor (goldens byte-identical), and
+  the #714 app↔turn lazy-import cycle is dissolved (zero top-level app imports in turn.py).
+  Remaining on #767: the EarthScope vocabulary extraction (#646/#648) — in progress — and the
+  #732 thought-duplication item (parked under #832). **gact-tui #232 is functionally complete**
+  (6/9 checklist items; the rest owner-gated): SPEC reconciled + conformance asserts (tui #247),
+  wire layers synced (tui #248), the retired `turn.*` vocabulary purged client-side + a
+  machine-checked SPEC §7.7 wire vocabulary where declared⇄spec drift fails CI in TS and Go
+  (tui #251), one WHATWG SSE grammar + `Last-Event-ID` resume on all three transports (tui #252),
+  floating issue ledgers converted to tracked issues (tui #253). Owner-gated remainders: the
+  dedup-owner step (#832), wire-type ownership/codegen (decision issue tui #254).
 - **Phases 3–4 — open** (Phase 3 opportunistically started: **#770 closed**, the #772 ratchet is
   live via #810/#827, and gact-tui parity phase 1 landed as tui #249; tui P0s #224–#231 verified
   closed in the Phase 0 sweep). Phase 3: #769 / #771 / #772 / #773 + gact-tui #233/#236. Phase 4:
