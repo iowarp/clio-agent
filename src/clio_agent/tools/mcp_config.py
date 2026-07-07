@@ -18,7 +18,7 @@ the documented, default surface.
 
 Scopes (highest precedence wins, merged by name): workspace
 ``<cwd>/.clio/mcp.yaml`` > user ``<config>/clio-agent/mcp.yaml`` > pack
-``AGENT.md`` frontmatter ``mcp_servers:`` > built-in defaults (fs/shell/web).
+``AGENT.md`` frontmatter ``mcp_servers:`` > built-in defaults (fs/shell).
 
 This module is parsing only; ``transport_for`` is the single FastMCP glue that
 turns a spec into a transport the existing ``execution.py`` machinery accepts.
@@ -54,7 +54,11 @@ __all__ = [
 ]
 
 # clio-agent's built-in universal defaults (always present, not declarations).
-BUILTIN_SERVER_NAMES = frozenset({"fs", "shell", "web"})
+# These MUST match what ``tools.gateway._mount_builtins`` actually mounts: a name
+# listed here but not mounted is silently un-mountable as a user server (the
+# gateway skips it as "builtin") — that phantom ``"web"`` bug is why this set is
+# kept in lockstep with the mounts, not aspirational.
+BUILTIN_SERVER_NAMES = frozenset({"fs", "shell"})
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\}")
 _URL_PREFIXES = ("http://", "https://")
@@ -333,7 +337,7 @@ def load_mcp_servers(
     Precedence (highest wins, merged whole by name): workspace
     ``<cwd>/.clio/mcp.yaml`` > user ``<config>/clio-agent/mcp.yaml`` > pack
     frontmatter (``pack_servers`` = ``{pack_id: {name: declaration}}``). Built-in
-    ``fs``/``shell``/``web`` are provided by core, not part of this map.
+    ``fs``/``shell`` are provided by core, not part of this map.
     """
     home = home or Path.home()
     cwd = cwd or Path.cwd()

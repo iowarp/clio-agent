@@ -82,6 +82,19 @@ class TestArgonneRef:
         monkeypatch.setenv("ALCF_INFERENCE_TOKEN", "alcf-tok")
         assert credentials.resolve_argonne_token() == "alcf-tok"
 
+    def test_bare_access_token_is_not_accepted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A bare, un-namespaced ``access_token`` env var is NOT an ALCF bearer.
+
+        #769 dropped the generic ``access_token`` escape hatch: it is far
+        too generic to claim as an ALCF bearer and risked hijacking an
+        unrelated process env var. Only ``CLIO_ARGONNE_TOKEN`` and
+        ``ALCF_INFERENCE_TOKEN`` remain as overrides; with neither set and
+        no stored Globus token, resolution surfaces ``""``.
+        """
+        monkeypatch.setenv("access_token", "hijacked-generic-token")
+        monkeypatch.setattr("clio_agent.providers.argonne_auth.tokens_exist", lambda: False)
+        assert credentials.resolve_argonne_token() == ""
+
     def test_argonne_ref_routes_through_config_seam(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # The runtime-refresh path + existing tests monkeypatch this seam; the
         # resolver must observe the patch.

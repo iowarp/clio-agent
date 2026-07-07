@@ -6,7 +6,7 @@ The legacy LM-Studio-specific dataclasses (LMStudioConfig / RouterLMConfig
 removed alongside the provider registry refactor (umbrella iowarp/clio-
 agent#48, sprint #50). The canonical surface is now
 LMProviderConfig + create_lm() / create_planner_lm() driven by the
-PROVIDER_DEFAULTS dict derived from clio_agent.providers.registry.
+PROVIDER_DEFAULTS dict derived from clio_agent.providers.catalog.
 """
 
 import pytest

@@ -133,4 +133,4 @@ dashboard, not in clio's per-turn meter.
 - [Providers overview](README.md)
 - [Adding a new provider](ADDING_A_PROVIDER.md)
 - Source: [`src/clio_agent/providers/codex_litellm.py`](../../src/clio_agent/providers/codex_litellm.py)
-- Source: [`src/clio_agent/providers/registry.py`](../../src/clio_agent/providers/registry.py) (`codex` entry)
+- Source: [`src/clio_agent/providers/catalog.py`](../../src/clio_agent/providers/catalog.py) (`codex` entry)

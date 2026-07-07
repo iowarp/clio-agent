@@ -167,6 +167,19 @@ def test_build_gateway_skips_builtin_namespace_collision(declared_server: FastMC
     assert "fs_ping" not in names
 
 
+def test_build_gateway_mounts_user_server_named_web(declared_server: FastMCP):
+    """``web`` is a free namespace — a user MCP server named ``web`` mounts.
+
+    Regression guard for the #769 phantom-builtin fix: ``web`` sat in the
+    reserved-namespace set with no backing server, so a user server named
+    ``web`` was silently skipped. Only ``fs`` and ``shell`` are reserved.
+    """
+    spec = MCPServerSpec(name="web", transport="stdio", command="x")
+    gw = build_gateway({"web": spec}, proxy_factory=_in_process_factory(declared_server))
+    names = {t.name for t in _list_tools_sync(gw)}
+    assert "web_ping" in names
+
+
 def test_build_gateway_threads_cwd_to_stdio_only(declared_server: FastMCP):
     """``cwd`` reaches stdio specs (per-workspace spawn) but never http specs."""
     seen: dict[str, str | None] = {}

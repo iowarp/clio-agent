@@ -100,19 +100,19 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     Handlers close over the ``app`` argument (FastAPI's decorators need it) and
     reach the live agent / LM config status / event bus through ``app.state``. The
-    preset + model catalogs are read from :mod:`clio_agent.providers.registry` once
+    preset + model catalogs are read from :mod:`clio_agent.providers.catalog` once
     at registration time (mirroring the original ``build_app`` behavior); the bind
     reaches the agent-rebuild hooks through ``deps``.
     """
 
     # ---- /v1/providers (#15) ------------------------------------------
 
-    # Derived from clio_agent.providers.registry. Add new presets to
-    # the registry, not here -- this list reflects whatever the registry
+    # Derived from clio_agent.providers.catalog. Add new presets to
+    # the catalog, not here -- this list reflects whatever the catalog
     # contains at registration time. Polaris preset removed for the time
     # being -- the inference-api gateway returns 400 'cluster polaris
     # does not exist' for /resource_server/polaris/vllm/v1.
-    from clio_agent.providers.registry import as_lm_presets as _build_lm_presets
+    from clio_agent.providers.catalog import as_lm_presets as _build_lm_presets
 
     _LM_PRESETS: list[LMProviderPreset] = _build_lm_presets()
 
@@ -120,14 +120,14 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
     # because most upstreams either don't expose a /models endpoint or
     # return hundreds of irrelevant entries. The TUI's Settings → Model
     # picker calls this once per provider and lists the rows verbatim.
-    # Derived from clio_agent.providers.registry. Static fallback used
+    # Derived from clio_agent.providers.catalog. Static fallback used
     # only when live model discovery against the upstream /v1/models
     # endpoint fails (no key, network down, 5xx) -- see the GET
     # /v1/providers/{id}/models handler below for the resolution order.
     # ALCF / Argonne live model availability is dynamic (jobs spin up
     # and tear down behind the gateway); the live set can be queried
     # with `scripts/list_active_models.sh` in alcf-agentics-workflow.
-    from clio_agent.providers.registry import (
+    from clio_agent.providers.catalog import (
         as_provider_models_dict as _build_provider_models,
     )
 
@@ -376,12 +376,12 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         # trigger an interactive OAuth flow.
         import os as _os  # noqa: PLC0415
 
+        from clio_agent.providers.catalog import (  # noqa: PLC0415
+            as_cloud_api_key_env as _cloud_env,
+        )
         from clio_agent.providers.handshake import (  # noqa: PLC0415
             HandshakeContext,
             run_handshake,
-        )
-        from clio_agent.providers.registry import (  # noqa: PLC0415
-            as_cloud_api_key_env as _cloud_env,
         )
 
         preset = next((p for p in _LM_PRESETS if p.id == provider_id), None)
@@ -447,12 +447,12 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         """
         import os as _os  # noqa: PLC0415
 
+        from clio_agent.providers.catalog import (  # noqa: PLC0415
+            as_cloud_api_key_env as _cloud_env,
+        )
         from clio_agent.providers.handshake import (  # noqa: PLC0415
             HandshakeContext,
             run_handshake,
-        )
-        from clio_agent.providers.registry import (  # noqa: PLC0415
-            as_cloud_api_key_env as _cloud_env,
         )
 
         preset = next((p for p in _LM_PRESETS if p.id == provider_id), None)
@@ -537,7 +537,6 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             env_token = (
                 os.environ.get("CLIO_ARGONNE_TOKEN", "").strip()
                 or os.environ.get("ALCF_INFERENCE_TOKEN", "").strip()
-                or os.environ.get("access_token", "").strip()
             )
             if env_token:
                 update["status"] = "ready"

@@ -68,12 +68,12 @@ def _dspy():
 
 
 # ============================================================================
-# PROVIDER DEFAULTS — derived from clio_agent.providers.registry
+# PROVIDER DEFAULTS — derived from clio_agent.providers.catalog
 # ============================================================================
 
 #
 # These two dicts are derived views over the canonical provider list at
-# ``src/clio_agent/providers/registry.py``. Add a new provider by adding
+# ``src/clio_agent/providers/catalog.py``. Add a new provider by adding
 # a ``Provider(...)`` entry there — the wire defaults flow through here,
 # the catalog rows flow into ``GET /v1/providers/lm``, and the static
 # model fallback flows into ``GET /v1/providers/{id}/models``.
@@ -93,10 +93,10 @@ def _dspy():
 #                         default. Users can override with
 #                         CLIO_LM_MAX_TOKENS for larger-context models.
 from clio_agent.providers import credentials as _credentials
-from clio_agent.providers.registry import (
+from clio_agent.providers.catalog import (
     as_cloud_api_key_env as _registry_cloud_api_key_env,
 )
-from clio_agent.providers.registry import (
+from clio_agent.providers.catalog import (
     as_provider_defaults_dict as _registry_provider_defaults,
 )
 

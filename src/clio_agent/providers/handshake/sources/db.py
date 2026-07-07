@@ -1,6 +1,7 @@
 """Local model-limits database — the bottom of the limit-resolution cascade.
 
-The handshake resolves a model's limits **provider-live -> models.dev -> this DB**.
+The handshake resolves a model's limits **provider-self-reported -> models.dev ->
+litellm catalog -> this DB**.
 The DB is split into two layers:
 
 - a **read-only seed shipped with the package** (``data/model_limits.json``) so a

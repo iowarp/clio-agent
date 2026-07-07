@@ -3,13 +3,13 @@
 Some providers (the ``codex`` and ``claude_code`` LiteLLM bridges) drive a local
 CLI rather than an HTTP endpoint, so there is nothing to *probe*: no ``/models``
 route, no auth header, no network at all. But they DO have a known model set —
-declared in the provider registry (:mod:`clio_agent.providers.registry`) — and
+declared in the provider catalog (:mod:`clio_agent.providers.catalog`) — and
 those models still need their **context windows** resolved so budgeting and the
 model picker work. So this handshake makes *zero* network calls yet still emits
 the registry's candidate models as profiles; the base
 :meth:`ProviderHandshake.enrich_capabilities` step then fills each model's
-context window from the shared source cascade (model-limits DB -> litellm catalog
--> models.dev).
+context window from the shared source cascade (provider-self-reported ->
+models.dev -> litellm catalog -> local DB).
 
 This is what makes a CLI provider's context discoverable on default config
 (iowarp/clio-agent#740). Previously discovery returned ``[]`` so codex /
@@ -62,7 +62,7 @@ class NoOpHandshake(ProviderHandshake):
         candidate model ids; surfacing them here lets the base enrichment resolve
         each one's context window from the cascade.
         """
-        from clio_agent.providers.registry import get_provider  # noqa: PLC0415
+        from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
 
         provider = get_provider(ctx.provider_id)
         if provider is None:
