@@ -6,12 +6,13 @@ COPY external/gact-tui/apps ./apps
 COPY branding ./branding
 WORKDIR /build/apps
 RUN pnpm install --frozen-lockfile=false --filter "@clio/web..."
-RUN GACT_BRAND=clio GACT_BRAND_ROOT=/build/branding pnpm --filter @clio/web build \
+RUN printf '{ "profile": "clio", "brandingRoot": "/build/branding" }\n' > brand.config.local.json \
+    && pnpm --filter @clio/web build \
     && test -f web/dist/index.html
 
 FROM python:3.12-slim
 LABEL org.opencontainers.image.title="CLIO Web" \
-      org.opencontainers.image.description="CLIO web UI (gact-tui apps/web, GACT_BRAND=clio) + gact backend." \
+      org.opencontainers.image.description="CLIO web UI (gact-tui apps/web, brand profile clio) + gact backend." \
       org.opencontainers.image.source="https://github.com/iowarp/clio-agent" \
       org.opencontainers.image.vendor="iowarp" \
       org.opencontainers.image.licenses="BSD-3-Clause"
