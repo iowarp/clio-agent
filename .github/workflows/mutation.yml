@@ -1,0 +1,53 @@
+# Mutation testing (#773 slice 19) — scheduled, report-only.
+#
+# Runs mutmut over the pilot scope declared in [tool.mutmut] (pyproject.toml)
+# and publishes the survivor report as a job summary + artifact. It does NOT
+# gate PRs: mutation results are advisory until the survivor count stabilizes,
+# at which point the intent is to ratchet (fail on NEW survivors), mirroring
+# scripts/check_silent_fallbacks.py's only-gets-stricter convention.
+#
+# Pilot baseline (2026-07-07, develop@c0f9404): 1395 mutants — 723 killed,
+# 492 survived, 180 without covering tests. See iowarp/clio-agent#773.
+name: mutation
+on:
+  schedule:
+    - cron: "17 5 * * 1"   # weekly, Monday 05:17 UTC
+  workflow_dispatch: {}
+jobs:
+  mutmut:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --extra dev --extra optimizers
+      - run: uv pip install mutmut
+      # The editable install's .pth would shadow mutmut's mutated copy (every
+      # mutant would falsely "survive") — remove it and resolve via PYTHONPATH.
+      - run: uv pip uninstall clio-agent
+      - name: Run mutation testing
+        env:
+          PYTHONPATH: src
+          CLIO_ALLOWED_ROOTS: /tmp:${{ github.workspace }}
+        run: uv run --no-sync mutmut run
+      - name: Publish summary
+        if: always()
+        env:
+          PYTHONPATH: src
+        run: |
+          {
+            echo "## Mutation results"
+            echo '```'
+            uv run --no-sync mutmut results | tail -n +1 | grep -oE ": [a-z ]+$" | sort | uniq -c | sort -rn
+            echo '```'
+            echo "### Survivors by function (top 20)"
+            echo '```'
+            uv run --no-sync mutmut results | grep ": survived" | sed "s/__mutmut_[0-9]*: survived//" | sort | uniq -c | sort -rn | head -20
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          uv run --no-sync mutmut results > mutmut-results.txt || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutmut-results
+          path: mutmut-results.txt
