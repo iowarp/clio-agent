@@ -15,6 +15,7 @@ fired this turn.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.providers.config import _current_lm_model_id
@@ -27,6 +28,8 @@ from clio_agent.gact.usage import (
 
 if TYPE_CHECKING:
     from clio_agent.gact.turn_state import TurnState
+
+logger = logging.getLogger(__name__)
 
 
 def roll_up_usage(state: "TurnState", pred: Any) -> None:
@@ -79,15 +82,30 @@ def roll_up_usage(state: "TurnState", pred: Any) -> None:
         # there was no real call (e.g. unit tests with a fake
         # agent that bypasses dspy.LM entirely).
         if history_made_calls:
+            # Record WHICH estimate strategies fired this turn so the degraded
+            # rollup is queryable instead of silent (#772). One structured
+            # warning per turn, not per strategy.
+            estimate_strategies: list[str] = []
             if state.turn_tokens["output"] == 0 and state.answer_text:
                 state.turn_tokens["output"] = max(1, len(state.answer_text) // 4)
+                estimate_strategies.append("output_chars_div_4")
             if state.turn_tokens["input"] == 0 and state.enriched_text:
                 state.turn_tokens["input"] = max(1, len(state.enriched_text) // 4)
+                estimate_strategies.append("input_chars_div_4")
             if state.turn_cost == 0.0:
                 state.turn_cost = _estimate_cost_usd(
                     _current_lm_model_id(),
                     state.turn_tokens["input"],
                     state.turn_tokens["output"],
+                )
+                estimate_strategies.append("price_table_estimate")
+            if estimate_strategies:
+                logger.warning(
+                    "usage rollup degraded to an estimate because the LM fired "
+                    "but reported zero usage "
+                    "reason=usage_estimated strategy=%s session=%s",
+                    ",".join(estimate_strategies),
+                    state.sid,
                 )
     if not state.turn_cost:
         state.turn_cost = float(getattr(pred, "cost_usd", 0.0) or 0.0)
