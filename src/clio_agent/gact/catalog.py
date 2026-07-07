@@ -65,7 +65,7 @@ def _load_skills_from_disk() -> list[AgentDef]:
         for md in _skill_markdown_files(root):
             try:
                 text = md.read_text(encoding="utf-8")
-            except Exception:
+            except Exception:  # noqa: BLE001 - unreadable skill markdown skipped
                 continue
             meta, body = _parse_skill_frontmatter(text)
             sid = (meta.get("name") or _default_skill_id(md)).strip()
@@ -148,7 +148,7 @@ def _load_command_files_from_disk(
         for md in sorted(root.glob("*.md"), key=lambda path: str(path).lower()):
             try:
                 text = md.read_text(encoding="utf-8")
-            except Exception:
+            except Exception:  # noqa: BLE001 - unreadable skill markdown skipped
                 continue
             meta, body = _parse_skill_frontmatter(text)
             command_id = _normalize_file_command_id(meta, md)
@@ -383,7 +383,7 @@ def _tool_owner_for_catalog(tool_name: str) -> str:
         from clio_agent.tools.catalog import tool_owner
 
         return tool_owner(tool_name)
-    except Exception:
+    except Exception:  # noqa: BLE001 - tool metadata lookup optional; empty on any failure
         return ""
 
 
@@ -393,7 +393,7 @@ def _tool_tags_for_catalog(tool_name: str) -> list[str]:
         from clio_agent.tools.catalog import tool_tags
 
         return sorted(tool_tags(tool_name))
-    except Exception:
+    except Exception:  # noqa: BLE001 - tool metadata lookup optional; empty on any failure
         return []
 
 
@@ -403,5 +403,5 @@ def _tool_visible_to_for_catalog(tool_name: str) -> list[str]:
         from clio_agent.tools.catalog import tool_visible_scopes
 
         return tool_visible_scopes(tool_name)
-    except Exception:
+    except Exception:  # noqa: BLE001 - tool metadata lookup optional; empty on any failure
         return []

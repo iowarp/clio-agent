@@ -749,7 +749,7 @@ if __name__ == "__main__":
 
         print("\nConfiguration working!")
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - CLI self-test prints the error to the user
         print(f"\nError: {e}")
         print("\nTroubleshooting:")
         print("- Ensure LM provider is running")

@@ -555,7 +555,7 @@ class AsyncMCPToolExecutor:
                     self._client_ctx.__aexit__(None, None, None),
                     timeout=close_timeout,
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - client-close error logged at debug; teardown continues
                 logger.debug("Error closing AsyncMCPToolExecutor client: %s", exc)
 
         self._client = None
@@ -830,7 +830,7 @@ class SyncMCPToolExecutor:
                     )
                 except TimeoutError:
                     logger.warning("Timed out closing SyncMCPToolExecutor client")
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - client-close error logged at debug; teardown continues
                     logger.debug("Error closing SyncMCPToolExecutor client: %s", exc)
 
             if not self._loop.is_closed():
@@ -1082,7 +1082,12 @@ def _repair_missing_file_arguments(
     records: list[dict[str, str]] = []
     try:
         policy = FileAccessPolicy.from_env()
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - degradation surfaced via structured log below
+        logger.warning(
+            "file-argument repair skipped: file policy unavailable "
+            "reason=file_policy_unavailable error=%r",
+            exc,
+        )
         return repaired, records
 
     scanned = 0

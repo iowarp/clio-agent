@@ -39,11 +39,11 @@ def _id_variants(model_id: str) -> list[str]:
 def _get_model_info(candidate: str) -> dict[str, Any] | None:
     try:
         import litellm  # noqa: PLC0415
-    except Exception:
+    except Exception:  # noqa: BLE001 - litellm optional; None when unavailable
         return None
     try:
         info = litellm.get_model_info(candidate)
-    except Exception:
+    except Exception:  # noqa: BLE001 - unmapped model id is a clean miss (see comment)
         # get_model_info raises for unmapped ids — a clean miss, try the next.
         return None
     # get_model_info returns a ModelInfo TypedDict; coerce to a plain dict for the

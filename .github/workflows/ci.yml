@@ -31,14 +31,12 @@ jobs:
       - name: "warn: ruff complexity (C901, PLR0915) (#714)"
         run: uv run ruff check --select C901,PLR0915 src/
         continue-on-error: true
-      # Silent-fallback ratchet (iowarp/clio-agent#772). WARN-ONLY for now:
-      # reports BLE001/S110/E722 counts and fails only when the total EXCEEDS
-      # the baseline recorded in the script (which may only ratchet down as
-      # sites are burned down). To be flipped to blocking once the burn-down
-      # settles.
-      - name: "warn: silent-fallback ratchet (BLE001, S110, E722) (#772)"
+      # Silent-fallback ratchet (iowarp/clio-agent#772). BLOCKING: reports
+      # BLE001/S110/E722 counts and fails when the total EXCEEDS the baseline
+      # recorded in the script (which may only ratchet down as sites are
+      # burned down).
+      - name: "check: silent-fallback ratchet (BLE001, S110, E722) (#772)"
         run: uv run python scripts/check_silent_fallbacks.py
-        continue-on-error: true
       - run: bash -n scripts/homelab-env.sh
       - run: uv run mypy src/
       # Coverage floor lowered to 70 as the v0.5 merge brought in
@@ -46,7 +44,12 @@ jobs:
       # to ratchet back up to 80% as the new code gets tests.
       # Coverage flags are explicit here on purpose: pyproject addopts is
       # empty so local pytest runs stay lean (iowarp/clio-agent#773).
-      - run: uv run pytest tests/ -m "not integration" --cov=clio_agent --cov-report=term-missing --cov-fail-under=70
+      # --cov-branch measures branch coverage (not just line): the floor is
+      # anchored one point below the measured combined line+branch total
+      # (measured 79% on develop @ 2026-07-07; floor 78) so a genuine
+      # regression fails CI while normal noise does not. Ratchet intent:
+      # raise this toward the 80% target as gact code gains tests (#31/#773).
+      - run: uv run pytest tests/ -m "not integration" --cov=clio_agent --cov-branch --cov-report=term-missing --cov-fail-under=78
 
   flake-hunt:
     # Concurrency / shared-state tests (marked ``@pytest.mark.concurrency``) run

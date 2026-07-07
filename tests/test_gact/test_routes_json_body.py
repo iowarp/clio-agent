@@ -20,7 +20,7 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
-from clio_agent.gact.routes._body import json_body
+from clio_agent.gact.routes._body import NonObjectBodyError, json_body
 
 _ROUTE_LOGGER = "clio_agent.gact.routes.body"
 
@@ -34,6 +34,31 @@ def echo_client() -> TestClient:
     @app.post("/echo")
     async def echo(request: Request) -> dict[str, Any]:
         return await json_body(request, route="POST /echo")
+
+    return TestClient(app)
+
+
+@pytest.fixture()
+def strict_client() -> TestClient:
+    """Endpoints exercising ``non_object="raise"`` (with/without null coercion)."""
+
+    app = FastAPI()
+
+    @app.post("/strict")
+    async def strict(request: Request) -> dict[str, Any]:
+        try:
+            return await json_body(request, route="POST /strict", non_object="raise")
+        except NonObjectBodyError as exc:
+            return {"rejected": exc.payload_type}
+
+    @app.post("/strict-no-null")
+    async def strict_no_null(request: Request) -> dict[str, Any]:
+        try:
+            return await json_body(
+                request, route="POST /strict-no-null", non_object="raise", null_is_empty=False
+            )
+        except NonObjectBodyError as exc:
+            return {"rejected": exc.payload_type}
 
     return TestClient(app)
 
@@ -112,6 +137,54 @@ def test_json_body_valid_non_dict_does_not_log(
     assert resp.status_code == 200
     assert resp.json() == {"ok": True}
     assert [r for r in caplog.records if r.name == _ROUTE_LOGGER] == []
+
+
+def test_json_body_raise_mode_rejects_list_without_logging(
+    strict_client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Under ``non_object="raise"`` a parsed non-object raises
+    ``NonObjectBodyError`` (carrying the payload type) and emits NO fallback
+    warning -- the caller surfaces an explicit rejection, nothing degrades."""
+
+    with caplog.at_level(logging.WARNING, logger=_ROUTE_LOGGER):
+        resp = strict_client.post("/strict", json=[1, 2])
+
+    assert resp.status_code == 200
+    assert resp.json() == {"rejected": "list"}
+    assert [r for r in caplog.records if r.name == _ROUTE_LOGGER] == []
+
+
+def test_json_body_raise_mode_still_coerces_null_and_malformed(
+    strict_client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``non_object="raise"`` with the default ``null_is_empty=True`` keeps the
+    degrade-to-``{}`` path (with its structured reason) for ``null`` and for a
+    malformed body -- only deliberate wrong-shaped JSON is rejected."""
+
+    headers = {"content-type": "application/json"}
+    with caplog.at_level(logging.WARNING, logger=_ROUTE_LOGGER):
+        null_resp = strict_client.post("/strict", content=b"null", headers=headers)
+        malformed_resp = strict_client.post("/strict", content=b"{oops", headers=headers)
+
+    assert null_resp.json() == {}
+    assert malformed_resp.json() == {}
+    assert len([r for r in caplog.records if r.name == _ROUTE_LOGGER]) == 2
+
+
+def test_json_body_raise_mode_null_is_empty_false_rejects_null(
+    strict_client: TestClient,
+) -> None:
+    """With ``null_is_empty=False`` a JSON ``null`` body is rejected like any
+    other non-object (rewind's pre-#772 contract); a malformed body still
+    degrades to ``{}``."""
+
+    headers = {"content-type": "application/json"}
+
+    null_resp = strict_client.post("/strict-no-null", content=b"null", headers=headers)
+    malformed_resp = strict_client.post("/strict-no-null", content=b"{oops", headers=headers)
+
+    assert null_resp.json() == {"rejected": "NoneType"}
+    assert malformed_resp.json() == {}
 
 
 # --- behavior preservation at real converted route handlers -----------------

@@ -186,7 +186,7 @@ class HookRegistry:
         for path in paths:
             try:
                 module = self._import_path(path)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - load failure logged ([clio-hooks] failed to load)
                 logger.warning("[clio-hooks] failed to load %s: %r", path, exc)
                 continue
             for event in _KNOWN_EVENTS:

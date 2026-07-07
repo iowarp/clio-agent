@@ -100,7 +100,7 @@ class OpenAICompatHandshake(ProviderHandshake):
         headers = self._auth_header(ctx)
         try:
             response = await client.get(self._models_url(ctx), headers=headers)
-        except Exception as exc:  # transport-level failure -> unreachable
+        except Exception as exc:  # transport-level failure -> unreachable  # noqa: BLE001 - surfaced as UNREACHABLE connectivity
             return ConnectivityResult(
                 connectivity=ConnectivityState.UNREACHABLE,
                 auth=AuthState.MISSING if self._requires_key(ctx) else AuthState.NOT_REQUIRED,
@@ -147,7 +147,7 @@ class OpenAICompatHandshake(ProviderHandshake):
             if response.status_code < 400:
                 payload = response.json()
                 rows = self._rows_from_openai_payload(payload)
-        except Exception:
+        except Exception:  # noqa: BLE001 - unparseable models payload yields no rows
             rows = []
         if not rows and ctx.provider_kind == "ollama":
             rows = await self._discover_ollama_tags(client, ctx, headers)
@@ -179,7 +179,7 @@ class OpenAICompatHandshake(ProviderHandshake):
             if response.status_code >= 400:
                 return []
             payload = response.json()
-        except Exception:
+        except Exception:  # noqa: BLE001 - unparseable payload yields no models
             return []
         models = payload.get("models") if isinstance(payload, dict) else None
         if not isinstance(models, list):

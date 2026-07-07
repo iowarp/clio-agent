@@ -104,7 +104,7 @@ def resolve_argonne_token() -> str:
             get_access_token,
             tokens_exist,
         )
-    except Exception:  # pragma: no cover - import-time error
+    except Exception:  # pragma: no cover - import-time error  # noqa: BLE001 - import-time failure yields an empty token
         return ""
 
     # No stored token → surface "" (don't drive interactive OAuth from here).
@@ -112,14 +112,17 @@ def resolve_argonne_token() -> str:
         return ""
 
     try:
-        return get_access_token()
+        # Passive probe: an expired refresh token must raise GlobusAuthError
+        # (reason=argonne_login_required) instead of blocking server boot /
+        # health / doctor on an interactive Globus login.
+        return get_access_token(allow_interactive=False)
     except GlobusUnavailable:
         # Logged elsewhere; let the downstream error message guide the user.
         return ""
-    except Exception:
-        # OAuth could not complete (network, refresh expired, etc). Returning
-        # "" lets the LM call fail with a clean 401 rather than masking it
-        # behind config-load tracebacks.
+    except Exception:  # noqa: BLE001 - OAuth failure yields empty token; downstream 401 guides the user
+        # OAuth could not complete (network, refresh expired, login required).
+        # Returning "" lets the LM call fail with a clean 401 rather than
+        # masking it behind config-load tracebacks.
         return ""
 
 

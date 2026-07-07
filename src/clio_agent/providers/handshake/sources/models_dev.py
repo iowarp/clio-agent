@@ -111,7 +111,7 @@ def _fetch_catalog() -> str | None:
         response = httpx.get(MODELS_DEV_URL, timeout=_FETCH_TIMEOUT_S)
         response.raise_for_status()
         return response.text
-    except Exception:
+    except Exception:  # noqa: BLE001 - fetch failure -> caller uses the cached copy (see comment)
         # Any error (offline, DNS, timeout, HTTP status, import) -> caller falls
         # back to the last cached copy.
         return None

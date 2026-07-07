@@ -13,6 +13,7 @@ ourselves (minute hour day-of-month month day-of-week, each
 
 from __future__ import annotations
 
+import logging
 import threading
 import uuid
 from collections.abc import Iterable
@@ -20,6 +21,8 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -98,12 +101,24 @@ class ScheduleStore:
             import json
 
             data = json.loads(self._path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - corrupt store restarts empty, but say so
+            logger.warning(
+                "schedule store: unreadable persistence restarted empty "
+                "reason=schedule_store_corrupt path=%s error=%s",
+                self._path,
+                exc,
+            )
             return
         for row in data.get("schedules", []):
             try:
                 self._schedules[row["id"]] = Schedule(**row)
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 - drop only the bad row, but say so
+                logger.warning(
+                    "schedule store: dropping malformed row "
+                    "reason=schedule_row_invalid schedule_id=%s error=%s",
+                    row.get("id") if isinstance(row, dict) else None,
+                    exc,
+                )
                 continue
 
     def _flush(self) -> None:

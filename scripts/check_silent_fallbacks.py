@@ -35,7 +35,7 @@ RATCHET_RULES: tuple[str, ...] = ("BLE001", "S110", "E722")
 # Recorded baseline: the known count of silent-fallback sites in SRC_ROOT.
 # This number may only ratchet DOWN (iowarp/clio-agent#772). Update it in the
 # same change that burns sites down; never raise it.
-BASELINE_TOTAL = 188
+BASELINE_TOTAL = 1
 
 # Root of the source tree to scan, relative to the repository root.
 SRC_ROOT = "src/clio_agent"

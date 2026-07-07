@@ -111,7 +111,7 @@ def _memprof_dump(signum: Any, frame: Any) -> None:
         else:
             sys.stderr.write("\n=== CLIO MEMPROF SNAPSHOT ===\n" + report)
             sys.stderr.flush()
-    except Exception:  # noqa: BLE001 - diagnostics must never crash the server
+    except Exception:  # noqa: BLE001,S110 - diagnostics must never crash the server
         pass
 
 
@@ -144,7 +144,7 @@ def _install_sigusr1_diagnostic() -> None:
             import tracemalloc
 
             tracemalloc.start(_memprof_frames())
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001,S110 - memory profiling is opt-in diagnostics; disabled on failure
             pass
         try:
             _signal.signal(_signal.SIGUSR1, _memprof_dump)

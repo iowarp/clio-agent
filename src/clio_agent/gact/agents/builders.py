@@ -374,6 +374,7 @@ async def _call_enabled_external_mcp_tool(
     # Single canonical construction site. pdeathsig-wrapping (Linux-only, no-op
     # elsewhere) now lives INSIDE the helper, so this external MCP child is reaped
     # when the clio server dies hard -- identically to every other stdio spawn.
+    from clio_agent.tools.execution import notify_tool_observer  # noqa: PLC0415
     from clio_agent.tools.mcp_config import (  # noqa: PLC0415
         MCPTransportError,
         transport_from_spec,
@@ -388,20 +389,14 @@ async def _call_enabled_external_mcp_tool(
     tool_observer = getattr(app.state, "pending_tool_observer", None)
     if tool_observer is None:
         tool_observer = app.state.make_tool_observer()
-    if tool_observer is not None:
-        try:
-            tool_observer(observer_name, dict(tool_args), "started", None)
-        except Exception:
-            pass
+    notify_tool_observer(tool_observer, observer_name, dict(tool_args), "started")
     try:
         async with Client(transport) as client:
             result = await client.call_tool(tool_name, dict(tool_args))
     except Exception as exc:  # noqa: BLE001
-        if tool_observer is not None:
-            try:
-                tool_observer(observer_name, dict(tool_args), "completed", repr(exc))
-            except Exception:
-                pass
+        notify_tool_observer(
+            tool_observer, observer_name, dict(tool_args), "completed", error=repr(exc)
+        )
         raise
     content = getattr(result, "content", None) or []
     result_text = "\n".join(str(getattr(part, "text", part)) for part in content)
@@ -412,11 +407,9 @@ async def _call_enabled_external_mcp_tool(
             if isinstance(data, Mapping)
             else str(data if data is not None else result)
         )
-    if tool_observer is not None:
-        try:
-            tool_observer(observer_name, dict(tool_args), "completed", None, result_text)
-        except Exception:
-            pass
+    notify_tool_observer(
+        tool_observer, observer_name, dict(tool_args), "completed", result=result_text
+    )
     if content:
         return result_text
     data = getattr(result, "data", None)
@@ -1497,7 +1490,7 @@ def _build_fanout_tool(base_agent: Any, parent: "AgentDef", children: list["Agen
                         "structured": _prediction_structured_metadata(pred),
                     }
                 )
-            except Exception as exc:  # pragma: no cover - exercised by state-space tests
+            except Exception as exc:  # pragma: no cover - exercised by state-space tests  # noqa: BLE001 - failure surfaced as status=partial_failure in results
                 status = "partial_failure"
                 results.append(
                     {
@@ -1613,7 +1606,7 @@ def _emit_blueprint_llm_failure(agent_def: "AgentDef", kind: str, exc: BaseExcep
             provider=_llm_provider_payload(app, agent_id),
             payload=payload,
         )
-    except Exception:  # noqa: BLE001 - capture must never break the repair flow
+    except Exception:  # noqa: BLE001,S110 - capture must never break the repair flow
         pass
 
 

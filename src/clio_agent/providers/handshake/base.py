@@ -15,6 +15,7 @@ marketplace DB) — see :mod:`clio_agent.providers.handshake.sources`.
 from __future__ import annotations
 
 import abc
+import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -26,6 +27,8 @@ from clio_agent.providers.handshake.model import (
     HandshakeReport,
     ModelProfile,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -84,7 +87,7 @@ class ProviderHandshake(abc.ABC):
         started = time.monotonic()
         try:
             client = await self._open_client(ctx)
-        except Exception as exc:  # client construction should not fail, but be safe
+        except Exception as exc:  # client construction should not fail, but be safe  # noqa: BLE001 - surfaced in HandshakeReport.error
             return self._report(
                 ctx,
                 ConnectivityState.UNREACHABLE,
@@ -103,7 +106,7 @@ class ProviderHandshake(abc.ABC):
                 ctx.extra["auth_header"] = conn.auth_header
             try:
                 raw_models = await self.discover_models(client, ctx)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - surfaced in HandshakeReport.error
                 return self._report(
                     ctx,
                     ConnectivityState.OK,
@@ -116,8 +119,16 @@ class ProviderHandshake(abc.ABC):
                 try:
                     profile = await self.discover_model_config(client, ctx, raw)
                     profile = await self.enrich_capabilities(profile, ctx)
-                except Exception:
-                    # one bad model row must not sink the whole report
+                except Exception as exc:
+                    # One bad model row must not sink the whole report, but a
+                    # dropped row is not silent: emit a structured reason so it
+                    # reaches the logs rather than vanishing.
+                    _model = raw.get("id") if isinstance(raw, dict) else getattr(raw, "id", raw)
+                    logger.warning(
+                        "handshake dropped a model row: reason=model_row_discovery_failed model=%r error=%r",
+                        _model,
+                        exc,
+                    )
                     continue
                 profiles.append(profile)
             return self._report(
@@ -127,7 +138,7 @@ class ProviderHandshake(abc.ABC):
                 models=tuple(profiles),
                 started=started,
             )
-        except Exception as exc:  # final backstop — never raise out of a handshake
+        except Exception as exc:  # final backstop — never raise out of a handshake  # noqa: BLE001 - final backstop surfaced in HandshakeReport.error
             return self._report(
                 ctx,
                 ConnectivityState.UNREACHABLE,
@@ -201,7 +212,7 @@ class ProviderHandshake(abc.ABC):
     async def _close_client(self, client: Any) -> None:
         try:
             await client.aclose()
-        except Exception:
+        except Exception:  # noqa: BLE001,S110 - client close best-effort during teardown
             pass
 
     def _report(

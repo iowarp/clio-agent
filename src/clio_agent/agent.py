@@ -509,7 +509,7 @@ class ClioAgent(dspy.Module):
             )
             trace.route = route
             success = True
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - routing failure recorded on the trace (success=False + inferred expert)
             success = False
             inferred_selected = self._selected_expert_from_trace(trace)
             if selected == "chat" and inferred_selected != "chat":
@@ -1120,7 +1120,7 @@ class ClioAgent(dspy.Module):
             result = normalize_tool_result(self._decode_tool_result(raw_result), tool=tool_name)
         except CancellationError:
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - error surfaced in result['error'] via normalize_tool_error
             result = {"error": normalize_tool_error(exc, tool=tool_name, code="tool_exception")}
         duration_ms = (time.time() - start) * 1000
         trace.record_tool(
@@ -2273,7 +2273,7 @@ class ClioAgent(dspy.Module):
         if isinstance(value, (list, dict)):
             try:
                 return json.dumps(value, ensure_ascii=False)
-            except Exception:
+            except Exception:  # noqa: BLE001 - value->JSON coercion falls back to str(); never fatal
                 return str(value)
 
         # Pydantic v2 models: avoid warning-emitting serialization paths.
@@ -2281,7 +2281,7 @@ class ClioAgent(dspy.Module):
             try:
                 dumped = value.model_dump(mode="json", warnings="none")
                 return json.dumps(dumped, ensure_ascii=False)
-            except Exception:
+            except Exception:  # noqa: BLE001,S110 - value coercion cascade; falls through to the next strategy
                 pass
 
         # Common chat/message object shape from LM backends.
@@ -2322,9 +2322,14 @@ class ClioAgent(dspy.Module):
             if self.verbose:
                 print(f"[ClioAgent] Compiled context ({len(compiled)} chars, tier={tier})")
             return compiled
-        except Exception as e:
-            if self.verbose:
-                print(f"[ClioAgent] Warning: ContextCompiler failed: {e}, falling back")
+        except Exception as exc:  # noqa: BLE001 - degraded context, not a failed turn
+            logger.warning(
+                "ARC context compilation failed; falling back to legacy retrieval "
+                "reason=context_compile_failed session=%s tier=%s error=%s",
+                session_id,
+                tier,
+                exc,
+            )
             # Fallback to legacy retrieval
             try:
                 arc_context = self.context_retriever.retrieve_context_for_query(
@@ -2348,6 +2353,11 @@ class ClioAgent(dspy.Module):
                     session_id,
                     exc,
                 )
+        logger.warning(
+            "no prior context recovered; expert runs cold "
+            "reason=context_unavailable session=%s",
+            session_id,
+        )
         return "No prior context"
 
     def _get_file_context(self, session_id: str, active_file: Path | None = None) -> str:
@@ -2398,7 +2408,13 @@ class ClioAgent(dspy.Module):
         suffix_filter = SCIENTIFIC_FILE_SUFFIXES
         try:
             conv = self.arc.get_conversation(session_id)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - best-effort file lookup, degrades to None
+            logger.debug(
+                "session conversation lookup failed; no session file resolved "
+                "reason=session_file_lookup_failed session=%s error=%s",
+                session_id,
+                exc,
+            )
             return None
         if conv is None:
             return None
@@ -2451,9 +2467,13 @@ class ClioAgent(dspy.Module):
                 conv.routing_decisions.append(routing_decision)
                 conv.updated_at = time.time()
                 self.arc.store_conversation(conv)
-        except Exception as e:
-            if self.verbose:
-                print(f"[ClioAgent] Warning: Failed to store routing decision: {e}")
+        except Exception as exc:  # noqa: BLE001 - telemetry write, not a failed turn
+            logger.warning(
+                "routing decision not persisted to ARC "
+                "reason=routing_decision_store_failed session=%s error=%s",
+                session_id,
+                exc,
+            )
 
     def _store_metrics(
         self,
@@ -2552,9 +2572,14 @@ class ClioAgent(dspy.Module):
                 storage_tier="warm",
             )
             self.arc.store_invocation(invocation)
-        except Exception as e:
-            if self.verbose:
-                print(f"[ClioAgent] Warning: Failed to store expert invocation: {e}")
+        except Exception as exc:  # noqa: BLE001 - telemetry write, not a failed turn
+            logger.warning(
+                "expert invocation not persisted to ARC "
+                "reason=invocation_store_failed session=%s agent=%s error=%s",
+                session_id,
+                selected,
+                exc,
+            )
 
     @staticmethod
     def _extract_nanoagents_spawned(prediction: Any) -> list[dict[str, Any]]:

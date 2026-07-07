@@ -197,6 +197,25 @@ def test_transport_for_unresolved_command_fails_loud():
         transport_for(spec_from_declaration("geo", "definitely-not-a-real-binary-xyz123 run"))
 
 
+def test_transport_for_no_cwd_env_keeps_path():
+    """A spec with an explicit env but no cwd must still inherit os.environ (PATH).
+
+    Regression (#772): the no-cwd branch built ``env = dict(spec.env)``, which handed
+    the stdio subprocess ONLY the spec vars and dropped PATH -> the launcher (already
+    resolved to an absolute path) still spawns, but any child process it execs by name
+    fails with ``os error 2``. The env must merge ``os.environ`` under the spec vars.
+    """
+    import os
+
+    spec = spec_from_declaration(
+        "ndp", {"command": "sh", "args": ["-c", "true"], "env": {"MY_KEY": "v"}}
+    )
+    stdio = transport_for(spec)
+    assert stdio.cwd is None
+    assert stdio.env["MY_KEY"] == "v"
+    assert stdio.env.get("PATH") == os.environ.get("PATH")
+
+
 # --- transport_from_spec: ONE canonical accepted set (#770 C2) -------------
 
 

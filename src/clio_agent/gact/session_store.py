@@ -324,7 +324,7 @@ def _load_context_files(path: Path | None) -> dict[str, dict[str, dict[str, Any]
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception:  # noqa: BLE001 - unreadable session store yields empty state
         return {}
     sessions = data.get("sessions", {}) if isinstance(data, Mapping) else {}
     if not isinstance(sessions, Mapping):

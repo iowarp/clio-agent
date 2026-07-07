@@ -926,7 +926,7 @@ def _render_return_summary(output: str) -> str:
         body = body.split("\n", 1)[-1].strip() if "\n" in body else ""
     try:
         data = json.loads(body)
-    except Exception:
+    except Exception:  # noqa: BLE001 - non-JSON delegation body returned verbatim
         return text
     if isinstance(data, Mapping):
         node: Mapping[str, Any] = data

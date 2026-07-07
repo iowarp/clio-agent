@@ -124,7 +124,7 @@ async def await_turn_work(state: "TurnState", awaitable: Any) -> Any:
                 task.cancel()
                 try:
                     await task
-                except BaseException:  # noqa: BLE001 - swallow during abort
+                except BaseException:  # noqa: BLE001,S110 - swallow during abort
                     pass
                 raise _TurnTimedOut(state.turn_progress_timeout_s) from None
     except asyncio.CancelledError:

@@ -87,18 +87,18 @@ def _encode_safe(value: Any) -> Any:
     if callable(dump):
         try:
             return _encode_safe(dump())
-        except Exception:  # noqa: BLE001 - fall through to the next coercion strategy
+        except Exception:  # noqa: BLE001,S110 - fall through to the next coercion strategy
             pass
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         try:
             return _encode_safe(dataclasses.asdict(value))
-        except Exception:  # noqa: BLE001 - fall through to the next coercion strategy
+        except Exception:  # noqa: BLE001,S110 - fall through to the next coercion strategy
             pass
     asdict = getattr(value, "_asdict", None)
     if callable(asdict):
         try:
             return _encode_safe(asdict())
-        except Exception:  # noqa: BLE001 - fall through to the next coercion strategy
+        except Exception:  # noqa: BLE001,S110 - fall through to the next coercion strategy
             pass
     obj_dict = getattr(value, "__dict__", None)
     if isinstance(obj_dict, dict) and obj_dict:
@@ -361,7 +361,7 @@ class SegmentStore:
         try:
             self._put_scope(session_id, scope, segs)
             return
-        except Exception:  # noqa: BLE001 - encode/put failed; isolate the offender below
+        except Exception:  # noqa: BLE001,S110 - encode/put failed; isolate the offender below
             pass
         # Drop the just-written segment(s) first (the most likely offender), then any
         # other segment that fails to encode in isolation, so the rest of the scope

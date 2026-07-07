@@ -799,8 +799,22 @@ def install_agent_blueprint(
                     text=True,
                     stderr=subprocess.DEVNULL,
                 ).strip()
-            except Exception:
+            except Exception as exc:
                 commit = ""
+                if pinned_commit:
+                    # A pin was requested but the source commit cannot be
+                    # resolved: refuse to install unverified rather than let the
+                    # mismatch check below fall through on the empty commit.
+                    raise ValueError(
+                        f"registry pin unverifiable: cannot resolve commit for "
+                        f"{source_path} to verify pin {pinned_commit}: {exc!r}"
+                    ) from exc
+                logger.warning(
+                    "registry commit unresolvable reason=registry_commit_unresolvable "
+                    "path=%s error=%r",
+                    source_path,
+                    exc,
+                )
             if pinned_commit and commit and commit != pinned_commit:
                 raise ValueError(f"registry pin mismatch: expected {pinned_commit}, found {commit}")
         else:

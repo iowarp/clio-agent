@@ -258,7 +258,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 lm_timeout=0.5,
             )
             integrations = list(report.integrations)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - surfaced as a degraded doctor row (see comment)
             # No silent fallback (cleanup ground rule): a probe engine failure is
             # surfaced as a structured degraded doctor row, not a bare 200.
             fallback = IntegrationStatus(
@@ -280,7 +280,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
         if handshake is not None:
             try:
                 enriched = handshake.to_integration_status()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - enrichment failure surfaced to logs/trace (see comment)
                 # No silent fallback: the enrichment is additive, but a failure to build
                 # it must reach the logs/trace rather than vanish (mirrors the sibling
                 # doctor-probe failure branch above).
@@ -301,12 +301,17 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
             uptime_s=uptime,
             overall_status=overall,
             integrations=rows,
+            # #772: surface the tool-runtime hooks flag so a failed permission-gate
+            # install (ungated/unobserved tools) is visible, not silent.
+            tool_hooks_installed=getattr(app.state, "tool_hooks_installed", None),
         )
         if overall == "unavailable":
-            return JSONResponse(
-                status_code=503,
-                content=response.model_dump(mode="json", exclude_none=True),
-            )
+            content = response.model_dump(mode="json", exclude_none=True)
+            # The hooks flag is tri-state (True / False / None = "agent not
+            # constructed yet") — the deferred-boot window reports exactly
+            # None over this 503 path, so exclude_none must not drop it (#772).
+            content["tool_hooks_installed"] = response.tool_hooks_installed
+            return JSONResponse(status_code=503, content=content)
         return response
 
     @app.get("/v1/capabilities", response_model=Capabilities)

@@ -45,7 +45,7 @@ def _provider_runtime_kind(provider_id: str) -> str:
         from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
 
         provider = get_provider(provider_id)
-    except Exception:
+    except Exception:  # noqa: BLE001 - provider lookup optional; None when catalog unavailable
         provider = None
     if provider is not None:
         return str(provider.provider_kind or provider_id)

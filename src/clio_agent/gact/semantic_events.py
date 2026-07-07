@@ -586,7 +586,7 @@ class SemanticEventSink:
                 from clio_agent.runtime.hooks import fire as _fire_hook
 
                 _fire_hook("semantic_event", project_hook(event, full=self.hooks_full))
-            except Exception:
+            except Exception:  # noqa: BLE001,S110 - semantic hooks are observability side-effects; never crash the turn
                 # Semantic hooks are observability side-effects. They should
                 # never mutate or crash the turn being observed.
                 pass

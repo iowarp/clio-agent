@@ -84,7 +84,7 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     # IOLoggingLM._process_completion (reasoning models only; today qwopus/qwen).
     try:
         lm._clio_reasoning_fallback = _reasoning_model_capability(config)  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001 - never let tagging break LM construction
+    except Exception:  # noqa: BLE001,S110 - never let tagging break LM construction
         pass
     return lm
 

@@ -171,6 +171,49 @@ def test_fire_error_is_logged_and_tick_survives(tmp_path: Path, caplog, monkeypa
     assert any(sid in r.getMessage() for r in matching)
 
 
+def test_corrupt_schedule_store_starts_empty_with_reason(tmp_path: Path, caplog) -> None:
+    """Garbage JSON on disk logs schedule_store_corrupt and starts empty."""
+
+    from clio_agent.gact.scheduler import ScheduleStore
+
+    path = tmp_path / "schedules.json"
+    path.write_text("{not valid json", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="clio_agent.gact.scheduler"):
+        store = ScheduleStore(path=path)
+
+    assert store.list() == []
+    matching = [r for r in caplog.records if "schedule_store_corrupt" in r.getMessage()]
+    assert matching, "corrupt schedule store was swallowed (no structured warning)"
+    assert any(str(path) in r.getMessage() for r in matching)
+
+
+def test_invalid_schedule_row_is_dropped_with_reason(tmp_path: Path, caplog) -> None:
+    """A single malformed row is dropped and logged; valid rows survive."""
+
+    import json
+
+    from clio_agent.gact.scheduler import ScheduleStore
+
+    path = tmp_path / "schedules.json"
+    good = {
+        "id": "sched_good0000000",
+        "session_id": "sess_x",
+        "cron": "* * * * *",
+        "question": "q",
+    }
+    bad = {"session_id": "sess_y", "cron": "* * * * *"}  # missing "id"
+    path.write_text(json.dumps({"schedules": [good, bad]}), encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="clio_agent.gact.scheduler"):
+        store = ScheduleStore(path=path)
+
+    ids = [s.id for s in store.list()]
+    assert ids == ["sched_good0000000"], f"expected only the valid row, got {ids}"
+    matching = [r for r in caplog.records if "schedule_row_invalid" in r.getMessage()]
+    assert matching, "invalid schedule row was swallowed (no structured warning)"
+
+
 def test_schedules_list_surfaces_utc_cron_assumption(tmp_path: Path) -> None:
     """The schedules API states its UTC-only cron evaluation on the wire."""
 

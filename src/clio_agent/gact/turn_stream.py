@@ -128,7 +128,7 @@ async def emit_chunk(
             # served transcript event; message.part.delta remains the UI stream.
             detail_level="off",
         )
-    except Exception:  # noqa: BLE001 - transcript streaming must not fail a turn
+    except Exception:  # noqa: BLE001,S110 - transcript streaming must not fail a turn
         pass
     if not text:
         trace.HF_ON and trace.hot(
@@ -237,5 +237,5 @@ def bind_live_emitter(state: "TurnState", loop: "asyncio.AbstractEventLoop") -> 
         from clio_agent.runtime.lm_activity import set_live_chunk_emitter  # noqa: PLC0415
 
         set_live_chunk_emitter(loop, partial(emit_chunk, state))
-    except Exception:  # noqa: BLE001 - live-stream wiring is best-effort
+    except Exception:  # noqa: BLE001,S110 - live-stream wiring is best-effort
         pass

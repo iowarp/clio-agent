@@ -89,7 +89,7 @@ class MessageStore:
                 continue
             try:
                 messages.append(Message(**payload))
-            except Exception:
+            except Exception:  # noqa: BLE001 - malformed persisted message row skipped
                 continue
         return messages
 

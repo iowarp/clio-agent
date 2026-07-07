@@ -551,7 +551,7 @@ def _emit_react_step_event(
                 "is_finish": bool(is_finish),
             },
         )
-    except Exception:  # noqa: BLE001 - capture must never break the expert loop
+    except Exception:  # noqa: BLE001,S110 - capture must never break the expert loop
         pass
 
 
@@ -590,7 +590,7 @@ def _emit_expert_lifecycle_event(
             actor={"agent_id": expert_id, "role": "expert"},
             payload={"expert_id": expert_id, "expert_span_id": expert_span_id, **payload},
         )
-    except Exception:  # noqa: BLE001 - capture must never break the expert loop
+    except Exception:  # noqa: BLE001,S110 - capture must never break the expert loop
         pass
 
 

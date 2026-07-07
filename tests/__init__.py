@@ -6,7 +6,6 @@ Tests for ClioAgent components.
 Test Structure:
 - test_core/: Core functionality, config, API/CLI, runtime status, optimizer plumbing
 - test_arc/: ARC memory, storage, indexing, LSM, retrieval, and context compilation
-- test_experts/: Generic expert support tests; native domain experts are retired
 - test_tools/: File policy, gateway, HDF5, Parquet, and execution boundary tests
 - test_integration/: Local filesystem and blueprint/registry end-to-end smoke tests
 
