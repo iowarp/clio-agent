@@ -415,9 +415,17 @@ async def _run_turn_in_background(
     # turn_stream.py, #767 Phase B Slice 3) is now a thin adapter: semantic
     # lm.token.delta + the parent-resume suppression gate (PR4 retires it) +
     # stream_audit, then one transcript call.
+    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+        _active_workflow_state_schema,
+    )
     from clio_agent.gact.tool_observer import _open_turn_transcript  # noqa: PLC0415
 
-    state.transcript = _open_turn_transcript(state.app, state.sid, state.turn_id)
+    # #767 Phase C: resolve the turn's pack workflow_state schema at the one turn
+    # seam and carry it on ``state`` for every delegation/grounding/scrub site.
+    state.workflow_schema = _active_workflow_state_schema(state.app, state.sid)
+    state.transcript = _open_turn_transcript(
+        state.app, state.sid, state.turn_id, schema=state.workflow_schema
+    )
     state.suppressed_parent_resume_offsets = {}
     # TRICKY #1 (Phase B spec): bind the emitter over ``state`` so its LATE reads
     # of state.active_agent_id / state.invocation_agent_id see the forward seam's
@@ -496,7 +504,9 @@ async def _run_turn_in_background(
         # branches not yet migrated).
         state.execution_path = getattr(state.pred, "execution_path", "") or ""
         state.tools_called = _extract_tools_called(state.pred)
-        top_level_workflow_state = _prediction_workflow_state(state.pred)
+        top_level_workflow_state = _prediction_workflow_state(
+            state.pred, schema=state.workflow_schema
+        )
         if top_level_workflow_state:
             _publish_transcript_event(
                 state.bus,

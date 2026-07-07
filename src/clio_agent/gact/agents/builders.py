@@ -40,7 +40,7 @@ import threading
 import time
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents.composition import (
@@ -48,6 +48,7 @@ from clio_agent.gact.agents.composition import (
     _runtime_dynamic_agent_children_context,
 )
 from clio_agent.gact.agents.resolution import (
+    _active_workflow_state_schema,
     _runtime_child_agent_rows,
     _runtime_declared_child_ids,
 )
@@ -78,6 +79,7 @@ from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
     from clio_agent.gact.types import AgentDef
+    from clio_agent.gact.workflow_state.schema import WorkflowStateSchema
     from clio_agent.providers.lm_spec import LMSpec
     from clio_agent.providers.resolver import ResolvedLMSpec
 
@@ -972,6 +974,45 @@ def _tool_user_agent_max_iters(agent_def: "AgentDef") -> int:
     return max_iters
 
 
+def _injected_workflow_state_field_type(schema: "WorkflowStateSchema") -> Any:
+    """Annotation for the auto-injected ``workflow_state`` output (Consumer A, #648).
+
+    The type is built FROM THE PACK SCHEMA, not hardcoded:
+
+    * GENERIC schema (no declared sections) -> ``dict[str, Any]`` byte-identically,
+      preserving the historical free-dict contract for domain-free packs.
+    * A schema that declares its section vocabulary -> a nested pydantic model.
+      Each declared section becomes ``Optional[<SectionModel>] = None``, and every
+      ``SectionModel`` carries a single typed ``status: Optional[Literal[...]] = None``
+      drawn from that section's ``status_ranks`` (sorted). ``extra="allow"`` at BOTH
+      the top level (undeclared sections) and each section level (undeclared keys such
+      as ``metadata_path``) keeps the strict adapter from rejecting an otherwise-correct
+      run, while an out-of-vocabulary ``status`` for a declared section now fails
+      validation (the typing is real).
+    """
+
+    if not schema.sections:
+        return dict[str, Any]
+
+    from pydantic import ConfigDict, create_model  # noqa: PLC0415
+
+    section_fields: dict[str, Any] = {}
+    for section_name, rule in schema.sections.items():
+        statuses = tuple(sorted(rule.status_ranks))
+        status_annotation: Any = Optional[Literal[statuses]] if statuses else Optional[str]  # type: ignore[valid-type]
+        section_model = create_model(
+            f"WorkflowStateSection_{section_name}",
+            __config__=ConfigDict(extra="allow"),
+            status=(status_annotation, None),
+        )
+        section_fields[section_name] = (Optional[section_model], None)
+    return create_model(
+        "InjectedWorkflowState",
+        __config__=ConfigDict(extra="allow"),
+        **section_fields,
+    )
+
+
 def _blueprint_runtime_signature(agent_def: "AgentDef", *, app: Any = None) -> Any:
     """Build a DSPy Signature from a blueprint's ordered signature fields.
 
@@ -1069,10 +1110,26 @@ def _blueprint_runtime_signature(agent_def: "AgentDef", *, app: Any = None) -> A
     # model to satisfy -- so we no longer auto-inject them. (A blueprint that
     # genuinely needs one can still declare it explicitly in its signature
     # `outputs:`.)
+    # Resolve the session's active workflow_state schema once (also reused for the
+    # next_expert routing Literal below). Consumer A (#648): the injected
+    # workflow_state field is TYPED FROM THE PACK SCHEMA -- a GENERIC (no declared
+    # sections) schema keeps the historical free ``dict[str, Any]`` byte-identically,
+    # while a pack that declares its vocabulary gets a nested pydantic model whose
+    # per-section ``status`` is a real ``Optional[Literal[...]]`` (undeclared keys and
+    # undeclared sections still validate via ``extra="allow"`` at both levels).
+    _route_app = app if app is not None else _ctx.active_app()
+    _route_sid = _ctx.active_session_id()
+    # No try/except: the resolver already returns GENERIC for app-less/session-less
+    # callers, so any exception here is a real defect that must propagate loudly
+    # (matching every other call site of the resolver -- turn.py and the two
+    # delegate/seed sites below). Swallowing it would silently downgrade the
+    # injected annotation with no recorded reason (no-silent-fallback ground rule).
+    _workflow_state_schema = _active_workflow_state_schema(_route_app, _route_sid)
+    _workflow_state_field_type = _injected_workflow_state_field_type(_workflow_state_schema)
     _structured_field_specs: dict[str, tuple[str, Any]] = {
         "workflow_state": (
             "Typed semantic workflow state (a JSON object) used for blueprint continuation routing.",
-            dict[str, Any],
+            _workflow_state_field_type,
         ),
     }
     _declared = {field for field, _, _ in outputs}
@@ -1089,8 +1146,7 @@ def _blueprint_runtime_signature(agent_def: "AgentDef", *, app: Any = None) -> A
     # makes a model fill it reliably (the old free-string `expert_handoffs` was always
     # emitted empty, so 100% of routing fell through to the contracts). The Literal is
     # built per-expert from its OWN declared children (a leaf gets Literal["finish"]).
-    _route_app = app if app is not None else _ctx.active_app()
-    _route_sid = _ctx.active_session_id()
+    # (_route_app / _route_sid resolved above with the workflow_state schema.)
     _agent_id = getattr(agent_def, "id", "")
     _child_ids: list[str] = []
     if _route_app is not None and _route_sid:
@@ -1236,6 +1292,9 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
 
     import dspy  # noqa: PLC0415
 
+    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+        _active_workflow_state_schema,
+    )
     from clio_agent.gact.app import (  # noqa: PLC0415
         _append_session_workflow_state_context,
         _blueprint_runner_for_agent,
@@ -1253,6 +1312,7 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
         if child.parent_id != parent.id:
             raise RuntimeError(f"{child.id!r} is not a declared child of {parent.id!r}")
         app_state = getattr(app, "state", None)
+        schema = _active_workflow_state_schema(app, session_id)
 
         _emit_semantic_event(
             app,
@@ -1281,6 +1341,7 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
             app,
             session_id,
             question,
+            schema=schema,
         )
         try:
             with _tool_session_context(session_id):
@@ -1322,11 +1383,11 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
         # Seed from the child's typed workflow_state output field (structural twin
         # of the removed prose append); merge tool-row state. State rides the
         # payload's ``workflow_state`` Mapping below, NOT the output text.
-        workflow_state = _prediction_workflow_state(pred)
+        workflow_state = _prediction_workflow_state(pred, schema=schema)
         for tool_row in tools_called:
             row_state = tool_row.get("workflow_state")
             if isinstance(row_state, Mapping):
-                _merge_workflow_state_mapping(workflow_state, row_state)
+                _merge_workflow_state_mapping(workflow_state, row_state, schema=schema)
         payload = {
             "agent_id": child.id,
             "parent_id": parent.id,
@@ -1706,8 +1767,13 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 trace.hot("FWD-A", "%s child-context+seed-done", getattr(self.agent_def, "id", "?"))
             blueprint_tool_rows: list[dict[str, Any]] = []
             if self.kind == "react":
+                from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+                    _active_workflow_state_schema,
+                )
+
                 prior_workflow_state = _workflow_state_from_outputs(
-                    [question, runtime_system_prompt]
+                    [question, runtime_system_prompt],
+                    schema=_active_workflow_state_schema(active_app, active_session_id),
                 )
                 if trace.HF_ON:
                     trace.hot(

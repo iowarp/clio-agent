@@ -45,8 +45,10 @@ def _route_values(sig: object) -> set[str]:
 
 
 def test_expert_children_cache_is_per_app(monkeypatch) -> None:
-    app_a = SimpleNamespace(state=SimpleNamespace())
-    app_b = SimpleNamespace(state=SimpleNamespace())
+    # ``sessions`` mirrors real app wiring: signature build resolves the session's
+    # workflow-state schema (unknown id -> no blueprint to attribute -> GENERIC).
+    app_a = SimpleNamespace(state=SimpleNamespace(sessions={}))
+    app_b = SimpleNamespace(state=SimpleNamespace(sessions={}))
 
     children = {id(app_a): {"x", "y"}, id(app_b): {"z"}}
     monkeypatch.setattr(

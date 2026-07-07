@@ -148,7 +148,9 @@ def _build_expert_system_prompt(monkeypatch: pytest.MonkeyPatch, *, arc: Any) ->
     ARC bound on the app. Returns the ``system_prompt`` the module hands the model."""
 
     _patch_runtime(monkeypatch)
-    app = SimpleNamespace(state=SimpleNamespace(arc=arc))
+    # ``sessions`` mirrors real app wiring: the workflow-schema resolver looks the
+    # session up (unknown id -> no blueprint to attribute -> GENERIC schema).
+    app = SimpleNamespace(state=SimpleNamespace(arc=arc, sessions={}))
     sid = "sess-multiturn"
     sid_token = ctx.set_session_id(sid)
     try:
@@ -186,7 +188,7 @@ def test_signature_instructions_byte_stable_across_turns(
     ``next_expert`` Literal is built from ``sorted(child_ids)`` so its option order is
     deterministic, and the rest of the signature is static."""
     _patch_runtime(monkeypatch)
-    app = SimpleNamespace(state=SimpleNamespace(arc=None))
+    app = SimpleNamespace(state=SimpleNamespace(arc=None, sessions={}))
     sid = "sess-multiturn"
     sid_token = ctx.set_session_id(sid)
     try:
@@ -279,7 +281,7 @@ def test_system_message_is_a_byte_prefix_across_turns(
     the KV cache hits from byte 0 through the entire system region. The per-turn user
     content (the question + prepended transcript) appends AFTER this prefix."""
     _patch_runtime(monkeypatch)
-    app = SimpleNamespace(state=SimpleNamespace(arc=None))
+    app = SimpleNamespace(state=SimpleNamespace(arc=None, sessions={}))
     sid_token = ctx.set_session_id("sess-multiturn")
     try:
         with _gact_app_context(app):

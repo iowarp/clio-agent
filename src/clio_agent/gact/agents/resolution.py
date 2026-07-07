@@ -34,6 +34,7 @@ from clio_agent.gact.agent_blueprints import (
     load_agent_blueprint_path,
     load_agent_blueprints,
     load_mcp_descriptors,
+    parse_agent_blueprint_root,
     validate_agent_hierarchy,
 )
 from clio_agent.gact.agents.composition import (
@@ -43,7 +44,12 @@ from clio_agent.gact.agents.composition import (
 )
 from clio_agent.gact.catalog import _builtin_agents, _load_skills_from_disk
 from clio_agent.gact.expert_packs import load_expert_packs, validate_expert_hierarchy
+from clio_agent.gact.runtime.app_state import per_app_dict
 from clio_agent.gact.types import AgentCapabilityRef, AgentDef
+from clio_agent.gact.workflow_state.schema import (
+    GENERIC_WORKFLOW_STATE_SCHEMA,
+    WorkflowStateSchema,
+)
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -230,6 +236,81 @@ def _runtime_active_agent_blueprint_path(app: "FastAPI", session_id: str = "") -
         return None
     raw = str(metadata.get("active_agent_blueprint_path") or "").strip()
     return Path(raw).expanduser() if raw else None
+
+
+def _active_workflow_state_schema(
+    app: "FastAPI | None", session_id: str = ""
+) -> "WorkflowStateSchema":
+    """THE one seam mapping a session's active blueprint to its typed
+    workflow_state schema.
+
+    A valid blueprint-level ``workflow_state`` declaration compiles to the typed
+    engine; a bool-only / absent declaration falls back to
+    ``GENERIC_WORKFLOW_STATE_SCHEMA`` (domain-free, presence-only). App-less /
+    session-less callers get GENERIC too (out-of-band — nothing to attribute).
+    The result is cached per (session, active-blueprint identity) on
+    ``app.state.workflow_state_schemas`` so a blueprint switch re-resolves.
+
+    Falling back to GENERIC records a loud, queryable
+    ``workflow_state_schema_absent`` reason in the dedicated per-app ledger
+    (``app.state.workflow_schema_fallbacks``; Slice E, no-silent-fallback rule).
+    The cache guarantees the reason is recorded at most once per (session,
+    active-blueprint identity). Malformed declarations are rejected at blueprint
+    load (the blueprint is disabled with a ``validation_errors`` entry) and so
+    never reach here — only an absent / bool-only declaration falls through.
+    """
+
+    if app is None or not session_id or getattr(app, "state", None) is None:
+        # App-less, session-less, or a state-less app carrier: nothing to attribute
+        # a blueprint to, so the generic engine is the honest answer (mirrors the
+        # defensive ``getattr(app, "state", None)`` style of the ledger helpers).
+        return GENERIC_WORKFLOW_STATE_SCHEMA
+    blueprint_id = _runtime_active_agent_blueprint_id(app, session_id)
+    blueprint_path = _runtime_active_agent_blueprint_path(app, session_id)
+    cache = per_app_dict("workflow_state_schemas", app=app)
+    key = (blueprint_id, str(blueprint_path or ""))
+    cached = cache.get(session_id)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    declaration: Any = None
+    if blueprint_path is not None or blueprint_id:
+        blueprint = (
+            parse_agent_blueprint_root(blueprint_path, scope="session")
+            if blueprint_path is not None
+            else next(
+                (
+                    row
+                    for row in discover_agent_blueprints(
+                        cwd=_runtime_workspace_catalog_cwd(app, session_id=session_id)
+                    )
+                    if row.id == blueprint_id
+                ),
+                None,
+            )
+        )
+        if blueprint is not None and blueprint.enabled:
+            declaration = blueprint.metadata.get("workflow_state")
+    if isinstance(declaration, Mapping):
+        schema = WorkflowStateSchema.model_validate(declaration)
+    else:
+        schema = GENERIC_WORKFLOW_STATE_SCHEMA
+        # Loud, queryable degradation (no-silent-fallback): the active blueprint
+        # declares no workflow_state schema, so the generic presence-only engine
+        # runs. Recorded once per (session, blueprint) — the cache below dedupes
+        # re-resolutions. Lazy import mirrors the ambient-LM ledger seam and keeps
+        # this resolution leaf free of a top-level ``streaming`` dependency.
+        from clio_agent.gact.streaming import (  # noqa: PLC0415
+            _record_workflow_schema_fallback,
+        )
+
+        _record_workflow_schema_fallback(
+            app,
+            session_id,
+            "workflow_state_schema_absent",
+            f"active blueprint {blueprint_id or '(none)'} declares no workflow_state schema",
+        )
+    cache[session_id] = (key, schema)
+    return schema
 
 
 def _runtime_active_session_expert_pack_id(app: "FastAPI", session_id: str = "") -> str:

@@ -303,6 +303,24 @@ def parse_agent_blueprint_root(root: Path, *, scope: str) -> AgentBlueprintDefin
     install_metadata = read_install_metadata(path.parent)
     title = str(meta.get("title") or blueprint_id).strip()
     display_name = str(meta.get("display_name") or title).strip()
+    # Fail loud on a malformed workflow_state declaration (#646/#648, Phase C
+    # slice E): a Mapping declaration that does not compile to a WorkflowStateSchema
+    # disables the blueprint (``enabled=not errors`` below) with a validation error
+    # — the resolver then never sees a malformed declaration and only ever falls
+    # back to GENERIC on an absent / bool-only one. A bool / None declaration is a
+    # legitimate opt-out and is left to the resolver's loud generic fallback.
+    workflow_state_declaration = meta.get("workflow_state")
+    if isinstance(workflow_state_declaration, dict):
+        from pydantic import ValidationError  # noqa: PLC0415
+
+        from clio_agent.gact.workflow_state.schema import (  # noqa: PLC0415
+            WorkflowStateSchema,
+        )
+
+        try:
+            WorkflowStateSchema.model_validate(workflow_state_declaration)
+        except ValidationError as exc:
+            errors.append(f"invalid workflow_state schema: {exc}")
     return AgentBlueprintDefinition(
         id=blueprint_id,
         version=str(meta.get("version") or "").strip(),
@@ -334,6 +352,11 @@ def parse_agent_blueprint_root(root: Path, *, scope: str) -> AgentBlueprintDefin
             else {},
             "includes": _list_field(meta, "includes"),
             "blueprint": meta.get("blueprint") if isinstance(meta.get("blueprint"), dict) else {},
+            # Raw pack-declared workflow_state vocabulary (#646/#648, Phase C).
+            # Stamped verbatim (dict / bool / None); the resolver compiles the
+            # Mapping form into a typed WorkflowStateSchema. Slice E validates it
+            # here and disables the blueprint on a malformed declaration.
+            "workflow_state": meta.get("workflow_state"),
             "install": install_metadata
             or (meta.get("install") if isinstance(meta.get("install"), dict) else {}),
             "default_registry": default_registry_metadata()

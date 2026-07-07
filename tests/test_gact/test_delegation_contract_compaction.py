@@ -8,6 +8,7 @@ from clio_agent.gact.app import (
     _latest_parent_resumed_output_summary,
 )
 from clio_agent.gact.types import Part
+from tests.test_gact.earthscope_schema import EARTHSCOPE_WORKFLOW_STATE_SCHEMA
 
 
 @dataclass(frozen=True)
@@ -79,6 +80,7 @@ def test_parent_resume_prompt_receives_genuine_child_output_verbatim() -> None:
                 "output": child_output,
             }
         ],
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
 
     assert "NEXT_EXPERT: visualization" in prompt

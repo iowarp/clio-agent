@@ -302,7 +302,7 @@ async def run_dynamic_agent_sync(
         },
         payload=_prediction_summary(_pred),
     )
-    _workflow_state = _prediction_workflow_state(_pred)
+    _workflow_state = _prediction_workflow_state(_pred, schema=state.workflow_schema)
     if _workflow_state:
         _publish_transcript_event(
             state.bus,
@@ -442,6 +442,7 @@ async def execute_delegated_experts(
             state.app,
             state.sid,
             _delegated_expert_prompt(row, source_text),
+            schema=state.workflow_schema,
         )
         target_kind = (
             _blueprint_module_kind(target)
@@ -526,11 +527,15 @@ async def execute_delegated_experts(
             # any tool-row state. The state rides the completed_row's
             # ``workflow_state`` Mapping below; it is never serialized into the
             # output text.
-            local_workflow_state = _prediction_workflow_state(pred_child)
+            local_workflow_state = _prediction_workflow_state(
+                pred_child, schema=state.workflow_schema
+            )
             for tool_row in local_tools_called:
                 row_state = tool_row.get("workflow_state")
                 if isinstance(row_state, Mapping):
-                    _merge_workflow_state_mapping(local_workflow_state, row_state)
+                    _merge_workflow_state_mapping(
+                        local_workflow_state, row_state, schema=state.workflow_schema
+                    )
             nested: list[dict[str, Any]] = []
             if target.source == "expert_pack":
                 pred_child, nested = await settle_dynamic_agent_delegations(
@@ -614,22 +619,29 @@ async def execute_delegated_experts(
             # structured workflow_state field via local_workflow_state (the
             # structural twin of the removed prose append) -- never re-parsed
             # out of `output` text, which no longer carries a state block.
-            workflow_state = _workflow_state_from_outputs([prompt])
+            workflow_state = _workflow_state_from_outputs(
+                [prompt], schema=state.workflow_schema
+            )
             # Seed from this expert's own authoritative typed emission so its
             # state bubbles to the parent for continuation routing, even when
             # `output` was reassigned to a child-evidence summary. Generic for
             # all packs.
             if local_workflow_state:
-                _merge_workflow_state_mapping(workflow_state, local_workflow_state)
+                _merge_workflow_state_mapping(
+                    workflow_state, local_workflow_state, schema=state.workflow_schema
+                )
             if nested:
                 _merge_workflow_state_mapping(
                     workflow_state,
-                    _workflow_state_from_handoff_rows(nested),
+                    _workflow_state_from_handoff_rows(nested, schema=state.workflow_schema),
+                    schema=state.workflow_schema,
                 )
             for tool_row in child_tools_called:
                 row_state = tool_row.get("workflow_state")
                 if isinstance(row_state, Mapping):
-                    _merge_workflow_state_mapping(workflow_state, row_state)
+                    _merge_workflow_state_mapping(
+                        workflow_state, row_state, schema=state.workflow_schema
+                    )
             child_tools_called = _sanitize_tools_called_metadata(child_tools_called)
             handoff_output = "" if _looks_like_structured_answer(output) else output
             # The PUBLIC return summary is derived from the child's GENUINE
@@ -639,7 +651,9 @@ async def execute_delegated_experts(
             # feeds the parent RESUME PROMPT (which receives the typed
             # workflow_state separately, not raw JSON).
             public_return_summary = (
-                _clean_public_transcript_text(_render_return_summary(output))
+                _clean_public_transcript_text(
+                    _render_return_summary(output), schema=state.workflow_schema
+                )
                 or f"{target.id} returned to {parent_agent.id}."
             )
             completed_row = {
@@ -796,6 +810,7 @@ async def execute_delegated_experts(
                 error=error_name,
                 message=error_message,
                 tools_called=child_tools_called,
+                schema=state.workflow_schema,
             )
             output = _failed_child_delegation_output_summary(
                 child_agent_id=target.id,
@@ -953,7 +968,7 @@ async def settle_dynamic_agent_delegations(
         # and inject it via the clean structured prompt formatter, rather than
         # appending a prose state block to the parent's answer.
         current_evidence = str(getattr(latest_pred, "answer", "") or "").strip()
-        parent_state = _prediction_workflow_state(latest_pred)
+        parent_state = _prediction_workflow_state(latest_pred, schema=state.workflow_schema)
         if parent_state:
             current_evidence = _append_accumulated_workflow_state_context(
                 current_evidence, parent_state
@@ -986,7 +1001,11 @@ async def settle_dynamic_agent_delegations(
         # Re-invoke the parent with the child's returned evidence so IT emits the
         # next route (descend again, or finish).
         resume_prompt = _dynamic_parent_resume_prompt(
-            source_text, parent_agent, all_rows, declared_child_ids=declared_child_ids
+            source_text,
+            parent_agent,
+            all_rows,
+            declared_child_ids=declared_child_ids,
+            schema=state.workflow_schema,
         )
         latest_pred = await run_dynamic_agent_sync(state, parent_agent, resume_prompt)
 

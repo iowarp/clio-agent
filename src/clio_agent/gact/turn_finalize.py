@@ -255,17 +255,20 @@ def finalize_turn(
     if state.error_info is None and not state.answer_text and state.expert_handoffs:
         state.answer_text = _fallback_answer_from_delegation(state.expert_handoffs)
 
-    # Final user-facing text only: correct any fabricated local artifact (csv/png)
-    # path the answer presents as produced — whether the synthesizing expert
-    # composed a plausible-but-wrong filename or the delegation-fallback text
-    # carried a model-requested ``output_path`` that the tool never wrote — by
-    # grounding it against the run's verified on-disk artifacts in the merged
-    # typed workflow_state. Generic (typed state + filesystem only), applied once
-    # on the assembled answer, never on intermediate child rows.
+    # Final user-facing text only: correct any fabricated local artifact path the
+    # answer presents as produced — whether the synthesizing expert composed a
+    # plausible-but-wrong filename or the delegation-fallback text carried a
+    # model-requested ``output_path`` that the tool never wrote — by grounding it
+    # against the run's verified on-disk artifacts in the merged typed
+    # workflow_state. Generic (pack schema + filesystem only), applied once on the
+    # assembled answer, never on intermediate child rows.
     if state.answer_text and state.expert_handoffs:
         state.answer_text = _ground_fabricated_local_artifact_paths(
             state.answer_text,
-            _workflow_state_from_handoff_rows(state.expert_handoffs),
+            _workflow_state_from_handoff_rows(
+                state.expert_handoffs, schema=state.workflow_schema
+            ),
+            schema=state.workflow_schema,
         )
 
     # Build assistant parts — routing_decision (v0.2) first when we

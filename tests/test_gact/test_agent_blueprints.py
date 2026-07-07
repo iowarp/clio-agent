@@ -65,6 +65,7 @@ from clio_agent.gact.app import (
 )
 from clio_agent.gact.types import AgentDef
 from tests.test_gact.conftest import complete_turn
+from tests.test_gact.earthscope_schema import EARTHSCOPE_WORKFLOW_STATE_SCHEMA
 
 
 def _fake_resolved_spec(provider: str, model: str) -> Any:
@@ -340,7 +341,8 @@ def test_workflow_state_normalizes_unicode_hyphens_in_path_fields() -> None:
                     }
                 }
             )
-        ]
+        ],
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
 
     assert state["acquisition"]["local_path"] == "/tmp/.clio/artifacts/ndp-staging/MTA1.csv"
@@ -771,7 +773,8 @@ def test_workflow_state_merge_preserves_staged_acquisition_over_metadata_only(
                     }
                 }
             ),
-        ]
+        ],
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
 
     assert state["resource_candidate"]["status"] == "selected"
@@ -796,7 +799,7 @@ def test_ground_fabricated_local_artifact_path_rewrites_to_verified(tmp_path) ->
         "Plot (PNG): /home/x/.clio/artifacts/plots/P475_CI_LY_timeseries.png\n"
         "Source URL: https://ds2.datacollaboratory.org/raw_csv/P475.CI.LY_.20.csv"
     )
-    grounded = _ground_fabricated_local_artifact_paths(answer, state)
+    grounded = _ground_fabricated_local_artifact_paths(answer, state, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
 
     # The fabricated PNG path (not on disk) is rewritten to the verified one.
     assert str(real_png) in grounded
@@ -825,7 +828,7 @@ def test_ground_fabricated_csv_path_ignores_metadata_catalog_for_substitution(tm
         },
     }
     answer = "Staged station CSV: /tmp/SAN_timeseries.csv"
-    grounded = _ground_fabricated_local_artifact_paths(answer, state)
+    grounded = _ground_fabricated_local_artifact_paths(answer, state, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
 
     assert str(real_csv) in grounded
     assert "/tmp/SAN_timeseries.csv" not in grounded
@@ -838,7 +841,7 @@ def test_ground_fabricated_local_artifact_path_respects_missing_framing(tmp_path
     real_png.write_bytes(b"\x89PNG" + b"0" * 64)
     state = {"artifact": {"status": "ready", "path": str(real_png)}}
     answer = "No figure was produced; a PNG has not been staged at /tmp/expected/P475_plot.png yet."
-    grounded = _ground_fabricated_local_artifact_paths(answer, state)
+    grounded = _ground_fabricated_local_artifact_paths(answer, state, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
 
     # An honestly-framed missing/expected path must not be rewritten.
     assert grounded == answer
@@ -849,7 +852,8 @@ def test_ground_fabricated_local_artifact_path_no_verified_neutralizes() -> None
     # local artifact path must be neutralized rather than presented as real.
     answer = "Plot (PNG): /home/x/.clio/artifacts/plots/SAN_timeseries.png"
     grounded = _ground_fabricated_local_artifact_paths(
-        answer, {"acquisition": {"status": "blocked"}}
+        answer, {"acquisition": {"status": "blocked"}},
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
 
     assert "SAN_timeseries.png" not in grounded
@@ -874,7 +878,7 @@ def test_ground_fabricated_local_artifact_path_collapses_doubled_prefix(tmp_path
         "acquisition": {"local_path": real_s},
         "catalog": {"metadata_path": str(staging / "catalog.csv")},
     }
-    grounded = _ground_fabricated_local_artifact_paths(f"Staged CSV: {doubled}.", state)
+    grounded = _ground_fabricated_local_artifact_paths(f"Staged CSV: {doubled}.", state, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
     assert real_s in grounded
     assert doubled not in grounded
 
@@ -886,7 +890,8 @@ def test_ground_fabricated_local_artifact_path_keeps_honest_blocked_prose() -> N
         "written to /tmp/expected/figure.png once a station CSV is staged."
     )
     grounded = _ground_fabricated_local_artifact_paths(
-        answer, {"acquisition": {"status": "blocked"}}
+        answer, {"acquisition": {"status": "blocked"}},
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
 
     assert grounded == answer
@@ -935,7 +940,8 @@ def test_workflow_state_merge_preserves_non_empty_tool_provenance(tmp_path: Path
                     }
                 }
             ),
-        ]
+        ],
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
 
     assert state["resource_candidate"]["dataset_id"] == "1b0c1b93-f164-4025-bd7b-000252b5ca18"
@@ -964,7 +970,8 @@ def test_workflow_state_extraction_preserves_nested_child_structured_evidence() 
                     }
                 }
             )
-        ]
+        ],
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
 
     assert state["profile"]["status"] == "complete"
@@ -989,7 +996,8 @@ def test_workflow_state_downgrades_analysis_ready_without_staged_local_path() ->
                     }
                 }
             )
-        ]
+        ],
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
 
     assert state["acquisition"]["status"] == "candidate_found"
@@ -1018,7 +1026,8 @@ def test_workflow_state_reclassifies_data_available_without_staged_local_path() 
                     }
                 }
             )
-        ]
+        ],
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
 
     assert state["acquisition"]["status"] == "candidate_found"
@@ -1450,7 +1459,7 @@ def test_failed_child_delegation_output_summary_is_clean_prose() -> None:
     # No prose state block pollutes the summary anymore.
     assert "workflow state" not in summary.casefold()
     assert "workflow_state" not in summary
-    assert _workflow_state_from_outputs([summary]) == {}
+    assert _workflow_state_from_outputs([summary], schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA) == {}
 
 
 def test_failed_child_delegation_state_rides_structured_row() -> None:
@@ -1464,13 +1473,14 @@ def test_failed_child_delegation_state_rides_structured_row() -> None:
         error="AuthenticationError",
         message="token inactive",
         tools_called=[],
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
 
     assert state["delegation"]["status"] == "failed"
     assert state["delegation"]["failed_child"] == "earthscope_station_catalog"
     # The parent reads this structured field via _workflow_state_from_handoff_rows.
     failed_row = {"stage": "delegate.failed", "workflow_state": state}
-    assert _workflow_state_from_handoff_rows([failed_row])["delegation"]["status"] == "failed"
+    assert _workflow_state_from_handoff_rows([failed_row], schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)["delegation"]["status"] == "failed"
 
 
 def test_completed_child_state_is_structural_not_prose_in_continuation() -> None:
@@ -1502,11 +1512,11 @@ def test_completed_child_state_is_structural_not_prose_in_continuation() -> None
     # (a) No prose state block in the user-/parent-facing output text.
     assert "typed workflow state" not in output.casefold()
     assert "CLIO" not in output
-    assert _workflow_state_from_outputs([clean_answer]) == {}
+    assert _workflow_state_from_outputs([clean_answer], schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA) == {}
 
     # (b1) The structural carrier (the row's workflow_state field) holds the state,
     # readable by the parent's handoff-row reader.
-    recovered = _workflow_state_from_handoff_rows([completed_row])
+    recovered = _workflow_state_from_handoff_rows([completed_row], schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
     assert recovered["acquisition"]["status"] == "staged"
     assert recovered["station_catalog"]["station_ids"] == ["P472", "SIO5"]
 
@@ -1516,6 +1526,7 @@ def test_completed_child_state_is_structural_not_prose_in_continuation() -> None
         "acquire GNSS data near San Diego",
         SimpleNamespace(id="ndp_dataset_discovery"),
         [completed_row],
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
     assert '"status": "staged"' in resume_prompt
     assert "P472" in resume_prompt
@@ -1532,11 +1543,11 @@ def test_session_workflow_state_context_injects_ledger_state_structurally() -> N
     ]
     app = SimpleNamespace(state=SimpleNamespace(tool_call_ledger={"sess-1": ledger_rows}))
 
-    enriched = _append_session_workflow_state_context(app, "sess-1", "find more stations")
+    enriched = _append_session_workflow_state_context(app, "sess-1", "find more stations", schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
 
     assert "find more stations" in enriched
     assert '"status": "staged"' in enriched
-    assert _workflow_state_from_outputs([enriched])["acquisition"]["status"] == "staged"
+    assert _workflow_state_from_outputs([enriched], schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)["acquisition"]["status"] == "staged"
 
 
 def test_nested_handoff_tool_calls_preserve_child_result_evidence() -> None:
@@ -2299,6 +2310,7 @@ def test_prediction_workflow_state_read_structurally() -> None:
                 }
             }
         ),
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
 
     assert state["acquisition"]["status"] == "metadata_only"
@@ -2309,17 +2321,19 @@ def test_prediction_workflow_state_accepts_json_string_and_wrapped_mapping() -> 
     # A typed field may arrive as a JSON string or already wrapped in
     # {"workflow_state": ...}; both normalize to the inner section mapping.
     from_string = _prediction_workflow_state(
-        SimpleNamespace(workflow_state='{"workflow_state": {"profile": {"status": "ready"}}}')
+        SimpleNamespace(workflow_state='{"workflow_state": {"profile": {"status": "ready"}}}'),
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
     assert from_string["profile"]["status"] == "ready"
 
     from_wrapped = _prediction_workflow_state(
-        SimpleNamespace(workflow_state={"workflow_state": {"artifact": {"status": "ready"}}})
+        SimpleNamespace(workflow_state={"workflow_state": {"artifact": {"status": "ready"}}}),
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
     assert from_wrapped["artifact"]["status"] == "ready"
 
-    assert _prediction_workflow_state(SimpleNamespace(workflow_state="")) == {}
-    assert _prediction_workflow_state(SimpleNamespace(workflow_state=None)) == {}
+    assert _prediction_workflow_state(SimpleNamespace(workflow_state=""), schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA) == {}
+    assert _prediction_workflow_state(SimpleNamespace(workflow_state=None), schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA) == {}
 
 
 def test_fallback_answer_from_delegation_uses_latest_completed_parent_resume() -> None:
