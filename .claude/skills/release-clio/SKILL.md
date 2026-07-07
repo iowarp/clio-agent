@@ -78,6 +78,14 @@ curl -s https://pypi.org/pypi/clio-agent/json | python3 -c "import sys,json;d=js
 gh release view vX.Y.Z --json assets -q '.assets[].name' | grep clio-tui   # installer needs clio-tui-{os}-{arch}
 gh run list --workflow=docker.yml --limit 1                                 # ghcr images
 ```
+The `clio-bundles.yml` **`release-check`** job must be green — it asserts every
+expected bundle uploaded (bundled msi/nsis/dmg/deb/rpm, lite set, tui set, web
+zip; #841 F-15). A red `release-check` names the missing artifact — a silently
+incomplete release (like v0.5.17's dropped `aarch64` bundled `.dmg`) fails here
+instead of shipping. To re-check by hand:
+```sh
+gh release view vX.Y.Z --json assets -q '.assets[].name' | python3 scripts/check_release_completeness.py
+```
 
 ## Hard-won gotchas (all hit on the 0.5.3 release — check these)
 
