@@ -1,6 +1,7 @@
 """Tests for the tool execution boundary."""
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -16,6 +17,7 @@ from clio_agent.tools.execution import (
     SyncMCPToolExecutor,
     ToolRuntimeHooks,
     _ground_output_paths,
+    _repair_missing_file_arguments,
     create_async_tool_executor,
     create_sync_tool_executor,
     set_tool_runtime_fallback,
@@ -468,9 +470,16 @@ def test_sync_mcp_tool_executor_repairs_unique_missing_file_arg(
         set_tool_runtime_fallback(ToolRuntimeHooks())
         executor.close()
 
-    # The result is a JSON string; compare the parsed arg with Path equality so
+    # The substitution is surfaced verbatim as a ``[path-repair]`` note prepended
+    # to the tool result the model reads back.
+    assert result.startswith("[path-repair] argument 'filepath':")
+    assert "substituted unique match" in result
+    assert str(good.resolve()) in result.splitlines()[0]
+
+    # The JSON body follows the note; compare the parsed arg with Path equality so
     # the assertion is independent of separators and JSON backslash escaping.
-    repaired = json.loads(result)["args"]["filepath"]
+    body = result[result.index("{") :]
+    repaired = json.loads(body)["args"]["filepath"]
     assert Path(repaired) == good.resolve()
     assert observed == [
         ("fake_echo", {"filepath": str(good.resolve())}, "started", None),
@@ -508,6 +517,105 @@ def test_sync_mcp_tool_executor_does_not_repair_ambiguous_missing_file_arg(
     assert Path(kept) == tmp_path / "typo" / "sample.fasta"
     assert Path(kept) != first.resolve()
     assert Path(kept) != second.resolve()
+
+
+def test_repair_returns_records_for_each_substitution(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    """A unique repair yields a structured record ``{argument, requested, used}``."""
+    good = tmp_path / "data" / "reference.fasta"
+    good.parent.mkdir()
+    good.write_text(">chrA\nACGT\n", encoding="utf-8")
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+
+    requested = str(tmp_path / "typo" / "reference.fasta")
+    repaired, records = _repair_missing_file_arguments({"filepath": requested})
+
+    assert Path(repaired["filepath"]) == good.resolve()
+    assert records == [
+        {"argument": "filepath", "requested": requested, "used": str(good.resolve())}
+    ]
+
+
+def test_repair_scan_bound_leaves_args_unchanged(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    """Hitting the scan-entry bound aborts and leaves the argument untouched.
+
+    A partial scan cannot prove a basename match is unique, so no substitution is
+    made and no record is surfaced.
+    """
+    good = tmp_path / "data" / "reference.fasta"
+    good.parent.mkdir()
+    good.write_text(">chrA\nACGT\n", encoding="utf-8")
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    # Force the very first scanned entry to trip the ceiling.
+    monkeypatch.setattr("clio_agent.tools.execution._REPAIR_SCAN_LIMIT", 0)
+
+    requested = str(tmp_path / "typo" / "reference.fasta")
+    repaired, records = _repair_missing_file_arguments({"filepath": requested})
+
+    assert repaired == {"filepath": requested}
+    assert records == []
+
+
+def test_repair_scan_bound_aborts_walk_with_no_matches(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    """The scan bound stops the WALK itself, not just per-match bookkeeping.
+
+    A no-match basename is the canonical repair trigger (the mistyped file does
+    not exist anywhere). The walk must abort at the entry ceiling instead of
+    traversing the whole allowed-root tree looking for matches that never come.
+    """
+    # Tree much larger than the bound: 30 directories x 5 files = 180 entries.
+    for d in range(30):
+        sub = tmp_path / f"dir_{d:02d}"
+        sub.mkdir()
+        for f in range(5):
+            (sub / f"file_{f}.txt").write_text("x", encoding="utf-8")
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    monkeypatch.setattr("clio_agent.tools.execution._REPAIR_SCAN_LIMIT", 5)
+
+    real_scandir = os.scandir
+    scanned_dirs: list[str] = []
+
+    def counting_scandir(path: Any) -> Any:
+        text = os.fspath(path) if not isinstance(path, int) else str(path)
+        if text.startswith(str(tmp_path)):
+            scanned_dirs.append(text)
+        return real_scandir(path)
+
+    monkeypatch.setattr("clio_agent.tools.execution.os.scandir", counting_scandir)
+
+    requested = str(tmp_path / "typo" / "nowhere.fasta")
+    repaired, records = _repair_missing_file_arguments({"filepath": requested})
+
+    # Aborted at the bound: unchanged args, no records surfaced.
+    assert repaired == {"filepath": requested}
+    assert records == []
+    # And the walk itself stopped: with a ceiling of 5 entries it can have
+    # opened at most 2 directories, nowhere near the 31 an unbounded
+    # traversal would visit.
+    assert 1 <= len(scanned_dirs) <= 2
+
+
+def test_repair_deadline_bound_leaves_args_unchanged(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    """Hitting the wall-clock deadline aborts and leaves the argument untouched."""
+    good = tmp_path / "data" / "reference.fasta"
+    good.parent.mkdir()
+    good.write_text(">chrA\nACGT\n", encoding="utf-8")
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    # A negative budget puts the deadline in the past before the first scan entry.
+    monkeypatch.setattr("clio_agent.tools.execution._REPAIR_DEADLINE_S", -1.0)
+
+    requested = str(tmp_path / "typo" / "reference.fasta")
+    repaired, records = _repair_missing_file_arguments({"filepath": requested})
+
+    assert repaired == {"filepath": requested}
+    assert records == []
 
 
 def test_sync_mcp_tool_executor_reports_cooperative_cancel_after_tool_result():

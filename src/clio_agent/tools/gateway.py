@@ -208,7 +208,13 @@ def _list_tools_sync(gw: FastMCP) -> list[Any]:
 
 
 def _namespace_of(tool_name: str) -> str:
-    """Derive the owning server namespace from a namespaced tool name."""
+    """Derive the owning server namespace from a namespaced tool name.
+
+    The namespace is everything before the FIRST ``_``. This split is only sound
+    because server names are constrained to ``[a-z0-9-]`` (no ``_``) at declaration
+    time by ``tools.mcp_config._validate_server_name`` — a name like ``my_server``
+    would otherwise mis-derive to ``my``. Keep that invariant if you touch either.
+    """
     return tool_name.split("_", 1)[0] if "_" in tool_name else tool_name
 
 
