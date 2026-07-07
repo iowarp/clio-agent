@@ -14,7 +14,7 @@
 - `runtime/` for doctor/status, hooks, LM activity/stream audit, and the nanoagent spawn primitive
 - `ui/` for the legacy CLI and REST API entry points (gact is the product surface)
 
-Tests mirror the runtime layout in `tests/` (`test_core/`, `test_arc/`, `test_experts/`, `test_tools/`, `test_gact/`, `test_integration/`, ...). Architecture and design docs live in `docs/` (historical material in `docs/archive/`), and reference material is in `ai-docs/`.
+Tests mirror the runtime layout in `tests/` (`test_core/`, `test_arc/`, `test_tools/`, `test_gact/`, `test_integration/`, ...). Architecture and design docs live in `docs/` (historical material in `docs/archive/`), and reference material is in `ai-docs/`.
 Helper scripts for local demos and homelab setup live in `scripts/`.
 
 ## Build, Test, and Development Commands
