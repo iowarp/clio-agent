@@ -51,6 +51,7 @@ from clio_agent.gact.runtime.globals import (
 )
 from clio_agent.gact.streaming import _live_streamed_field_text_for_turn
 from clio_agent.gact.types import Message, Part
+from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -829,3 +830,132 @@ def _make_tool_observer(app: "FastAPI"):
             )
 
     return observe
+
+
+_INTERNAL_METADATA_TOOL_NAMES = frozenset(
+    {
+        "clio_prior_workflow_state",
+        "finish",
+    }
+)
+
+
+def _tool_metadata_name(row: Mapping[str, Any]) -> str:
+    """Return the display tool name for a metadata row."""
+
+    return str(row.get("name") or row.get("tool") or "").strip()
+
+
+def _tool_metadata_name_args_key(row: Mapping[str, Any]) -> tuple[str, str]:
+    """Return a user-visible identity for metadata-level tool summaries."""
+
+    args = row.get("args")
+    if args is None:
+        args = row.get("arguments")
+    if args is None:
+        args = row.get("params")
+    try:
+        encoded_args = json.dumps(args or {}, sort_keys=True, default=str)
+    except TypeError:
+        encoded_args = str(args or {})
+    return _tool_metadata_name(row), encoded_args
+
+
+def _tool_metadata_has_result(row: Mapping[str, Any]) -> bool:
+    """Return whether a metadata row has result evidence worth preserving."""
+
+    for key in ("result", "observation", "output", "response", "result_preview"):
+        if row.get(key) not in (None, "", [], {}):
+            return True
+    return False
+
+
+def _sanitize_tools_called_metadata(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop internal tool-summary rows and de-duplicate equivalent public rows."""
+
+    cleaned: list[dict[str, Any]] = []
+    by_key: dict[tuple[str, str], int] = {}
+    dropped_internal = 0
+    merged_duplicates = 0
+    for raw_row in rows:
+        if not isinstance(raw_row, Mapping):
+            continue
+        name = _tool_metadata_name(raw_row)
+        if not name or name in _INTERNAL_METADATA_TOOL_NAMES:
+            dropped_internal += 1
+            continue
+        row = dict(raw_row)
+        key = _tool_metadata_name_args_key(row)
+        existing_index = by_key.get(key)
+        if existing_index is None:
+            by_key[key] = len(cleaned)
+            cleaned.append(row)
+            continue
+        merged_duplicates += 1
+        existing = cleaned[existing_index]
+        for field_name, value in row.items():
+            if value in (None, "", [], {}):
+                continue
+            if field_name in {"result", "observation", "output", "response", "result_preview"}:
+                if not _tool_metadata_has_result(existing):
+                    existing[field_name] = value
+                continue
+            if field_name not in existing or existing[field_name] in (None, "", [], {}):
+                existing[field_name] = value
+            elif field_name in {"duration_ms", "cached", "ok", "error"}:
+                existing[field_name] = value
+    if rows and (dropped_internal or merged_duplicates or len(cleaned) != len(rows)):
+        trace.HF_ON and trace.hot(
+            "STREAM-SSE",
+            "sanitized_tools_called input=%d output=%d dropped_internal=%d merged_duplicates=%d",
+            len(rows),
+            len(cleaned),
+            dropped_internal,
+            merged_duplicates,
+        )
+    return cleaned
+
+
+def _sanitize_handoff_tool_metadata(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a handoff row with public ``tools_called`` metadata normalized."""
+
+    cleaned = dict(row)
+    tools = cleaned.get("tools_called")
+    if isinstance(tools, list):
+        public_tools = _sanitize_tools_called_metadata(
+            [dict(tool) for tool in tools if isinstance(tool, Mapping)]
+        )
+        if public_tools:
+            cleaned["tools_called"] = public_tools
+        else:
+            cleaned.pop("tools_called", None)
+    children = cleaned.get("children")
+    if isinstance(children, list):
+        cleaned["children"] = [
+            _sanitize_handoff_tool_metadata(child) if isinstance(child, Mapping) else child
+            for child in children
+        ]
+    return cleaned
+
+
+def _handoff_part_metadata(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Return metadata for a display handoff part.
+
+    Tool calls/results are emitted as explicit ordered parts. Keeping the same
+    rows inside handoff metadata makes the UI render duplicate tools, so handoff
+    parts carry delegation state only.
+    """
+
+    cleaned = _sanitize_handoff_tool_metadata(row)
+    cleaned.pop("tools_called", None)
+    children = cleaned.get("children")
+    if isinstance(children, list):
+        display_children: list[Any] = []
+        for child in children:
+            if isinstance(child, Mapping):
+                child_clean = _handoff_part_metadata(child)
+                display_children.append(child_clean)
+            else:
+                display_children.append(child)
+        cleaned["children"] = display_children
+    return cleaned

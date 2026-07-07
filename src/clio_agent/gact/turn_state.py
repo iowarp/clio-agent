@@ -28,6 +28,7 @@ from clio_agent.gact.runtime.globals import _semantic_trace_id
 
 if TYPE_CHECKING:
     import threading
+    from collections.abc import Awaitable, Callable
 
     from fastapi import FastAPI
 
@@ -67,6 +68,12 @@ class TurnState:
     turn_cancel_event: "threading.Event" = field(init=False)
     turn_progress_timeout_s: float = 0.0
     _watchdog_poll_s: float = 0.0
+    # #767 Phase B (Slice 4->5 bridge): the no-progress watchdog is still owned by
+    # ``turn.py`` closures; they are published here so the extracted
+    # ``turn_delegation`` seam can drive them off ``state``. Slice 5 replaces these
+    # with free functions in ``turn_watchdog.py`` and removes both fields.
+    cancel_requested: "Callable[[], bool]" = field(init=False)
+    await_turn_work: "Callable[[Any], Awaitable[Any]]" = field(init=False)
     history_start: dict[int, int] = field(default_factory=dict)
     context_frame: Any = None
     context_file_provenance: Any = None

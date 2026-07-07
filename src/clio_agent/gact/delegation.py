@@ -850,3 +850,70 @@ def _fallback_answer_from_delegation(handoffs: list[dict[str, Any]]) -> str:
         if text:
             return text
     return ""
+
+
+# ------------------------------------------------------------------------- #
+# Structured-answer rendering (delegation return summaries) #
+# ------------------------------------------------------------------------- #
+
+
+def _looks_like_structured_answer(text: str) -> bool:
+    """True when an expert answer is machine-readable state, not prose."""
+
+    stripped = (text or "").lstrip()
+    if not stripped:
+        return False
+    return stripped[0] in "{[" or stripped.startswith("```json") or stripped.startswith("```JSON")
+
+
+def _render_return_summary(output: str) -> str:
+    """A human-readable one-liner for a child's return, from its GENUINE answer.
+
+    Prose answers pass through unchanged. Structured (JSON) answers — the typed
+    ``dspy.extract`` deliverable — are rendered into a compact, grounded summary
+    (a ``summary``/``description`` field if present, else the top-level scalar
+    fields) so the transcript shows the real result instead of a generic
+    "returned a compact result" placeholder. Returns "" when there is nothing
+    meaningful to show (caller supplies the fallback)."""
+
+    text = (output or "").strip()
+    if not text or not _looks_like_structured_answer(text):
+        return text
+    body = text
+    if body.startswith("```"):
+        body = body.strip("`")
+        body = body.split("\n", 1)[-1].strip() if "\n" in body else ""
+    try:
+        data = json.loads(body)
+    except Exception:
+        return text
+    if isinstance(data, Mapping):
+        node: Mapping[str, Any] = data
+        # Unwrap a single-key namespace wrapper (e.g. {"geospatial": {...}}) so the
+        # salient fields one level down are summarised, not just "{namespace}".
+        for _ in range(2):
+            if len(node) == 1:
+                only = next(iter(node.values()))
+                if isinstance(only, Mapping):
+                    node = only
+                    continue
+            break
+        for key in ("summary", "description", "answer", "result"):
+            value = node.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        scalars = []
+        for key, value in node.items():
+            if isinstance(value, bool) or isinstance(value, (str, int, float)):
+                text_value = str(value)
+                if len(text_value) > 60:
+                    text_value = text_value[:57] + "..."
+                scalars.append(f"{key}: {text_value}")
+            if len(scalars) >= 6:
+                break
+        if scalars:
+            return "; ".join(scalars)
+    if isinstance(data, list):
+        return f"{len(data)} item(s)"
+    # Structured but unrenderable (e.g. empty object): no meaningful one-liner.
+    return ""

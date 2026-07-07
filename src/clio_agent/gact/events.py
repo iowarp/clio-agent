@@ -33,6 +33,7 @@ import itertools
 import logging
 import time
 from collections import defaultdict
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
@@ -360,3 +361,14 @@ def heartbeat_event(session_id: str) -> Event:
 
 def _ms_since(start: float) -> int:
     return int((time.time() - start) * 1000)
+
+
+def _publish_transcript_event(
+    bus: EventBus,
+    sid: str,
+    event_type: str,
+    payload: Mapping[str, Any],
+) -> None:
+    """Publish one normalized transcript event alongside legacy message events."""
+
+    bus.publish(Event(type=event_type, session_id=sid, payload=dict(payload)))
