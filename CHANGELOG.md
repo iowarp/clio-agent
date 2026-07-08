@@ -12,6 +12,12 @@ TUI/HTTP surface aren't tracked here.
   needed. Users pointing at `:18900/v1` should re-pick the `codex`
   preset so config resolves through the registered provider.
 
+> **Tracking gap:** releases `0.3.2` through `0.5.17` were shipped
+> without a CHANGELOG entry. For those versions, see the GitHub release
+> notes at https://github.com/iowarp/clio-agent/releases. This file is
+> owned by the release skill going forward (see
+> `.claude/skills/release-clio/SKILL.md`).
+
 ## [0.3.1] — 2026-04-27
 
 The "every advertised capability actually works" release. Every flag
