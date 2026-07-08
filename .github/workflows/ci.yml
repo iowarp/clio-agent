@@ -18,16 +18,15 @@ jobs:
           version: "latest"
       - run: uv sync --extra dev --extra optimizers
       - run: uv run ruff check src/ tests/ scripts/create_demo_data.py scripts/validate_marketplace_blueprints.py
-      # Anti-re-accretion guardrails (iowarp/clio-agent#714). WARN-ONLY for now:
-      # continue-on-error so they report during the in-progress gact
-      # decomposition without blocking the build. To be flipped to blocking in
-      # the final phase of the refactor.
-      - name: "warn: file-size guard (#714)"
+      # Anti-re-accretion guardrails (iowarp/clio-agent#714, #774). BLOCKING:
+      # now that the #767 gact decomposition has landed, these enforce per-file
+      # ratchet baselines -- a new god-file or a baselined file that regrows
+      # past its recorded count fails the build. The baselines may only ratchet
+      # DOWN (see the scripts' RATCHET_BASELINE docstrings).
+      - name: "guard: file-size ratchet (#714, #774)"
         run: uv run python scripts/check_file_size.py
-        continue-on-error: true
-      - name: "warn: no class-in-function guard (#714)"
+      - name: "guard: no class-in-function ratchet (#714, #774)"
         run: uv run python scripts/check_no_class_in_function.py
-        continue-on-error: true
       - name: "warn: ruff complexity (C901, PLR0915) (#714)"
         run: uv run ruff check --select C901,PLR0915 src/
         continue-on-error: true

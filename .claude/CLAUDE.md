@@ -77,9 +77,11 @@ rules apply to every change:
   a bug even when the output looks fine.
 - **No accretion.** Fixes that add more than a trivial amount of code go in an
   owner module, not appended to a god file — patch-driven development is how
-  `turn.py` / `agent.py` / `app.py` grew to 3–4k lines. The warn-only CI guards
-  (`scripts/check_file_size.py`, `scripts/check_no_class_in_function.py`) will
-  become enforcing; do not add to files they flag.
+  `turn.py` / `agent.py` / `app.py` grew to 3–4k lines. The CI guards
+  (`scripts/check_file_size.py`, `scripts/check_no_class_in_function.py`) are
+  now **enforcing** via per-file ratchet baselines (#774): a new god-file or a
+  baselined file that regrows past its recorded count fails CI; baselines only
+  ratchet down. Do not add to files they flag.
 
 ---
 
