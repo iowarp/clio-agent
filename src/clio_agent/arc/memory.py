@@ -1166,29 +1166,25 @@ class ARCMemory:
                 self._inflight_inv.pop(session_id, None)
             self._inflight_cv.notify_all()
 
-    def _drain_inflight_invocations(self, session_id: str, timeout: float = 5.0) -> None:
-        """Block until no invocation write for ``session_id`` is in flight (#804).
-
-        :meth:`release_session` calls this before it counts/evicts the index so an
-        in-flight ``store_invocation`` (mid store-RPC, index insert not yet applied)
-        is drained rather than under-counted. NOT a silent wait: if the drain does not
-        quiesce within ``timeout`` it logs a structured reason and proceeds best-effort
-        rather than blocking a release forever.
+    def _drain_inflight_invocations(self, session_id: str, timeout: float = 5.0) -> int:
+        """Block until no ``session_id`` invocation write is in flight, then return the residual in-flight count -- 0 on a clean drain, ``>0`` only on the ``timeout`` path (which logs a structured reason and proceeds, not a silent wait). :meth:`release_session` drains before it counts/evicts the index so an in-flight ``store_invocation`` (mid store-RPC, index insert not yet applied) is not under-counted, and surfaces this return as ``inflight_pending`` so a degraded release is visible in the return value, not only the log (no silent fallback; #804).
         """
         deadline = time.monotonic() + timeout
         with self._inflight_cv:
             while self._inflight_inv.get(session_id, 0) > 0:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
+                    pending = self._inflight_inv.get(session_id, 0)
                     logger.warning(
                         "arc: release_session proceeding with %d in-flight invocation "
                         "write(s) still pending session=%s reason=inflight_drain_timeout "
                         "(index count may under-report a concurrent write; #804)",
-                        self._inflight_inv.get(session_id, 0),
+                        pending,
                         session_id,
                     )
-                    return
+                    return pending
                 self._inflight_cv.wait(timeout=remaining)
+        return 0
 
     def release_session(self, session_id: str) -> Dict[str, int]:
         """Release a session's hot footprint from cache and indexes.
@@ -1204,11 +1200,13 @@ class ARCMemory:
         Returns:
             Counts of evicted cache and index entries (for diagnostics/tests).
         """
-        # Drain any in-flight invocation write for this session BEFORE reading the
-        # index, so a concurrent store_invocation whose durable write is mid-flight is
-        # counted/evicted here rather than leaking a stale index entry after the release
-        # (#804). Done outside _lock -- the drain waits on its own Condition.
-        self._drain_inflight_invocations(session_id)
+        # Drain any in-flight invocation write for this session BEFORE reading the index, so a concurrent store_invocation
+        # whose durable write is mid-flight is counted/evicted here rather than leaking a stale index entry after the release
+        # (#804). Done outside _lock -- the drain waits on its own Condition. RESIDUAL WINDOW (not closed here): the drain and
+        # the ``with self._lock`` below are not atomic, so a store_invocation that BEGINS after the drain sees count==0 but
+        # before _lock is taken can still insert its index entry post-evict (only when a session is released mid-turn); the
+        # complete fix -- a caller-side active-session guard like rollback's -- is a follow-up, and the non-zero ``inflight_pending`` returned below surfaces this meanwhile.
+        inflight_pending = self._drain_inflight_invocations(session_id)
 
         with self._lock:
             evicted_cache = 0
@@ -1263,6 +1261,8 @@ class ARCMemory:
             "index": evicted_index,
             "live": live,
             "segments": segments,
+            # 0 on a clean drain; >0 only when the in-flight drain timed out, so a caller detects an under-counted release without grepping logs (#804).
+            "inflight_pending": inflight_pending,
         }
 
     def flush_and_release(self) -> None:

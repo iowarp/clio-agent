@@ -156,6 +156,38 @@ def test_release_drains_inflight_invocation_write(tmp_path) -> None:
     with arc._lock:
         remaining = list(arc._inv_index.get_session_range(sess))
     assert remaining == [], f"stale index entry leaked after release: {remaining!r}"
+    # The drain quiesced (gate opened before release finished), so the release is
+    # NOT degraded: inflight_pending must be 0.
+    assert result.get("inflight_pending") == 0
+
+
+def test_drain_timeout_reports_pending_count(tmp_path) -> None:
+    """When the drain cannot quiesce in time it must REPORT the residual count, not
+    silently proceed (no silent fallback): ``_drain_inflight_invocations`` returns the
+    still-pending count, which ``release_session`` surfaces as ``inflight_pending``."""
+    store = _GatedInvStore()
+    arc = ARCMemory(data_dir=str(tmp_path / "arc"), store=store)
+    sess = "s1"
+
+    store._armed.set()
+
+    def writer() -> None:
+        arc.store_invocation(_inv("t1", sess))
+
+    wt = threading.Thread(target=writer)
+    wt.start()
+    try:
+        assert store.put_entered.wait(2.0), "writer never reached the gated store.put"
+        # t1 is frozen mid-put -> in flight. A short-timeout drain cannot quiesce and
+        # must report the residual (1), not return a clean 0.
+        pending = arc._drain_inflight_invocations(sess, timeout=0.1)
+        assert pending == 1, f"drain timeout must report the pending write, got {pending}"
+    finally:
+        store._gate.set()  # release the frozen writer so the thread can exit
+        wt.join(5.0)
+    assert not wt.is_alive(), "writer thread did not settle"
+    # Once the write completes, a fresh drain quiesces cleanly.
+    assert arc._drain_inflight_invocations(sess, timeout=1.0) == 0
 
 
 if __name__ == "__main__":  # pragma: no cover - manual invocation
