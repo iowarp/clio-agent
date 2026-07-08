@@ -41,7 +41,7 @@ $env:CLIO_LM_MAX_TOKENS='4096'
 $env:CLIO_LM_PLANNER_MAX_TOKENS='4096'
 $env:CLIO_LM_PLANNER_TEMPERATURE='0'
 $env:CLIO_ALLOWED_ROOTS='D:\Libraries\Documents\projects\clio-agent'
-uv run clio-agent-gact --host 127.0.0.1 --port 17902
+uv run clio-agent serve --host 127.0.0.1 --port 17902
 ```
 
 Suite:

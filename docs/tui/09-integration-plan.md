@@ -7,7 +7,7 @@
 Let an operator run:
 
 ```sh
-uv run clio-agent-gact --host 127.0.0.1 --port 17800
+uv run clio-agent serve --host 127.0.0.1 --port 17800
 GACT_BACKEND=http://127.0.0.1:17800 gact
 ```
 
@@ -22,14 +22,14 @@ gact-tui (Go/Bubble Tea)
   |
   | GACT /v1 REST + SSE
   v
-clio-agent-gact (FastAPI, src/clio_agent/gact/app.py)
+clio-agent serve (FastAPI, src/clio_agent/gact/app.py)
   |
   | DSPy + LiteLLM + CLIO experts + MCP tools
   v
 ClioAgent
 ```
 
-The legacy `clio-agent-api` process (`/query`, `/health`, `/experts`, `/metrics`) has been removed; its console script is now a deprecation shim pointing at `clio-agent-gact`. The GACT `/v1` surface below is the single TUI integration front door.
+The legacy `clio-agent-api` process (`/query`, `/health`, `/experts`, `/metrics`) has been removed; its console script is now a deprecation shim pointing at `clio-agent serve`. The GACT `/v1` surface below is the single TUI integration front door.
 
 ## Native GACT Mapping
 
@@ -105,8 +105,8 @@ The authoritative tracker is `REAL_GAPS.md`; the broader capability table is `..
 
 The runtime is native, but packaging can still improve:
 
-1. Add or keep `gact agent deploy clio my-clio` support in `gact-tui` so users do not have to start `clio-agent-gact` manually.
-2. Probe for `clio-agent-gact` on `PATH` or run it through `uv`.
+1. Add or keep `gact agent deploy clio my-clio` support in `gact-tui` so users do not have to start `clio-agent serve` manually.
+2. Probe for `clio-agent` on `PATH` or run it through `uv`.
 3. Pick a free local port, start the backend, probe `/v1/health` and `/v1/capabilities`, then register `GACT_BACKEND`.
 4. Surface provider misconfiguration through the existing `/v1/providers/lm` settings flow instead of failing silently.
 
@@ -114,4 +114,4 @@ The runtime is native, but packaging can still improve:
 
 - **CLIO unit/integration**: `tests/test_gact/` covers native GACT sessions, streaming, cancellation, provider config, catalog, permissions, diffs, metrics, hooks, context files, tasks, and workspaces.
 - **Streaming/cancellation focus**: `uv run pytest tests/test_gact/test_streaming.py tests/test_gact/test_cancellation.py -q`
-- **GACT TUI conformance**: run `gact-tui/contract/conformance` against a live `clio-agent-gact` port. Unsupported or partial areas should match `REAL_GAPS.md`, not be papered over with fake success states.
+- **GACT TUI conformance**: run `gact-tui/contract/conformance` against a live `clio-agent serve` port. Unsupported or partial areas should match `REAL_GAPS.md`, not be papered over with fake success states.
