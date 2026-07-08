@@ -25,7 +25,7 @@ import msgspec
 import pytest
 
 from clio_agent.arc.memory import ARCMemory
-from clio_agent.arc.schema import Invocation
+from clio_agent.arc.schema import Conversation, Invocation
 
 
 class _DelayedStore:
@@ -258,6 +258,93 @@ def test_same_timestamp_invocations_both_retained(tmp_path) -> None:
     got = {inv.trace_id for inv in arc.get_session_invocations("sess-dup", limit=100)}
     assert got == {"dup-a", "dup-b"}
     assert _index_trace_ids(arc, "sess-dup") == {"dup-a", "dup-b"}
+
+
+class _GatedConvStore(_DelayedStore):
+    """Store whose ``put`` on the ``conversations`` kind blocks on a gate once armed,
+    so a writer can be frozen mid-write to expose the store_conversation /
+    get_conversation interleaving deterministically (no timing luck)."""
+
+    def __init__(self) -> None:
+        super().__init__(delay=0.0)
+        self._gate = threading.Event()
+        self._armed = threading.Event()
+        self.put_entered = threading.Event()
+
+    def put(
+        self,
+        kind: str,
+        name: str,
+        data: bytes,
+        *,
+        tier: str = "warm",
+        search_text: Optional[str] = None,
+    ) -> None:
+        if kind == "conversations" and self._armed.is_set():
+            self.put_entered.set()
+            self._gate.wait(timeout=5.0)
+        with self._d_lock:
+            self._data[(kind, name)] = data
+
+
+def _conv(session_id: str, marker: str) -> Conversation:
+    now = time.time()
+    return Conversation(
+        session_id=session_id,
+        user_id="user@example.com",
+        created_at=now,
+        metadata={"marker": marker},
+    )
+
+
+def test_conversation_refill_cannot_clobber_a_concurrent_write(tmp_path) -> None:
+    """A cache-miss ``get_conversation`` must never refill the LRU with a disk value
+    older than a concurrent ``store_conversation`` on the SAME session.
+
+    Regression for the lost-update race that narrowing ``_lock`` (#771 Slice B)
+    introduced: with the per-session cache+store pair no longer atomic, a reader could
+    cache a stale ``v0`` after a writer had already cached the fresh ``v2``, pinning
+    the hot path to the old conversation forever. The writer is frozen inside
+    ``store.put`` via a gate so the interleaving is deterministic.
+    """
+    store = _GatedConvStore()
+    arc = ARCMemory(data_dir=str(tmp_path / "arc"), store=store)
+    sess = "sess-rmw"
+
+    arc.store_conversation(_conv(sess, "v0"))  # seed (gate disarmed)
+    store._armed.set()  # the next conversations put (v2) will freeze mid-flight
+
+    def writer() -> None:
+        arc.store_conversation(_conv(sess, "v2"))
+
+    wt = threading.Thread(target=writer)
+    wt.start()
+    assert store.put_entered.wait(2.0), "writer never reached the gated store.put"
+
+    # Model a cache eviction (release_session / LRU pressure) so the reader is forced
+    # down the slow disk-refill path while the writer is still frozen.
+    arc._cache.invalidate(f"conv:{sess}")
+
+    reader_result: dict[str, Optional[str]] = {}
+
+    def reader() -> None:
+        c = arc.get_conversation(sess)
+        reader_result["marker"] = c.metadata.get("marker") if c else None
+
+    rt = threading.Thread(target=reader)
+    rt.start()
+    time.sleep(0.2)  # let the reader reach disk (unfixed) or block on the lock (fixed)
+    store._gate.set()  # release the frozen writer
+    wt.join(5.0)
+    rt.join(5.0)
+    assert not wt.is_alive() and not rt.is_alive(), "threads did not settle (deadlock?)"
+
+    final = arc.get_conversation(sess)
+    assert final is not None and final.metadata.get("marker") == "v2", (
+        "stale conversation won the cache after a concurrent write: "
+        f"reader saw {reader_result.get('marker')!r}, "
+        f"final cache marker={final.metadata.get('marker') if final else None!r}"
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover - manual invocation

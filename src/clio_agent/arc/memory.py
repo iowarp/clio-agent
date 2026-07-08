@@ -252,9 +252,33 @@ class ARCMemory:
         # ``_lock`` RELEASED (``threading.Lock`` is not reentrant).
         self._lock = threading.Lock()
 
+        # Per-session conversation lock. ``store_conversation`` and
+        # ``get_conversation`` do a cache+store PAIR (write: cache.put -> store.put;
+        # slow-path read: store.get -> cache.put) that must be atomic *per session* or
+        # a cache-miss reader can refill the LRU with a stale disk value AFTER a
+        # concurrent writer cached the fresh one — a silent lost update that pins the
+        # hot path to the old conversation forever. This lock serializes only ops on
+        # the SAME session (distinct sessions still run concurrently and the global
+        # ``_lock`` is never held across a store RPC — the #771 narrowing goal holds).
+        # Locks are keyed by session_id and never evicted (one tiny Lock per session
+        # ever seen), matching the SegmentStore per-scope-lock discipline: evicting a
+        # lock an in-flight op still holds would split mutual exclusion.
+        self._conv_locks: Dict[str, threading.Lock] = {}
+        self._conv_locks_registry = threading.Lock()
+
         # Performance tracking
         self._disk_reads = 0
         self._disk_writes = 0
+
+    def _conv_lock(self, session_id: str) -> threading.Lock:
+        """Return the per-session conversation lock, creating it once. The registry
+        lock is held only for the brief lookup/create, never across a store RPC."""
+        with self._conv_locks_registry:
+            lk = self._conv_locks.get(session_id)
+            if lk is None:
+                lk = threading.Lock()
+                self._conv_locks[session_id] = lk
+            return lk
 
     def store_conversation(self, conversation: Conversation) -> None:
         """Store conversation in cache and on disk.
@@ -280,14 +304,18 @@ class ARCMemory:
         session_id = conversation.session_id
         cache_key = f"conv:{session_id}"
 
-        # Store in cache (hot data). LRUCache is self-locked; no composite here.
-        self._cache.put(cache_key, conversation)
-
-        # Encode + persist to disk OUTSIDE _lock (store carries its own I/O cost).
+        # Encode OUTSIDE any lock (CPU-only, no shared state).
         encoded = encode_conversation(conversation)
-        self._store.put("conversations", session_id, encoded)
 
-        # Only the counter needs the ARC lock.
+        # The cache write and the store write are one atomic unit PER SESSION: a
+        # concurrent get_conversation refill on this session cannot interleave and
+        # clobber this fresh value with a stale disk read. The store RPC runs under the
+        # per-session lock (serializing only same-session ops), never under _lock.
+        with self._conv_lock(session_id):
+            self._cache.put(cache_key, conversation)
+            self._store.put("conversations", session_id, encoded)
+
+        # Only the counter needs the ARC lock (taken separately, never nested).
         with self._lock:
             self._disk_writes += 1
 
@@ -311,20 +339,27 @@ class ARCMemory:
         """
         cache_key = f"conv:{session_id}"
 
-        # Fast path: check cache
+        # Fast path: check cache (lock-free; a plain LRU get is atomic).
         cached = self._cache.get(cache_key)
         if cached is not None:
             return cached
 
-        # Slow path: load from disk OUTSIDE _lock (store read carries its own cost).
-        encoded = self._store.get("conversations", session_id)
-        if encoded is None:
-            return None
+        # Slow path under the per-session lock with a double-checked cache read: the
+        # store.get -> cache.put refill is serialized against a concurrent
+        # store_conversation on the same session, so the cache can never be left
+        # holding a value older than disk. The store RPC runs under this per-session
+        # lock (same-session only), never under _lock.
+        with self._conv_lock(session_id):
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                return cached
+            encoded = self._store.get("conversations", session_id)
+            if encoded is None:
+                return None
+            conversation = decode_conversation(encoded)
+            self._cache.put(cache_key, conversation)
 
-        conversation = decode_conversation(encoded)
-
-        # Update cache for future access (self-locked); bump counter under _lock.
-        self._cache.put(cache_key, conversation)
+        # Bump the counter under the ARC lock (taken separately, never nested).
         with self._lock:
             self._disk_reads += 1
 
@@ -436,6 +471,10 @@ class ARCMemory:
             return cached
 
         # Slow path: load from disk OUTSIDE _lock (store read carries its own cost).
+        # Unlike conversations, this refill needs NO per-key lock: an invocation record
+        # is keyed by a unique uuid4 trace_id and is write-once (never updated after
+        # store_invocation), so disk[trace_id] is immutable and a refill can never read
+        # a value staler than a concurrent write — there is no same-key read-modify-write.
         encoded = self._store.get("invocations", invocation_id)
         if encoded is None:
             return None
