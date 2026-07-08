@@ -49,7 +49,6 @@ from clio_agent.gact.runtime.globals import (
     _new_message_id,
     _resolve_tool_session,
 )
-from clio_agent.gact.streaming import _live_streamed_field_text_for_turn
 from clio_agent.gact.types import Message, Part
 from clio_agent.runtime import trace
 
@@ -624,11 +623,19 @@ def _make_tool_observer(app: "FastAPI"):
     def _streamed_field_contains(sid: str, agent_id: str, field: str, text: str) -> bool:
         if not sid or not agent_id or not text.strip():
             return False
-        # Turn-scoped read (#757): only text streamed DURING the active turn can
-        # dedup this thought — a prior turn's phrasing must never suppress it.
-        streamed = _live_streamed_field_text_for_turn(
-            app, sid, _ctx.active_turn_id(), agent_id, field
-        )
+        # Turn-scoped read (#732): the per-session TurnTranscript ledger owns the
+        # streamed text for this turn — ``streamed_field_dedup_text`` subsumes the
+        # retired ``app.state.live_streamed_field_text`` buffer. It reads the tap's
+        # SYNCHRONOUS copy (recorded in this same executor thread before the tool
+        # fired), so this observe() call never races the cross-thread ledger append
+        # that the loop drains asynchronously — the happens-before the old buffer
+        # gave us. The open ledger IS the active turn, so this stays turn-scoped:
+        # only text streamed DURING the active turn can dedup this thought — a
+        # prior turn's phrasing never suppresses it. Same (agent, field) key.
+        transcript = _session_turn_transcript(app, sid)
+        if transcript is None:
+            return False
+        streamed = transcript.streamed_field_dedup_text(agent_id, field)
         return _streamed_text_matches(streamed, text)
 
     def observe(

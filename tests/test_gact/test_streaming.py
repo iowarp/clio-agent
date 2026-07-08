@@ -1110,32 +1110,3 @@ def test_streamed_field_buffer_cleared_at_turn_end_and_turn_scoped(
     )
     store = getattr(app.state, "live_streamed_field_text", {}) or {}
     assert store.get(sid) in (None, {})
-
-
-def test_live_streamed_field_buffer_helpers_are_turn_scoped() -> None:
-    """Unit coverage for the #757 turn-scoped buffer helpers: a stale entry from
-    a previous turn is never matched and is dropped (with a structured warning)
-    on the next write; clearing removes the session's entry entirely."""
-    from clio_agent.gact.streaming import (
-        _clear_live_streamed_field_text,
-        _live_streamed_field_text_for_turn,
-        _record_live_streamed_field_text,
-    )
-
-    app = SimpleNamespace(state=SimpleNamespace())
-    sid = "sess_1"
-
-    _record_live_streamed_field_text(app, sid, "turn_1", "main", "reasoning", "alpha ")
-    _record_live_streamed_field_text(app, sid, "turn_1", "main", "reasoning", "beta")
-    assert _live_streamed_field_text_for_turn(app, sid, "turn_1", "main", "reasoning") == (
-        "alpha beta"
-    )
-    # A DIFFERENT turn must never see turn_1's text (per-turn suppression scope).
-    assert _live_streamed_field_text_for_turn(app, sid, "turn_2", "main", "reasoning") == ""
-    # Writing under a new turn drops the stale turn_1 residue instead of appending.
-    _record_live_streamed_field_text(app, sid, "turn_2", "main", "reasoning", "gamma")
-    assert _live_streamed_field_text_for_turn(app, sid, "turn_2", "main", "reasoning") == "gamma"
-    assert _live_streamed_field_text_for_turn(app, sid, "turn_1", "main", "reasoning") == ""
-    # End-of-turn cleanup empties the session's entry.
-    _clear_live_streamed_field_text(app, sid)
-    assert app.state.live_streamed_field_text == {}

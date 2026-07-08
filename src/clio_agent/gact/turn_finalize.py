@@ -72,7 +72,6 @@ from clio_agent.gact.runtime.globals import (
 )
 from clio_agent.gact.runtime.retention import enforce_list_bound
 from clio_agent.gact.streaming import (
-    _clear_live_streamed_field_text,
     _pop_stream_fallback,
     _stream_fallback_payload,
 )
@@ -699,9 +698,6 @@ def finalize_turn(
     getattr(state.app.state, "live_assistant_message_ids", {}).pop(state.sid, None)
     getattr(state.app.state, "live_assistant_parts", {}).pop(state.sid, None)
     getattr(state.app.state, "live_assistant_part_keys", {}).pop(state.sid, None)
-    # #757: the streamed-field buffer is per-turn; leaving it grows without bound
-    # and makes later turns' suppression matchers eat legitimate thinking parts.
-    _clear_live_streamed_field_text(state.app, state.sid)
     update_retry_attempt(
         retry_status,
         metadata_patch={
@@ -949,10 +945,6 @@ def settle_failed_finalize(
     getattr(app.state, "live_assistant_message_ids", {}).pop(sid, None)
     getattr(app.state, "live_assistant_parts", {}).pop(sid, None)
     getattr(app.state, "live_assistant_part_keys", {}).pop(sid, None)
-    # #757: the streamed-field buffer is per-turn; a failed finalize must
-    # drop it exactly like the happy-path cleanup or later turns'
-    # suppression matchers eat legitimate thinking parts.
-    _clear_live_streamed_field_text(app, sid)
     if sess is not None:
         app.state.sessions.update(
             sid,
