@@ -77,9 +77,11 @@ else
   say "No running CLIO server found"
 fi
 
-# Sweep leftover server processes started from this prefix.
+# Sweep leftover server processes started from this prefix. Match both the
+# current entrypoint (clio-agent serve) and the retired pre-upgrade one
+# (clio-agent-gact) so an old server left running is still cleaned up.
 if command -v pkill >/dev/null 2>&1; then
-  pkill -f "$CLIO_PREFIX/clio-agent/.venv/bin/clio-agent-gact" 2>/dev/null || true
+  pkill -f "$CLIO_PREFIX/clio-agent/.venv/bin/clio-agent(-gact)?" 2>/dev/null || true
 fi
 
 # ---- remove files ----------------------------------------------------

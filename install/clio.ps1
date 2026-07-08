@@ -39,7 +39,7 @@ $PidFile   = Join-Path $Prefix 'clio-server.pid'
 $ServerLog = Join-Path $Prefix 'clio-server.log'
 $ServerErr = Join-Path $Prefix 'clio-server.err.log'
 $GactLog   = Join-Path $Prefix 'gact-stderr.log'
-$ServerBin = Join-Path $Prefix 'clio-agent\.venv\Scripts\clio-agent-gact.exe'
+$ServerBin = Join-Path $Prefix 'clio-agent\.venv\Scripts\clio-agent.exe'
 $GactBin   = Join-Path $Prefix 'gact.exe'
 # The Go TUI white-labels purely from GACT_BRAND_NAME at runtime (no brand root /
 # brand.json read anymore; web+desktop read that at build time via
@@ -121,7 +121,7 @@ function Start-Server {
     # redirection avoids that: the server inherits only the log files.
     # The doubled outer quotes are the classic `cmd /c "..."` form so
     # cmd strips exactly one pair and parses the inner quotes itself.
-    $inner = '""{0}" --port {1} > "{2}" 2> "{3}""' -f $ServerBin, $Port, $ServerLog, $ServerErr
+    $inner = '""{0}" serve --port {1} > "{2}" 2> "{3}""' -f $ServerBin, $Port, $ServerLog, $ServerErr
     $proc = Start-Process -FilePath $env:ComSpec `
         -ArgumentList '/c', $inner `
         -WorkingDirectory (Join-Path $Prefix 'clio-agent') `
@@ -147,7 +147,7 @@ function Stop-Server {
         return
     }
     Say "Stopping CLIO server (pid $p)"
-    # taskkill /T kills the whole tree - clio-agent-gact spawns python
+    # taskkill /T kills the whole tree - clio-agent serve spawns python
     # children, and a bare Stop-Process would orphan them (the zombie
     # state that holds the log file open and blocks the next start).
     & taskkill /PID $p /T /F | Out-Null
