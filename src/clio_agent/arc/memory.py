@@ -18,6 +18,7 @@ See docs/ARC_MEMORY_LAYER.md for architecture details.
 
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, cast
 
@@ -266,6 +267,20 @@ class ARCMemory:
         self._conv_locks: Dict[str, threading.Lock] = {}
         self._conv_locks_registry = threading.Lock()
 
+        # In-flight invocation writes, per session. ``store_invocation`` persists the
+        # record OUTSIDE ``_lock`` (the #771 narrowing) and inserts the ``_inv_index``
+        # entry only AFTER that store RPC returns, so there is a window where an
+        # invocation is being written but is not yet indexed. A ``release_session`` that
+        # counted/evicted the index during that window under-counted the in-flight
+        # invocation, and its index entry then landed AFTER the release as a leaked
+        # stale entry for an already-released session (#804). This counter is incremented
+        # BEFORE the store RPC and decremented AFTER the index insert, so
+        # ``release_session`` can DRAIN a session's pending writes before it reads the
+        # index. Guarded by a Condition (never held across ``_store``/``_lsm`` I/O nor
+        # ``_lock``, so it introduces no new lock-ordering edge).
+        self._inflight_inv: Dict[str, int] = {}
+        self._inflight_cv = threading.Condition()
+
         # Performance tracking
         self._disk_reads = 0
         self._disk_writes = 0
@@ -419,35 +434,45 @@ class ARCMemory:
         cache_key = f"inv:{trace_id}"
         timestamp = self._parse_timestamp(invocation.started_at)
 
-        # Encode + persist to disk OUTSIDE _lock (store RPC carries its own cost).
+        # Encode OUTSIDE _lock (store RPC carries its own cost).
         encoded = encode_invocation(invocation)
-        self._store.put("invocations", trace_id, encoded)
 
-        # Also store in LSM tree for high-throughput metrics queries. LSMTree is
-        # self-locked with a double-buffered flush, so this stays OUTSIDE _lock.
-        self._lsm.write(
-            timestamp=timestamp,
-            metric={
-                "trace_id": trace_id,
-                "session_id": session_id,
-                "agent_id": invocation.agent_id,
-                "tier": invocation.tier,
-                "duration_ms": invocation.duration_ms,
-                "status": invocation.status,
-            },
-        )
+        # Mark this write in-flight for the session BEFORE the store RPC and clear it
+        # only AFTER the index insert, so a concurrent release_session drains it rather
+        # than racing the insert (#804 -- see _drain_inflight_invocations and the
+        # counter's declaration). ``finally`` guarantees the mark clears even if the
+        # store RPC / LSM write raises, so a failed write can never wedge a drain.
+        self._enter_inflight(session_id)
+        try:
+            self._store.put("invocations", trace_id, encoded)
 
-        # Hot structures under the ARC lock: cache + index must be updated as a
-        # consistent pair (a reader takes _lock to see both), and _inv_index has no
-        # lock of its own. The trace_id is part of the composite index key so two
-        # invocations in the same session that share a timestamp (coarse clocks
-        # resolve sub-millisecond calls to the same tick) do not collide and
-        # silently drop one another.
-        index_key = (session_id, timestamp, trace_id)
-        with self._lock:
-            self._cache.put(cache_key, invocation)
-            self._inv_index.insert(index_key, {"trace_id": trace_id})
-            self._disk_writes += 1
+            # Also store in LSM tree for high-throughput metrics queries. LSMTree is
+            # self-locked with a double-buffered flush, so this stays OUTSIDE _lock.
+            self._lsm.write(
+                timestamp=timestamp,
+                metric={
+                    "trace_id": trace_id,
+                    "session_id": session_id,
+                    "agent_id": invocation.agent_id,
+                    "tier": invocation.tier,
+                    "duration_ms": invocation.duration_ms,
+                    "status": invocation.status,
+                },
+            )
+
+            # Hot structures under the ARC lock: cache + index must be updated as a
+            # consistent pair (a reader takes _lock to see both), and _inv_index has no
+            # lock of its own. The trace_id is part of the composite index key so two
+            # invocations in the same session that share a timestamp (coarse clocks
+            # resolve sub-millisecond calls to the same tick) do not collide and
+            # silently drop one another.
+            index_key = (session_id, timestamp, trace_id)
+            with self._lock:
+                self._cache.put(cache_key, invocation)
+                self._inv_index.insert(index_key, {"trace_id": trace_id})
+                self._disk_writes += 1
+        finally:
+            self._exit_inflight(session_id)
 
     def get_invocation(self, invocation_id: str) -> Optional[Invocation]:
         """Get specific invocation.
@@ -1118,6 +1143,49 @@ class ARCMemory:
         """Whether scope search uses real BM25 (CTE backend) vs the naive fallback."""
         return self._segments.supports_search()
 
+    def _enter_inflight(self, session_id: str) -> None:
+        """Register an in-flight invocation write for ``session_id`` (#804).
+
+        Called BEFORE the store RPC in :meth:`store_invocation` so a concurrent
+        :meth:`release_session` observes the pending write and drains it.
+        """
+        with self._inflight_cv:
+            self._inflight_inv[session_id] = self._inflight_inv.get(session_id, 0) + 1
+
+    def _exit_inflight(self, session_id: str) -> None:
+        """Clear one in-flight invocation write for ``session_id`` and wake drainers.
+
+        Called AFTER the ``_inv_index`` insert (in a ``finally``) so a draining
+        :meth:`release_session` unblocks only once the index reflects the write.
+        """
+        with self._inflight_cv:
+            remaining = self._inflight_inv.get(session_id, 0) - 1
+            if remaining > 0:
+                self._inflight_inv[session_id] = remaining
+            else:
+                self._inflight_inv.pop(session_id, None)
+            self._inflight_cv.notify_all()
+
+    def _drain_inflight_invocations(self, session_id: str, timeout: float = 5.0) -> int:
+        """Block until no ``session_id`` invocation write is in flight, then return the residual in-flight count -- 0 on a clean drain, ``>0`` only on the ``timeout`` path (which logs a structured reason and proceeds, not a silent wait). :meth:`release_session` drains before it counts/evicts the index so an in-flight ``store_invocation`` (mid store-RPC, index insert not yet applied) is not under-counted, and surfaces this return as ``inflight_pending`` so a degraded release is visible in the return value, not only the log (no silent fallback; #804).
+        """
+        deadline = time.monotonic() + timeout
+        with self._inflight_cv:
+            while self._inflight_inv.get(session_id, 0) > 0:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    pending = self._inflight_inv.get(session_id, 0)
+                    logger.warning(
+                        "arc: release_session proceeding with %d in-flight invocation "
+                        "write(s) still pending session=%s reason=inflight_drain_timeout "
+                        "(index count may under-report a concurrent write; #804)",
+                        pending,
+                        session_id,
+                    )
+                    return pending
+                self._inflight_cv.wait(timeout=remaining)
+        return 0
+
     def release_session(self, session_id: str) -> Dict[str, int]:
         """Release a session's hot footprint from cache and indexes.
 
@@ -1132,6 +1200,14 @@ class ARCMemory:
         Returns:
             Counts of evicted cache and index entries (for diagnostics/tests).
         """
+        # Drain any in-flight invocation write for this session BEFORE reading the index, so a concurrent store_invocation
+        # whose durable write is mid-flight is counted/evicted here rather than leaking a stale index entry after the release
+        # (#804). Done outside _lock -- the drain waits on its own Condition. RESIDUAL WINDOW (not closed here): the drain and
+        # the ``with self._lock`` below are not atomic, so a store_invocation that BEGINS after the drain sees count==0 but
+        # before _lock is taken can still insert its index entry post-evict (only when a session is released mid-turn); the
+        # complete fix -- a caller-side active-session guard like rollback's -- is a follow-up, and the non-zero ``inflight_pending`` returned below surfaces this meanwhile.
+        inflight_pending = self._drain_inflight_invocations(session_id)
+
         with self._lock:
             evicted_cache = 0
 
@@ -1185,6 +1261,8 @@ class ARCMemory:
             "index": evicted_index,
             "live": live,
             "segments": segments,
+            # 0 on a clean drain; >0 only when the in-flight drain timed out, so a caller detects an under-counted release without grepping logs (#804).
+            "inflight_pending": inflight_pending,
         }
 
     def flush_and_release(self) -> None:
@@ -1313,6 +1391,4 @@ class ARCMemory:
             return dt.timestamp()
 
         # Fallback: return current timestamp
-        import time
-
         return time.time()
