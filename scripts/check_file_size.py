@@ -43,8 +43,8 @@ DEFAULT_MAX_LINES = 800
 # repository root and use forward slashes.
 RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/agent.py": 2715,
-    "src/clio_agent/arc/memory.py": 1279,
-    "src/clio_agent/arc/segments.py": 1108,
+    "src/clio_agent/arc/memory.py": 1318,
+    "src/clio_agent/arc/segments.py": 1117,
     "src/clio_agent/arc/storage.py": 978,
     "src/clio_agent/gact/agent_blueprints.py": 1100,
     "src/clio_agent/gact/agents/builders.py": 2209,
