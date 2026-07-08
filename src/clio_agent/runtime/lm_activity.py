@@ -126,23 +126,16 @@ def note_lm_answer_delta(text: str, *, field: str = "answer") -> None:
     agent_id = ""
     try:
         from clio_agent.gact.context import (  # noqa: PLC0415
-            active_app,
             active_react_scope,
-            active_session_id,
-            active_turn_id,
             active_visible_answer_stream,
-        )
-        from clio_agent.gact.streaming import (  # noqa: PLC0415
-            _record_live_streamed_field_text,
         )
 
         agent_id = active_react_scope()
-        app = active_app()
-        sid = active_session_id()
-        if app is not None and sid and agent_id:
-            # Turn-scoped buffer (#757): stamped with the active turn id and
-            # cleared at turn end, so suppression never matches a prior turn.
-            _record_live_streamed_field_text(app, sid, active_turn_id(), agent_id, field, text)
+        # #732: the streamed text this tap emits is recorded by the turn's
+        # TurnTranscript ledger via ``emit_chunk`` (scheduled below) — the tool
+        # observer's thought dedup reads ``transcript.streamed_text`` directly,
+        # so this tap no longer writes a parallel ``live_streamed_field_text``
+        # buffer.
         visible_fields = {"reasoning", "next_thought"}
         if field == "answer" and active_visible_answer_stream():
             visible_fields.add("answer")

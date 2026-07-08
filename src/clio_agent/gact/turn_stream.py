@@ -28,7 +28,6 @@ from functools import partial
 from typing import TYPE_CHECKING, Optional
 
 from clio_agent.gact.runtime.globals import _emit_semantic_event, _llm_provider_payload
-from clio_agent.gact.streaming import _record_live_streamed_field_text
 from clio_agent.gact.tool_observer import _mirror_transcript_state
 from clio_agent.gact.transcript import _transcript_text_field
 from clio_agent.gact.types import Part
@@ -56,17 +55,6 @@ def _latest_parent_resume_output(parts: list[Part], agent_id: str) -> str:
         if output:
             return output
     return ""
-
-
-def record_streamed_field_text(state: "TurnState", agent: str, field: str, chunk: str) -> None:
-    """Record a streamed chunk into the turn-scoped dedup buffer (#767 Phase B).
-
-    Turn-scoped buffer (#757): stamped with THIS turn's id and cleared at turn
-    end, so the tool observer's thought dedup never matches a previous turn's
-    streamed text. Retires in PR4 (#767) in favor of ``transcript.streamed_text``.
-    """
-
-    _record_live_streamed_field_text(state.app, state.sid, state.turn_id, agent, field, chunk)
 
 
 def settle_turn_transcript(state: "TurnState") -> None:
@@ -173,8 +161,6 @@ async def emit_chunk(
                 full_text=text[:12000],
             )
             return
-    if not is_provider_thinking:
-        record_streamed_field_text(state, chunk_agent, stream_field, text)
     # ONE transcript call: mints the message id on first arrival, opens/
     # splits parts per (agent, field), cleans the whole buffer once at
     # close, and publishes message.created/part.added/part.delta — the state
