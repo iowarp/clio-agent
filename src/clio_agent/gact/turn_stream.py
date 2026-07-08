@@ -222,6 +222,15 @@ def bind_live_emitter(state: "TurnState", loop: "asyncio.AbstractEventLoop") -> 
     try:
         from clio_agent.runtime.lm_activity import set_live_chunk_emitter  # noqa: PLC0415
 
-        set_live_chunk_emitter(loop, partial(emit_chunk, state))
+        # Pass the transcript's SYNCHRONOUS tap-dedup recorder alongside the async
+        # emitter (#732): the tap records the streamed field text in-thread before
+        # scheduling the cross-thread emit, so the same-thread tool observer's
+        # thought-dedup gate has a race-free source. Bound method over the turn's
+        # transcript, so it is naturally turn-scoped and dies with the turn.
+        set_live_chunk_emitter(
+            loop,
+            partial(emit_chunk, state),
+            state.transcript.record_streamed_field_text,
+        )
     except Exception:  # noqa: BLE001,S110 - live-stream wiring is best-effort
         pass

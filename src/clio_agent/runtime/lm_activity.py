@@ -90,18 +90,24 @@ def _active_lm_session() -> str:
 # separate streaming path. The turn sets (loop, async _emit_chunk) here; the tap
 # schedules the answer delta onto that loop. ContextVar so it's copied into the
 # executor that runs the expert (and is naturally absent off-turn = no-op).
-_LIVE_CHUNK_EMITTER: ContextVar[tuple[Any, Any] | None] = ContextVar(
+_LIVE_CHUNK_EMITTER: ContextVar[tuple[Any, Any, Any] | None] = ContextVar(
     "clio_live_chunk_emitter", default=None
 )
 
 
-def set_live_chunk_emitter(loop: Any, emit_coro: Any) -> None:
-    """Bind the turn's (event loop, async answer-chunk publisher).
+def set_live_chunk_emitter(loop: Any, emit_coro: Any, record_dedup: Any = None) -> None:
+    """Bind the turn's (event loop, async answer-chunk publisher, tap-dedup recorder).
+
+    ``record_dedup`` is the turn transcript's synchronous
+    ``record_streamed_field_text`` (#732): the tap calls it IN-THREAD before
+    scheduling the cross-thread emit, so the same-thread tool observer's
+    thought-dedup gate reads a source with a real happens-before instead of
+    racing the loop's asynchronous ledger append.
 
     The binding is a ContextVar set in the turn's context: it is copied into the
     executor that runs the expert and dies with the turn's context — no explicit
     reset is needed (or provided)."""
-    _LIVE_CHUNK_EMITTER.set((loop, emit_coro))
+    _LIVE_CHUNK_EMITTER.set((loop, emit_coro, record_dedup))
 
 
 def note_lm_answer_delta(text: str, *, field: str = "answer") -> None:
@@ -119,7 +125,7 @@ def note_lm_answer_delta(text: str, *, field: str = "answer") -> None:
     emitter = _LIVE_CHUNK_EMITTER.get()
     if not emitter:
         return
-    loop, emit_coro = emitter
+    loop, emit_coro, record_dedup = emitter
     # Attribute this delta to the expert whose LM call produced it. The tap runs in
     # the executor thread where the expert's react scope contextvar is set, so the
     # author is known here; the chat publisher splits parts when it changes (WS3).
@@ -131,11 +137,20 @@ def note_lm_answer_delta(text: str, *, field: str = "answer") -> None:
         )
 
         agent_id = active_react_scope()
-        # #732: the streamed text this tap emits is recorded by the turn's
-        # TurnTranscript ledger via ``emit_chunk`` (scheduled below) — the tool
-        # observer's thought dedup reads ``transcript.streamed_text`` directly,
-        # so this tap no longer writes a parallel ``live_streamed_field_text``
-        # buffer.
+        # #732: record the streamed field text into the turn transcript's
+        # tap-dedup buffer SYNCHRONOUSLY, in THIS executor thread, before the
+        # cross-thread emit is scheduled below. The tool observer's thought-dedup
+        # gate runs in this same thread when a tool fires, so it must read a source
+        # written before the tool call — not the ledger's async ``append_text_delta``
+        # (scheduled onto the loop, possibly not drained yet). This restores the
+        # happens-before the retired ``live_streamed_field_text`` buffer provided.
+        # Keyed by the same ``active_react_scope()`` the gate queries with; skipped
+        # off-scope (agent_id empty), matching the old buffer's guard.
+        if record_dedup is not None and agent_id:
+            try:
+                record_dedup(agent_id, field, text)
+            except Exception:  # noqa: BLE001,S110 - dedup capture is best-effort
+                pass
         visible_fields = {"reasoning", "next_thought"}
         if field == "answer" and active_visible_answer_stream():
             visible_fields.add("answer")
@@ -201,7 +216,7 @@ def note_lm_provider_thinking_delta(text: str, *, provider: str = "") -> None:
     emitter = _LIVE_CHUNK_EMITTER.get()
     if not emitter:
         return
-    loop, emit_coro = emitter
+    loop, emit_coro, _record_dedup = emitter
     agent_id = ""
     try:
         from clio_agent.gact.context import active_react_scope  # noqa: PLC0415

@@ -178,6 +178,15 @@ class TurnTranscript:
         # (agent_id, field) -> raw streamed chunks THIS turn (turn-scoped by
         # construction — subsumes app.state.live_streamed_field_text, #757).
         self._streamed: dict[tuple[str, str], list[str]] = {}
+        # (agent_id, field) -> chunks recorded SYNCHRONOUSLY by the LM stream tap,
+        # in the tap's own (executor) thread, BEFORE the cross-thread
+        # ``append_text_delta`` is scheduled onto the loop (#732). The tool
+        # observer's thought-dedup gate runs in that SAME executor thread, so it
+        # must read a source written before the tool fires — not the ledger's
+        # ``_streamed``, which the loop populates asynchronously and may not have
+        # drained yet. This restores the happens-before the retired synchronous
+        # ``live_streamed_field_text`` buffer provided (audit #732).
+        self._tap_streamed: dict[tuple[str, str], list[str]] = {}
         # Every accepted streamed chunk in arrival order, across agents AND
         # fields (provider thinking included) — the whole-turn concat the
         # timeout/StreamingOutputError partials read; byte-identical to the
@@ -478,6 +487,43 @@ class TurnTranscript:
         """Concatenated raw deltas for ``(agent_id, field)`` THIS turn."""
 
         with self._lock:
+            return "".join(self._streamed.get((agent_id, field), []))
+
+    def record_streamed_field_text(self, agent_id: str, field: str, chunk: str) -> None:
+        """Record a streamed contract-field ``chunk`` SYNCHRONOUSLY from the LM tap.
+
+        The LM stream tap (``lm_activity.note_lm_answer_delta``) runs in the
+        expert's executor thread and schedules the visible delta onto the turn's
+        loop cross-thread (fire-and-forget). The tool observer's thought-dedup
+        gate runs in that SAME executor thread when a tool fires, so it cannot
+        rely on the loop having drained the scheduled ``append_text_delta`` yet.
+        The tap therefore records here first, in-thread, giving the gate a source
+        with a real happens-before — exactly the guarantee the retired
+        ``live_streamed_field_text`` buffer provided (#732). Turn-scoped by
+        construction (one ledger per turn), so a prior turn never leaks in.
+        """
+
+        if not chunk:
+            return
+        key = (str(agent_id or ""), str(field or "answer"))
+        with self._lock:
+            self._tap_streamed.setdefault(key, []).append(chunk)
+
+    def streamed_field_dedup_text(self, agent_id: str, field: str) -> str:
+        """Streamed text for ``(agent_id, field)`` for the thought-dedup gate.
+
+        Prefers the tap-recorded copy (:meth:`record_streamed_field_text`),
+        written synchronously in the LM tap thread so the same-thread tool
+        observer never races the cross-thread ledger append (#732). Falls back to
+        the ledger deltas for non-tap producers (a direct
+        :meth:`append_text_delta`, e.g. tests / batch paths), so dedup behaves
+        exactly as before wherever no tap wrote.
+        """
+
+        with self._lock:
+            tap = self._tap_streamed.get((agent_id, field))
+            if tap:
+                return "".join(tap)
             return "".join(self._streamed.get((agent_id, field), []))
 
     def raw_streamed_text(self) -> str:
