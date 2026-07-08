@@ -1067,28 +1067,37 @@ class SegmentStore:
         """Drop a session's in-memory scopes (write-through, nothing lost). Returns
         the number of scopes released.
 
-        Store-wide structural op: it holds the registry lock (freezing the lock set +
-        structural maps) AND each affected scope lock, so it never races a per-scope
-        op in flight. No deadlock: a per-scope op only re-touches the registry at its
-        single ``_lock_for`` entry (before taking its scope lock, releasing the
-        registry immediately) — it never holds a scope lock while waiting on the
-        registry, so this acquire-registry-then-scopes order has no reverse cycle."""
+        Store-wide structural op: it holds the registry lock (freezing the lock set)
+        AND each affected scope lock, so it never races a per-scope op in flight. No
+        deadlock: a per-scope op only re-touches the registry at its single
+        ``_lock_for`` entry (before taking its scope lock, releasing the registry
+        immediately) — it never holds a scope lock while waiting on the registry, so
+        this acquire-registry-then-scopes order has no reverse cycle.
+
+        The affected keys are derived from the lock registry (``_scope_locks``, whose
+        structure is guarded by ``_registry_lock``) and NOT by iterating ``_scopes``:
+        a per-scope cold-load (``_segs``) inserts into ``_scopes`` under only its own
+        scope lock, so iterating the live dict here would race a load on a *different*
+        session ("dictionary changed size during iteration"). Every in-memory scope is
+        always locked before it is loaded, so the lock keys are a superset of the
+        loaded keys — nothing loaded is missed."""
         with self._registry_lock:
-            keys = [k for k in self._scopes if k[0] == session_id]
-            lock_keys = sorted({k for k in self._scope_locks if k[0] == session_id} | set(keys))
-            held = [self._scope_locks[k] for k in lock_keys if k in self._scope_locks]
+            lock_keys = sorted(k for k in self._scope_locks if k[0] == session_id)
+            held = [self._scope_locks[k] for k in lock_keys]
             for lk in held:
                 lk.acquire()
             try:
-                for k in keys:
-                    self._scopes.pop(k, None)
+                released = 0
+                for k in lock_keys:
+                    if self._scopes.pop(k, None) is not None:
+                        released += 1
                     self._loaded.discard(k)
                 self._index.drop_session(session_id)  # keep the locator consistent
             finally:
                 for lk in held:
                     lk.release()
-            logger.info("segments: release session=%s scopes=%d", session_id, len(keys))
-            return len(keys)
+            logger.info("segments: release session=%s scopes=%d", session_id, released)
+            return released
 
     def clear(self) -> None:
         """Drop ALL in-memory scope state (store untouched).
