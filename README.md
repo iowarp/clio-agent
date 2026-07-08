@@ -94,11 +94,11 @@ For the design rationale (three-tier hierarchy, ARC memory, optimizer layer, IOW
 | [docs/SETUP.md](docs/SETUP.md) | Release install, source-build install, and smoke test |
 | [docs/CONTRIBUTOR_QUICKSTART.md](docs/CONTRIBUTOR_QUICKSTART.md) | Dev environment, quality checks, where to put code |
 | [docs/MCP_TOOL_INTEGRATION.md](docs/MCP_TOOL_INTEGRATION.md) | Adding tools via FastMCP |
-| [docs/EXPERT_SYSTEM_DESIGN.md](docs/EXPERT_SYSTEM_DESIGN.md) | Adding new experts |
+| [docs/archive/EXPERT_SYSTEM_DESIGN.md](docs/archive/EXPERT_SYSTEM_DESIGN.md) | Adding new experts |
 | [docs/ARC_MEMORY_LAYER.md](docs/ARC_MEMORY_LAYER.md) | Memory model and storage |
 | [docs/PERMISSIONS.md](docs/PERMISSIONS.md) | Tool permission system |
 | [docs/providers/](docs/providers/) | LM provider configuration |
-| [docs/CAPABILITIES_MATRIX.md](docs/CAPABILITIES_MATRIX.md) | Feature matrix |
+| [docs/archive/CAPABILITIES_MATRIX.md](docs/archive/CAPABILITIES_MATRIX.md) | Feature matrix |
 | [docs/design/roadmap.md](docs/design/roadmap.md) | Roadmap |
 
 ---

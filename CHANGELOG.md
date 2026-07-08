@@ -23,7 +23,7 @@ TUI/HTTP surface aren't tracked here.
 The "every advertised capability actually works" release. Every flag
 in `/v1/capabilities` that's `true` has been verified end-to-end with
 either an integration test, a curl trace, or a screenshot — see
-`docs/CAPABILITIES_MATRIX.md` for the full matrix. **No silent
+`docs/archive/CAPABILITIES_MATRIX.md` for the full matrix. **No silent
 downgrades anywhere; if a flag is true, it works.**
 
 ### Added
@@ -35,7 +35,7 @@ downgrades anywhere; if a flag is true, it works.**
     installed third-party servers in one list.
   - Verified end-to-end against `@modelcontextprotocol/server-everything`:
     13 tools enumerated, `echo` + `get-sum` round-tripped via stdio.
-- `docs/CAPABILITIES_MATRIX.md` — one row per advertised capability with
+- `docs/archive/CAPABILITIES_MATRIX.md` — one row per advertised capability with
   the proof for each (curl evidence / screenshot / integration test).
 - New screenshots: `clio_mcp_servers.png` (bundled + third-party), 
   `clio_diff.png` (apply/reject path).

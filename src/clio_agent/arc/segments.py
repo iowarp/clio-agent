@@ -8,7 +8,7 @@ operations — ``append`` / ``insert`` / ``delete`` / ``summarize`` / ``replace`
 mutate segments between renders, so an out-of-band edit changes the *next*
 prompt. That is the whole point of the live plane.
 
-Design (docs/design/arc-live-context-plane.md, docs/design/implementation-spec.md):
+Design (docs/archive/arc-live-context-plane.md, docs/archive/implementation-spec.md):
     * Composed by ``ARCMemory`` (sibling of ``LiveRuntimeContext``); persists
       through the injected ``ARCStore`` as one record per ``(session_id, scope)``
       — ``render`` is the every-iteration hot path, so the whole scope is batched

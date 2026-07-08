@@ -1,7 +1,7 @@
 """Regression tests for the admin-bind process-default + atomicity group.
 
 These cover the three adversarially-confirmed defects in the demoted
-``PUT /v1/providers/lm`` bind (design ``docs/design/per-expert-provider-lm.md``
+``PUT /v1/providers/lm`` bind (design ``docs/archive/per-expert-provider-lm.md``
 §5/§6):
 
 * **#2 deferred-boot ambient 503** — a GACT booted *without* ``CLIO_LM_PROVIDER``

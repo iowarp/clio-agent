@@ -3,7 +3,7 @@
 > Grounding goal for an ultracode (multi-agent) run. This file states the *goal*,
 > the *definition of done*, the *locked decisions*, and the *testing posture*. It
 > does NOT sequence the build — decomposition and ordering are the executor's job.
-> Full design context: [`docs/design/arc-live-context-plane.md`](docs/design/arc-live-context-plane.md).
+> Full design context: [`docs/archive/arc-live-context-plane.md`](docs/archive/arc-live-context-plane.md).
 
 ## The goal
 

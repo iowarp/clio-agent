@@ -4,7 +4,7 @@ v1 (the single-node *logical* plane) is DONE and green on real ALCF: the DSPy Re
 loop reads its prompt FROM ARC each iteration; the four ops + per-expert 90%
 auto-compaction + ARC/Trace separation are proven (byte-equality, mutation-propagation,
 needle-in-haystack, real provider-driven compaction). See `GOAL.md`,
-`arc-live-context-plane.md`, `implementation-spec.md`.
+`docs/archive/arc-live-context-plane.md`, `docs/archive/implementation-spec.md`.
 
 This file captures the larger arc we scoped early but the v1 GOAL did not — written as a
 dependency graph of threads, not a phased timeline. Threads marked *(independent)* can run
