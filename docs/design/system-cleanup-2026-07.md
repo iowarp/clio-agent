@@ -46,15 +46,31 @@ Kept current as work lands; the running per-PR log is the umbrella #775.
   (tui #251), one WHATWG SSE grammar + `Last-Event-ID` resume on all three transports (tui #252),
   floating issue ledgers converted to tracked issues (tui #253). Owner-gated remainders: the
   dedup-owner step (#832), wire-type ownership/codegen (decision issue tui #254).
-- **Phase 3 — in progress; Phase 4 — open** (Phase 3 formally started 2026-07-07 with #769
-  (config convergence) in build; **#770 closed**, the #772 ratchet is
-  live via #810/#827, and gact-tui parity phase 1 landed as tui #249; tui P0s #224–#231 verified
-  closed in the Phase 0 sweep). Phase 3: #769 / #771 / #772 / #773 + gact-tui #233/#236. Phase 4:
-  #774 + gact-tui #234/#235 + **#830** (converge the server entry point → one `clio-agent`
-  executable + one container port/healthcheck — a #829 follow-up) + **#841** (release/distribution
-  hygiene: the pages download must hand out the bundled desktop installer — a user got the
-  backend-less lite MSI — and the CLIO brand must be current across installer art, app icons, and
-  in-app splash/error surfaces, with a CI assertion so a lite/bundled mixup can't ship).
+- **Phase 3 — ✅ COMPLETE (2026-07-08).** #769 config convergence (7 slices); **#771 ARC truth &
+  durability** landed as PR #859 — chunked `_events` log (kills the O(N²) write amplification),
+  `_lock` scoped off store RPCs, one conversation-history channel, writer-less-struct deletion,
+  one shutdown story, doc truth. Two real lock-scope races were caught **before merge** (a
+  `SegmentStore.release()` "dict changed size" crash by CI flake-hunt's `--count`; a silent
+  conversation lost-update by the independent adversarial review, reproduced deterministically)
+  and fixed at root with failing-first tests. #772/#773 silent-fallback + test-depth ratchets
+  (#844) + weekly mutmut mutation CI (#845). gact-tui #233/#236 landed as self-landing PRs.
+- **Phase 4 — ✅ COMPLETE (code) (2026-07-08); owner-gated remainders only.**
+  - **clio:** #841 release/distribution hygiene (#846–#849: brand-config mechanism restored, download
+    page prefers the bundled installer, packaging CI asserts, CLIO icon family); #830 entry-point
+    convergence (#850–#852: containers + launchers on `clio-agent serve` :8100, `clio-agent-gact`
+    a deprecation alias); #774 repo/meta-doc hygiene (#853–#858: anti-accretion guards enforcing,
+    pyproject scrub, placeholder purge, AGENTS.md truth, submodule contract, CHANGELOG).
+  - **gact-tui:** #234 CLI structure (cli→internal/cli, one command context, single command table,
+    tapes relocated, markers de-obfuscated, ui-render split **stage 1** — honestly 3 leaf files, the
+    rest deferred) + #235 repo hygiene (136 MB screenshot purge, root sweep, Makefile truth,
+    CHANGELOG revival, media/LFS policy, history-rewrite runbook). PRs #264–#284; a Phase-4 docker
+    baseline regression (H3's `go.work` loop-test member vs `.dockerignore`) was caught on develop
+    CI and fixed in #285.
+  - **Owner-gated remainders (not executed):** the git history rewrite (owner-only runbook, prepared
+    not run); GitHub **LFS quota** confirmation before large baselines land; the U1 size-ratchet
+    **flip-to-enforcing** (drop `|| true`, dated 2026-09-01); **ui-split stage 2+** (follow-up tui
+    #282); the **gact-tui submodule pin** bump in clio-agent (release-time action per the #857
+    contract); P14 owner-local `tmp/` cleanups; and the parked **PR-4 dedup-owner** step (#832).
 
 ---
 
