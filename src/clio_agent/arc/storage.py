@@ -336,12 +336,21 @@ def _runtime_launcher_path(iowarp_core: object) -> Optional[str]:
 def _detached_popen_kwargs() -> "dict[str, object]":
     """Popen kwargs that detach the daemon so it outlives the spawning process.
 
-    POSIX: a new session (``setsid``) → own session/group leader. Windows: a detached
-    process in a new process group so a Ctrl-C / parent exit does not propagate to it.
+    POSIX: a new session (``setsid``) → own session/group leader. Windows:
+    ``CREATE_NO_WINDOW`` (a hidden console) in a new process group so a Ctrl-C /
+    parent exit does not propagate to it.
+
+    Windows: use ``CREATE_NO_WINDOW``, NOT ``DETACHED_PROCESS``. ``DETACHED_PROCESS``
+    gives the child NO console at all, and the clio-core runtime daemon's bundled
+    ZeroMQ then fails to initialise Winsock (``Successful WSASTARTUP not yet
+    performed`` [10093] → ``ROUTER Send: Host unreachable`` → the 30s bind timeout),
+    so ``_ensure_runtime_daemon`` never sees port 9413 come up and ARC falls back to
+    LocalFS. ``CREATE_NO_WINDOW`` keeps a (hidden) console — enough for the daemon's
+    socket init — while still detaching it from the parent's console and window.
     """
     if sys.platform.startswith("win"):
         flags = 0
-        flags |= getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+        flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
         flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
         return {"creationflags": flags, "close_fds": True}
     return {"start_new_session": True, "close_fds": True}
