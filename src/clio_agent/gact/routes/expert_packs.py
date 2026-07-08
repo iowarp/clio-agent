@@ -18,10 +18,10 @@ surface.
 
 The disk-reading primitives live in :mod:`clio_agent.gact.expert_packs` (single
 source); the session-metadata reads reuse the byte-identical ``_runtime_*``
-helpers in :mod:`clio_agent.gact.agents.resolution`. The one genuinely
-``build_app``-local seam the set route needs -- the workspace-session mirror --
-travels on :class:`~clio_agent.gact.routes.deps.GactDeps`. Handlers reach
-``app.state`` directly and never import :mod:`clio_agent.gact.app`.
+helpers in :mod:`clio_agent.gact.agents.resolution`. Handlers reach
+``app.state`` directly and never import :mod:`clio_agent.gact.app`; the shared
+:class:`~clio_agent.gact.routes.deps.GactDeps` is accepted for signature
+uniformity with the other route factories.
 """
 
 from __future__ import annotations
@@ -52,9 +52,9 @@ def register_expert_packs_routes(app: FastAPI, deps: "GactDeps") -> None:
     """Register the expert-pack discovery + session-attachment routes on ``app``.
 
     Handlers close over the ``app`` argument (FastAPI's decorators need it) and
-    reach ``app.state`` directly. The only cross-concern ``build_app``-local
-    seam -- the workspace-session mirror used when persisting an active pack --
-    travels on ``deps`` (:class:`~clio_agent.gact.routes.deps.GactDeps`).
+    reach ``app.state`` directly. ``deps``
+    (:class:`~clio_agent.gact.routes.deps.GactDeps`) is accepted for signature
+    uniformity with the other route factories.
     """
 
     @app.get("/v1/expert-packs")
@@ -181,7 +181,6 @@ def register_expert_packs_routes(app: FastAPI, deps: "GactDeps") -> None:
                     "active_expert_pack_path": str(Path(pack_path).expanduser()),
                 },
             )
-            deps.mirror_workspace_session(app, sid)
             return {
                 "session_id": sid,
                 "workspace_id": getattr(sess, "workspace_id", ""),
@@ -226,7 +225,6 @@ def register_expert_packs_routes(app: FastAPI, deps: "GactDeps") -> None:
                 "active_expert_pack_path": "",
             },
         )
-        deps.mirror_workspace_session(app, sid)
         return {
             "session_id": sid,
             "workspace_id": getattr(sess, "workspace_id", ""),

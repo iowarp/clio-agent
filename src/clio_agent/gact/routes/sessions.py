@@ -6,7 +6,7 @@ session-scoped ask-user / retry protocol.
 * CRUD -- ``POST/GET/PATCH/DELETE /v1/sessions`` (+ ``GET /v1/sessions/{sid}``):
   create against the workspace store, list with the archive partition, patch the
   mutable mode/title fields, and permission-gated delete (which also drops the
-  session's messages, context-file ledger, workspace mirror and hot ARC footprint).
+  session's messages, context-file ledger and hot ARC footprint).
 * Rollback -- ``POST /v1/sessions/{sid}/undo`` + ``.../rewind``: drop the trailing
   ``count`` messages (undo) or everything past a target message (rewind), both
   permission-gated and republished as ``message.deleted`` + ``session.{op}``.
@@ -30,7 +30,7 @@ The fork, question-answer and retry routes drive a background user turn through
 ``deps.start_background_user_turn`` (the turn engine in
 :mod:`clio_agent.gact.turn`). The module imports only leaf packages (events,
 runtime, types, stdlib) and never loads :mod:`clio_agent.gact.app`; the shared
-cross-concern helpers (ledger replace, workspace mirror/arc release, model-ref
+cross-concern helpers (ledger replace, ARC release, model-ref
 errors, evidence index, resume text) travel on :class:`GactDeps`. The session-
 private rollback + ask-user/retry helpers live here.
 """
@@ -89,8 +89,8 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     Handlers close over the ``app`` argument (FastAPI's decorators need it) and
     reach sessions/messages/questions/attempts state + the live event bus through
-    ``app.state``. Cross-concern ``build_app`` helpers (ledger replace, workspace
-    mirror + context-file/ARC release, model-ref errors, the evidence index, the
+    ``app.state``. Cross-concern ``build_app`` helpers (ledger replace,
+    context-file/ARC release, model-ref errors, the evidence index, the
     ask-user resume text, the destructive-action guard, and the background-turn
     entrypoint) travel through ``deps`` rather than importing back into
     ``gact.app``. The rollback + ask-user/retry helper closures are concern-private.
@@ -136,7 +136,6 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             edit_mode=req.edit_mode,
             routing_mode=req.routing_mode,
         )
-        deps.mirror_workspace_session(app, sess.id)
         return Session(**sess.to_wire())
 
     @app.patch("/v1/sessions/{sid}", response_model=Session)
@@ -179,7 +178,6 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 payload=Session(**sess.to_wire()).model_dump(exclude_none=True),
             )
         )
-        deps.mirror_workspace_session(app, sid)
         return Session(**sess.to_wire())
 
     @app.get("/v1/sessions", response_model=ListSessionsResponse)
@@ -247,7 +245,6 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             summary=f"delete session {sid}",
             reason="user_requested_session_delete",
         )
-        deps.remove_workspace_session_mirror(app, sid)
         existed = app.state.sessions.delete(sid)
         if not existed:
             raise HTTPException(

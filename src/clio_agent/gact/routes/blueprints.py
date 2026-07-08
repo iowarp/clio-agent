@@ -27,9 +27,9 @@ This concern owns the marketplace/install surface for agent blueprints under
 The disk-reading lifecycle primitives live in
 :mod:`clio_agent.gact.agent_blueprints` (single source); the session-state reads
 reuse the byte-identical ``_runtime_*`` helpers in
-:mod:`clio_agent.gact.agents.resolution`. The two genuinely ``build_app``-local
-seams the session-set route needs -- the activation-metadata builder and the
-workspace-session mirror -- travel on :class:`~clio_agent.gact.routes.deps.GactDeps`.
+:mod:`clio_agent.gact.agents.resolution`. The ``build_app``-local seam the
+session-set route needs -- the activation-metadata builder -- travels on
+:class:`~clio_agent.gact.routes.deps.GactDeps`.
 Handlers reach ``app.state`` directly and never import :mod:`clio_agent.gact.app`.
 """
 
@@ -199,7 +199,7 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     Handlers are defined inside this factory so they close over the ``app``
     argument FastAPI's decorators require, and reach the activation-metadata
-    builder + workspace-session mirror through ``deps`` rather than any
+    builder through ``deps`` rather than any
     ``build_app`` local. The expert-pack routes call the blueprint handlers
     directly so a single implementation backs both surfaces.
     """
@@ -847,7 +847,6 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                     "active_expert_pack_path": "",
                 },
             )
-        deps.mirror_workspace_session(app, sid)
         return {
             "session_id": sid,
             "workspace_id": getattr(sess, "workspace_id", ""),

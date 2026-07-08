@@ -683,13 +683,11 @@ class CTEStore:
             "durability today."
         )
 
-    def release(self) -> None:
-        """Detach this process from the shared runtime; stop it if we were the last.
-
-        Wired into the gact server's lifespan shutdown so leaving the TUI releases the
-        whole runtime. Idempotent; a no-op if another client is still attached.
-        """
-        release_runtime_client(self._config_path, self._log_level)
+    # NOTE: there is deliberately NO instance ``release()`` method. The shared
+    # clio-core runtime is released exactly once, last-one-out, via the
+    # module-level :func:`release_runtime_client` registered with ``atexit`` in
+    # :meth:`_ensure_runtime`. See that method and the gact lifespan note in
+    # ``gact/app.py`` for why atexit — not a lifespan hook — owns shutdown.
 
     @classmethod
     def _ensure_runtime(cls, config_path: str, log_level: str, settle_s: float) -> None:
@@ -730,10 +728,14 @@ class CTEStore:
             cte.initialize_cte(config_path, cte.PoolQuery.Dynamic())  # "" => ~/.clio/clio.yaml
             cls._initialized = True
 
-            # Stash for the release path, and register an atexit fallback so a clean
-            # Python exit (legacy agent, tests, scripts) still does last-one-out. The
-            # gact server calls release_runtime_client() from its lifespan shutdown for
-            # the SIGTERM / TUI-leave path (where atexit does not run).
+            # Stash the params and register the last-one-out release with atexit.
+            # atexit is THE shutdown mechanism — not a duplicate/fallback. uvicorn
+            # handles SIGTERM by returning from its serve loop, so the interpreter
+            # exits normally and atexit fires ("I leave the TUI, everything gets
+            # released"). The gact lifespan hook DELIBERATELY does NOT call
+            # release_runtime_client (see gact/app.py lifespan note): doing so would
+            # wrongly stop the SHARED daemon on any app teardown that is not a
+            # process exit (e.g. a second app in the same process).
             global _active_config_path, _active_log_level
             _active_config_path = config_path
             _active_log_level = log_level
