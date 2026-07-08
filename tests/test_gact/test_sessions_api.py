@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB8: integration tests for /v1/sessions CRUD.
+"""integration tests for /v1/sessions CRUD.
 
 Uses FastAPI's TestClient against build_app() with a per-test
 sessions_path so tests don't share state.

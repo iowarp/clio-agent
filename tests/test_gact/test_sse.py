@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB13: tests for /v1/sessions/{sid}/events.
+"""tests for /v1/sessions/{sid}/events.
 
 Two-layer testing strategy:
 

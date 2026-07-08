@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB16: assistant turns report tools_called.
+"""assistant turns report tools_called.
 
 The TUI renders a post-hoc gutter under each assistant message by
 reading ``metadata.tools_called``. This test pins that the POST

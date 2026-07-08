@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB18: tool.call.started + tool.call.completed events
+"""tool.call.started + tool.call.completed events
 are live lifecycle telemetry, not reconstructed from post-turn summaries.
 
 Reads from EventBus history after the POST instead of streaming SSE

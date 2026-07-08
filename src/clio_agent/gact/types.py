@@ -6,7 +6,7 @@ the Python counterpart of the Go types at
 generated client code rounds-trips cleanly.
 
 Only the shapes we actually emit or consume live here — we stub
-incrementally as each endpoint lands (CLIO-BBBBBBBBBB6 onwards).
+incrementally as each endpoint lands.
 """
 
 from __future__ import annotations
@@ -500,7 +500,7 @@ class Session(BaseModel):
     parent_session_id: str = ""
     model: ModelRef = Field(default_factory=ModelRef)
     agent: AgentRef = Field(default_factory=AgentRef)
-    # CLIO-BBBBBBBBBB24: cumulative rollups.
+    # cumulative rollups.
     tokens_input: int = 0
     tokens_output: int = 0
     cost_usd: float = 0.0
@@ -1012,7 +1012,7 @@ class Metrics(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# /v1/providers/lm — TUI-side LM config (CLIO-BBBBBBBBBB-D)
+# /v1/providers/lm — TUI-side LM config
 # ---------------------------------------------------------------------------
 
 

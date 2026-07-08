@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB23: interactive permission prompts."""
+"""interactive permission prompts."""
 
 from __future__ import annotations
 

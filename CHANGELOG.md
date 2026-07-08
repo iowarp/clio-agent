@@ -169,4 +169,4 @@ Initial v0.2 contract scaffolding:
   `agent_routing`, `memory`, `structured_errors`,
   `integration_health`, `tool_telemetry`, etc.
 
-(Full details in PLAN-CLIO-BBBBBBBBBB items #1–#23.)
+(Full details in the gact-tui integration plan items #1–#23.)

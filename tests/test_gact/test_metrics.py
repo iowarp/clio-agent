@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB15: tests for GET /v1/metrics.
+"""tests for GET /v1/metrics.
 
 The endpoint summarises runtime state — sessions by status + the
 in-memory message counts — into the SPEC §6.16 wire envelope.

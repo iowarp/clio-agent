@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB11: tests for /v1/memory/stats.
+"""tests for /v1/memory/stats.
 
 Drives the app with a FakeARC so we don't need a real ARC instance
 (which would touch disk + spin up indexes). Covers:

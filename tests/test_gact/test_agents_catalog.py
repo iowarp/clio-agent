@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB10: tests for /v1/agents + /v1/catalog/tools.
+"""tests for /v1/agents + /v1/catalog/tools.
 
 Exercises the CLIO to GACT translator that exposes registry-loaded Agent
 Blueprint experts and dynamic skill/user agents as AgentDef rows, plus the

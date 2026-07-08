@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB20: POST /v1/sessions/{sid}/cancel.
+"""POST /v1/sessions/{sid}/cancel.
 
 Two scenarios:
 - Idle session: flag flipped, status -> cancelled, event fired, 204.

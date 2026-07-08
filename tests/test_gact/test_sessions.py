@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB7: session registry tests.
+"""session registry tests.
 
 Covers Create/Get/List/Delete/Update, disk persistence roundtrip,
 and resilience to corrupted on-disk state.

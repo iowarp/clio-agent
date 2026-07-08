@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB19: text parts stream via message.part.delta events."""
+"""text parts stream via message.part.delta events."""
 
 from __future__ import annotations
 

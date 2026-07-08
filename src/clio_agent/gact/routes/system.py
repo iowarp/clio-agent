@@ -445,7 +445,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
         role_counts = counters.role_counts()
         latencies = {key: _latency_stat(vals) for key, vals in counters.latency_samples.items()}
 
-        # CLIO-BBBBBBBBBB24: tokens + cost rollup across every
+        # tokens + cost rollup across every
         # session's cumulative counters.
         from clio_agent.gact.types import MetricsCost, MetricsTokens  # noqa: PLC0415
 
