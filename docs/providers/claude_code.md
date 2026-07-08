@@ -73,7 +73,7 @@ uv run python scripts/run_demo_benchmark.py `
   --base-url http://127.0.0.1:17920 `
   --lane claude_code `
   --output-jsonl tmp/clio-demo-benchmark-claude-code.jsonl `
-  --report docs/archive/CLAUDE_CODE_BENCHMARK_REPORT.md `
+  --report tmp/clio-demo-benchmark-claude-code.md `
   --require-lane-criteria
 ```
 

@@ -136,7 +136,7 @@ Tracked in `PLAN.md:149-150, 339-350`:
 
 ## MCP gateway
 
-`from clio_agent.tools.gateway import gateway` → `FastMCP("clio-gateway")` with 8 tools (see `05-tools.md`). Not bound to an HTTP transport by default. Can be exposed:
+`from clio_agent.tools.gateway import gateway` → `FastMCP("clio-gateway")` with 8 tools (see [`../MCP_TOOL_INTEGRATION.md`](../MCP_TOOL_INTEGRATION.md)). Not bound to an HTTP transport by default. Can be exposed:
 
 ```python
 # In-process (tests):
