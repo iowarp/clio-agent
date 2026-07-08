@@ -78,9 +78,10 @@ Kept current as work lands; the running per-PR log is the umbrella #775.
 6. **Delete, don't gate.** Dead layers and banned heuristics are removed, not env-flagged off.
 7. **No accretion.** Patch-driven development is how `turn.py`/`agent.py`/`app.py` grew to 3–4k
    lines; cleanup work must not feed them. A fix that adds more than a trivial amount of code goes
-   in an owner module (new file if needed), not appended to a god file. CI already carries
-   warn-only size guards (`scripts/check_file_size.py`, ci.yml ratchet comments) — flip them to
-   **enforcing** once the #767 / gact-tui #234 splits land, so files can't silently regrow.
+   in an owner module (new file if needed), not appended to a god file. Now that the #767
+   split has landed, CI carries **enforcing** guards (`scripts/check_file_size.py`,
+   `scripts/check_no_class_in_function.py`) that hold each god-file at a per-file ratchet
+   baseline (may only ratchet down) and fail any new offender, so files can't silently regrow (#774).
 
 ## 2. Exit criteria (measurable)
 
