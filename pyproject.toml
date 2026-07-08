@@ -80,10 +80,6 @@ optimizers = [
     "numpy>=1.24.0",
 ]
 
-tools = [
-    # pyarrow moved to core dependencies (v0.2.0)
-]
-
 adios = [
     # Optional because PyPI wheels are not available for all Windows/Python
     # combinations; CLIO still exposes BP container/profiling inspection
@@ -97,12 +93,6 @@ adios = [
 # PyPI package metadata (upload is rejected with "Can't have direct dependency"),
 # so it is intentionally NOT a declared extra. Install it manually when needed:
 #   uv pip install "openai-codex @ git+https://github.com/openai/codex.git@79f044ed34c60af815feef12e8e665f35d54871e#subdirectory=sdk/python"
-
-iowarp = [
-    # clio-core CTE is now a CORE dependency (the default ARC backend), so this
-    # extra is redundant — kept as an explicit opt-in alias and for [all].
-    "iowarp-core>=2.1.0",
-]
 
 argonne = [
     # Globus Auth bridge for the ALCF inference gateway (Sophia/Polaris vLLM).
@@ -133,12 +123,12 @@ dev = [
 ]
 
 all = [
-    "clio-agent[optimizers,tools,adios,iowarp,argonne,claude-code,dev]",
+    "clio-agent[optimizers,adios,argonne,claude-code,dev]",
 ]
 
 [project.urls]
 Homepage = "https://github.com/iowarp/clio-agent"
-Documentation = "https://github.com/iowarp/clio-agent/tree/main/ai-docs"
+Documentation = "https://iowarp.github.io/clio-agent/"
 Repository = "https://github.com/iowarp/clio-agent"
 Issues = "https://github.com/iowarp/clio-agent/issues"
 
@@ -153,11 +143,6 @@ clio-agent-gact = "clio_agent.gact.app:main_deprecated"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
-
-# Hatch requires this opt-in to allow git URLs in dependencies (we use
-# one for the optional [codex] extra — openai_codex isn't on PyPI yet).
-[tool.hatch.metadata]
-allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/clio_agent"]
@@ -191,11 +176,6 @@ markers = [
 # every invocation — even --collect-only — punishes local runs. CI passes
 # its coverage flags explicitly in .github/workflows/ci.yml (#773).
 addopts = []
-
-[tool.black]
-line-length = 100
-target-version = ["py312"]
-include = '\.pyi?$'
 
 [tool.ruff]
 line-length = 100
