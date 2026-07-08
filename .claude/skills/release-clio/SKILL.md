@@ -56,6 +56,16 @@ git merge --no-ff develop -m "Merge develop: release vX.Y.Z — <summary>"
 - `install/README.md` → bump the `CLIO_VERSION=` example.
 - Commit the submodule gitlink bumps + version together: `chore(release): vX.Y.Z`.
 
+### 4b. Roll the CHANGELOG (GACT-contract surface only)
+`CHANGELOG.md` tracks changes to clio-agent's **GACT-contract surface**
+(the TUI/HTTP surface) — not every internal change. Before tagging:
+- Rename the `## Unreleased` heading to `## [X.Y.Z] — YYYY-MM-DD` (today's
+  date), keeping the Added/Changed/Fixed/Removed sections it accumulated.
+- Add a fresh empty `## Unreleased` block above it for the next cycle.
+- If this release had **no** contract-surface change, say so explicitly
+  under the new version heading rather than leaving a stale Unreleased block.
+- Commit alongside the version bump (`chore(release): vX.Y.Z`).
+
 ### 5. Verify locally BEFORE tagging (cheap; avoids failed CI cycles)
 ```sh
 uv version --short                     # == X.Y.Z
