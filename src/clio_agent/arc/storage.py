@@ -51,8 +51,6 @@ logger = logging.getLogger(__name__)
 ARC_KINDS: tuple[str, ...] = (
     "conversations",
     "invocations",
-    "profiles",
-    "procedural",
     "variants",
     "segments",  # live context plane: one record per (session_id, scope)
 )

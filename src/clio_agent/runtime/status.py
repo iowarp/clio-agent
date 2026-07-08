@@ -656,7 +656,6 @@ class RuntimeProbe:
                 "conversations",
                 "invocations",
                 "metrics",
-                "profiles",
                 "variants",
                 "semantic-search",
             ],
@@ -701,7 +700,7 @@ class RuntimeProbe:
             next_action="No action required for local mode; set CLIO_ARC_STORE=cte for clio-core.",
             endpoint=str(arc_dir),
             fallback="local",
-            capabilities=["conversations", "invocations", "metrics", "profiles", "variants"],
+            capabilities=["conversations", "invocations", "metrics", "variants"],
             details={"storage_mode": "local"},
             required=True,
         )

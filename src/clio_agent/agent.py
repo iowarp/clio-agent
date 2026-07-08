@@ -2391,37 +2391,16 @@ class ClioAgent(dspy.Module):
         return "No prior context"
 
     def _get_file_context(self, session_id: str, active_file: Path | None = None) -> str:
-        """Load dataset profiles from ARC for expert file context.
+        """Return the active session file reference, if any.
 
         Args:
-            session_id: Session identifier
+            session_id: Session identifier (kept for signature stability).
+            active_file: The resolved session file for this turn, if any.
 
         Returns:
-            JSON string of dataset profiles, or empty string if none.
+            The ``Current session file`` line, or an empty string when no file
+            is bound to the turn.
         """
-        try:
-            profiles = self.arc.get_session_profiles(session_id)
-            if profiles:
-                context = json.dumps(
-                    [
-                        {
-                            "filepath": p.filepath,
-                            "schema": p.schema_info,
-                            "stats": p.statistics,
-                        }
-                        for p in profiles
-                    ]
-                )
-                if active_file is not None:
-                    return f"{context}\nCurrent session file: {active_file}"
-                return context
-        except Exception as exc:  # noqa: BLE001 - degraded context, not a failed turn
-            logger.warning(
-                "ARC dataset profiles unavailable; expert runs without file context "
-                "reason=arc_file_context_unavailable session=%s error=%s",
-                session_id,
-                exc,
-            )
         if active_file is not None:
             return f"Current session file: {active_file}"
         return ""
