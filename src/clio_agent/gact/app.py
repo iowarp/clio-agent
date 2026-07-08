@@ -1,8 +1,8 @@
 """GACT v0.2 FastAPI application for CLIO.
 
 Exposes the GACT v0.2 contract surface. Most routes are 501 stubs
-today (CLIO-BBBBBBBBBB6); they get wired one at a time in
-follow-on iterations (BBB7–BBB12) against the spec at
+today; they get wired one at a time in
+follow-on iterations against the spec at
 ``gact-tui/contract/SPEC.md`` and the docs in ``docs/tui/``.
 
 Run via::
@@ -1266,7 +1266,7 @@ def build_app(
     )
     app.state.memory_events = {}
     app.state.command_audit = []
-    # CLIO-BBBBBBBBBB13: per-session pub/sub. POST /messages
+    # per-session pub/sub. POST /messages
     # publishes; /v1/sessions/{sid}/events subscribers consume.
     app.state.bus = EventBus()
     app.state.semantic_trace_detail_level = (
@@ -1294,7 +1294,7 @@ def build_app(
     # (ARC's arc.op op-logger AND highway-derive sink are wired via _set_app_arc
     # whenever app.state.arc is assigned — see _set_app_arc; the highway closure reads
     # app.state.semantic_event_sink at fire-time, so this construction order is fine.)
-    # CLIO-BBBBBBBBBB14: message log keyed by session_id. Populated by
+    # message log keyed by session_id. Populated by
     # POST /messages, read by GET /messages, and backed by per-session
     # JSON ledgers so adapter deletion/redeploy preserves transcripts.
     app.state.message_store = MessageStore(path=session_store_path.parent / "messages")
@@ -1308,14 +1308,14 @@ def build_app(
     # #770 C3: bounded eviction-audit trail for the in-memory ledgers below;
     # every retention drop records a typed reason here (no silent drop).
     init_retention_state(app)
-    # CLIO-BBBBBBBBBB20: cooperative cancellation flags. POST /cancel
+    # cooperative cancellation flags. POST /cancel
     # adds a sid; the POST-message handler checks + clears after the
     # agent returns. Set (not dict) because the flag's presence IS
     # the signal — no payload.
     app.state.cancel_flags = set()
     app.state.cancel_events = {}
     app.state.cancel_attempts = {}
-    # CLIO-BBBBBBBBBB22: per-session context files. Keyed by
+    # per-session context files. Keyed by
     # session_id, each value is an ordered dict of
     # path -> ContextFile dict.
     app.state.context_files_path = session_store_path.parent / "context_files.json"
@@ -1328,12 +1328,12 @@ def build_app(
     # reads are policy-gated and provenance-bearing so cross-session
     # context is visible after the fact.
     app.state.memory_tool_audit = []
-    # CLIO-BBBBBBBBBB21: per-session pending diffs. Keyed by
+    # per-session pending diffs. Keyed by
     # session_id -> list of {path, unified_diff, status,
     # part_id, message_id}. Status is "pending" until apply/reject
     # flips it.
     app.state.pending_diffs = {}
-    # CLIO-BBBBBBBBBB23: pending permission requests. Flat dict
+    # pending permission requests. Flat dict
     # keyed by permission_id so GET /v1/permissions can filter by
     # session cheaply. Each record carries
     # {id, session_id, tool_call, summary, created_at, status,
@@ -1475,7 +1475,7 @@ def build_app(
         }
         pass
 
-    # CLIO-BBBBBBBBBB-D: live LM config — what the TUI configured
+    # live LM config — what the TUI configured
     # us with. Distinct from boot-time env because PUT /providers/lm
     # rebuilds the agent + DSPy config in-place.
     app.state.lm_config = None
@@ -1501,7 +1501,7 @@ def build_app(
     except Exception:  # noqa: BLE001 - misconfig must not break app construction
         _boot_cfg = LMProviderConfig()
     app.state.provider_profiles = ProviderProfileStore.seed(spec_from_config(_boot_cfg))
-    # CLIO-BBBBBBBBBB-WS: workspaces store. Persisted alongside
+    # workspaces store. Persisted alongside
     # sessions; seeds a default workspace if none exist so the TUI
     # always has something to render.
     app.state.workspaces = WorkspaceStore(
@@ -1803,7 +1803,7 @@ def build_app(
     # routes/sessions.py and registered below via register_sessions_routes(
     # app, deps); the ledger replace travels on ``deps``.
 
-    # ---- /v1/providers (#15) + /v1/providers/lm (CLIO-BBBBBBBBBB-D) ---
+    # ---- /v1/providers (#15) + /v1/providers/lm ---
     # The LM-provider catalog (list/detail/auth/models/handshake) and the
     # runtime LM-bind routes (get/put/wait LM config, incl. the dspy.settings
     # + env snapshot/restore bind closures) are owned by routes/providers.py and
@@ -2178,7 +2178,7 @@ def build_app(
     # error travel on ``deps``.
     register_messages_routes(app, deps)
 
-    # ---- /v1/workspaces (CLIO-BBBBBBBBBB-WS) -------------------------
+    # ---- /v1/workspaces -------------------------
     # Workspace store CRUD + file listing/reading are owned by
     # routes/workspaces.py; registered here so they bind to the same app.
     register_workspaces_routes(app, deps)
@@ -2268,7 +2268,7 @@ def build_app(
     # destructive-action guard through ``deps``.
     register_catalog_routes(app, deps)
 
-    # ---- /v1/providers (#15) + /v1/providers/lm (CLIO-BBBBBBBBBB-D) ---
+    # ---- /v1/providers (#15) + /v1/providers/lm ---
     # The LM-provider catalog (list/detail/auth/models/handshake) and the runtime
     # LM-bind routes (get/put/wait LM config) are owned by routes/providers.py. The
     # write-side bind hot-swaps the live agent's LMs and mutates

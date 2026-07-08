@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB21: two-phase edits."""
+"""two-phase edits."""
 
 from __future__ import annotations
 

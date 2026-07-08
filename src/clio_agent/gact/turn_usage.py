@@ -46,7 +46,7 @@ def roll_up_usage(state: "TurnState", pred: Any) -> None:
         pred: The forward prediction to harvest usage from.
     """
 
-    # CLIO-BBBBBBBBBB24: cost + token rollup. Real DSPy
+    # cost + token rollup. Real DSPy
     # predictions don't always populate .tokens / .cost_usd
     # directly — pull from the per-turn UsageTracker first
     # (works across threads + streaming), then LM history.

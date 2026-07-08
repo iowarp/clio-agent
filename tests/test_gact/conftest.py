@@ -1,7 +1,7 @@
 """Shared helpers for the GACT test suite.
 
 POST /messages used to be synchronous (the response body carried
-the assistant message). Since CLIO-BBBBBBBBBB-D it returns an ack
+the assistant message). It now returns an ack
 ``{message_id, accepted_at}`` and the assistant turn arrives
 asynchronously via SSE / GET /messages. ``complete_turn`` wraps that
 flow for tests that just want "POST + return the assistant".

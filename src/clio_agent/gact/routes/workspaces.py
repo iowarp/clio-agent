@@ -116,7 +116,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
     ``build_app`` local.
     """
 
-    # ---- /v1/workspaces (CLIO-BBBBBBBBBB-WS) -------------------------
+    # ---- /v1/workspaces -------------------------
 
     @app.get("/v1/workspaces", response_model=ListWorkspacesResponse)
     async def list_workspaces() -> ListWorkspacesResponse:

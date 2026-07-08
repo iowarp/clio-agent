@@ -894,9 +894,9 @@ def _not_implemented(capability: str) -> ErrorEnvelope:
             details={
                 "capability": capability,
                 "note": (
-                    "This endpoint is stubbed at CLIO-BBBBBBBBBB6; it will "
+                    "This endpoint is stubbed; it will "
                     "be wired in a follow-on iteration. See "
-                    "gact-tui/PLAN.md phase CLIO-BBBBBBBBBB for the roadmap."
+                    "gact-tui/PLAN.md for the roadmap."
                 ),
             },
             recoverable=False,

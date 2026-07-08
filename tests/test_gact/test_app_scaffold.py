@@ -1,11 +1,11 @@
-"""CLIO-BBBBBBBBBB6: smoke tests for the GACT v0.2 scaffold.
+"""smoke tests for the GACT v0.2 scaffold.
 
 Verifies the FastAPI app builds, its baseline routes (/v1/health +
 /v1/capabilities) respond with the v0.2 shape, and every route we
 stubbed returns a v0.2-shaped 501 error envelope.
 
 Full endpoint behaviour gets tested as each route is wired in
-follow-on iterations (CLIO-BBBBBBBBBB7+).
+follow-on iterations.
 """
 
 from __future__ import annotations

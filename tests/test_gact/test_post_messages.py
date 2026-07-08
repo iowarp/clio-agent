@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB9: tests for POST /v1/sessions/{sid}/messages.
+"""tests for POST /v1/sessions/{sid}/messages.
 
 Drives the app with a FakeClioAgent so no LM is needed. Covers:
   - happy path: user message stored, assistant reply returned with

@@ -11,7 +11,7 @@ drives:
   model catalog and connectivity/auth/per-model handshake via the unified async
   handshake (passive auth -- browsing never triggers interactive OAuth).
 * ``GET /v1/providers/lm`` + ``PUT /v1/providers/lm`` + ``GET /v1/providers/lm/wait``
-  (CLIO-BBBBBBBBBB-D) -- report the live LM config, reconfigure it in-place (the
+  report the live LM config, reconfigure it in-place (the
   async ``idle -> configuring -> ready/error`` bind), and block until the bind
   settles.
 
@@ -489,7 +489,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         out["generated_at"] = report.generated_at
         return out
 
-    # ---- /v1/providers/lm (CLIO-BBBBBBBBBB-D) ------------------------
+    # ---- /v1/providers/lm ------------------------
 
     def _normalize_lm_provider_request(req: LMProviderRequest) -> LMProviderRequest:
         """Convert catalog preset ids to runtime provider kinds before wiring DSPy."""

@@ -539,7 +539,7 @@ async def _run_turn_in_background(
             or _format_react_trajectory(getattr(state.pred, "trajectory", None))
             or ""
         )
-        # CLIO-BBBBBBBBBB24: cost + token rollup — mutate
+        # cost + token rollup — mutate
         # state.turn_tokens / state.turn_cost from the prediction
         # or the per-turn LM history slice (see turn_usage.py).
         roll_up_usage(state, state.pred)

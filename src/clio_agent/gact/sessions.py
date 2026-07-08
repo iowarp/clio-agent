@@ -1,6 +1,6 @@
 """GACT v0.2 session registry for CLIO.
 
-Until CLIO-BBBBBBBBBB19 moves session ownership into ARC, the GACT
+Until session ownership moves into ARC, the GACT
 app owns a small registry of ``Session`` records:
 
 - in-memory dict keyed by session id
@@ -108,7 +108,7 @@ class Session:
     parent_session_id: str = ""
     model: dict[str, str] = field(default_factory=dict)
     agent: dict[str, str] = field(default_factory=lambda: {"id": "main"})
-    # CLIO-BBBBBBBBBB24: cumulative token + cost rollup. Populated
+    # cumulative token + cost rollup. Populated
     # from Prediction.tokens / cost_usd on every turn.
     tokens_input: int = 0
     tokens_output: int = 0

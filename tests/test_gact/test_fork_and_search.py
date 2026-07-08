@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB26+27: session fork + message search.
+"""session fork + message search.
 
 Fork copies stored messages from one session into a new session
 that carries ``parent_session_id`` pointing at the source. Search

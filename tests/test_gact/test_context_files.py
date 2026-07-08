@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB22: session context files."""
+"""session context files."""
 
 from __future__ import annotations
 
