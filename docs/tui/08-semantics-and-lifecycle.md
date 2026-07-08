@@ -86,7 +86,7 @@ Tests: `tests/test_gact/test_cancellation.py`.
 
 ### Streaming
 
-`clio-agent-gact` streams GACT events over `GET /v1/sessions/{sid}/events`. A user turn is accepted with `POST /v1/sessions/{sid}/messages`, then the SSE channel emits `message.created`, `message.part.added`, `message.part.delta`, `message.part.completed`, and `message.completed`.
+`clio-agent serve` streams GACT events over `GET /v1/sessions/{sid}/events`. A user turn is accepted with `POST /v1/sessions/{sid}/messages`, then the SSE channel emits `message.created`, `message.part.added`, `message.part.delta`, `message.part.completed`, and `message.completed`.
 
 Text streaming has explicit provenance:
 
@@ -289,7 +289,7 @@ agent.shutdown()                                 # flush ARC + close LSM
 For a server-mode equivalent:
 
 ```bash
-$ clio-agent-gact --host 127.0.0.1 --port 8100 &
+$ clio-agent serve --host 127.0.0.1 --port 8100 &
 $ curl -s -X POST http://127.0.0.1:8100/v1/sessions/abc/messages \
     -H 'Content-Type: application/json' \
     -d '{"question":"Hi","session_id":"abc"}'

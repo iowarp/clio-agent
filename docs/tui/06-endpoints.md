@@ -7,10 +7,12 @@
 From `pyproject.toml` (`[project.scripts]`):
 
 ```toml
-clio-agent      = "clio_agent.ui.cli:main"
-clio-agent-gact = "clio_agent.gact.app:main"
+clio-agent      = "clio_agent.ui.cli:main"          # `clio-agent serve` is the front door
+clio-agent-gact = "clio_agent.gact.app:main_deprecated"
+# clio-agent-gact is a deprecation alias: it warns on stderr, then delegates to
+# `clio-agent serve` (kept functional for one release for old launchers).
 # clio-agent-api is a removed-shim entry point: it prints a pointer to
-# clio-agent-gact and exits non-zero (clio_agent.ui._deprecated_api:main).
+# `clio-agent serve` and exits non-zero (clio_agent.ui._deprecated_api:main).
 ```
 
 ## CLI — interactive + one-shot
@@ -53,18 +55,18 @@ The legacy `clio-agent-api` REST server (`ui/api.py`, `POST /query`, `GET
 /health`, `GET /experts`, `GET /metrics` on `:8000`) has been **removed**. CLIO
 now has a single HTTP front door: the unified GACT server below. The
 `clio-agent-api` console script survives only as a deprecation shim — it prints
-a pointer to `clio-agent-gact` and exits non-zero.
+a pointer to `clio-agent serve` and exits non-zero.
 
-Migration: start `clio-agent-gact --host 0.0.0.0 --port 8100` and use the `/v1`
+Migration: start `clio-agent serve --host 0.0.0.0 --port 8100` and use the `/v1`
 API. Health moved from `/health` to `/v1/health`; per-session live streaming is
 at `/v1/sessions/{sid}/events`.
 
-## GACT API — `clio-agent-gact`
+## GACT API — `clio-agent serve`
 
 Module: `gact/app.py`. FastAPI + Uvicorn. The single HTTP front door.
 
 ```
-$ clio-agent-gact --host 127.0.0.1 --port 17800
+$ clio-agent serve --host 127.0.0.1 --port 17800
 ```
 
 ### Core routes
@@ -153,7 +155,7 @@ The TUI does **not** need to speak MCP directly — it goes through the GACT mes
 ### A. Native GACT backend (recommended)
 
 ```sh
-clio-agent-gact --host 127.0.0.1 --port 17800
+clio-agent serve --host 127.0.0.1 --port 17800
 GACT_BACKEND=http://127.0.0.1:17800 gact
 ```
 
@@ -196,6 +198,6 @@ If the MCP gateway is served over HTTP, the TUI can call individual tools direct
 
 ## Recommended path for gact-tui
 
-Use `clio-agent-gact` directly. It already exposes the GACT primitives gact-tui expects: sessions, messages, event streams, cancellation, catalog, provider config, metrics, permissions, hooks, context files, diffs, tasks, and workspaces. Remaining truth gaps are tracked in `REAL_GAPS.md`.
+Use `clio-agent serve` directly. It already exposes the GACT primitives gact-tui expects: sessions, messages, event streams, cancellation, catalog, provider config, metrics, permissions, hooks, context files, diffs, tasks, and workspaces. Remaining truth gaps are tracked in `REAL_GAPS.md`.
 
 Covered in depth in `09-integration-plan.md`.

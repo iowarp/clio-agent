@@ -20,8 +20,8 @@ This folder is the spec and reference for building a first-class terminal UI on 
 
 ## TL;DR for somebody building the adapter
 
-- CLIO ships **`clio-agent-gact`**, a FastAPI backend that speaks the native GACT `/v1/...` contract used by `gact-tui`.
-- The legacy **`clio-agent-api`** surface (`POST /query`, `GET /health`, `GET /experts`, `GET /metrics`) has been removed; its console script is now a deprecation shim that points at `clio-agent-gact`.
+- CLIO ships **`clio-agent serve`**, a FastAPI backend that speaks the native GACT `/v1/...` contract used by `gact-tui`.
+- The legacy **`clio-agent-api`** surface (`POST /query`, `GET /health`, `GET /experts`, `GET /metrics`) has been removed; its console script is now a deprecation shim that points at `clio-agent serve`.
 - One GACT turn = `POST /v1/sessions/{sid}/messages`; the request acks quickly and progress streams over `GET /v1/sessions/{sid}/events` as `message.created`, `message.part.*`, tool telemetry when available, and `message.completed`.
 - Routing is a one-pass DSPy planner over live tools and registered experts; it selects a tool, `expert:data|analysis|visualization`, `answer`/chat, or an explicit `none` route.
 - CLIO's GACT backend owns sessions through `/v1/sessions`.

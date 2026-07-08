@@ -88,7 +88,7 @@ We DO NOT close an issue until:
 
 1. The capability flag is `true`.
 2. An integration test in `tests/test_integration_contract/` drives the
-   capability through `clio-agent-gact` against a real LM.
+   capability through `clio-agent serve` against a real LM.
 3. The test passes against at least one explicitly configured real LM
    provider. Cross-provider sanity should be run when credentials or a
    local provider are available, but the tests must not embed provider

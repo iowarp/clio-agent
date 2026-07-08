@@ -59,7 +59,7 @@ clio-agent — nothing else to install.
 ```sh
 git clone --recurse-submodules https://github.com/iowarp/clio-agent
 cd clio-agent && uv sync --extra optimizers --extra argonne
-uv run src/clio_agent/ui/cli.py        # or: uv run clio-agent-gact
+uv run src/clio_agent/ui/cli.py        # or: uv run clio-agent serve
 ```
 
 ## ⚠️ Running more than one at once

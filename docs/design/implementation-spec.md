@@ -808,8 +808,8 @@ export CLIO_SEMANTIC_TRACE_PATH="$PWD/.clio-traces"
 # optional: export CLIO_AUTOCOMPACT_PCT=0.85   # auto-compaction threshold
 # optional: export CLIO_LM_MAX_TOKENS=32000    # if the ALCF static default caps at 4096
 
-# 3) launch gact (main() at app.py:22518)
-uv run clio-agent-gact --host 127.0.0.1 --port 17960 &
+# 3) launch gact (clio-agent serve → run_server in app.py)
+uv run clio-agent serve --host 127.0.0.1 --port 17960 &
 
 # 4) wait for the LM to wire, then fire one turn through the ReAct path
 until curl -sf 'http://127.0.0.1:17960/v1/providers/lm/wait?timeout=30' \

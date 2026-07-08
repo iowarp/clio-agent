@@ -145,10 +145,10 @@ Issues = "https://github.com/iowarp/clio-agent/issues"
 [project.scripts]
 clio-agent = "clio_agent.ui.cli:main"
 clio-agent-api = "clio_agent.ui._deprecated_api:main"
-# GACT v0.2 surface. Peer of clio-agent-api; runs on its own port.
-# See docs/tui/ for the integration spec. Wired in CLIO-BBBBBBBBBB6;
-# real endpoints come online in CLIO-BBBBBBBBBB7-12.
-clio-agent-gact = "clio_agent.gact.app:main"
+# Deprecation alias for the retired standalone gact entry point. `clio-agent
+# serve` is the single front door (#830); this stays functional for one
+# release so old installed launchers keep working, emitting a stderr notice.
+clio-agent-gact = "clio_agent.gact.app:main_deprecated"
 
 [build-system]
 requires = ["hatchling"]

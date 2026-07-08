@@ -25,6 +25,7 @@ import argparse
 import asyncio
 import logging
 import os
+import sys
 import time
 
 # Process diagnostics (SIGUSR1 wedge/heap dump) extracted to gact/diagnostics.py
@@ -2519,3 +2520,19 @@ def main() -> None:
         reload=args.reload,
         no_agent=args.no_agent,
     )
+
+
+def main_deprecated() -> None:
+    """Deprecation alias for the ``clio-agent-gact`` console script.
+
+    ``clio-agent serve`` is now the single front door. This alias stays
+    fully functional for one release so old installed launchers that still
+    call ``clio-agent-gact`` keep working; it just emits a one-line stderr
+    notice before delegating to :func:`main`.
+    """
+
+    print(
+        "clio-agent-gact is deprecated; use clio-agent serve",
+        file=sys.stderr,
+    )
+    main()

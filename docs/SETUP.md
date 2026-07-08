@@ -7,7 +7,7 @@ UI at CLIO and start asking scientific-data questions.
 ## What you're installing
 
 - **clio-agent** (Python) — the agent itself, plus a FastAPI server
-  (`clio-agent-gact`) that speaks the GACT v0.2 contract.
+  (`clio-agent serve`) that speaks the GACT v0.2 contract.
 - **gact** (Go binary) — the TUI front-end. Connects to any
   GACT-compliant backend via REST + SSE.
 
@@ -82,7 +82,7 @@ provider. No restart, no env-var dance.
 
 ```bash
 cd clio-agent
-uv run clio-agent-gact --port 17800
+uv run clio-agent serve --port 17800
 ```
 
 The server boots without an LM wired — the TUI will pop a config
@@ -93,7 +93,7 @@ export CLIO_LM_PROVIDER=openai
 export CLIO_LM_API_BASE=https://api.openai.com/v1
 export CLIO_LM_MODEL=gpt-4o-mini
 export CLIO_LM_API_KEY=sk-...
-uv run clio-agent-gact --port 17800
+uv run clio-agent serve --port 17800
 ```
 
 ## Connect the TUI
@@ -160,7 +160,7 @@ new model's prices.
 ```bash
 # Boot server.
 cd clio-agent
-uv run clio-agent-gact --port 17800 &
+uv run clio-agent serve --port 17800 &
 
 # Configure the LM.
 curl -X PUT http://127.0.0.1:17800/v1/providers/lm \
