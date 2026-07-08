@@ -30,7 +30,7 @@ Use only public, inspectable material:
 | R8 | MCP tools: <https://modelcontextprotocol.io/docs/concepts/tools> | Tool schemas, model-controlled tool calls, and clear separation between tools and prompts. |
 | R9 | CLIO ARC memory docs: [ARC_MEMORY_LAYER.md](ARC_MEMORY_LAYER.md) | Durable memory tiers, retrieval, procedural memories, and context compilation expectations. |
 | R10 | CLIO real-provider regression evidence: [REAL_PROVIDER_SEMANTIC_REGRESSION.md](REAL_PROVIDER_SEMANTIC_REGRESSION.md) | Ground-truth failure modes for routing, tool evidence, provider fallback, and streaming claims. |
-| R11 | CLIO command/capability audit: [COMMAND_CAPABILITY_AUDIT.md](archive/COMMAND_CAPABILITY_AUDIT.md) | Truthful command availability, visible TODO commands, permissions, rewind, and unsupported voice semantics. |
+| R11 | CLIO command/capability audit (`COMMAND_CAPABILITY_AUDIT.md`, culled 2026-07 — see git history) | Truthful command availability, visible TODO commands, permissions, rewind, and unsupported voice semantics. |
 | R12 | CLIO memory refinement design: [MEMORY_SYSTEM_REFINEMENT.md](archive/MEMORY_SYSTEM_REFINEMENT.md) | Context-frame truth, provenance, compaction events, and cross-session access constraints. |
 
 ## Prompt Family Matrix

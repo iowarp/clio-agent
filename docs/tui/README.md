@@ -8,13 +8,12 @@ This folder is the spec and reference for building a first-class terminal UI on 
 
 | # | Doc | When to read |
 |---|---|---|
-| 01 | [Overview](01-overview.md) | What CLIO is, who it's for, 30-second mental model |
 | 02 | [Agent graph](02-agent-graph.md) | How a single turn flows end-to-end |
 | 03 | [Experts](03-experts.md) | What an Expert is, current roster, routing |
-| 04 | [ARC memory](04-arc-memory.md) | Persistent memory layout + what to surface in the TUI |
-| 05 | [Tools](05-tools.md) | The FastMCP gateway + every tool catalogued |
+| 04 | ARC memory → [`../ARC_MEMORY_LAYER.md`](../ARC_MEMORY_LAYER.md) | Persistent memory layout + what to surface in the TUI |
+| 05 | Tools → [`../MCP_TOOL_INTEGRATION.md`](../MCP_TOOL_INTEGRATION.md) | The FastMCP gateway + tool catalogue |
 | 06 | [Endpoints](06-endpoints.md) | CLI + REST API + MCP surface |
-| 07 | [Providers + config](07-providers-config.md) | LM providers matrix + env-var reference |
+| 07 | Providers + config → [`../providers/README.md`](../providers/README.md) | LM providers matrix + env-var reference |
 | 08 | [Semantics + lifecycle](08-semantics-and-lifecycle.md) | Behavioural pins from the test suite |
 | 09 | [Integration plan](09-integration-plan.md) | How gact-tui actually hooks in |
 
@@ -30,7 +29,7 @@ This folder is the spec and reference for building a first-class terminal UI on 
 
 ## What this folder does NOT cover
 
-- SIMBA optimiser internals — enough in [08-semantics-and-lifecycle.md](08-semantics-and-lifecycle.md) for integration; deeper context in [`../SELF_IMPROVEMENT.md`](../SELF_IMPROVEMENT.md).
+- SIMBA optimiser internals — enough in [08-semantics-and-lifecycle.md](08-semantics-and-lifecycle.md) for integration. (The optimizer layer is currently a not-implemented stub; see issue #801.)
 - DSPy signatures in detail — treat as implementation detail per [`../../CLAUDE.md`](../../CLAUDE.md) Rule 3.
 - IOWarp CTE storage tiers — automatic; not the TUI's concern.
 

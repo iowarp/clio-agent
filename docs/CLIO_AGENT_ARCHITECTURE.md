@@ -1081,7 +1081,6 @@ These are implementation details - users interact with CLIO Agent through:
 
 - [System Identity](SYSTEM_IDENTITY.md) - CLIO Agent identity, capabilities, and design principles
 - [ARC Memory Layer](ARC_MEMORY_LAYER.md) - Deep dive on memory architecture, indexing, IOWarp integration
-- [Self Improvement](SELF_IMPROVEMENT.md) - Optimizer concepts, metrics, and tuning direction
 - [Global Development Plan](../PLAN.md) - Active roadmap, work packages, and current delivery status
 - [IOWarp Architecture](https://iowarp.ai/docs) - Full IOWarp 3-tier architecture (CEI/CAE/CTE)
 - [MCP Protocol Specification](https://modelcontextprotocol.io) - Model Context Protocol docs

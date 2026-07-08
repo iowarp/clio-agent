@@ -96,7 +96,6 @@ For the design rationale (three-tier hierarchy, ARC memory, optimizer layer, IOW
 | [docs/MCP_TOOL_INTEGRATION.md](docs/MCP_TOOL_INTEGRATION.md) | Adding tools via FastMCP |
 | [docs/EXPERT_SYSTEM_DESIGN.md](docs/EXPERT_SYSTEM_DESIGN.md) | Adding new experts |
 | [docs/ARC_MEMORY_LAYER.md](docs/ARC_MEMORY_LAYER.md) | Memory model and storage |
-| [docs/SELF_IMPROVEMENT.md](docs/SELF_IMPROVEMENT.md) | Optimizer layer |
 | [docs/PERMISSIONS.md](docs/PERMISSIONS.md) | Tool permission system |
 | [docs/providers/](docs/providers/) | LM provider configuration |
 | [docs/CAPABILITIES_MATRIX.md](docs/CAPABILITIES_MATRIX.md) | Feature matrix |

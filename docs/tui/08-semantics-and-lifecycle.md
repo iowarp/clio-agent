@@ -168,7 +168,7 @@ reconfigure-provider, and exit recovery actions.
 - Provider/LM failure → structured `provider_error`; CLIO must not hide
   an upstream/provider failure behind repeated, canned, or locally synthesized
   assistant text.
-- Tool failure → return `{"error": {...}}` dict, not raise (see `05-tools.md`).
+- Tool failure → return `{"error": {...}}` dict, not raise (see [`../MCP_TOOL_INTEGRATION.md`](../MCP_TOOL_INTEGRATION.md)).
 
 (`test_errors.py`, `test_agent_dispatch.py`, `agent.py`)
 
@@ -267,7 +267,7 @@ result = runner.run(
 
 `test_significance()` runs a proportion z-test on before/after success rates; only stat-sig variants get deployed. Variants are versioned in ARC; the TUI (or admin) can roll them back.
 
-(`test_runner.py:56-218`, `SELF_IMPROVEMENT.md`)
+(`test_runner.py:56-218`)
 
 ## Copy-paste minimal end-to-end
 
