@@ -66,11 +66,26 @@ Kept current as work lands; the running per-PR log is the umbrella #775.
     CHANGELOG revival, media/LFS policy, history-rewrite runbook). PRs #264–#284; a Phase-4 docker
     baseline regression (H3's `go.work` loop-test member vs `.dockerignore`) was caught on develop
     CI and fixed in #285.
+  - **Docs curation + READMEs (both repos, 2026-07-08).** A content-aware pass (each doc read and
+    classified, not mechanically folded): **clio** culled 19 benchmark/stress run-logs + stale
+    `docs/tui/` duplicates and archived 7 superseded design docs, added `docs/README.md` as the
+    index, and repointed the root README at it (#861–#863); **gact-tui** deleted the unwired
+    `visual_loop/` harness + untracked `apps/web/screenshots/`, relocated `loop-test/` →
+    `examples/`, culled 14 agentic-noise docs, archived the founding `apps/` design series + folded
+    `notes/`→`docs/reference/` and `ref/`→`docs/ref/` under a new `docs/README.md`, and rewrote the
+    root README as a concise human-centric guide (fixed the wrong `JaimeCernuda` clone URL, unified
+    the v0.2 contract references) (#286–#290). Slice-4's archive PR was rebased to avoid resurrecting
+    the culled files; the README rewrite's claims were independently verified against the code
+    (two overclaims — a non-existent "Gruvbox" theme and a wrong adapter LOC/file-structure line —
+    were corrected before merge). Follow-up (content, not a move): a truthfulness pass on clio's
+    `CLIO_AGENT_ARCHITECTURE.md` (stale LangChain/CrewAI-supported + tiered-storage claims).
   - **Owner-gated remainders (not executed):** the git history rewrite (owner-only runbook, prepared
     not run); GitHub **LFS quota** confirmation before large baselines land; the U1 size-ratchet
     **flip-to-enforcing** (drop `|| true`, dated 2026-09-01); **ui-split stage 2+** (follow-up tui
     #282); the **gact-tui submodule pin** bump in clio-agent (release-time action per the #857
-    contract); P14 owner-local `tmp/` cleanups; and the parked **PR-4 dedup-owner** step (#832).
+    contract — develop pin `3c90468` now trails gact-tui develop `9a15565`, which carries the
+    #285–#290 hygiene/docs work); P14 owner-local `tmp/` cleanups; and the parked **PR-4 dedup-owner**
+    step (#832).
 
 ---
 
