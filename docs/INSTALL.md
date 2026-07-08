@@ -44,7 +44,7 @@ script fetches the web bundle into `$CLIO_PREFIX/clio-agent/web`; override with
 ## d) Scaled / hosted web (Docker Compose)
 ```sh
 docker compose up clio-web          # self-contained web UI → http://localhost:8080
-docker compose --profile api up     # headless backend (API/SSE) → :7777 for scale-out
+docker compose --profile api up     # headless backend (API/SSE) → :8100 for scale-out
 ```
 Uses the published `ghcr.io/iowarp/clio-{web,api}` images (no build). Override `CLIO_LM_*`
 to point at your model provider.

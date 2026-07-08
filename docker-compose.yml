@@ -2,7 +2,7 @@
 # (no local build needed; pulls our released images).
 #
 #   docker compose up clio-web         # web UI  → http://localhost:8080
-#   docker compose --profile api up    # headless backend (API/SSE) → :7777  (scale-out)
+#   docker compose --profile api up    # headless backend (API/SSE) → :8100  (scale-out)
 #
 # The interactive TUI is not a service (a containerised TUI needs a real tty);
 # run it directly instead:
@@ -32,7 +32,7 @@ services:
     image: ghcr.io/iowarp/clio-api:latest
     profiles: ["api"]
     ports:
-      - "7777:7777"
+      - "8100:8100"
     environment:
       - CLIO_LM_PROVIDER=${CLIO_LM_PROVIDER:-lm_studio}
       - CLIO_LM_API_BASE=${CLIO_LM_API_BASE:-http://host.docker.internal:1234/v1}
