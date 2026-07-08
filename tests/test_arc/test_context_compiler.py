@@ -474,6 +474,98 @@ class TestCompileEndToEnd:
         assert len(result) > 0
 
 
+class TestIncludeConversationFlag:
+    """`include_conversation=False` drops the conversation/routing channel (#771).
+
+    gact owns the conversation history via its transcript prepend; the compiled
+    context must stop echoing the same turns or every turn is paid for twice.
+    """
+
+    @staticmethod
+    def _live_turns(monkeypatch, arc):
+        """Force a non-empty live view with a distinctive answer string."""
+        marker = "SENTINEL prior turn answer about electron_temperature"
+        monkeypatch.setattr(
+            arc,
+            "get_live_context",
+            lambda _sid, **_kw: {
+                "turns": [
+                    {
+                        "question": "what is in run.h5?",
+                        "answer": marker,
+                        "selected_expert": "data",
+                    }
+                ]
+            },
+        )
+        return marker
+
+    def test_include_true_emits_session_context(self, tmp_path, monkeypatch):
+        """The default path still surfaces live turns as [Session Context]."""
+        arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+        marker = self._live_turns(monkeypatch, arc)
+        compiler = ContextCompiler(arc)
+
+        result = compiler.compile("follow up", "sess", tier=2, include_conversation=True)
+
+        assert "[Session Context]" in result
+        assert marker in result
+        assert "[Routing History]" in result
+
+    def test_include_false_drops_conversation_and_routing(self, tmp_path, monkeypatch):
+        """With the flag off, no live turns leak into the compiled context."""
+        arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+        marker = self._live_turns(monkeypatch, arc)
+        compiler = ContextCompiler(arc)
+
+        result = compiler.compile("follow up", "sess", tier=2, include_conversation=False)
+
+        assert "[Session Context]" not in result
+        assert "[Routing History]" not in result
+        assert marker not in result
+
+    def test_include_false_never_calls_get_live_context(self, tmp_path, monkeypatch):
+        """The flag skips the branch entirely — no get_live_context call is made."""
+        arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+
+        calls: list[str] = []
+
+        def _tripwire(_sid, **_kw):
+            calls.append(_sid)
+            return {"turns": [{"question": "q", "answer": "a", "selected_expert": "data"}]}
+
+        monkeypatch.setattr(arc, "get_live_context", _tripwire)
+        compiler = ContextCompiler(arc)
+
+        compiler.compile("follow up", "sess", tier=2, include_conversation=False)
+
+        assert calls == []
+
+    def test_include_false_keeps_non_conversation_sections(self, tmp_path, monkeypatch):
+        """Profiles/procedural still flow when conversation is suppressed."""
+        arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+        self._live_turns(monkeypatch, arc)
+        session_id = "sess_profiles"
+
+        profile = DatasetProfile(
+            session_id=session_id,
+            filepath="/data/keep.parquet",
+            file_format="parquet",
+            created_by="data",
+            created_at=time.time(),
+            schema_info={"columns": ["temp"], "rows": 10},
+        )
+        arc.store_dataset_profile(profile)
+
+        compiler = ContextCompiler(arc)
+        result = compiler.compile(
+            "analyze", session_id, tier=2, include_conversation=False
+        )
+
+        assert "[Available Data]" in result
+        assert "keep.parquet" in result
+
+
 class TestSectionUnavailableReasons:
     """A failing ARC section must degrade with a logged reason, not silently (#772)."""
 

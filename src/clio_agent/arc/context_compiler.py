@@ -81,6 +81,7 @@ class ContextCompiler:
         session_id: str,
         tier: int = 2,
         tool_scope: str = "all",
+        include_conversation: bool = True,
     ) -> str:
         """Compile context for a query within token budget.
 
@@ -96,6 +97,12 @@ class ContextCompiler:
             tier: Agent tier (1 for router, 2 for expert). Determines budget.
             tool_scope: Agent/tool visibility scope for injected tool summaries.
                 Use ``chat``, an expert id, ``planner``, ``all``, or ``none``.
+            include_conversation: When ``True`` (default) the compiled context
+                carries the ``[Session Context]``/``[Routing History]`` sections
+                built from live turns. When ``False`` those branches are skipped
+                entirely (no ``get_live_context`` call) — the caller already owns
+                the conversation channel (gact's transcript prepend), so echoing
+                the same turns here would double the token spend (#771).
 
         Returns:
             Compiled context string within token budget.
@@ -108,7 +115,7 @@ class ContextCompiler:
         budget_tokens = self.tier_budgets.get(budget_key, 4000)
 
         # Stage 1: Filter
-        raw_context = self._filter(query, session_id)
+        raw_context = self._filter(query, session_id, include_conversation=include_conversation)
 
         # Stage 2: Compact
         compacted = self._compact(raw_context, budget_tokens)
@@ -119,7 +126,12 @@ class ContextCompiler:
         # Stage 4: Assemble
         return self._assemble(enriched)
 
-    def _filter(self, query: str, session_id: str) -> Dict[str, Any]:
+    def _filter(
+        self,
+        query: str,
+        session_id: str,
+        include_conversation: bool = True,
+    ) -> Dict[str, Any]:
         """Filter relevant data from ARC memory.
 
         Returns raw context dict with conversation history, dataset profiles,
@@ -128,6 +140,10 @@ class ContextCompiler:
         Args:
             query: User's current query
             session_id: Session identifier
+            include_conversation: When ``False`` the conversation and routing
+                branches are skipped entirely (no ``get_live_context`` /
+                ``get_conversation`` call) so the caller-owned transcript is the
+                sole conversation channel (#771).
 
         Returns:
             Dict with 'conversation', 'profiles', 'procedural', 'routing' keys.
@@ -141,7 +157,11 @@ class ContextCompiler:
 
         # Conversation: prefer the LIVE runtime context for the open session (a
         # projection of the in-flight trace), falling back to the persisted
-        # conversation for closed/historical sessions.
+        # conversation for closed/historical sessions. Skipped when the caller
+        # already owns the conversation channel (include_conversation=False).
+        if not include_conversation:
+            return self._filter_non_conversation(session_id, raw)
+
         live: Dict[str, Any] = {}
         live_getter = getattr(self.arc, "get_live_context", None)
         if callable(live_getter):
@@ -206,6 +226,24 @@ class ContextCompiler:
                         for rd in recent_routing
                     ]
 
+        return self._filter_non_conversation(session_id, raw)
+
+    def _filter_non_conversation(
+        self, session_id: str, raw: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Populate the non-conversation sections (profiles, procedural).
+
+        Shared by both filter paths so that skipping the conversation channel
+        (``include_conversation=False``) still surfaces dataset profiles and
+        procedural memories.
+
+        Args:
+            session_id: Session identifier
+            raw: Partially built raw context dict to populate in place.
+
+        Returns:
+            The same ``raw`` dict with profiles/procedural filled.
+        """
         # Get dataset profiles for this session
         try:
             profiles = self.arc.get_session_profiles(session_id)

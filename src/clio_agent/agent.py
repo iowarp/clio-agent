@@ -493,8 +493,12 @@ class ClioAgent(dspy.Module):
 
         start_time = time.time()
 
-        # Step 1: Retrieve context from ARC Memory
-        session_context = self._get_session_context(question, session_id, tool_scope="chat")
+        # Step 1: Retrieve context from ARC Memory. The gact turn path prepends
+        # the full transcript as THE conversation channel, so the compiled
+        # context deliberately omits conversation/routing turns (#771).
+        session_context = self._get_session_context(
+            question, session_id, tool_scope="chat", include_conversation=False
+        )
         active_file = self._resolve_session_file_reference(question, session_id)
         file_context = self._get_file_context(session_id, active_file)
         routing_mode = self._effective_routing_mode()
@@ -2316,6 +2320,7 @@ class ClioAgent(dspy.Module):
         session_id: str,
         tier: int = 2,
         tool_scope: str = "none",
+        include_conversation: bool = False,
     ) -> str:
         """Retrieve compiled session context from ARC Memory.
 
@@ -2327,6 +2332,11 @@ class ClioAgent(dspy.Module):
             session_id: Session identifier
             tier: Agent tier for token budget (1=planner/2K, 2=expert/4K)
             tool_scope: Agent/tool visibility scope for ARC tool summaries.
+            include_conversation: Whether the compiled context should carry the
+                conversation/routing sections. Defaults to ``False`` because the
+                gact turn path prepends the full transcript as THE conversation
+                channel — compiling the same turns here would double the token
+                spend (#771).
 
         Returns:
             Compiled context string or "No prior context"
@@ -2337,6 +2347,7 @@ class ClioAgent(dspy.Module):
                 session_id=session_id,
                 tier=tier,
                 tool_scope=tool_scope,
+                include_conversation=include_conversation,
             )
             if self.verbose:
                 print(f"[ClioAgent] Compiled context ({len(compiled)} chars, tier={tier})")
