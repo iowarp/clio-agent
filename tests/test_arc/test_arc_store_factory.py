@@ -267,6 +267,39 @@ def test_release_stops_daemon_when_last_and_is_idempotent(monkeypatch, tmp_path)
     assert calls == [1]  # idempotent (no double-stop)
 
 
+def test_ensure_runtime_registers_atexit_release(monkeypatch, tmp_path):
+    """atexit is THE shutdown mechanism (#771): ``_ensure_runtime`` MUST register
+    ``release_runtime_client`` with atexit so a clean interpreter exit (the SIGTERM /
+    TUI-leave path uvicorn turns into a normal return) does last-one-out. The gact
+    lifespan deliberately does NOT call it. Binding-free: the native modules are faked
+    so no real clio-core runtime is touched."""
+    import sys
+    import types as _types
+    from types import SimpleNamespace
+
+    _isolate_clio_home(monkeypatch, tmp_path)
+    fake_iowarp = _types.ModuleType("iowarp_core")
+    fake_cte = _types.ModuleType("clio_cte_core_ext")
+    fake_cte.ChimaeraMode = SimpleNamespace(kClient=object())
+    fake_cte.PoolQuery = SimpleNamespace(Dynamic=lambda: object())
+    fake_cte.chimaera_init = lambda *a, **k: None
+    fake_cte.initialize_cte = lambda *a, **k: None
+    monkeypatch.setitem(sys.modules, "iowarp_core", fake_iowarp)
+    monkeypatch.setitem(sys.modules, "clio_cte_core_ext", fake_cte)
+    monkeypatch.setattr(storage, "_ensure_runtime_daemon", lambda *a, **k: None)
+    monkeypatch.setattr(storage.time, "sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr(storage.CTEStore, "_initialized", False)
+
+    registered: list[tuple] = []
+    monkeypatch.setattr(
+        storage.atexit, "register", lambda fn, *a: registered.append((fn, a))
+    )
+
+    storage.CTEStore._ensure_runtime("", "error", 0.0)
+
+    assert (storage.release_runtime_client, ("", "error")) in registered
+
+
 # ---- integration: real shared clio-core CTE runtime (connect-or-spawn) ----
 
 

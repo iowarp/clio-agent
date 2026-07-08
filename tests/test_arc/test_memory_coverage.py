@@ -1,9 +1,8 @@
 """Additional ARC Memory tests for coverage of uncovered paths.
 
 Covers: index lifecycle (no cap; release eviction), get_invocation (cache miss path),
-get_session_invocations, store_dataset_profile, get_dataset_profile (disk fallback),
-get_session_profiles, store_procedural_memory, get_procedural_memories, get_lsm_stats,
-clear_cache, clear_all, _parse_timestamp (string timestamps).
+get_session_invocations, get_lsm_stats, clear_cache, clear_all,
+_parse_timestamp (string timestamps).
 """
 
 import time
@@ -13,10 +12,8 @@ import pytest
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.schema import (
     Conversation,
-    DatasetProfile,
     Invocation,
     Message,
-    ProceduralMemory,
 )
 
 
@@ -114,115 +111,6 @@ class TestGetSessionInvocations:
         """Should return empty list for session with no invocations."""
         result = arc.get_session_invocations("empty")
         assert result == []
-
-
-class TestDatasetProfiles:
-    """Test store_dataset_profile and get_dataset_profile."""
-
-    def _make_profile(self, session_id="s1", filepath="/data/test.h5"):
-        return DatasetProfile(
-            session_id=session_id,
-            filepath=filepath,
-            file_format="hdf5",
-            created_by="data",
-            created_at=time.time(),
-        )
-
-    def test_store_and_get(self, arc):
-        """Store and retrieve profile."""
-        p = self._make_profile()
-        arc.store_dataset_profile(p)
-        result = arc.get_dataset_profile("s1", "/data/test.h5")
-        assert result is not None
-        assert result.filepath == "/data/test.h5"
-
-    def test_disk_fallback(self, arc):
-        """Should load from disk on cache miss."""
-        p = self._make_profile()
-        arc.store_dataset_profile(p)
-        arc.clear_cache()
-        result = arc.get_dataset_profile("s1", "/data/test.h5")
-        assert result is not None
-
-    def test_missing_returns_none(self, arc):
-        """Should return None for nonexistent profile."""
-        assert arc.get_dataset_profile("s1", "/missing.h5") is None
-
-    def test_get_session_profiles(self, arc):
-        """Should return all profiles for a session."""
-        arc.store_dataset_profile(self._make_profile("s1", "/a.h5"))
-        arc.store_dataset_profile(self._make_profile("s1", "/b.h5"))
-        arc.store_dataset_profile(self._make_profile("s2", "/c.h5"))
-
-        profiles = arc.get_session_profiles("s1")
-        assert len(profiles) == 2
-
-    def test_get_session_profiles_empty(self, arc):
-        """Should return empty list for session with no profiles."""
-        assert arc.get_session_profiles("empty") == []
-
-    def test_session_profiles_deduplication(self, arc):
-        """Profiles from cache and disk should not duplicate."""
-        p = self._make_profile("s1", "/a.h5")
-        arc.store_dataset_profile(p)
-        # Profile is in both cache and disk -- should only appear once
-        profiles = arc.get_session_profiles("s1")
-        filepaths = [pr.filepath for pr in profiles]
-        assert filepaths.count("/a.h5") == 1
-
-
-class TestProceduralMemory:
-    """Test store_procedural_memory and get_procedural_memories."""
-
-    def _make_mem(self, session_id="s1", expert_id="data", idx=0):
-        return ProceduralMemory(
-            session_id=session_id,
-            expert_id=expert_id,
-            pattern_type="success",
-            description=f"pattern-{idx}",
-            context={"file_type": "hdf5"},
-            outcome="good",
-            learned_at=time.time() + idx,
-        )
-
-    def test_store_and_get(self, arc):
-        """Store and retrieve procedural memory."""
-        m = self._make_mem()
-        arc.store_procedural_memory(m)
-        result = arc.get_procedural_memories("s1")
-        assert len(result) >= 1
-
-    def test_filter_by_expert(self, arc):
-        """Should filter by expert_id."""
-        arc.store_procedural_memory(self._make_mem(expert_id="data", idx=0))
-        arc.store_procedural_memory(self._make_mem(expert_id="analysis", idx=1))
-
-        result = arc.get_procedural_memories("s1", expert_id="data")
-        assert all(m.expert_id == "data" for m in result)
-
-    def test_sorted_most_recent_first(self, arc):
-        """Should return most recent first."""
-        for i in range(3):
-            arc.store_procedural_memory(self._make_mem(idx=i))
-
-        result = arc.get_procedural_memories("s1")
-        for i in range(len(result) - 1):
-            assert result[i].learned_at >= result[i + 1].learned_at
-
-    def test_respects_limit(self, arc):
-        """Should respect limit parameter."""
-        for i in range(10):
-            arc.store_procedural_memory(self._make_mem(idx=i))
-
-        result = arc.get_procedural_memories("s1", limit=3)
-        assert len(result) <= 3
-
-    def test_disk_fallback(self, arc):
-        """Should load from disk on cache miss."""
-        arc.store_procedural_memory(self._make_mem())
-        arc.clear_cache()
-        result = arc.get_procedural_memories("s1")
-        assert len(result) >= 1
 
 
 class TestLsmStats:

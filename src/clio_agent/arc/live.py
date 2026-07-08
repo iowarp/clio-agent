@@ -59,7 +59,54 @@ from clio_agent.arc.segments import SegmentStore, _encode_safe
 # never sees it; combined with ``semantic_event`` not being a working-set kind, the
 # log can never leak into a model prompt. Defined here (the observer's substrate) and
 # re-exported by ``arc.memory`` (the writer) so both share one constant.
+#
+# The log is a CHUNK FAMILY, not one ever-growing scope: chunk 1 is the legacy bare
+# ``_events`` and chunk ``N>=2`` is ``_events/N``. The writer rolls to the next chunk
+# once the active one reaches ``arc.events_chunk_segments`` segments, so a single
+# append re-encodes only the active chunk (O(chunk)) instead of the whole log (O(N)),
+# killing the per-event O(N²) rewrite. The reads concatenate ``render`` across the
+# family in chunk order; the store-wide monotonic ``logical_time`` guarantees that
+# concatenation equals the old single-scope render (each chunk is filled to capacity
+# before the next opens, so every chunk-1 event precedes every chunk-2 event).
 EVENTS_SCOPE = "_events"
+
+
+def events_chunk_scope(index: int) -> str:
+    """Scope name for the ``index``-th chunk of the reserved ``_events`` log.
+
+    Chunks are 1-indexed. Chunk 1 is the legacy bare ``_events`` (so existing single-
+    scope logs keep working unchanged); chunk ``N>=2`` is ``_events/N``. THE single
+    naming rule, shared by the writer (:meth:`ARCMemory._append_event_segment`) and the
+    reader (:func:`events_chunk_index` / :meth:`LiveRuntimeContext.events_scopes`).
+    """
+    return EVENTS_SCOPE if index <= 1 else f"{EVENTS_SCOPE}/{index}"
+
+
+def events_chunk_index(scope: str) -> int:
+    """Chunk index of an ``_events`` family scope (inverse of :func:`events_chunk_scope`).
+
+    ``_events`` -> 1; ``_events/N`` -> N. A non-family scope (or an unparsable tail)
+    maps to 1 so ordering is total and never raises.
+    """
+    if scope == EVENTS_SCOPE:
+        return 1
+    prefix = f"{EVENTS_SCOPE}/"
+    if scope.startswith(prefix):
+        try:
+            return int(scope[len(prefix) :])
+        except ValueError:
+            return 1
+    return 1
+
+
+def is_events_scope(scope: str) -> bool:
+    """Whether ``scope`` belongs to the reserved ``_events`` chunk family.
+
+    True for the bare ``_events`` and every ``_events/N`` chunk. Used to keep the whole
+    family out of the search-text companion (the log must never pollute scope search)
+    and to enumerate the family for lifecycle erase / concatenated reads.
+    """
+    return scope == EVENTS_SCOPE or scope.startswith(f"{EVENTS_SCOPE}/")
 
 
 def build_event_content(event: Any) -> Optional[dict[str, Any]]:
@@ -208,7 +255,10 @@ class LiveRuntimeContext:
                 :meth:`fold` writes the log to it so the tests' projections work.
         """
         if store is None:
-            store = SegmentStore(_MemoryStore())
+            # A standalone observer keeps the ``_events`` chunk family out of the
+            # search-text companion too (parity with the production store ARCMemory
+            # injects), so the log can never surface in scope search.
+            store = SegmentStore(_MemoryStore(), search_indexed=lambda scope: not is_events_scope(scope))
         self._segments = store
 
     # ---- ingest (standalone / test convenience) ------------------------
@@ -242,23 +292,42 @@ class LiveRuntimeContext:
             expert_span_id=str(getattr(event, "expert_span_id", "") or ""),
         )
 
+    # ---- chunk family --------------------------------------------------
+
+    def events_scopes(self, session_id: str) -> list[str]:
+        """The session's ``_events`` chunk scopes, in chunk order (``[]`` if none).
+
+        Discovers the persisted family via ``scan_scopes`` and orders it by chunk
+        index, so the reads can concatenate ``render`` across it and the lifecycle can
+        erase the whole family. Chunk order is also global event order (each chunk is
+        filled before the next opens; ``logical_time`` is store-wide monotonic)."""
+        scopes = [
+            s for s in self._segments.scan_scopes(session_id, EVENTS_SCOPE) if is_events_scope(s)
+        ]
+        return sorted(scopes, key=events_chunk_index)
+
     # ---- lifecycle -----------------------------------------------------
 
     def release(self, session_id: str) -> int:
-        """Drop a session's live turns (erase the ``_events`` log). Returns the number
-        of turns released (NOT segments), matching the historical contract."""
+        """Drop a session's live turns (erase the whole ``_events`` chunk family).
+        Returns the number of turns released (NOT segments), matching the historical
+        contract."""
         turn_count = len(self._turns(session_id))
-        self._segments.drop_scope(session_id, EVENTS_SCOPE)
+        for scope in self.events_scopes(session_id):
+            self._segments.drop_scope(session_id, scope)
         return turn_count
 
     def clear(self) -> None:
-        """Erase the ``_events`` log across all sessions (idle -> baseline)."""
+        """Erase the ``_events`` log (every chunk of every session) — idle -> baseline."""
         for session_id in self._event_session_ids():
-            self._segments.drop_scope(session_id, EVENTS_SCOPE)
+            for scope in self.events_scopes(session_id):
+                self._segments.drop_scope(session_id, scope)
 
     def _event_session_ids(self) -> list[str]:
-        """Every session that currently holds an ``_events`` scope record (so ``clear``
-        can erase them all)."""
+        """Every session that currently holds an ``_events`` record (so ``clear`` can
+        erase them all). Chunk 1 (the bare ``_events``) is always present for any session
+        with events — it is created first and only dropped with the whole family — so
+        enumerating by it covers every session that owns any chunk."""
         return self._segments.sessions_with_scope(EVENTS_SCOPE)
 
     # ---- read / replay -------------------------------------------------
@@ -269,8 +338,15 @@ class LiveRuntimeContext:
         REPLAYING each turn's events (in render = (order, logical_time) order, which is
         record order) through :func:`_apply`. NO turn cap — ARC holds every turn; a
         consumer that wants only a recent window asks for it explicitly (see
-        :meth:`view`'s ``max_turns``)."""
-        segments = self._segments.render(session_id, EVENTS_SCOPE)
+        :meth:`view`'s ``max_turns``).
+
+        The log is a chunk family: CONCATENATE ``render`` across the chunks in chunk
+        order. Each chunk is rendered internally by ``(order, logical_time)``; because a
+        chunk is filled to capacity before the next opens, chunk order IS global event
+        order, so the concatenation equals the old single-scope render byte-for-byte."""
+        segments: list[Any] = []
+        for scope in self.events_scopes(session_id):
+            segments.extend(self._segments.render(session_id, scope))
         grouped: "OrderedDict[str, list[Any]]" = OrderedDict()
         for seg in segments:
             if seg.kind != "semantic_event":

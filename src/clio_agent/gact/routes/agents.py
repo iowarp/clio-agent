@@ -448,8 +448,8 @@ def register_agents_routes(app: FastAPI, deps: "GactDeps") -> None:
     Handlers are defined inside this factory so they close over the ``app``
     argument FastAPI's decorators require, and reach the shared row-resolution
     closures (``agent_rows``/``agent_with_capability_refs``/overlay helpers/
-    ``prompt_registry_for_request``) plus the destructive-action guard and
-    workspace-session mirror through ``deps`` rather than any ``build_app`` local.
+    ``prompt_registry_for_request``) plus the destructive-action guard through
+    ``deps`` rather than any ``build_app`` local.
     """
 
     @app.post("/v1/agents/extract", response_model=AgentDef, status_code=201)
@@ -604,7 +604,6 @@ def register_agents_routes(app: FastAPI, deps: "GactDeps") -> None:
             sid,
             metadata_patch={"agent_blueprint_overlay": dict(overlay)},
         )
-        deps.mirror_workspace_session(app, sid)
         return {
             "session_id": sid,
             "agent_overlay": dict(overlay),

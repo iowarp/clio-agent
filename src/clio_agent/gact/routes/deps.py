@@ -178,19 +178,6 @@ class _AgentBlueprintActivationMetadata(Protocol):
     ) -> dict[str, str]: ...
 
 
-class _MirrorWorkspaceSession(Protocol):
-    """Callable seam persisting one session row into its owning workspace store.
-
-    ``_mirror_workspace_session`` (in :mod:`clio_agent.gact.app`) writes a single
-    session's state into the workspace storage root that owns it. The
-    set-active-blueprint route mirrors the session after mutating its metadata so
-    the workspace-scoped copy stays in sync; it reaches the mirror through
-    ``deps`` rather than importing back into ``gact.app``.
-    """
-
-    def __call__(self, app: "FastAPI", session_id: str) -> None: ...
-
-
 class _AgentRows(Protocol):
     """Callable seam resolving the effective agent catalog for a session/workspace.
 
@@ -254,8 +241,8 @@ class _AppendSessionMessage(Protocol):
     """Callable seam appending one message to a session's ledger (memory + disk).
 
     ``_append_session_message`` (in :mod:`clio_agent.gact.app`) appends a message
-    to ``app.state.messages`` + the message store and mirrors it into the owning
-    workspace store. It is the message-ledger primitive shared across the
+    to ``app.state.messages`` + the message store. It is the message-ledger
+    primitive shared across the
     sessions/messages concerns and the command-dispatch route (which materializes
     a synthetic result message); it stays single-sourced in ``gact.app`` and
     travels here so the command route does not import back into it.
@@ -268,8 +255,8 @@ class _DeleteSessionMessages(Protocol):
     """Callable seam dropping a session's message ledger (memory + disk).
 
     ``_delete_session_messages`` (in :mod:`clio_agent.gact.app`) removes a
-    session's messages from ``app.state.messages`` + the message store and mirrors
-    the deletion into the owning workspace store. The ``/clear`` command dispatch
+    session's messages from ``app.state.messages`` + the message store. The
+    ``/clear`` command dispatch
     path calls it; it stays single-sourced in ``gact.app`` and travels here.
     """
 
@@ -336,18 +323,6 @@ class _StartBackgroundUserTurn(Protocol):
     ) -> "Message": ...
 
 
-class _RemoveWorkspaceSessionMirror(Protocol):
-    """Callable seam dropping one mirrored session row from its workspace store.
-
-    ``_remove_workspace_session_mirror`` (in :mod:`clio_agent.gact.app`) deletes a
-    session's mirrored copy from the workspace-local store that owns it. Session
-    deletion mirrors the removal before dropping the canonical row; it reaches the
-    mirror through ``deps`` rather than importing back into ``gact.app``.
-    """
-
-    def __call__(self, app: "FastAPI", session_id: str) -> None: ...
-
-
 class _DeleteSessionContextFiles(Protocol):
     """Callable seam dropping a session's context-file ledger (memory + disk).
 
@@ -375,9 +350,9 @@ class _ReplaceSessionMessages(Protocol):
     """Callable seam replacing one session's message ledger (memory + disk).
 
     ``_replace_session_messages`` (in :mod:`clio_agent.gact.app`) overwrites a
-    session's stored messages in ``app.state.messages`` + the message store and
-    mirrors the result into the owning workspace store. The rollback (undo/rewind),
-    fork, compact and import session routes all rewrite the ledger through it, and
+    session's stored messages in ``app.state.messages`` + the message store. The
+    rollback (undo/rewind), fork, compact and import session routes all rewrite
+    the ledger through it, and
     the message-delete route in ``gact.app`` shares it; it stays single-sourced
     there and travels here.
     """
@@ -512,7 +487,6 @@ class GactDeps:
     prompt_render_context_for_request: _PromptRenderContextForRequest
     active_session_agent_blueprint_id: _ActiveSessionAgentBlueprintId
     agent_blueprint_activation_metadata: _AgentBlueprintActivationMetadata
-    mirror_workspace_session: _MirrorWorkspaceSession
     agent_rows: _AgentRows
     agent_with_capability_refs: _AgentWithCapabilityRefs
     base_session_agent_blueprint_rows: _BaseSessionAgentBlueprintRows
@@ -522,7 +496,6 @@ class GactDeps:
     blueprint_runner_for_agent: _BlueprintRunnerForAgent
     resolve_runtime_dynamic_agent: _ResolveRuntimeDynamicAgent
     start_background_user_turn: _StartBackgroundUserTurn
-    remove_workspace_session_mirror: _RemoveWorkspaceSessionMirror
     delete_session_context_files: _DeleteSessionContextFiles
     release_session_arc: _ReleaseSessionArc
     replace_session_messages: _ReplaceSessionMessages

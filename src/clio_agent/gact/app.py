@@ -223,7 +223,7 @@ def _agent_not_available_error(app: "FastAPI", sid: str) -> "ErrorEnvelope":
     )
 
 
-# Session message-ledger + workspace-mirror + context-file helpers now live in
+# Session message-ledger + context-file helpers now live in
 # clio_agent.gact.session_store (#714 decomposition). Re-exported here so
 # `from clio_agent.gact.app import ...` and test_import_seams stay green.
 # Per-turn context enrichment + context-frame provenance now live in
@@ -257,13 +257,8 @@ from clio_agent.gact.session_store import (  # noqa: E402,F401
     _extend_session_messages,
     _flush_context_files,
     _load_context_files,
-    _mirror_workspace_messages,
-    _mirror_workspace_session,
     _release_session_arc,
-    _remove_workspace_session_mirror,
     _replace_session_messages,
-    _workspace_for_session,
-    _workspace_storage_root_for_session,
 )
 
 
@@ -1778,8 +1773,8 @@ def build_app(
     # ---- /v1/sessions CRUD + delete -----------------------------------
     # Session create/list/get/patch + permission-gated delete are owned by
     # routes/sessions.py and registered below via register_sessions_routes(
-    # app, deps); the workspace-session mirror + the delete cascade
-    # (messages/context-files/ARC release) travel on ``deps``.
+    # app, deps); the delete cascade (messages/context-files/ARC release)
+    # travels on ``deps``.
 
     # ---- /v1/sessions/{sid}/context/* (ARC live-context plane) -------
     # The session context compartment policy + the live ARC context-plane
@@ -2103,8 +2098,7 @@ def build_app(
     # ``register_blueprints_routes(app, deps)`` once ``deps`` is built. The
     # expert-pack routes are thin aliases of the blueprint lifecycle (one engine,
     # ``kind``-distinguished). The set-active route reaches the activation-metadata
-    # builder + workspace-session mirror (and the metadata-only active-id reader)
-    # through ``deps``.
+    # builder (and the metadata-only active-id reader) through ``deps``.
 
     # ---- /v1/expert-packs/* discovery + session attachment ----------------
     # The expert-pack discovery (list/get/validate) and session attachment
@@ -2120,7 +2114,7 @@ def build_app(
     # is built. They reach the shared row-resolution closures (``agent_rows``/
     # ``agent_with_capability_refs``/``base_session_agent_blueprint_rows``/
     # ``apply_agent_overlay_rows``/``prompt_registry_for_request``) plus the
-    # destructive-action guard and workspace-session mirror through ``deps``.
+    # destructive-action guard through ``deps``.
 
     # Cross-concern seam (#714): built once and threaded to every extracted
     # ``register_<concern>_routes(app, deps)`` factory so moved handlers reach
@@ -2136,7 +2130,6 @@ def build_app(
         prompt_render_context_for_request=_prompt_render_context_for_request,
         active_session_agent_blueprint_id=_active_session_agent_blueprint_id,
         agent_blueprint_activation_metadata=_agent_blueprint_activation_metadata,
-        mirror_workspace_session=_mirror_workspace_session,
         agent_rows=_agent_rows,
         agent_with_capability_refs=_agent_with_capability_refs_bound,
         base_session_agent_blueprint_rows=_base_session_agent_blueprint_rows,
@@ -2146,7 +2139,6 @@ def build_app(
         blueprint_runner_for_agent=_blueprint_runner_for_agent,
         resolve_runtime_dynamic_agent=_resolve_runtime_dynamic_agent_bound,
         start_background_user_turn=_start_background_user_turn,
-        remove_workspace_session_mirror=_remove_workspace_session_mirror,
         delete_session_context_files=_delete_session_context_files,
         release_session_arc=_release_session_arc,
         replace_session_messages=_replace_session_messages,
@@ -2165,7 +2157,7 @@ def build_app(
     # compaction, cancel, the user-question ledger and the turn-retry routes
     # are owned by routes/sessions.py. The fork/answer/retry routes drive a
     # background turn through ``deps.start_background_user_turn``; the ledger
-    # replace, workspace mirror + delete cascade, model-ref errors, evidence
+    # replace + delete cascade, model-ref errors, evidence
     # index and resume text travel on ``deps``.
     register_sessions_routes(app, deps)
 
@@ -2187,23 +2179,20 @@ def build_app(
     # Blueprint source registry, install/update/delete engine, MCP-descriptor
     # enable, and the session get/set-active-blueprint routes are owned by
     # routes/blueprints.py; the expert-pack routes are thin aliases of the same
-    # lifecycle. The set-active route reaches the activation-metadata builder,
-    # workspace-session mirror, and metadata-only active-id reader through
-    # ``deps``.
+    # lifecycle. The set-active route reaches the activation-metadata builder
+    # and metadata-only active-id reader through ``deps``.
     register_blueprints_routes(app, deps)
 
     # ---- /v1/expert-packs/* discovery + session attachment -----------
     # Pack discovery (list/get/validate) and session attachment (get/set the
-    # active pack) are owned by routes/expert_packs.py; the set route reaches
-    # the workspace-session mirror through ``deps``. (Pack install/update/delete
+    # active pack) are owned by routes/expert_packs.py. (Pack install/update/delete
     # are blueprint-engine aliases registered above by register_blueprints_routes.)
     register_expert_packs_routes(app, deps)
 
     # ---- /v1/agents/* + /v1/sessions/{sid}/agent-overlay -------------
     # Tier-2 agent registry CRUD + list + extract and the session agent-overlay
     # routes (get/put/export) are owned by routes/agents.py; they reach the shared
-    # row-resolution closures plus the destructive-action guard and workspace-
-    # session mirror through ``deps``.
+    # row-resolution closures plus the destructive-action guard through ``deps``.
     register_agents_routes(app, deps)
 
     # ---- /v1/mcp/servers (#13) ---------------------------------------

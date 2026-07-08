@@ -97,6 +97,25 @@ from clio_agent.tools.mcp_config import load_mcp_servers
 
 logger = logging.getLogger(__name__)
 
+
+def _clio_agent_version() -> str:
+    """Return the installed clio-agent package version.
+
+    Stamped into ARC conversation metadata so persisted records carry the
+    build that wrote them. Falls back to the in-tree ``__version__`` when the
+    distribution metadata is unavailable (e.g. a non-installed source tree).
+    """
+
+    from importlib import metadata  # noqa: PLC0415 - local to keep import list lean
+
+    try:
+        return metadata.version("clio-agent")
+    except metadata.PackageNotFoundError:
+        import clio_agent  # noqa: PLC0415
+
+        return str(getattr(clio_agent, "__version__", "0.0.0"))
+
+
 PLANNER_HIDDEN_TOOL_NAMES = {"fs_read_file", "fs_apply_edit_write"}
 
 # Action kinds the agent loop can execute. Enum validation happens at the
@@ -474,8 +493,12 @@ class ClioAgent(dspy.Module):
 
         start_time = time.time()
 
-        # Step 1: Retrieve context from ARC Memory
-        session_context = self._get_session_context(question, session_id, tool_scope="chat")
+        # Step 1: Retrieve context from ARC Memory. The gact turn path prepends
+        # the full transcript as THE conversation channel, so the compiled
+        # context deliberately omits conversation/routing turns (#771).
+        session_context = self._get_session_context(
+            question, session_id, tool_scope="chat", include_conversation=False
+        )
         active_file = self._resolve_session_file_reference(question, session_id)
         file_context = self._get_file_context(session_id, active_file)
         routing_mode = self._effective_routing_mode()
@@ -2297,6 +2320,7 @@ class ClioAgent(dspy.Module):
         session_id: str,
         tier: int = 2,
         tool_scope: str = "none",
+        include_conversation: bool = False,
     ) -> str:
         """Retrieve compiled session context from ARC Memory.
 
@@ -2308,6 +2332,11 @@ class ClioAgent(dspy.Module):
             session_id: Session identifier
             tier: Agent tier for token budget (1=planner/2K, 2=expert/4K)
             tool_scope: Agent/tool visibility scope for ARC tool summaries.
+            include_conversation: Whether the compiled context should carry the
+                conversation/routing sections. Defaults to ``False`` because the
+                gact turn path prepends the full transcript as THE conversation
+                channel — compiling the same turns here would double the token
+                spend (#771).
 
         Returns:
             Compiled context string or "No prior context"
@@ -2318,6 +2347,7 @@ class ClioAgent(dspy.Module):
                 session_id=session_id,
                 tier=tier,
                 tool_scope=tool_scope,
+                include_conversation=include_conversation,
             )
             if self.verbose:
                 print(f"[ClioAgent] Compiled context ({len(compiled)} chars, tier={tier})")
@@ -2361,37 +2391,16 @@ class ClioAgent(dspy.Module):
         return "No prior context"
 
     def _get_file_context(self, session_id: str, active_file: Path | None = None) -> str:
-        """Load dataset profiles from ARC for expert file context.
+        """Return the active session file reference, if any.
 
         Args:
-            session_id: Session identifier
+            session_id: Session identifier (kept for signature stability).
+            active_file: The resolved session file for this turn, if any.
 
         Returns:
-            JSON string of dataset profiles, or empty string if none.
+            The ``Current session file`` line, or an empty string when no file
+            is bound to the turn.
         """
-        try:
-            profiles = self.arc.get_session_profiles(session_id)
-            if profiles:
-                context = json.dumps(
-                    [
-                        {
-                            "filepath": p.filepath,
-                            "schema": p.schema_info,
-                            "stats": p.statistics,
-                        }
-                        for p in profiles
-                    ]
-                )
-                if active_file is not None:
-                    return f"{context}\nCurrent session file: {active_file}"
-                return context
-        except Exception as exc:  # noqa: BLE001 - degraded context, not a failed turn
-            logger.warning(
-                "ARC dataset profiles unavailable; expert runs without file context "
-                "reason=arc_file_context_unavailable session=%s error=%s",
-                session_id,
-                exc,
-            )
         if active_file is not None:
             return f"Current session file: {active_file}"
         return ""
@@ -2686,7 +2695,7 @@ class ClioAgent(dspy.Module):
                 status="active",
                 messages=[user_msg, assistant_msg],
                 routing_decisions=[],
-                metadata={"clio_agent_version": "0.2.0", "arc_enabled": True},
+                metadata={"clio_agent_version": _clio_agent_version(), "arc_enabled": True},
                 storage_tier="warm",
             )
             self.arc.store_conversation(conv)

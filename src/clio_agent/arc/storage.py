@@ -1,23 +1,32 @@
-"""IOWarp CTE (Convergent Tiered Environment) storage backend for ARC.
+"""Persistent record backends for ARC.
 
-Integrates ARC Memory with IOWarp's multi-tier storage system for automatic
-data migration across tiers based on access patterns.
+This module defines the storage seam ARC records go through and the two
+concrete backends that implement it. It is the durable tier beneath the
+in-memory hot layer (``LRUCache`` + ``BTreeIndex`` in ``memory.py``); it does
+NOT do access-pattern-driven tier migration -- there is no hot/warm/cold/archive
+mover here.
 
-Architecture:
-    - Hot tier: In-memory cache (handled by LRUCache in memory.py)
-    - Warm tier: SSD/local disk (default for active data)
-    - Cold tier: Network storage/HDF5 (for historical data)
-    - Archive tier: Tape/long-term storage (for old data)
+The seam -- :class:`ARCStore` (a ``Protocol``):
+    ``put(kind, name, data, search_text=...)`` / ``get(kind, name)`` /
+    ``scan(kind, prefix)`` over opaque ``bytes`` keyed by ``(kind, name)``.
+    Any backend that satisfies it plugs in.
 
-Tier Migration Policy:
-    - Hot → Warm: 1 day (handled by LRU cache eviction)
-    - Warm → Cold: 7 days (infrequent access)
-    - Cold → Archive: 30 days (historical data)
+Backends:
+    - :class:`LocalFSStore` -- plain files under ``<data_dir>``: one
+      ``<kind>/<name>.msgpack`` record per key plus a ``<kind>/<name>.search``
+      plain-text companion for the degraded keyword-overlap search. Durable on
+      disk; no external process.
+    - :class:`CTEStore` -- the clio-core CTE (Convergent Tiered Environment)
+      binding, connecting to a shared per-user daemon (connect-or-spawn, stopped
+      at interpreter exit via ``atexit``). Its DRAM tier is the live working set;
+      a file tier (``<user_data_dir>/cte/storage.bin``) backs it. On-disk
+      recovery of the file tier is still WIP, so for guaranteed disk durability
+      today prefer ``CLIO_ARC_STORE=local``.
 
-Graceful Degradation:
-    If IOWarp is unavailable, falls back to local filesystem storage.
-
-See PLAN.md v0.3.0 Task 2 for requirements.
+Backend selection is FAIL-LOUD, not a silent fallback: see :func:`make_arc_store`.
+``"cte"`` is the default; if its binding is absent or fails to init it RAISES --
+it does not quietly degrade to ``LocalFSStore``. ``LocalFSStore`` is used only
+when ``CLIO_ARC_STORE=local`` (or ``backend="local"``) is selected explicitly.
 """
 
 import atexit
@@ -42,8 +51,6 @@ logger = logging.getLogger(__name__)
 ARC_KINDS: tuple[str, ...] = (
     "conversations",
     "invocations",
-    "profiles",
-    "procedural",
     "variants",
     "segments",  # live context plane: one record per (session_id, scope)
 )
@@ -676,13 +683,11 @@ class CTEStore:
             "durability today."
         )
 
-    def release(self) -> None:
-        """Detach this process from the shared runtime; stop it if we were the last.
-
-        Wired into the gact server's lifespan shutdown so leaving the TUI releases the
-        whole runtime. Idempotent; a no-op if another client is still attached.
-        """
-        release_runtime_client(self._config_path, self._log_level)
+    # NOTE: there is deliberately NO instance ``release()`` method. The shared
+    # clio-core runtime is released exactly once, last-one-out, via the
+    # module-level :func:`release_runtime_client` registered with ``atexit`` in
+    # :meth:`_ensure_runtime`. See that method and the gact lifespan note in
+    # ``gact/app.py`` for why atexit — not a lifespan hook — owns shutdown.
 
     @classmethod
     def _ensure_runtime(cls, config_path: str, log_level: str, settle_s: float) -> None:
@@ -723,10 +728,14 @@ class CTEStore:
             cte.initialize_cte(config_path, cte.PoolQuery.Dynamic())  # "" => ~/.clio/clio.yaml
             cls._initialized = True
 
-            # Stash for the release path, and register an atexit fallback so a clean
-            # Python exit (legacy agent, tests, scripts) still does last-one-out. The
-            # gact server calls release_runtime_client() from its lifespan shutdown for
-            # the SIGTERM / TUI-leave path (where atexit does not run).
+            # Stash the params and register the last-one-out release with atexit.
+            # atexit is THE shutdown mechanism — not a duplicate/fallback. uvicorn
+            # handles SIGTERM by returning from its serve loop, so the interpreter
+            # exits normally and atexit fires ("I leave the TUI, everything gets
+            # released"). The gact lifespan hook DELIBERATELY does NOT call
+            # release_runtime_client (see gact/app.py lifespan note): doing so would
+            # wrongly stop the SHARED daemon on any app teardown that is not a
+            # process exit (e.g. a second app in the same process).
             global _active_config_path, _active_log_level
             _active_config_path = config_path
             _active_log_level = log_level

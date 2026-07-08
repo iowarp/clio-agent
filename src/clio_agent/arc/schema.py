@@ -508,51 +508,6 @@ class Context(msgspec.Struct):
     storage_tier: str = "cold"
 
 
-class DatasetProfile(msgspec.Struct):
-    """Profile of an analyzed dataset for cross-expert collaboration.
-
-    Stores schema, statistics, and quality information about a dataset
-    so that multiple experts can share analysis results within a session.
-    For example, DataExpert stores a profile after initial analysis, and
-    AnalysisExpert or VisualizationExpert can read it to avoid re-analyzing.
-
-    Attributes:
-        session_id: Session that created this profile
-        filepath: Path to the analyzed file
-        file_format: File format identifier ("hdf5", "parquet", "csv")
-        created_by: Expert that created it ("data", "analysis")
-        created_at: Creation timestamp (Unix timestamp)
-        schema_info: Column names, types, row count
-        statistics: Per-column stats (min, max, mean, etc.)
-        quality_notes: Human-readable observations ("15% nulls in column X")
-        metadata: Additional information
-
-    Example:
-        >>> import time
-        >>> profile = DatasetProfile(
-        ...     session_id="session-1",
-        ...     filepath="/data/experiment.parquet",
-        ...     file_format="parquet",
-        ...     created_by="data",
-        ...     created_at=time.time(),
-        ...     schema_info={"columns": ["temp", "pressure"], "rows": 1000},
-        ...     statistics={"temp": {"mean": 24.5, "std": 3.2}},
-        ...     quality_notes=["No nulls detected"],
-        ...     metadata={}
-        ... )
-    """
-
-    session_id: str
-    filepath: str
-    file_format: str
-    created_by: str
-    created_at: float
-    schema_info: Dict[str, Any] = msgspec.field(default_factory=dict)
-    statistics: Dict[str, Any] = msgspec.field(default_factory=dict)
-    quality_notes: List[str] = msgspec.field(default_factory=list)
-    metadata: Dict[str, Any] = msgspec.field(default_factory=dict)
-
-
 class VariantRecord(msgspec.Struct):
     """Record of an optimized expert variant stored in ARC.
 
@@ -607,47 +562,6 @@ class VariantRecord(msgspec.Struct):
     metadata: Dict[str, Any] = msgspec.field(default_factory=dict)
 
 
-class ProceduralMemory(msgspec.Struct):
-    """Record of what worked or failed for an expert in a session.
-
-    Stores success/failure patterns so experts can learn from past attempts
-    within and across sessions. Used by the context compilation pipeline to
-    inject relevant procedural knowledge into expert prompts.
-
-    Attributes:
-        session_id: Session this memory belongs to
-        expert_id: Which expert this applies to
-        pattern_type: Type of pattern ("success", "failure", "optimization")
-        description: Human-readable description of the pattern
-        context: What was happening when the pattern was observed
-        outcome: What happened as a result
-        learned_at: Timestamp when the pattern was recorded (Unix timestamp)
-        confidence: How reliable this pattern is (0.0-1.0)
-
-    Example:
-        >>> import time
-        >>> mem = ProceduralMemory(
-        ...     session_id="session-1",
-        ...     expert_id="data",
-        ...     pattern_type="success",
-        ...     description="gzip-6 achieved 3x compression on float64 data",
-        ...     context={"file_type": "hdf5", "dtype": "float64"},
-        ...     outcome="compression_ratio=3.1",
-        ...     learned_at=time.time(),
-        ...     confidence=0.9
-        ... )
-    """
-
-    session_id: str
-    expert_id: str
-    pattern_type: str  # "success", "failure", "optimization"
-    description: str
-    context: Dict[str, Any]
-    outcome: str
-    learned_at: float = msgspec.field(default_factory=lambda: time.time())
-    confidence: float = 0.5
-
-
 def encode_conversation(conv: Conversation) -> bytes:
     """Encode Conversation to msgpack bytes.
 
@@ -699,54 +613,6 @@ def decode_invocation(data: bytes) -> Invocation:
         Invocation object
     """
     return msgspec.msgpack.decode(data, type=Invocation)
-
-
-def encode_dataset_profile(profile: DatasetProfile) -> bytes:
-    """Encode DatasetProfile to msgpack bytes.
-
-    Args:
-        profile: DatasetProfile object
-
-    Returns:
-        Msgpack-encoded bytes
-    """
-    return msgspec.msgpack.encode(profile)
-
-
-def decode_dataset_profile(data: bytes) -> DatasetProfile:
-    """Decode msgpack bytes to DatasetProfile.
-
-    Args:
-        data: Msgpack-encoded bytes
-
-    Returns:
-        DatasetProfile object
-    """
-    return msgspec.msgpack.decode(data, type=DatasetProfile)
-
-
-def encode_procedural_memory(memory: ProceduralMemory) -> bytes:
-    """Encode ProceduralMemory to msgpack bytes.
-
-    Args:
-        memory: ProceduralMemory object
-
-    Returns:
-        Msgpack-encoded bytes
-    """
-    return msgspec.msgpack.encode(memory)
-
-
-def decode_procedural_memory(data: bytes) -> ProceduralMemory:
-    """Decode msgpack bytes to ProceduralMemory.
-
-    Args:
-        data: Msgpack-encoded bytes
-
-    Returns:
-        ProceduralMemory object
-    """
-    return msgspec.msgpack.decode(data, type=ProceduralMemory)
 
 
 def encode_variant_record(record: VariantRecord) -> bytes:

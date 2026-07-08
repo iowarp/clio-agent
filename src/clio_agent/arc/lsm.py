@@ -1,19 +1,18 @@
-"""LSM Tree for write-heavy metrics collection (v0.3.0)
+"""LSM Tree for write-heavy metrics collection.
 
-This module implements a Log-Structured Merge (LSM) tree optimized for
-high-throughput metrics collection with background compaction.
+This module implements a Log-Structured Merge (LSM) tree for the write-heavy
+invocation-metrics path, where appends dominate and reads are range scans.
 
 Architecture:
     - MemTable: In-memory SortedDict for recent writes (O(log N) inserts)
     - SSTables: Immutable on-disk sorted tables (msgpack format)
-    - Background Compaction: Async thread merges SSTables to reduce read amplification
+    - Background Compaction: Async thread merges SSTables to reduce read
+      amplification; the MemTable is double-buffered so a flush does not block
+      concurrent writers.
 
-Performance Targets:
-    - Write throughput > 1000 ops/sec
-    - Read latency < 10ms (MemTable + SSTable scan)
-    - Background compaction to manage disk usage
-
-See PLAN.md v0.3.0 Task 3 for implementation requirements.
+Reads merge the live MemTable with the on-disk SSTables. The single caller is
+``ARCMemory.store_invocation`` (memory.py); metrics live under
+``.clio/agent/arc/lsm/sst_*.msgpack``.
 """
 
 import logging

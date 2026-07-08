@@ -1,18 +1,13 @@
-"""Session message-ledger + workspace-mirror + context-file helpers (#714).
+"""Session message-ledger + context-file helpers (#714).
 
 Behavior-preserving extraction from :mod:`clio_agent.gact.app`. This module owns
 the cohesive cluster that persists a session's *conversation state* across the
-three places it lives:
+two places it lives:
 
 * **In-memory + durable message store** -- ``app.state.messages`` (hot copy) plus
   the write-through :class:`~clio_agent.gact.messages.MessageStore` on disk. The
   ``_append/_extend/_replace/_delete_session_messages`` helpers keep both in lock
-  step and mirror every mutation into the owning workspace.
-* **Workspace storage mirror** -- a per-workspace copy of ``sessions.json`` and the
-  message ledger written under the workspace's resolved storage root, so a session
-  travels with its workspace. ``_workspace_for_session`` /
-  ``_workspace_storage_root_for_session`` resolve the root and the ``_mirror_*`` /
-  ``_remove_workspace_session_mirror`` helpers maintain it.
+  step.
 * **Context-file attachments** -- the ``app.state.context_files`` ledger keyed by
   session id, loaded from / flushed to ``app.state.context_files_path``.
 
@@ -20,10 +15,14 @@ It also exposes ``_release_session_arc`` (drop a closed session's hot ARC
 footprint) and ``_compile_session_conversation_history`` (prepend a compact
 transcript of prior turns to the current prompt for multi-turn continuity).
 
+The reader-less per-workspace session/message mirror was DELETED in #771 (zero
+readers in ``src/`` or gact-tui; #737 direction is fewer materializations, not
+more). ``resolve_workspace_storage_root`` still resolves the ``storage_root``
+wire field in :mod:`clio_agent.gact.workspaces`; nothing is written under it.
+
 The module imports only leaves (stdlib + :mod:`clio_agent.gact.messages` for the
-durable store and :mod:`clio_agent.gact.workspace_scope` for the storage-root
-resolver); it never imports :mod:`clio_agent.gact.app` at module top. ``app`` is
-always passed explicitly so handlers never close over ``build_app`` locals.
+durable store); it never imports :mod:`clio_agent.gact.app` at module top. ``app``
+is always passed explicitly so handlers never close over ``build_app`` locals.
 """
 
 from __future__ import annotations
@@ -32,12 +31,9 @@ import json
 import logging
 import os
 from collections.abc import Mapping
-from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from clio_agent.gact.messages import MessageStore
-from clio_agent.gact.workspace_scope import resolve_workspace_storage_root
 from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
@@ -49,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 
 # ------------------------------------------------------------------------- #
-# Session message ledger (in-memory + durable + workspace mirror) #
+# Session message ledger (in-memory + durable) #
 # ------------------------------------------------------------------------- #
 
 
@@ -73,7 +69,6 @@ def _append_session_message(app: "FastAPI", session_id: str, message: "Message")
     store = getattr(app.state, "message_store", None)
     if store is not None:
         store.append(session_id, message)
-    _mirror_workspace_messages(app, session_id)
 
 
 def _extend_session_messages(
@@ -92,7 +87,6 @@ def _extend_session_messages(
     store = getattr(app.state, "message_store", None)
     if store is not None:
         store.extend(session_id, messages)
-    _mirror_workspace_messages(app, session_id)
 
 
 def _replace_session_messages(
@@ -109,7 +103,6 @@ def _replace_session_messages(
     store = getattr(app.state, "message_store", None)
     if store is not None:
         store.replace_session(session_id, list(messages))
-    _mirror_workspace_messages(app, session_id)
 
 
 def _delete_session_messages(app: "FastAPI", session_id: str) -> None:
@@ -122,7 +115,6 @@ def _delete_session_messages(app: "FastAPI", session_id: str) -> None:
     store = getattr(app.state, "message_store", None)
     if store is not None:
         store.delete_session(session_id)
-    _mirror_workspace_messages(app, session_id)
 
 
 def _release_session_arc(app: "FastAPI", session_id: str) -> None:
@@ -148,122 +140,6 @@ def _release_session_arc(app: "FastAPI", session_id: str) -> None:
             session_id,
             exc,
         )
-
-
-# ------------------------------------------------------------------------- #
-# Workspace storage mirror #
-# ------------------------------------------------------------------------- #
-
-
-def _workspace_for_session(app: "FastAPI", session_id: str) -> Any | None:
-    """Return the workspace owning ``session_id`` (or ``None`` if unowned)."""
-
-    sess = app.state.sessions.get(session_id)
-    if sess is None:
-        return None
-    return app.state.workspaces.get(getattr(sess, "workspace_id", ""))
-
-
-def _workspace_storage_root_for_session(app: "FastAPI", session_id: str) -> Path | None:
-    """Resolve the on-disk storage root for the session's owning workspace."""
-
-    ws = _workspace_for_session(app, session_id)
-    if ws is None:
-        return None
-    return resolve_workspace_storage_root(ws)
-
-
-def _mirror_workspace_session(app: "FastAPI", session_id: str) -> None:
-    """Persist one session row into the owning workspace storage root."""
-
-    sess = app.state.sessions.get(session_id)
-    root = _workspace_storage_root_for_session(app, session_id)
-    if sess is None or root is None:
-        return
-    path = root / "sessions.json"
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        data: dict[str, Any] = {}
-        if path.exists():
-            try:
-                loaded = json.loads(path.read_text(encoding="utf-8"))
-                if isinstance(loaded, dict):
-                    data = loaded
-            except Exception as exc:  # noqa: BLE001 - mirror is best-effort, but say so
-                logger.warning(
-                    "workspace mirror: unreadable sessions.json restarted empty "
-                    "reason=workspace_mirror_corrupt_reset session=%s path=%s error=%s",
-                    session_id,
-                    path,
-                    exc,
-                )
-                data = {}
-        data[session_id] = asdict(sess)
-        data[session_id].setdefault("metadata", {})
-        data[session_id]["metadata"]["workspace_storage_root"] = str(root)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-        os.replace(tmp, path)
-    except Exception as exc:  # noqa: BLE001 - mirror is best-effort, but say so
-        logger.warning(
-            "workspace mirror: session row not persisted "
-            "reason=workspace_mirror_session_write_failed session=%s path=%s error=%s",
-            session_id,
-            path,
-            exc,
-        )
-        return
-
-
-def _mirror_workspace_messages(app: "FastAPI", session_id: str) -> None:
-    """Persist one message ledger into the owning workspace storage root."""
-
-    root = _workspace_storage_root_for_session(app, session_id)
-    if root is None:
-        return
-    try:
-        store = MessageStore(root / "messages")
-        messages = list(app.state.messages.get(session_id, []))
-        if messages:
-            store.replace_session(session_id, messages)
-        else:
-            store.delete_session(session_id)
-    except Exception as exc:  # noqa: BLE001 - mirror is best-effort, but say so
-        logger.warning(
-            "workspace mirror: message ledger not persisted "
-            "reason=workspace_mirror_messages_write_failed session=%s root=%s error=%s",
-            session_id,
-            root,
-            exc,
-        )
-        return
-
-
-def _remove_workspace_session_mirror(app: "FastAPI", session_id: str) -> None:
-    """Remove one mirrored session row from its workspace-local store."""
-
-    root = _workspace_storage_root_for_session(app, session_id)
-    if root is None:
-        return
-    try:
-        sessions_path = root / "sessions.json"
-        if sessions_path.exists():
-            data = json.loads(sessions_path.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                data.pop(session_id, None)
-                tmp = sessions_path.with_suffix(sessions_path.suffix + ".tmp")
-                tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-                os.replace(tmp, sessions_path)
-        MessageStore(root / "messages").delete_session(session_id)
-    except Exception as exc:  # noqa: BLE001 - mirror is best-effort, but say so
-        logger.warning(
-            "workspace mirror: stale session row not removed "
-            "reason=workspace_mirror_remove_failed session=%s root=%s error=%s",
-            session_id,
-            root,
-            exc,
-        )
-        return
 
 
 # ------------------------------------------------------------------------- #
@@ -354,12 +230,15 @@ def _flush_context_files(app: "FastAPI") -> None:
         return
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    # write+fsync to a temp file, then atomic rename: fsync forces the bytes to
+    # disk before the rename publishes them, so a crash can't leave a partial
+    # ledger behind.
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(
-        json.dumps({"sessions": app.state.context_files}, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
-    tmp.replace(path)
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"sessions": app.state.context_files}, indent=2, sort_keys=True))
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
 
 
 def _delete_session_context_files(app: "FastAPI", session_id: str) -> None:

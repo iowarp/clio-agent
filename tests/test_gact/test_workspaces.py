@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
-from clio_agent.gact.types import Message, Part
 
 
 def _client(tmp_path: Path) -> TestClient:
@@ -67,45 +65,10 @@ def test_workspace_exposes_default_and_configured_storage_root(tmp_path: Path) -
     assert custom_ws["storage_root"] == str(custom)
 
 
-def test_session_and_messages_are_mirrored_to_workspace_storage(tmp_path: Path) -> None:
-    c = _client(tmp_path)
-    project = tmp_path / "project"
-    project.mkdir()
-    ws = c.post(
-        "/v1/workspaces",
-        json={"name": "project", "root_path": str(project)},
-    ).json()
-    sid = c.post(
-        "/v1/sessions",
-        json={"workspace_id": ws["id"], "title": "workspace local"},
-    ).json()["id"]
-    storage_root = project / ".clio"
-    sessions_path = storage_root / "sessions.json"
-
-    data = json.loads(sessions_path.read_text(encoding="utf-8"))
-    assert data[sid]["workspace_id"] == ws["id"]
-    assert data[sid]["metadata"]["workspace_storage_root"] == str(storage_root)
-
-    from clio_agent.gact.app import _replace_session_messages
-
-    _replace_session_messages(
-        c.app,
-        sid,
-        [
-            Message(
-                id="msg_1",
-                session_id=sid,
-                role="user",
-                created_at="2026-05-28T00:00:00+00:00",
-                updated_at="2026-05-28T00:00:00+00:00",
-                parts=[Part(id="part_1", type="text", text="workspace-local memory")],
-            )
-        ],
-    )
-
-    message_path = storage_root / "messages" / f"{sid}.json"
-    messages = json.loads(message_path.read_text(encoding="utf-8"))
-    assert messages[0]["parts"][0]["text"] == "workspace-local memory"
+# The per-workspace session/message mirror was DELETED in #771 (reader-less,
+# write-only). The inverse guarantee — a workspace-owned session writes NOTHING
+# under its storage root — is covered by
+# tests/test_gact/test_workspace_mirror_removed.py.
 
 
 def test_create_session_validates_workspace(tmp_path: Path) -> None:

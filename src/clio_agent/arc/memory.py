@@ -3,14 +3,15 @@
 This module provides the ARCMemory class which serves as the main interface
 for all ARC (Adaptive Retrieval Cache) operations. It integrates:
     - LRUCache for hot data (O(1) access)
-    - BTreeIndex for O(log N) retrieval
-    - msgspec for efficient serialization
-    - Thread-safe operations
+    - BTreeIndex for retrieval index
+    - a pluggable ARCStore backend (clio-core CTE or LocalFS; see storage.py)
+      for durable records, an LSM tree (lsm.py) for write-heavy invocation
+      metrics, and a SegmentStore (segments.py) for the live context plane
+    - msgspec for serialization
 
-Performance Targets:
-    - Cache hit rate > 85%
-    - Retrieval latency < 10ms
-    - Thread-safe concurrent access
+Concurrency: ``ARCMemory._lock`` guards only the in-process hot structures
+(cache, invocation index, counters); it is never held across store or LSM I/O
+(each of those self-locks). See the invariant note at the lock's declaration.
 
 See docs/ARC_MEMORY_LAYER.md for architecture details.
 """
@@ -23,24 +24,25 @@ from typing import Any, Callable, Dict, List, Optional, cast
 from clio_agent import conf
 from clio_agent.arc.cache import LRUCache
 from clio_agent.arc.index import BTreeIndex
-from clio_agent.arc.live import EVENTS_SCOPE, LiveRuntimeContext, build_event_content
+from clio_agent.arc.live import (
+    EVENTS_SCOPE,
+    LiveRuntimeContext,
+    build_event_content,
+    events_chunk_index,
+    events_chunk_scope,
+    is_events_scope,
+)
 from clio_agent.arc.lsm import LSMTree
 from clio_agent.arc.schema import (
     Conversation,
-    DatasetProfile,
     Invocation,
-    ProceduralMemory,
     SegmentKind,
     VariantRecord,
     decode_conversation,
-    decode_dataset_profile,
     decode_invocation,
-    decode_procedural_memory,
     decode_variant_record,
     encode_conversation,
-    encode_dataset_profile,
     encode_invocation,
-    encode_procedural_memory,
     encode_variant_record,
 )
 from clio_agent.arc.segments import OpLogger, SegmentStore
@@ -148,8 +150,28 @@ class ARCMemory:
         # ReAct loop reads its prompt from each iteration. It also holds ARC's ONE
         # persisted semantic-event log (the reserved ``_events`` scope). The op_logger
         # that mirrors each op into the durable Trace is injected later by the gact app
-        # via set_segment_op_logger (keeps arc/ free of any gact/ import).
-        self._segments = SegmentStore(self._store)
+        # via set_segment_op_logger (keeps arc/ free of any gact/ import). The
+        # ``search_indexed`` predicate keeps the reserved ``_events`` chunk family out of
+        # the plain-text search companion so the semantic-event log can never pollute
+        # scope search (gact ``/context/search``).
+        self._segments = SegmentStore(
+            self._store, search_indexed=lambda scope: not is_events_scope(scope)
+        )
+
+        # Per-session writer cursor for the ``_events`` chunk family:
+        # ``session_id -> (chunk_index, segments_in_chunk)``. The append path rolls to
+        # the next chunk once the active one reaches ``events_chunk_segments`` segments,
+        # so a single event re-encodes only the active chunk (O(chunk)) instead of the
+        # whole log (O(N) => O(N²)/session). Recovered lazily on first append after a
+        # restart by scanning the persisted family (:meth:`_events_chunk_for_append`).
+        self._events_chunk_segments = conf.resolve(
+            "arc.events_chunk_segments",
+            env="CLIO_ARC_EVENTS_CHUNK_SEGMENTS",
+            default=512,
+            cast=conf.as_int,
+        )
+        self._events_writer: dict[str, tuple[int, int]] = {}
+        self._events_writer_lock = threading.Lock()
 
         # Live runtime context: PROJECTS the canonical semantic-event stream into
         # per-session turn records so Invocation/Conversation are projections of the
@@ -209,12 +231,54 @@ class ARCMemory:
             ),
         )
 
-        # Thread safety
+        # Thread safety.
+        #
+        # INVARIANT — ``_lock`` guards ONLY the hot in-memory structures that have
+        # no lock of their own: the invocation B-tree (``_inv_index``), the
+        # ``_disk_reads`` / ``_disk_writes`` counters, and multi-step *composite*
+        # reads/writes over the cache (e.g. scanning ``_cache._cache`` internals, or
+        # a cache+index pair that a reader must see consistently). It is NEVER held
+        # across ``_store`` I/O (CTE RPCs / LocalFS reads) or ``_lsm`` writes — those
+        # sub-components carry their own locks (``LRUCache._lock`` cache.py,
+        # ``LSMTree._lock`` with double-buffered flush lsm.py, ``SegmentStore``
+        # per-scope locks segments.py), and holding this lock across their I/O
+        # serialized every session behind one slow store RPC. So the pattern in
+        # every method below is: encode / ``store.get`` / ``store.put`` /
+        # ``store.scan`` / ``lsm.write`` OUTSIDE the lock; ``_inv_index`` surgery,
+        # counter bumps, and cache-composite ops UNDER it. A plain
+        # ``LRUCache.put/get/invalidate`` is atomic on its own lock, so those may run
+        # outside ``_lock`` when not part of a composite. Reentrancy note: helpers
+        # that take ``_lock`` for a counter (``get_invocation``) must be called with
+        # ``_lock`` RELEASED (``threading.Lock`` is not reentrant).
         self._lock = threading.Lock()
+
+        # Per-session conversation lock. ``store_conversation`` and
+        # ``get_conversation`` do a cache+store PAIR (write: cache.put -> store.put;
+        # slow-path read: store.get -> cache.put) that must be atomic *per session* or
+        # a cache-miss reader can refill the LRU with a stale disk value AFTER a
+        # concurrent writer cached the fresh one — a silent lost update that pins the
+        # hot path to the old conversation forever. This lock serializes only ops on
+        # the SAME session (distinct sessions still run concurrently and the global
+        # ``_lock`` is never held across a store RPC — the #771 narrowing goal holds).
+        # Locks are keyed by session_id and never evicted (one tiny Lock per session
+        # ever seen), matching the SegmentStore per-scope-lock discipline: evicting a
+        # lock an in-flight op still holds would split mutual exclusion.
+        self._conv_locks: Dict[str, threading.Lock] = {}
+        self._conv_locks_registry = threading.Lock()
 
         # Performance tracking
         self._disk_reads = 0
         self._disk_writes = 0
+
+    def _conv_lock(self, session_id: str) -> threading.Lock:
+        """Return the per-session conversation lock, creating it once. The registry
+        lock is held only for the brief lookup/create, never across a store RPC."""
+        with self._conv_locks_registry:
+            lk = self._conv_locks.get(session_id)
+            if lk is None:
+                lk = threading.Lock()
+                self._conv_locks[session_id] = lk
+            return lk
 
     def store_conversation(self, conversation: Conversation) -> None:
         """Store conversation in cache and on disk.
@@ -237,16 +301,22 @@ class ARCMemory:
             ... )
             >>> arc.store_conversation(conv)
         """
-        with self._lock:
-            session_id = conversation.session_id
-            cache_key = f"conv:{session_id}"
+        session_id = conversation.session_id
+        cache_key = f"conv:{session_id}"
 
-            # Store in cache (hot data)
+        # Encode OUTSIDE any lock (CPU-only, no shared state).
+        encoded = encode_conversation(conversation)
+
+        # The cache write and the store write are one atomic unit PER SESSION: a
+        # concurrent get_conversation refill on this session cannot interleave and
+        # clobber this fresh value with a stale disk read. The store RPC runs under the
+        # per-session lock (serializing only same-session ops), never under _lock.
+        with self._conv_lock(session_id):
             self._cache.put(cache_key, conversation)
-
-            # Persist to disk
-            encoded = encode_conversation(conversation)
             self._store.put("conversations", session_id, encoded)
+
+        # Only the counter needs the ARC lock (taken separately, never nested).
+        with self._lock:
             self._disk_writes += 1
 
     def get_conversation(self, session_id: str) -> Optional[Conversation]:
@@ -269,24 +339,31 @@ class ARCMemory:
         """
         cache_key = f"conv:{session_id}"
 
-        # Fast path: check cache
+        # Fast path: check cache (lock-free; a plain LRU get is atomic).
         cached = self._cache.get(cache_key)
         if cached is not None:
             return cached
 
-        # Slow path: load from disk
-        with self._lock:
+        # Slow path under the per-session lock with a double-checked cache read: the
+        # store.get -> cache.put refill is serialized against a concurrent
+        # store_conversation on the same session, so the cache can never be left
+        # holding a value older than disk. The store RPC runs under this per-session
+        # lock (same-session only), never under _lock.
+        with self._conv_lock(session_id):
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                return cached
             encoded = self._store.get("conversations", session_id)
             if encoded is None:
                 return None
-
             conversation = decode_conversation(encoded)
-            self._disk_reads += 1
-
-            # Update cache for future access
             self._cache.put(cache_key, conversation)
 
-            return conversation
+        # Bump the counter under the ARC lock (taken separately, never nested).
+        with self._lock:
+            self._disk_reads += 1
+
+        return conversation
 
     def get_conversation_history(self, session_id: str, limit: int = 10) -> List[Conversation]:
         """Get recent conversations for session.
@@ -337,39 +414,40 @@ class ARCMemory:
             ... )
             >>> arc.store_invocation(inv)
         """
+        trace_id = invocation.trace_id
+        session_id = invocation.session_id
+        cache_key = f"inv:{trace_id}"
+        timestamp = self._parse_timestamp(invocation.started_at)
+
+        # Encode + persist to disk OUTSIDE _lock (store RPC carries its own cost).
+        encoded = encode_invocation(invocation)
+        self._store.put("invocations", trace_id, encoded)
+
+        # Also store in LSM tree for high-throughput metrics queries. LSMTree is
+        # self-locked with a double-buffered flush, so this stays OUTSIDE _lock.
+        self._lsm.write(
+            timestamp=timestamp,
+            metric={
+                "trace_id": trace_id,
+                "session_id": session_id,
+                "agent_id": invocation.agent_id,
+                "tier": invocation.tier,
+                "duration_ms": invocation.duration_ms,
+                "status": invocation.status,
+            },
+        )
+
+        # Hot structures under the ARC lock: cache + index must be updated as a
+        # consistent pair (a reader takes _lock to see both), and _inv_index has no
+        # lock of its own. The trace_id is part of the composite index key so two
+        # invocations in the same session that share a timestamp (coarse clocks
+        # resolve sub-millisecond calls to the same tick) do not collide and
+        # silently drop one another.
+        index_key = (session_id, timestamp, trace_id)
         with self._lock:
-            trace_id = invocation.trace_id
-            session_id = invocation.session_id
-            cache_key = f"inv:{trace_id}"
-
-            # Store in cache
             self._cache.put(cache_key, invocation)
-
-            # Store in index (for session-based queries). The trace_id is part
-            # of the composite key so two invocations in the same session that
-            # share a timestamp (coarse clocks resolve sub-millisecond calls to
-            # the same tick) do not collide and silently drop one another.
-            timestamp = self._parse_timestamp(invocation.started_at)
-            index_key = (session_id, timestamp, trace_id)
             self._inv_index.insert(index_key, {"trace_id": trace_id})
-
-            # Persist to disk
-            encoded = encode_invocation(invocation)
-            self._store.put("invocations", trace_id, encoded)
             self._disk_writes += 1
-
-            # Also store in LSM tree for high-throughput metrics queries
-            self._lsm.write(
-                timestamp=timestamp,
-                metric={
-                    "trace_id": trace_id,
-                    "session_id": session_id,
-                    "agent_id": invocation.agent_id,
-                    "tier": invocation.tier,
-                    "duration_ms": invocation.duration_ms,
-                    "status": invocation.status,
-                },
-            )
 
     def get_invocation(self, invocation_id: str) -> Optional[Invocation]:
         """Get specific invocation.
@@ -392,19 +470,23 @@ class ARCMemory:
         if cached is not None:
             return cached
 
-        # Slow path: load from disk
-        with self._lock:
-            encoded = self._store.get("invocations", invocation_id)
-            if encoded is None:
-                return None
+        # Slow path: load from disk OUTSIDE _lock (store read carries its own cost).
+        # Unlike conversations, this refill needs NO per-key lock: an invocation record
+        # is keyed by a unique uuid4 trace_id and is write-once (never updated after
+        # store_invocation), so disk[trace_id] is immutable and a refill can never read
+        # a value staler than a concurrent write — there is no same-key read-modify-write.
+        encoded = self._store.get("invocations", invocation_id)
+        if encoded is None:
+            return None
 
-            invocation = decode_invocation(encoded)
+        invocation = decode_invocation(encoded)
+
+        # Update cache (self-locked); bump counter under _lock.
+        self._cache.put(cache_key, invocation)
+        with self._lock:
             self._disk_reads += 1
 
-            # Update cache
-            self._cache.put(cache_key, invocation)
-
-            return invocation
+        return invocation
 
     def get_session_invocations(self, session_id: str, limit: int = 100) -> List[Invocation]:
         """Get invocations for a session.
@@ -423,8 +505,11 @@ class ARCMemory:
             >>> for inv in invocations:
             ...     print(f"{inv.agent_id}: {inv.duration_ms}ms")
         """
-        # Get all index entries for this session
-        index_entries = self._inv_index.get_session_range(session_id)
+        # Snapshot the session's index entries UNDER _lock (BTreeIndex has no lock
+        # of its own and a concurrent release_session/store_invocation mutates it).
+        # Copy to a plain list so the store loads below run with the lock released.
+        with self._lock:
+            index_entries = list(self._inv_index.get_session_range(session_id))
 
         # Extract trace IDs and load invocations. The B-tree is in-memory, so
         # after process restart it may be empty even though invocation files
@@ -433,19 +518,23 @@ class ARCMemory:
         if index_entries:
             for entry in index_entries[-limit:]:  # Get most recent
                 trace_id = entry["trace_id"]
-                inv = self.get_invocation(trace_id)
+                inv = self.get_invocation(trace_id)  # self-locks for its counter
                 if inv:
                     invocations.append(inv)
         else:
+            # Materialize the whole-kind scan OUTSIDE _lock, then decode + count.
+            rows = list(self._store.scan("invocations"))
+            decoded = 0
+            for _name, encoded in rows:
+                try:
+                    inv = decode_invocation(encoded)
+                    decoded += 1
+                except Exception:  # noqa: BLE001 - corrupt/undecodable invocation row skipped; disk read continues
+                    continue
+                if inv.session_id == session_id:
+                    invocations.append(inv)
             with self._lock:
-                for _name, encoded in self._store.scan("invocations"):
-                    try:
-                        inv = decode_invocation(encoded)
-                        self._disk_reads += 1
-                    except Exception:  # noqa: BLE001 - corrupt/undecodable invocation row skipped; disk read continues
-                        continue
-                    if inv.session_id == session_id:
-                        invocations.append(inv)
+                self._disk_reads += decoded
             invocations.sort(key=lambda inv: inv.started_at)
             invocations = invocations[-limit:]
 
@@ -461,7 +550,6 @@ class ARCMemory:
         Examples:
             >>> stats = arc.get_tool_cache_stats()
             >>> print(f"Tool cache hit rate: {stats['tool_cache_hit_rate']:.2%}")
-            >>> print(f"Target: {stats['target_hit_rate']:.2%}")
         """
         stats = self._cache.stats()
         return {
@@ -469,7 +557,6 @@ class ARCMemory:
             "tool_cache_hits": stats["hits"],
             "tool_cache_misses": stats["misses"],
             "tool_cache_size": stats["size"],
-            "target_hit_rate": 0.50,  # >50% per PLAN.md
         }
 
     def get_lsm_stats(self) -> Dict[str, Any]:
@@ -519,213 +606,6 @@ class ARCMemory:
                 "inv_index_size": len(self._inv_index),
             }
 
-    # ---- Shared Context: Dataset Profiles ----
-
-    def store_dataset_profile(self, profile: DatasetProfile) -> None:
-        """Store a dataset profile for cross-expert collaboration.
-
-        Stores in cache and persists to disk so other experts can
-        retrieve the profile within the same session.
-
-        Args:
-            profile: DatasetProfile object to store
-
-        Examples:
-            >>> from clio_agent.arc.schema import DatasetProfile
-            >>> profile = DatasetProfile(
-            ...     session_id="session-1",
-            ...     filepath="/data/test.parquet",
-            ...     file_format="parquet",
-            ...     created_by="data",
-            ...     created_at=time.time(),
-            ... )
-            >>> arc.store_dataset_profile(profile)
-        """
-        import hashlib
-
-        with self._lock:
-            cache_key = f"profile:{profile.session_id}:{profile.filepath}"
-            self._cache.put(cache_key, profile)
-
-            # Persist to disk
-            key_hash = hashlib.md5(cache_key.encode()).hexdigest()[:12]
-            encoded = encode_dataset_profile(profile)
-            self._store.put("profiles", f"{profile.session_id}_{key_hash}", encoded)
-            self._disk_writes += 1
-
-    def get_dataset_profile(self, session_id: str, filepath: str) -> Optional[DatasetProfile]:
-        """Retrieve a dataset profile by session and filepath.
-
-        Checks cache first, then falls back to disk.
-
-        Args:
-            session_id: Session identifier
-            filepath: Path to the analyzed file
-
-        Returns:
-            DatasetProfile if found, None otherwise
-
-        Examples:
-            >>> profile = arc.get_dataset_profile("session-1", "/data/test.parquet")
-            >>> if profile:
-            ...     print(f"Format: {profile.file_format}")
-        """
-        cache_key = f"profile:{session_id}:{filepath}"
-
-        # Fast path: check cache
-        cached = self._cache.get(cache_key)
-        if cached is not None:
-            return cached
-
-        # Slow path: scan disk for this session
-        with self._lock:
-            for _name, encoded in self._store.scan("profiles", prefix=f"{session_id}_"):
-                profile = decode_dataset_profile(encoded)
-                self._disk_reads += 1
-                if profile.filepath == filepath:
-                    # Cache for future access
-                    self._cache.put(cache_key, profile)
-                    return profile
-            return None
-
-    def get_session_profiles(self, session_id: str) -> List[DatasetProfile]:
-        """Get all dataset profiles for a session.
-
-        Returns all profiles stored by any expert in the given session,
-        enabling cross-expert collaboration.
-
-        Args:
-            session_id: Session identifier
-
-        Returns:
-            List of DatasetProfile objects for the session
-
-        Examples:
-            >>> profiles = arc.get_session_profiles("session-1")
-            >>> for p in profiles:
-            ...     print(f"{p.filepath}: {p.created_by}")
-        """
-        profiles: List[DatasetProfile] = []
-        seen_filepaths: set[str] = set()
-
-        # Check cache first for known keys
-        with self._lock:
-            if hasattr(self._cache, "_cache"):
-                for key in list(self._cache._cache.keys()):
-                    if key.startswith(f"profile:{session_id}:"):
-                        val = self._cache._cache.get(key)
-                        if val is not None and isinstance(val, DatasetProfile):
-                            profiles.append(val)
-                            seen_filepaths.add(val.filepath)
-
-            # Also scan disk for profiles not in cache
-            for _name, encoded in self._store.scan("profiles", prefix=f"{session_id}_"):
-                profile = decode_dataset_profile(encoded)
-                self._disk_reads += 1
-                if profile.filepath not in seen_filepaths:
-                    profiles.append(profile)
-                    seen_filepaths.add(profile.filepath)
-                    # Cache for future access
-                    cache_key = f"profile:{session_id}:{profile.filepath}"
-                    self._cache.put(cache_key, profile)
-
-        return profiles
-
-    # ---- Shared Context: Procedural Memory ----
-
-    def store_procedural_memory(self, memory: ProceduralMemory) -> None:
-        """Store a procedural memory entry (what worked/failed).
-
-        Persists success/failure/optimization patterns so experts can
-        learn from past attempts.
-
-        Args:
-            memory: ProceduralMemory object to store
-
-        Examples:
-            >>> from clio_agent.arc.schema import ProceduralMemory
-            >>> mem = ProceduralMemory(
-            ...     session_id="session-1",
-            ...     expert_id="data",
-            ...     pattern_type="success",
-            ...     description="gzip-6 worked well",
-            ...     context={"file_type": "hdf5"},
-            ...     outcome="3x compression",
-            ... )
-            >>> arc.store_procedural_memory(mem)
-        """
-        import hashlib
-
-        with self._lock:
-            cache_key = f"proc:{memory.session_id}:{memory.expert_id}:{memory.learned_at}"
-            self._cache.put(cache_key, memory)
-
-            # Persist to disk
-            key_hash = hashlib.md5(cache_key.encode()).hexdigest()[:12]
-            encoded = encode_procedural_memory(memory)
-            self._store.put("procedural", f"{memory.expert_id}_{key_hash}", encoded)
-            self._disk_writes += 1
-
-    def get_procedural_memories(
-        self,
-        session_id: str,
-        expert_id: Optional[str] = None,
-        limit: int = 10,
-    ) -> List[ProceduralMemory]:
-        """Get procedural memories for a session, optionally filtered by expert.
-
-        Returns most recent memories first.
-
-        Args:
-            session_id: Session identifier
-            expert_id: Optional expert filter (e.g., "data", "analysis")
-            limit: Maximum number of memories to return (default: 10)
-
-        Returns:
-            List of ProceduralMemory objects, most recent first
-
-        Examples:
-            >>> memories = arc.get_procedural_memories("session-1", expert_id="data")
-            >>> for m in memories:
-            ...     print(f"[{m.pattern_type}] {m.description}")
-        """
-        memories: List[ProceduralMemory] = []
-        seen_keys: set[str] = set()
-
-        with self._lock:
-            # Scan cache
-            prefix = f"proc:{session_id}:"
-            if hasattr(self._cache, "_cache"):
-                for key in list(self._cache._cache.keys()):
-                    if key.startswith(prefix):
-                        val = self._cache._cache.get(key)
-                        if val is not None and isinstance(val, ProceduralMemory):
-                            if expert_id is None or val.expert_id == expert_id:
-                                memories.append(val)
-                                seen_keys.add(key)
-
-            # Scan disk
-            scan_prefix = f"{expert_id}_" if expert_id else ""
-
-            for _name, encoded in self._store.scan("procedural", prefix=scan_prefix):
-                mem = decode_procedural_memory(encoded)
-                self._disk_reads += 1
-
-                if mem.session_id != session_id:
-                    continue
-                if expert_id is not None and mem.expert_id != expert_id:
-                    continue
-
-                cache_key = f"proc:{mem.session_id}:{mem.expert_id}:{mem.learned_at}"
-                if cache_key not in seen_keys:
-                    memories.append(mem)
-                    seen_keys.add(cache_key)
-                    self._cache.put(cache_key, mem)
-
-        # Sort by learned_at descending (most recent first)
-        memories.sort(key=lambda m: m.learned_at, reverse=True)
-        return memories[:limit]
-
     # ---- Optimizer: Invocation + Variant queries ----
 
     def get_invocations_by_agent(
@@ -755,20 +635,24 @@ class ARCMemory:
         """
         invocations: list[Invocation] = []
 
-        with self._lock:
-            for _name, encoded in self._store.scan("invocations"):
-                try:
-                    inv = decode_invocation(encoded)
-                    self._disk_reads += 1
+        # Materialize the whole-kind scan OUTSIDE _lock; decode + filter, count after.
+        rows = list(self._store.scan("invocations"))
+        decoded = 0
+        for _name, encoded in rows:
+            try:
+                inv = decode_invocation(encoded)
+                decoded += 1
 
-                    if inv.agent_id != agent_id:
-                        continue
-                    if status is not None and inv.status != status:
-                        continue
-
-                    invocations.append(inv)
-                except Exception:  # noqa: BLE001 - corrupt/undecodable invocation row skipped
+                if inv.agent_id != agent_id:
                     continue
+                if status is not None and inv.status != status:
+                    continue
+
+                invocations.append(inv)
+            except Exception:  # noqa: BLE001 - corrupt/undecodable invocation row skipped
+                continue
+        with self._lock:
+            self._disk_reads += decoded
 
         # Sort by started_at descending (most recent first)
         invocations.sort(key=lambda inv: inv.started_at, reverse=True)
@@ -782,13 +666,17 @@ class ARCMemory:
         into physical storage.
         """
         invocations: list[Invocation] = []
+        # Materialize the whole-kind scan OUTSIDE _lock; decode, count after.
+        rows = list(self._store.scan("invocations"))
+        decoded = 0
+        for _name, encoded in rows:
+            try:
+                invocations.append(decode_invocation(encoded))
+                decoded += 1
+            except Exception:  # noqa: BLE001 - corrupt/undecodable invocation row skipped
+                continue
         with self._lock:
-            for _name, encoded in self._store.scan("invocations"):
-                try:
-                    invocations.append(decode_invocation(encoded))
-                    self._disk_reads += 1
-                except Exception:  # noqa: BLE001 - corrupt/undecodable invocation row skipped
-                    continue
+            self._disk_reads += decoded
         return invocations
 
     def store_variant_record(self, record: VariantRecord) -> None:
@@ -810,12 +698,13 @@ class ARCMemory:
             ... )
             >>> arc.store_variant_record(record)
         """
-        with self._lock:
-            cache_key = f"variant:{record.variant_id}"
-            self._cache.put(cache_key, record)
+        cache_key = f"variant:{record.variant_id}"
+        self._cache.put(cache_key, record)
 
-            encoded = encode_variant_record(record)
-            self._store.put("variants", record.variant_id, encoded)
+        # Encode + persist to disk OUTSIDE _lock.
+        encoded = encode_variant_record(record)
+        self._store.put("variants", record.variant_id, encoded)
+        with self._lock:
             self._disk_writes += 1
 
     def get_variant_records(self, agent_id: str) -> list[VariantRecord]:
@@ -837,16 +726,20 @@ class ARCMemory:
         """
         records: list[VariantRecord] = []
 
-        with self._lock:
-            for _name, encoded in self._store.scan("variants"):
-                try:
-                    record = decode_variant_record(encoded)
-                    self._disk_reads += 1
+        # Materialize the whole-kind scan OUTSIDE _lock; decode + filter, count after.
+        rows = list(self._store.scan("variants"))
+        decoded = 0
+        for _name, encoded in rows:
+            try:
+                record = decode_variant_record(encoded)
+                decoded += 1
 
-                    if record.agent_id == agent_id:
-                        records.append(record)
-                except Exception:  # noqa: BLE001 - corrupt/undecodable record skipped
-                    continue
+                if record.agent_id == agent_id:
+                    records.append(record)
+            except Exception:  # noqa: BLE001 - corrupt/undecodable record skipped
+                continue
+        with self._lock:
+            self._disk_reads += decoded
 
         # Sort by created_at descending (most recent first)
         records.sort(key=lambda r: r.created_at, reverse=True)
@@ -922,7 +815,7 @@ class ARCMemory:
         ONE skip decision (:meth:`_event_skip_reason`) gates the persist; every
         persist/skip is logged via ``runtime.trace`` (HF_ON-guarded ``ARC-EVENTS`` hot
         tag) so a dropped event is one ``CLIO_DEBUG=high`` line. Builds a lean content
-        dict from the SemanticEvent's fields (large text capped), correlated by the
+        dict from the SemanticEvent's fields (stored verbatim, no caps), correlated by the
         event's trajectory span ids, and appends ONE segment under the reserved
         ``_events`` scope. Never rendered into a prompt (own scope + non-working-set
         kind)."""
@@ -947,20 +840,65 @@ class ARCMemory:
 
     def _append_event_segment(self, event: Any, etype: str, sid: str) -> None:
         """Build (via the shared :func:`~clio_agent.arc.live.build_event_content`) +
-        append the lean ``semantic_event`` segment. ONE builder is shared with the
-        standalone observer so the persisted log is identical regardless of path."""
+        append the lean ``semantic_event`` segment to the session's ACTIVE ``_events``
+        chunk. ONE builder is shared with the standalone observer so the persisted log
+        is identical regardless of path. The chunk cursor (:meth:`_events_chunk_for_append`)
+        bounds each append's re-encode to one chunk instead of the whole log."""
         content = build_event_content(event)
         if content is None:
             return
+        scope = self._events_chunk_for_append(sid)
         self._segments.append(
             sid,
-            EVENTS_SCOPE,
+            scope,
             cast(SegmentKind, "semantic_event"),
             content,
             step=-1,
             turn_id=str(getattr(event, "turn_id", "") or ""),
             expert_span_id=str(getattr(event, "expert_span_id", "") or ""),
         )
+
+    def _events_chunk_for_append(self, sid: str) -> str:
+        """Reserve a slot in the session's active ``_events`` chunk and return its scope.
+
+        Advances the per-session cursor, rolling to the next chunk once the active one
+        has reached ``events_chunk_segments`` segments (so appends stay O(chunk)). On the
+        first append after a restart the cursor is recovered from the persisted family
+        (:meth:`_recover_events_writer`) so the log resumes at its last chunk instead of
+        overwriting or fragmenting it. Guarded by ``_events_writer_lock`` — the cursor is
+        the sole shared mutable state and events can arrive from multiple threads."""
+        with self._events_writer_lock:
+            state = self._events_writer.get(sid)
+            if state is None:
+                state = self._recover_events_writer(sid)
+            index, count = state
+            if count >= self._events_chunk_segments:
+                index += 1
+                count = 0
+            self._events_writer[sid] = (index, count + 1)
+            return events_chunk_scope(index)
+
+    def _recover_events_writer(self, sid: str) -> tuple[int, int]:
+        """Cold-start cursor for a session: resume at the highest persisted chunk.
+
+        Scans the session's ``_events`` family; with none persisted the cursor starts at
+        chunk 1 empty, otherwise at the max chunk index with its current segment count
+        (so the next append continues that chunk until it rolls). Called under
+        ``_events_writer_lock``."""
+        indices = [
+            events_chunk_index(s)
+            for s in self._segments.scan_scopes(sid, EVENTS_SCOPE)
+            if is_events_scope(s)
+        ]
+        if not indices:
+            return (1, 0)
+        max_index = max(indices)
+        count = len(
+            self._segments.list_segments(
+                sid, events_chunk_scope(max_index), include_tombstoned=True
+            )
+        )
+        return (max_index, count)
 
     def on_semantic_event(self, event: Any) -> None:
         """Persist one RAW semantic event as the single ``_events`` log record.
@@ -1207,8 +1145,6 @@ class ARCMemory:
 
             self._cache.invalidate(f"conv:{session_id}")
             evicted_cache += 1
-            evicted_cache += self._cache.invalidate_prefix(f"profile:{session_id}:")
-            evicted_cache += self._cache.invalidate_prefix(f"proc:{session_id}:")
 
             evicted_index = self._inv_index.delete_session(session_id)
 
@@ -1232,6 +1168,10 @@ class ARCMemory:
             )
         else:
             live = self._live.release(session_id)
+            # The chunk family is gone; drop the write cursor so the next event for this
+            # session recovers to a fresh chunk 1 (retention keeps it — same chunk continues).
+            with self._events_writer_lock:
+                self._events_writer.pop(session_id, None)
             logger.info(
                 "arc: erased _events log session=%s reason=durable_trace_enabled "
                 "backend=%r turns=%d (the durable trace keeps the full history)",
@@ -1260,8 +1200,9 @@ class ARCMemory:
             >>> arc.get_cache_stats()['size']
             0
         """
+        # LSM flush is self-locked (double-buffered) — keep it OUTSIDE _lock.
+        self._lsm.flush()
         with self._lock:
-            self._lsm.flush()
             self._cache.clear()
             self._inv_index.clear()
         # The observer's clear ERASES the reserved ``_events`` scope across every
@@ -1285,6 +1226,8 @@ class ARCMemory:
                 backend,
             )
             self._live.clear()
+            with self._events_writer_lock:
+                self._events_writer.clear()
         self._segments.clear()
 
     def clear_cache(self) -> None:
@@ -1307,22 +1250,23 @@ class ARCMemory:
         Examples:
             >>> arc.clear_all()  # Only use in tests or to reset state
         """
+        # Hot-structure surgery under _lock: cache, index, event write cursors, and
+        # counters. The _events chunk family is wiped from disk below, so reset the
+        # write cursors here so the next event for any session recovers to a fresh
+        # chunk 1.
         with self._lock:
-            # Clear cache
             self._cache.clear()
-
-            # Clear index
             self._inv_index.clear()
-
-            # Clear disk storage (wipes the "segments" kind too, since it's in ARC_KINDS)
-            self._store.clear()
-
-            # Drop the in-memory segment plane (store already cleared above)
-            self._segments.clear()
-
-            # Reset counters
+            with self._events_writer_lock:
+                self._events_writer.clear()
             self._disk_reads = 0
             self._disk_writes = 0
+
+        # Disk + in-memory segment-plane wipe OUTSIDE _lock (store and SegmentStore
+        # carry their own locks). ``_store.clear`` wipes the "segments" kind too
+        # (it is in ARC_KINDS); ``_segments.clear`` drops the in-memory plane after.
+        self._store.clear()
+        self._segments.clear()
 
     def __del__(self) -> None:
         """Cleanup LSM tree on delete."""

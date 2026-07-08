@@ -114,6 +114,7 @@ class ContextRetriever:
         session_id: str,
         tier: int = 2,
         tool_scope: str = "all",
+        include_conversation: bool = True,
     ) -> str:
         """Compile context using the ContextCompiler pipeline.
 
@@ -125,6 +126,10 @@ class ContextRetriever:
             session_id: Session identifier
             tier: Agent tier (1 for router, 2 for expert)
             tool_scope: Agent/tool visibility scope for injected tool summaries.
+            include_conversation: Forwarded to :meth:`ContextCompiler.compile`.
+                When ``False`` the compiled context omits the conversation and
+                routing sections so the caller's own transcript is the single
+                conversation channel (#771).
 
         Returns:
             Compiled context string within tier's token budget.
@@ -144,6 +149,7 @@ class ContextRetriever:
             session_id,
             tier=tier,
             tool_scope=tool_scope,
+            include_conversation=include_conversation,
         )
 
     def retrieve_context_for_query(

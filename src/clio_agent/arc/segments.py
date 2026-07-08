@@ -255,7 +255,13 @@ class SegmentIndex:
 class SegmentStore:
     """Ordered, scoped, mutable live-context store. Thread-safe."""
 
-    def __init__(self, store: ARCStore, op_logger: OpLogger | None = None) -> None:
+    def __init__(
+        self,
+        store: ARCStore,
+        op_logger: OpLogger | None = None,
+        *,
+        search_indexed: Callable[[str], bool] | None = None,
+    ) -> None:
         """Initialize the store.
 
         Args:
@@ -264,9 +270,17 @@ class SegmentStore:
                 Trace and returns the emitted event dict (with ``"event_id"``).
                 Injected so ``arc/`` never depends on ``gact/``; ``None`` (unit
                 tests / memory-only) means ops still work, just unlogged.
+            search_indexed: Optional predicate ``scope -> bool`` deciding whether a
+                scope's persist writes the plain-text search companion. ``None``
+                (default) indexes every scope (historical behavior). ARCMemory injects
+                a predicate that returns ``False`` for the reserved ``_events`` chunk
+                family so the semantic-event log never pollutes scope search — a
+                deliberate, scope-level exclusion (not per-op) that holds for EVERY
+                write to those scopes regardless of the op path.
         """
         self._store = store
         self._op_logger = op_logger
+        self._search_indexed = search_indexed
         # PER-SCOPE locking: one lock per (session_id, scope) so ops on different
         # scopes (overlapping experts) run concurrently instead of serializing on a
         # single store-wide lock held through disk I/O. The lock-registry itself is
@@ -399,12 +413,19 @@ class SegmentStore:
         companion). Raises if ``encode_segments`` / ``store.put`` rejects any segment."""
         # search_text: the live render flattened to plain text, so semantic discovery
         # (Thread D) can find this scope by content. Empty -> None drops the companion.
-        live_text = "\n".join(segment_text(s) for s in self._live_sorted(segs))
+        # A scope the ``search_indexed`` predicate excludes (the reserved ``_events``
+        # chunk family) NEVER writes the companion, so the semantic-event log can never
+        # surface in scope search.
+        if self._search_indexed is None or self._search_indexed(scope):
+            live_text = "\n".join(segment_text(s) for s in self._live_sorted(segs))
+            search_text = live_text or None
+        else:
+            search_text = None
         self._store.put(
             "segments",
             self._record_name(session_id, scope),
             encode_segments(segs),
-            search_text=live_text or None,
+            search_text=search_text,
         )
 
     @staticmethod
@@ -1046,28 +1067,37 @@ class SegmentStore:
         """Drop a session's in-memory scopes (write-through, nothing lost). Returns
         the number of scopes released.
 
-        Store-wide structural op: it holds the registry lock (freezing the lock set +
-        structural maps) AND each affected scope lock, so it never races a per-scope
-        op in flight. No deadlock: a per-scope op only re-touches the registry at its
-        single ``_lock_for`` entry (before taking its scope lock, releasing the
-        registry immediately) — it never holds a scope lock while waiting on the
-        registry, so this acquire-registry-then-scopes order has no reverse cycle."""
+        Store-wide structural op: it holds the registry lock (freezing the lock set)
+        AND each affected scope lock, so it never races a per-scope op in flight. No
+        deadlock: a per-scope op only re-touches the registry at its single
+        ``_lock_for`` entry (before taking its scope lock, releasing the registry
+        immediately) — it never holds a scope lock while waiting on the registry, so
+        this acquire-registry-then-scopes order has no reverse cycle.
+
+        The affected keys are derived from the lock registry (``_scope_locks``, whose
+        structure is guarded by ``_registry_lock``) and NOT by iterating ``_scopes``:
+        a per-scope cold-load (``_segs``) inserts into ``_scopes`` under only its own
+        scope lock, so iterating the live dict here would race a load on a *different*
+        session ("dictionary changed size during iteration"). Every in-memory scope is
+        always locked before it is loaded, so the lock keys are a superset of the
+        loaded keys — nothing loaded is missed."""
         with self._registry_lock:
-            keys = [k for k in self._scopes if k[0] == session_id]
-            lock_keys = sorted({k for k in self._scope_locks if k[0] == session_id} | set(keys))
-            held = [self._scope_locks[k] for k in lock_keys if k in self._scope_locks]
+            lock_keys = sorted(k for k in self._scope_locks if k[0] == session_id)
+            held = [self._scope_locks[k] for k in lock_keys]
             for lk in held:
                 lk.acquire()
             try:
-                for k in keys:
-                    self._scopes.pop(k, None)
+                released = 0
+                for k in lock_keys:
+                    if self._scopes.pop(k, None) is not None:
+                        released += 1
                     self._loaded.discard(k)
                 self._index.drop_session(session_id)  # keep the locator consistent
             finally:
                 for lk in held:
                     lk.release()
-            logger.info("segments: release session=%s scopes=%d", session_id, len(keys))
-            return len(keys)
+            logger.info("segments: release session=%s scopes=%d", session_id, released)
+            return released
 
     def clear(self) -> None:
         """Drop ALL in-memory scope state (store untouched).
