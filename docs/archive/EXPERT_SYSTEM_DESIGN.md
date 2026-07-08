@@ -178,4 +178,4 @@ All independently improve from their specific examples
 
 ---
 
-See [CLIO_AGENT_ARCHITECTURE](CLIO_AGENT_ARCHITECTURE.md) for system overview.
+See [CLIO_AGENT_ARCHITECTURE](../CLIO_AGENT_ARCHITECTURE.md) for system overview.

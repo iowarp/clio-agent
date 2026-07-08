@@ -99,7 +99,7 @@ Keep these visible to the engineering team rather than hiding them behind a norm
 - Tool lifecycle telemetry is live-only; post-turn `tools_called` remains summary metadata.
 - Some GACT endpoint families are definition/catalog surfaces rather than full runtime routes for CLIO's core agent loop.
 
-The authoritative tracker is `REAL_GAPS.md`; the broader capability table is `../CAPABILITIES_MATRIX.md`.
+The authoritative tracker is `REAL_GAPS.md`; the broader capability table is `../archive/CAPABILITIES_MATRIX.md`.
 
 ## Deployment Work Still Desired
 

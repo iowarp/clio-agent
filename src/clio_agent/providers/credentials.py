@@ -5,7 +5,7 @@ an inline secret) into an actual ``api_key``. It is deliberately read-only:
 ``resolve`` computes a value **fresh per call and returns it** — it NEVER
 writes ``os.environ`` or any process-global state. That property is what makes
 per-expert / per-node credential resolution safe under concurrency (design:
-``docs/design/per-expert-provider-lm.md`` §3.2): N experts on N providers can
+``docs/archive/per-expert-provider-lm.md`` §3.2): N experts on N providers can
 resolve independently with zero contention and no shared mutable global.
 
 Backends, keyed by the ``credential_ref``:

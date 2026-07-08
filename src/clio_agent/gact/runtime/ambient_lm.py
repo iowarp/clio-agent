@@ -103,7 +103,7 @@ def install_process_default_lm(lm: Any, adapter: Any = None) -> bool:
     """Install/refresh the process-default dspy LM (+ adapter) — the admin bind's job.
 
     The default/admin bind (``PUT /v1/providers/lm``) is the ONLY writer of the
-    process-global default (design ``per-expert-provider-lm.md`` §6): experts still
+    process-global default (design ``docs/archive/per-expert-provider-lm.md`` §6): experts still
     resolve their own LM per ``dspy.context``, but the ambient consumers this module
     guards (auto-compaction summarisation, usage/token metering, the turn-end
     model-id probe) and the deferred-boot / rebind paths need a *valid, current*

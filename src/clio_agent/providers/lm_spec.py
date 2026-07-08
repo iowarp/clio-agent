@@ -6,7 +6,7 @@ transport, and the sampling surface. Because it carries no secret and no live
 object, a spec is safe to persist into a stored ``AgentDef``, a checked-in
 blueprint frontmatter, or a trace, and safe to ship with a work item to another
 node — where its ``credential_ref`` is resolved fresh against node-local
-sources (design ``docs/design/per-expert-provider-lm.md`` §3.1/§3.2).
+sources (design ``docs/archive/per-expert-provider-lm.md`` §3.1/§3.2).
 
 This module is deliberately additive: nothing consumes ``LMSpec`` yet. It
 introduces the data type plus two pure helpers:

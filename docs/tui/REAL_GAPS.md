@@ -96,4 +96,4 @@ We DO NOT close an issue until:
 
 Status today: the hard blockers listed above are clearable only when
 their endpoint behavior, real-agent driver, and provenance evidence all
-match this document and `docs/CAPABILITIES_MATRIX.md`.
+match this document and `docs/archive/CAPABILITIES_MATRIX.md`.

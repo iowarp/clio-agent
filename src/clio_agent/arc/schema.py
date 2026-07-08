@@ -57,7 +57,7 @@ class Message(msgspec.Struct):
 # One ordered, scoped piece of the ARC live context plane. The four context
 # operations (append/insert/delete/summarize) act on these; the gact ReAct loop
 # writes one per produced piece (thought/tool_call/observation) and rebuilds its
-# prompt by rendering the live ordered set. See docs/design/arc-live-context-plane.md.
+# prompt by rendering the live ordered set. See docs/archive/arc-live-context-plane.md.
 SegmentKind = Literal[
     "system",
     "user",

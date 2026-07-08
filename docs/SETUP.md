@@ -191,7 +191,7 @@ You should see the assistant's reply with a populated `tokens` and
 Each prompt below exercises a different code path. Run them through
 the TUI (or via curl) once you have the LM configured. Each should
 produce the documented behaviour — see
-[`docs/CAPABILITIES_MATRIX.md`](CAPABILITIES_MATRIX.md) for the full
+[`docs/archive/CAPABILITIES_MATRIX.md`](archive/CAPABILITIES_MATRIX.md) for the full
 end-to-end verification matrix.
 
 | Prompt | What it exercises |

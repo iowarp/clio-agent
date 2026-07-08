@@ -16,7 +16,7 @@ drives:
   settles.
 
 The write-side bind (``PUT /v1/providers/lm`` -> :func:`_apply_lm_provider`) is a
-demoted **default-profile** action (design ``docs/design/per-expert-provider-lm.md``
+demoted **default-profile** action (design ``docs/archive/per-expert-provider-lm.md``
 §5): it resolves the request to a config, folds its (cached) handshake, atomically
 swaps the default entry of the per-app
 :class:`~clio_agent.gact.providers.profile_store.ProviderProfileStore` (an immutable

@@ -49,7 +49,7 @@ out-of-band edit changes the *next* prompt. That is the whole point of the live
 plane: compressing ARC actually changes what the model attends over, instead of
 being a post-hoc record with zero effect on the turn.
 
-Design detail lives in `docs/design/arc-live-context-plane.md`. Two properties
+Design detail lives in `docs/archive/arc-live-context-plane.md`. Two properties
 matter for storage:
 
 - Each `(session_id, scope)` persists as **one** record through the injected
@@ -218,7 +218,7 @@ already *derived* from the log rather than built independently.
 
 The separable physical follow-on is the clio-core KV plane
 (`context-transfer-engine` / `llm-hooks` / `kvcache`) described in
-`docs/design/arc-live-context-plane.md`: a store-level append/KV-surgery backend
+`docs/archive/arc-live-context-plane.md`: a store-level append/KV-surgery backend
 that turns the live-plane ops into true O(1) appends behind the same `apply`
 interface. Until #737 lands, treat the topology table above as the real,
 present-day layout.
@@ -257,7 +257,7 @@ The durable semantic Trace backend is off by default; enable it via
 
 ## Related Documentation
 
-- [ARC as the Live Context Plane](design/arc-live-context-plane.md) — the design
+- [ARC as the Live Context Plane](archive/arc-live-context-plane.md) — the design
   rationale for the mutable plane and the #737 north-star.
 - [CLIO Agent Architecture](CLIO_AGENT_ARCHITECTURE.md) — full system architecture.
 - [Environment variable reference](ENVIRONMENT.md) — every `CLIO_*` knob.
