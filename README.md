@@ -54,6 +54,17 @@ Prerequisites for the default release install: [`uv`](https://astral.sh/uv)
 or Python 3.12+ with `pip`. `git` and Go are only needed when you opt into
 source-build mode with `CLIO_REF` or `GACT_REF`.
 
+### More ways to get CLIO
+
+The install script above is one of several download options:
+
+- 🌐 **[CLIO website →](https://iowarp.github.io/clio-agent/)** — guided downloads and a tour of the product.
+- 📦 **[GitHub Releases →](https://github.com/iowarp/clio-agent/releases/latest)** — **desktop apps** (`.msi` / `.exe` for Windows, `.dmg` for macOS, `.deb` / `.AppImage` / `.rpm` for Linux), standalone `clio-tui-<os>-<arch>` binaries, and the web bundle.
+- 🐳 **Docker (no install)** — `docker run -it --rm ghcr.io/iowarp/clio-tui:latest`, or `docker compose up clio-web` for the browser UI.
+- 🖥️ **Browser UI** — `clio --web` serves the web app locally.
+
+Full matrix (script · docker · web · desktop · compose · source) with copy-paste commands: **[docs/INSTALL.md](docs/INSTALL.md)**.
+
 ---
 
 ## Using the `clio` command

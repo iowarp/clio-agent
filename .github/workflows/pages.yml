@@ -28,23 +28,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      # Pull the product screenshots straight from the gact-tui submodule at deploy
-      # time (curated set per docs/CLIO_INSTALL_PAGE_IMAGE_MANIFEST.md) instead of
-      # committing copies that go stale as the tui team regenerates them. The site
-      # references stable site/assets/* paths; this step fills them from the submodule.
-      - name: Stage product screenshots from gact-tui submodule
-        run: |
-          aud=external/gact-tui/apps/web/screenshots/audit
-          mkdir -p site/assets/shots
-          cp "$aud/ndp-earthscope-live-final.png"                         site/assets/hero.png
-          cp "$aud/desktop-linux-xvfb-chat-clio-18190-attached-1440.png"  site/assets/desktop-shell.png
-          cp "$aud/ndp-earthscope-live-artifact-preview.png"             site/assets/shots/1-artifact.png
-          cp "$aud/overnight-real-markdown-preview.png"                   site/assets/shots/2-markdown.png
-          cp "$aud/overnight-real-image-preview.png"                      site/assets/shots/3-image.png
-          cp "$aud/overnight-real-file-editor-diff.png"                   site/assets/shots/4-diff.png
-          cp "$aud/overnight-real-streaming-final.png"                    site/assets/shots/5-streaming.png
+      # Product screenshots are committed directly under site/assets/ (hero.png,
+      # desktop-shell.png, shots/1-5). They used to be staged at deploy time from
+      # external/gact-tui/apps/web/screenshots/audit, but gact-tui #235 stopped
+      # committing those run-output captures, which broke this deploy. Owning the
+      # curated marketing set in this repo (where the site lives) decouples the
+      # landing page from the submodule's volatile screenshot layout. Refresh the
+      # set per docs/CLIO_INSTALL_PAGE_IMAGE_MANIFEST.md when the product UI changes.
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
