@@ -5,10 +5,10 @@
 > and are served from there by `.github/workflows/pages.yml`. They used to be staged
 > at deploy from `external/gact-tui/apps/web/screenshots/audit/`, but gact-tui #235
 > stopped committing those run-output captures, which broke the Pages deploy. The
-> current set was rendered from the live EarthScope/NDP GNSS workflow (the demo
-> scenario) via the TUI. The per-slot *intent* below still holds — refresh the images
-> in place (ideally with fresher web-shell captures) when the product UI changes.
-> The `Source:` paths below are historical and no longer exist.
+> current set is a **generic product-feature** selection (conversation, tool calls,
+> MCP catalog, file preview, diff, streaming) — deliberately not tied to any single
+> use case. The per-slot *intent* below still holds; refresh the images in place when
+> the product UI changes. The `Source:` paths below are historical and no longer exist.
 
 This is the curated screenshot set for a clean CLIO install/download page.
 These are product images, not QA evidence dumps. Only use screenshots that show

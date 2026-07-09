@@ -150,7 +150,7 @@ section.wrap.tight { padding-top: 56px; padding-bottom: 56px; }
   color: var(--text);
 }
 .brand:hover { text-decoration: none; }
-.brand img { width: 30px; height: 30px; border-radius: 8px; }
+.brand img { width: 30px; height: 30px; object-fit: contain; }
 .brand .wordmark { font-size: 18px; }
 .nav-links {
   margin-left: auto;
@@ -218,9 +218,10 @@ h2 { font-size: clamp(26px, 4vw, 36px); font-weight: 700; letter-spacing: -0.01e
 /* ---------- Hero ---------- */
 .hero { padding: 92px 0 64px; text-align: center; }
 .hero-logo {
-  width: 72px; height: 72px; border-radius: 18px;
+  width: 88px; height: 88px;
   margin: 0 auto 26px;
-  box-shadow: 0 0 0 1px var(--border), 0 18px 60px rgba(234, 123, 42, 0.18);
+  object-fit: contain;
+  filter: drop-shadow(0 12px 34px rgba(234, 123, 42, 0.22));
 }
 .hero h1 {
   font-size: clamp(40px, 8vw, 76px);
@@ -253,31 +254,6 @@ h2 { font-size: clamp(26px, 4vw, 36px); font-weight: 700; letter-spacing: -0.01e
   object-fit: contain;
   border-radius: calc(var(--radius) - 6px);
   display: block;
-}
-
-/* ---------- Demo video ---------- */
-.demo-video {
-  margin: 0;
-  padding: 10px;
-  background: #08090b;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.45);
-}
-.demo-video video {
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  object-fit: contain;
-  border-radius: calc(var(--radius) - 6px);
-  display: block;
-  background: #050607;
-}
-.demo-video figcaption {
-  text-align: center;
-  color: var(--muted);
-  font-size: 14px;
-  margin-top: 12px;
-  padding-bottom: 4px;
 }
 
 /* ---------- Code blocks ---------- */
