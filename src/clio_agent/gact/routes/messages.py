@@ -326,34 +326,114 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         )
 
     @app.get("/v1/sessions/{sid}/messages")
-    async def list_messages(sid: str) -> dict[str, Any]:
-        """List messages in a session.
+    async def list_messages(
+        sid: str,
+        include_system: bool = True,
+        limit: int | None = None,
+        before: str | None = None,
+    ) -> dict[str, Any]:
+        """List messages in a session, newest-first, with optional paging (#232).
 
         Today: in-memory log populated by POST /messages; returns
         empty when the session exists but has no turns yet. The v0.1
         wire shape (no pagination header, bare array) is what every
         v0.1 backend does; v0.2 clients accept both.
+
+        Query params (all optional — omitting every one reproduces the
+        historical full-ledger, newest-first, ``next_cursor: null`` behaviour):
+
+        * ``include_system`` — when ``False``, drop ``role == "system"``
+          messages from the page (SPEC §4.4: system messages default-included,
+          suppressible via ``?include_system=false``).
+        * ``limit`` — return at most this many NEWEST messages (after ``before``
+          is applied). Must be ``> 0``; ``<= 0`` raises a 422 validation error.
+        * ``before`` — cursor: return only messages strictly OLDER (earlier in
+          chronological order) than the message whose id equals ``before``. An
+          unknown id raises a 404 (mirrors ``get_message``). The live in-flight
+          assistant projection is the newest message, so it only appears on the
+          newest page (``before`` unset).
+
+        ``next_cursor`` is the id of the OLDEST message in the returned page when
+        ``limit`` truncated the result (older messages remain beyond this page);
+        otherwise it stays ``null``.
         """
 
         sess = app.state.sessions.get(sid)
         if sess is None:
             raise _session_not_found(sid)
+        if limit is not None and limit <= 0:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="validation_error",
+                        message="limit must be a positive integer",
+                        details={"session_id": sid, "limit": limit},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
         # TUI (and SPEC §6.4) expect newest-first with an optional
         # cursor for older pages. We store chronologically so reverse
-        # at read time.
+        # at read time. Apply filters against the chronological list
+        # first, then reverse, then truncate — see the docstring for
+        # the exact ordering contract.
         chronological_rows = list(app.state.messages.get(sid, []))
-        live_assistant = _live_assistant_message(sid)
-        if live_assistant is not None:
-            stored_ids = {m.id for m in chronological_rows}
-            if live_assistant.id not in stored_ids:
-                chronological_rows.append(live_assistant)
+
+        # (1) Resolve ``before`` against the chronological list. The cursor names
+        # a real stored message; return only rows strictly older than it. The
+        # live in-flight projection is never a stored message, so it can never be
+        # a valid ``before`` target — an unknown id is a 404 like get_message.
+        if before is not None:
+            cursor_index = next(
+                (i for i, m in enumerate(chronological_rows) if m.id == before),
+                -1,
+            )
+            if cursor_index < 0:
+                raise HTTPException(
+                    status_code=404,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="not_found",
+                            message=f"message not found: {before}",
+                            details={"session_id": sid, "message_id": before},
+                            recoverable=False,
+                        )
+                    ).model_dump(exclude_none=True),
+                )
+            chronological_rows = chronological_rows[:cursor_index]
+        else:
+            # The live assistant message is the NEWEST message and only belongs
+            # on the newest page (``before`` unset). Paginating into the past
+            # never appends it.
+            live_assistant = _live_assistant_message(sid)
+            if live_assistant is not None:
+                stored_ids = {m.id for m in chronological_rows}
+                if live_assistant.id not in stored_ids:
+                    chronological_rows.append(live_assistant)
+
+        # (2) Drop system messages when suppressed.
+        if not include_system:
+            chronological_rows = [m for m in chronological_rows if m.role != "system"]
+
+        # (3) Reverse to newest-first.
         rows = list(reversed(chronological_rows))
+
+        # (4) Apply ``limit`` to the newest N, and (5) compute next_cursor: the id
+        # of the oldest message in this page WHEN the limit truncated older rows.
+        next_cursor: str | None = None
+        if limit is not None and len(rows) > limit:
+            rows = rows[:limit]
+            if rows:
+                next_cursor = rows[-1].id
+
         # #731: serialize via ``to_wire`` (not ``model_dump(exclude_none)``) so the
         # reloaded parts are byte-for-byte the slim, arrival-ordered shape the live
         # SSE stream delivered — a reloaded conversation matches what streamed.
         return {
             "messages": [m.to_wire() for m in rows],
-            "next_cursor": None,
+            "next_cursor": next_cursor,
         }
 
     @app.get("/v1/sessions/{sid}/messages/{message_id}")

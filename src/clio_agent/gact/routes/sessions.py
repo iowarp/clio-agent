@@ -50,6 +50,7 @@ from fastapi.responses import JSONResponse
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.events import Event
 from clio_agent.gact.routes._body import NonObjectBodyError, json_body
+from clio_agent.gact.routes.session_filters import filter_session_rows
 from clio_agent.gact.runtime.constants import _installed_clio_agent_version
 from clio_agent.gact.runtime.globals import (
     _active_semantic_turn_id,
@@ -185,16 +186,15 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         workspace_id: Optional[str] = None,
         include_all_workspaces: bool = False,
         archived: Optional[bool] = None,
+        parent_session_id: Optional[str] = None,
     ) -> ListSessionsResponse:
+        """List sessions, filtered by workspace scope, archive bucket (audit E-14),
+        and optionally fork lineage — ``parent_session_id`` non-empty restricts to
+        that parent's direct sub-sessions (#232); omitted/empty is unchanged."""
+
         effective_workspace_id = workspace_id or (None if include_all_workspaces else "ws_default")
         rows = app.state.sessions.list(workspace_id=effective_workspace_id)
-        # iowarp/gact-tui §audit/E-14: archive partition. ?archived=true
-        # → only archived; ?archived=false (default) → only active. The
-        # desktop toggles this through the SessionsColumn archive view.
-        if archived is None:
-            rows = [r for r in rows if not getattr(r, "archived", False)]
-        else:
-            rows = [r for r in rows if bool(getattr(r, "archived", False)) == bool(archived)]
+        rows = filter_session_rows(rows, archived=archived, parent_session_id=parent_session_id)
         return ListSessionsResponse(sessions=[Session(**row.to_wire()) for row in rows])
 
     @app.get("/v1/sessions/{sid}", response_model=Session)
