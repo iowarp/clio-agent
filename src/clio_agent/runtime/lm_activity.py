@@ -137,20 +137,6 @@ def note_lm_answer_delta(text: str, *, field: str = "answer") -> None:
         )
 
         agent_id = active_react_scope()
-        # #732: record the streamed field text into the turn transcript's
-        # tap-dedup buffer SYNCHRONOUSLY, in THIS executor thread, before the
-        # cross-thread emit is scheduled below. The tool observer's thought-dedup
-        # gate runs in this same thread when a tool fires, so it must read a source
-        # written before the tool call — not the ledger's async ``append_text_delta``
-        # (scheduled onto the loop, possibly not drained yet). This restores the
-        # happens-before the retired ``live_streamed_field_text`` buffer provided.
-        # Keyed by the same ``active_react_scope()`` the gate queries with; skipped
-        # off-scope (agent_id empty), matching the old buffer's guard.
-        if record_dedup is not None and agent_id:
-            try:
-                record_dedup(agent_id, field, text)
-            except Exception:  # noqa: BLE001,S110 - dedup capture is best-effort
-                pass
         visible_fields = {"reasoning", "next_thought"}
         if field == "answer" and active_visible_answer_stream():
             visible_fields.add("answer")
@@ -179,6 +165,24 @@ def note_lm_answer_delta(text: str, *, field: str = "answer") -> None:
     except Exception:  # noqa: BLE001 - scope unavailable off-turn (CLI/optimizer)
         agent_id = ""
     try:
+        # #732 (S2): record the streamed field text into the turn transcript's
+        # tap-dedup buffer SYNCHRONOUSLY, in THIS executor thread, before the
+        # cross-thread emit is scheduled below. RELOCATED here (was unconditional,
+        # before the visible_fields gate) so the tap records presence IFF this field
+        # is actually emitted as a VISIBLE text row: a non-visible contract field
+        # returns above and never reaches here. This ties tap-presence to visible
+        # emission — tap(agent,field) non-empty ⟺ a visible row was emitted — so the
+        # tool observer's op-identity thought-dedup gate can never clear a thought
+        # whose next_thought has no visible row (the attempt-1 vanish). The tool
+        # observer runs in this SAME executor thread when a tool fires, so it reads a
+        # source written before the tool call — the happens-before the retired
+        # ``live_streamed_field_text`` buffer provided. Skipped off-scope (agent_id
+        # empty), matching the old buffer's guard.
+        if record_dedup is not None and agent_id:
+            try:
+                record_dedup(agent_id, field, text)
+            except Exception:  # noqa: BLE001,S110 - dedup capture is best-effort
+                pass
         stream_audit(
             "bridge.contract_field",
             agent_id=agent_id or "",

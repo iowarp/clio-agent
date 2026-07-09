@@ -59,7 +59,7 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/gact/routes/sessions.py": 1478,
     "src/clio_agent/gact/runtime/globals.py": 923,
     "src/clio_agent/gact/streaming.py": 1027,
-    "src/clio_agent/gact/tool_observer.py": 977,
+    "src/clio_agent/gact/tool_observer.py": 946,
     "src/clio_agent/gact/transcript.py": 996,
     "src/clio_agent/gact/turn.py": 816,
     "src/clio_agent/gact/turn_delegation.py": 1014,

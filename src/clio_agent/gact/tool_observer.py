@@ -51,6 +51,7 @@ from clio_agent.gact.runtime.globals import (
 )
 from clio_agent.gact.types import Message, Part
 from clio_agent.runtime import trace
+from clio_agent.runtime.stream_audit import stream_audit
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -571,42 +572,6 @@ def _emit_live_tool_route_context(app: "FastAPI", sid: str, tool_name: str) -> N
         )
 
 
-def _streamed_text_matches(streamed: str, candidate: str) -> bool:
-    """True when ``candidate`` is the same text already streamed as ``streamed``.
-
-    Whitespace-insensitive, BIDIRECTIONAL containment: ``candidate`` (a raw ReAct
-    step ``thought``) may be a SUBSET of the streamed copy (a short, clean thought)
-    OR a SUPERSET of it — DSPy's ChatAdapter sometimes re-emits ``next_thought``
-    with a ``[[ ## next_thought ## ]]`` marker, so the raw thought is the streamed
-    answer repeated and runs LONGER than the streamed copy. Both mean the thought
-    was already shown as a text row, so the caller drops it from the tool_call
-    instead of rendering the same answer twice (gap: tool_call.thought duplicating
-    the next_thought text part on reload).
-    """
-    left = " ".join(streamed.split())
-    right = " ".join(candidate.split())
-    return bool(left and right and (left == right or right in left or left in right))
-
-
-def _thought_repeats_emitted_text(app: "FastAPI", sid: str, agent: str, thought: str) -> bool:
-    """True when ``thought`` repeats a ``text`` part already emitted this turn for
-    ``agent`` — the next_thought already shows as a visible text row, so it must
-    not also ride the tool_call.thought. Compares against the EMITTED parts
-    (``live_assistant_parts``), which is reliable on every transport — unlike the
-    streamed-field buffer, which was empty on the SDK path so the old dedup never
-    fired."""
-    if not thought.strip():
-        return False
-    store = getattr(app.state, "live_assistant_parts", None) or {}
-    parts = store.get(sid, []) if isinstance(store, Mapping) else []
-    for part in reversed(list(parts)):
-        if getattr(part, "type", "") == "text" and getattr(part, "agent_id", "") == agent:
-            text = getattr(part, "text", "") or ""
-            if text.strip():
-                return _streamed_text_matches(text, thought)
-    return False
-
-
 def _make_tool_observer(app: "FastAPI"):
     """Build a callable suitable for MCPToolBridge.tool_observer.
 
@@ -619,24 +584,6 @@ def _make_tool_observer(app: "FastAPI"):
     didn't populate ``pred.tools_called`` itself (e.g. the
     deterministic short-circuit paths).
     """
-
-    def _streamed_field_contains(sid: str, agent_id: str, field: str, text: str) -> bool:
-        if not sid or not agent_id or not text.strip():
-            return False
-        # Turn-scoped read (#732): the per-session TurnTranscript ledger owns the
-        # streamed text for this turn — ``streamed_field_dedup_text`` subsumes the
-        # retired ``app.state.live_streamed_field_text`` buffer. It reads the tap's
-        # SYNCHRONOUS copy (recorded in this same executor thread before the tool
-        # fired), so this observe() call never races the cross-thread ledger append
-        # that the loop drains asynchronously — the happens-before the old buffer
-        # gave us. The open ledger IS the active turn, so this stays turn-scoped:
-        # only text streamed DURING the active turn can dedup this thought — a
-        # prior turn's phrasing never suppresses it. Same (agent, field) key.
-        transcript = _session_turn_transcript(app, sid)
-        if transcript is None:
-            return False
-        streamed = transcript.streamed_field_dedup_text(agent_id, field)
-        return _streamed_text_matches(streamed, text)
 
     def observe(
         name: str,
@@ -695,22 +642,44 @@ def _make_tool_observer(app: "FastAPI"):
                 )
             )
             step_thought = _ctx.active_step_thought()
-            # The next_thought already streams as a visible text row, so it must NOT
-            # also ride the tool_call.thought (else the answer renders twice — once
-            # as the text row, once as the tool's thought). Clear it whenever it
-            # repeats an already-emitted text part for this agent. Comparing against
-            # the EMITTED parts is reliable on every transport (the streamed-field
-            # buffer was empty for the SDK path, so the old check never fired); we
-            # also keep the streamed-field check as a fast path. NOTE: we no longer
-            # fall back to active_step_reasoning() — that raw DSPy channel carries
-            # ``[[ ## next_thought ## ]]`` markers and the answer repeated, which is
-            # exactly the garbage that rode the tool_call on reload.
-            if (
-                not step_thought
-                or _streamed_field_contains(sid, invoking_expert, "next_thought", step_thought)
-                or _thought_repeats_emitted_text(app, sid, invoking_expert, step_thought)
-            ):
+            # #732 (S2): next_thought is a DISTINCT VISIBLE loop element that owns its
+            # OWN streamed text row (note_lm_answer_delta -> emit_chunk ->
+            # append_text_delta, a ``text`` part with signature_field_name="next_thought").
+            # The copy the ReAct step also carries on tool_call.thought is the redundant
+            # duplication — clear it IFF that visible row exists this turn. OP-IDENTITY
+            # PRESENCE check ("did this channel produce a part this turn?"), never a
+            # string compare: the LM tap records the field's presence SYNCHRONOUSLY in
+            # this same executor thread (happens-before this observe()), and lm_activity
+            # records it ONLY in the visible-emit branch — so tap-presence ⟺ visible-row,
+            # and a field with NO visible row (SDK/batch gap) KEEPS its thought (no
+            # content loss, the attempt-1 blocker). Both branches emit a stream_audit
+            # reason (no silent fallback). (agent-id identity + turn-scope-latch soundness:
+            # module docstring of tests/test_gact/test_next_thought_single_owner.py.)
+            transcript = _session_turn_transcript(app, sid)
+            visible_row = transcript is not None and transcript.streamed_field_started(
+                invoking_expert, "next_thought"
+            )
+            if not step_thought or visible_row:
+                if step_thought:
+                    stream_audit(
+                        "bridge.tool_thought",
+                        agent_id=invoking_expert,
+                        field="next_thought",
+                        visible=False,
+                        duplicate_suppressed=True,
+                        duplicate_reason="next_thought_owns_visible_text_row",
+                        head=step_thought[:120],
+                    )
                 step_thought = ""
+            else:
+                stream_audit(
+                    "bridge.tool_thought",
+                    agent_id=invoking_expert,
+                    field="next_thought",
+                    duplicate_suppressed=False,
+                    duplicate_reason="thought_kept_no_visible_row",
+                    head=step_thought[:120],
+                )
             _append_live_assistant_part(
                 app,
                 sid,

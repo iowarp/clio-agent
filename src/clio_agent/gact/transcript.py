@@ -509,22 +509,22 @@ class TurnTranscript:
         with self._lock:
             self._tap_streamed.setdefault(key, []).append(chunk)
 
-    def streamed_field_dedup_text(self, agent_id: str, field: str) -> str:
-        """Streamed text for ``(agent_id, field)`` for the thought-dedup gate.
+    def streamed_field_started(self, agent_id: str, field: str) -> bool:
+        """True when ``(agent_id, field)`` produced a streamed text chunk this turn.
 
-        Prefers the tap-recorded copy (:meth:`record_streamed_field_text`),
-        written synchronously in the LM tap thread so the same-thread tool
-        observer never races the cross-thread ledger append (#732). Falls back to
-        the ledger deltas for non-tap producers (a direct
-        :meth:`append_text_delta`, e.g. tests / batch paths), so dedup behaves
-        exactly as before wherever no tap wrote.
+        The OP-IDENTITY presence check the tool observer's thought-dedup gate
+        reads (#732 / S2): "did this channel emit a visible text row?", never a
+        string comparison. Prefers the tap copy (:meth:`record_streamed_field_text`,
+        written synchronously in the LM tap thread before the cross-thread
+        :meth:`append_text_delta` schedules) and falls back to the ledger deltas.
+        ``note_lm_answer_delta`` records the tap ONLY inside its visible-emit
+        branch, so tap-presence ⟺ visible-row-emitted — no visible row reads
+        ``False`` and keeps the copy.
         """
 
+        key = (agent_id, field)
         with self._lock:
-            tap = self._tap_streamed.get((agent_id, field))
-            if tap:
-                return "".join(tap)
-            return "".join(self._streamed.get((agent_id, field), []))
+            return bool(self._tap_streamed.get(key) or self._streamed.get(key))
 
     def raw_streamed_text(self) -> str:
         """Every accepted streamed chunk THIS turn, concatenated in arrival order.
