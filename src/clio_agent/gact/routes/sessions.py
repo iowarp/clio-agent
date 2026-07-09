@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-import uuid
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
@@ -50,6 +49,7 @@ from fastapi.responses import JSONResponse
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.events import Event
 from clio_agent.gact.routes._body import NonObjectBodyError, json_body
+from clio_agent.gact.routes.compaction import build_compact_summary_message
 from clio_agent.gact.routes.session_filters import filter_session_rows
 from clio_agent.gact.runtime.constants import _installed_clio_agent_version
 from clio_agent.gact.runtime.globals import (
@@ -70,10 +70,8 @@ from clio_agent.gact.types import (
     ListSessionsResponse,
     Message,
     ModelRef,
-    Part,
     RetryTurnRequest,
     Session,
-    Tokens,
     TurnAttempt,
     UpdateSessionRequest,
     UserQuestion,
@@ -787,31 +785,14 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                     ).model_dump(exclude_none=True),
                 ) from exc
 
-        compact_message = Message(
-            id=f"msg_compact_{uuid.uuid4().hex[:10]}",
-            turn_id=_active_semantic_turn_id(),
+        compact_message = build_compact_summary_message(
             session_id=sid,
-            role="assistant",
-            created_at=datetime.now(timezone.utc).isoformat(),
-            updated_at=datetime.now(timezone.utc).isoformat(),
-            parts=[
-                Part(
-                    id=f"part_compact_{uuid.uuid4().hex[:10]}",
-                    type="text",
-                    metadata={
-                        "synthetic": "compact_summary",
-                        "memory_event_id": event_id,
-                    },
-                    text="[compact summary]\n" + (summary or "").strip(),
-                )
+            turn_id=_active_semantic_turn_id(),
+            summary=summary or "",
+            event_id=event_id,
+            compacted_message_ids=[
+                mid for m in ledger if (mid := _attr(m, "id", ""))
             ],
-            tokens=Tokens(input=0, output=0, cache_read=0, cache_write=0),
-            cost_usd=0.0,
-            stop_reason="end_turn",
-            metadata={
-                "synthetic": "compact_summary",
-                "memory_event_id": event_id,
-            },
         )
         deps.replace_session_messages(app, sid, [compact_message])
         memory_event = {
