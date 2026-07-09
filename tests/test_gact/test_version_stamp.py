@@ -100,3 +100,22 @@ def test_version_helpers_report_installed_distribution() -> None:
     assert _clio_agent_version() == INSTALLED_VERSION
     assert _installed_clio_agent_version() == INSTALLED_VERSION
     assert INSTALLED_VERSION != "0.2.0"
+
+
+def test_backend_version_appends_git_sha_in_checkout() -> None:
+    """``GACT_BACKEND_VERSION`` carries the HEAD SHA (``semver+sha``) in a checkout.
+
+    Outside a git repo the helper degrades to the plain semver; either shape is
+    accepted, but the SHA suffix, when present, must be a short hex of the base.
+    """
+
+    from clio_agent.gact.runtime.constants import _backend_version, _git_head_sha
+
+    version = _backend_version()
+    sha = _git_head_sha()
+    if sha is None:
+        assert version == INSTALLED_VERSION
+    else:
+        assert version == f"{INSTALLED_VERSION}+{sha}"
+        assert 0 < len(sha) <= 8
+        assert all(c in "0123456789abcdef" for c in sha)
