@@ -6,6 +6,27 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.5.18] — 2026-07-09
+
+The grounding-demo release. Pairs with gact-tui **v0.9.5** (pinned
+submodule) — #233 render parity + #232 protocol convergence on the
+client side, matched by the contract-surface changes below on the
+server side.
+
+### Added
+- `GET /v1/sessions/{id}/messages` now honors pagination
+  (`before` / `limit` / `include_system`) and `GET /v1/sessions`
+  honors the `parent_session_id` filter. These params were previously
+  accepted but ignored (unbounded payloads; subsession UIs saw every
+  session); they are now a normative contract with conformance
+  coverage on the gact-tui side (#232, #872).
+
+### Changed
+- Compaction emits a **structured compaction part** (a typed part
+  carrying the summary + metadata) instead of `[compact summary]`
+  prose, so clients render it as a first-class part rather than
+  scraping text (#832, #873).
+
 ### Removed
 - Retired the legacy Codex HTTP bridge process. Switch
   `provider=codex` to the LiteLLM CustomLLM path; no bridge process is
