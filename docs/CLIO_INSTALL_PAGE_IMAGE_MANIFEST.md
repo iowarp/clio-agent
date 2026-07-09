@@ -1,5 +1,15 @@
 # CLIO Install Page Image Manifest
 
+> **Status (2026-07-09):** the landing-page product screenshots are now **committed
+> directly under `site/assets/`** (`hero.png`, `desktop-shell.png`, `shots/1-5.png`)
+> and are served from there by `.github/workflows/pages.yml`. They used to be staged
+> at deploy from `external/gact-tui/apps/web/screenshots/audit/`, but gact-tui #235
+> stopped committing those run-output captures, which broke the Pages deploy. The
+> current set was rendered from the live EarthScope/NDP GNSS workflow (the demo
+> scenario) via the TUI. The per-slot *intent* below still holds — refresh the images
+> in place (ideally with fresher web-shell captures) when the product UI changes.
+> The `Source:` paths below are historical and no longer exist.
+
 This is the curated screenshot set for a clean CLIO install/download page.
 These are product images, not QA evidence dumps. Only use screenshots that show
 the current CLIO visual system, real conversation context, and concrete outputs
