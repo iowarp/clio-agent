@@ -56,7 +56,7 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/gact/routes/catalog.py": 880,
     "src/clio_agent/gact/routes/mcp.py": 939,
     "src/clio_agent/gact/routes/providers.py": 1314,
-    "src/clio_agent/gact/routes/sessions.py": 1497,
+    "src/clio_agent/gact/routes/sessions.py": 1478,
     "src/clio_agent/gact/runtime/globals.py": 923,
     "src/clio_agent/gact/streaming.py": 1027,
     "src/clio_agent/gact/tool_observer.py": 977,

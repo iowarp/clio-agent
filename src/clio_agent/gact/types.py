@@ -661,19 +661,19 @@ class Part(BaseModel):
     lines_added: int = 0
     lines_removed: int = 0
 
-    def to_wire(self) -> dict[str, Any]:
-        """Project this part to its on-the-wire dict, dropping unused fields.
+    # compaction part (SPEC §4.5, #832): structured summary replacing archived
+    # history, rendered from typed fields (not a ``[compact summary]`` prefix).
+    # ``auto`` flags a policy- (vs user-) triggered /compact; ``compacted_message_ids``
+    # lists the archived messages it stands in for.
+    summary: str = ""
+    auto: bool = False
+    compacted_message_ids: list[str] = Field(default_factory=list)
 
-        The Part shape carries one set of fields per ``type`` (text, tool_call,
-        file_diff, expert_handoff, routing_decision, …) but a single instance only
-        populates the handful relevant to its own type; the rest sit at their
-        zero-value defaults. ``model_dump(exclude_none=True)`` does NOT drop those
-        (the defaults are ``""``/``0``/``[]``/``False``, not ``None``), so every
-        part historically shipped ~30 mostly-empty keys. ``exclude_defaults``
-        realizes the documented "omitempty" contract: only fields the part actually
-        set survive. The identity + authorship triple (``id``/``type``/``agent_id``)
-        is force-kept so a client can always attribute a part without inference,
-        even when a value coincides with its default.
+    def to_wire(self) -> dict[str, Any]:
+        """Project this part to its wire dict via ``exclude_defaults`` (omitempty:
+        a part populates only its own ``type``'s fields; the rest sit at
+        ``""``/``0``/``[]``/``False`` and are dropped). The ``id``/``type``/``agent_id``
+        triple is force-kept so a client can always attribute a part; ``content`` recurses.
         """
 
         wire = self.model_dump(exclude_defaults=True)
