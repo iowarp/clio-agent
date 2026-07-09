@@ -65,7 +65,7 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/gact/turn_delegation.py": 1014,
     "src/clio_agent/gact/turn_finalize.py": 966,
     "src/clio_agent/gact/types.py": 1143,
-    "src/clio_agent/providers/claude_code_litellm.py": 1227,
+    "src/clio_agent/providers/claude_code_litellm.py": 1176,
     "src/clio_agent/runtime/status.py": 1222,
     "src/clio_agent/tools/execution.py": 1187,
     "src/clio_agent/ui/cli.py": 1156,

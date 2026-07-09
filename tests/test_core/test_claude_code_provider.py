@@ -20,8 +20,10 @@ from clio_agent.providers.claude_code_litellm import (
     _messages_to_claude_prompt,
     _resolve_claude_binary,
     _run_exec,
-    _split_provider_thinking_contract_delta,
     ensure_registered,
+)
+from clio_agent.providers.claude_code_thinking_split import (
+    _split_provider_thinking_contract_delta,
 )
 
 
@@ -202,9 +204,10 @@ def test_custom_llm_sdk_transport_routes_to_run_sdk(monkeypatch) -> None:
 
 
 def test_split_provider_thinking_promotes_react_tool_marker_across_chunks() -> None:
-    """ReAct markers in provider thinking are structured contract, not model_aux."""
+    """A line-start ReAct header in provider thinking is structured contract, not model_aux,
+    and is promoted even when the header is split across two ``thinking_delta`` chunks."""
     provider, contract, tail, started = _split_provider_thinking_contract_delta(
-        "analysis before [[ ## next_tool",
+        "analysis before\n[[ ## next_tool",
         marker_tail="",
         contract_started=False,
     )
@@ -222,9 +225,57 @@ def test_split_provider_thinking_promotes_react_tool_marker_across_chunks() -> N
     )
 
     provider_parts.append(provider)
-    assert "".join(provider_parts) == "analysis before "
+    assert "".join(provider_parts) == "analysis before\n"
     assert contract == "[[ ## next_tool_name ## ]]\nfinish\n\n[[ ## next_tool_args ## ]]\n{}"
     assert tail == ""
+    assert started
+
+
+def test_split_provider_thinking_ignores_midline_marker_mention() -> None:
+    """A marker MENTIONED mid-line in prose (the model narrating its own ChatAdapter format,
+    often backtick-wrapped) is NOT a contract boundary: it stays in provider thinking and does
+    not latch ``contract_started``. This is the #877 root fix — the mis-promotion that made the
+    client regex mangle genuine reasoning prose."""
+    text = "It then emits `[[ ## next_thought ## ]]`, then `[[ ## next_tool_name ## ]]` in order."
+    provider, contract, tail, started = _split_provider_thinking_contract_delta(
+        text,
+        marker_tail="",
+        contract_started=False,
+    )
+
+    assert provider == text  # the whole mention is preserved verbatim as thinking
+    assert contract == ""
+    assert tail == ""
+    assert not started
+
+
+def test_split_provider_thinking_promotes_unknown_field_line_start() -> None:
+    """A well-formed line-start header for an UNKNOWN field name (``\\w+``, not a fixed
+    allowlist) is still recognized as contract, matching DSPy's grammar — so it can never
+    survive in provider thinking and render verbatim once the client marker strip is deleted."""
+    provider, contract, tail, started = _split_provider_thinking_contract_delta(
+        "some thinking\n[[ ## foobar ## ]]\nvalue",
+        marker_tail="",
+        contract_started=False,
+    )
+
+    assert provider == "some thinking\n"
+    assert contract == "[[ ## foobar ## ]]\nvalue"
+    assert tail == ""
+    assert started
+
+
+def test_split_provider_thinking_promotes_header_at_buffer_start() -> None:
+    """A header at the very start of the thinking buffer (no preceding newline) is contract."""
+    provider, contract, tail, started = _split_provider_thinking_contract_delta(
+        "[[ ## reasoning ## ]]\nthe answer is 42",
+        marker_tail="",
+        contract_started=False,
+    )
+
+    assert provider == ""
+    assert contract == "[[ ## reasoning ## ]]\nthe answer is 42"
+    assert not tail
     assert started
 
 
@@ -434,7 +485,7 @@ async def test_astream_sdk_promotes_dspy_contract_from_thinking_delta(monkeypatc
                     "type": "content_block_delta",
                     "delta": {
                         "type": "thinking_delta",
-                        "thinking": "internal draft [[ ## rea",
+                        "thinking": "internal draft\n[[ ## rea",
                     },
                 }
             )
