@@ -1,0 +1,156 @@
+{
+  "events": [
+    {
+      "payload": {
+        "id": "<msg#1>",
+        "metadata": {},
+        "parts": [
+          {
+            "agent_id": "",
+            "id": "<part#3>",
+            "text": "stream a text answer",
+            "type": "text"
+          }
+        ],
+        "role": "user",
+        "session_id": "<sess#2>",
+        "stop_reason": "",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.created"
+    },
+    {
+      "payload": {
+        "id": "<msg#4>",
+        "metadata": {},
+        "parts": [],
+        "role": "assistant",
+        "session_id": "<sess#2>",
+        "stop_reason": "",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.created"
+    },
+    {
+      "payload": {
+        "message_id": "<msg#4>",
+        "part": {
+          "agent_id": "main",
+          "id": "<part#5>",
+          "metadata": {
+            "signature_field_name": "answer",
+            "stream_source": "live"
+          },
+          "type": "text"
+        },
+        "stream_source": "live",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.part.added"
+    },
+    {
+      "payload": {
+        "delta": {
+          "text_append": "Hello "
+        },
+        "message_id": "<msg#4>",
+        "part_id": "<part#5>",
+        "signature_field_name": "answer",
+        "stream_source": "live",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.part.delta"
+    },
+    {
+      "payload": {
+        "delta": {
+          "text_append": "streamed "
+        },
+        "message_id": "<msg#4>",
+        "part_id": "<part#5>",
+        "signature_field_name": "answer",
+        "stream_source": "live",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.part.delta"
+    },
+    {
+      "payload": {
+        "delta": {
+          "text_append": "world."
+        },
+        "message_id": "<msg#4>",
+        "part_id": "<part#5>",
+        "signature_field_name": "answer",
+        "stream_source": "live",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.part.delta"
+    },
+    {
+      "payload": {
+        "final_text": "Hello streamed world.",
+        "message_id": "<msg#4>",
+        "part_id": "<part#5>",
+        "stream_source": "live",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.part.completed"
+    },
+    {
+      "payload": {
+        "message_id": "<msg#4>",
+        "part": {
+          "agent_id": "main",
+          "id": "<part#6>",
+          "metadata": {
+            "route_reason": "planner selected code expert",
+            "route_source": "dspy"
+          },
+          "rationale": "matched coding keywords",
+          "selected_agent": "code_expert",
+          "type": "routing_decision"
+        },
+        "stream_source": "batch",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.part.added"
+    },
+    {
+      "payload": {
+        "message_id": "<msg#4>",
+        "metadata": {
+          "stream_source": "live"
+        },
+        "stop_reason": "end_turn",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.completed"
+    }
+  ],
+  "persisted_assistant_parts": [
+    {
+      "agent_id": "main",
+      "id": "<part#5>",
+      "metadata": {
+        "signature_field_name": "answer",
+        "stream_source": "live"
+      },
+      "sequence": 1,
+      "text": "Hello streamed world.",
+      "type": "text"
+    },
+    {
+      "agent_id": "main",
+      "id": "<part#6>",
+      "metadata": {
+        "route_reason": "planner selected code expert",
+        "route_source": "dspy"
+      },
+      "rationale": "matched coding keywords",
+      "selected_agent": "code_expert",
+      "sequence": 2,
+      "type": "routing_decision"
+    }
+  ]
+}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -7,6 +8,27 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
+
+
+def _write_agent_invocable_command(command_dir: Path, name: str, description: str) -> None:
+    """Write a minimal agent-invocable slash-command file to ``command_dir``."""
+
+    command_dir.mkdir(parents=True, exist_ok=True)
+    command_dir.joinpath(f"{name}.md").write_text(
+        "\n".join(
+            [
+                "---",
+                f"name: {name}",
+                f"title: {name.title()}",
+                f"description: {description}",
+                "agent: main",
+                "agent-invocable: true",
+                "---",
+                f"Run {name}.",
+            ]
+        ),
+        encoding="utf-8",
+    )
 
 
 @pytest.fixture()
@@ -355,9 +377,7 @@ def test_user_agent_runtime_uses_resolved_prompt_profile(
         )
         assert created.status_code == 201, created.text
         catalog_agent = c.get("/v1/agents/reviewer").json()
-        listed_agents = {
-            row["id"]: row for row in c.get("/v1/agents").json()["agents"]
-        }
+        listed_agents = {row["id"]: row for row in c.get("/v1/agents").json()["agents"]}
         sid = c.post(
             "/v1/sessions",
             json={"title": "prompt-backed agent", "agent": {"id": "reviewer"}},
@@ -393,3 +413,97 @@ def test_user_agent_runtime_uses_resolved_prompt_profile(
     assert assistant["metadata"]["prompt_resolution"]["id"] == "clio.reviewer"
     assert assistant["metadata"]["prompt_resolution"]["profile"] == "light"
     assert assistant["parts"][1]["text"] == "PROMPT_PROFILE_OK"
+
+
+def test_planner_render_context_uses_agent_scoped_commands(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The render context's ``commands.agent_invocable`` must be the AGENT-scoped
+    subset (what ``planner_command_rows`` returns for that agent+session), not the
+    un-scoped base command list.
+
+    Regression for #770 C1: ``_prompt_render_context_for_request`` passed the
+    module-level ``_resolve_runtime_dynamic_agent`` (arity ``(app, agent_id, ...)``)
+    where ``planner_command_rows`` calls ``resolver(agent_id, session_id=...)`` ->
+    ``TypeError`` swallowed by a bare ``except``, so the scoped enrichment silently
+    reverted to the base list.
+    """
+
+    monkeypatch.chdir(tmp_path)
+    command_dir = tmp_path / ".clio" / "commands"
+    # Two agent-invocable commands on disk; the active agent only allows one.
+    _write_agent_invocable_command(command_dir, "summarize", "Summarize a dataset")
+    _write_agent_invocable_command(command_dir, "other", "Some other command")
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as c:
+        created = c.post(
+            "/v1/agents",
+            json={
+                "id": "caller",
+                "title": "Caller",
+                "system_prompt": "Call allowed commands.",
+                "metadata": {"commands": ["/summarize"]},
+            },
+        )
+        assert created.status_code in (200, 201), created.text
+        sid = c.post(
+            "/v1/sessions",
+            json={"title": "t", "agent": {"id": "caller"}},
+        ).json()["id"]
+
+        rendered = c.post(
+            "/v1/prompts/clio.main.planner/render",
+            json={"session_id": sid},
+        ).json()["prompt"]
+
+    text = rendered["text"]
+    # The agent-scoped subset keeps /summarize (allowed) and drops /other (not
+    # allowed for this agent). Under the bug the base list leaked /other through.
+    assert "/summarize" in text
+    assert "/other" not in text
+
+
+def test_planner_render_context_records_reason_on_enrichment_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A failure in the agent-invocable command enrichment must emit a structured
+    reason (no silent ``except: pass``) and fall back to the base command list."""
+
+    monkeypatch.chdir(tmp_path)
+    _write_agent_invocable_command(
+        tmp_path / ".clio" / "commands", "summarize", "Summarize a dataset"
+    )
+
+    def _boom(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        raise RuntimeError("planner enrichment exploded")
+
+    monkeypatch.setattr("clio_agent.gact.app._planner_command_rows", _boom)
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as c:
+        sid = c.post(
+            "/v1/sessions",
+            json={"title": "t", "agent": {"id": "main"}},
+        ).json()["id"]
+
+        with caplog.at_level(logging.WARNING, logger="clio_agent"):
+            resp = c.post(
+                "/v1/prompts/clio.main.planner/render",
+                json={"session_id": sid},
+            )
+
+    assert resp.status_code == 200, resp.text
+    # The failure is observable in the trace, not swallowed.
+    reasons = [
+        rec.getMessage()
+        for rec in caplog.records
+        if "PROMPT-CTX" in rec.getMessage() and "enrichment failed" in rec.getMessage()
+    ]
+    assert reasons, "expected a structured PROMPT-CTX enrichment-failure reason"
+    assert "planner enrichment exploded" in reasons[0]
+    # Enrichment failed -> render still succeeds on the base command list.
+    assert "/summarize" in resp.json()["prompt"]["text"]

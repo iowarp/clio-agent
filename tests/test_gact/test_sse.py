@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB13: tests for /v1/sessions/{sid}/events.
+"""tests for /v1/sessions/{sid}/events.
 
 Two-layer testing strategy:
 
@@ -78,7 +78,7 @@ def test_sse_wire_tap_writes_timestamped_event_log(
     monkeypatch.setenv("CLIO_SSE_WIRE_TAP", str(raw_path))
     monkeypatch.setenv("CLIO_SSE_EVENT_LOG", str(event_log_path))
     monkeypatch.setenv("CLIO_STREAM_AUDIT_LOG", str(audit_path))
-    event = Event(type="turn.text.delta", session_id="sess_1", payload={"turn_id": "t1"})
+    event = Event(type="message.part.delta", session_id="sess_1", payload={"turn_id": "t1"})
     frame = _format_sse(event)
 
     _sse_wire_tap("sess_1", frame, event)
@@ -87,7 +87,7 @@ def test_sse_wire_tap_writes_timestamped_event_log(
     row = json.loads(event_log_path.read_text(encoding="utf-8"))
     assert row["session_id"] == "sess_1"
     assert row["event_id"] == event.id
-    assert row["event_type"] == "turn.text.delta"
+    assert row["event_type"] == "message.part.delta"
     assert row["event_occurred_at"] == event.occurred_at
     assert row["sse_written_at"]
     assert row["frame_bytes"] == len(frame)
@@ -235,7 +235,7 @@ def test_sse_endpoint_404s_for_unknown_session(client: TestClient) -> None:
     resp = client.get("/v1/sessions/sess_nope/events")
     assert resp.status_code == 404
     body = resp.json()
-    assert body["error"]["error"] == "internal_error"
+    assert body["error"]["error"] == "not_found"
     assert "session not found" in body["error"]["message"]
 
 

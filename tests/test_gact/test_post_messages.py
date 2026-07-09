@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB9: tests for POST /v1/sessions/{sid}/messages.
+"""tests for POST /v1/sessions/{sid}/messages.
 
 Drives the app with a FakeClioAgent so no LM is needed. Covers:
   - happy path: user message stored, assistant reply returned with
@@ -906,16 +906,15 @@ def test_post_message_agent_id_override_reports_structured_error_without_mutatin
     }
 
 
-def test_post_message_does_not_keyword_route_to_user_agent_by_default(
+def test_post_message_main_path_answers_without_keyword_routing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from .conftest import complete_turn
 
     def fail_prompt_agent(*args: Any, **kwargs: Any) -> Any:
-        raise AssertionError("keyword user-agent routing should be opt-in")
+        raise AssertionError("no keyword auto-routing: the main path must answer")
 
-    monkeypatch.delenv("CLIO_ENABLE_KEYWORD_USER_AGENT_ROUTING", raising=False)
     monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fail_prompt_agent)
 
     agent = FakeClioAgent(answer="MAIN_OK", selected_expert="")
@@ -934,102 +933,6 @@ def test_post_message_does_not_keyword_route_to_user_agent_by_default(
             == 201
         )
         sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
-        assistant = complete_turn(c, sid, "please do a code review of this patch")
-
-    assert agent.calls == [("please do a code review of this patch", sid)]
-    assert [part["type"] for part in assistant["parts"]] == ["text"]
-    assert assistant["parts"][0]["text"] == "MAIN_OK"
-
-
-def test_post_message_can_opt_in_to_keyword_user_agent_routing(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from .conftest import complete_turn
-
-    calls: list[tuple[str, str, str]] = []
-
-    def fake_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
-        calls.append((agent_def.id, question, session_id))
-        return FakePrediction(
-            answer="USER_AGENT_ROUTED",
-            selected_expert=agent_def.id,
-            routing_rationale="matched registered user-agent keyword",
-            route_source="user_agent_keyword",
-        )
-
-    async def fake_stream_unavailable(
-        app: Any,
-        enriched_text: str,
-        sid: str,
-        emit_chunk: Any,
-        **kwargs: Any,
-    ) -> Any:
-        del enriched_text, emit_chunk, kwargs
-        from clio_agent.gact.app import _record_stream_fallback
-
-        _record_stream_fallback(app, sid, "dynamic_prompt_stream_unavailable")
-        return None
-
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_stream_unavailable)
-    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_agent)
-    monkeypatch.setenv("CLIO_ENABLE_KEYWORD_USER_AGENT_ROUTING", "1")
-
-    agent = FakeClioAgent(answer="main should not run")
-    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
-    with TestClient(app) as c:
-        assert (
-            c.post(
-                "/v1/agents",
-                json={
-                    "id": "reviewer",
-                    "title": "Reviewer",
-                    "system_prompt": "Review code carefully.",
-                    "keywords": ["code review", "reviewer"],
-                },
-            ).status_code
-            == 201
-        )
-        sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
-        assistant = complete_turn(c, sid, "please do a code review of this patch")
-
-    assert agent.calls == []
-    assert calls == [("reviewer", "please do a code review of this patch", sid)]
-    assert assistant["parts"][0]["selected_agent"] == "reviewer"
-    assert assistant["parts"][0]["metadata"]["route_source"] == "user_agent_keyword"
-    assert assistant["parts"][1]["text"] == "USER_AGENT_ROUTED"
-
-
-def test_post_message_keyword_routing_chat_mode_uses_main_agent(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from .conftest import complete_turn
-
-    def fail_prompt_agent(*args: Any, **kwargs: Any) -> Any:
-        raise AssertionError("chat routing mode should not auto-route to user agent")
-
-    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fail_prompt_agent)
-
-    agent = FakeClioAgent(answer="MAIN_OK", selected_expert="")
-    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
-    with TestClient(app) as c:
-        assert (
-            c.post(
-                "/v1/agents",
-                json={
-                    "id": "reviewer",
-                    "title": "Reviewer",
-                    "system_prompt": "Review code carefully.",
-                    "keywords": ["code review"],
-                },
-            ).status_code
-            == 201
-        )
-        sid = c.post(
-            "/v1/sessions",
-            json={"title": "x", "routing_mode": "chat"},
-        ).json()["id"]
         assistant = complete_turn(c, sid, "please do a code review of this patch")
 
     assert agent.calls == [("please do a code review of this patch", sid)]
@@ -1089,7 +992,10 @@ def test_post_message_prompt_user_agent_streams_live_when_available(
     completed = [ev for ev in history if ev.type == "message.completed"]
 
     assert agent.calls == []
-    assert assistant["parts"][1]["text"] == "USER_AGENT_LIVE_OK"
+    # #767 PR3 (#731): parts persist in ARRIVAL order — the streamed answer part
+    # landed live first; the routing banner is appended at finalize, after it.
+    assert [part["type"] for part in assistant["parts"]] == ["text", "routing_decision"]
+    assert assistant["parts"][0]["text"] == "USER_AGENT_LIVE_OK"
     assert assistant["metadata"]["stream_source"] == "live"
     assert [d.payload["delta"]["text_append"] for d in deltas] == [
         "USER_",
@@ -1109,12 +1015,13 @@ def test_post_message_tool_user_agent_executes_registered_agent(
     tool_module = object()
 
     def fake_tool_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
-        from clio_agent.tools.execution import _GLOBAL_TOOL_OBSERVER
+        from clio_agent.tools.execution import current_tool_runtime
 
         calls.append((agent_def.id, question, session_id))
-        assert _GLOBAL_TOOL_OBSERVER is not None
-        _GLOBAL_TOOL_OBSERVER("fs_read_file", {"path": "README.md"}, "started", None)
-        _GLOBAL_TOOL_OBSERVER("fs_read_file", {"path": "README.md"}, "completed", None)
+        observer = current_tool_runtime().tool_observer
+        assert observer is not None
+        observer("fs_read_file", {"path": "README.md"}, "started", None)
+        observer("fs_read_file", {"path": "README.md"}, "completed", None)
         return FakePrediction(
             answer="TOOL_USER_AGENT_OK",
             selected_expert=agent_def.id,
@@ -1171,19 +1078,21 @@ def test_post_message_tool_user_agent_executes_registered_agent(
     assert calls == [("tool_reviewer", "hi", sid)]
     assert assistant["stop_reason"] == "end_turn"
     assert assistant.get("error_info") is None
-    # #731: the persisted message is the live spine in ARRIVAL ORDER — the
-    # tool_call / tool_result parts the observer emitted are retained (previously
-    # only ``text`` parts survived, regrouping by type and dropping tool parts).
+    # #731 / #767 PR3: the persisted message IS the ledger in ARRIVAL ORDER —
+    # the observer's tool_call / tool_result parts landed live during the turn;
+    # the routing banner and the batch answer are appended at finalize, after
+    # them. (Before PR3 finalize hoisted its routing part above the live spine,
+    # so reload order differed from stream order.)
     assert [part["type"] for part in assistant["parts"]] == [
-        "routing_decision",
         "tool_call",
         "tool_result",
+        "routing_decision",
         "text",
     ]
     # #731: every persisted part carries a monotonic 1-based arrival-order key.
     assert [part["sequence"] for part in assistant["parts"]] == [1, 2, 3, 4]
-    assert assistant["parts"][0]["selected_agent"] == "tool_reviewer"
-    assert assistant["parts"][1]["tool_name"] == "fs_read_file"
+    assert assistant["parts"][2]["selected_agent"] == "tool_reviewer"
+    assert assistant["parts"][0]["tool_name"] == "fs_read_file"
     assert assistant["parts"][-1]["text"] == "TOOL_USER_AGENT_OK"
     assert assistant["metadata"]["stream_source"] == "batch"
     assert assistant["metadata"]["stream_fallback"]["reason"] == ("dynamic_tool_stream_unavailable")
@@ -1278,7 +1187,10 @@ def test_post_message_tool_user_agent_streams_live_when_available(
     completed = [ev for ev in history if ev.type == "message.completed"]
 
     assert agent.calls == []
-    assert assistant["parts"][1]["text"] == "TOOL_USER_AGENT_LIVE_OK"
+    # #767 PR3 (#731): arrival order — the streamed answer part precedes the
+    # finalize-appended routing banner.
+    assert [part["type"] for part in assistant["parts"]] == ["text", "routing_decision"]
+    assert assistant["parts"][0]["text"] == "TOOL_USER_AGENT_LIVE_OK"
     assert assistant["metadata"]["stream_source"] == "live"
     assert [d.payload["delta"]["text_append"] for d in deltas] == [
         "TOOL_",
@@ -1613,49 +1525,10 @@ def test_tool_call_part_carries_thought_and_invoking_expert(tmp_path: Path) -> N
         assert wire["agent_id"] == "geospatial"
 
 
-def test_dedup_cross_agent_text_drops_verbatim_echo() -> None:
-    """#736: when the resumed orchestrator (``main``) re-emits a terminal child's
-    answer verbatim, the later cross-agent byte-identical ``text`` part is dropped
-    from the authored transcript and the original child-authored part is kept."""
-
-    from clio_agent.gact.turn import _dedup_cross_agent_text
-    from clio_agent.gact.types import Part
-
-    answer = "## Region\n\nLos Angeles. Strain-rate estimation complete."
-    parts = [
-        Part(id="p1", type="text", agent_id="synthesis", text=answer),
-        Part(id="p2", type="expert_handoff", agent_id="main"),
-        # main reprints synthesis's answer verbatim (the #736 dup)
-        Part(id="p3", type="text", agent_id="main", text=answer),
-        # main's own distinct closing wrap-up — must survive
-        Part(id="p4", type="thinking", agent_id="main", text="All stages complete."),
-    ]
-
-    kept = _dedup_cross_agent_text(parts)
-
-    kept_ids = [p.id for p in kept]
-    assert kept_ids == ["p1", "p2", "p4"]
-    # the surviving answer is the child-authored original
-    answer_parts = [p for p in kept if p.type == "text" and p.text.strip() == answer.strip()]
-    assert len(answer_parts) == 1
-    assert answer_parts[0].agent_id == "synthesis"
-
-
-def test_dedup_cross_agent_text_keeps_same_author_repeat() -> None:
-    """The dedup is cross-agent only: a single author legitimately repeating text
-    (and whitespace-only / empty parts) is left untouched — only a DIFFERENT author's
-    verbatim echo of an earlier part is removed."""
-
-    from clio_agent.gact.turn import _dedup_cross_agent_text
-    from clio_agent.gact.types import Part
-
-    parts = [
-        Part(id="a1", type="text", agent_id="data", text="status: ok"),
-        Part(id="a2", type="text", agent_id="data", text="status: ok"),  # same author
-        Part(id="a3", type="text", agent_id="analysis", text=""),  # empty: ignored
-        Part(id="a4", type="text", agent_id="analysis", text="   "),  # blank: ignored
-    ]
-
-    kept = _dedup_cross_agent_text(parts)
-
-    assert [p.id for p in kept] == ["a1", "a2", "a3", "a4"]
+# NOTE (#767 PR3): the ``_dedup_cross_agent_text`` finalize scrub (mechanism 6's
+# persist-time half) was deleted — finalize persists the ledger VERBATIM, so a
+# post-hoc text-matching drop pass can no longer exist. The #736 symptom is now
+# covered by exactly-once producer assertions in ``test_turn_transcript_pr3.py``
+# (the canonical answer channel never re-emits an already-landed answer, by op
+# identity) and by the suite-wide live==reload fold property in ``conftest.py``.
+# The restates_part_id echo TAG (mechanism 6's replacement labeling) ships in PR4.

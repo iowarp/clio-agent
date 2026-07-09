@@ -1,7 +1,7 @@
 # Adding a new LM provider
 
 clio-agent's provider catalog lives in one place:
-[`src/clio_agent/providers/registry.py`][registry]. Adding a new
+[`src/clio_agent/providers/catalog.py`][catalog]. Adding a new
 provider is usually one new `Provider(...)` entry. If the wire isn't
 OpenAI / Anthropic-compatible (LiteLLM doesn't speak it natively),
 you also write a `CustomLLM`.
@@ -45,12 +45,12 @@ class Provider:
 
 Most providers fit here: the upstream speaks the OpenAI chat-
 completions protocol (LM Studio, Ollama, OpenRouter, ALCF vLLM, …).
-LiteLLM handles the wire. **You write one registry entry, nothing
+LiteLLM handles the wire. **You write one catalog entry, nothing
 else.**
 
 Example: imagine adding **`groq`** for Groq Cloud.
 
-1. Open `src/clio_agent/providers/registry.py`. Add an entry to
+1. Open `src/clio_agent/providers/catalog.py`. Add an entry to
    `PROVIDERS`:
 
    ```python
@@ -80,7 +80,7 @@ Example: imagine adding **`groq`** for Groq Cloud.
    already have an `is_kind_default=True` row (Groq does — `"openai"`
    is already covered), no test change needed. Otherwise add it to
    `test_provider_defaults_keys_match_kinds` in
-   `tests/test_core/test_provider_registry.py`.
+   `tests/test_core/test_provider_catalog.py`.
 
 3. **Done.** `dspy.LM(model="openai/llama-3.1-70b-versatile",
    api_base="https://api.groq.com/openai/v1", api_key=...)` already
@@ -178,7 +178,7 @@ if config.provider == "myprovider":
     return f"myprovider/{config.model.removeprefix('myprovider/')}"
 ```
 
-### 4. Add the registry entry
+### 4. Add the catalog entry
 
 ```python
 Provider(
@@ -197,7 +197,7 @@ Provider(
 
 ### 5. Widen the `ProviderKind` literal
 
-In `registry.py`:
+In `catalog.py`:
 
 ```python
 ProviderKind = Literal[
@@ -222,7 +222,7 @@ Add `tests/test_core/test_myprovider_provider.py`. At minimum:
 - If you have an optional extra, test the "extra not installed" path
   raises an actionable error.
 
-Update `tests/test_core/test_provider_registry.py`'s
+Update `tests/test_core/test_provider_catalog.py`'s
 `test_provider_defaults_keys_match_kinds` to include the new wire
 kind.
 
@@ -237,14 +237,14 @@ from the root [`README.md`](../../README.md).
 - **All LM calls go through DSPy → LiteLLM.** No raw `requests.post`
   side channels. If LiteLLM can't reach your upstream natively, write
   a `CustomLLM` — don't bypass the abstraction.
-- **One source of truth.** The registry is it. `PROVIDER_DEFAULTS`,
+- **One source of truth.** The catalog is it. `PROVIDER_DEFAULTS`,
   `_LM_PRESETS`, and `_PROVIDER_MODELS` are derived views — never edit
   them directly.
 - **Lazy imports.** A `CustomLLM` module is imported only when the
   user selects that provider. Don't import-time-pull heavy
-  dependencies from `registry.py` itself.
+  dependencies from `catalog.py` itself.
 - **Idempotent registration.** Hot-swapping providers via
   `PUT /v1/providers/lm` should not grow `litellm.custom_provider_map`
   without bound.
 
-[registry]: ../../src/clio_agent/providers/registry.py
+[catalog]: ../../src/clio_agent/providers/catalog.py

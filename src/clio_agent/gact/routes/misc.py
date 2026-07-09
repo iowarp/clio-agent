@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
@@ -34,9 +33,11 @@ from typing import TYPE_CHECKING, Any, Optional
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
-from clio_agent.gact.events import Event, heartbeat_payload
+from clio_agent.gact.events import Event, heartbeat_event
+from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.runtime.constants import GACT_BACKEND_VERSION
 from clio_agent.gact.runtime.globals import _format_sse
+from clio_agent.gact.runtime.retention import enforce_dict_bound
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Session
 from clio_agent.runtime.stream_audit import stream_audit
 
@@ -56,7 +57,9 @@ def _sse_wire_tap(sid: str, frame: bytes, event: Event | None = None) -> None:
     same Event objects to all subscribers. Used to get a 1-1 replica of the UI
     stream for ordering/quality debugging. Best-effort: never breaks the feed.
     """
-    path = os.environ.get("CLIO_SSE_WIRE_TAP")
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    path = conf.resolve("debug.sse_wire_tap", env="CLIO_SSE_WIRE_TAP", default="", cast=conf.as_str)
     if path:
         try:
             with open(path, "ab") as fh:
@@ -76,7 +79,9 @@ def _sse_wire_tap(sid: str, frame: bytes, event: Event | None = None) -> None:
         "frame_bytes": len(frame),
         "payload_keys": sorted(event.payload.keys()),
     }
-    event_log = os.environ.get("CLIO_SSE_EVENT_LOG", "").strip()
+    event_log = conf.resolve(
+        "debug.sse_event_log", env="CLIO_SSE_EVENT_LOG", default="", cast=conf.as_str
+    ).strip()
     if event_log:
         try:
             log_path = Path(event_log).expanduser()
@@ -113,7 +118,7 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"session not found: {sid}",
                         recoverable=False,
                     )
@@ -129,18 +134,13 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"session not found: {sid}",
                         recoverable=False,
                     )
                 ).model_dump(exclude_none=True),
             )
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+        body = await json_body(request, route="POST /v1/sessions/{sid}/tasks")
         title = (body.get("title") or "").strip()
         if not title:
             raise HTTPException(
@@ -182,19 +182,14 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"task not found: {tid}",
                         recoverable=False,
                     )
                 ).model_dump(exclude_none=True),
             )
         _, row = found
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+        body = await json_body(request, route="PATCH /v1/tasks/{tid}")
         if "title" in body and body["title"]:
             row["title"] = str(body["title"])
         if "status" in body and body["status"] in {"pending", "running", "completed", "failed"}:
@@ -210,7 +205,7 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"task not found: {tid}",
                         recoverable=False,
                     )
@@ -294,18 +289,13 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"session not found: {sid}",
                         recoverable=False,
                     )
                 ).model_dump(exclude_none=True),
             )
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+        body = await json_body(request, route="POST /v1/sessions/{sid}/share")
         ttl_s = int(body.get("ttl_s") or 0)
         token = "shr_" + uuid.uuid4().hex[:24]
         expires_at: str | float = ""
@@ -316,6 +306,7 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
             "created_at": datetime.now(timezone.utc).isoformat(),
             "expires_at": expires_at,
         }
+        enforce_dict_bound(app, app.state.shared_tokens, "shared_tokens", session_id=sid)
         return {
             "token": token,
             "session_id": sid,
@@ -331,7 +322,7 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"share token not found: {token}",
                         recoverable=False,
                     )
@@ -358,7 +349,7 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=(f"underlying session {sid} no longer exists"),
                         recoverable=False,
                     )
@@ -390,7 +381,7 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"session not found: {sid}",
                         details={"session_id": sid},
                         recoverable=False,
@@ -446,16 +437,13 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
             try:
                 # Heartbeat task — pumps a server.heartbeat event
                 # into the queue every 15s. SPEC §7.1.
+                # Transient (live-delivery only): heartbeats must not
+                # enter the replay history or count as watchdog
+                # progress — see events.heartbeat_event (#761).
                 async def _heartbeat() -> None:
                     while True:
                         await asyncio.sleep(15)
-                        app.state.bus.publish(
-                            Event(
-                                type="server.heartbeat",
-                                session_id=sid,
-                                payload=heartbeat_payload(),
-                            )
-                        )
+                        app.state.bus.publish(heartbeat_event(sid))
 
                 heartbeat_task = asyncio.create_task(_heartbeat())
 

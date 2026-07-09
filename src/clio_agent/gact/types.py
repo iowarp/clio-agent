@@ -6,7 +6,7 @@ the Python counterpart of the Go types at
 generated client code rounds-trips cleanly.
 
 Only the shapes we actually emit or consume live here — we stub
-incrementally as each endpoint lands (CLIO-BBBBBBBBBB6 onwards).
+incrementally as each endpoint lands.
 """
 
 from __future__ import annotations
@@ -23,11 +23,24 @@ from clio_agent.arc.schema import SegmentKind
 
 
 class Integration(BaseModel):
-    """One subsystem row in ``/v1/health.integrations[]`` (v0.2 §3.4)."""
+    """One subsystem row in ``/v1/health.integrations[]`` (v0.2 §3.4).
+
+    ``name``/``status``/``detail`` are the v0.2 back-compat triple the TUI's
+    ``/doctor`` modal already parses. The richer optional fields (#800) carry the
+    full :class:`clio_agent.runtime.status.IntegrationStatus` detail so the single
+    doctor engine loses nothing on the wire and the CLI/TUI can render the same
+    columns as ``render_doctor_report`` (summary / config source / endpoint / next
+    action). They are additive and default to ``None`` so existing readers stay
+    valid; ``detail`` mirrors ``summary`` for clients that only read ``detail``.
+    """
 
     name: str
     status: Literal["ready", "degraded", "unavailable"]
     detail: str = ""
+    summary: Optional[str] = None
+    config_source: Optional[str] = None
+    next_action: Optional[str] = None
+    endpoint: Optional[str] = None
 
 
 class HealthResponse(BaseModel):
@@ -37,6 +50,15 @@ class HealthResponse(BaseModel):
     uptime_s: int
     overall_status: Optional[Literal["ready", "degraded", "unavailable"]] = None
     integrations: Optional[list[Integration]] = None
+    # #772: whether the tool-runtime hooks (permission gate + tool observer) are
+    # installed. ``False`` means the install *failed* — tools would run ungated/
+    # unobserved, the highest-severity silent fallback, now surfaced so operators
+    # can see the degraded gate (the error itself is captured in
+    # ``app.state.tool_hooks_install_error`` and logged as
+    # ``reason=tool_runtime_hooks_install_failed``). ``None`` means
+    # not-yet-determined: deferred agent init hasn't installed the hooks yet
+    # (or the agent itself failed to construct — see ``agent_init_error``).
+    tool_hooks_installed: Optional[bool] = None
 
 
 class BackendInfo(BaseModel):
@@ -478,7 +500,7 @@ class Session(BaseModel):
     parent_session_id: str = ""
     model: ModelRef = Field(default_factory=ModelRef)
     agent: AgentRef = Field(default_factory=AgentRef)
-    # CLIO-BBBBBBBBBB24: cumulative rollups.
+    # cumulative rollups.
     tokens_input: int = 0
     tokens_output: int = 0
     cost_usd: float = 0.0
@@ -639,19 +661,19 @@ class Part(BaseModel):
     lines_added: int = 0
     lines_removed: int = 0
 
-    def to_wire(self) -> dict[str, Any]:
-        """Project this part to its on-the-wire dict, dropping unused fields.
+    # compaction part (SPEC §4.5, #832): structured summary replacing archived
+    # history, rendered from typed fields (not a ``[compact summary]`` prefix).
+    # ``auto`` flags a policy- (vs user-) triggered /compact; ``compacted_message_ids``
+    # lists the archived messages it stands in for.
+    summary: str = ""
+    auto: bool = False
+    compacted_message_ids: list[str] = Field(default_factory=list)
 
-        The Part shape carries one set of fields per ``type`` (text, tool_call,
-        file_diff, expert_handoff, routing_decision, …) but a single instance only
-        populates the handful relevant to its own type; the rest sit at their
-        zero-value defaults. ``model_dump(exclude_none=True)`` does NOT drop those
-        (the defaults are ``""``/``0``/``[]``/``False``, not ``None``), so every
-        part historically shipped ~30 mostly-empty keys. ``exclude_defaults``
-        realizes the documented "omitempty" contract: only fields the part actually
-        set survive. The identity + authorship triple (``id``/``type``/``agent_id``)
-        is force-kept so a client can always attribute a part without inference,
-        even when a value coincides with its default.
+    def to_wire(self) -> dict[str, Any]:
+        """Project this part to its wire dict via ``exclude_defaults`` (omitempty:
+        a part populates only its own ``type``'s fields; the rest sit at
+        ``""``/``0``/``[]``/``False`` and are dropped). The ``id``/``type``/``agent_id``
+        triple is force-kept so a client can always attribute a part; ``content`` recurses.
         """
 
         wire = self.model_dump(exclude_defaults=True)
@@ -801,6 +823,11 @@ class AgentDef(BaseModel):
     prompt_profile: str = ""
     default_provider: str = ""
     default_model: str = ""
+    # Per-expert provider identity (#818). All data, never inline secrets: an
+    # empty value means "inherit the default profile" (today's behaviour).
+    api_base: str = ""  # explicit endpoint override for this expert's provider
+    credential_ref: str = ""  # KEY into a credential source (e.g. "openai:acctB"), never a secret
+    transport: str = ""  # transport hint for codex/claude_code providers ("exec"/"sdk")
     parameters: dict[str, Any] = Field(default_factory=dict)
     module: dict[str, Any] = Field(default_factory=dict)
     signature: dict[str, Any] = Field(default_factory=dict)
@@ -985,7 +1012,7 @@ class Metrics(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# /v1/providers/lm — TUI-side LM config (CLIO-BBBBBBBBBB-D)
+# /v1/providers/lm — TUI-side LM config
 # ---------------------------------------------------------------------------
 
 

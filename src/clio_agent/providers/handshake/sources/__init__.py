@@ -1,19 +1,23 @@
 """Context-source factory: resolve a model's limits from the layered cascade.
 
-A provider's own metadata is authoritative; when it doesn't self-report a limit,
-the handshake's ``enrich_capabilities`` step falls back to this factory, which
-tries the sources in a **strict, fixed order** and returns the first hit with an
-exact provenance string:
+The full cascade is **provider-self-reported → models.dev → litellm catalog →
+local DB**. A provider's own metadata is authoritative; when it doesn't
+self-report a limit, the handshake's ``enrich_capabilities`` step falls back to
+this factory, which tries the remaining sources in a **strict, fixed order** and
+returns the first hit with an exact provenance string:
 
 1. **models.dev** (``"models.dev"``) — the public catalog, fetched + cached with a
    TTL, offline-safe. Broadest coverage.
-2. **db** (``"db"``) — the local model-limits database (:mod:`...sources.db`): a
+2. **litellm** (``"litellm"``) — the bundled LiteLLM model-cost catalog, an
+   offline in-process lookup for models models.dev doesn't list.
+3. **db** (``"db"``) — the local model-limits database (:mod:`...sources.db`): a
    repo-shipped, lab-shareable JSON that is also **written back on discovery**, so
    models no public catalog lists yet are still known offline next time.
 
 On a total miss the factory returns ``(None, "")`` and the caller keeps the
-profile's limit unset. Provenance strings are exactly ``models.dev`` | ``db`` and
-feed :attr:`ModelProfile.context_source`. Nothing here fetches at import time.
+profile's limit unset. Provenance strings are exactly ``models.dev`` | ``litellm``
+| ``db`` and feed :attr:`ModelProfile.context_source`. Nothing here fetches at
+import time.
 """
 
 from __future__ import annotations
@@ -47,7 +51,11 @@ SOURCE_DB = "db"
 
 
 def resolve_context(model_id: str, provider_kind: str) -> tuple[int | None, str]:
-    """Resolve a context window for ``model_id`` via models.dev, then the local DB.
+    """Resolve a context window via models.dev, then LiteLLM, then the local DB.
+
+    This is the fallback tail of the full **provider-self-reported → models.dev →
+    litellm catalog → local DB** cascade (the provider-self-report step runs
+    upstream in ``enrich_capabilities``).
 
     Args:
         model_id: The raw model identifier (may include a ``vendor/`` prefix).
@@ -56,7 +64,8 @@ def resolve_context(model_id: str, provider_kind: str) -> tuple[int | None, str]
 
     Returns:
         ``(context_window, source_name)`` where ``source_name`` is exactly
-        ``"models.dev"`` or ``"db"`` on a hit, or ``(None, "")`` on a total miss.
+        ``"models.dev"``, ``"litellm"``, or ``"db"`` on a hit, or ``(None, "")`` on
+        a total miss.
     """
     if not (model_id or "").strip():
         return None, ""

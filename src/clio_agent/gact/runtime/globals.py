@@ -19,9 +19,9 @@ It owns, as the single source of truth:
 * **The internal exceptions** used to settle turns / signal terminal workflow
   states, plus ``_not_implemented`` / ``_coerce_error_info``.
 * **ID / timestamp generators + the SSE wire formatter** (``_format_sse``).
-* **The ``_ctx`` boundary shims + resolve-once caches** (the ``_CompatVar``
-  proxies, the tool/app context managers, the expert-children / orchestrator
-  briefing caches).
+* **The ``_ctx`` boundary shims** (the ``_CompatVar`` proxies, the tool/app
+  context managers). The resolve-once expert caches formerly here are now
+  per-app on ``app.state`` (``gact.runtime.app_state.per_app_dict``, #770).
 
 It imports ONLY gact *leaves* (``gact.context``, ``gact.semantic_events``,
 ``gact.events``, ``gact.types``) + stdlib -- NEVER ``gact.app`` -- so it is
@@ -103,23 +103,26 @@ _ACTIVE_BLUEPRINT_TOOL_ROWS = _CompatVar(
     _ctx.active_blueprint_tool_rows, _ctx.set_blueprint_tool_rows
 )
 
-# Resolve-once cache of an expert's declared child ids, used to build the
-# next_expert: Literal[children, "finish"] routing field. The signature is rebuilt
-# on several paths and some lack the app/session context needed to resolve children
-# live; this process-global cache keeps the Literal correct (vs collapsing to
-# Literal["finish"], which would force an immediate finish). Keyed by expert id.
-_EXPERT_CHILDREN_CACHE: dict[str, list[str]] = {}
-# Same problem, the prompt side: the orchestrator-identity briefing (built from the
-# children rows, which need the session) collapses to "" on a session-less module
-# rebuild -- so the model loses its "you are an orchestrator, delegate, don't
-# fabricate" grounding on exactly the build it runs. Render-once-reuse keeps the
-# briefing on every build. Keyed by expert id.
-_ORCHESTRATOR_BRIEFING_CACHE: dict[str, str] = {}
+# The resolve-once expert caches (declared child ids for the next_expert Literal;
+# the orchestrator-identity briefing) no longer live here as process-global dicts
+# (#770 unified-concurrency §4 Site 2). They are keyed on the live turn's
+# ``app.state`` via ``gact.runtime.app_state.per_app_dict`` so one app's build can
+# never leak its value into a sibling app's (first/last-writer-wins), and an
+# app-less consume yields a structured empty (deterministic finish) rather than a
+# stale cross-app value.
 
 
 @contextmanager
 def _tool_session_context(sid: str) -> Iterator[None]:
-    """Bind GACT tool hooks to the session driving the current turn."""
+    """Bind the tool session id + workspace root for the current turn.
+
+    The four tool-runtime hooks are resolved per tool call by the installed
+    ``ToolRuntimeHooks`` resolver (``resolve_tool_runtime`` dispatching on the
+    keystone-bound ``_ctx.active_app()``), so this no longer binds them. It binds
+    only the tool session id (read by the permission gate to attribute the call to
+    the live turn's session) and the workspace root — resolved off the live app so
+    the tool executor grounds output artifacts into the bound workspace (#735).
+    """
     from clio_agent.tools.execution import tool_workspace_context  # noqa: PLC0415
 
     workspace_root = ""
@@ -258,30 +261,6 @@ def _active_semantic_trace_id() -> str:
     return _ctx.active_trace_id()
 
 
-def _with_ui_safe_semantic_fields(
-    event_type: str,
-    *,
-    status: str,
-    summary: str,
-    payload: Optional[dict[str, Any]],
-) -> dict[str, Any]:
-    """Return the payload unchanged — clio does NOT author UI captions.
-
-    This used to inject ``ui_summary`` (a copy of the envelope ``summary``) and
-    ``result_summary`` (a third copy) into every event payload. That is lossy
-    compaction substituting a clio-authored label for the real content, and it
-    breaks the absolute-observability contract owed to the scientist: the stream
-    must carry what the agent actually did, not clio's caption of it. The event's
-    one-line ``summary`` already rides the envelope; the consumer (TUI) decides
-    how to fold the FULL content — clio transmits, it does not editorialize.
-
-    Kept as an identity passthrough so the (many) emit call sites need no change;
-    ``event_type``/``status``/``summary`` are accepted and ignored.
-    """
-    del event_type, status, summary  # intentionally unused — no captions authored
-    return dict(payload or {})
-
-
 def _llm_provider_payload(app: "FastAPI", agent_id: str = "") -> dict[str, Any]:
     """Build the ``provider`` payload (provider/model/api-base/temperature/max-tokens)
     attached to LM-activity semantic events.
@@ -344,12 +323,10 @@ def _build_semantic_event(
     else:
         sess = None
     workspace_id = str(getattr(sess, "workspace_id", "") or "")
-    event_payload = _with_ui_safe_semantic_fields(
-        event_type,
-        status=status,
-        summary=summary,
-        payload=payload,
-    )
+    # The payload rides verbatim — clio does NOT author UI captions. The event's
+    # one-line ``summary`` already rides the envelope; the consumer (TUI) decides
+    # how to fold the FULL content.
+    event_payload = dict(payload or {})
     return SemanticEvent(
         event_type=event_type,
         session_id=sid,
@@ -486,9 +463,15 @@ def _active_lm_last_reasoning() -> str:
     our boundary subclass (e.g. a test DummyLM, which carries no reasoning channel)."""
 
     try:
-        import dspy  # noqa: PLC0415
+        from clio_agent.gact.runtime.ambient_lm import resolve_active_lm  # noqa: PLC0415
 
-        lm = dspy.settings.lm
+        # Inside the expert/main ``dspy.context`` this is the bound profile LM whose
+        # call just ran (the normal path). Outside one it falls through to the boot
+        # default AND records an ``ambient_lm_default`` reason so the miss is
+        # queryable rather than a silent ambient read (#818).
+        lm = resolve_active_lm(site="globals._active_lm_last_reasoning")
+        if lm is None:
+            return ""
         stashed = getattr(lm, "_clio_last_reasoning", None)
         if stashed is not None:
             return str(stashed)
@@ -568,7 +551,7 @@ def _emit_react_step_event(
                 "is_finish": bool(is_finish),
             },
         )
-    except Exception:  # noqa: BLE001 - capture must never break the expert loop
+    except Exception:  # noqa: BLE001,S110 - capture must never break the expert loop
         pass
 
 
@@ -607,7 +590,7 @@ def _emit_expert_lifecycle_event(
             actor={"agent_id": expert_id, "role": "expert"},
             payload={"expert_id": expert_id, "expert_span_id": expert_span_id, **payload},
         )
-    except Exception:  # noqa: BLE001 - capture must never break the expert loop
+    except Exception:  # noqa: BLE001,S110 - capture must never break the expert loop
         pass
 
 
@@ -911,11 +894,30 @@ def _not_implemented(capability: str) -> ErrorEnvelope:
             details={
                 "capability": capability,
                 "note": (
-                    "This endpoint is stubbed at CLIO-BBBBBBBBBB6; it will "
+                    "This endpoint is stubbed; it will "
                     "be wired in a follow-on iteration. See "
-                    "gact-tui/PLAN.md phase CLIO-BBBBBBBBBB for the roadmap."
+                    "gact-tui/PLAN.md for the roadmap."
                 ),
             },
             recoverable=False,
         )
+    )
+
+
+def _cancelled_error_info(
+    sid: str,
+    *,
+    execution_cancellation: str,
+    executor_work_may_continue: bool,
+) -> "ErrorInfo":
+    """Return the structured ``ErrorInfo`` for a client-cancelled turn."""
+    return ErrorInfo(
+        error="cancelled",
+        message="turn cancelled by client",
+        details={
+            "session_id": sid,
+            "execution_cancellation": execution_cancellation,
+            "executor_work_may_continue": executor_work_may_continue,
+        },
+        recoverable=True,
     )

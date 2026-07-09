@@ -59,7 +59,7 @@ class LMStudioHandshake(ProviderHandshake):
         for url in urls:
             try:
                 response = await client.get(url)
-            except Exception as exc:  # network/DNS/connection failure
+            except Exception as exc:  # network/DNS/connection failure  # noqa: BLE001 - connection failure captured in last_error
                 last_error = f"{type(exc).__name__}: {exc}"
                 continue
             if response.status_code < 400:

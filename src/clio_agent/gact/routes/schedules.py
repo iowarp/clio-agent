@@ -10,6 +10,9 @@ that the tick loop reads:
 * ``POST /v1/sessions/{sid}/schedules`` -- add a ``cron`` + ``question`` schedule.
 * ``DELETE /v1/schedules/{schedule_id}`` -- delete a schedule (policy-gated).
 
+Cron expressions are evaluated in UTC only (#766); the list envelope carries
+``cron_timezone: "utc"`` so clients need not guess.
+
 The store lives on ``app.state.schedules`` and the scheduler tick task owns the
 actual firing, so these handlers only mutate the store; they never duplicate the
 background-turn launch path. The delete route is a direct destructive action, so
@@ -25,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 
+from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 if TYPE_CHECKING:
@@ -43,19 +47,21 @@ def register_schedules_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.get("/v1/sessions/{sid}/schedules")
     async def list_schedules(sid: str) -> dict[str, Any]:
+        """List a session's scheduled turns. Cron fires in UTC only."""
         if app.state.sessions.get(sid) is None:
             raise HTTPException(
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"session not found: {sid}",
                         recoverable=False,
                     )
                 ).model_dump(exclude_none=True),
             )
         rows = [s.to_wire() for s in app.state.schedules.list(session_id=sid)]
-        return {"schedules": rows}
+        # Cron expressions are evaluated in UTC only; say so on the wire (#766).
+        return {"schedules": rows, "cron_timezone": "utc"}
 
     @app.post("/v1/sessions/{sid}/schedules")
     async def add_schedule(sid: str, request: Request) -> dict[str, Any]:
@@ -64,18 +70,13 @@ def register_schedules_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"session not found: {sid}",
                         recoverable=False,
                     )
                 ).model_dump(exclude_none=True),
             )
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+        body = await json_body(request, route="POST /v1/sessions/{sid}/schedules")
         cron = (body.get("cron") or "").strip()
         question = (body.get("question") or "").strip()
         if not cron or not question:
@@ -100,7 +101,7 @@ def register_schedules_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"schedule not found: {schedule_id}",
                         recoverable=False,
                     )
@@ -122,7 +123,7 @@ def register_schedules_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"schedule not found: {schedule_id}",
                         recoverable=False,
                     )

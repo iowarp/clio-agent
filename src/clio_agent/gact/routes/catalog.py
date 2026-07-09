@@ -27,6 +27,8 @@ through ``deps`` rather than importing back into :mod:`clio_agent.gact.app`.
 
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import json
 import uuid
 from collections.abc import Mapping
@@ -43,6 +45,7 @@ from clio_agent.gact.catalog import (
     _truthy_command_field,
 )
 from clio_agent.gact.events import Event
+from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.runtime.commands import (
     agent_allowed_command_ids,
     all_command_rows,
@@ -54,11 +57,13 @@ from clio_agent.gact.runtime.globals import (
     _emit_semantic_event,
     _gact_app_context,
 )
+from clio_agent.gact.runtime.retention import enforce_list_bound
 from clio_agent.gact.types import (
     ErrorEnvelope,
     ErrorInfo,
     ListToolsResponse,
 )
+from clio_agent.tools.mcp_config import MCPTransportError, transport_from_spec
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -131,10 +136,6 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
         if installed:
             try:
                 from fastmcp import Client  # noqa: PLC0415
-                from fastmcp.client.transports import (  # noqa: PLC0415
-                    StdioTransport,
-                    StreamableHttpTransport,
-                )
             except Exception:  # noqa: BLE001
                 Client = None  # type: ignore
             for sid, info in sorted(installed.items()):
@@ -166,14 +167,20 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                 spec = info.get("spec", {})
                 if Client is None:
                     continue
-                if spec.get("transport") == "stdio":
-                    transport = StdioTransport(
-                        command=spec["command"],
-                        args=spec.get("args") or [],
+                try:
+                    transport = transport_from_spec(spec)
+                except MCPTransportError as exc:
+                    # No-silent-fallback: surface the unusable stored spec as a
+                    # structured error row instead of dropping the server.
+                    rows.append(
+                        {
+                            "id": f"{sid}_error",
+                            "name": f"{sid}_error",
+                            "description": f"invalid MCP transport spec for {sid}: {exc}",
+                            "server_id": sid,
+                            "source": "error",
+                        }
                     )
-                elif spec.get("transport") == "http":
-                    transport = StreamableHttpTransport(url=spec["url"])  # type: ignore[assignment]
-                else:
                     continue
                 try:
                     async with Client(transport) as client:
@@ -239,7 +246,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                         "tags": _tool_tags_for_catalog(tool_id),
                         "visible_to": _tool_visible_to_for_catalog(tool_id),
                     }
-        except Exception:
+        except Exception:  # noqa: BLE001,S110 - catalog enrichment best-effort; partial rows returned
             pass
 
         # Fall back to installed third-party MCP servers — heavier
@@ -248,11 +255,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
         if installed:
             try:
                 from fastmcp import Client  # noqa: PLC0415
-                from fastmcp.client.transports import (  # noqa: PLC0415
-                    StdioTransport,
-                    StreamableHttpTransport,
-                )
-            except Exception:
+            except Exception:  # noqa: BLE001 - optional fastmcp client; None when unavailable
                 Client = None  # type: ignore
             for sid, info in installed.items():
                 for declared in info.get("tools") or []:
@@ -280,15 +283,9 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                 if Client is None:
                     break
                 try:
-                    transport = info.get("transport") or "stdio"
-                    if transport == "stdio":
-                        t = StdioTransport(
-                            command=info.get("command") or "",
-                            args=info.get("args") or [],
-                            env=info.get("env") or None,
-                        )
-                    else:
-                        t = StreamableHttpTransport(url=info.get("url") or "")  # type: ignore[assignment]
+                    # Unify onto the spec-based helper (single canonical accepted
+                    # set) instead of the old top-level ``info['transport']`` shape.
+                    t = transport_from_spec(info.get("spec") or {})
                     async with Client(t) as cli:
                         tools = await cli.list_tools()
                     for tt in tools:
@@ -310,7 +307,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                                 "tags": _tool_tags_for_catalog(tool_id),
                                 "visible_to": _tool_visible_to_for_catalog(tool_id),
                             }
-                except Exception:
+                except Exception:  # noqa: BLE001 - per-server catalog probe failure skipped
                     continue
 
         raise HTTPException(
@@ -437,6 +434,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         app.state.command_audit.append(row)
+        enforce_list_bound(app, app.state.command_audit, "command_audit", session_id=sid)
         event_status = status if status in {"completed", "failed", "denied"} else "completed"
         _emit_semantic_event(
             app,
@@ -489,7 +487,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"session not found: {sid}",
                         recoverable=False,
                     )
@@ -540,12 +538,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             )
 
-        try:
-            request_body = await request.json()
-        except Exception:
-            request_body = {}
-        if not isinstance(request_body, dict):
-            request_body = {}
+        request_body = await json_body(request, route="POST /v1/sessions/{sid}/commands/{cmd}")
         caller = request_body.get("caller")
         caller_meta = caller if isinstance(caller, Mapping) else {}
         caller_type = str(caller_meta.get("type") or request_body.get("caller_type") or "user")
@@ -659,13 +652,25 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                 cmd_id=cmd_id,
                 agent_id=agent_id,
             )
+            # #755: the runner is a full (blocking) DSPy agent turn that can
+            # take minutes. Run it off the event loop so /health, SSE
+            # heartbeats, and other sessions stay responsive, mirroring how
+            # turn.py executes blueprint runners. Copy the request context
+            # with the app contextvar bound so the runner's dynamic-agent
+            # tool wrappers still resolve ``app`` inside the worker thread;
+            # the synchronous response shape and audit rows are unchanged.
             with _gact_app_context(app):
-                pred = deps.blueprint_runner_for_agent(agent_def)(
+                command_turn_context = contextvars.copy_context()
+            pred = await asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda: command_turn_context.run(
+                    deps.blueprint_runner_for_agent(agent_def),
                     app.state.agent,
                     agent_def,
                     question,
                     sid,
-                )
+                ),
+            )
             agent_body_text = str(getattr(pred, "answer", "") or "").strip()
             if not agent_body_text:
                 agent_body_text = f"user command {cmd_id} completed with no answer"

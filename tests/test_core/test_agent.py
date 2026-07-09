@@ -23,10 +23,10 @@ class TestClioAgent:
         assert hasattr(agent, "forward")
         agent.shutdown()
 
-    def test_has_router(self):
-        """Test ClioAgent has router component."""
+    def test_has_action_planner(self):
+        """Test ClioAgent has an action planner component."""
         agent = ClioAgent()
-        assert hasattr(agent, "router")
+        assert hasattr(agent, "action_planner")
         agent.shutdown()
 
     def test_has_chat_agent(self):
@@ -50,13 +50,6 @@ class TestClioAgent:
         agent = ClioAgent()
         assert hasattr(agent, "arc")
         assert agent.arc is not None
-        agent.shutdown()
-
-    def test_has_lsm_tree(self):
-        """Test ClioAgent has LSM tree."""
-        agent = ClioAgent()
-        assert hasattr(agent, "lsm")
-        assert agent.lsm is not None
         agent.shutdown()
 
     def test_has_registry(self):
@@ -93,13 +86,6 @@ class TestClioAgent:
         assert "capacity" in stats
         agent.shutdown()
 
-    def test_lsm_stats(self):
-        """Test LSM stats are retrievable."""
-        agent = ClioAgent()
-        stats = agent.get_lsm_stats()
-        assert "write_count" in stats
-        agent.shutdown()
-
     def test_shutdown(self):
         """Test clean shutdown does not raise."""
         agent = ClioAgent()
@@ -122,7 +108,29 @@ class TestClioAgent:
         """Test that planner LM is configured separately."""
         agent = ClioAgent()
         assert agent._planner_lm is not None
-        assert agent._router_lm is agent._planner_lm
+        agent.shutdown()
+
+    def test_rebind_lms_swaps_entire_lm_surface(self):
+        """rebind_lms rebuilds the whole LM surface from a new provider config.
+
+        Guards the partial-write regression class: all four LM-surface fields
+        (_provider_config / _main_lm / _planner_lm / _dspy_adapter) must be
+        rebuilt together, never a torn subset.
+        """
+        import dataclasses
+
+        agent = ClioAgent()
+        before_main = agent._main_lm
+        before_planner = agent._planner_lm
+        before_adapter = agent._dspy_adapter
+        cfg2 = dataclasses.replace(agent._provider_config, model="rebind-depth-model")
+        agent.rebind_lms(cfg2)
+        assert agent._provider_config is cfg2
+        assert agent._main_lm is not before_main
+        assert agent._planner_lm is not before_planner
+        assert agent._dspy_adapter is not before_adapter
+        assert "rebind-depth-model" in agent._main_lm.model
+        assert "rebind-depth-model" in agent._planner_lm.model
         agent.shutdown()
 
     def test_lm_studio_explicit_model_skips_model_discovery(self, tmp_path, monkeypatch):
@@ -256,3 +264,63 @@ class TestClioAgent:
         ctx = agent._get_session_context("test question", "empty_session")
         assert isinstance(ctx, str)
         agent.shutdown()
+
+
+class TestStoreExpertInvocation:
+    """#801: the per-turn invocation write is the future optimizer training
+    corpus (and feeds /metrics) — pin that it still persists to ARC."""
+
+    def test_store_expert_invocation_persists_training_corpus(self, tmp_path):
+        """A successful expert turn must land as a tier-2 ARC invocation."""
+        agent = ClioAgent(data_dir=str(tmp_path / "clio"))
+        try:
+            prediction = dspy.Prediction(
+                analysis="mean displacement is 4.2 mm",
+                recommendations="plot the north component",
+            )
+            agent._store_expert_invocation(
+                question="what is the mean displacement?",
+                file_context="station MTA1 csv",
+                selected="data",
+                session_id="s-corpus",
+                expert_result=prediction,
+                success=True,
+                error_msg=None,
+                duration_ms=12.5,
+                trace=None,
+            )
+
+            invocations = agent.arc.get_invocations_by_agent("data", status="success")
+            assert len(invocations) == 1
+            inv = invocations[0]
+            assert inv.tier == 2
+            assert inv.agent_id == "data"
+            assert inv.session_id == "s-corpus"
+            assert inv.input["question"] == "what is the mean displacement?"
+            assert inv.input["file_context"] == "station MTA1 csv"
+            assert inv.output["analysis"] == "mean displacement is 4.2 mm"
+            assert inv.performance["success"] is True
+        finally:
+            agent.shutdown()
+
+    def test_store_expert_invocation_records_failures_too(self, tmp_path):
+        """Failed turns are corpus signal as well — status + error persist."""
+        agent = ClioAgent(data_dir=str(tmp_path / "clio"))
+        try:
+            agent._store_expert_invocation(
+                question="broken question",
+                file_context="",
+                selected="data",
+                session_id="s-corpus",
+                expert_result=None,
+                success=False,
+                error_msg="expert exploded",
+                duration_ms=3.0,
+                trace=None,
+            )
+
+            invocations = agent.arc.get_invocations_by_agent("data", status="failure")
+            assert len(invocations) == 1
+            assert invocations[0].output["error"] == "expert exploded"
+        finally:
+            agent.shutdown()

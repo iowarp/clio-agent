@@ -36,7 +36,6 @@ agent.registry                        # core runtime registry
 # GACT loads Agent Blueprint experts from the registry/marketplace store
 # and compiles them by module.kind at session runtime.
 agent.arc                             # ARCMemory
-agent.lsm                             # LSM tree for metrics
 ```
 
 ### Single turn (happy path)
@@ -53,7 +52,6 @@ Returns `dspy.Prediction` with:
 - `session_id: str`
 - `duration_ms: float`
 - `arc_stats: dict` (cache hits/misses)
-- `lsm_stats: dict`
 - `error_info: dict | None`
 
 `agent.arc.get_conversation(session_id).messages` has `len == 2 * turn_count` (user + assistant).
@@ -88,7 +86,7 @@ Tests: `tests/test_gact/test_cancellation.py`.
 
 ### Streaming
 
-`clio-agent-gact` streams GACT events over `GET /v1/sessions/{sid}/events`. A user turn is accepted with `POST /v1/sessions/{sid}/messages`, then the SSE channel emits `message.created`, `message.part.added`, `message.part.delta`, `message.part.completed`, and `message.completed`.
+`clio-agent serve` streams GACT events over `GET /v1/sessions/{sid}/events`. A user turn is accepted with `POST /v1/sessions/{sid}/messages`, then the SSE channel emits `message.created`, `message.part.added`, `message.part.delta`, `message.part.completed`, and `message.completed`.
 
 Text streaming has explicit provenance:
 
@@ -105,12 +103,9 @@ Current limitation: the chat `answer` path can stream live when the upstream DSP
 
 Tests: `tests/test_gact/test_streaming.py`.
 
-The legacy `clio-agent-api` `/query` endpoint still has its own SSE
-shape (`routing`, `done`) and returns a completed answer with
-`stream_source="batch"` plus
-`stream_fallback.reason="legacy_query_sync_path"`. It does not emit live
-provider-token deltas or synthetic chunk events; use native GACT events
-for best-effort live streaming.
+The legacy `clio-agent-api` `/query` endpoint has been **removed** (its
+console script is now a deprecation shim). Use native GACT events
+(`/v1/sessions/{sid}/events`) for best-effort live streaming.
 
 ## Error semantics
 
@@ -173,7 +168,7 @@ reconfigure-provider, and exit recovery actions.
 - Provider/LM failure → structured `provider_error`; CLIO must not hide
   an upstream/provider failure behind repeated, canned, or locally synthesized
   assistant text.
-- Tool failure → return `{"error": {...}}` dict, not raise (see `05-tools.md`).
+- Tool failure → return `{"error": {...}}` dict, not raise (see [`../MCP_TOOL_INTEGRATION.md`](../MCP_TOOL_INTEGRATION.md)).
 
 (`test_errors.py`, `test_agent_dispatch.py`, `agent.py`)
 
@@ -272,7 +267,7 @@ result = runner.run(
 
 `test_significance()` runs a proportion z-test on before/after success rates; only stat-sig variants get deployed. Variants are versioned in ARC; the TUI (or admin) can roll them back.
 
-(`test_runner.py:56-218`, `SELF_IMPROVEMENT.md`)
+(`test_runner.py:56-218`)
 
 ## Copy-paste minimal end-to-end
 
@@ -294,8 +289,8 @@ agent.shutdown()                                 # flush ARC + close LSM
 For a server-mode equivalent:
 
 ```bash
-$ clio-agent-api --host 127.0.0.1 --port 8000 &
-$ curl -s -X POST http://127.0.0.1:8000/query \
+$ clio-agent serve --host 127.0.0.1 --port 8100 &
+$ curl -s -X POST http://127.0.0.1:8100/v1/sessions/abc/messages \
     -H 'Content-Type: application/json' \
     -d '{"question":"Hi","session_id":"abc"}'
 # → {"answer":"...","selected_expert":"chat","session_id":"abc","duration_ms":...,"error_info":null}

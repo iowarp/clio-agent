@@ -233,7 +233,8 @@ async def test_passive_with_stored_token_skips_deferred(
     """Stored Globus token that cannot validate offline -> SKIPPED/DEFERRED."""
     monkeypatch.setattr(argonne_auth, "tokens_exist", lambda: True)
 
-    def _fail(_force: bool = False) -> str:
+    def _fail(_force: bool = False, *, allow_interactive: bool = True) -> str:
+        assert allow_interactive is False
         raise RuntimeError("offline: cannot refresh")
 
     monkeypatch.setattr(argonne_auth, "get_access_token", _fail)
@@ -279,7 +280,11 @@ async def test_active_mode_refreshes_token(
 ) -> None:
     """Active mode with no env/stored token may mint via a non-interactive refresh."""
     monkeypatch.setattr(argonne_auth, "tokens_exist", lambda: False)
-    monkeypatch.setattr(argonne_auth, "get_access_token", lambda _force=False: "active-token")
+    monkeypatch.setattr(
+        argonne_auth,
+        "get_access_token",
+        lambda _force=False, *, allow_interactive=True: "active-token",
+    )
 
     hs = ArgonneHandshake(provider=None)
     ctx = HandshakeContext(

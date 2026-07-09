@@ -34,13 +34,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
 import threading
 import time
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents.composition import (
@@ -48,6 +47,7 @@ from clio_agent.gact.agents.composition import (
     _runtime_dynamic_agent_children_context,
 )
 from clio_agent.gact.agents.resolution import (
+    _active_workflow_state_schema,
     _runtime_child_agent_rows,
     _runtime_declared_child_ids,
 )
@@ -56,9 +56,9 @@ from clio_agent.gact.agents.runtime import (
     _retaining_react_cls,
 )
 from clio_agent.gact.events import Event
+from clio_agent.gact.runtime.app_state import per_app_dict
 from clio_agent.gact.runtime.context_tokens import _resolve_expert_context_window
 from clio_agent.gact.runtime.globals import (
-    _EXPERT_CHILDREN_CACHE,
     _active_semantic_trace_id,
     _active_semantic_turn_id,
     _BlueprintTerminalWorkflowState,
@@ -78,54 +78,117 @@ from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
     from clio_agent.gact.types import AgentDef
+    from clio_agent.gact.workflow_state.schema import WorkflowStateSchema
+    from clio_agent.providers.lm_spec import LMSpec
+    from clio_agent.providers.resolver import ResolvedLMSpec
 
 
-def _dynamic_agent_lm_config(base_agent: Any, agent_def: "AgentDef") -> Any:
-    """Build a provider config for a registered dynamic agent."""
-    from clio_agent.config import (  # noqa: PLC0415
-        LMProviderConfig,
-        load_config_from_env,
-    )
-    from clio_agent.gact.app import (  # noqa: PLC0415
-        _user_agent_float_param,
-        _user_agent_int_param,
-    )
+def _default_profile_spec(base_agent: Any) -> "LMSpec":
+    """Return the default-profile :class:`LMSpec` an undeclared expert inherits.
 
+    Reads the active per-app profile store (``app.state.provider_profiles`` — the
+    immutable, RCU-swapped registry from design §3.4) when an app is bound;
+    otherwise falls back to the boot agent's live ``_provider_config`` (or a fresh
+    :func:`load_config_from_env` config) projected to a secret-free spec. That
+    fallback is the byte-identical single-default-LM baseline (RULE 2), so a
+    direct call with no active app resolves exactly as before.
+
+    Args:
+        base_agent: The owning agent; consulted for ``_provider_config`` only when
+            no per-app profile store is available.
+
+    Returns:
+        The default-profile :class:`LMSpec` whose fields undeclared expert fields
+        inherit.
+    """
+    from clio_agent.providers.lm_spec import spec_from_config  # noqa: PLC0415
+
+    app = _ctx.active_app()
+    store = getattr(getattr(app, "state", None), "provider_profiles", None) if app else None
+    if store is not None:
+        default = getattr(store, "default", None)
+        if default is not None:
+            return default
     base_config = getattr(base_agent, "_provider_config", None)
     if base_config is None:
+        from clio_agent.config import load_config_from_env  # noqa: PLC0415
+
         base_config = load_config_from_env()
-    provider = agent_def.default_provider or base_config.provider
-    same_provider = provider == base_config.provider
-    params = agent_def.parameters if isinstance(agent_def.parameters, Mapping) else {}
-    api_base = str(params.get("api_base") or (base_config.api_base if same_provider else ""))
-    api_key = base_config.api_key if same_provider else ""
-    new_config = LMProviderConfig(
-        provider=provider,  # type: ignore[arg-type]
-        api_base=api_base,
-        model=agent_def.default_model or (base_config.model if same_provider else ""),
-        api_key=api_key,
-        temperature=_user_agent_float_param(agent_def, "temperature", base_config.temperature),
-        max_tokens=_user_agent_int_param(agent_def, "max_tokens", base_config.max_tokens),
-        planner_temperature=base_config.planner_temperature,
-        planner_max_tokens=base_config.planner_max_tokens,
-        codex_transport=base_config.codex_transport,
-        claude_code_transport=base_config.claude_code_transport,
-        thinking_budget=_user_agent_int_param(
-            agent_def,
-            "thinking_budget",
-            base_config.thinking_budget,
-        ),
+    return spec_from_config(base_config)
+
+
+def _dynamic_agent_lm_config(base_agent: Any, agent_def: "AgentDef") -> "ResolvedLMSpec":
+    """Resolve a registered dynamic agent's provider identity to a ``ResolvedLMSpec``.
+
+    Builds a serializable :class:`~clio_agent.providers.lm_spec.LMSpec` from the
+    ``AgentDef`` — inheriting every field it does not declare from the active
+    default profile (:func:`_default_profile_spec`) — then delegates to
+    :func:`~clio_agent.providers.resolver.resolve_endpoint_and_handshake`, the
+    pure endpoint + cached-handshake half (design §3.3/§4). The credential is
+    deliberately NOT resolved here; each expert ``forward()`` resolves it fresh
+    via :meth:`~clio_agent.providers.resolver.ResolvedLMSpec.materialize` because
+    tokens rotate mid-session.
+
+    This drops the former ``same_provider`` gate: a cross-provider expert now
+    authenticates its own provider and gets its own handshake-folded
+    ``context_window`` / context-aware ``max_tokens`` / reasoning + tool flags,
+    instead of the empty credentials and ``None`` context window the gate produced
+    (design §2 "the gap"). The undeclared same-provider expert still resolves to
+    the default profile, preserving the baseline.
+
+    Args:
+        base_agent: The owning agent (source of the default-profile fallback).
+        agent_def: The registered dynamic agent's definition.
+
+    Returns:
+        A :class:`~clio_agent.providers.resolver.ResolvedLMSpec` — the key-less,
+        handshake-populated skeleton plus any structured handshake-fallback
+        reason. Call :meth:`ResolvedLMSpec.materialize` to get the runnable config.
+    """
+    from clio_agent.providers.lm_spec import build_spec  # noqa: PLC0415
+    from clio_agent.providers.resolver import resolve_endpoint_and_handshake  # noqa: PLC0415
+
+    default_spec = _default_profile_spec(base_agent)
+    # The boot/default-profile credential the main agent runs (its resolved
+    # ``_provider_config.api_key``). It is carried onto the DEFAULT-profile path so
+    # an undeclared expert authenticates with the exact key the main agent uses —
+    # even when that key came from the generic ``CLIO_LM_API_KEY`` boot var and the
+    # provider-native var (e.g. ``OPENAI_API_KEY``) is unset or names a different
+    # account (finding #1: RULE-2 main-works/experts-401 asymmetry). The
+    # credential_ref/spec stay secret-free — this key never serializes; it is a
+    # runtime resolution artifact threaded only when the expert resolves to the
+    # boot provider's default profile.
+    base_config = getattr(base_agent, "_provider_config", None)
+    boot_provider = str(getattr(base_config, "provider", "") or "")
+    boot_key = str(getattr(base_config, "api_key", "") or "")
+    declared_provider = str(getattr(agent_def, "default_provider", "") or "")
+    if declared_provider and declared_provider != default_spec.provider:
+        # Cross-provider expert: the endpoint / model / credential-ref / transport
+        # are provider-scoped, so inheriting the default provider's values would
+        # point the new provider at the wrong endpoint (and a foreign credential).
+        # Blank them — the resolver fills the new provider's PROVIDER_DEFAULTS and
+        # its own default credential — while the provider-agnostic sampling params
+        # still inherit. This preserves the old ``same_provider`` endpoint/model
+        # semantics (design §2 the gap; §4).
+        default_spec = replace(
+            default_spec,
+            provider=declared_provider,
+            model="",
+            api_base="",
+            credential_ref="",
+            transport="",
+        )
+    spec = build_spec(agent_def, default_spec)
+    # Thread the boot credential only when the expert resolves to the boot
+    # provider's default profile. Skip argonne: its default credential is a
+    # short-lived Globus token re-minted fresh per call by the resolver, so a
+    # captured boot token would go stale — the fresh resolution must win there.
+    default_credential = (
+        boot_key
+        if (boot_key and spec.provider == boot_provider and boot_provider != "argonne")
+        else ""
     )
-    # Propagate the handshake-discovered context window (init=False fields, so the
-    # constructor above leaves them None). Without this the live plane's
-    # auto-compaction has no denominator on the dynamic-agent path, since
-    # apply_handshake is not called here.
-    if same_provider and new_config.model == base_config.model:
-        for _attr in ("context_window", "chosen_context"):
-            _val = getattr(base_config, _attr, None)
-            if _val:
-                setattr(new_config, _attr, _val)
-    return new_config
+    return resolve_endpoint_and_handshake(spec, default_credential=default_credential)
 
 
 def _prompt_user_agent_signature() -> Any:
@@ -162,12 +225,19 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
         _coerce_expert_handoff_rows,
     )
     from clio_agent.prompts import PromptRegistry  # noqa: PLC0415
+    from clio_agent.providers.credentials import CredentialResolver  # noqa: PLC0415
 
     class PromptUserAgentModule(dspy.Module):
         def __init__(self, base_agent: Any, agent_def: "AgentDef") -> None:
             super().__init__()
             self.agent_def = agent_def
-            self.config = _dynamic_agent_lm_config(base_agent, agent_def)
+            # Per-expert provider identity as data; the credential is resolved
+            # fresh per forward() via ``self._resolved_spec.materialize`` (design
+            # §4). ``self.config`` is the init-time materialization kept for
+            # compatibility (adapter/context-window reads).
+            self._resolved_spec = _dynamic_agent_lm_config(base_agent, agent_def)
+            self._cred_resolver = CredentialResolver()
+            self.config = self._resolved_spec.materialize(self._cred_resolver)
             self._provider_config = self.config
             runtime = PromptRegistry().resolve("clio.runtime.prompt_user_agent")
             runtime_text = str(getattr(runtime, "text", "") or "").strip()
@@ -205,9 +275,12 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
                         executor_work_may_continue=False,
                     )
                 )
+            # Resolve the credential fresh for this call (tokens rotate); the
+            # dspy.context boundary itself is unchanged (design §4).
+            cfg = self._resolved_spec.materialize(self._cred_resolver)
             with dspy.context(
-                lm=create_lm(self.config),
-                adapter=create_chat_adapter(self.config),
+                lm=create_lm(cfg),
+                adapter=create_chat_adapter(cfg),
             ):
                 result = self.answer_synthesizer(
                     system_prompt=self.system_prompt,
@@ -295,44 +368,35 @@ async def _call_enabled_external_mcp_tool(
 
     try:
         from fastmcp import Client  # noqa: PLC0415
-        from fastmcp.client.transports import (  # noqa: PLC0415
-            StdioTransport,
-            StreamableHttpTransport,
-        )
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(f"fastmcp Client unavailable: {exc!r}") from exc
 
-    spec = info.get("spec", {})
-    if spec.get("transport") == "stdio":
-        from clio_agent.tools.mcp_config import pdeathsig_wrapped_command  # noqa: PLC0415
+    # Single canonical construction site. pdeathsig-wrapping (Linux-only, no-op
+    # elsewhere) now lives INSIDE the helper, so this external MCP child is reaped
+    # when the clio server dies hard -- identically to every other stdio spawn.
+    from clio_agent.tools.execution import notify_tool_observer  # noqa: PLC0415
+    from clio_agent.tools.mcp_config import (  # noqa: PLC0415
+        MCPTransportError,
+        transport_from_spec,
+    )
 
-        # Reap this external MCP child if the clio server dies hard (SIGKILL/OOM/
-        # crash) -- there is no parent-death link otherwise, so it would orphan to
-        # init. Mirrors transport_for() for the configured/clio-kit servers.
-        cmd, cmd_args = pdeathsig_wrapped_command(spec["command"], spec.get("args") or [])
-        transport = StdioTransport(command=cmd, args=cmd_args)
-    elif spec.get("transport") in {"http", "streamable-http"}:
-        transport = StreamableHttpTransport(url=spec["url"])  # type: ignore[assignment]
-    else:
-        raise RuntimeError(f"unknown stored MCP transport for {server_id}: {spec!r}")
+    spec = info.get("spec", {})
+    try:
+        transport = transport_from_spec(spec)
+    except MCPTransportError as exc:
+        raise RuntimeError(f"unknown stored MCP transport for {server_id}: {spec!r}") from exc
 
     tool_observer = getattr(app.state, "pending_tool_observer", None)
     if tool_observer is None:
         tool_observer = app.state.make_tool_observer()
-    if tool_observer is not None:
-        try:
-            tool_observer(observer_name, dict(tool_args), "started", None)
-        except Exception:
-            pass
+    notify_tool_observer(tool_observer, observer_name, dict(tool_args), "started")
     try:
         async with Client(transport) as client:
             result = await client.call_tool(tool_name, dict(tool_args))
     except Exception as exc:  # noqa: BLE001
-        if tool_observer is not None:
-            try:
-                tool_observer(observer_name, dict(tool_args), "completed", repr(exc))
-            except Exception:
-                pass
+        notify_tool_observer(
+            tool_observer, observer_name, dict(tool_args), "completed", error=repr(exc)
+        )
         raise
     content = getattr(result, "content", None) or []
     result_text = "\n".join(str(getattr(part, "text", part)) for part in content)
@@ -343,11 +407,9 @@ async def _call_enabled_external_mcp_tool(
             if isinstance(data, Mapping)
             else str(data if data is not None else result)
         )
-    if tool_observer is not None:
-        try:
-            tool_observer(observer_name, dict(tool_args), "completed", None, result_text)
-        except Exception:
-            pass
+    notify_tool_observer(
+        tool_observer, observer_name, dict(tool_args), "completed", result=result_text
+    )
     if content:
         return result_text
     data = getattr(result, "data", None)
@@ -904,8 +966,52 @@ def _tool_user_agent_max_iters(agent_def: "AgentDef") -> int:
     return max_iters
 
 
-def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
-    """Build a DSPy Signature from a blueprint's ordered signature fields."""
+def _injected_workflow_state_field_type(schema: "WorkflowStateSchema") -> Any:
+    """Annotation for the auto-injected ``workflow_state`` output (Consumer A, #648).
+
+    The type is built FROM THE PACK SCHEMA, not hardcoded:
+
+    * GENERIC schema (no declared sections) -> ``dict[str, Any]`` byte-identically,
+      preserving the historical free-dict contract for domain-free packs.
+    * A schema that declares its section vocabulary -> a nested pydantic model.
+      Each declared section becomes ``Optional[<SectionModel>] = None``, and every
+      ``SectionModel`` carries a single typed ``status: Optional[Literal[...]] = None``
+      drawn from that section's ``status_ranks`` (sorted). ``extra="allow"`` at BOTH
+      the top level (undeclared sections) and each section level (undeclared keys such
+      as ``metadata_path``) keeps the strict adapter from rejecting an otherwise-correct
+      run, while an out-of-vocabulary ``status`` for a declared section now fails
+      validation (the typing is real).
+    """
+
+    if not schema.sections:
+        return dict[str, Any]
+
+    from pydantic import ConfigDict, create_model  # noqa: PLC0415
+
+    section_fields: dict[str, Any] = {}
+    for section_name, rule in schema.sections.items():
+        statuses = tuple(sorted(rule.status_ranks))
+        status_annotation: Any = Optional[Literal[statuses]] if statuses else Optional[str]  # type: ignore[valid-type]
+        section_model = create_model(
+            f"WorkflowStateSection_{section_name}",
+            __config__=ConfigDict(extra="allow"),
+            status=(status_annotation, None),
+        )
+        section_fields[section_name] = (Optional[section_model], None)
+    return create_model(
+        "InjectedWorkflowState",
+        __config__=ConfigDict(extra="allow"),
+        **section_fields,
+    )
+
+
+def _blueprint_runtime_signature(agent_def: "AgentDef", *, app: Any = None) -> Any:
+    """Build a DSPy Signature from a blueprint's ordered signature fields.
+
+    ``app`` lets a caller that already holds the live app thread it in explicitly
+    for the per-app children cache (#770 Site 2); when omitted the live turn's
+    ``active_app()`` is the source (reliable in-turn via the keystone).
+    """
 
     import dspy  # noqa: PLC0415
 
@@ -983,8 +1089,8 @@ def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
 
     # CLEAN CONTRACT: workflow_state is the ONE load-bearing structured output --
     # a TYPED dict the adapter forces the model to emit, and the channel the
-    # agent->agent handoff actually travels on (_append_prediction_workflow_state
-    # carries ONLY workflow_state to the next expert). The former companions
+    # agent->agent handoff actually travels on (carried STRUCTURALLY on every
+    # Prediction / handoff row, never re-parsed from prose). The former companions
     # (evidence/artifacts/errors/delegation) were a redundant second copy that
     # nothing authoritative consumed: `artifacts` is tool-tracked on disk
     # (clio_sut._artifacts) and its handoff rides in workflow_state; `evidence`
@@ -996,10 +1102,26 @@ def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
     # model to satisfy -- so we no longer auto-inject them. (A blueprint that
     # genuinely needs one can still declare it explicitly in its signature
     # `outputs:`.)
+    # Resolve the session's active workflow_state schema once (also reused for the
+    # next_expert routing Literal below). Consumer A (#648): the injected
+    # workflow_state field is TYPED FROM THE PACK SCHEMA -- a GENERIC (no declared
+    # sections) schema keeps the historical free ``dict[str, Any]`` byte-identically,
+    # while a pack that declares its vocabulary gets a nested pydantic model whose
+    # per-section ``status`` is a real ``Optional[Literal[...]]`` (undeclared keys and
+    # undeclared sections still validate via ``extra="allow"`` at both levels).
+    _route_app = app if app is not None else _ctx.active_app()
+    _route_sid = _ctx.active_session_id()
+    # No try/except: the resolver already returns GENERIC for app-less/session-less
+    # callers, so any exception here is a real defect that must propagate loudly
+    # (matching every other call site of the resolver -- turn.py and the two
+    # delegate/seed sites below). Swallowing it would silently downgrade the
+    # injected annotation with no recorded reason (no-silent-fallback ground rule).
+    _workflow_state_schema = _active_workflow_state_schema(_route_app, _route_sid)
+    _workflow_state_field_type = _injected_workflow_state_field_type(_workflow_state_schema)
     _structured_field_specs: dict[str, tuple[str, Any]] = {
         "workflow_state": (
             "Typed semantic workflow state (a JSON object) used for blueprint continuation routing.",
-            dict[str, Any],
+            _workflow_state_field_type,
         ),
     }
     _declared = {field for field, _, _ in outputs}
@@ -1016,8 +1138,7 @@ def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
     # makes a model fill it reliably (the old free-string `expert_handoffs` was always
     # emitted empty, so 100% of routing fell through to the contracts). The Literal is
     # built per-expert from its OWN declared children (a leaf gets Literal["finish"]).
-    _route_app = _ctx.active_app()
-    _route_sid = _ctx.active_session_id()
+    # (_route_app / _route_sid resolved above with the workflow_state schema.)
     _agent_id = getattr(agent_def, "id", "")
     _child_ids: list[str] = []
     if _route_app is not None and _route_sid:
@@ -1027,15 +1148,19 @@ def _blueprint_runtime_signature(agent_def: "AgentDef") -> Any:
             )
         except Exception:  # noqa: BLE001 - routing field is best-effort at sig-build
             _child_ids = []
-    # Resolve-once-then-reuse via a process-global cache: some signature-build paths
-    # carry NEITHER the app nor the session context, so resolve children live when we
-    # can and fall back to the cache otherwise -- keeps next_expert's Literal correct
-    # instead of collapsing to Literal["finish"] and forcing an immediate finish.
+    # Resolve-once-then-reuse via a PER-APP cache on the live app's ``app.state``
+    # (#770 Site 2): some signature-build paths carry the app but not the session, so
+    # resolve children live when we can and fall back to this app's own cache
+    # otherwise -- keeps next_expert's Literal correct instead of collapsing to
+    # Literal["finish"]. When genuinely app-less, per_app_dict returns a fresh empty
+    # dict, so the Literal deterministically collapses to "finish" rather than leaking
+    # a sibling app's children through a process-global cache.
+    _children_cache = per_app_dict("expert_children", app=_route_app)
     if _agent_id:
         if _child_ids:
-            _EXPERT_CHILDREN_CACHE[_agent_id] = _child_ids
-        elif _agent_id in _EXPERT_CHILDREN_CACHE:
-            _child_ids = list(_EXPERT_CHILDREN_CACHE[_agent_id])
+            _children_cache[_agent_id] = _child_ids
+        elif _agent_id in _children_cache:
+            _child_ids = list(_children_cache[_agent_id])
     if "next_expert" not in _declared:
         _route_values = tuple(_child_ids) + ("finish",)
         _next_expert_type = Literal[_route_values]  # type: ignore[valid-type]
@@ -1159,6 +1284,9 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
 
     import dspy  # noqa: PLC0415
 
+    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+        _active_workflow_state_schema,
+    )
     from clio_agent.gact.app import (  # noqa: PLC0415
         _append_session_workflow_state_context,
         _blueprint_runner_for_agent,
@@ -1176,6 +1304,7 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
         if child.parent_id != parent.id:
             raise RuntimeError(f"{child.id!r} is not a declared child of {parent.id!r}")
         app_state = getattr(app, "state", None)
+        schema = _active_workflow_state_schema(app, session_id)
 
         _emit_semantic_event(
             app,
@@ -1204,6 +1333,7 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
             app,
             session_id,
             question,
+            schema=schema,
         )
         try:
             with _tool_session_context(session_id):
@@ -1245,11 +1375,11 @@ def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentD
         # Seed from the child's typed workflow_state output field (structural twin
         # of the removed prose append); merge tool-row state. State rides the
         # payload's ``workflow_state`` Mapping below, NOT the output text.
-        workflow_state = _prediction_workflow_state(pred)
+        workflow_state = _prediction_workflow_state(pred, schema=schema)
         for tool_row in tools_called:
             row_state = tool_row.get("workflow_state")
             if isinstance(row_state, Mapping):
-                _merge_workflow_state_mapping(workflow_state, row_state)
+                _merge_workflow_state_mapping(workflow_state, row_state, schema=schema)
         payload = {
             "agent_id": child.id,
             "parent_id": parent.id,
@@ -1360,7 +1490,7 @@ def _build_fanout_tool(base_agent: Any, parent: "AgentDef", children: list["Agen
                         "structured": _prediction_structured_metadata(pred),
                     }
                 )
-            except Exception as exc:  # pragma: no cover - exercised by state-space tests
+            except Exception as exc:  # pragma: no cover - exercised by state-space tests  # noqa: BLE001 - failure surfaced as status=partial_failure in results
                 status = "partial_failure"
                 results.append(
                     {
@@ -1476,7 +1606,7 @@ def _emit_blueprint_llm_failure(agent_def: "AgentDef", kind: str, exc: BaseExcep
             provider=_llm_provider_payload(app, agent_id),
             payload=payload,
         )
-    except Exception:  # noqa: BLE001 - capture must never break the repair flow
+    except Exception:  # noqa: BLE001,S110 - capture must never break the repair flow
         pass
 
 
@@ -1494,13 +1624,20 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
         _tool_agent_empty_answer_fallback,
         _workflow_state_from_outputs,
     )
+    from clio_agent.providers.credentials import CredentialResolver  # noqa: PLC0415
 
     class BlueprintExpertModule(dspy.Module):
         def __init__(self, base_agent: Any, agent_def: "AgentDef") -> None:
             super().__init__()
             self.agent_def = agent_def
             self.kind = _blueprint_module_kind(agent_def)
-            self.config = _dynamic_agent_lm_config(base_agent, agent_def)
+            # Per-expert provider identity as data; the credential is resolved
+            # fresh per forward() via ``self._resolved_spec.materialize`` (design
+            # §4). ``self.config`` is the init-time materialization kept for
+            # compatibility (adapter/context-window reads).
+            self._resolved_spec = _dynamic_agent_lm_config(base_agent, agent_def)
+            self._cred_resolver = CredentialResolver()
+            self.config = self._resolved_spec.materialize(self._cred_resolver)
             self._provider_config = self.config
             self.signature = _blueprint_runtime_signature(agent_def)
             self.tools: list[Any] = []
@@ -1590,11 +1727,9 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             # generate unboundedly (→ truncation / >900s wedge). Tell them to output only
             # the required fields and stop. Env-gated so it rides with CLIO_LM_DISABLE_THINKING
             # and never touches the well-behaved remote models.
-            if os.environ.get("CLIO_LM_DISABLE_THINKING", "").strip().lower() in {
-                "1",
-                "true",
-                "yes",
-            }:
+            from clio_agent.config import _thinking_disabled  # noqa: PLC0415
+
+            if _thinking_disabled():
                 runtime_system_prompt = (
                     runtime_system_prompt
                     + "\n\nOUTPUT DISCIPLINE: Produce ONLY the required output fields, each "
@@ -1622,8 +1757,13 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 trace.hot("FWD-A", "%s child-context+seed-done", getattr(self.agent_def, "id", "?"))
             blueprint_tool_rows: list[dict[str, Any]] = []
             if self.kind == "react":
+                from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+                    _active_workflow_state_schema,
+                )
+
                 prior_workflow_state = _workflow_state_from_outputs(
-                    [question, runtime_system_prompt]
+                    [question, runtime_system_prompt],
+                    schema=_active_workflow_state_schema(active_app, active_session_id),
                 )
                 if trace.HF_ON:
                     trace.hot(
@@ -1675,8 +1815,12 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     _ck_q[-500:],
                 )
             try:
-                adapter = create_chat_adapter(self.config)
-                _base_temp = float(getattr(self.config, "temperature", 0.0) or 0.0)
+                # Resolve the credential fresh for this call (tokens rotate); the
+                # dspy.context boundary below is unchanged (design §4). The temp
+                # variants replace() off this per-call config, never self.config.
+                _fwd_config = self._resolved_spec.materialize(self._cred_resolver)
+                adapter = create_chat_adapter(_fwd_config)
+                _base_temp = float(getattr(_fwd_config, "temperature", 0.0) or 0.0)
                 _max_repairs = _extract_repair_attempts()
                 _repair_hint = ""
                 # original attempt + up to _max_repairs bounded SCHEMA-REPAIR retries
@@ -1687,9 +1831,9 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     # -- dspy _warn_zero_temp_rollout).
                     _attempt_temp = _repair_temperature(_base_temp, _repair_attempt)
                     _attempt_config = (
-                        self.config
+                        _fwd_config
                         if _attempt_temp == _base_temp
-                        else replace(self.config, temperature=_attempt_temp)
+                        else replace(_fwd_config, temperature=_attempt_temp)
                     )
                     _call_kwargs = (
                         kwargs
@@ -1753,7 +1897,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                                         _re_temp = _repair_temperature(_base_temp, _re_i)
                                         with dspy.context(
                                             lm=create_lm(
-                                                replace(self.config, temperature=_re_temp)
+                                                replace(_fwd_config, temperature=_re_temp)
                                             ),
                                             adapter=adapter,
                                         ):
@@ -1921,12 +2065,19 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
         _tool_agent_empty_answer_fallback,
     )
     from clio_agent.prompts import PromptRegistry  # noqa: PLC0415
+    from clio_agent.providers.credentials import CredentialResolver  # noqa: PLC0415
 
     class ToolUserAgentModule(dspy.Module):
         def __init__(self, base_agent: Any, agent_def: "AgentDef") -> None:
             super().__init__()
             self.agent_def = agent_def
-            self.config = _dynamic_agent_lm_config(base_agent, agent_def)
+            # Per-expert provider identity as data; the credential is resolved
+            # fresh per forward() via ``self._resolved_spec.materialize`` (design
+            # §4). ``self.config`` is the init-time materialization kept for
+            # compatibility (adapter/context-window reads).
+            self._resolved_spec = _dynamic_agent_lm_config(base_agent, agent_def)
+            self._cred_resolver = CredentialResolver()
+            self.config = self._resolved_spec.materialize(self._cred_resolver)
             self._provider_config = self.config
             self.tools = _dynamic_agent_tools(base_agent, agent_def)
             runtime = PromptRegistry().resolve("clio.runtime.tool_user_agent")
@@ -1988,11 +2139,14 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             try:
                 # track_usage installs the tracker so auto-compaction can read each
                 # call's exact prompt_tokens.
+                # Resolve the credential fresh for this call (tokens rotate); the
+                # dspy.context boundary itself is unchanged (design §4).
+                cfg = self._resolved_spec.materialize(self._cred_resolver)
                 with (
                     dspy.track_usage(),
                     dspy.context(
-                        lm=create_lm(self.config),
-                        adapter=create_chat_adapter(self.config),
+                        lm=create_lm(cfg),
+                        adapter=create_chat_adapter(cfg),
                     ),
                 ):
                     result = self.react_agent(

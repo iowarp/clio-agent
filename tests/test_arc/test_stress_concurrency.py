@@ -36,6 +36,9 @@ from clio_agent.arc.schema import decode_segments
 from clio_agent.arc.segments import SegmentStore, segments_to_keys
 from clio_agent.arc.storage import LocalFSStore
 
+# #735 flake-hunt: ARC concurrency invariants run under xdist load x3.
+pytestmark = pytest.mark.concurrency
+
 SID = "stress-sess"
 
 

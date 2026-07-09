@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB20: POST /v1/sessions/{sid}/cancel.
+"""POST /v1/sessions/{sid}/cancel.
 
 Two scenarios:
 - Idle session: flag flipped, status -> cancelled, event fired, 204.
@@ -117,7 +117,7 @@ def test_cancel_unknown_session_404s_with_v0_2_envelope(tmp_path: Path) -> None:
     resp = client.post("/v1/sessions/sess_nope/cancel")
     assert resp.status_code == 404
     body = resp.json()
-    assert body["error"]["error"] == "internal_error"
+    assert body["error"]["error"] == "not_found"
     assert "session not found" in body["error"]["message"]
 
 

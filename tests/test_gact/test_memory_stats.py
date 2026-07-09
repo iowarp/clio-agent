@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB11: tests for /v1/memory/stats.
+"""tests for /v1/memory/stats.
 
 Drives the app with a FakeARC so we don't need a real ARC instance
 (which would touch disk + spin up indexes). Covers:
@@ -65,9 +65,24 @@ class FakeARC:
         return {}
 
 
+class _StubProviderConfig:
+    """Minimal stand-in exposing the handshake-resolved context window the
+    memory-stats budget reads via ``_resolve_expert_context_window``."""
+
+    def __init__(self, chosen_context: int = 4000) -> None:
+        self.chosen_context = chosen_context
+        self.model = "stub/model"
+
+
+class _StubAgent:
+    def __init__(self, chosen_context: int = 4000) -> None:
+        self._provider_config = _StubProviderConfig(chosen_context)
+
+
 class FakeAgent:
     def __init__(self) -> None:
         self.questions: list[str] = []
+        self._provider_config = _StubProviderConfig()
 
     def forward(self, question: str, session_id: str) -> Any:
         self.questions.append(question)
@@ -85,7 +100,9 @@ class FakeAgent:
 @pytest.fixture()
 def client_with_arc(tmp_path: Path) -> TestClient:
     arc = FakeARC(hits=80, misses=20, conv_index_size=12, inv_index_size=42)
-    return TestClient(build_app(sessions_path=tmp_path / "s.json", arc=arc))
+    return TestClient(
+        build_app(sessions_path=tmp_path / "s.json", arc=arc, agent=_StubAgent())
+    )
 
 
 def test_memory_stats_reports_cache_counters(client_with_arc: TestClient) -> None:
@@ -147,7 +164,57 @@ def test_memory_stats_session_block_populated_when_session_id_set(
     assert s["token_pressure"] == pytest.approx(30 / 4000)
     assert s["threshold_state"] == "normal"
     assert s["compaction_recommended"] is False
+    assert body["metadata"]["tokens_budget_source"] == "handshake_window"
     assert body["metadata"]["session"]["recorded_lifetime_tokens"] == 200
+
+
+def test_memory_stats_budget_from_handshake_context_window(tmp_path: Path) -> None:
+    """The retained-context budget is the handshake-resolved context window
+    (``chosen_context`` on the live provider config), not the 4000 fossil."""
+
+    client = TestClient(
+        build_app(
+            sessions_path=tmp_path / "s.json",
+            arc=FakeARC(),
+            agent=_StubAgent(chosen_context=32000),
+        )
+    )
+    sid = client.post("/v1/sessions", json={"title": "x"}).json()["id"]
+    client.app.state.messages[sid] = [
+        Message(
+            id="msg_1",
+            session_id=sid,
+            role="user",
+            created_at="2026-05-27T00:00:00+00:00",
+            updated_at="2026-05-27T00:00:00+00:00",
+            parts=[Part(id="part_1", type="text", text="hello")],
+        ),
+    ]
+    body = client.get(f"/v1/memory/stats?session_id={sid}").json()
+    assert body["session"]["tokens_budget"] == 32000
+    assert body["metadata"]["tokens_budget_source"] == "handshake_window"
+
+
+def test_memory_stats_budget_unknown_without_provider_config(tmp_path: Path) -> None:
+    """No live provider config (agent unwired / window undiscoverable) -> the
+    budget is 0 and the source is surfaced as ``unknown`` (pressure stays 0)."""
+
+    client = TestClient(build_app(sessions_path=tmp_path / "s.json", arc=FakeARC()))
+    sid = client.post("/v1/sessions", json={"title": "x"}).json()["id"]
+    client.app.state.messages[sid] = [
+        Message(
+            id="msg_1",
+            session_id=sid,
+            role="user",
+            created_at="2026-05-27T00:00:00+00:00",
+            updated_at="2026-05-27T00:00:00+00:00",
+            parts=[Part(id="part_1", type="text", text="hello")],
+        ),
+    ]
+    body = client.get(f"/v1/memory/stats?session_id={sid}").json()
+    assert body["session"]["tokens_budget"] == 0
+    assert body["session"]["token_pressure"] == 0.0
+    assert body["metadata"]["tokens_budget_source"] == "unknown"
 
 
 def test_memory_stats_reports_retained_context_files_and_compaction_pressure(

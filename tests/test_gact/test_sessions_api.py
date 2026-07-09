@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB8: integration tests for /v1/sessions CRUD.
+"""integration tests for /v1/sessions CRUD.
 
 Uses FastAPI's TestClient against build_app() with a per-test
 sessions_path so tests don't share state.
@@ -114,7 +114,7 @@ def test_session_context_policy_unknown_session_404s(client: TestClient) -> None
 
     assert resp.status_code == 404
     detail = resp.json()["error"]
-    assert detail["error"] == "internal_error"
+    assert detail["error"] == "not_found"
     assert detail["details"]["session_id"] == "sess_missing"
 
 
@@ -223,9 +223,21 @@ def test_compact_retries_transient_provider_errors(tmp_path: Path) -> None:
         assert "Recovered compact summary." in arc_messages[0].content
         messages = c.get(f"/v1/sessions/{sid}/messages").json()["messages"]
         assert len(messages) == 1
-        assert messages[0]["parts"][0]["metadata"]["synthetic"] == "compact_summary"
+        part = messages[0]["parts"][0]
+        # #832: the client-facing summary is a structured `compaction` part
+        # (SPEC §4.5), not a `[compact summary]`-prefixed synthetic text part.
+        assert part["type"] == "compaction"
+        assert part["summary"] == "Recovered compact summary."
+        assert not part["summary"].startswith("[compact summary]")
+        # `auto` defaults to False (user-triggered /compact); omitempty on the wire.
+        assert part.get("auto", False) is False
+        # The archived ledger message ids this summary stands in for (#832).
+        assert part["compacted_message_ids"] == ["msg_seed"]
+        assert part["metadata"]["synthetic"] == "compact_summary"
         assert messages[0]["metadata"]["memory_event_id"] == body["event_id"]
-        assert "Recovered compact summary." in messages[0]["parts"][0]["text"]
+        # No part on the compaction message is a legacy `[compact summary]` text part.
+        for p in messages[0]["parts"]:
+            assert not (p.get("type") == "text" and p.get("text", "").startswith("[compact summary]"))
         events = c.get(f"/v1/sessions/{sid}/memory/events").json()["events"]
         assert len(events) == 1
         event = events[0]

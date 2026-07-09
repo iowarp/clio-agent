@@ -6,7 +6,7 @@ session-scoped ask-user / retry protocol.
 * CRUD -- ``POST/GET/PATCH/DELETE /v1/sessions`` (+ ``GET /v1/sessions/{sid}``):
   create against the workspace store, list with the archive partition, patch the
   mutable mode/title fields, and permission-gated delete (which also drops the
-  session's messages, context-file ledger, workspace mirror and hot ARC footprint).
+  session's messages, context-file ledger and hot ARC footprint).
 * Rollback -- ``POST /v1/sessions/{sid}/undo`` + ``.../rewind``: drop the trailing
   ``count`` messages (undo) or everything past a target message (rewind), both
   permission-gated and republished as ``message.deleted`` + ``session.{op}``.
@@ -30,7 +30,7 @@ The fork, question-answer and retry routes drive a background user turn through
 ``deps.start_background_user_turn`` (the turn engine in
 :mod:`clio_agent.gact.turn`). The module imports only leaf packages (events,
 runtime, types, stdlib) and never loads :mod:`clio_agent.gact.app`; the shared
-cross-concern helpers (ledger replace, workspace mirror/arc release, model-ref
+cross-concern helpers (ledger replace, ARC release, model-ref
 errors, evidence index, resume text) travel on :class:`GactDeps`. The session-
 private rollback + ask-user/retry helpers live here.
 """
@@ -38,9 +38,7 @@ private rollback + ask-user/retry helpers live here.
 from __future__ import annotations
 
 import asyncio
-import json
 import time
-import uuid
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
@@ -50,6 +48,10 @@ from fastapi.responses import JSONResponse
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.events import Event
+from clio_agent.gact.routes._body import NonObjectBodyError, json_body
+from clio_agent.gact.routes.compaction import build_compact_summary_message
+from clio_agent.gact.routes.session_filters import filter_session_rows
+from clio_agent.gact.runtime.constants import _installed_clio_agent_version
 from clio_agent.gact.runtime.globals import (
     _active_semantic_turn_id,
     _emit_semantic_event,
@@ -58,6 +60,7 @@ from clio_agent.gact.runtime.globals import (
     _new_memory_event_id,
     _new_question_id,
 )
+from clio_agent.gact.runtime.retention import enforce_dict_bound
 from clio_agent.gact.types import (
     AnswerUserQuestionRequest,
     CreateSessionRequest,
@@ -67,10 +70,8 @@ from clio_agent.gact.types import (
     ListSessionsResponse,
     Message,
     ModelRef,
-    Part,
     RetryTurnRequest,
     Session,
-    Tokens,
     TurnAttempt,
     UpdateSessionRequest,
     UserQuestion,
@@ -87,8 +88,8 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     Handlers close over the ``app`` argument (FastAPI's decorators need it) and
     reach sessions/messages/questions/attempts state + the live event bus through
-    ``app.state``. Cross-concern ``build_app`` helpers (ledger replace, workspace
-    mirror + context-file/ARC release, model-ref errors, the evidence index, the
+    ``app.state``. Cross-concern ``build_app`` helpers (ledger replace,
+    context-file/ARC release, model-ref errors, the evidence index, the
     ask-user resume text, the destructive-action guard, and the background-turn
     entrypoint) travel through ``deps`` rather than importing back into
     ``gact.app``. The rollback + ask-user/retry helper closures are concern-private.
@@ -99,7 +100,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             status_code=404,
             detail=ErrorEnvelope(
                 error=ErrorInfo(
-                    error="internal_error",
+                    error="not_found",
                     message=f"session not found: {sid}",
                     details={"session_id": sid},
                     recoverable=False,
@@ -117,7 +118,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"workspace not found: {wid}",
                         details={"workspace_id": wid},
                         recoverable=True,
@@ -134,7 +135,6 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             edit_mode=req.edit_mode,
             routing_mode=req.routing_mode,
         )
-        deps.mirror_workspace_session(app, sess.id)
         return Session(**sess.to_wire())
 
     @app.patch("/v1/sessions/{sid}", response_model=Session)
@@ -163,7 +163,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"session not found: {sid}",
                         recoverable=False,
                     )
@@ -177,7 +177,6 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 payload=Session(**sess.to_wire()).model_dump(exclude_none=True),
             )
         )
-        deps.mirror_workspace_session(app, sid)
         return Session(**sess.to_wire())
 
     @app.get("/v1/sessions", response_model=ListSessionsResponse)
@@ -185,16 +184,15 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         workspace_id: Optional[str] = None,
         include_all_workspaces: bool = False,
         archived: Optional[bool] = None,
+        parent_session_id: Optional[str] = None,
     ) -> ListSessionsResponse:
+        """List sessions, filtered by workspace scope, archive bucket (audit E-14),
+        and optionally fork lineage — ``parent_session_id`` non-empty restricts to
+        that parent's direct sub-sessions (#232); omitted/empty is unchanged."""
+
         effective_workspace_id = workspace_id or (None if include_all_workspaces else "ws_default")
         rows = app.state.sessions.list(workspace_id=effective_workspace_id)
-        # iowarp/gact-tui §audit/E-14: archive partition. ?archived=true
-        # → only archived; ?archived=false (default) → only active. The
-        # desktop toggles this through the SessionsColumn archive view.
-        if archived is None:
-            rows = [r for r in rows if not getattr(r, "archived", False)]
-        else:
-            rows = [r for r in rows if bool(getattr(r, "archived", False)) == bool(archived)]
+        rows = filter_session_rows(rows, archived=archived, parent_session_id=parent_session_id)
         return ListSessionsResponse(sessions=[Session(**row.to_wire()) for row in rows])
 
     @app.get("/v1/sessions/{sid}", response_model=Session)
@@ -205,7 +203,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"session not found: {sid}",
                         details={"session_id": sid},
                         recoverable=False,
@@ -245,14 +243,13 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             summary=f"delete session {sid}",
             reason="user_requested_session_delete",
         )
-        deps.remove_workspace_session_mirror(app, sid)
         existed = app.state.sessions.delete(sid)
         if not existed:
             raise HTTPException(
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"session not found: {sid}",
                         details={"session_id": sid},
                         recoverable=False,
@@ -375,13 +372,16 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         if sess is None:
             raise _session_not_found(sid)
         _reject_rollback_while_active(sid, sess)
+        # Optional free-form body: a malformed or ``null`` payload is treated as
+        # ``{}`` (unchanged behavior, now with a structured
+        # ``request_body_unparseable`` reason in the trace), but a valid-JSON
+        # non-object payload keeps its pre-#772 422 -- undo is destructive and
+        # must not proceed on a wrong-shaped body coerced to defaults.
         try:
-            body = await request.json()
-        except json.JSONDecodeError:
-            body = {}
-        if body is None:
-            body = {}
-        if not isinstance(body, dict):
+            body = await json_body(
+                request, route="POST /v1/sessions/{sid}/undo", non_object="raise"
+            )
+        except NonObjectBodyError:
             raise HTTPException(
                 status_code=422,
                 detail=ErrorEnvelope(
@@ -392,7 +392,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                         recoverable=True,
                     )
                 ).model_dump(exclude_none=True),
-            )
+            ) from None
         raw_count = body.get("count", body.get("message_count", 1))
         try:
             count = int(raw_count) if isinstance(raw_count, str | int | float) else 1
@@ -435,11 +435,19 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         if sess is None:
             raise _session_not_found(sid)
         _reject_rollback_while_active(sid, sess)
+        # A malformed body is treated as ``{}`` (unchanged behavior, now with a
+        # structured ``request_body_unparseable`` reason in the trace), but a
+        # valid-JSON non-object payload -- including ``null``, which rewind's
+        # pre-#772 guard never coerced -- keeps its 422: rewind is destructive
+        # and must not proceed on a wrong-shaped body coerced to defaults.
         try:
-            body = await request.json()
-        except json.JSONDecodeError:
-            body = {}
-        if not isinstance(body, dict):
+            body = await json_body(
+                request,
+                route="POST /v1/sessions/{sid}/rewind",
+                non_object="raise",
+                null_is_empty=False,
+            )
+        except NonObjectBodyError:
             raise HTTPException(
                 status_code=422,
                 detail=ErrorEnvelope(
@@ -450,7 +458,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                         recoverable=True,
                     )
                 ).model_dump(exclude_none=True),
-            )
+            ) from None
         target_message_id = str(
             body.get("message_id")
             or body.get("target_message_id")
@@ -534,7 +542,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"session not found: {sid}",
                         details={"session_id": sid},
                         recoverable=False,
@@ -542,12 +550,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             )
 
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+        body = await json_body(request, route="POST /v1/sessions/{sid}/fork")
         at = body.get("at_message_id") or ""
         title = body.get("title") or f"{sess.title} (fork)"
 
@@ -651,10 +654,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
 
         # Try to extract optional focus instructions from the body.
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
+        body = await json_body(request, route="POST /v1/sessions/{sid}/compact")
         focus = (body.get("focus") or "").strip()
 
         prompt = (
@@ -758,7 +758,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                         messages=[arc_summary],
                         routing_decisions=[],
                         metadata={
-                            "clio_agent_version": "0.2.0",
+                            "clio_agent_version": _installed_clio_agent_version(),
                             "arc_enabled": True,
                             "compacted_by": "gact",
                         },
@@ -785,31 +785,14 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                     ).model_dump(exclude_none=True),
                 ) from exc
 
-        compact_message = Message(
-            id=f"msg_compact_{uuid.uuid4().hex[:10]}",
-            turn_id=_active_semantic_turn_id(),
+        compact_message = build_compact_summary_message(
             session_id=sid,
-            role="assistant",
-            created_at=datetime.now(timezone.utc).isoformat(),
-            updated_at=datetime.now(timezone.utc).isoformat(),
-            parts=[
-                Part(
-                    id=f"part_compact_{uuid.uuid4().hex[:10]}",
-                    type="text",
-                    metadata={
-                        "synthetic": "compact_summary",
-                        "memory_event_id": event_id,
-                    },
-                    text="[compact summary]\n" + (summary or "").strip(),
-                )
+            turn_id=_active_semantic_turn_id(),
+            summary=summary or "",
+            event_id=event_id,
+            compacted_message_ids=[
+                mid for m in ledger if (mid := _attr(m, "id", ""))
             ],
-            tokens=Tokens(input=0, output=0, cache_read=0, cache_write=0),
-            cost_usd=0.0,
-            stop_reason="end_turn",
-            metadata={
-                "synthetic": "compact_summary",
-                "memory_event_id": event_id,
-            },
         )
         deps.replace_session_messages(app, sid, [compact_message])
         memory_event = {
@@ -881,7 +864,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"session not found: {sid}",
                         recoverable=False,
                     )
@@ -920,7 +903,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             try:
                 msg = Message(**{**m, "session_id": new_sess.id})
                 msg_rows.append(msg)
-            except Exception:
+            except Exception:  # noqa: BLE001 - malformed message row skipped during rewind copy
                 continue
         deps.replace_session_messages(app, new_sess.id, msg_rows)
         context_files: dict[str, dict[str, Any]] = {}
@@ -1388,6 +1371,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 }
             )
             app.state.turn_attempts[attempt.id] = attempt
+        enforce_dict_bound(app, app.state.turn_attempts, "turn_attempts", session_id=sid)
         app.state.bus.publish(
             Event(
                 type="turn.retry_requested",
@@ -1427,7 +1411,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"session not found: {sid}",
                         details={"session_id": sid},
                         recoverable=False,

@@ -69,7 +69,7 @@ class OllamaHandshake(OpenAICompatHandshake):
                     raw_caps = data.get("capabilities")
                     if isinstance(raw_caps, list):
                         caps = tuple(str(c) for c in raw_caps)
-        except Exception:
+        except Exception:  # noqa: BLE001,S110 - /api/show best-effort; falls back to the enrich cascade
             # /api/show is best-effort: a failure leaves context_window=None and the
             # base enrich step falls back to the cascade (models.dev/litellm/DB).
             pass

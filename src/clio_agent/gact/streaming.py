@@ -52,6 +52,60 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
 
+def _select_accepted_kwargs(func: Any, candidate: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the subset of ``candidate`` keyword args that ``func`` accepts.
+
+    Signature inspection replaces the old TypeError-message sniffing: we decide
+    which optional kwargs a callee understands *before* invoking it, so the call
+    happens exactly once and any ``TypeError`` raised from inside the callee
+    propagates as-is rather than being mistaken for a signature mismatch.
+
+    Returns ``None`` when ``func`` cannot be introspected (some C-level /
+    builtin callables raise ``ValueError``/``TypeError`` from
+    :func:`inspect.signature`); the caller then makes a single best-effort
+    attempt with the full candidate set instead of guessing.
+    """
+
+    try:
+        sig = inspect.signature(func)
+    except (ValueError, TypeError):
+        return None
+    params = sig.parameters.values()
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params):
+        return dict(candidate)
+    accepted = {
+        p.name
+        for p in params
+        if p.kind
+        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    }
+    return {name: value for name, value in candidate.items() if name in accepted}
+
+
+def _callable_positional_slots(func: Any, count: int) -> bool:
+    """Whether ``func`` accepts at least ``count`` positional arguments.
+
+    Signature-inspection replacement for the old positional/argument message
+    sniffing in :func:`_run_dynamic_agent_compat`. Uninspectable callables are
+    assumed to accept the full arg list (single best-effort attempt).
+    """
+
+    try:
+        sig = inspect.signature(func)
+    except (ValueError, TypeError):
+        return True
+    slots = 0
+    for param in sig.parameters.values():
+        if param.kind is inspect.Parameter.VAR_POSITIONAL:
+            return True
+        if param.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            slots += 1
+    return slots >= count
+
+
 def _agent_forward_compat(
     agent: Any,
     question: str,
@@ -61,47 +115,27 @@ def _agent_forward_compat(
     cancel_requested: Any | None = None,
     images: list[Any] | None = None,
 ) -> Any:
-    """Call agent.forward, threading session_mode + session_edit_mode
-    when the agent accepts them, falling back to the legacy
+    """Call agent.forward, threading session_mode + session_edit_mode + the
+    optional ``images``/``cancel_requested`` kwargs *only when the agent's
+    signature accepts them*, falling back to the legacy
     ``(question, session_id)`` signature for fakes / older builds.
 
-    Lets us add new optional kwargs to the contract without breaking
-    every test fixture that hand-rolled a minimal forward signature.
+    The callee is inspected once up front and invoked exactly once: no
+    TypeError-message sniffing and no double-run, so a ``TypeError`` raised
+    from inside ``forward`` propagates unchanged.
     """
 
-    optional_kwargs: dict[str, Any] = {
+    candidate: dict[str, Any] = {
+        "session_id": session_id,
+        "session_mode": session_mode,
+        "session_edit_mode": session_edit_mode,
         "images": images or [],
         "cancel_requested": cancel_requested,
     }
-    attempts = [
-        optional_kwargs,
-        {"cancel_requested": cancel_requested},
-        {"images": images or []},
-        {},
-    ]
-    last_type_error: TypeError | None = None
-    for optional in attempts:
-        try:
-            return agent.forward(
-                question,
-                session_id=session_id,
-                session_mode=session_mode,
-                session_edit_mode=session_edit_mode,
-                **optional,
-            )
-        except TypeError as exc:
-            message = str(exc)
-            if "images" not in message and "cancel_requested" not in message:
-                last_type_error = exc
-                break
-            last_type_error = exc
-
-    try:
-        return agent.forward(question, session_id=session_id)
-    except TypeError as exc:
-        if last_type_error is not None:
-            raise last_type_error from exc
-        raise
+    selected = _select_accepted_kwargs(agent.forward, candidate)
+    if selected is None:
+        return agent.forward(question, **candidate)
+    return agent.forward(question, **selected)
 
 
 async def _try_streamed_forward_compat(
@@ -123,38 +157,19 @@ async def _try_streamed_forward_compat(
     # keeps intercepting the turn path after the streaming extraction.
     from clio_agent.gact.app import _try_streamed_forward  # noqa: PLC0415
 
-    base_kwargs: dict[str, Any] = {
+    candidate: dict[str, Any] = {
         "session_mode": session_mode,
         "session_edit_mode": session_edit_mode,
+        "images": images or [],
+        "cancel_requested": cancel_requested,
     }
     if agent_override is not None:
-        base_kwargs["agent_override"] = agent_override
+        candidate["agent_override"] = agent_override
 
-    optional_attempts: list[dict[str, Any]] = [
-        {"images": images or [], "cancel_requested": cancel_requested},
-        {"cancel_requested": cancel_requested},
-        {"images": images or []},
-        {},
-    ]
-    last_type_error: TypeError | None = None
-    for optional in optional_attempts:
-        try:
-            return await _try_streamed_forward(
-                app,
-                enriched_text,
-                sid,
-                emit_chunk,
-                **base_kwargs,
-                **optional,
-            )
-        except TypeError as exc:
-            message = str(exc)
-            if "cancel_requested" not in message and "images" not in message:
-                raise
-            last_type_error = exc
-    if last_type_error is not None:
-        raise last_type_error
-    return None
+    selected = _select_accepted_kwargs(_try_streamed_forward, candidate)
+    if selected is None:
+        return await _try_streamed_forward(app, enriched_text, sid, emit_chunk, **candidate)
+    return await _try_streamed_forward(app, enriched_text, sid, emit_chunk, **selected)
 
 
 def _run_dynamic_agent_compat(
@@ -165,14 +180,18 @@ def _run_dynamic_agent_compat(
     sid: str,
     cancel_requested: Any | None,
 ) -> Any:
-    """Run a dynamic agent while preserving older runner call signatures."""
+    """Run a dynamic agent while preserving older runner call signatures.
 
-    try:
-        return runner(base_agent, dynamic_agent, question, sid, cancel_requested)
-    except TypeError as exc:
-        if "positional" not in str(exc) and "argument" not in str(exc):
-            raise
-        return runner(base_agent, dynamic_agent, question, sid)
+    The runner's arity is inspected up front so it is invoked exactly once:
+    5-arg runners receive ``cancel_requested``, legacy 4-arg runners do not.
+    No positional/argument message sniffing, no double-run — an internal
+    ``TypeError`` propagates on the single call.
+    """
+
+    args: list[Any] = [base_agent, dynamic_agent, question, sid, cancel_requested]
+    if not _callable_positional_slots(runner, len(args)):
+        args = args[:-1]
+    return runner(*args)
 
 
 class _StreamingOutputError(RuntimeError):
@@ -216,6 +235,153 @@ def _record_stream_fallback(
 
 def _pop_stream_fallback(app: "FastAPI", sid: str) -> dict[str, Any]:
     return _stream_fallback_reasons(app).pop(sid, {})
+
+
+# --- ambient-LM fallback reason catalog (per-expert-provider sweep, #818) ----
+# A SIBLING of the stream_fallback catalog for the ambient ``dspy.settings.lm``
+# call-site sweep: a runtime helper (token accounting / auto-compaction / usage
+# rollup / reasoning capture / model-id probe) resolved the process boot-default
+# LM because no per-profile ``dspy.context`` was bound. Deliberately kept OUT of
+# ``_STREAM_FALLBACK_REASON_DEFINITIONS`` (and its client-facing
+# ``x_clio_stream_fallback_reasons`` capability, an audited *closed set* of
+# live-streaming fallbacks) so an unrelated provider-binding reason cannot break
+# that contract. It follows the same typed, reject-unknowns pattern and is
+# recorded per session in the ambient-LM ledger (``gact.runtime.ambient_lm``) so
+# the miss stays queryable rather than a silent dependency on the global default.
+_AMBIENT_LM_FALLBACK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
+    "ambient_lm_default": {
+        "category": "provider_binding",
+        "recovery_actions": ["bind_active_profile_context", "pass_explicit_lm"],
+        "description": (
+            "A runtime call site resolved the process boot-default LM because no "
+            "per-profile dspy.context was active. The result is valid but "
+            "attributed to the boot default, not an expert/main profile; bind the "
+            "active profile's context (or pass an explicit LM) to remove the "
+            "ambient dependency."
+        ),
+    },
+}
+
+
+def _ambient_lm_fallback_payload(reason: str, message: str = "") -> dict[str, Any]:
+    """Build a structured, typed payload for an ambient boot-default LM read.
+
+    Mirrors :func:`_stream_fallback_payload` (validate against a typed catalog,
+    reject unknowns) for the ambient-LM sweep's dedicated reason catalog, so a
+    miss records a queryable typed reason instead of a bare fallback."""
+
+    definition = _AMBIENT_LM_FALLBACK_REASON_DEFINITIONS.get(reason)
+    if definition is None:
+        raise ValueError(f"Unknown ambient LM fallback reason: {reason}")
+    payload: dict[str, Any] = {
+        "reason": reason,
+        **{
+            key: (list(value) if isinstance(value, list) else value)
+            for key, value in definition.items()
+        },
+    }
+    if message:
+        payload["message"] = message
+    return payload
+
+
+# --- workflow_state schema fallback reason catalog (#646/#648, Phase C) -------
+# A SIBLING of the stream_fallback catalog for the pack-declared workflow_state
+# vocabulary seam: a session whose active Agent Blueprint declares no
+# ``workflow_state`` schema runs the typed-state engine with the GENERIC
+# (presence-only) schema instead of a domain-typed one. Deliberately kept OUT of
+# ``_STREAM_FALLBACK_REASON_DEFINITIONS`` (and its client-facing
+# ``x_clio_stream_fallback_reasons`` capability, an audited *closed set* of
+# live-streaming fallbacks) so an unrelated pack-declaration reason cannot break
+# that contract. It follows the same typed, reject-unknowns pattern and is
+# recorded per session in a dedicated bounded ledger
+# (``app.state.workflow_schema_fallbacks``) so the generic degradation stays
+# queryable rather than a silent downgrade.
+_WORKFLOW_SCHEMA_FALLBACK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
+    "workflow_state_schema_absent": {
+        "category": "pack_declaration",
+        "recovery_actions": [
+            "declare_workflow_state_schema_in_agent_md",
+            "continue_with_generic_merge",
+        ],
+        "description": (
+            "The session's active Agent Blueprint declares no workflow_state schema, "
+            "so the typed-state engine ran with the generic presence-only schema "
+            "(rank 0 everywhere, no artifact grounding, no domain scrub aliases). "
+            "Legitimate generic behavior, recorded so the degradation is queryable "
+            "rather than silent."
+        ),
+    },
+}
+
+# Cap the per-session ledger so a long-lived session cannot grow it without bound;
+# consecutive same-message records are de-duplicated before this cap is consulted.
+_MAX_WORKFLOW_SCHEMA_LEDGER_ENTRIES = 64
+
+
+def _workflow_schema_fallback_payload(reason: str, message: str = "") -> dict[str, Any]:
+    """Build a structured, typed payload for a workflow_state generic fallback.
+
+    Mirrors :func:`_stream_fallback_payload` / :func:`_ambient_lm_fallback_payload`
+    (validate against a typed catalog, reject unknowns) for the workflow_state
+    schema seam's dedicated reason catalog, so a miss records a queryable typed
+    reason instead of a silent generic downgrade."""
+
+    definition = _WORKFLOW_SCHEMA_FALLBACK_REASON_DEFINITIONS.get(reason)
+    if definition is None:
+        raise ValueError(f"Unknown workflow_state schema fallback reason: {reason}")
+    payload: dict[str, Any] = {
+        "reason": reason,
+        **{
+            key: (list(value) if isinstance(value, list) else value)
+            for key, value in definition.items()
+        },
+    }
+    if message:
+        payload["message"] = message
+    return payload
+
+
+def _workflow_schema_fallbacks(app: "FastAPI") -> dict[str, list[dict[str, Any]]]:
+    """Return the per-session workflow_state schema fallback ledger, creating it on first use.
+
+    Keyed by session id, each value a list of catalog payloads (most-recent last).
+    A dedicated per-app ledger (never the single-slot streaming ledger the turn
+    handler pops for its ``stream_fallback`` metadata) so the generic-schema
+    degradation stays queryable after the fact."""
+
+    ledger = getattr(app.state, "workflow_schema_fallbacks", None)
+    if not isinstance(ledger, dict):
+        ledger = {}
+        app.state.workflow_schema_fallbacks = ledger
+    return ledger
+
+
+def _record_workflow_schema_fallback(
+    app: "FastAPI",
+    sid: str,
+    reason: str,
+    message: str = "",
+) -> None:
+    """Record a structured workflow_state generic-fallback reason for a session.
+
+    Builds the reason from the dedicated sibling catalog (via
+    :func:`_workflow_schema_fallback_payload`) and appends it to the per-app
+    workflow-schema ledger so the miss is queryable. Consecutive same-message
+    records for a session are collapsed, and the ledger is capped, mirroring the
+    ambient-LM ledger, so a session cannot grow it without bound. A missing
+    app/state or session id is a no-op (nothing to attribute)."""
+
+    if app is None or getattr(app, "state", None) is None or not sid:
+        return
+    payload = _workflow_schema_fallback_payload(reason, message)
+    entries = _workflow_schema_fallbacks(app).setdefault(sid, [])
+    # Collapse consecutive same-message records so a re-resolution leaves ONE
+    # queryable entry per (session, blueprint) rather than one per call.
+    if not entries or entries[-1].get("message") != message:
+        entries.append(payload)
+    if len(entries) > _MAX_WORKFLOW_SCHEMA_LEDGER_ENTRIES:
+        del entries[:-_MAX_WORKFLOW_SCHEMA_LEDGER_ENTRIES]
 
 
 def _append_stream_listener(
@@ -362,7 +528,7 @@ def _config_is_reasoning_model(provider_config: Any) -> bool:
         from clio_agent.config import _reasoning_model_capability  # noqa: PLC0415
 
         return bool(_reasoning_model_capability(provider_config))
-    except Exception:
+    except Exception:  # noqa: BLE001 - reasoning-capability probe falls back to the provider flag
         return bool(getattr(provider_config, "is_reasoning", False))
 
 
@@ -435,7 +601,7 @@ async def _try_streamed_forward(
         if _guided_output_enabled():
             _record_stream_fallback(app, sid, "stream_disabled_guided_output")
             return None
-    except Exception:  # noqa: BLE001 - never let this gate break the turn
+    except Exception:  # noqa: BLE001,S110 - never let this gate break the turn
         pass
 
     # Some reasoning-model + provider combos stream the answer entirely on the
@@ -450,7 +616,7 @@ async def _try_streamed_forward(
         if not _live_streaming_enabled():
             _record_stream_fallback(app, sid, "stream_disabled_live_streaming")
             return None
-    except Exception:  # noqa: BLE001 - never let this gate break the turn
+    except Exception:  # noqa: BLE001,S110 - never let this gate break the turn
         pass
 
     try:
@@ -459,7 +625,7 @@ async def _try_streamed_forward(
         from dspy.streaming.streamify import streamify
         from dspy.streaming.streaming_listener import StreamListener  # noqa: PLC0415
         from litellm.types.utils import ModelResponseStream  # noqa: F401
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - recorded via _record_stream_fallback (stream deps unavailable)
         _record_stream_fallback(
             app,
             sid,
@@ -496,7 +662,7 @@ async def _try_streamed_forward(
             stream_listeners=listeners,
             is_async_program=has_async_forward,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - stream-bind failure falls back to the canonical sync path (recorded)
         # Stream binding is best-effort. If DSPy cannot attach the
         # listener to this program shape, let the canonical sync path
         # run and surface any real agent/provider error from there.
@@ -642,7 +808,7 @@ async def _try_streamed_forward(
                                 payload={"stream_source": "reasoning"},
                             )
                         )
-                    except Exception:  # noqa: BLE001 - heartbeat is best-effort
+                    except Exception:  # noqa: BLE001,S110 - heartbeat is best-effort
                         pass
     except Exception as exc:
         detail = _describe_stream_exc(exc)
@@ -710,7 +876,7 @@ def _chunk_reasoning_text(piece: Any) -> str:
                 )
                 if reasoning:
                     return str(reasoning)
-    except Exception:  # noqa: BLE001 - best-effort extraction
+    except Exception:  # noqa: BLE001,S110 - best-effort extraction
         pass
     return ""
 
@@ -734,7 +900,7 @@ def _chunk_text(piece: Any) -> str:
                 content = getattr(delta, "content", None)
                 if content:
                     return str(content)
-    except Exception:
+    except Exception:  # noqa: BLE001,S110 - content extraction best-effort; falls through
         pass
     if isinstance(piece, dict):
         # OpenAI-style dict.

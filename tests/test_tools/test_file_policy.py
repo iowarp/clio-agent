@@ -125,3 +125,17 @@ def test_policy_from_env_prefers_workspace_config(tmp_path, monkeypatch):
     assert policy.allowed_roots == (config_root.resolve(),)
     assert policy.max_file_size_bytes == 10_000_000_000
     assert policy.allow_symlinks is True
+
+
+def test_default_allowed_roots_use_platform_tempdir(monkeypatch):
+    """Default roots must use tempfile.gettempdir(), not a POSIX /tmp literal (#765)."""
+    import tempfile
+    from pathlib import Path
+
+    monkeypatch.delenv("CLIO_ALLOWED_ROOTS", raising=False)
+
+    roots = file_policy._default_allowed_roots()
+
+    assert Path(tempfile.gettempdir()) in roots
+    for root in roots:
+        assert root in (Path.cwd(), Path(tempfile.gettempdir()))

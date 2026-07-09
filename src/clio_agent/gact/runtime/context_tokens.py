@@ -72,7 +72,13 @@ def _last_prompt_tokens() -> int:
     """
     import dspy  # noqa: PLC0415
 
-    lm = getattr(dspy.settings, "lm", None)
+    from clio_agent.gact.runtime.ambient_lm import resolve_active_lm  # noqa: PLC0415
+
+    # Resolve the LM through the ambient guard: inside an expert/main
+    # ``dspy.context`` this is the bound profile LM (the normal auto-compaction
+    # path); outside one it falls through to the boot default AND records a
+    # structured ``ambient_lm_default`` reason so the miss is queryable (#818).
+    lm = resolve_active_lm(site="context_tokens._last_prompt_tokens")
     model = str(getattr(lm, "model", "") or "")
 
     # 1. Provider-exact prompt_tokens from the usage tracker.
@@ -89,7 +95,7 @@ def _last_prompt_tokens() -> int:
             pt = int(entries[-1].get("prompt_tokens", 0) or 0) if entries else 0
             if pt > 0:
                 return pt
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001,S110 - cached prompt-token lookup best-effort; falls through
             pass
 
     # 2. Provider didn't report prompt_tokens: count the last call's real messages.
@@ -100,7 +106,7 @@ def _last_prompt_tokens() -> int:
             import litellm  # noqa: PLC0415
 
             return int(litellm.token_counter(model=model, messages=messages))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001,S110 - litellm token_counter optional; returns 0
         pass
     return 0
 
@@ -142,13 +148,17 @@ def _estimate_text_tokens(text: str) -> int:
     if not text:
         return 0
     try:
-        import dspy  # noqa: PLC0415
         import litellm  # noqa: PLC0415
 
-        model = str(getattr(getattr(dspy.settings, "lm", None), "model", "") or "")
+        from clio_agent.gact.runtime.ambient_lm import resolve_active_lm  # noqa: PLC0415
+
+        # Bound profile LM inside a ``dspy.context``; boot default (recorded as an
+        # ``ambient_lm_default`` reason) outside one — never a silent ambient read.
+        lm = resolve_active_lm(site="context_tokens._estimate_text_tokens")
+        model = str(getattr(lm, "model", "") or "")
         if model:
             return int(litellm.token_counter(model=model, text=text))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001,S110 - tokenizer optional; falls back to ~4-chars/token
         pass
     return max(1, len(text) // 4)
 
@@ -175,7 +185,7 @@ def _resolve_expert_context_window(cfg: Any) -> int:
         v = info.get("max_input_tokens") or info.get("max_tokens")
         if v:
             return int(v)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001,S110 - litellm model-info optional; tries the next source
         pass
     try:
         import json  # noqa: PLC0415
@@ -195,6 +205,6 @@ def _resolve_expert_context_window(cfg: Any) -> int:
         v = entry.get("context")
         if v:
             return int(v)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001,S110 - bundled model_limits lookup best-effort; returns 0 (auto-compaction off)
         pass
     return 0

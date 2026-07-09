@@ -6,18 +6,45 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.5.18] — 2026-07-09
+
+The grounding-demo release. Pairs with gact-tui **v0.9.5** (pinned
+submodule) — #233 render parity + #232 protocol convergence on the
+client side, matched by the contract-surface changes below on the
+server side.
+
+### Added
+- `GET /v1/sessions/{id}/messages` now honors pagination
+  (`before` / `limit` / `include_system`) and `GET /v1/sessions`
+  honors the `parent_session_id` filter. These params were previously
+  accepted but ignored (unbounded payloads; subsession UIs saw every
+  session); they are now a normative contract with conformance
+  coverage on the gact-tui side (#232, #872).
+
+### Changed
+- Compaction emits a **structured compaction part** (a typed part
+  carrying the summary + metadata) instead of `[compact summary]`
+  prose, so clients render it as a first-class part rather than
+  scraping text (#832, #873).
+
 ### Removed
 - Retired the legacy Codex HTTP bridge process. Switch
   `provider=codex` to the LiteLLM CustomLLM path; no bridge process is
   needed. Users pointing at `:18900/v1` should re-pick the `codex`
   preset so config resolves through the registered provider.
 
+> **Tracking gap:** releases `0.3.2` through `0.5.17` were shipped
+> without a CHANGELOG entry. For those versions, see the GitHub release
+> notes at https://github.com/iowarp/clio-agent/releases. This file is
+> owned by the release skill going forward (see
+> `.claude/skills/release-clio/SKILL.md`).
+
 ## [0.3.1] — 2026-04-27
 
 The "every advertised capability actually works" release. Every flag
 in `/v1/capabilities` that's `true` has been verified end-to-end with
 either an integration test, a curl trace, or a screenshot — see
-`docs/CAPABILITIES_MATRIX.md` for the full matrix. **No silent
+`docs/archive/CAPABILITIES_MATRIX.md` for the full matrix. **No silent
 downgrades anywhere; if a flag is true, it works.**
 
 ### Added
@@ -29,7 +56,7 @@ downgrades anywhere; if a flag is true, it works.**
     installed third-party servers in one list.
   - Verified end-to-end against `@modelcontextprotocol/server-everything`:
     13 tools enumerated, `echo` + `get-sum` round-tripped via stdio.
-- `docs/CAPABILITIES_MATRIX.md` — one row per advertised capability with
+- `docs/archive/CAPABILITIES_MATRIX.md` — one row per advertised capability with
   the proof for each (curl evidence / screenshot / integration test).
 - New screenshots: `clio_mcp_servers.png` (bundled + third-party), 
   `clio_diff.png` (apply/reject path).
@@ -169,4 +196,4 @@ Initial v0.2 contract scaffolding:
   `agent_routing`, `memory`, `structured_errors`,
   `integration_health`, `tool_telemetry`, etc.
 
-(Full details in PLAN-CLIO-BBBBBBBBBB items #1–#23.)
+(Full details in the gact-tui integration plan items #1–#23.)

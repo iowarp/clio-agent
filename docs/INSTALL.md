@@ -44,7 +44,7 @@ script fetches the web bundle into `$CLIO_PREFIX/clio-agent/web`; override with
 ## d) Scaled / hosted web (Docker Compose)
 ```sh
 docker compose up clio-web          # self-contained web UI → http://localhost:8080
-docker compose --profile api up     # headless backend (API/SSE) → :7777 for scale-out
+docker compose --profile api up     # headless backend (API/SSE) → :8100 for scale-out
 ```
 Uses the published `ghcr.io/iowarp/clio-{web,api}` images (no build). Override `CLIO_LM_*`
 to point at your model provider.
@@ -59,12 +59,13 @@ clio-agent — nothing else to install.
 ```sh
 git clone --recurse-submodules https://github.com/iowarp/clio-agent
 cd clio-agent && uv sync --extra optimizers --extra argonne
-uv run src/clio_agent/ui/cli.py        # or: uv run clio-agent-gact
+uv run src/clio_agent/ui/cli.py        # or: uv run clio-agent serve
 ```
 
 ## ⚠️ Running more than one at once
 The CLI (`clio` / `clio --web`) and the desktop app each spawn a gact server and default
 to the **same port + the same `~/.config/clio-agent/` state dir**. Running two
 simultaneously can clash on the port and risk concurrent-write corruption / version skew.
-Use one at a time, or different `CLIO_PORT` + state dirs. Tracked in
+Use one at a time, or a different `CLIO_PORT` (desktop supervisor) / `--port`
+(raw server) + state dirs. Tracked in
 [#698](https://github.com/iowarp/clio-agent/issues/698).

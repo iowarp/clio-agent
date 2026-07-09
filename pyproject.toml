@@ -1,6 +1,6 @@
 [project]
 name = "clio-agent"
-version = "0.5.17"
+version = "0.5.18"
 description = "CLIO Agent — Autonomous AI agent framework for scientific data management. Part of the IOWarp platform."
 authors = [
     { name = "Jaime Cernuda", email = "jcernudagarcia@illinoistech.edu" },
@@ -67,6 +67,10 @@ dependencies = [
     "fastapi>=0.104.0",
     "uvicorn>=0.24.0",
     "sse-starlette>=1.6.0",
+    # clio_agent.sdk (#799) — the typed GACT client imports httpx directly
+    # (already present transitively via fastmcp/dspy; declared so the SDK
+    # does not lean on someone else's dependency tree).
+    "httpx>=0.27.0",
 ]
 
 [project.optional-dependencies]
@@ -74,10 +78,6 @@ optimizers = [
     # Optimizer Layer (v0.4.0+)
     "scipy>=1.11.0",
     "numpy>=1.24.0",
-]
-
-tools = [
-    # pyarrow moved to core dependencies (v0.2.0)
 ]
 
 adios = [
@@ -93,12 +93,6 @@ adios = [
 # PyPI package metadata (upload is rejected with "Can't have direct dependency"),
 # so it is intentionally NOT a declared extra. Install it manually when needed:
 #   uv pip install "openai-codex @ git+https://github.com/openai/codex.git@79f044ed34c60af815feef12e8e665f35d54871e#subdirectory=sdk/python"
-
-iowarp = [
-    # clio-core CTE is now a CORE dependency (the default ARC backend), so this
-    # extra is redundant — kept as an explicit opt-in alias and for [all].
-    "iowarp-core>=2.1.0",
-]
 
 argonne = [
     # Globus Auth bridge for the ALCF inference gateway (Sophia/Polaris vLLM).
@@ -121,36 +115,34 @@ dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
     "pytest-asyncio>=0.21.0",
+    "pytest-xdist>=3.5.0",  # -n / --dist loadfile for the concurrency flake-hunt (#735)
+    "pytest-repeat>=0.9.3",  # --count for the flake-hunt (#735)
+    "hypothesis>=6",  # property-based tests (parser invariants pilot, #773 Slice 16)
     "ruff>=0.1.0",
     "mypy>=1.7.0",
 ]
 
 all = [
-    "clio-agent[optimizers,tools,adios,iowarp,argonne,claude-code,dev]",
+    "clio-agent[optimizers,adios,argonne,claude-code,dev]",
 ]
 
 [project.urls]
 Homepage = "https://github.com/iowarp/clio-agent"
-Documentation = "https://github.com/iowarp/clio-agent/tree/main/ai-docs"
+Documentation = "https://iowarp.github.io/clio-agent/"
 Repository = "https://github.com/iowarp/clio-agent"
 Issues = "https://github.com/iowarp/clio-agent/issues"
 
 [project.scripts]
-clio-agent = "clio_agent.ui.cli:run_cli"
-clio-agent-api = "clio_agent.ui.api:main"
-# GACT v0.2 surface. Peer of clio-agent-api; runs on its own port.
-# See docs/tui/ for the integration spec. Wired in CLIO-BBBBBBBBBB6;
-# real endpoints come online in CLIO-BBBBBBBBBB7-12.
-clio-agent-gact = "clio_agent.gact.app:main"
+clio-agent = "clio_agent.ui.cli:main"
+clio-agent-api = "clio_agent.ui._deprecated_api:main"
+# Deprecation alias for the retired standalone gact entry point. `clio-agent
+# serve` is the single front door (#830); this stays functional for one
+# release so old installed launchers keep working, emitting a stderr notice.
+clio-agent-gact = "clio_agent.gact.app:main_deprecated"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
-
-# Hatch requires this opt-in to allow git URLs in dependencies (we use
-# one for the optional [codex] extra — openai_codex isn't on PyPI yet).
-[tool.hatch.metadata]
-allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/clio_agent"]
@@ -172,24 +164,18 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-asyncio_mode = "auto"  # CLIO-BBBBBBBBBB13: SSE tests use async httpx
+asyncio_mode = "auto"  # SSE tests use async httpx
 markers = [
     "integration: marks tests requiring full-stack/external runtime behavior",
     "benchmark: marks long real-provider stress benchmark tests",
     "real_case: end-to-end live CLIO blueprint case (a tier above unit/integration; needs CLIO_RUN_LIVE=1)",
     "live: hits a live gact server + external provider (slow; skipped unless CLIO_RUN_LIVE=1)",
+    "concurrency: thread-safety / shared-state tests run under xdist load x3 in the flake-hunt CI job (#735)",
 ]
-addopts = [
-    "--verbose",
-    "--cov=clio_agent",
-    "--cov-report=term-missing",
-    "--cov-report=html",
-]
-
-[tool.black]
-line-length = 100
-target-version = ["py312"]
-include = '\.pyi?$'
+# Keep addopts empty: forcing --verbose + coverage (incl. 23MB htmlcov) on
+# every invocation — even --collect-only — punishes local runs. CI passes
+# its coverage flags explicitly in .github/workflows/ci.yml (#773).
+addopts = []
 
 [tool.ruff]
 line-length = 100
@@ -216,3 +202,13 @@ warn_unused_configs = true
 disallow_untyped_defs = false  # Set to true for stricter typing
 ignore_missing_imports = true
 disable_error_code = ["import-untyped"]
+
+[tool.mutmut]
+# Mutation-testing pilot scope (#773 slice 19): the two correctness-critical
+# leaf modules, exercised by the focused runner shims in tests/mutmut_runner/.
+# Run via .github/workflows/mutation.yml (scheduled) or locally on POSIX:
+#   uv pip uninstall clio-agent && PYTHONPATH=src uv run --no-sync mutmut run
+# (the editable install must be removed or its .pth shadows the mutated copy).
+paths_to_mutate = ["src/clio_agent/arc/segments.py", "src/clio_agent/gact/events.py"]
+tests_dir = ["tests/mutmut_runner/"]
+also_copy = ["src/clio_agent/", "tests/"]

@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB19: text parts stream via message.part.delta events."""
+"""text parts stream via message.part.delta events."""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ from clio_agent.gact.app import (
     build_app,
 )
 from clio_agent.gact.types import AgentDef
+from tests.test_gact.earthscope_schema import EARTHSCOPE_WORKFLOW_STATE_SCHEMA
 
 
 @dataclass
@@ -361,6 +362,7 @@ def test_dynamic_agent_lm_config_preserves_claude_code_transport() -> None:
         )
     )
 
+    # Step 6: the delegate returns a ResolvedLMSpec; materialize to the config.
     cfg = _dynamic_agent_lm_config(
         base_agent,
         AgentDef(
@@ -369,7 +371,7 @@ def test_dynamic_agent_lm_config_preserves_claude_code_transport() -> None:
             title="EarthScope",
             system_prompt="Use the EarthScope blueprint.",
         ),
-    )
+    ).materialize()
 
     assert cfg.provider == "claude_code"
     assert cfg.claude_code_transport == "exec"
@@ -733,7 +735,7 @@ def test_live_streamed_deltas_are_marked_live(
     assert "stream_fallback" not in text_parts[-1]["metadata"]
 
 
-def test_live_streamed_contract_fields_emit_normalized_transcript_events(
+def test_live_streamed_contract_fields_emit_message_part_deltas(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     async def fake_streamed_forward(
@@ -762,20 +764,27 @@ def test_live_streamed_contract_fields_emit_normalized_transcript_events(
 
     history = app.state.bus._history.get(sid, [])
     transcript_events = [e for e in history if e.type.startswith("turn.")]
-    text_deltas = [e for e in history if e.type == "turn.text.delta"]
+    part_deltas = [e for e in history if e.type == "message.part.delta"]
 
+    # #767 PR5: the normalized turn.text.delta twin is retired; the streamed
+    # contract fields ride message.part.delta only.
+    assert [e for e in history if e.type == "turn.text.delta"] == []
     assert transcript_events[0].type == "turn.started"
-    assert [e.payload["field"] for e in text_deltas] == ["thought", "thought", "answer"]
-    assert [e.payload["text_append"] for e in text_deltas] == [
+    assert [e.payload["signature_field_name"] for e in part_deltas] == [
+        "reasoning",
+        "next_thought",
+        "answer",
+    ]
+    assert [e.payload["delta"]["text_append"] for e in part_deltas] == [
         "thinking ",
         "next ",
         "answer",
     ]
     assert transcript_events[-1].type == "turn.completed"
-    assert all("[[ ##" not in e.payload.get("text_append", "") for e in text_deltas)
+    assert all("[[ ##" not in e.payload["delta"].get("text_append", "") for e in part_deltas)
 
 
-def test_provider_aux_streams_as_model_aux_trace_event(
+def test_provider_aux_streams_as_thinking_part(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     async def fake_streamed_forward(
@@ -801,11 +810,27 @@ def test_provider_aux_streams_as_model_aux_trace_event(
     )
 
     history = app.state.bus._history.get(sid, [])
-    trace_deltas = [e for e in history if e.type == "turn.trace.delta"]
 
-    assert len(trace_deltas) == 1
-    assert trace_deltas[0].payload["trace_kind"] == "model_aux"
-    assert trace_deltas[0].payload["text_append"] == "raw provider thought"
+    # #767 PR5: the normalized turn.trace.delta twin is retired; provider aux
+    # rides a message.part.* thinking part.
+    assert [e for e in history if e.type == "turn.trace.delta"] == []
+    thinking_added = [
+        e
+        for e in history
+        if e.type == "message.part.added" and e.payload["part"]["type"] == "thinking"
+    ]
+    assert len(thinking_added) == 1
+    thinking_meta = thinking_added[0].payload["part"]["metadata"]
+    assert thinking_meta["thinking_source"] == "provider"
+    assert thinking_meta["provider_source"] == "claude_code_sdk"
+    thinking_deltas = [
+        e
+        for e in history
+        if e.type == "message.part.delta"
+        and e.payload["signature_field_name"] == "provider_thinking:claude_code_sdk"
+    ]
+    assert len(thinking_deltas) == 1
+    assert thinking_deltas[0].payload["delta"]["text_append"] == "raw provider thought"
 
 
 def _turn_id_of(history: list[Any]) -> str:
@@ -965,12 +990,12 @@ def test_streamed_answer_is_cleaned_once_whole_not_per_chunk(
         "persisted. Coverage exists in the region.",
     ]
     sub_full = "".join(sub_chunks)
-    sub_whole = _clean_public_transcript_text(sub_full, preserve_whitespace=True)
+    sub_whole = _clean_public_transcript_text(sub_full, preserve_whitespace=True, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
 
     def _per_chunk(cs: list[str]) -> str:
         out: list[str] = []
         for c in cs:
-            t = _clean_public_transcript_text(c, preserve_whitespace=True)
+            t = _clean_public_transcript_text(c, preserve_whitespace=True, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
             if t:
                 out.append(t)
         return "".join(out)
@@ -1022,3 +1047,66 @@ def test_streamed_answer_is_cleaned_once_whole_not_per_chunk(
     assert "I identified MTA1 as the nearest ranked station." in body
     assert "Coverage exists in the region." in body
     assert "persisted" not in body
+
+
+def test_streamed_field_buffer_cleared_at_turn_end_and_turn_scoped(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """iowarp/clio-agent#757: ``app.state.live_streamed_field_text`` must be
+    cleared at turn end, and the finalize thinking-part suppression must match
+    only against the CURRENT turn's streamed text.
+
+    Turn 1 streams contract reasoning live; turn 2 streams nothing but its
+    finalize ``reasoning`` repeats turn 1's phrasing. Before the fix the buffer
+    survived turn 1, so turn 2's thinking part was wrongly suppressed as
+    "already streamed" and the dict grew forever.
+    """
+    from .conftest import complete_turn
+
+    repeated = "I will inspect the HDF5 schema before answering the user."
+
+    @dataclass
+    class _ReasoningPred:
+        answer: str = ""
+        selected_expert: str = ""
+        routing_rationale: str = ""
+        reasoning: str = ""
+
+    calls = {"n": 0}
+
+    async def fake_streamed_forward(
+        app: Any,
+        enriched_text: str,
+        sid: str,
+        emit_chunk: Any,
+        session_mode: str = "chat",
+        session_edit_mode: str = "diff",
+    ) -> _ReasoningPred:
+        del app, enriched_text, sid, session_mode, session_edit_mode
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # Turn 1: the reasoning channel streams live -> recorded in the buffer.
+            await emit_chunk(repeated, "main", "reasoning")
+            await emit_chunk("turn one answer", "main", "answer")
+            return _ReasoningPred(answer="turn one answer")
+        # Turn 2: nothing streams; the finalize reasoning repeats turn 1's phrasing.
+        return _ReasoningPred(answer="turn two answer", reasoning=repeated)
+
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent("fallback"))
+    client = TestClient(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+
+    complete_turn(client, sid, "turn one")
+    store = getattr(app.state, "live_streamed_field_text", {}) or {}
+    assert store.get(sid) in (None, {}), (
+        f"live_streamed_field_text must be cleared at turn end, got: {store.get(sid)!r}"
+    )
+
+    assistant2 = complete_turn(client, sid, "turn two")
+    thinking_texts = [p["text"] for p in assistant2["parts"] if p["type"] == "thinking"]
+    assert thinking_texts == [repeated], (
+        "turn 2's thinking part must NOT be suppressed by turn 1's streamed text"
+    )
+    store = getattr(app.state, "live_streamed_field_text", {}) or {}
+    assert store.get(sid) in (None, {})

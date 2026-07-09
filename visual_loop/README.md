@@ -50,11 +50,10 @@ visual_loop/screenshots/clio_tui_brand_intro.gif
 The most useful live transcript source is the ALCF demo benchmark harness:
 
 - `scripts/run_demo_benchmark.py`
-- `docs/ALCF_DEMO_BENCHMARK_REPORT.md`
 
-The report documents the final 21-case run, including prompts, provider/model
-settings, selected agent, handoffs, tools, child sessions, artifacts, elapsed
-time, and caveats. The final local evidence file was:
+Run with `--report <path>` to render a run report documenting prompts,
+provider/model settings, selected agent, handoffs, tools, child sessions,
+artifacts, elapsed time, and caveats. The final local evidence file was:
 
 ```text
 tmp/clio-demo-benchmark-alcf-metis-20260524-stress-final4.jsonl

@@ -7,6 +7,7 @@ the prompt, and that mode=edit + paths-outside-root are filtered.
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -123,9 +124,7 @@ def test_edit_mode_includes_only_header(setup) -> None:
     assert "mode=edit" in seen
     # Body should NOT be inlined for edit mode.
     assert "def f()" not in seen
-    assert assistant["metadata"]["context_files"]["files"][0]["inline_policy"] == (
-        "metadata_only"
-    )
+    assert assistant["metadata"]["context_files"]["files"][0]["inline_policy"] == ("metadata_only")
 
 
 def test_missing_edit_mode_path_remains_visible(setup) -> None:
@@ -193,7 +192,10 @@ def test_path_outside_workspace_root_is_inlined_for_reads(setup, tmp_path: Path)
 
     app, c, agent, _ = setup
     sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    outside = Path("/tmp") / "v031-outside-marker.txt"
+    # Create the outside-root file in a separate OS-absolute temp dir so it
+    # is absolute on every OS yet still outside the tmp_path workspace root.
+    outside_dir = Path(tempfile.mkdtemp())
+    outside = outside_dir / "v031-outside-marker.txt"
     outside.write_text("MAGIC-MARKER-FROM-OUTSIDE-ROOT")
     try:
         c.post(
@@ -205,6 +207,10 @@ def test_path_outside_workspace_root_is_inlined_for_reads(setup, tmp_path: Path)
         try:
             outside.unlink()
         except FileNotFoundError:
+            pass
+        try:
+            outside_dir.rmdir()
+        except OSError:
             pass
     seen, _ = agent.calls[-1]
     # File body IS inlined now (no silent skip).

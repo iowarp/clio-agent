@@ -87,20 +87,15 @@ For the design rationale (three-tier hierarchy, ARC memory, optimizer layer, IOW
 
 ## Documentation
 
-| Doc | What's in it |
-|---|---|
-| [docs/CLIO_AGENT_ARCHITECTURE.md](docs/CLIO_AGENT_ARCHITECTURE.md) | Three-tier design, ARC memory, optimizer layer |
-| [docs/SYSTEM_IDENTITY.md](docs/SYSTEM_IDENTITY.md) | What the agent is, design principles |
-| [docs/SETUP.md](docs/SETUP.md) | Release install, source-build install, and smoke test |
-| [docs/CONTRIBUTOR_QUICKSTART.md](docs/CONTRIBUTOR_QUICKSTART.md) | Dev environment, quality checks, where to put code |
-| [docs/MCP_TOOL_INTEGRATION.md](docs/MCP_TOOL_INTEGRATION.md) | Adding tools via FastMCP |
-| [docs/EXPERT_SYSTEM_DESIGN.md](docs/EXPERT_SYSTEM_DESIGN.md) | Adding new experts |
-| [docs/ARC_MEMORY_LAYER.md](docs/ARC_MEMORY_LAYER.md) | Memory model and storage |
-| [docs/SELF_IMPROVEMENT.md](docs/SELF_IMPROVEMENT.md) | Optimizer layer |
-| [docs/PERMISSIONS.md](docs/PERMISSIONS.md) | Tool permission system |
-| [docs/providers/](docs/providers/) | LM provider configuration |
-| [docs/CAPABILITIES_MATRIX.md](docs/CAPABILITIES_MATRIX.md) | Feature matrix |
-| [PLAN.md](PLAN.md) | Roadmap |
+The full, organized index is in **[docs/README.md](docs/README.md)**. Common
+starting points:
+
+- **[Setup & install](docs/SETUP.md)** — release install, source build, smoke test
+- **[Architecture](docs/CLIO_AGENT_ARCHITECTURE.md)** — the three-tier design, ARC memory, and tool gateway
+- **[Contributing](docs/CONTRIBUTOR_QUICKSTART.md)** — dev environment, quality checks, and where code goes
+- **[Adding tools](docs/MCP_TOOL_INTEGRATION.md)** / **[experts](docs/DSPY_BLUEPRINT_EXPERT_RUNTIME.md)** — extend the agent
+- **[Providers](docs/providers/)** — configure an LM backend
+- **[Roadmap](docs/design/roadmap.md)** — what's next
 
 ---
 

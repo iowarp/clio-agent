@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 
+from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.prompts import parse_prompt_text
 
@@ -109,12 +110,7 @@ def register_prompts_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.post("/v1/prompts/{prompt_id:path}/render")
     async def render_prompt(prompt_id: str, request: Request, profile: str = "") -> dict[str, Any]:
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+        body = await json_body(request, route="POST /v1/prompts/{prompt_id}/render")
         requested_profile = str(body.get("profile") or profile or "")
         session_id = str(body.get("session_id") or "")
         workspace_id = str(body.get("workspace_id") or "")
@@ -150,12 +146,7 @@ def register_prompts_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.post("/v1/prompts/{prompt_id:path}/validate")
     async def validate_prompt(prompt_id: str, request: Request) -> dict[str, Any]:
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+        body = await json_body(request, route="POST /v1/prompts/{prompt_id}/validate")
         text = str(body.get("text") or "")
         profile = str(body.get("profile") or "default")
         if text.strip():
@@ -191,12 +182,7 @@ def register_prompts_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.post("/v1/prompts/reload")
     async def reload_prompts(request: Request) -> dict[str, Any]:
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+        body = await json_body(request, route="POST /v1/prompts/reload")
         app.state.prompt_registry.reload()
         registry = deps.prompt_registry_for_request(
             session_id=str(body.get("session_id") or ""),
@@ -206,12 +192,7 @@ def register_prompts_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.put("/v1/prompts/{prompt_id:path}")
     async def save_prompt(prompt_id: str, request: Request) -> dict[str, Any]:
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+        body = await json_body(request, route="PUT /v1/prompts/{prompt_id}")
         text = str(body.get("text") or "")
         if not text.strip():
             raise HTTPException(

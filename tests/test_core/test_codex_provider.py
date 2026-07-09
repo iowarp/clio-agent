@@ -172,6 +172,13 @@ class TestRunExec:
                 _run_exec(prompt="hi", model="gpt-5")
 
     def test_timeout_raises(self, tmp_path: Path):
+        """A timeout raises AND the last-message temp file is unlinked.
+
+        Regression guard for the #769 leak fix: the old ``finally: pass``
+        left ``codex-out-<uuid>.txt`` on disk when ``subprocess.run``
+        raised ``TimeoutExpired``. Pin the uuid so we can pre-create the
+        file (as a half-written codex would) and assert cleanup happened.
+        """
         with (
             patch(
                 "clio_agent.providers.codex_litellm._resolve_codex_binary",
@@ -182,10 +189,18 @@ class TestRunExec:
                 "clio_agent.providers.codex_litellm.tempfile.gettempdir",
                 return_value=str(tmp_path),
             ),
+            patch(
+                "clio_agent.providers.codex_litellm.uuid.uuid4",
+                return_value=MagicMock(hex="deadbeef"),
+            ),
         ):
             run_mock.side_effect = subprocess.TimeoutExpired(cmd="codex", timeout=1.0)
+            last_msg_path = tmp_path / "codex-out-deadbeef.txt"
+            # Simulate codex having written partial output before timing out.
+            last_msg_path.write_text("partial", encoding="utf-8")
             with pytest.raises(CodexExecError, match="timed out"):
                 _run_exec(prompt="hi", model="gpt-5", timeout=1.0)
+            assert not last_msg_path.exists()
 
     def test_missing_output_file_raises(self, tmp_path: Path):
         with (
@@ -424,14 +439,42 @@ class TestSDKTransport:
                 optional_params={"codex_transport": "sdk"},
             )
 
-    def test_env_var_selects_transport(self, monkeypatch):
-        """CLIO_CODEX_TRANSPORT=sdk should route through the SDK path even
-        when optional_params doesn't override transport."""
+    def test_env_var_does_not_select_transport(self, monkeypatch):
+        """CLIO_CODEX_TRANSPORT must be ignored (#818): transport is read purely
+        from the per-LM optional_params carried on the resolved config. With env
+        set to ``sdk`` but no override in optional_params, the DEFAULT_TRANSPORT
+        (``exec``) applies — the process-global env never leaks into a per-LM path."""
         monkeypatch.setenv("CLIO_CODEX_TRANSPORT", "sdk")
+        # If the env leaked in, the SDK import would be attempted; make it explode
+        # so an accidental sdk route is loud rather than silent.
+        monkeypatch.setitem(__import__("sys").modules, "openai_codex", None)
+        with patch(
+            "clio_agent.providers.codex_litellm._run_exec",
+            return_value="exec-routed",
+        ) as run_exec:
+            handler = CodexLLM()
+            resp = handler.completion(
+                model="codex/gpt-5",
+                messages=[{"role": "user", "content": "hi"}],
+                api_base="",
+                custom_prompt_dict={},
+                model_response=None,  # type: ignore[arg-type]
+                print_verbose=lambda *_: None,
+                encoding=None,
+                api_key=None,
+                logging_obj=None,
+                optional_params={},
+            )
+        run_exec.assert_called_once()
+        assert resp.choices[0].message.content == "exec-routed"
+
+    def test_optional_params_override_env(self, monkeypatch):
+        """optional_params is authoritative even when the (ignored) env disagrees."""
+        monkeypatch.setenv("CLIO_CODEX_TRANSPORT", "exec")
         sdk_module = MagicMock()
         codex_instance = MagicMock()
         thread = MagicMock()
-        thread.run.return_value = MagicMock(final_response="env-routed sdk")
+        thread.run.return_value = MagicMock(final_response="config-routed sdk")
         codex_instance.thread_start.return_value = thread
         codex_instance.__enter__ = MagicMock(return_value=codex_instance)
         codex_instance.__exit__ = MagicMock(return_value=False)
@@ -449,9 +492,9 @@ class TestSDKTransport:
             encoding=None,
             api_key=None,
             logging_obj=None,
-            optional_params={},
+            optional_params={"codex_transport": "sdk"},
         )
-        assert resp.choices[0].message.content == "env-routed sdk"
+        assert resp.choices[0].message.content == "config-routed sdk"
 
     def test_unknown_transport_raises(self):
         handler = CodexLLM()

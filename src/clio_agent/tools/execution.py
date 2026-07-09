@@ -7,9 +7,13 @@ import concurrent.futures
 import contextvars
 import json
 import logging
+import os
 import threading
-from collections.abc import Callable, Mapping
+import time
+from collections import deque
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager, suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Optional, Protocol
 
@@ -18,6 +22,7 @@ from fastmcp import Client
 
 from clio_agent import conf
 from clio_agent.errors import CancellationError
+from clio_agent.runtime.stream_audit import stream_audit
 from clio_agent.tools.file_policy import FileAccessPolicy
 
 logger = logging.getLogger(__name__)
@@ -46,19 +51,22 @@ class MCPClientProtocol(Protocol):
 ClientFactory = Callable[[Any], MCPClientProtocol]
 
 
-# iowarp/clio-agent#7 + #2: process-global hooks. The GACT layer
-# (or any other harness) sets these once and every SyncMCPToolExecutor
-# consults them at call time. None means "no-op".
-_GLOBAL_PERMISSION_GATE: Optional[Callable[[str, Mapping[str, Any]], str]] = None
-_GLOBAL_TOOL_INTERCEPTOR: Optional[Callable[[str, Mapping[str, Any]], Any | None]] = None
+# iowarp/clio-agent#7 + #2 + #735: the four tool-runtime hooks (permission
+# gate, telemetry observer, preflight interceptor, cancellation checker) are
+# resolved per tool call through the ``ToolRuntimeHooks`` seam below — gact
+# installs a stateless resolver that dispatches on the LIVE turn's app, so
+# concurrent apps in one process never share a hook. There is no process-global
+# hook state left; the sole retained net is the single ``_FALLBACK_TOOL_RUNTIME``
+# bundle consulted (loudly) only when no app resolves.
 ToolObserver = Callable[
     [str, Mapping[str, Any], Optional[str], Optional[str], Any | None],
     None,
 ]
 LegacyToolObserver = Callable[[str, Mapping[str, Any], Optional[str], Optional[str]], None]
 
-_GLOBAL_TOOL_OBSERVER: Optional[ToolObserver | LegacyToolObserver] = None
-_GLOBAL_CANCELLATION_CHECKER: Optional[Callable[[], bool]] = None
+# The active session workspace root rides its own ContextVar (kept: it is read on
+# the app-less CLI grounding path where no app resolves — see ``agent.py`` /
+# ``file_policy.py`` — so it cannot fold into the ``active_app()``-keyed bundle).
 _ACTIVE_TOOL_WORKSPACE_ROOT: contextvars.ContextVar[str] = contextvars.ContextVar(
     "clio_active_tool_workspace_root",
     default="",
@@ -82,31 +90,142 @@ def get_active_tool_workspace_root() -> str:
     return _ACTIVE_TOOL_WORKSPACE_ROOT.get()
 
 
-def set_global_permission_gate(
-    gate: Optional[Callable[[str, Mapping[str, Any]], str]],
-) -> None:
-    """Install a process-global permission gate. Pass None to disable."""
-
-    global _GLOBAL_PERMISSION_GATE
-    _GLOBAL_PERMISSION_GATE = gate
-
-
-def set_global_tool_observer(
-    observer: Optional[ToolObserver | LegacyToolObserver],
-) -> None:
-    """Install a process-global tool-call observer. Pass None to disable."""
-
-    global _GLOBAL_TOOL_OBSERVER
-    _GLOBAL_TOOL_OBSERVER = observer
+# --------------------------------------------------------------------------- #
+# iowarp/clio-agent#735 — the tool-runtime hooks SEAM (unified concurrency §2). #
+#                                                                               #
+# The low ``tools`` layer owns an inversion-of-control SLOT: a frozen data      #
+# shape (``ToolRuntimeHooks``), one resolver function pointer, and one retained #
+# fallback bundle. gact installs a STATELESS resolver once (``build_app`` ->     #
+# ``set_tool_runtime_resolver``) that dispatches on the live turn's app; the    #
+# executor reads the bundle via ``current_tool_runtime()`` at call time. Nothing #
+# per-app is ever pushed into this layer, and this layer imports no ``gact``.    #
+#                                                                               #
+# This is the SOLE tool-hook mechanism: the resolver is the in-turn path and the #
+# single ``_FALLBACK_TOOL_RUNTIME`` bundle is the reason-logged app-less net.    #
+# --------------------------------------------------------------------------- #
 
 
-def set_global_tool_interceptor(
-    interceptor: Optional[Callable[[str, Mapping[str, Any]], Any | None]],
-) -> None:
-    """Install a process-global preflight tool interceptor. Pass None to disable."""
+@dataclass(frozen=True)
+class ToolRuntimeHooks:
+    """The per-tool-call hook bundle resolved for the live turn (#735).
 
-    global _GLOBAL_TOOL_INTERCEPTOR
-    _GLOBAL_TOOL_INTERCEPTOR = interceptor
+    A frozen value object carrying the four tool-runtime hooks. ``None`` on any
+    field means "no such hook" (a no-op), never "look elsewhere".
+    """
+
+    permission_gate: Optional[Callable[[str, Mapping[str, Any]], str]] = None
+    tool_observer: Optional[ToolObserver | LegacyToolObserver] = None
+    tool_interceptor: Optional[Callable[[str, Mapping[str, Any]], Any | None]] = None
+    cancellation_checker: Optional[Callable[[], bool]] = None
+
+
+# One installed resolver slot (gact fills it once) + one retained fallback bundle
+# used ONLY when no app resolves (out-of-band / app-less caller).
+_TOOL_RUNTIME_RESOLVER: Optional[Callable[[], "ToolRuntimeHooks | None"]] = None
+_FALLBACK_TOOL_RUNTIME: ToolRuntimeHooks = ToolRuntimeHooks()
+
+
+def set_tool_runtime_resolver(fn: Optional[Callable[[], "ToolRuntimeHooks | None"]]) -> None:
+    """Install the stateless per-call resolver (gact does this once in build_app).
+
+    The resolver returns the live turn's hooks, or ``None`` when app-less so
+    ``current_tool_runtime`` takes the reason-logged fallback path.
+    """
+
+    global _TOOL_RUNTIME_RESOLVER
+    _TOOL_RUNTIME_RESOLVER = fn
+
+
+def set_tool_runtime_fallback(hooks: ToolRuntimeHooks) -> None:
+    """Set the neutral app-less fallback bundle (defaults to empty hooks).
+
+    Production leaves this NEUTRAL: gact's per-app install stamps ``app.state``
+    only and the resolver dispatches on ``active_app()``, so an app-less resolve
+    never returns a sibling app's live hooks (#735 unified §1). This setter exists
+    for explicit out-of-band / test callers that deliberately exercise the app-less
+    path; such callers own resetting it back to ``ToolRuntimeHooks()``.
+    """
+
+    global _FALLBACK_TOOL_RUNTIME
+    _FALLBACK_TOOL_RUNTIME = hooks
+
+
+# Structured reason catalog for a degraded tool-runtime resolve — modeled on the
+# ``stream_fallback`` catalog (a typed reason, recorded + queryable after the
+# fact). Every app-less resolve emits one of these instead of silently returning
+# an empty bundle (the no-silent-fallback ground rule): a dropped permission gate
+# must always be observable in the audit sink.
+_TOOL_RUNTIME_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
+    "tool_runtime_appless_fallback": {
+        "severity": "warning",
+        "detail": (
+            "no app resolved for this tool call; used the retained last-installed "
+            "hook bundle (out-of-band / app-less caller)"
+        ),
+    },
+    "tool_runtime_unresolved": {
+        "severity": "warning",
+        "detail": (
+            "no app resolved and the retained fallback bundle carries no permission "
+            "gate or observer; the tool call runs unhooked"
+        ),
+    },
+}
+
+_TOOL_RUNTIME_REASONS: "deque[dict[str, Any]]" = deque(maxlen=256)
+_TOOL_RUNTIME_REASONS_LOCK = threading.Lock()
+
+
+def _emit_tool_runtime_reason(reason: str, **fields: Any) -> dict[str, Any]:
+    """Record a typed tool-runtime resolve reason to the low-layer audit sink.
+
+    Appends to the bounded, queryable in-process ring (``recorded_tool_runtime_reasons``)
+    and to the ``stream_audit`` JSONL. Does NOT import gact.
+    """
+
+    definition = _TOOL_RUNTIME_REASON_DEFINITIONS.get(reason)
+    if definition is None:
+        raise ValueError(f"Unknown tool-runtime reason: {reason}")
+    payload: dict[str, Any] = {"reason": reason, **definition, **fields}
+    with _TOOL_RUNTIME_REASONS_LOCK:
+        _TOOL_RUNTIME_REASONS.append(payload)
+    stream_audit("tool_runtime_fallback", **payload)
+    logger.debug(
+        "tool-runtime resolve degraded reason=%s detail=%s",
+        reason,
+        definition["detail"],
+    )
+    return payload
+
+
+def recorded_tool_runtime_reasons() -> list[dict[str, Any]]:
+    """Return a snapshot of recorded tool-runtime resolve reasons (queryable audit)."""
+
+    with _TOOL_RUNTIME_REASONS_LOCK:
+        return list(_TOOL_RUNTIME_REASONS)
+
+
+def current_tool_runtime() -> ToolRuntimeHooks:
+    """Resolve the live tool-runtime hook bundle for THIS tool call (#735 seam).
+
+    Prefers the installed resolver (gact dispatches on ``active_app()`` so N apps
+    in one process each read their own ``app.state.pending_*``). When no app
+    resolves it falls back to the single retained ``_FALLBACK_TOOL_RUNTIME``
+    bundle — but LOUDLY: it emits a structured reason so the degradation reaches
+    the audit sink rather than silently dropping a gate.
+    """
+
+    resolver = _TOOL_RUNTIME_RESOLVER
+    resolved = resolver() if resolver is not None else None
+    if resolved is not None:
+        return resolved
+    fallback = _FALLBACK_TOOL_RUNTIME
+    _emit_tool_runtime_reason(
+        "tool_runtime_appless_fallback"
+        if fallback.permission_gate is not None or fallback.tool_observer is not None
+        else "tool_runtime_unresolved"
+    )
+    return fallback
 
 
 def notify_tool_observer(
@@ -129,8 +248,14 @@ def notify_tool_observer(
                 observer(name, dict(args), phase, error, result)  # type: ignore[misc, call-arg]
             except TypeError:
                 observer(name, dict(args), phase, error)  # type: ignore[misc, call-arg]
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 - observers must never break tool execution
+        logger.warning(
+            "tool observer raised; its view of this call is lost "
+            "reason=tool_observer_failed tool=%s phase=%s error=%s",
+            name,
+            phase,
+            exc,
+        )
 
 
 def notify_global_tool_observer(
@@ -140,9 +265,14 @@ def notify_global_tool_observer(
     error: str | None = None,
     result: Any | None = None,
 ) -> None:
-    """Notify the process-global tool observer, swallowing observer failures."""
+    """Notify the active tool observer (per-turn override, else global fallback).
 
-    notify_tool_observer(_GLOBAL_TOOL_OBSERVER, name, args, phase, error, result)
+    Prefers the current turn's observer so an in-turn caller (a live-observed
+    agent, a native tool shim) reaches THIS app's observer rather than a sibling
+    app's process-global (iowarp/clio-agent#735).
+    """
+
+    notify_tool_observer(current_tool_runtime().tool_observer, name, args, phase, error, result)
 
 
 def _structured_tool_result_error(result: Any) -> str | None:
@@ -174,13 +304,6 @@ def _structured_tool_result_error(result: Any) -> str | None:
         if normalized.startswith("error:"):
             return decoded.strip()
     return None
-
-
-def set_global_cancellation_checker(checker: Optional[Callable[[], bool]]) -> None:
-    """Install a process-global cooperative cancellation checker."""
-
-    global _GLOBAL_CANCELLATION_CHECKER
-    _GLOBAL_CANCELLATION_CHECKER = checker
 
 
 class AsyncToolExecutor(Protocol):
@@ -432,7 +555,7 @@ class AsyncMCPToolExecutor:
                     self._client_ctx.__aexit__(None, None, None),
                     timeout=close_timeout,
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - client-close error logged at debug; teardown continues
                 logger.debug("Error closing AsyncMCPToolExecutor client: %s", exc)
 
         self._client = None
@@ -478,9 +601,9 @@ class SyncMCPToolExecutor:
         #   "allow"  → run the tool unchanged
         #   "deny"   → raise a PermissionError; the agent sees the
         #              traceback in its tool_result and reports it.
-        # Explicit instance hook wins. When omitted, call_tool consults
-        # the module-level _GLOBAL_PERMISSION_GATE dynamically so GACT
-        # deferred startup can wire hooks after an executor exists.
+        # Explicit instance hook wins. When omitted, call_tool consults the
+        # resolved ``current_tool_runtime()`` bundle dynamically so GACT deferred
+        # startup can wire hooks after an executor exists.
         self._permission_gate = permission_gate
         # iowarp/clio-agent#2: optional observer called BEFORE
         # ("started") and AFTER ("completed", error?) every tool
@@ -564,9 +687,10 @@ class SyncMCPToolExecutor:
         if self._closed:
             raise RuntimeError("SyncMCPToolExecutor is closed")
 
-        permission_gate = self._permission_gate or _GLOBAL_PERMISSION_GATE
-        tool_observer = self._tool_observer or _GLOBAL_TOOL_OBSERVER
-        cancellation_checker = _GLOBAL_CANCELLATION_CHECKER
+        hooks = current_tool_runtime()
+        permission_gate = self._permission_gate or hooks.permission_gate
+        tool_observer = self._tool_observer or hooks.tool_observer
+        cancellation_checker = hooks.cancellation_checker
 
         def raise_if_cancelled(stage: str) -> None:
             if cancellation_checker is not None and cancellation_checker():
@@ -580,7 +704,7 @@ class SyncMCPToolExecutor:
                     },
                 )
 
-        effective_args = _repair_missing_file_arguments(args)
+        effective_args, repair_records = _repair_missing_file_arguments(args)
         effective_args = _ground_output_paths(
             effective_args,
             getattr(self._mcp_tools.get(name), "inputSchema", None),
@@ -603,7 +727,7 @@ class SyncMCPToolExecutor:
             notify_tool_observer(tool_observer, name, effective_args, "completed", circuit_error)
             raise RepeatedToolFailureError(circuit_error)
 
-        tool_interceptor = _GLOBAL_TOOL_INTERCEPTOR
+        tool_interceptor = hooks.tool_interceptor
         if tool_interceptor is not None:
             intercepted = tool_interceptor(name, dict(effective_args))
             if intercepted is not None:
@@ -643,6 +767,8 @@ class SyncMCPToolExecutor:
             self._record_tool_success(name)
             notify_tool_observer(tool_observer, name, effective_args, "completed", None, result)
 
+        if repair_records:
+            return _prepend_repair_notes(repair_records, result)
         return result
 
     def _repeated_transient_failure_error(self, name: str) -> str | None:
@@ -704,7 +830,7 @@ class SyncMCPToolExecutor:
                     )
                 except TimeoutError:
                     logger.warning("Timed out closing SyncMCPToolExecutor client")
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - client-close error logged at debug; teardown continues
                     logger.debug("Error closing SyncMCPToolExecutor client: %s", exc)
 
             if not self._loop.is_closed():
@@ -879,21 +1005,93 @@ def _ground_output_paths(
     return grounded
 
 
-def _repair_missing_file_arguments(args: Mapping[str, Any]) -> dict[str, Any]:
+# Bounds on the allowed-root basename scan: a mistyped path must not turn a tool
+# call into an unbounded filesystem walk. Both are hard ceilings — hitting either
+# aborts the scan and leaves the argument UNCHANGED, because a partial scan cannot
+# prove a match is unique.
+_REPAIR_SCAN_LIMIT = 20_000
+_REPAIR_DEADLINE_S = 2.0
+
+
+def _bounded_basename_matches(
+    roots: Sequence[Path],
+    basename: str,
+    scanned: int,
+    deadline: float,
+) -> tuple[list[Path], int, bool]:
+    """Walk ``roots`` for files named ``basename``, bounding every entry visited.
+
+    Unlike ``Path.rglob``, which only yields name-matches (so a no-match basename
+    over a huge tree would traverse it exhaustively before any bound could be
+    consulted), this walk increments ``scanned`` and checks the wall-clock
+    ``deadline`` for EVERY directory entry visited. Directory symlinks are not
+    followed, matching ``rglob``'s non-recursing behavior and avoiding cycles.
+
+    Returns:
+        ``(matches, scanned, aborted)``: resolved file matches (the walk stops
+        after a second match, which already disproves uniqueness), the updated
+        entry count, and whether a bound aborted the walk.
+    """
+    matches: list[Path] = []
+    for root in roots:
+        stack: list[str] = [str(root)]
+        while stack:
+            directory = stack.pop()
+            try:
+                entries = os.scandir(directory)
+            except OSError:
+                continue
+            with entries:
+                for entry in entries:
+                    scanned += 1
+                    if scanned > _REPAIR_SCAN_LIMIT or time.monotonic() > deadline:
+                        return matches, scanned, True
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(entry.path)
+                        elif entry.name == basename and entry.is_file():
+                            matches.append(Path(entry.path).resolve())
+                            if len(matches) > 1:
+                                return matches, scanned, False
+                    except OSError:
+                        continue
+    return matches, scanned, False
+
+
+def _repair_missing_file_arguments(
+    args: Mapping[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
     """Repair obvious missing file-path typos to a unique allowed-root match.
 
     Model-generated tool calls occasionally mistype a directory component while
     preserving the target basename. Retrying a unique basename match under the
     configured allowed roots keeps the repair inside the existing file policy:
     no outside-root access, and no ambiguous guessing.
+
+    The allowed-root walk is bounded (``_REPAIR_SCAN_LIMIT`` entries across roots,
+    ``_REPAIR_DEADLINE_S`` seconds); exceeding either bound aborts the scan and
+    leaves the argument unchanged, since a partial scan cannot prove uniqueness.
+
+    Returns:
+        The (possibly repaired) argument dict, and a list of substitution records
+        ``{"argument", "requested", "used"}`` — one per actually-substituted
+        argument — so the caller can surface every repair in the tool result.
     """
 
     repaired = dict(args)
+    records: list[dict[str, str]] = []
     try:
         policy = FileAccessPolicy.from_env()
-    except Exception:
-        return repaired
+    except Exception as exc:  # noqa: BLE001 - degradation surfaced via structured log below
+        logger.warning(
+            "file-argument repair skipped: file policy unavailable "
+            "reason=file_policy_unavailable error=%r",
+            exc,
+        )
+        return repaired, records
 
+    scanned = 0
+    deadline = time.monotonic() + _REPAIR_DEADLINE_S
     for key, value in list(repaired.items()):
         if key not in _FILE_ARGUMENT_NAMES or not isinstance(value, str) or not value.strip():
             continue
@@ -903,22 +1101,33 @@ def _repair_missing_file_arguments(args: Mapping[str, Any]) -> dict[str, Any]:
         basename = candidate.name
         if not basename or basename in {".", ".."}:
             continue
-        matches: list[Path] = []
-        for root in policy.allowed_roots:
-            try:
-                for found in root.rglob(basename):
-                    if found.is_file():
-                        matches.append(found.resolve())
-                        if len(matches) > 1:
-                            break
-            except OSError:
-                continue
-            if len(matches) > 1:
-                break
+        matches, scanned, aborted = _bounded_basename_matches(
+            policy.allowed_roots, basename, scanned, deadline
+        )
+        if aborted:
+            # A partial scan can't prove uniqueness — leave the argument as-is.
+            continue
         unique = sorted(set(matches))
         if len(unique) == 1:
-            repaired[key] = str(unique[0])
-    return repaired
+            used = str(unique[0])
+            repaired[key] = used
+            records.append({"argument": key, "requested": value, "used": used})
+    return repaired, records
+
+
+def _prepend_repair_notes(records: Sequence[Mapping[str, str]], result: str) -> str:
+    """Prepend a human-readable ``[path-repair]`` note per substitution to ``result``.
+
+    Every file-argument substitution the executor made is surfaced verbatim in the
+    tool result the model reads back, so a silently-corrected path is never
+    invisible — the repair is auditable in the trace and to the model itself.
+    """
+    notes = "".join(
+        f"[path-repair] argument '{rec['argument']}': '{rec['requested']}' not found; "
+        f"substituted unique match '{rec['used']}'\n"
+        for rec in records
+    )
+    return f"{notes}\n{result}"
 
 
 def _make_dspy_tools(
@@ -964,14 +1173,15 @@ __all__ = [
     "SyncMCPToolExecutor",
     "SyncToolExecutor",
     "ToolExecutor",
+    "ToolRuntimeHooks",
     "create_async_tool_executor",
     "create_sync_tool_executor",
+    "current_tool_runtime",
     "get_active_tool_workspace_root",
     "notify_global_tool_observer",
     "notify_tool_observer",
-    "set_global_cancellation_checker",
-    "set_global_permission_gate",
-    "set_global_tool_interceptor",
-    "set_global_tool_observer",
+    "recorded_tool_runtime_reasons",
+    "set_tool_runtime_fallback",
+    "set_tool_runtime_resolver",
     "tool_workspace_context",
 ]

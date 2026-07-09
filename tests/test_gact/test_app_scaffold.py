@@ -1,11 +1,11 @@
-"""CLIO-BBBBBBBBBB6: smoke tests for the GACT v0.2 scaffold.
+"""smoke tests for the GACT v0.2 scaffold.
 
 Verifies the FastAPI app builds, its baseline routes (/v1/health +
 /v1/capabilities) respond with the v0.2 shape, and every route we
 stubbed returns a v0.2-shaped 501 error envelope.
 
 Full endpoint behaviour gets tested as each route is wired in
-follow-on iterations (CLIO-BBBBBBBBBB7+).
+follow-on iterations.
 """
 
 from __future__ import annotations
@@ -77,6 +77,9 @@ def test_capabilities_advertises_v0_2(client: TestClient) -> None:
     assert gaps["lsp"]["status"] == "unsupported"
     assert gaps["optimizer_command"]["status"] == "unavailable"
     assert gaps["optimizer_command"]["related_commands"] == ["/optimize"]
+    # #801: the gap row carries the shared reason code + #633 pointer.
+    assert gaps["optimizer_command"]["reason"] == "optimizer_not_implemented"
+    assert gaps["optimizer_command"]["tracking_issue"].endswith("/issues/633")
     # Landed capabilities.
     for flag in (
         "sessions",
@@ -93,6 +96,45 @@ def test_capabilities_advertises_v0_2(client: TestClient) -> None:
         "tool_telemetry",
     ):
         assert caps[flag] is True, f"{flag} implemented — must advertise True"
+
+
+def test_capabilities_do_not_advertise_unwired_flags(client: TestClient) -> None:
+    """#760: session_summary/attachments_upload have no routes behind
+    them — advertising them lies to the TUI (gact/types.py contract)."""
+
+    caps = client.get("/v1/capabilities").json()["capabilities"]
+    assert caps["session_summary"] is False, (
+        "no POST /v1/sessions/{sid}/summarize route is registered — must not advertise"
+    )
+    assert caps["attachments_upload"] is False, (
+        "no POST /v1/sessions/{sid}/attachments route is registered — must not advertise"
+    )
+
+
+def test_advertised_capabilities_are_backed_by_registered_routes() -> None:
+    """#760 conformance guard: every advertised flag that maps 1:1 to a
+    route must have that route registered on the app."""
+
+    # Only flags with an unambiguous single-route contract.
+    flag_to_route: dict[str, tuple[str, str]] = {
+        "session_branching": ("POST", "/v1/sessions/{sid}/fork"),
+        "search_messages": ("GET", "/v1/sessions/{sid}/messages/search"),
+        "session_export": ("GET", "/v1/sessions/{sid}/export"),
+        "session_summary": ("POST", "/v1/sessions/{sid}/summarize"),
+        "attachments_upload": ("POST", "/v1/sessions/{sid}/attachments"),
+    }
+    app = build_app()
+    registered = {
+        (method, route.path)
+        for route in app.routes
+        for method in (getattr(route, "methods", None) or ())
+    }
+    caps = TestClient(app).get("/v1/capabilities").json()["capabilities"]
+    for flag, (method, path) in flag_to_route.items():
+        if caps[flag] is True:
+            assert (method, path) in registered, (
+                f"capability {flag}=True advertised but {method} {path} is not registered"
+            )
 
 
 def test_capability_gaps_endpoint_returns_disabled_future_capabilities(
@@ -127,6 +169,10 @@ def test_capability_gaps_endpoint_returns_disabled_future_capabilities(
         "render_optimize_disabled",
         "retry_after_optimizer_support_lands",
     ]
+    # #801: uniform structured not-implemented — shared reason code + #633 pointer.
+    assert optimize["reason"] == "optimizer_not_implemented"
+    assert optimize["tracking_issue"].endswith("/issues/633")
+    assert "633" in optimize["description"]
 
 
 def test_stubbed_routes_return_501_with_v0_2_envelope() -> None:

@@ -7,7 +7,7 @@ UI at CLIO and start asking scientific-data questions.
 ## What you're installing
 
 - **clio-agent** (Python) — the agent itself, plus a FastAPI server
-  (`clio-agent-gact`) that speaks the GACT v0.2 contract.
+  (`clio-agent serve`) that speaks the GACT v0.2 contract.
 - **gact** (Go binary) — the TUI front-end. Connects to any
   GACT-compliant backend via REST + SSE.
 
@@ -82,7 +82,7 @@ provider. No restart, no env-var dance.
 
 ```bash
 cd clio-agent
-uv run clio-agent-gact --port 17800
+uv run clio-agent serve --port 17800
 ```
 
 The server boots without an LM wired — the TUI will pop a config
@@ -93,7 +93,7 @@ export CLIO_LM_PROVIDER=openai
 export CLIO_LM_API_BASE=https://api.openai.com/v1
 export CLIO_LM_MODEL=gpt-4o-mini
 export CLIO_LM_API_KEY=sk-...
-uv run clio-agent-gact --port 17800
+uv run clio-agent serve --port 17800
 ```
 
 ## Connect the TUI
@@ -160,7 +160,7 @@ new model's prices.
 ```bash
 # Boot server.
 cd clio-agent
-uv run clio-agent-gact --port 17800 &
+uv run clio-agent serve --port 17800 &
 
 # Configure the LM.
 curl -X PUT http://127.0.0.1:17800/v1/providers/lm \
@@ -191,7 +191,7 @@ You should see the assistant's reply with a populated `tokens` and
 Each prompt below exercises a different code path. Run them through
 the TUI (or via curl) once you have the LM configured. Each should
 produce the documented behaviour — see
-[`docs/CAPABILITIES_MATRIX.md`](CAPABILITIES_MATRIX.md) for the full
+[`docs/archive/CAPABILITIES_MATRIX.md`](archive/CAPABILITIES_MATRIX.md) for the full
 end-to-end verification matrix.
 
 | Prompt | What it exercises |

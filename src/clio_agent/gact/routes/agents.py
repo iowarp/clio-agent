@@ -51,6 +51,7 @@ from clio_agent.gact.agents.resolution import (
     _runtime_session_agent_overlay,
     _runtime_workspace_catalog_cwd,
 )
+from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.types import (
     AgentDef,
     ErrorEnvelope,
@@ -90,7 +91,7 @@ def _known_agent_overlay_tool_names(app: FastAPI) -> set[str]:
                 name = str(getattr(tool, "name", "") or "").strip()
                 if name:
                     names.add(name)
-        except Exception:  # noqa: BLE001 - a broken executor must not block validation
+        except Exception:  # noqa: BLE001,S110 - a broken executor must not block validation
             pass
     for server in (getattr(app.state, "external_mcp_servers", {}) or {}).values():
         if not isinstance(server, Mapping):
@@ -108,7 +109,7 @@ def _known_agent_overlay_tool_names(app: FastAPI) -> set[str]:
 def _known_agent_overlay_provider_ids() -> set[str]:
     """Provider ids an overlay may legitimately assign as ``default_provider``."""
 
-    from clio_agent.providers.registry import as_lm_presets  # noqa: PLC0415
+    from clio_agent.providers.catalog import as_lm_presets  # noqa: PLC0415
 
     presets = as_lm_presets()
     providers = {str(row.id) for row in presets if str(row.id).strip()}
@@ -261,6 +262,9 @@ def _validate_session_agent_overlay_payload(
             "prompt_profile",
             "default_provider",
             "default_model",
+            "api_base",
+            "credential_ref",
+            "transport",
             "parent_id",
             "specialization",
         ):
@@ -444,8 +448,8 @@ def register_agents_routes(app: FastAPI, deps: "GactDeps") -> None:
     Handlers are defined inside this factory so they close over the ``app``
     argument FastAPI's decorators require, and reach the shared row-resolution
     closures (``agent_rows``/``agent_with_capability_refs``/overlay helpers/
-    ``prompt_registry_for_request``) plus the destructive-action guard and
-    workspace-session mirror through ``deps`` rather than any ``build_app`` local.
+    ``prompt_registry_for_request``) plus the destructive-action guard through
+    ``deps`` rather than any ``build_app`` local.
     """
 
     @app.post("/v1/agents/extract", response_model=AgentDef, status_code=201)
@@ -459,12 +463,7 @@ def register_agents_routes(app: FastAPI, deps: "GactDeps") -> None:
         compilation is deferred — this is the heuristic baseline.
         """
 
-        try:
-            body = await request.json()
-        except Exception:  # noqa: BLE001 - a malformed body is treated as empty
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+        body = await json_body(request, route="POST /v1/agents/extract")
         sids = [s for s in (body.get("session_ids") or []) if isinstance(s, str)]
         new_id = (body.get("agent_id") or "").strip()
         if not sids or not new_id:
@@ -605,7 +604,6 @@ def register_agents_routes(app: FastAPI, deps: "GactDeps") -> None:
             sid,
             metadata_patch={"agent_blueprint_overlay": dict(overlay)},
         )
-        deps.mirror_workspace_session(app, sid)
         return {
             "session_id": sid,
             "agent_overlay": dict(overlay),
@@ -872,7 +870,7 @@ def register_agents_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"agent not found: {agent_id}",
                         recoverable=False,
                     )
@@ -906,7 +904,7 @@ def register_agents_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"agent not found: {agent_id}",
                         recoverable=False,
                     )

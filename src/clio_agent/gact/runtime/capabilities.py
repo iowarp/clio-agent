@@ -3,8 +3,9 @@
 This module owns the static, client-renderable catalogs that the read-only
 system routes project, plus the percentile helper the ``/v1/metrics`` envelope
 builds from recorded tool-call durations. It is deliberately a *leaf*: it imports
-only stdlib (and the wire ``MetricsLatencyStat`` lazily, inside the one function
-that needs it), and has **zero** ``app.state`` coupling.
+only stdlib plus the dependency-free :mod:`clio_agent.optimizer.stub` (and the
+wire ``MetricsLatencyStat`` lazily, inside the one function that needs it), and
+has **zero** ``app.state`` coupling.
 
 Two consumers share these definitions, so they live here as the single source:
 
@@ -29,6 +30,12 @@ Responsibilities:
 from __future__ import annotations
 
 from typing import Any
+
+from clio_agent.optimizer.stub import (
+    OPTIMIZER_NOT_IMPLEMENTED_MESSAGE,
+    OPTIMIZER_NOT_IMPLEMENTED_REASON,
+    OPTIMIZER_TRACKING_ISSUE,
+)
 
 _STREAM_FALLBACK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
     "stream_disabled_guided_output": {
@@ -172,13 +179,15 @@ _CAPABILITY_GAP_DEFINITIONS: dict[str, dict[str, Any]] = {
         "related_endpoints": ["/v1/lsp/*"],
     },
     "optimizer_command": {
+        # #801: SPEC §3.3.1 capability-gap row — /optimize stays advertised as
+        # a planned research surface while carrying the uniform structured
+        # not-implemented stub (reason code + #633 pointer).
         "status": "unavailable",
         "advertised": True,
         "category": "deferred_command",
-        "description": (
-            "The /optimize slash command is kept visible as future CLIO "
-            "direction, but optimizer command execution is not wired yet."
-        ),
+        "reason": OPTIMIZER_NOT_IMPLEMENTED_REASON,
+        "tracking_issue": OPTIMIZER_TRACKING_ISSUE,
+        "description": OPTIMIZER_NOT_IMPLEMENTED_MESSAGE,
         "client_behavior": "render_disabled",
         "recovery_actions": [
             "render_optimize_disabled",

@@ -56,10 +56,20 @@ git merge --no-ff develop -m "Merge develop: release vX.Y.Z — <summary>"
 - `install/README.md` → bump the `CLIO_VERSION=` example.
 - Commit the submodule gitlink bumps + version together: `chore(release): vX.Y.Z`.
 
+### 4b. Roll the CHANGELOG (GACT-contract surface only)
+`CHANGELOG.md` tracks changes to clio-agent's **GACT-contract surface**
+(the TUI/HTTP surface) — not every internal change. Before tagging:
+- Rename the `## Unreleased` heading to `## [X.Y.Z] — YYYY-MM-DD` (today's
+  date), keeping the Added/Changed/Fixed/Removed sections it accumulated.
+- Add a fresh empty `## Unreleased` block above it for the next cycle.
+- If this release had **no** contract-surface change, say so explicitly
+  under the new version heading rather than leaving a stale Unreleased block.
+- Commit alongside the version bump (`chore(release): vX.Y.Z`).
+
 ### 5. Verify locally BEFORE tagging (cheap; avoids failed CI cycles)
 ```sh
 uv version --short                     # == X.Y.Z
-uv run python -c "import clio_agent, clio_agent.config, clio_agent.gact.app, clio_agent.ui.api; print('ok')"
+uv run python -c "import clio_agent, clio_agent.config, clio_agent.gact.app, clio_agent.ui.cli; print('ok')"
 uv build && ls -lh dist/               # BOTH wheel AND sdist must be < 100 MB (PyPI limit)
 # confirm no direct/git deps leaked into wheel metadata:
 python3 -c "import zipfile,glob; z=zipfile.ZipFile(glob.glob('dist/*.whl')[0]); m=[n for n in z.namelist() if n.endswith('METADATA')][0]; print('git+ in METADATA:', any('git+' in l for l in z.read(m).decode().splitlines()))"
@@ -77,6 +87,14 @@ gh run watch $(gh run list --workflow=release.yml --limit 1 --json databaseId -q
 curl -s https://pypi.org/pypi/clio-agent/json | python3 -c "import sys,json;d=json.load(sys.stdin);print('X.Y.Z' in d['releases'])"
 gh release view vX.Y.Z --json assets -q '.assets[].name' | grep clio-tui   # installer needs clio-tui-{os}-{arch}
 gh run list --workflow=docker.yml --limit 1                                 # ghcr images
+```
+The `clio-bundles.yml` **`release-check`** job must be green — it asserts every
+expected bundle uploaded (bundled msi/nsis/dmg/deb/rpm, lite set, tui set, web
+zip; #841 F-15). A red `release-check` names the missing artifact — a silently
+incomplete release (like v0.5.17's dropped `aarch64` bundled `.dmg`) fails here
+instead of shipping. To re-check by hand:
+```sh
+gh release view vX.Y.Z --json assets -q '.assets[].name' | python3 scripts/check_release_completeness.py
 ```
 
 ## Hard-won gotchas (all hit on the 0.5.3 release — check these)

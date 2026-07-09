@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB10: tests for /v1/agents + /v1/catalog/tools.
+"""tests for /v1/agents + /v1/catalog/tools.
 
 Exercises the CLIO to GACT translator that exposes registry-loaded Agent
 Blueprint experts and dynamic skill/user agents as AgentDef rows, plus the
@@ -104,7 +104,8 @@ def test_agents_expose_normalized_capability_refs(client: TestClient) -> None:
     }
     assert ("command", "/clear") in main_refs
     assert main_refs[("command", "/optimize")]["status"] == "unavailable"
-    assert main_refs[("command", "/optimize")]["metadata"]["error"] == "not_implemented"
+    # #801: uniform structured not-implemented reason code across surfaces.
+    assert main_refs[("command", "/optimize")]["metadata"]["error"] == "optimizer_not_implemented"
     assert "/cache-stats" in by_id["main"]["commands"]
 
     data_refs = {

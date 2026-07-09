@@ -257,10 +257,10 @@ def parse_expert_file(
                 errors.append(f"invalid {field_name} reference: {value}")
     defaults = pack.defaults if pack is not None else {}
     metadata: dict[str, Any] = {
-        "expert_path": str(path),
+        "expert_path": path.as_posix(),
         "expert_scope": scope,
         "expert_layout": "expert_markdown",
-        "definition_path": str(path),
+        "definition_path": path.as_posix(),
     }
     if pack is not None:
         metadata.update(
@@ -312,6 +312,16 @@ def parse_expert_file(
         default_model=str(
             meta.get("model") or meta.get("default_model") or defaults.get("model") or ""
         ).strip(),
+        api_base=str(
+            meta.get("api_base") or meta.get("api-base") or defaults.get("api_base") or ""
+        ).strip(),
+        credential_ref=str(
+            meta.get("credential_ref")
+            or meta.get("credential-ref")
+            or defaults.get("credential_ref")
+            or ""
+        ).strip(),
+        transport=str(meta.get("transport") or defaults.get("transport") or "").strip(),
         parameters=_parameters_from_meta(meta),
         module=module,
         signature=signature,
@@ -512,7 +522,7 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
         parsed = yaml.safe_load(frontmatter) or {}
         if isinstance(parsed, dict):
             return {str(key): value for key, value in parsed.items()}, body
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001,S110 - yaml unavailable/invalid; falls back to the line parser below
         pass
     meta: dict[str, Any] = {}
     cur_key = ""

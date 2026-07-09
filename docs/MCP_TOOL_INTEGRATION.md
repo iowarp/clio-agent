@@ -378,6 +378,6 @@ gateway.mount("/hdf5", {"command": "uvx", "args": ["iowarp-mcps", "hdf5"]})
 ## Related Documentation
 
 - [CLIO_AGENT_ARCHITECTURE.md](CLIO_AGENT_ARCHITECTURE.md) - System architecture
-- [EXPERT_SYSTEM_DESIGN.md](EXPERT_SYSTEM_DESIGN.md) - Expert agent patterns
+- [DSPY_BLUEPRINT_EXPERT_RUNTIME.md](DSPY_BLUEPRINT_EXPERT_RUNTIME.md) - Expert agent patterns
 - [ai-docs/FASTMCP/](../ai-docs/FASTMCP/) - FastMCP reference material
 - [ai-docs/DSPY/06_ADVANCED_PATTERNS.md](../ai-docs/DSPY/06_ADVANCED_PATTERNS.md) - DSPy tool integration

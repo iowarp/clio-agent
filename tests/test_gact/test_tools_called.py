@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB16: assistant turns report tools_called.
+"""assistant turns report tools_called.
 
 The TUI renders a post-hoc gutter under each assistant message by
 reading ``metadata.tools_called``. This test pins that the POST
@@ -149,9 +149,11 @@ def test_expert_handoffs_propagate_to_message_metadata(tmp_path: Path) -> None:
     assistant = complete_turn(client, sid, "find seismic data")
 
     assert assistant["metadata"]["expert_handoffs"] == handoffs
+    # #767 PR3 (mechanism 2, design §4 row 6): there is NO finalize
+    # rebuild-from-rows — expert_handoff PARTS exist only when the delegation
+    # runtime appended them live, at emit time. Rows the prediction merely
+    # reports (as here — no delegation actually executed) stay message
+    # METADATA only, so a reload can never show handoff atoms that never
+    # happened on the live stream.
     handoff_parts = [part for part in assistant["parts"] if part["type"] == "expert_handoff"]
-    assert len(handoff_parts) == 2
-    assert handoff_parts[0]["metadata"]["agent_id"] == "data"
-    assert handoff_parts[0]["text"].startswith("data | success")
-    assert handoff_parts[1]["metadata"]["parent_id"] == "data"
-    assert "data -> ndp_catalog" in handoff_parts[1]["text"]
+    assert handoff_parts == []

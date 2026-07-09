@@ -1,21 +1,21 @@
-"""LSM Tree for write-heavy metrics collection (v0.3.0)
+"""LSM Tree for write-heavy metrics collection.
 
-This module implements a Log-Structured Merge (LSM) tree optimized for
-high-throughput metrics collection with background compaction.
+This module implements a Log-Structured Merge (LSM) tree for the write-heavy
+invocation-metrics path, where appends dominate and reads are range scans.
 
 Architecture:
     - MemTable: In-memory SortedDict for recent writes (O(log N) inserts)
     - SSTables: Immutable on-disk sorted tables (msgpack format)
-    - Background Compaction: Async thread merges SSTables to reduce read amplification
+    - Background Compaction: Async thread merges SSTables to reduce read
+      amplification; the MemTable is double-buffered so a flush does not block
+      concurrent writers.
 
-Performance Targets:
-    - Write throughput > 1000 ops/sec
-    - Read latency < 10ms (MemTable + SSTable scan)
-    - Background compaction to manage disk usage
-
-See PLAN.md v0.3.0 Task 3 for implementation requirements.
+Reads merge the live MemTable with the on-disk SSTables. The single caller is
+``ARCMemory.store_invocation`` (memory.py); metrics live under
+``.clio/agent/arc/lsm/sst_*.msgpack``.
 """
 
+import logging
 import threading
 import time
 import uuid
@@ -25,6 +25,8 @@ from typing import Any, Dict, List, Optional
 
 import msgspec
 from sortedcontainers import SortedDict
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -337,10 +339,13 @@ class LSMTree:
                 if len(self._sstables) >= self._compaction_threshold:
                     try:
                         self._compact_sstables()
-                    except Exception as e:
-                        # Log error but don't crash thread
-                        # In production, would use proper logging
-                        print(f"LSM compaction error: {e}")
+                    except Exception as exc:  # noqa: BLE001 - keep the compaction thread alive
+                        logger.warning(
+                            "LSM compaction skipped this cycle "
+                            "reason=lsm_compaction_failed sstables=%d error=%s",
+                            len(self._sstables),
+                            exc,
+                        )
 
     def _compact_sstables(self) -> None:
         """Merge SSTables to reduce read amplification.
@@ -390,8 +395,13 @@ class LSMTree:
             for sstable in self._sstables:
                 try:
                     sstable.file_path.unlink()
-                except Exception:
-                    pass  # Best effort deletion
+                except Exception as exc:  # noqa: BLE001 - best-effort deletion, but say so
+                    logger.warning(
+                        "LSM compaction left a stale SSTable on disk "
+                        "reason=lsm_sstable_cleanup_failed path=%s error=%s",
+                        sstable.file_path,
+                        exc,
+                    )
 
             # Replace with compacted SSTable
             self._sstables = [compacted_sstable]
@@ -481,8 +491,14 @@ class LSMTree:
 
                 self._sstables.append(sstable)
 
-            except Exception:
-                # Skip corrupted SSTables
+            except Exception as exc:  # noqa: BLE001 - reason=sstable_corrupt_skipped logged below
+                # Skip corrupted SSTables, but surface a structured reason so a
+                # silently-dropped SSTable is observable in the trace.
+                logger.warning(
+                    "arc lsm degraded: reason=sstable_corrupt_skipped path=%s error=%r",
+                    sstable_path,
+                    exc,
+                )
                 continue
 
     def get_stats(self) -> Dict[str, Any]:

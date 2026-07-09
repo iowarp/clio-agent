@@ -42,12 +42,18 @@ from clio_agent.gact.agents.builders import (
     _build_blueprint_dspy_module,
 )
 from clio_agent.gact.agents.composition import _runtime_dynamic_agent_children_context
-from clio_agent.gact.runtime.globals import (
-    _EXPERT_CHILDREN_CACHE,
-    _ORCHESTRATOR_BRIEFING_CACHE,
-    _gact_app_context,
-)
+from clio_agent.gact.runtime.globals import _gact_app_context
 from clio_agent.gact.types import AgentDef
+
+
+def _clear_app_caches(app: Any) -> None:
+    """Clear THIS app's resolve-once expert caches (now per-app on ``app.state``,
+    #770 Site 2) to force a genuine recompute rather than a cache echo."""
+    for name in ("expert_children", "orchestrator_briefing"):
+        store = getattr(app.state, name, None)
+        if isinstance(store, dict):
+            store.clear()
+
 
 # ---- deterministic fixture graph -------------------------------------------- #
 
@@ -82,14 +88,11 @@ CHILDREN = [
 
 @pytest.fixture(autouse=True)
 def _clear_prompt_caches() -> Iterator[None]:
-    """The orchestrator-briefing / expert-children process caches are module-global;
-    clear them around each test so a stale entry from another test cannot mask a
-    genuine per-turn recomputation difference."""
-    _ORCHESTRATOR_BRIEFING_CACHE.clear()
-    _EXPERT_CHILDREN_CACHE.clear()
+    """The orchestrator-briefing / expert-children resolve-once caches are now
+    PER-APP on ``app.state`` (#770 Site 2), so a fresh app per build is naturally
+    isolated -- no cross-test process-global to scrub. Same-app builds within one
+    test clear via ``_clear_app_caches`` where a genuine recompute is asserted."""
     yield
-    _ORCHESTRATOR_BRIEFING_CACHE.clear()
-    _EXPERT_CHILDREN_CACHE.clear()
 
 
 def _patch_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -102,10 +105,14 @@ def _patch_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object())
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
+    # Step 6: ``_dynamic_agent_lm_config`` returns a ``ResolvedLMSpec`` whose
+    # ``materialize`` yields the runnable config; stub that contract here.
     monkeypatch.setattr(
         "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
         lambda base_agent, agent_def: SimpleNamespace(
-            provider="argonne", model="gpt-oss-120b", temperature=0.0
+            materialize=lambda cred_resolver=None: SimpleNamespace(
+                provider="argonne", model="gpt-oss-120b", temperature=0.0
+            )
         ),
     )
     monkeypatch.setattr(
@@ -141,7 +148,9 @@ def _build_expert_system_prompt(monkeypatch: pytest.MonkeyPatch, *, arc: Any) ->
     ARC bound on the app. Returns the ``system_prompt`` the module hands the model."""
 
     _patch_runtime(monkeypatch)
-    app = SimpleNamespace(state=SimpleNamespace(arc=arc))
+    # ``sessions`` mirrors real app wiring: the workflow-schema resolver looks the
+    # session up (unknown id -> no blueprint to attribute -> GENERIC schema).
+    app = SimpleNamespace(state=SimpleNamespace(arc=arc, sessions={}))
     sid = "sess-multiturn"
     sid_token = ctx.set_session_id(sid)
     try:
@@ -160,9 +169,9 @@ def test_expert_system_prompt_byte_stable_across_turns(
 ) -> None:
     """The SAME expert with the SAME children renders a byte-identical system prompt on
     turn 1 and turn 2. A datetime/uuid/reordered-dict leak would break this."""
+    # Each build uses a FRESH app, so its per-app caches start empty -> turn2 is a
+    # genuine recompute, not a cache echo (no shared process-global to scrub).
     turn1 = _build_expert_system_prompt(monkeypatch, arc=None)
-    _ORCHESTRATOR_BRIEFING_CACHE.clear()  # force a genuine recompute, not a cache echo
-    _EXPERT_CHILDREN_CACHE.clear()
     turn2 = _build_expert_system_prompt(monkeypatch, arc=None)
     assert turn1 == turn2
     # And it actually carries the orchestrator identity + child descriptions (so the
@@ -179,13 +188,13 @@ def test_signature_instructions_byte_stable_across_turns(
     ``next_expert`` Literal is built from ``sorted(child_ids)`` so its option order is
     deterministic, and the rest of the signature is static."""
     _patch_runtime(monkeypatch)
-    app = SimpleNamespace(state=SimpleNamespace(arc=None))
+    app = SimpleNamespace(state=SimpleNamespace(arc=None, sessions={}))
     sid = "sess-multiturn"
     sid_token = ctx.set_session_id(sid)
     try:
         with _gact_app_context(app):
             sig1 = _blueprint_runtime_signature(PARENT)
-            _EXPERT_CHILDREN_CACHE.clear()
+            _clear_app_caches(app)
             sig2 = _blueprint_runtime_signature(PARENT)
     finally:
         ctx.reset(sid_token)
@@ -202,7 +211,7 @@ def test_orchestrator_briefing_byte_stable(monkeypatch: pytest.MonkeyPatch) -> N
     _patch_runtime(monkeypatch)
     app = SimpleNamespace(state=SimpleNamespace(arc=None))
     first = _runtime_dynamic_agent_children_context(app, PARENT, session_id="sess-multiturn")
-    _ORCHESTRATOR_BRIEFING_CACHE.clear()
+    _clear_app_caches(app)
     second = _runtime_dynamic_agent_children_context(app, PARENT, session_id="sess-multiturn")
     assert first == second
     assert first  # non-empty: the parent HAS children, so a briefing was rendered
@@ -216,7 +225,7 @@ def test_orchestrator_briefing_child_order_is_deterministic(
     _patch_runtime(monkeypatch)
     app = SimpleNamespace(state=SimpleNamespace(arc=None))
     sorted_order = _runtime_dynamic_agent_children_context(app, PARENT, session_id="sess-multiturn")
-    _ORCHESTRATOR_BRIEFING_CACHE.clear()
+    _clear_app_caches(app)
     # Re-patch with the children REVERSED; the render must be identical.
     monkeypatch.setattr(
         "clio_agent.gact.agents.resolution._runtime_child_agent_rows",
@@ -239,9 +248,8 @@ def test_system_prompt_identical_arc_vs_native(monkeypatch: pytest.MonkeyPatch) 
     """The assembled expert system prompt is byte-identical whether or not an ARC is
     bound on the app -- the prompt assembly does not branch on ARC. (ARC governs the
     per-turn trajectory render, not the system prompt.)"""
+    # Fresh app per build -> per-app caches start empty; no shared global to scrub.
     native = _build_expert_system_prompt(monkeypatch, arc=None)
-    _ORCHESTRATOR_BRIEFING_CACHE.clear()
-    _EXPERT_CHILDREN_CACHE.clear()
     arc_backed = _build_expert_system_prompt(monkeypatch, arc=SimpleNamespace(name="fake-arc"))
     assert native == arc_backed
 
@@ -255,8 +263,7 @@ def test_system_prompt_identical_arc_vs_native_two_turns(
     prompts: list[str] = []
     for arc in (None, SimpleNamespace(name="fake-arc")):
         for _turn in range(2):
-            _ORCHESTRATOR_BRIEFING_CACHE.clear()
-            _EXPERT_CHILDREN_CACHE.clear()
+            # Fresh app per build (inside the helper) -> a genuine recompute each turn.
             prompts.append(_build_expert_system_prompt(monkeypatch, arc=arc))
     assert len(set(prompts)) == 1, "system prompt differs across turn/ARC-path"
 
@@ -274,15 +281,14 @@ def test_system_message_is_a_byte_prefix_across_turns(
     the KV cache hits from byte 0 through the entire system region. The per-turn user
     content (the question + prepended transcript) appends AFTER this prefix."""
     _patch_runtime(monkeypatch)
-    app = SimpleNamespace(state=SimpleNamespace(arc=None))
+    app = SimpleNamespace(state=SimpleNamespace(arc=None, sessions={}))
     sid_token = ctx.set_session_id("sess-multiturn")
     try:
         with _gact_app_context(app):
             module1 = _build_blueprint_dspy_module(SimpleNamespace(), PARENT)
             sys_msg_1 = module1.program.signature.instructions
             prefix_1 = sys_msg_1 + "\n\n" + module1.system_prompt
-            _ORCHESTRATOR_BRIEFING_CACHE.clear()
-            _EXPERT_CHILDREN_CACHE.clear()
+            _clear_app_caches(app)
             module2 = _build_blueprint_dspy_module(SimpleNamespace(), PARENT)
             sys_msg_2 = module2.program.signature.instructions
             prefix_2 = sys_msg_2 + "\n\n" + module2.system_prompt

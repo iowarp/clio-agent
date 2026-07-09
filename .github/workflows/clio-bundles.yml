@@ -8,7 +8,6 @@ on:
 env:
   PNPM_VERSION: "9.15.9"
   NODE_VERSION: "20.x"
-  GACT_BRAND: clio
 
 jobs:
   installers:
@@ -87,10 +86,14 @@ jobs:
       - name: Install
         working-directory: external/gact-tui/apps
         run: pnpm install --frozen-lockfile=false
+      - name: Select CLIO brand (gact-tui config-file mechanism)
+        shell: bash
+        run: |
+          root="${GITHUB_WORKSPACE//\\//}/branding"
+          printf '{ "profile": "clio", "brandingRoot": "%s" }\n' "$root" \
+            > external/gact-tui/apps/brand.config.local.json
       - name: Build CLIO web
         working-directory: external/gact-tui/apps
-        env:
-          GACT_BRAND_ROOT: ${{ github.workspace }}/branding
         run: pnpm --filter @clio/web build
       - name: Package
         run: |
@@ -219,16 +222,47 @@ jobs:
         run: ./scripts/build-clio-runtime.ps1 -Ref $env:CLIO_REF
         env:
           CLIO_REF: ${{ github.ref_name }}
+      - name: Select CLIO brand (gact-tui config-file mechanism)
+        shell: bash
+        run: |
+          root="${GITHUB_WORKSPACE//\\//}/branding"
+          printf '{ "profile": "clio", "brandingRoot": "%s" }\n' "$root" \
+            > external/gact-tui/apps/brand.config.local.json
       - name: Build web
         working-directory: external/gact-tui/apps
-        env:
-          GACT_BRAND_ROOT: ${{ github.workspace }}/branding
         run: pnpm --filter @clio/web build
+      - name: Generate brand backend descriptor
+        working-directory: external/gact-tui/apps
+        run: pnpm --filter @clio/desktop run gen-brand-backend
+      - name: Assert CLIO brand compiled
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The desktop bundle must compile the CLIO brand, not the neutral
+          # connect-mode default that shipped before #841. Two independent
+          # signals: the generated backend descriptor is managed-mode, and the
+          # web dist carries a CLIO-distinctive marker string.
+          gen="external/gact-tui/apps/desktop/src-tauri/gen/brand-backend.json"
+          jq -e '.mode == "managed" and .sidecarName == "clio-agent"' "$gen" >/dev/null \
+            || { echo "::error::brand assert: $gen is not managed/clio-agent (neutral connect-mode build)"; exit 1; }
+          dist="external/gact-tui/apps/web/dist"
+          if ! grep -rqI 'Gnosis Research Center' "$dist"; then
+            echo "::error::brand assert: CLIO marker absent from $dist (neutral web build)"
+            exit 1
+          fi
+      - name: Apply CLIO icons
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Copy the CLIO icon family over the neutral gact-tui icons so the
+          # overlay's relative "icons/..." paths resolve to branded art. A
+          # copy-over is more robust than "../../../.." paths in the overlay.
+          src="${{ github.workspace }}/branding/clio/icons"
+          dst="external/gact-tui/apps/desktop/src-tauri/icons"
+          cp -f "$src"/* "$dst"/
       - name: Tauri release build
         working-directory: external/gact-tui/apps
         shell: bash
-        env:
-          GACT_BRAND_ROOT: ${{ github.workspace }}/branding
         run: |
           set -euo pipefail
           brand="${{ github.workspace }}/branding/clio/tauri.clio.conf.json"
@@ -301,6 +335,27 @@ jobs:
                 cp "$f" "$stage/${stem}-${{ matrix.target }}.${base##*.}"
               done
           fi
+          # Payload floor: a bundled installer embeds the clio-agent Python
+          # runtime, so it is much larger than the ~10-20 MB lite Tauri bundle.
+          # A bundled artifact under the floor means the runtime never got
+          # embedded (the connect-mode regression behind #841) -- fail loudly.
+          if [ "${{ matrix.variant }}" = "bundled" ]; then
+            floor_mb="${BUNDLED_PAYLOAD_FLOOR_MB:-60}"
+            floor=$((floor_mb * 1024 * 1024))
+            staged=0
+            while IFS= read -r -d '' f; do
+              staged=$((staged + 1))
+              size=$(wc -c < "$f")
+              if [ "$size" -lt "$floor" ]; then
+                echo "::error::payload assert: $(basename "$f") is ${size}B, under the ${floor_mb} MB bundled floor (runtime not embedded)"
+                exit 1
+              fi
+            done < <(find "$stage" -type f -name '*-bundled.*' -print0)
+            if [ "$staged" -eq 0 ]; then
+              echo "::error::payload assert: bundled variant staged no *-bundled.* artifact"
+              exit 1
+            fi
+          fi
           # Cross-platform checksum: Linux has both, macOS has only `shasum`,
           # Windows git-bash has only `sha256sum`. Prefer sha256sum, else shasum.
           if command -v sha256sum >/dev/null 2>&1; then SUM="sha256sum"; else SUM="shasum -a 256"; fi
@@ -308,3 +363,25 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: ${{ runner.temp }}/clio-desktop-stage/*
+
+  release-check:
+    name: release completeness
+    needs: [desktop, web, tui, installers]
+    # Run even when a matrix leg failed: a silently-dropped bundle (the v0.5.17
+    # aarch64 bundled .dmg, #841 F-15) is exactly the case this must catch.
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Assert release asset completeness
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release view "$GITHUB_REF_NAME" --json assets -q '.assets[].name' \
+            | python3 scripts/check_release_completeness.py

@@ -18,7 +18,7 @@ the documented, default surface.
 
 Scopes (highest precedence wins, merged by name): workspace
 ``<cwd>/.clio/mcp.yaml`` > user ``<config>/clio-agent/mcp.yaml`` > pack
-``AGENT.md`` frontmatter ``mcp_servers:`` > built-in defaults (fs/shell/web).
+``AGENT.md`` frontmatter ``mcp_servers:`` > built-in defaults (fs/shell).
 
 This module is parsing only; ``transport_for`` is the single FastMCP glue that
 turns a spec into a transport the existing ``execution.py`` machinery accepts.
@@ -49,17 +49,56 @@ __all__ = [
     "resolve_expert_servers",
     "load_mcp_servers",
     "transport_for",
+    "transport_from_spec",
+    "MCPTransportError",
 ]
 
 # clio-agent's built-in universal defaults (always present, not declarations).
-BUILTIN_SERVER_NAMES = frozenset({"fs", "shell", "web"})
+# These MUST match what ``tools.gateway._mount_builtins`` actually mounts: a name
+# listed here but not mounted is silently un-mountable as a user server (the
+# gateway skips it as "builtin") — that phantom ``"web"`` bug is why this set is
+# kept in lockstep with the mounts, not aspirational.
+BUILTIN_SERVER_NAMES = frozenset({"fs", "shell"})
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\}")
 _URL_PREFIXES = ("http://", "https://")
 
+# A server name becomes the tool-namespace prefix, and ``tools.gateway._namespace_of``
+# derives that namespace by splitting a namespaced tool name on the FIRST ``_``. A
+# name containing ``_`` (or any char outside ``[a-z0-9-]``) therefore yields a wrong
+# namespace (``my_server`` -> ``my``) and misclassifies its tools. Validate at
+# declaration so the break surfaces as a structured spec error, not a silent
+# downstream mis-namespacing.
+_VALID_SERVER_NAME = re.compile(r"^[a-z0-9-]+$")
+
+
+def _validate_server_name(name: str) -> str | None:
+    """Return a structured error string if ``name`` is not a legal MCP server name."""
+    if not name:
+        return "MCP server name must be non-empty"
+    if not _VALID_SERVER_NAME.match(name):
+        return (
+            f"invalid MCP server name {name!r}: names must match [a-z0-9-] with no "
+            "'_' (underscore delimits the tool namespace; see "
+            "tools.gateway._namespace_of)"
+        )
+    return None
+
 
 class MCPConfigError(ValueError):
     """A declaration could not be parsed (recorded on the spec, not raised)."""
+
+
+class MCPTransportError(ValueError):
+    """A raw ``{transport, command, args, url}`` dict spec cannot become a transport.
+
+    Raised by :func:`transport_from_spec` when the stored spec of a REST-installed
+    or agent-blueprint MCP server is unusable: a stdio spec with no ``command``, an
+    http/streamable-http/sse spec with no ``url``, or an unknown ``transport`` value
+    outside the single canonical accepted set ``{stdio, http, streamable-http,
+    sse}``. Callers map it to a client-actionable 4xx (e.g. ``mcp_spec_invalid``)
+    rather than letting a divergent inline branch 500 or silently drop the server.
+    """
 
 
 class MCPSpawnError(RuntimeError):
@@ -232,15 +271,22 @@ def spec_from_declaration(
 ) -> MCPServerSpec:
     """Normalize one ``mcp_servers`` value (string command/url, or mapping)."""
     if isinstance(value, str):
-        return _spec_from_string(name, value, source=source, env=env)
-    if isinstance(value, Mapping):
-        return _spec_from_mapping(name, value, source=source, env=env)
-    return MCPServerSpec(
-        name=name,
-        transport="stdio",
-        source=source,
-        validation_errors=(f"unsupported mcp_servers value for {name!r}: {type(value).__name__}",),
-    )
+        spec = _spec_from_string(name, value, source=source, env=env)
+    elif isinstance(value, Mapping):
+        spec = _spec_from_mapping(name, value, source=source, env=env)
+    else:
+        spec = MCPServerSpec(
+            name=name,
+            transport="stdio",
+            source=source,
+            validation_errors=(
+                f"unsupported mcp_servers value for {name!r}: {type(value).__name__}",
+            ),
+        )
+    name_error = _validate_server_name(name)
+    if name_error:
+        spec = replace(spec, validation_errors=(name_error, *spec.validation_errors))
+    return spec
 
 
 def specs_from_mapping(
@@ -319,7 +365,7 @@ def load_mcp_servers(
     Precedence (highest wins, merged whole by name): workspace
     ``<cwd>/.clio/mcp.yaml`` > user ``<config>/clio-agent/mcp.yaml`` > pack
     frontmatter (``pack_servers`` = ``{pack_id: {name: declaration}}``). Built-in
-    ``fs``/``shell``/``web`` are provided by core, not part of this map.
+    ``fs``/``shell`` are provided by core, not part of this map.
     """
     home = home or Path.home()
     cwd = cwd or Path.cwd()
@@ -392,7 +438,11 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
                 f"PATH for the clio-agent process. source={spec.source or 'unknown'}"
             )
 
-        env: dict[str, str] | None = dict(spec.env) or None
+        # Merge ``os.environ`` under the spec vars whenever we hand the subprocess
+        # an explicit env, so PATH (and the rest of the parent environment) survives.
+        # A bare ``dict(spec.env)`` would give the child ONLY the spec vars and drop
+        # PATH -> anything it execs by name fails with ``os error 2``.
+        env: dict[str, str] | None = {**os.environ, **dict(spec.env)} if spec.env else None
         if cwd:
             # Pin clio-kit's artifacts root to the workspace so staged resources
             # and generated artifacts land in the workspace even when the
@@ -409,3 +459,87 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
             cwd=cwd,
         )
     return spec.url
+
+
+# The single canonical accepted transport set for raw dict specs. Every
+# REST-installed / agent-blueprint MCP server routes its construction through
+# :func:`transport_from_spec`, so this set is the one source of truth — no more
+# per-site ``{http}`` vs ``{http, streamable-http}`` vs ``{http, streamable-http,
+# sse}`` divergence. ``http``/``streamable-http`` share the Streamable-HTTP wire
+# protocol (``StreamableHttpTransport``); ``sse`` is a DISTINCT FastMCP wire
+# protocol (``SSETransport``) and is constructed separately in
+# :func:`transport_from_spec`. All three are accepted here and by the
+# agent-blueprint descriptor validator alike.
+_STREAMABLE_HTTP_TRANSPORTS = frozenset({"http", "streamable-http"})
+_HTTP_TRANSPORTS = _STREAMABLE_HTTP_TRANSPORTS | frozenset({"sse"})
+_CANONICAL_TRANSPORTS = frozenset({"stdio"}) | _HTTP_TRANSPORTS
+
+
+def transport_from_spec(spec: Mapping[str, Any]) -> Any:
+    """Turn a raw ``{transport, command, args, url, env}`` dict into a FastMCP transport.
+
+    This is the ONE construction site for the runtime third-party MCP surface —
+    the REST-installed servers and agent-blueprint MCP descriptors stored on
+    ``app.state.external_mcp_servers[sid]["spec"]``. It complements
+    :func:`transport_for` (which takes the typed :class:`MCPServerSpec` and does
+    ``which()`` / cwd / ``CLIO_KIT_ARTIFACTS`` pinning) by covering the dict-spec
+    path used by the gact routes and agent builders.
+
+    Accepted ``transport`` values are the single canonical set
+    ``{stdio, http, streamable-http, sse}``. ``http``/``streamable-http`` connect
+    via ``StreamableHttpTransport(url)``; ``sse`` is a DISTINCT FastMCP wire
+    protocol and connects via ``SSETransport(url)`` — the same class FastMCP's own
+    ``infer_transport`` selects for an ``/sse`` URL, so a real SSE MCP server's
+    tools are actually reachable. ``stdio`` spawns a subprocess whose command is
+    first wrapped by :func:`pdeathsig_wrapped_command` so a REST-installed stdio
+    child dies with the clio server instead of orphaning on a hard kill (Linux
+    only; a no-op passthrough on Windows/macOS, exactly as that helper guards).
+
+    Args:
+        spec: The stored dict spec. ``transport`` selects the branch; ``command``
+            (+ optional ``args``/``env``) drives stdio; ``url`` drives the http
+            family.
+
+    Returns:
+        A ``fastmcp`` ``ClientTransport`` (``StdioTransport``,
+        ``StreamableHttpTransport``, or ``SSETransport``) ready to hand to
+        ``fastmcp.Client``.
+
+    Raises:
+        MCPTransportError: The spec is unusable — a stdio spec with no
+            ``command``, an http-family spec with no ``url``, or a ``transport``
+            outside the canonical accepted set.
+    """
+    from fastmcp.client.transports import (  # noqa: PLC0415
+        SSETransport,
+        StdioTransport,
+        StreamableHttpTransport,
+    )
+
+    transport_kind = str(spec.get("transport") or "").strip().lower()
+    if transport_kind == "stdio":
+        command = str(spec.get("command") or "").strip()
+        if not command:
+            raise MCPTransportError("stdio MCP transport spec requires a 'command'")
+        raw_args = spec.get("args") or []
+        raw_env = spec.get("env") or None
+        cmd, cmd_args = pdeathsig_wrapped_command(command, list(raw_args))
+        return StdioTransport(
+            command=cmd,
+            args=cmd_args,
+            env=dict(raw_env) if raw_env else None,
+        )
+    if transport_kind in _HTTP_TRANSPORTS:
+        url = str(spec.get("url") or "").strip()
+        if not url:
+            raise MCPTransportError(f"{transport_kind} MCP transport spec requires a 'url'")
+        # SSE and Streamable-HTTP are distinct wire protocols in FastMCP; route
+        # each to its own transport class (matching ``infer_transport``) so the
+        # server's tools are actually reachable.
+        if transport_kind == "sse":
+            return SSETransport(url=url)
+        return StreamableHttpTransport(url=url)
+    raise MCPTransportError(
+        f"unknown MCP transport {transport_kind!r} "
+        f"(expected one of {sorted(_CANONICAL_TRANSPORTS)})"
+    )

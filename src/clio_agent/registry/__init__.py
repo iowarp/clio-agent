@@ -1,9 +1,8 @@
-"""Agent Registry - Capability-based agent discovery and routing (v0.2.0)
+"""Agent Registry - Capability-based agent discovery (v0.2.0)
 
 The registry module provides:
 - AgentRegistry: Thread-safe registry for managing agents
 - AgentCapability: Metadata for agent capabilities
-- RoutingDecision: Result of routing queries to agents
 
 Example:
     >>> from clio_agent.registry import AgentRegistry, AgentCapability
@@ -20,11 +19,9 @@ Example:
 from clio_agent.registry.registry import (
     AgentCapability,
     AgentRegistry,
-    RoutingDecision,
 )
 
 __all__ = [
     "AgentRegistry",
     "AgentCapability",
-    "RoutingDecision",
 ]

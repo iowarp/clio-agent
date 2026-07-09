@@ -9,6 +9,7 @@ adapted at the API boundary rather than duplicated here.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 import shutil
@@ -20,6 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
+from clio_agent import conf
 from clio_agent.gact.expert_packs import (
     ExpertPackDefinition,
     _fallback_expert_id,
@@ -31,9 +33,16 @@ from clio_agent.gact.expert_packs import (
 from clio_agent.gact.types import AgentDef
 from clio_agent.tools.catalog import TOOL_CATALOG
 
+logger = logging.getLogger(__name__)
+
 _BLUEPRINT_ROOT_NAME = "AGENT.md"
 _BLUEPRINT_ID_RE = r"^[A-Za-z0-9_.-]+$"
-DEFAULT_REGISTRY_URL = "git@github.com:JaimeCernuda/clio-agent-marketplace.git"
+# Keyless https remote so first-run bootstrap works without any SSH identity
+# (iowarp/clio-agent#764); iowarp is the canonical marketplace org (matches
+# .gitmodules). Override via config file or env; see ``default_registry_url``.
+DEFAULT_REGISTRY_URL = "https://github.com/iowarp/clio-agent-marketplace.git"
+_REGISTRY_URL_CONF_KEY = "gact.blueprint_registry.url"
+_REGISTRY_URL_ENV = "CLIO_BLUEPRINT_REGISTRY_URL"
 DEFAULT_REGISTRY_REF = "main"
 # Empty commit => follow the registry ref (main) HEAD instead of a frozen pin.
 DEFAULT_REGISTRY_COMMIT = ""
@@ -84,22 +93,42 @@ def agent_blueprint_roots(home: Path, cwd: Path) -> list[tuple[Path, str]]:
     ]
 
 
-def builtin_agent_blueprints_root() -> Path:
-    """Return the retired pre-#629 in-repo blueprint root.
+def default_registry_url() -> str:
+    """Resolve the default blueprint registry URL.
 
-    Kept only for migration diagnostics. Runtime discovery intentionally does
-    not include this path; default agents must be installed from the pinned
-    default registry and therefore carry registry install provenance.
+    Precedence follows :func:`clio_agent.conf.resolve` (config file over env
+    over in-code default): the ``gact.blueprint_registry.url`` key in
+    ``config.yaml``, then the ``CLIO_BLUEPRINT_REGISTRY_URL`` environment
+    variable, then :data:`DEFAULT_REGISTRY_URL`. A configured-but-blank value
+    is a degraded path: it falls back to the default and logs a structured
+    warning rather than attempting a clone from an empty remote.
     """
 
-    return Path(__file__).resolve().parents[1] / "agent_blueprints" / "builtin"
+    resolved = str(
+        conf.resolve(
+            _REGISTRY_URL_CONF_KEY,
+            env=_REGISTRY_URL_ENV,
+            default=DEFAULT_REGISTRY_URL,
+            cast=conf.as_str,
+        )
+    ).strip()
+    if not resolved:
+        logger.warning(
+            "blueprint_registry_url_fallback reason=blank_configured_value key=%s env=%s "
+            "falling back to default %s",
+            _REGISTRY_URL_CONF_KEY,
+            _REGISTRY_URL_ENV,
+            DEFAULT_REGISTRY_URL,
+        )
+        return DEFAULT_REGISTRY_URL
+    return resolved
 
 
 def default_registry_metadata() -> dict[str, str]:
     """Return the pinned default registry bootstrap contract."""
 
     return {
-        "source": DEFAULT_REGISTRY_URL,
+        "source": default_registry_url(),
         "ref": DEFAULT_REGISTRY_REF,
         "commit": DEFAULT_REGISTRY_COMMIT,
         "default_agent_blueprint_id": DEFAULT_AGENT_BLUEPRINT_ID,
@@ -113,14 +142,18 @@ def default_registry_install_source() -> str:
     Development checkouts may carry the marketplace as a git submodule. When
     present, use it as the install source so first-run bootstrap does not depend
     on network access. Packaged installs without the submodule still clone the
-    pinned registry URL.
+    pinned registry URL. An explicit registry override (config file or
+    ``CLIO_BLUEPRINT_REGISTRY_URL``) always wins over the local submodule.
     """
 
+    url = default_registry_url()
+    if url != DEFAULT_REGISTRY_URL:
+        return url
     repo_root = Path(__file__).resolve().parents[3]
     submodule = repo_root / DEFAULT_REGISTRY_SUBMODULE_PATH
     if submodule.is_dir():
         return str(submodule)
-    return DEFAULT_REGISTRY_URL
+    return url
 
 
 def discover_agent_blueprints(
@@ -183,12 +216,12 @@ def ensure_default_registry_bootstrap(
     blueprint row instead of silently falling back to bundled domain experts.
     """
 
-    if str(os.environ.get(_DEFAULT_BOOTSTRAP_ENV) or "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }:
+    if conf.resolve(
+        "agents.disable_default_registry_bootstrap",
+        env=_DEFAULT_BOOTSTRAP_ENV,
+        default=False,
+        cast=conf.as_bool,
+    ):
         return ""
     home = home or Path.home()
     cwd = cwd or Path(os.getcwd())
@@ -221,7 +254,7 @@ def ensure_default_registry_bootstrap(
         )
     except Exception as exc:  # noqa: BLE001
         target = pinned or DEFAULT_REGISTRY_REF
-        return f"unable to install default registry {DEFAULT_REGISTRY_URL}@{target}: {exc}"
+        return f"unable to install default registry {default_registry_url()}@{target}: {exc}"
     return ""
 
 
@@ -270,6 +303,24 @@ def parse_agent_blueprint_root(root: Path, *, scope: str) -> AgentBlueprintDefin
     install_metadata = read_install_metadata(path.parent)
     title = str(meta.get("title") or blueprint_id).strip()
     display_name = str(meta.get("display_name") or title).strip()
+    # Fail loud on a malformed workflow_state declaration (#646/#648, Phase C
+    # slice E): a Mapping declaration that does not compile to a WorkflowStateSchema
+    # disables the blueprint (``enabled=not errors`` below) with a validation error
+    # — the resolver then never sees a malformed declaration and only ever falls
+    # back to GENERIC on an absent / bool-only one. A bool / None declaration is a
+    # legitimate opt-out and is left to the resolver's loud generic fallback.
+    workflow_state_declaration = meta.get("workflow_state")
+    if isinstance(workflow_state_declaration, dict):
+        from pydantic import ValidationError  # noqa: PLC0415
+
+        from clio_agent.gact.workflow_state.schema import (  # noqa: PLC0415
+            WorkflowStateSchema,
+        )
+
+        try:
+            WorkflowStateSchema.model_validate(workflow_state_declaration)
+        except ValidationError as exc:
+            errors.append(f"invalid workflow_state schema: {exc}")
     return AgentBlueprintDefinition(
         id=blueprint_id,
         version=str(meta.get("version") or "").strip(),
@@ -301,6 +352,11 @@ def parse_agent_blueprint_root(root: Path, *, scope: str) -> AgentBlueprintDefin
             else {},
             "includes": _list_field(meta, "includes"),
             "blueprint": meta.get("blueprint") if isinstance(meta.get("blueprint"), dict) else {},
+            # Raw pack-declared workflow_state vocabulary (#646/#648, Phase C).
+            # Stamped verbatim (dict / bool / None); the resolver compiles the
+            # Mapping form into a typed WorkflowStateSchema. Slice E validates it
+            # here and disables the blueprint on a malformed declaration.
+            "workflow_state": meta.get("workflow_state"),
             "install": install_metadata
             or (meta.get("install") if isinstance(meta.get("install"), dict) else {}),
             "default_registry": default_registry_metadata()
@@ -605,7 +661,7 @@ def load_mcp_descriptors(
             descriptor_id = _fallback_expert_id(path)
         if not transport:
             errors.append("missing required MCP descriptor field: transport")
-        if transport not in {"", "stdio", "http", "streamable-http"}:
+        if transport not in {"", "stdio", "http", "streamable-http", "sse"}:
             errors.append(f"unsupported MCP descriptor transport: {transport}")
         command, args, install_warnings = _mcp_stdio_spec_from_metadata(meta, root=root)
         local_script = _local_mcp_script_from_metadata(meta)
@@ -613,7 +669,10 @@ def load_mcp_descriptors(
             errors.append(f"pack-local MCP launch path not found: {local_script}")
         if transport == "stdio" and not command:
             errors.append("stdio MCP descriptors require command")
-        if transport in {"http", "streamable-http"} and not str(meta.get("url") or "").strip():
+        if (
+            transport in {"http", "streamable-http", "sse"}
+            and not str(meta.get("url") or "").strip()
+        ):
             errors.append(f"{transport} MCP descriptors require url")
         warnings: list[str] = []
         warnings.extend(install_warnings)
@@ -740,8 +799,22 @@ def install_agent_blueprint(
                     text=True,
                     stderr=subprocess.DEVNULL,
                 ).strip()
-            except Exception:
+            except Exception as exc:
                 commit = ""
+                if pinned_commit:
+                    # A pin was requested but the source commit cannot be
+                    # resolved: refuse to install unverified rather than let the
+                    # mismatch check below fall through on the empty commit.
+                    raise ValueError(
+                        f"registry pin unverifiable: cannot resolve commit for "
+                        f"{source_path} to verify pin {pinned_commit}: {exc!r}"
+                    ) from exc
+                logger.warning(
+                    "registry commit unresolvable reason=registry_commit_unresolvable "
+                    "path=%s error=%r",
+                    source_path,
+                    exc,
+                )
             if pinned_commit and commit and commit != pinned_commit:
                 raise ValueError(f"registry pin mismatch: expected {pinned_commit}, found {commit}")
         else:

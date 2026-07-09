@@ -52,6 +52,8 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, HTTPException, Request, Response
 
 from clio_agent.gact.events import Event
+from clio_agent.gact.routes._body import json_body
+from clio_agent.gact.runtime.retention import enforce_list_bound
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 if TYPE_CHECKING:
@@ -107,7 +109,7 @@ def register_diffs_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"session not found: {sid}",
                         recoverable=False,
                     )
@@ -125,7 +127,7 @@ def register_diffs_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"session not found: {sid}",
                         recoverable=False,
                     )
@@ -168,18 +170,13 @@ def register_diffs_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"session not found: {sid}",
                         recoverable=False,
                     )
                 ).model_dump(exclude_none=True),
             )
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+        body = await json_body(request, route="POST /v1/sessions/{sid}/diffs/apply")
         paths = [p for p in (body.get("paths") or []) if isinstance(p, str)]
 
         rows = app.state.pending_diffs.get(sid, [])
@@ -237,6 +234,9 @@ def register_diffs_routes(app: FastAPI, deps: "GactDeps") -> None:
                     },
                 )
             )
+        # #770 C3: apply flips rows to a terminal status; reclaim now-terminal
+        # rows so the per-session bucket does not wait for the next diff append.
+        enforce_list_bound(app, rows, "pending_diffs", session_id=sid)
         out: dict[str, Any] = {"applied": applied}
         if write_errors:
             out["write_errors"] = write_errors
@@ -252,18 +252,13 @@ def register_diffs_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"session not found: {sid}",
                         recoverable=False,
                     )
                 ).model_dump(exclude_none=True),
             )
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+        body = await json_body(request, route="POST /v1/sessions/{sid}/diffs/reject")
         paths = [p for p in (body.get("paths") or []) if isinstance(p, str)]
 
         rows = app.state.pending_diffs.get(sid, [])
@@ -284,6 +279,8 @@ def register_diffs_routes(app: FastAPI, deps: "GactDeps") -> None:
                     },
                 )
             )
+        # #770 C3: reject flips rows to a terminal status; reclaim them now.
+        enforce_list_bound(app, rows, "pending_diffs", session_id=sid)
         return {"rejected": rejected}
 
     # ---- /v1/sessions/{sid}/context/files (BBB22) ---------------------
@@ -391,7 +388,7 @@ def register_diffs_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"session not found: {sid}",
                         details={"session_id": sid},
                         recoverable=False,
@@ -409,7 +406,7 @@ def register_diffs_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"session not found: {sid}",
                         details={"session_id": sid},
                         recoverable=False,
@@ -438,7 +435,7 @@ def register_diffs_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"session not found: {sid}",
                         details={"session_id": sid},
                         recoverable=False,
@@ -462,20 +459,14 @@ def register_diffs_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"session not found: {sid}",
                         details={"session_id": sid},
                         recoverable=False,
                     )
                 ).model_dump(exclude_none=True),
             )
-        body = {}
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+        body = await json_body(request, route="POST /v1/sessions/{sid}/context/files")
         path = (body.get("path") or "").strip()
         resolved_info = _resolve_context_attachment_path(
             sess=sess,
@@ -584,20 +575,14 @@ def register_diffs_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"session not found: {sid}",
                         details={"session_id": sid},
                         recoverable=False,
                     )
                 ).model_dump(exclude_none=True),
             )
-        body = {}
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+        body = await json_body(request, route="DELETE /v1/sessions/{sid}/context/files")
         raw_path = (body.get("path") or "").strip()
         path = raw_path[1:].strip() if raw_path.startswith("@") else raw_path
         bucket = app.state.context_files.get(sid, {})

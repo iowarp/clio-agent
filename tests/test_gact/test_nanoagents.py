@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB25: tier-3 nanoagent spawns."""
+"""tier-3 nanoagent spawns."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB22: session context files."""
+"""session context files."""
 
 from __future__ import annotations
 
@@ -210,7 +210,7 @@ def test_invalid_mode_is_structured_422(tmp_path: Path) -> None:
     sid = _sid(client)
     resp = client.post(
         f"/v1/sessions/{sid}/context/files",
-        json={"path": "/tmp/b.py", "mode": "nonsense"},
+        json={"path": str(tmp_path / "b.py"), "mode": "nonsense"},
     )
     assert resp.status_code == 422
     body = resp.json()

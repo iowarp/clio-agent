@@ -42,10 +42,10 @@ def _provider_runtime_kind(provider_id: str) -> str:
     if not provider_id:
         return ""
     try:
-        from clio_agent.providers.registry import get_provider  # noqa: PLC0415
+        from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
 
         provider = get_provider(provider_id)
-    except Exception:
+    except Exception:  # noqa: BLE001 - provider lookup optional; None when catalog unavailable
         provider = None
     if provider is not None:
         return str(provider.provider_kind or provider_id)
@@ -58,6 +58,13 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
     ``app.state.lm_config`` is populated by ``PUT /v1/providers/lm``.
     When GACT boots from ``CLIO_LM_PROVIDER`` instead, the live
     ``ClioAgent`` still carries the effective ``LMProviderConfig``.
+
+    This stays the **gating** read: it reports the live/bound config only, and an
+    unconfigured GACT (no live ``_provider_config``) reports an empty config so
+    the model-ref / vision route gates behave. The per-app store's default profile
+    is reported *separately* by :func:`_default_profile_spec` (used by the GET body
+    builder ``_lm_provider_info``), which never feeds those gates. After a bind the
+    two are ``spec_from_config``-consistent by construction.
     """
 
     cfg = dict(getattr(app.state, "lm_config", None) or {})
@@ -90,6 +97,24 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
         elif provider == "claude_code":
             cfg["transport"] = getattr(provider_config, "claude_code_transport", None)
     return cfg
+
+
+def _default_profile_spec(app: "FastAPI") -> Any:
+    """Return the per-app profile store's default :class:`LMSpec`, or ``None``.
+
+    Read-only: consults ``app.state.provider_profiles`` (the immutable, RCU-swapped
+    :class:`~clio_agent.gact.providers.profile_store.ProviderProfileStore` the admin
+    bind swaps and every undeclared expert inherits — design §3.4/§5). Returns
+    ``None`` when no store is bound (e.g. a bare ``SimpleNamespace`` app in a unit
+    test). This is the read side reading the default **off the store**; it is used
+    by the GET body builder to report the bound default and never feeds the
+    model-ref / vision route gates.
+    """
+
+    store = getattr(getattr(app, "state", None), "provider_profiles", None)
+    if store is None:
+        return None
+    return getattr(store, "default", None)
 
 
 def _model_ref_dict(value: Any) -> dict[str, str]:
@@ -210,3 +235,16 @@ def _image_part_error(
             recoverable=True,
         )
     )
+
+
+def _current_lm_model_id() -> str:
+    """Best-effort: which model the active dspy LM is bound to.
+
+    Resolves through the ambient guard so that a read outside any per-profile
+    ``dspy.context`` (e.g. turn-end metadata assembly) records a structured
+    ``ambient_lm_default`` reason instead of silently depending on the process
+    boot default (#818)."""
+    from clio_agent.gact.runtime.ambient_lm import resolve_active_lm  # noqa: PLC0415
+
+    lm = resolve_active_lm(site="app._current_lm_model_id")
+    return getattr(lm, "model", "") if lm else ""

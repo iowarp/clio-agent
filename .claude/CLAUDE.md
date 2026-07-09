@@ -45,7 +45,8 @@ is stale or aspirational — do not treat it as ground truth.
    blocked; dig. Deterministic code is only ever the *last* error-correction barrier.
 
 5. **DSPy is the internal engine AND the reference.** For typed-output/adapter/signature
-   semantics, the source of truth is the **DSPy source in `docs/ref/dspy/`** (not guesswork,
+   semantics, the source of truth is the **DSPy reference in `ai-docs/DSPY/` plus the
+   upstream DSPy source** (not guesswork,
    not this file). Key facts: a Signature *is* a `pydantic.BaseModel`; each field is a
    `FieldInfo`; `dspy.OutputField(**pydantic_kwargs)` forwards every Pydantic constraint/
    default; `adapters/utils.py::parse_value` does `json_repair`→`ast.literal_eval`→
@@ -60,39 +61,65 @@ is stale or aspirational — do not treat it as ground truth.
 
 ---
 
+## Cleanup program (2026-07)
+
+An active, audited cleanup program governs structural changes:
+`docs/design/system-cleanup-2026-07.md`, umbrella issue
+[#775](https://github.com/iowarp/clio-agent/issues/775). Two of its ground
+rules apply to every change:
+
+- **No silent fallback.** Every degradation, downgrade, or alternate path must
+  emit a structured reason that reaches the trace/API — or the path gets
+  deleted. The model is the `stream_fallback` catalog in
+  `src/clio_agent/gact/streaming.py` (`_stream_fallback_payload` /
+  `_stream_fallback_reasons`): a typed reason, recorded per session, queryable
+  after the fact. A bare `except: pass` or an unexplained quality downgrade is
+  a bug even when the output looks fine.
+- **No accretion.** Fixes that add more than a trivial amount of code go in an
+  owner module, not appended to a god file — patch-driven development is how
+  `turn.py` / `agent.py` / `app.py` grew to 3–4k lines. The CI guards
+  (`scripts/check_file_size.py`, `scripts/check_no_class_in_function.py`) are
+  now **enforcing** via per-file ratchet baselines (#774): a new god-file or a
+  baselined file that regrows past its recorded count fails CI; baselines only
+  ratchet down. Do not add to files they flag.
+
+---
+
 ## Core Principles
 
 **CLIO Agent IS**: Self-improving autonomous agent for scientific data (not a framework)
 **Architecture**: 3-Tier Orchestration + ARC Memory + Optimizer Layer + IOWarp Integration
-**Internal Engine**: DSPy 3.x (signatures, modules, optimizers) + FastMCP 3.x (tool servers)
+**Internal Engine**: DSPy 3.x (signatures, modules, adapters) + FastMCP 3.x (tool servers)
+**Product Surface**: the GACT server (`clio_agent.gact.app`) that gact-tui talks to
 
 ---
 
-## Locked-Down Stack
+## Actual Stack
 
-### Required Dependencies
+The dependency truth is `pyproject.toml`, not this list. As of 0.5.x the core is:
 
 ```python
-# Core
-"dspy-ai>=3.1.0"             # Agent patterns + optimizers (INTERNAL)
-"fastmcp>=3.0.0"             # MCP protocol + gateway composition
+# Engine + tools
+"dspy>=3.1.3"                # (package is `dspy`, NOT `dspy-ai`)
+"fastmcp>=3.2.4"
 
-# UI
-"rich>=14.2.0"               # Terminal UI
+# GACT server (shipped product surface, not optional)
+"fastapi", "uvicorn", "sse-starlette"
 
-# Memory Layer
-"sortedcontainers>=2.4.0"    # B-tree index
-"lru-dict>=1.3.0"            # LRU cache
-"msgspec>=0.18.0"            # Serialization
+# ARC / memory
+"iowarp-core>=2.1.0"         # clio-core CTE — default ARC store backend
+"sortedcontainers", "lru-dict", "msgspec", "platformdirs"
 
-# Optimizer Layer (Phase 3+)
-"scipy>=1.11.0"              # Statistical tests
-"numpy>=1.24.0"              # Numerical ops
+# Runtime daemon lifecycle (cross-platform)
+"filelock", "psutil"
 
-# Tools (Phase 1+)
-"h5py>=3.10.0"               # HDF5 MCP server
-"pyarrow>=14.0.0"            # Parquet MCP server (Phase 2+)
+# UI / misc
+"rich", "prompt-toolkit", "requests", "h5py", "pyarrow", "matplotlib"
 ```
+
+Optional extras: `optimizers` (scipy/numpy), `adios` (non-Windows), `argonne`
+(globus-sdk), `claude-code`, `dev`. Install for development with
+`uv sync --extra dev --extra optimizers`.
 
 ### Forbidden
 
@@ -108,24 +135,35 @@ is stale or aspirational — do not treat it as ground truth.
 
 ## Critical Rules (NON-NEGOTIABLE)
 
-### RULE 1: Follow PLAN.md Phase Order
-- Implement phases sequentially: Phase 1 -> Phase 2 -> ... -> Phase 6
-- Complete tasks within a phase before moving to next
-- Never skip phases or cherry-pick tasks from later phases
+### RULE 1: Follow the Live Roadmap
+- The roadmap is `docs/design/roadmap.md`; structural work follows the cleanup
+  program `docs/design/system-cleanup-2026-07.md` (#775)
+- `PLAN.md` at the repo root is a superseded pointer file — do not treat its
+  historical phases as tasks
 
 ### RULE 2: Never Break Baseline
-- Main agent, DataExpert, CLI must always work
-- Test before committing: `uv run src/clio_agent/ui/cli.py`
+- The GACT server, main agent, and CLI must always work
+- Smoke-check before committing: `uv run src/clio_agent/ui/cli.py`
 - If a change breaks baseline, revert first, then fix
 
 ### RULE 3: DSPy is Internal Implementation Detail
-- Use DSPy internally for signatures, modules, optimizers
+- Use DSPy internally for signatures, modules, adapters
 - **DO NOT expose** DSPy in user-facing docs, APIs, or error messages
 - **Exception**: CLAUDE.md and code comments only
 
-### RULE 4: All Data Goes Through ARC
-- Store conversations, invocations, metrics in ARC
-- **DO NOT create** separate storage systems, databases, or caches
+### RULE 4: Know Where Data Actually Lives (honest topology)
+- **ARC** owns the prompt working set (the live context plane the ReAct loop
+  reads each iteration — `arc/live.py`, `arc/prompt_recorder.py`) and the
+  semantic event log (`arc/schema.py`, `arc/segments.py`), plus invocations
+  and metrics
+- **gact** stores its own sessions and messages (`gact/session_store.py`,
+  `~/.config/clio-agent/messages/sess_*.json`) and workflow state
+  (`run.extra.workflow_state`)
+- These are today ~4 parallel materializations of the same history. The agreed
+  direction is [#737](https://github.com/iowarp/clio-agent/issues/737):
+  collapse them into one normalized log + thin projections (event-sourcing)
+- Rule of conduct: do NOT add a fifth store. New persistent state goes in an
+  existing store, and new code should not deepen the duplication #737 removes
 
 ### RULE 5: Tool Curation (Max 5-7 Per Expert)
 - Each expert gets 5-7 high-level curated tools, not every atomic operation
@@ -135,22 +173,19 @@ is stale or aspirational — do not treat it as ground truth.
 
 ### RULE 6: Context is Compiled, Not Concatenated
 - Never dump raw conversation history into prompts
-- Use context compilation pipeline: filter -> compact -> enrich -> assemble
-- Set context budgets per tier (T1: 2K tokens, T2: 4K tokens)
+- Use the context compilation pipeline (`arc/context_compiler.py`):
+  filter -> compact -> enrich -> assemble
+- Budgets are discovered from the model (handshake), not hardcoded (⚑ #6)
 - **DO NOT concatenate** all ARC data into a single string
 
-### RULE 7: Performance Targets
-- Cache hit rate > 85%
-- ARC retrieval < 10ms (O(log N))
-- Tool cache hit rate > 50%
-
-### RULE 8: Test Coverage > 80% (Phase 4+)
-- Unit tests for all new code
-- Integration tests for critical paths
+### RULE 7: Test Coverage — CI Floor 70, Ratcheting Up
+- CI enforces `--cov-fail-under=70` (lowered when the v0.5 gact merge landed;
+  tracked to ratchet back to 80 as gact code gains tests)
+- Unit tests for all new code; integration tests for critical paths
 - Use `Client(server)` for in-memory MCP server testing
-- Run `pytest tests/` before committing
+- Run `uv run pytest tests/ -m "not integration"` before committing
 
-### RULE 9: Type Hints + Docstrings
+### RULE 8: Type Hints + Docstrings
 - Type hints on all functions
 - Google-style docstrings
 - Use `Literal` types for routing decisions
@@ -169,7 +204,7 @@ dspy.configure(lm=lm, adapter=dspy.ChatAdapter())
 
 ### Tool.from_mcp_tool() for MCP Bridge
 ```python
-# Native bridge: MCP tool -> DSPy tool (replaces mcp_connector.py)
+# Native bridge: MCP tool -> DSPy tool
 from fastmcp import Client
 client = Client(server)
 async with client:
@@ -183,13 +218,6 @@ async with client:
 # Use dspy.context() instead of global dspy.configure()
 with dspy.context(lm=expert_model):
     result = expert(question=query)
-```
-
-### SIMBA for Agentic Optimization
-```python
-# Designed for multi-step agent tasks (not just single predictions)
-optimizer = dspy.SIMBA(metric=success_metric, max_steps=50)
-optimized_agent = optimizer.compile(agent, trainset=examples)
 ```
 
 ### Typed Outputs
@@ -208,42 +236,19 @@ class RoutingSignature(dspy.Signature):
 ```python
 from fastmcp import FastMCP
 gateway = FastMCP("clio-gateway")
-gateway.mount("/hdf5", hdf5_server)
-gateway.mount("/parquet", parquet_server)
-# Tools namespaced: hdf5_list_datasets, parquet_analyze_schema
+gateway.mount("/fs", fs_server)
+gateway.mount("/shell", shell_server)
+# Tools are namespaced per mount
 ```
 
 ### In-Memory Testing
 ```python
 # Test MCP servers without subprocess or network
 from fastmcp import Client
-async def test_hdf5_analyze():
-    async with Client(hdf5_server) as client:
-        result = await client.call_tool("analyze_dataset", {"filepath": "test.h5"})
+async def test_fs_read():
+    async with Client(fs_server) as client:
+        result = await client.call_tool("read_file", {"filepath": "test.txt"})
         assert result is not None
-```
-
-### Dependency Injection
-```python
-from fastmcp import FastMCP, Depends
-
-def get_arc_memory():
-    return ARCMemory()
-
-@mcp.tool()
-def analyze(filepath: str, arc: ARCMemory = Depends(get_arc_memory)) -> dict:
-    # arc is injected, hidden from LLM tool schema
-    cached = arc.get_cached_tool_result("hdf5", "analyze", {"filepath": filepath})
-    if cached:
-        return cached
-    # ... actual analysis
-```
-
-### Transforms for Access Control
-```python
-from fastmcp.transforms import Enabled
-# Only expose tools matching a condition
-gateway.mount("/admin", admin_server, transforms=[Enabled(lambda t: user.is_admin)])
 ```
 
 ---
@@ -251,30 +256,22 @@ gateway.mount("/admin", admin_server, transforms=[Enabled(lambda t: user.is_admi
 ## Architecture DOs and DONTs
 
 ### 3-Tier Hierarchy
-- **DO**: Tier 1 (Main) -> Tier 2 (Experts) -> Tier 3 (Nanoagents via dspy.Parallel)
+- **DO**: Tier 1 (Main) -> Tier 2 (Experts) -> Tier 3 (Nanoagents)
 - **DON'T**: Skip tiers, mix responsibilities, or have experts call other experts directly
 
 ### Agent Registry
 - **DO**: Use registry for capability-based routing with typed outputs
-- **DON'T**: Hardcode if/else routing logic or keyword-match routing
+- **DON'T**: Hardcode if/else routing logic or keyword-match routing (⚑ #1)
 
 ### ARC Memory
-- **DO**: Check cache before expensive operations; compile context before injection
-- **DON'T**: Skip caching, use O(N) algorithms, or concatenate raw history
+- **DO**: Compile context before injection; record prompts/events through the live plane
+- **DON'T**: Concatenate raw history or invent parallel storage (see RULE 4)
 
 ### MCP Tools
 - **DO**: Use FastMCP mount() gateway pattern; test with Client(server) in-memory
 - **DON'T**: Write custom async/sync bridges, spawn subprocess per tool call
 - **DO**: Curate 5-7 tools per expert with clear agent stories
 - **DON'T**: Auto-generate tools, expose 10+ tools, or duplicate tool functionality
-
-### Optimizers
-- **DO**: Validate with statistical significance before deploying optimized variants
-- **DON'T**: Deploy without testing; optimize without sufficient training data (min 50 examples)
-
-### System Prompts
-- **DO**: Write 500+ word domain-specific prompts for each expert signature
-- **DON'T**: Use generic "helpful assistant" prompts or share prompts across experts
 
 ### Model Selection
 - **DO**: Use `dspy.context(lm=...)` for per-request model selection
@@ -297,9 +294,9 @@ gateway.mount("/admin", admin_server, transforms=[Enabled(lambda t: user.is_admi
 
 ### Workflow
 
-1. Read PLAN.md for current phase and task
-2. Read relevant architecture docs (CLIO_AGENT_ARCHITECTURE, etc.)
-3. Implement with type hints + docstrings
+1. Read `docs/design/roadmap.md` (and the cleanup program for structural work)
+2. Read relevant architecture docs (docs/CLIO_AGENT_ARCHITECTURE.md, etc.)
+3. Implement with type hints + docstrings, in the owner module (no accretion)
 4. Write tests (using `Client(server)` for MCP, mocks for LM calls)
 5. Test + lint: `uv run pytest tests/ -m "not integration"` then `ruff check src/`
 6. Verify baseline still works: `uv run src/clio_agent/ui/cli.py`
@@ -319,23 +316,50 @@ gateway.mount("/admin", admin_server, transforms=[Enabled(lambda t: user.is_admi
 ### Current Working Files
 ```
 src/clio_agent/
-├── config.py                 # Multi-provider LM configuration
 ├── agent.py                  # Main agent — planner loop (Tier 1)
+├── conf.py / config.py       # Runtime config + multi-provider LM configuration
+├── paths.py                  # Canonical config/data/cache locations
+├── prompts.py                # External editable prompt system
 ├── harness.py                # RunTrace, RouteDecision, tool-result normalization
 ├── conversation_manager.py   # Session conversation state
 ├── errors.py                 # Structured error types
-├── signatures/               # DSPy signatures (planner, expert, chat)
-├── experts/                  # Domain experts (Tier 2): data, analysis, visualization
+├── signatures/               # DSPy signatures (main agent)
+├── experts/                  # native_tools.py — native expert tool surface
+├── prompt_packs/             # Built-in prompt packs
+├── agent_blueprints/         # Built-in agent blueprints
 ├── registry/                 # Capability-based agent registry + matching
-├── arc/                      # ARC memory: cache, B-tree index, LSM, storage, retrieval
-├── optimizer/                # Instrumentation, training, variants, runner
-├── runtime/                  # Doctor / runtime status + nanoagent spawn primitive (Tier 3)
-├── providers/                # Provider-specific auth (e.g. Argonne / ALCF)
-├── tools/                    # FastMCP gateway, file policy, execution boundary
-│   └── servers/              # HDF5 + Parquet MCP servers
-├── gact/                     # GACT v0.2 server — the API surface gact-tui talks to
-└── ui/
-    ├── cli.py                # Interactive CLI + doctor
+├── arc/                      # ARC memory: live context plane, prompt recorder,
+│                             #   context compiler, cache, index, LSM, storage,
+│                             #   retrieval, semantic schema/segments, replay
+├── optimizer/                # Instrumentation, trainer, variants, runner
+├── runtime/                  # Doctor/status, hooks, LM activity + stream audit,
+│                             #   nanoagent spawn primitive (Tier 3)
+├── providers/                # Provider auth + LiteLLM bridges (Argonne/ALCF,
+│                             #   claude_code, codex) and handshake/ (model
+│                             #   limits discovery)
+├── tools/                    # FastMCP gateway, catalog, file policy, fs_write,
+│   │                         #   execution boundary, mcp_config
+│   └── servers/              # FS + shell MCP servers
+├── gact/                     # GACT server — THE shipped API surface gact-tui
+│   │                         #   talks to (FastAPI + SSE)
+│   ├── app.py                # FastAPI app assembly
+│   ├── turn.py               # Turn orchestration
+│   ├── streaming.py          # SSE streaming + stream_fallback reason catalog
+│   ├── sessions.py / session_store.py / messages.py / messaging.py
+│   ├── events.py / semantic_events.py / evidence.py / usage.py
+│   ├── routes/               # HTTP routes: sessions, messages, agents, memory,
+│   │                         #   permissions, providers, workspaces, ...
+│   ├── agents/               # Agent composition/resolution/builders/runtime
+│   ├── runtime/              # Capabilities, commands, permission policies,
+│   │                         #   context tokens, globals
+│   ├── workflow_state/       # Workflow-state merge
+│   ├── providers/            # Provider config/auth (LM Studio, ...)
+│   ├── agent_blueprints.py / expert_packs.py / user_agents.py
+│   ├── catalog.py / context.py / delegation.py / diagnostics.py
+│   ├── enrichment.py / permission_gate.py / scheduler.py / tool_observer.py
+│   └── workspaces.py / workspace_scope.py / types.py
+└── ui/                       # LEGACY surfaces (gact is the product)
+    ├── cli.py                # Interactive CLI + doctor (still the smoke test)
     └── api.py                # REST API
 ```
 
@@ -343,16 +367,7 @@ src/clio_agent/
 
 ## Common Patterns
 
-### Pattern 1: ARC Cache-First
-```python
-cached = arc.get_cached_tool_result(tool, params)
-if cached:
-    return cached
-result = execute_tool(tool, params)
-arc.cache_tool_result(tool, params, result)
-```
-
-### Pattern 2: Store Metrics
+### Pattern 1: Store Metrics
 ```python
 start = time.time()
 result = expert.forward(query)
@@ -363,7 +378,7 @@ arc.store_invocation({
 })
 ```
 
-### Pattern 3: Registry Routing (Typed)
+### Pattern 2: Registry Routing (Typed)
 ```python
 class RoutingSignature(dspy.Signature):
     question: str = dspy.InputField()
@@ -374,14 +389,13 @@ routing = router(question=query)
 expert = registry.get_agent(routing.selected_expert)
 ```
 
-### Pattern 4: Context Compilation
+### Pattern 3: Context Compilation
 ```python
 # DON'T: raw_context = "\n".join(all_messages)
 # DO:
 compiled = context_compiler.compile(
     query=question,
     session_id=session_id,
-    budget_tokens=2000,
     include_procedural=True  # what worked/failed before
 )
 ```
@@ -394,15 +408,16 @@ compiled = context_compiler.compile(
 - Integration tests: `tests/test_integration/`
 - MCP server tests: use `Client(server)` in-memory (no subprocess)
 - LM tests: mock dspy.LM responses
-- Coverage gate: Phase 1 (50%), Phase 2 (60%), Phase 3 (70%), Phase 4+ (80%)
-- Run before commit: `pytest tests/`
+- Coverage gate: CI floor is 70 (`--cov-fail-under=70`), ratcheting back to 80
+- Run before commit: `uv run pytest tests/ -m "not integration"`
 
 ---
 
 ## Error Handling
 
-**Graceful Degradation Chain**:
-- IOWarp unavailable -> file-based ARC storage
+**Graceful Degradation Chain** (every step must emit a structured reason — see
+the no-silent-fallback ground rule above):
+- clio-core CTE unavailable -> file-based ARC storage
 - ARC unavailable -> continue without memory (warn user)
 - MCP server down -> pure reasoning mode (no tool calls)
 - Optimizer fails -> keep current variant (no rollback)
@@ -420,7 +435,7 @@ compiled = context_compiler.compile(
 - `docs`: Documentation
 
 **Before Commit**:
-- [ ] Tests passing: `pytest tests/`
+- [ ] Tests passing: `uv run pytest tests/ -m "not integration"`
 - [ ] Lint clean: `ruff check src/`
 - [ ] Baseline works: `uv run src/clio_agent/ui/cli.py`
 
@@ -429,12 +444,13 @@ compiled = context_compiler.compile(
 ## Quick Reference
 
 **Read First**:
-- `PLAN.md` - What to build (current phase)
+- `docs/design/roadmap.md` - What to build next
+- `docs/design/system-cleanup-2026-07.md` + #775 - Active cleanup program
 - `docs/CLIO_AGENT_ARCHITECTURE.md` - How it all fits together
 
 **Test**:
 ```bash
-pytest tests/
+uv run pytest tests/ -m "not integration"
 ruff check src/
 ```
 
@@ -445,4 +461,4 @@ uv run src/clio_agent/ui/cli.py
 
 ---
 
-**THIS IS YOUR REFERENCE. FOLLOW PLAN.MD. USE NATIVE DSPy/FastMCP PATTERNS.**
+**THIS IS YOUR REFERENCE. FOLLOW THE LIVE ROADMAP. USE NATIVE DSPy/FastMCP PATTERNS.**

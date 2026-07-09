@@ -26,10 +26,39 @@ overlap when the underlying experts make external calls.
 
 from __future__ import annotations
 
+import contextvars
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
+
+
+class _ContextBoundModule:
+    """Run a wrapped DSPy module inside a captured ``contextvars.Context``.
+
+    ``dspy.Parallel``'s ``ParallelExecutor`` forwards only DSPy's
+    ``thread_local_overrides`` into its worker threads — it does NOT copy the
+    caller's ``contextvars.Context``. So per-turn ContextVars (``active_app()``,
+    the tool-runtime hooks, and ``_ACTIVE_TOOL_WORKSPACE_ROOT``) are dropped and
+    nanoagent tool calls fall back to process-globals (a sibling app's hooks in
+    a multi-app process — this is #735/#813). Wrapping each worker so it runs
+    inside a context captured on the spawning thread restores that inheritance.
+
+    Each pair gets its OWN captured context copy: ``dspy.Parallel`` runs the
+    pairs concurrently, and a single shared context entered by two threads at
+    once raises ``RuntimeError: cannot enter context: already entered``.
+    Straggler resubmit (which would re-enter one pair's context) is disabled at
+    the ``dspy.Parallel`` call site via ``timeout=0``.
+    """
+
+    __slots__ = ("_module", "_context")
+
+    def __init__(self, module: Any, context: contextvars.Context) -> None:
+        self._module = module
+        self._context = context
+
+    def __call__(self, **kwargs: Any) -> Any:
+        return self._context.run(lambda: self._module(**kwargs))
 
 
 @dataclass
@@ -119,7 +148,7 @@ def spawn_many(
 
     try:
         import dspy
-    except Exception:  # pragma: no cover - dspy not present
+    except Exception:  # pragma: no cover - dspy not present  # noqa: BLE001 - dspy unavailable; falls back to the non-dspy spawn path
         return [
             spawn_one(
                 agent_factory,
@@ -130,15 +159,23 @@ def spawn_many(
             for item in items
         ]
 
-    # Build (module, kwargs-dict) pairs. Each pair gets a fresh
-    # agent so they don't share DSPy state.
+    # Build (module, kwargs-dict) pairs. Each pair gets a fresh agent so they
+    # don't share DSPy state, and its OWN captured ``contextvars.Context`` so
+    # the spawning thread's per-turn state (active_app / tool-runtime hooks /
+    # workspace root) reaches the worker — dspy.Parallel drops contextvars,
+    # copying only ``thread_local_overrides`` (#735/#813, see
+    # ``_ContextBoundModule``). Per-pair copies avoid concurrent re-entry of a
+    # shared context; ``timeout=0`` below disables straggler resubmit (we do not
+    # want hung nanoagents resubmitted, and a resubmit would re-enter a pair's
+    # context concurrently).
     pairs = []
     for item in items:
         agent = agent_factory()
         kwargs = {question_field: _render_input(item.get("input", {}))}
-        pairs.append((agent, kwargs))
+        captured = contextvars.copy_context()
+        pairs.append((_ContextBoundModule(agent, captured), kwargs))
 
-    parallel = dspy.Parallel(num_threads=num_threads)
+    parallel = dspy.Parallel(num_threads=num_threads, timeout=0)
     raw_results = parallel(pairs)
 
     out: list[NanoagentResult] = []

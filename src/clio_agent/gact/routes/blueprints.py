@@ -27,9 +27,9 @@ This concern owns the marketplace/install surface for agent blueprints under
 The disk-reading lifecycle primitives live in
 :mod:`clio_agent.gact.agent_blueprints` (single source); the session-state reads
 reuse the byte-identical ``_runtime_*`` helpers in
-:mod:`clio_agent.gact.agents.resolution`. The two genuinely ``build_app``-local
-seams the session-set route needs -- the activation-metadata builder and the
-workspace-session mirror -- travel on :class:`~clio_agent.gact.routes.deps.GactDeps`.
+:mod:`clio_agent.gact.agents.resolution`. The ``build_app``-local seam the
+session-set route needs -- the activation-metadata builder -- travels on
+:class:`~clio_agent.gact.routes.deps.GactDeps`.
 Handlers reach ``app.state`` directly and never import :mod:`clio_agent.gact.app`.
 """
 
@@ -93,7 +93,7 @@ def _load_agent_blueprint_sources() -> list[dict[str, Any]]:
         return []
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception:  # noqa: BLE001 - unreadable/invalid sources file yields no rows
         return []
     rows = payload.get("sources") if isinstance(payload, dict) else payload
     if not isinstance(rows, list):
@@ -158,7 +158,7 @@ def _refresh_agent_blueprint_source(row: Mapping[str, Any]) -> dict[str, Any]:
                     text=True,
                     stderr=subprocess.DEVNULL,
                 ).strip()
-            except Exception:
+            except Exception:  # noqa: BLE001 - display commit left blank when git rev-parse unavailable
                 refreshed["commit"] = ""
             refreshed["available_blueprints"] = _agent_blueprint_candidates(source_path)
             return refreshed
@@ -199,7 +199,7 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     Handlers are defined inside this factory so they close over the ``app``
     argument FastAPI's decorators require, and reach the activation-metadata
-    builder + workspace-session mirror through ``deps`` rather than any
+    builder through ``deps`` rather than any
     ``build_app`` local. The expert-pack routes call the blueprint handlers
     directly so a single implementation backs both surfaces.
     """
@@ -612,21 +612,14 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
         if probe:
             try:
                 from fastmcp import Client  # noqa: PLC0415
-                from fastmcp.client.transports import (  # noqa: PLC0415
-                    StdioTransport,
-                    StreamableHttpTransport,
+
+                from clio_agent.tools.mcp_config import (  # noqa: PLC0415
+                    transport_from_spec,
                 )
 
-                transport_kind = str(descriptor.get("transport") or "")
-                if transport_kind == "stdio":
-                    transport = StdioTransport(
-                        command=str(descriptor.get("command") or ""),
-                        args=list(descriptor.get("args") or []),
-                    )
-                elif transport_kind in {"http", "streamable-http"}:
-                    transport = StreamableHttpTransport(url=str(descriptor.get("url") or ""))  # type: ignore[assignment]
-                else:
-                    raise ValueError(f"unsupported MCP descriptor transport: {transport_kind}")
+                # Probe the stored spec through the single canonical helper so the
+                # install-probe accepts exactly what call/list/reconnect accept.
+                transport = transport_from_spec(spec)
                 async with Client(transport) as client:
                     live_tools = await client.list_tools()
                 tools = []
@@ -854,7 +847,6 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                     "active_expert_pack_path": "",
                 },
             )
-        deps.mirror_workspace_session(app, sid)
         return {
             "session_id": sid,
             "workspace_id": getattr(sess, "workspace_id", ""),

@@ -19,7 +19,7 @@ from clio_agent.tools.gateway import (
     get_gateway,
     list_capabilities,
 )
-from clio_agent.tools.mcp_config import MCPServerSpec
+from clio_agent.tools.mcp_config import MCPServerSpec, spec_from_declaration
 
 
 def test_mount_helper_uses_namespace_when_supported():
@@ -157,6 +157,20 @@ def test_build_gateway_skips_unusable_spec(declared_server: FastMCP):
     assert not any(n.startswith("bad_") for n in names)
 
 
+def test_build_gateway_skips_underscore_named_declared_server(declared_server: FastMCP):
+    """A declared server whose name contains ``_`` is unusable and never mounts.
+
+    The name is validated at declaration (``spec_from_declaration``) because ``_``
+    delimits the tool namespace; the resulting validation error keeps the server
+    out of the gateway rather than mis-namespacing its tools.
+    """
+    spec = spec_from_declaration("my_server", "x")
+    assert not spec.usable
+    gw = build_gateway({"my_server": spec}, proxy_factory=_in_process_factory(declared_server))
+    names = {t.name for t in _list_tools_sync(gw)}
+    assert not any(n.startswith("my_") for n in names)
+
+
 def test_build_gateway_skips_builtin_namespace_collision(declared_server: FastMCP):
     """A declared server may not shadow a reserved built-in namespace."""
     spec = MCPServerSpec(name="fs", transport="stdio", command="x")
@@ -165,6 +179,19 @@ def test_build_gateway_skips_builtin_namespace_collision(declared_server: FastMC
     # fs tools remain the in-process ones; declared 'ping' did NOT get mounted
     assert "fs_read_file" in names
     assert "fs_ping" not in names
+
+
+def test_build_gateway_mounts_user_server_named_web(declared_server: FastMCP):
+    """``web`` is a free namespace — a user MCP server named ``web`` mounts.
+
+    Regression guard for the #769 phantom-builtin fix: ``web`` sat in the
+    reserved-namespace set with no backing server, so a user server named
+    ``web`` was silently skipped. Only ``fs`` and ``shell`` are reserved.
+    """
+    spec = MCPServerSpec(name="web", transport="stdio", command="x")
+    gw = build_gateway({"web": spec}, proxy_factory=_in_process_factory(declared_server))
+    names = {t.name for t in _list_tools_sync(gw)}
+    assert "web_ping" in names
 
 
 def test_build_gateway_threads_cwd_to_stdio_only(declared_server: FastMCP):

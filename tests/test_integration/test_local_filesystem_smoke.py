@@ -34,9 +34,11 @@ def test_doctor_reports_local_file_policy_and_tool_backends(tmp_path):
         env={
             "CLIO_DATA_DIR": str(tmp_path / "data"),
             "CLIO_ALLOWED_ROOTS": str(tmp_path),
+            "CLIO_ARC_STORE": "local",
         },
         http_get=fake_get,
-        default_clio_core_path=None,
+        port_checker=lambda port: False,
+        clio_runtime_dir=tmp_path / "clio-home",
     )
 
     report = probe.collect(api_state=IntegrationState.READY)

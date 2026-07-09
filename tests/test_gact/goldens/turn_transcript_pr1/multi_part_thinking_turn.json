@@ -1,0 +1,264 @@
+{
+  "events": [
+    {
+      "payload": {
+        "id": "<msg#1>",
+        "metadata": {},
+        "parts": [
+          {
+            "agent_id": "",
+            "id": "<part#3>",
+            "text": "think then answer",
+            "type": "text"
+          }
+        ],
+        "role": "user",
+        "session_id": "<sess#2>",
+        "stop_reason": "",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.created"
+    },
+    {
+      "payload": {
+        "id": "<msg#4>",
+        "metadata": {},
+        "parts": [],
+        "role": "assistant",
+        "session_id": "<sess#2>",
+        "stop_reason": "",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.created"
+    },
+    {
+      "payload": {
+        "message_id": "<msg#4>",
+        "part": {
+          "agent_id": "main",
+          "id": "<part#5>",
+          "metadata": {
+            "default_collapsed": true,
+            "provider_source": "anthropic",
+            "signature_field_name": "provider_thinking:anthropic",
+            "stream_source": "live",
+            "thinking_source": "provider"
+          },
+          "type": "thinking"
+        },
+        "stream_source": "live",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.part.added"
+    },
+    {
+      "payload": {
+        "delta": {
+          "text_append": "Weighing the options..."
+        },
+        "message_id": "<msg#4>",
+        "part_id": "<part#5>",
+        "signature_field_name": "provider_thinking:anthropic",
+        "stream_source": "live",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.part.delta"
+    },
+    {
+      "payload": {
+        "final_text": "Weighing the options...",
+        "message_id": "<msg#4>",
+        "part_id": "<part#5>",
+        "stream_source": "live",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.part.completed"
+    },
+    {
+      "payload": {
+        "message_id": "<msg#4>",
+        "part": {
+          "agent_id": "main",
+          "id": "<part#6>",
+          "metadata": {
+            "signature_field_name": "reasoning",
+            "stream_source": "live"
+          },
+          "type": "text"
+        },
+        "stream_source": "live",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.part.added"
+    },
+    {
+      "payload": {
+        "delta": {
+          "text_append": "I should answer directly. "
+        },
+        "message_id": "<msg#4>",
+        "part_id": "<part#6>",
+        "signature_field_name": "reasoning",
+        "stream_source": "live",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.part.delta"
+    },
+    {
+      "payload": {
+        "delta": {
+          "text_append": "Because it is simple."
+        },
+        "message_id": "<msg#4>",
+        "part_id": "<part#6>",
+        "signature_field_name": "reasoning",
+        "stream_source": "live",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.part.delta"
+    },
+    {
+      "payload": {
+        "final_text": "I should answer directly. Because it is simple.",
+        "message_id": "<msg#4>",
+        "part_id": "<part#6>",
+        "stream_source": "live",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.part.completed"
+    },
+    {
+      "payload": {
+        "message_id": "<msg#4>",
+        "part": {
+          "agent_id": "main",
+          "id": "<part#7>",
+          "metadata": {
+            "signature_field_name": "answer",
+            "stream_source": "live"
+          },
+          "type": "text"
+        },
+        "stream_source": "live",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.part.added"
+    },
+    {
+      "payload": {
+        "delta": {
+          "text_append": "The answer "
+        },
+        "message_id": "<msg#4>",
+        "part_id": "<part#7>",
+        "signature_field_name": "answer",
+        "stream_source": "live",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.part.delta"
+    },
+    {
+      "payload": {
+        "delta": {
+          "text_append": "is 42."
+        },
+        "message_id": "<msg#4>",
+        "part_id": "<part#7>",
+        "signature_field_name": "answer",
+        "stream_source": "live",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.part.delta"
+    },
+    {
+      "payload": {
+        "final_text": "The answer is 42.",
+        "message_id": "<msg#4>",
+        "part_id": "<part#7>",
+        "stream_source": "live",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.part.completed"
+    },
+    {
+      "payload": {
+        "message_id": "<msg#4>",
+        "part": {
+          "agent_id": "main",
+          "id": "<part#8>",
+          "metadata": {
+            "route_reason": "planner selected code expert",
+            "route_source": "dspy"
+          },
+          "rationale": "matched coding keywords",
+          "selected_agent": "code_expert",
+          "type": "routing_decision"
+        },
+        "stream_source": "batch",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.part.added"
+    },
+    {
+      "payload": {
+        "message_id": "<msg#4>",
+        "metadata": {
+          "stream_source": "live"
+        },
+        "stop_reason": "end_turn",
+        "turn_id": "<msg#1>"
+      },
+      "type": "message.completed"
+    }
+  ],
+  "persisted_assistant_parts": [
+    {
+      "agent_id": "main",
+      "id": "<part#5>",
+      "metadata": {
+        "default_collapsed": true,
+        "provider_source": "anthropic",
+        "signature_field_name": "provider_thinking:anthropic",
+        "stream_source": "live",
+        "thinking_source": "provider"
+      },
+      "sequence": 1,
+      "text": "Weighing the options...",
+      "type": "thinking"
+    },
+    {
+      "agent_id": "main",
+      "id": "<part#6>",
+      "metadata": {
+        "signature_field_name": "reasoning",
+        "stream_source": "live"
+      },
+      "sequence": 2,
+      "text": "I should answer directly. Because it is simple.",
+      "type": "text"
+    },
+    {
+      "agent_id": "main",
+      "id": "<part#7>",
+      "metadata": {
+        "signature_field_name": "answer",
+        "stream_source": "live"
+      },
+      "sequence": 3,
+      "text": "The answer is 42.",
+      "type": "text"
+    },
+    {
+      "agent_id": "main",
+      "id": "<part#8>",
+      "metadata": {
+        "route_reason": "planner selected code expert",
+        "route_source": "dspy"
+      },
+      "rationale": "matched coding keywords",
+      "selected_agent": "code_expert",
+      "sequence": 4,
+      "type": "routing_decision"
+    }
+  ]
+}

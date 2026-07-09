@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -19,8 +18,13 @@ def _utc_iso(ts: float) -> str:
 
 def stream_audit_enabled() -> bool:
     """Return whether stream audit JSONL logging is enabled."""
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
 
-    return bool(os.environ.get("CLIO_STREAM_AUDIT_LOG", "").strip())
+    return bool(
+        conf.resolve(
+            "debug.stream_audit_log", env="CLIO_STREAM_AUDIT_LOG", default="", cast=conf.as_str
+        ).strip()
+    )
 
 
 def stream_audit(stage: str, **fields: Any) -> None:
@@ -31,7 +35,11 @@ def stream_audit(stage: str, **fields: Any) -> None:
     scheduling, normalized transcript events, and raw SSE receive times.
     """
 
-    raw_path = os.environ.get("CLIO_STREAM_AUDIT_LOG", "").strip()
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    raw_path = conf.resolve(
+        "debug.stream_audit_log", env="CLIO_STREAM_AUDIT_LOG", default="", cast=conf.as_str
+    ).strip()
     if not raw_path:
         return
     now = time.time()
@@ -49,5 +57,5 @@ def stream_audit(stage: str, **fields: Any) -> None:
             with path.open("a", encoding="utf-8") as f:
                 f.write(line)
                 f.write("\n")
-    except Exception:
+    except Exception:  # noqa: BLE001 - audit-log write best-effort; skipped on failure
         return

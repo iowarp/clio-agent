@@ -36,7 +36,7 @@ Run CLIO/GACT with Claude Code:
 $env:CLIO_LM_PROVIDER='claude_code'
 $env:CLIO_LM_MODEL='sonnet'
 $env:CLIO_CLAUDE_CODE_TRANSPORT='exec'
-uv run clio-agent-gact --host 127.0.0.1 --port 17920
+uv run clio-agent serve --host 127.0.0.1 --port 17920
 ```
 
 `sonnet` is the recommended default alias because Claude Code resolves it
@@ -73,7 +73,7 @@ uv run python scripts/run_demo_benchmark.py `
   --base-url http://127.0.0.1:17920 `
   --lane claude_code `
   --output-jsonl tmp/clio-demo-benchmark-claude-code.jsonl `
-  --report docs/CLAUDE_CODE_BENCHMARK_REPORT.md `
+  --report tmp/clio-demo-benchmark-claude-code.md `
   --require-lane-criteria
 ```
 

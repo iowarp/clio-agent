@@ -6,8 +6,7 @@ Instead of concatenating all ARC data into a single string, this compiler
 selectively builds context within token budgets per tier.
 
 Pipeline stages:
-    1. FILTER: Get relevant data from ARC (conversation history, dataset profiles,
-       procedural memories, routing decisions)
+    1. FILTER: Get relevant data from ARC (conversation history, routing decisions)
     2. COMPACT: Truncate/summarize each section to fit proportional token budget
     3. ENRICH: Add tool capability summaries and query keywords
     4. ASSEMBLE: Format into structured context string with section headers
@@ -19,9 +18,12 @@ Token budgets:
 See docs/CLIO_AGENT_ARCHITECTURE.md for context compilation rationale.
 """
 
+import logging
 from typing import Any, Dict, Optional
 
 from clio_agent.arc.memory import ARCMemory
+
+logger = logging.getLogger(__name__)
 
 
 class ContextCompiler:
@@ -46,10 +48,8 @@ class ContextCompiler:
 
     # Proportional allocation of budget per section
     BUDGET_PROPORTIONS = {
-        "conversation": 0.40,  # 40% for conversation history
-        "profiles": 0.30,  # 30% for dataset profiles
-        "procedural": 0.20,  # 20% for procedural memories
-        "routing": 0.10,  # 10% for routing history
+        "conversation": 0.80,  # 80% for conversation history
+        "routing": 0.20,  # 20% for routing history
     }
 
     # Rough token-to-word ratio (1 token ~ 0.75 words)
@@ -78,6 +78,7 @@ class ContextCompiler:
         session_id: str,
         tier: int = 2,
         tool_scope: str = "all",
+        include_conversation: bool = True,
     ) -> str:
         """Compile context for a query within token budget.
 
@@ -93,6 +94,12 @@ class ContextCompiler:
             tier: Agent tier (1 for router, 2 for expert). Determines budget.
             tool_scope: Agent/tool visibility scope for injected tool summaries.
                 Use ``chat``, an expert id, ``planner``, ``all``, or ``none``.
+            include_conversation: When ``True`` (default) the compiled context
+                carries the ``[Session Context]``/``[Routing History]`` sections
+                built from live turns. When ``False`` those branches are skipped
+                entirely (no ``get_live_context`` call) — the caller already owns
+                the conversation channel (gact's transcript prepend), so echoing
+                the same turns here would double the token spend (#771).
 
         Returns:
             Compiled context string within token budget.
@@ -105,7 +112,7 @@ class ContextCompiler:
         budget_tokens = self.tier_budgets.get(budget_key, 4000)
 
         # Stage 1: Filter
-        raw_context = self._filter(query, session_id)
+        raw_context = self._filter(query, session_id, include_conversation=include_conversation)
 
         # Stage 2: Compact
         compacted = self._compact(raw_context, budget_tokens)
@@ -116,35 +123,51 @@ class ContextCompiler:
         # Stage 4: Assemble
         return self._assemble(enriched)
 
-    def _filter(self, query: str, session_id: str) -> Dict[str, Any]:
+    def _filter(
+        self,
+        query: str,
+        session_id: str,
+        include_conversation: bool = True,
+    ) -> Dict[str, Any]:
         """Filter relevant data from ARC memory.
 
-        Returns raw context dict with conversation history, dataset profiles,
-        procedural memories, and routing decisions.
+        Returns raw context dict with conversation history and routing decisions.
 
         Args:
             query: User's current query
             session_id: Session identifier
+            include_conversation: When ``False`` the conversation and routing
+                branches are skipped entirely (no ``get_live_context`` /
+                ``get_conversation`` call) so the caller-owned transcript is the
+                sole conversation channel (#771).
 
         Returns:
-            Dict with 'conversation', 'profiles', 'procedural', 'routing' keys.
+            Dict with 'conversation' and 'routing' keys.
         """
         raw: Dict[str, Any] = {
             "conversation": [],
-            "profiles": [],
-            "procedural": [],
             "routing": [],
         }
 
         # Conversation: prefer the LIVE runtime context for the open session (a
         # projection of the in-flight trace), falling back to the persisted
-        # conversation for closed/historical sessions.
+        # conversation for closed/historical sessions. Skipped when the caller
+        # already owns the conversation channel (include_conversation=False).
+        if not include_conversation:
+            return raw
+
         live: Dict[str, Any] = {}
         live_getter = getattr(self.arc, "get_live_context", None)
         if callable(live_getter):
             try:
                 live = live_getter(session_id) or {}
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 - degradation logged: reason=context_section_unavailable
+                logger.warning(
+                    "context compile degraded: reason=context_section_unavailable "
+                    "section=live_conversation session=%s error=%r",
+                    session_id,
+                    exc,
+                )
                 live = {}
 
         if live.get("turns"):
@@ -197,47 +220,14 @@ class ContextCompiler:
                         for rd in recent_routing
                     ]
 
-        # Get dataset profiles for this session
-        try:
-            profiles = self.arc.get_session_profiles(session_id)
-            raw["profiles"] = [
-                {
-                    "filepath": p.filepath,
-                    "format": p.file_format,
-                    "schema": p.schema_info,
-                    "stats": p.statistics,
-                    "created_by": p.created_by,
-                }
-                for p in profiles
-            ]
-        except Exception:
-            pass
-
-        # Get procedural memories for this session
-        try:
-            memories = self.arc.get_procedural_memories(session_id, limit=5)
-            raw["procedural"] = [
-                {
-                    "type": m.pattern_type,
-                    "description": m.description,
-                    "expert": m.expert_id,
-                    "outcome": m.outcome,
-                }
-                for m in memories
-            ]
-        except Exception:
-            pass
-
         return raw
 
     def _compact(self, raw_context: Dict[str, Any], budget_tokens: int) -> Dict[str, str]:
         """Compact each section to fit within proportional budget.
 
         Each section gets a proportional share of the total budget:
-        - conversation: 40%
-        - profiles: 30%
-        - procedural: 20%
-        - routing: 10%
+        - conversation: 80%
+        - routing: 20%
 
         Uses word count approximation (1 token ~ 0.75 words).
 
@@ -275,7 +265,7 @@ class ContextCompiler:
         """Convert a section's raw data to text representation.
 
         Args:
-            section: Section name ('conversation', 'profiles', etc.)
+            section: Section name ('conversation' or 'routing')
             data: List of dicts from _filter()
 
         Returns:
@@ -298,38 +288,6 @@ class ContextCompiler:
                         preserve_evidence_index=is_compact_summary,
                     )
                 lines.append(f"{role}: {content}")
-            return "\n".join(lines)
-
-        elif section == "profiles":
-            lines = []
-            for p in data:
-                filepath = p.get("filepath", "unknown")
-                fmt = p.get("format", "unknown")
-                schema = p.get("schema", {})
-                cols = schema.get("columns", [])
-                rows = schema.get("rows", "?")
-                lines.append(f"{filepath} ({fmt}): {len(cols)} columns, {rows} rows")
-                stats = p.get("stats", {})
-                if stats:
-                    stat_strs = []
-                    for col, col_stats in list(stats.items())[:3]:
-                        if isinstance(col_stats, dict):
-                            stat_parts = [f"{k}={v}" for k, v in list(col_stats.items())[:3]]
-                            stat_strs.append(f"{col}: {', '.join(stat_parts)}")
-                    if stat_strs:
-                        lines.append("  Stats: " + "; ".join(stat_strs))
-            return "\n".join(lines)
-
-        elif section == "procedural":
-            lines = []
-            for m in data:
-                ptype = m.get("type", "unknown")
-                desc = m.get("description", "")
-                expert = m.get("expert", "unknown")
-                outcome = m.get("outcome", "")
-                lines.append(f"[{ptype}] ({expert}) {desc}")
-                if outcome:
-                    lines.append(f"  -> {outcome}")
             return "\n".join(lines)
 
         elif section == "routing":
@@ -402,7 +360,12 @@ class ContextCompiler:
                     caps = [c for c in caps if tool_visible_to(c["name"], tool_scope)]
             tool_lines = [f"{c['name']}: {c['description']}" for c in caps]
             enriched["tools"] = "\n".join(tool_lines)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - degradation logged: reason=context_section_unavailable
+            logger.warning(
+                "context compile degraded: reason=context_section_unavailable "
+                "section=tools error=%r",
+                exc,
+            )
             enriched["tools"] = ""
 
         # Extract query keywords
@@ -449,14 +412,6 @@ class ContextCompiler:
         conversation = enriched_context.get("conversation", "")
         if conversation:
             sections.append(f"[Session Context]\n{conversation}")
-
-        profiles = enriched_context.get("profiles", "")
-        if profiles:
-            sections.append(f"[Available Data]\n{profiles}")
-
-        procedural = enriched_context.get("procedural", "")
-        if procedural:
-            sections.append(f"[Prior Analysis]\n{procedural}")
 
         routing = enriched_context.get("routing", "")
         if routing:

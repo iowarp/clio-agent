@@ -5,11 +5,12 @@ the cohesive cluster that *grounds a turn's output in verifiable reality* and
 *recovers bounded tool evidence* from agent trajectories. It is the single source
 of truth for:
 
-* **Artifact grounding** -- replacing fabricated local csv/png path citations in a
+* **Artifact grounding** -- replacing fabricated local artifact path citations in a
   final answer with the run's verified on-disk artifact of the same type, driven
-  only by the typed ``workflow_state`` and the filesystem (no station/region
-  heuristics): :func:`_ground_fabricated_local_artifact_paths` and its support
-  (:func:`_verified_local_artifact_paths_by_ext`, :func:`_is_remote_artifact_ref`).
+  only by the pack-declared ``workflow_state`` schema and the filesystem (no
+  domain heuristics): :func:`_ground_fabricated_local_artifact_paths` and its
+  support (:func:`_verified_local_artifact_paths_by_ext`,
+  :func:`_is_remote_artifact_ref`).
 * **Tool-result inspection** -- previewing, error-classifying, and idempotently
   bounding individual tool results (:func:`_tool_result_preview`,
   :func:`_tool_result_is_error`, :func:`_is_bounded_tool_result`,
@@ -38,6 +39,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -52,6 +54,7 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
     from clio_agent.gact.types import AgentDef
+    from clio_agent.gact.workflow_state.schema import WorkflowStateSchema
 
 
 # ------------------------------------------------------------------------- #
@@ -59,16 +62,28 @@ if TYPE_CHECKING:
 # ------------------------------------------------------------------------- #
 
 
-_ARTIFACT_PATH_TOKEN_RE = re.compile(r"[A-Za-z0-9_./~+-]+\.(?:csv|png)", re.IGNORECASE)
-_ARTIFACT_PATH_MISSING_FRAMING_RE = re.compile(
-    r"(not\s+(?:been\s+)?(?:staged|downloaded|available|present|found|created|generated|produced)|"
-    r"no\s+(?:png|csv|plot|figure|file|artifact|local)\b|"
-    r"does\s+not\s+exist|doesn'?t\s+exist|not\s+yet|is\s+blocked|blocked\s+because|"
-    r"cannot\s+be|could\s+not\s+be|no\s+such\s+file|would\s+(?:need|be)|will\s+be|"
-    r"written\s+to|saved\s+to|expected\s+(?:location|at)|placeholder|hypothetical|"
-    r"once\s+(?:the|a)\b|to\s+be\s+(?:created|generated|written))",
-    re.IGNORECASE,
-)
+@lru_cache(maxsize=None)
+def _artifact_path_token_re(extensions: tuple[str, ...]) -> re.Pattern[str]:
+    """Compile the fabricated-artifact token matcher for the declared extensions."""
+
+    ext_alternation = "|".join(re.escape(ext) for ext in extensions)
+    return re.compile(rf"[A-Za-z0-9_./~+-]+\.(?:{ext_alternation})", re.IGNORECASE)
+
+
+@lru_cache(maxsize=None)
+def _artifact_path_missing_framing_re(extensions: tuple[str, ...]) -> re.Pattern[str]:
+    """Compile the honest-not-produced framing matcher for the declared extensions."""
+
+    ext_alternation = "|".join(re.escape(ext) for ext in extensions)
+    return re.compile(
+        r"(not\s+(?:been\s+)?(?:staged|downloaded|available|present|found|created|generated|produced)|"
+        rf"no\s+(?:{ext_alternation}|plot|figure|file|artifact|local)\b|"
+        r"does\s+not\s+exist|doesn'?t\s+exist|not\s+yet|is\s+blocked|blocked\s+because|"
+        r"cannot\s+be|could\s+not\s+be|no\s+such\s+file|would\s+(?:need|be)|will\s+be|"
+        r"written\s+to|saved\s+to|expected\s+(?:location|at)|placeholder|hypothetical|"
+        r"once\s+(?:the|a)\b|to\s+be\s+(?:created|generated|written))",
+        re.IGNORECASE,
+    )
 
 
 def _is_remote_artifact_ref(value: str) -> bool:
@@ -78,36 +93,24 @@ def _is_remote_artifact_ref(value: str) -> bool:
     return value.startswith(("http://", "https://", "ftp://", "//")) or "://" in value
 
 
-_VERIFIED_ARTIFACT_STATE_PATHS: tuple[tuple[str, ...], ...] = (
-    # The analysis-ready staged station time-series CSV (never the metadata
-    # catalog, which is recorded separately under acquisition.metadata_path).
-    ("acquisition", "local_path"),
-    # The rendered plot PNG.
-    ("artifact", "path"),
-    ("visualization", "path"),
-    ("visualization", "plot_path"),
-    ("visualization", "staged_plot_png"),
-    # The profiled station CSV (same file as acquisition.local_path).
-    ("profile", "path"),
-)
-
-
 def _verified_local_artifact_paths_by_ext(
     state: Mapping[str, Any],
+    *,
+    schema: "WorkflowStateSchema",
 ) -> dict[str, list[str]]:
     """Collect the run's authoritative on-disk artifact paths from the specific
-    typed workflow_state fields that name a produced deliverable (the staged
-    station CSV and the rendered PNG), bucketed by lowercase extension.
+    typed workflow_state fields the pack schema declares as produced deliverables,
+    bucketed by lowercase extension.
 
-    Only these declared fields are consulted — not an arbitrary walk — so that
-    incidental on-disk files such as the staged metadata catalog
-    (``acquisition.metadata_path``) never count as the deliverable artifact and
-    never make the substitution ambiguous. These are the only artifact paths a
-    final answer may legitimately cite; any other local csv/png path it presents
-    as a produced artifact is a model confabulation."""
+    Only the schema's declared ``artifact_paths`` fields are consulted — not an
+    arbitrary walk — so that incidental on-disk files (e.g. a discovery metadata
+    catalog recorded under a separate field) never count as the deliverable
+    artifact and never make the substitution ambiguous. These are the only
+    artifact paths a final answer may legitimately cite; any other local artifact
+    path it presents as a produced deliverable is a model confabulation."""
 
-    found: dict[str, list[str]] = {"csv": [], "png": []}
-    for section, key in _VERIFIED_ARTIFACT_STATE_PATHS:
+    found: dict[str, list[str]] = {ext: [] for ext in schema.artifact_extensions}
+    for section, key in schema.artifact_paths:
         section_obj = state.get(section)
         if not isinstance(section_obj, Mapping):
             continue
@@ -118,7 +121,7 @@ def _verified_local_artifact_paths_by_ext(
         if not token or _is_remote_artifact_ref(token):
             continue
         lowered = token.lower()
-        for ext in ("csv", "png"):
+        for ext in schema.artifact_extensions:
             if lowered.endswith("." + ext):
                 try:
                     on_disk = Path(token).is_file()
@@ -132,29 +135,34 @@ def _verified_local_artifact_paths_by_ext(
 def _ground_fabricated_local_artifact_paths(
     answer: str,
     state: Mapping[str, Any],
+    *,
+    schema: "WorkflowStateSchema",
 ) -> str:
-    """Replace fabricated local artifact (csv/png) path citations in a final
-    answer with the run's verified on-disk artifact of the same type.
+    """Replace fabricated local artifact path citations in a final answer with the
+    run's verified on-disk artifact of the same declared type.
 
     The synthesis model sometimes derives a plausible-but-wrong local artifact
-    filename (e.g. an invented ``.../plots/<station>_timeseries.png`` or a
-    ``<csv>.png`` swap) instead of copying the exact tool-returned path, and on a
-    data-blocked run it can cite a local csv/png that was never produced at all.
-    Such a path does not exist on disk and misrepresents the deliverable. This
-    generic pass — driven only by the typed workflow_state and the filesystem,
-    with no station/region heuristics — corrects a non-existent local csv/png
-    citation: it rewrites it to the single verified artifact of that type when
-    exactly one exists, otherwise (nothing real to point at, e.g. a data-blocked
-    run) it neutralizes the fabricated path with an explicit not-produced note.
-    Remote source URLs and paths the answer honestly frames as
-    missing/not-yet-created are left untouched."""
+    filename (e.g. an invented plot path or an extension swap) instead of copying
+    the exact tool-returned path, and on a data-blocked run it can cite a local
+    artifact that was never produced at all. Such a path does not exist on disk
+    and misrepresents the deliverable. This generic pass — driven only by the
+    pack-declared workflow_state schema and the filesystem, with no domain
+    heuristics — corrects a non-existent local artifact citation: it rewrites it
+    to the single verified artifact of that type when exactly one exists,
+    otherwise (nothing real to point at, e.g. a data-blocked run) it neutralizes
+    the fabricated path with an explicit not-produced note. Remote source URLs and
+    paths the answer honestly frames as missing/not-yet-created are left
+    untouched. A schema that declares no artifact extensions (the generic default)
+    grounds nothing and returns the answer unchanged."""
 
-    if not answer:
+    if not answer or not schema.artifact_extensions:
         return answer
-    verified = _verified_local_artifact_paths_by_ext(state)
+    verified = _verified_local_artifact_paths_by_ext(state, schema=schema)
+    token_re = _artifact_path_token_re(schema.artifact_extensions)
+    framing_re = _artifact_path_missing_framing_re(schema.artifact_extensions)
 
     result = answer
-    for match in list(_ARTIFACT_PATH_TOKEN_RE.finditer(answer)):
+    for match in list(token_re.finditer(answer)):
         token = match.group(0)
         if _is_remote_artifact_ref(token):
             continue
@@ -166,10 +174,10 @@ def _ground_fabricated_local_artifact_paths(
         ext = token.rsplit(".", 1)[-1].lower()
         candidates = verified.get(ext) or []
         # Path-doubling / prefix-mangling: if the non-existent token EMBEDS exactly
-        # one verified artifact path as a substring (e.g. the model emitted
-        # ".../ndp-/home/.../ndp-staging/P473.csv" — a real path with a duplicated
-        # prefix), collapse to that verified path. Generic; runs before the
-        # ambiguity check so it still corrects when several artifacts exist.
+        # one verified artifact path as a substring (e.g. the model emitted a real
+        # staged path with a duplicated directory prefix), collapse to that
+        # verified path. Generic; runs before the ambiguity check so it still
+        # corrects when several artifacts exist.
         embedded = [c for c in candidates if c and c in token and c != token]
         if len(embedded) == 1:
             result = result.replace(token, embedded[0])
@@ -180,7 +188,7 @@ def _ground_fabricated_local_artifact_paths(
         # Respect honest "not produced / would be at <path>" framing.
         lo = max(0, match.start() - 160)
         hi = min(len(answer), match.end() + 160)
-        if _ARTIFACT_PATH_MISSING_FRAMING_RE.search(answer[lo:hi]):
+        if framing_re.search(answer[lo:hi]):
             continue
         if len(candidates) == 1:
             # Exactly one verified artifact of this type: correct the citation.

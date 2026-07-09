@@ -1,5 +1,13 @@
 """Expert call instrumentation for optimization data collection.
 
+Research-pending (#801; tracked in
+https://github.com/iowarp/clio-agent/issues/633): this is the live half of
+the optimizer vertical — per-turn invocation records are written by
+``ClioAgent._store_expert_invocation`` (which reuses ``_extract_output``
+here) and ``MetricsAggregator`` feeds ``/metrics`` today. The
+``instrumented_forward`` decorator itself has no callers in the current
+blueprint runtime.
+
 Provides a decorator to wrap expert forward() calls, logging Invocation
 records to ARC memory with input, output, status, duration, and agent_id.
 Also provides MetricsAggregator for computing per-expert performance metrics.
@@ -9,11 +17,14 @@ The instrumented data becomes the training set for SIMBA optimization.
 
 import functools
 import json
+import logging
 import time
 import uuid
 from typing import Any, Callable, Dict
 
 from clio_agent.arc.schema import Invocation
+
+logger = logging.getLogger(__name__)
 
 
 def instrumented_forward(arc_memory: Any, agent_id: str) -> Callable:
@@ -145,8 +156,13 @@ def _extract_output(result: Any) -> Dict[str, Any]:
                 val = getattr(result, key, "")
                 if val is not None:
                     output_data[key] = _to_safe_text(val)[:500]
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - instrumentation must not fail the call
+            logger.warning(
+                "prediction fields not captured; invocation record will be incomplete "
+                "reason=prediction_output_capture_failed result_type=%s error=%s",
+                type(result).__name__,
+                exc,
+            )
     else:
         # Fallback: try common expert output fields
         for field in (
@@ -174,14 +190,14 @@ def _to_safe_text(value: Any) -> str:
     if isinstance(value, (list, dict)):
         try:
             return json.dumps(value, ensure_ascii=False)
-        except Exception:
+        except Exception:  # noqa: BLE001 - value->JSON coercion falls back to str()
             return str(value)
 
     if hasattr(value, "model_dump"):
         try:
             dumped = value.model_dump(mode="json", warnings="none")
             return json.dumps(dumped, ensure_ascii=False)
-        except Exception:
+        except Exception:  # noqa: BLE001,S110 - value coercion cascade; falls through
             pass
 
     content = getattr(value, "content", None)

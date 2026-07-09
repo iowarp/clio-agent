@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB24: tokens + cost_usd propagate through every layer.
+"""tokens + cost_usd propagate through every layer.
 
 The Prediction can carry ``.tokens`` (dict or attr) and ``.cost_usd``;
 the POST-message path threads those onto:

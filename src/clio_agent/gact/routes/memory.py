@@ -41,6 +41,7 @@ from clio_agent.gact.runtime.memory_search import (
     _memory_search_response,
     _message_text_excerpt,
 )
+from clio_agent.gact.runtime.retention import enforce_list_bound
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, MemorySearchResponse
 from clio_agent.gact.workspace_scope import GLOBAL_WORKSPACE_ID
 
@@ -102,6 +103,7 @@ def _memory_tool_audit(
     if not hasattr(app.state, "memory_tool_audit"):
         app.state.memory_tool_audit = []
     app.state.memory_tool_audit.append(row)
+    enforce_list_bound(app, app.state.memory_tool_audit, "memory_tool_audit", session_id=session_id)
     app.state.bus.publish(
         Event(
             type=f"{tool_name}.{'denied' if status == 'denied' else 'completed'}",

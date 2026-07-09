@@ -576,6 +576,19 @@ h2 { font-size: clamp(26px, 4vw, 36px); font-weight: 700; letter-spacing: -0.01e
   font-size: 13px;
 }
 
+/* Honesty caption under the primary download: whether the resolved build
+   bundles the CLIO backend or is attach-only. Populated by app.js; empty until
+   the release assets resolve, so it takes no vertical space on failure. */
+.os-dl-note {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  margin: 0;
+  text-align: center;
+  min-height: 0;
+}
+.os-dl-note:empty { display: none; }
+
 /* "Your platform" badge — hidden unless the card is the detected OS. */
 .os-badge {
   position: absolute;

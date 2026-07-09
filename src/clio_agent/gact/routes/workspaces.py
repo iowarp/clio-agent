@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 
+from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.types import (
     CreateWorkspaceRequest,
     ErrorEnvelope,
@@ -115,7 +116,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
     ``build_app`` local.
     """
 
-    # ---- /v1/workspaces (CLIO-BBBBBBBBBB-WS) -------------------------
+    # ---- /v1/workspaces -------------------------
 
     @app.get("/v1/workspaces", response_model=ListWorkspacesResponse)
     async def list_workspaces() -> ListWorkspacesResponse:
@@ -144,7 +145,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"workspace not found: {wid}",
                         details={"workspace_id": wid},
                         recoverable=False,
@@ -162,39 +163,37 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         Accept partial updates of any of those fields.
         """
 
-        ws = app.state.workspaces.get(wid)
-        if ws is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"workspace not found: {wid}",
-                        details={"workspace_id": wid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        try:
-            body = await request.json()
-        except Exception as exc:
-            trace.event("WORKSPACE", "PATCH %s body parse failed (%s); ignoring body", wid, exc)
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+        body = await json_body(request, route="PATCH /v1/workspaces/{wid}")
         name = body.get("name")
         root_path = body.get("root_path")
         metadata = body.get("metadata")
         # The desktop sends `config` as an alias for metadata.
         if metadata is None and isinstance(body.get("config"), dict):
             metadata = body.get("config")
-        if isinstance(name, str) and name.strip():
-            ws.name = name.strip()
-        if isinstance(root_path, str) and root_path.strip():
-            ws.root_path = root_path.strip()
-        if isinstance(metadata, dict):
-            ws.metadata.update(metadata)
-        app.state.workspaces._flush()
+        # Route the mutation through the store so it serialises under the
+        # WorkspaceStore lock (no torn write / flush racing a concurrent
+        # create) and bumps ``updated_at`` — never mutate the live object
+        # returned by ``get()`` outside the lock.
+        ws = app.state.workspaces.update(
+            wid,
+            name=name.strip() if isinstance(name, str) and name.strip() else None,
+            root_path=(
+                root_path.strip() if isinstance(root_path, str) and root_path.strip() else None
+            ),
+            metadata_patch=metadata if isinstance(metadata, dict) else None,
+        )
+        if ws is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"workspace not found: {wid}",
+                        details={"workspace_id": wid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
         return Workspace(**ws.to_wire())
 
     @app.delete("/v1/workspaces/{wid}")
@@ -218,7 +217,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=404,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="not_found",
                         message=f"workspace not found: {wid}",
                         recoverable=False,
                     )
@@ -283,7 +282,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
 
             policy = FileAccessPolicy.from_mapping(os.environ)
             allow_symlinks = policy.allow_symlinks
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - failure recorded via trace.event
             trace.event(
                 "WORKSPACE",
                 "file policy unavailable for %s (%s); symlinks stay excluded",
@@ -432,7 +431,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         root = Path(ws.root_path or os.getcwd()).expanduser().resolve()
         try:
             target = (root / path).resolve()
-        except Exception:
+        except Exception:  # noqa: BLE001 - path resolution failure surfaced as HTTP 400
             raise HTTPException(
                 status_code=400,
                 detail=ErrorEnvelope(
@@ -474,7 +473,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
 
             policy = FileAccessPolicy.from_mapping(os.environ)
             max_bytes = policy.max_file_size_bytes
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - failure recorded via trace.event
             trace.event(
                 "WORKSPACE",
                 "file policy unavailable reading %s (%s); using 1 GiB size cap",

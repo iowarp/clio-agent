@@ -96,7 +96,7 @@ if ($serverPid) {
 # that never registered a pidfile - exactly the state install.ps1 hit).
 $escaped = [regex]::Escape($Prefix)
 Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-    Where-Object { $_.CommandLine -and $_.CommandLine -match 'clio-agent-gact' -and $_.CommandLine -match $escaped } |
+    Where-Object { $_.CommandLine -and $_.CommandLine -match 'clio-agent(-gact)?' -and $_.CommandLine -match $escaped } |
     ForEach-Object {
         Say "Killing leftover process (pid $($_.ProcessId))"
         & taskkill /PID $_.ProcessId /T /F | Out-Null

@@ -1,12 +1,12 @@
 """GACT v0.2 session registry for CLIO.
 
-Until CLIO-BBBBBBBBBB19 moves session ownership into ARC, the GACT
+Until session ownership moves into ARC, the GACT
 app owns a small registry of ``Session`` records:
 
 - in-memory dict keyed by session id
 - optional JSON persistence so sessions survive ``clio-agent-gact``
-  restarts (default: ``~/.config/clio-agent/sessions.json``; the path
-  is configurable for tests)
+  restarts (default: ``<cwd>/.clio/agent/sessions.json`` per
+  :func:`_default_store_path`; ``CLIO_SESSIONS_PATH`` overrides the full path)
 
 The registry is thread-safe for the workload we expect (FastAPI
 serves requests concurrently but each request either reads or writes
@@ -77,7 +77,11 @@ def _default_store_path() -> Path:
     The directory is created lazily on first write.
     """
 
-    override = os.environ.get("CLIO_SESSIONS_PATH", "").strip()
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    override = conf.resolve(
+        "paths.sessions", env="CLIO_SESSIONS_PATH", default="", cast=conf.as_str
+    ).strip()
     if override:
         return Path(override).expanduser()
     from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
@@ -104,7 +108,7 @@ class Session:
     parent_session_id: str = ""
     model: dict[str, str] = field(default_factory=dict)
     agent: dict[str, str] = field(default_factory=lambda: {"id": "main"})
-    # CLIO-BBBBBBBBBB24: cumulative token + cost rollup. Populated
+    # cumulative token + cost rollup. Populated
     # from Prediction.tokens / cost_usd on every turn.
     tokens_input: int = 0
     tokens_output: int = 0
@@ -206,10 +210,14 @@ class SessionStore:
             return
         self._path.parent.mkdir(parents=True, exist_ok=True)
         payload = {sid: asdict(s) for sid, s in self._sessions.items()}
-        # temp-file + rename = atomic on POSIX so a mid-write crash
-        # can't leave a partial JSON blob on disk.
+        # write+fsync to a temp file, then atomic rename: the fsync forces the
+        # bytes to disk before the rename publishes them, so a mid-write crash
+        # can't leave a partial JSON blob on disk (temp-file + rename is atomic).
         tmp = self._path.with_suffix(self._path.suffix + ".tmp")
-        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True))
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, indent=2, sort_keys=True))
+            fh.flush()
+            os.fsync(fh.fileno())
         os.replace(tmp, self._path)
 
     # ---- CRUD ---------------------------------------------------------

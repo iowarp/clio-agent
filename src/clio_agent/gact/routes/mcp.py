@@ -39,7 +39,6 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import json
-import os
 import uuid
 from collections.abc import Mapping
 from contextlib import nullcontext
@@ -54,8 +53,11 @@ from clio_agent.gact.agent_blueprints import (
 )
 from clio_agent.gact.agents.resolution import _runtime_workspace_catalog_cwd
 from clio_agent.gact.events import Event
+from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.runtime.globals import _tool_session_context
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
+from clio_agent.tools.execution import notify_tool_observer
+from clio_agent.tools.mcp_config import MCPTransportError, transport_from_spec
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -71,10 +73,16 @@ def _mcp_reconnect_timeout_s() -> float:
     ``CLIO_GACT_MCP_RECONNECT_TIMEOUT_S``. A non-positive or unparseable
     value falls back to the 15s default rather than disabling the guard."""
 
-    raw = os.environ.get("CLIO_GACT_MCP_RECONNECT_TIMEOUT_S", "15").strip()
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
     try:
-        value = float(raw)
-    except ValueError:
+        value = conf.resolve(
+            "limits.mcp_reconnect_timeout_s",
+            env="CLIO_GACT_MCP_RECONNECT_TIMEOUT_S",
+            default=15.0,
+            cast=conf.as_float,
+        )
+    except (ValueError, TypeError):
         return 15.0
     return value if value > 0 else 15.0
 
@@ -181,7 +189,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                             "enabled": False,
                         }
                     )
-        except Exception:
+        except Exception:  # noqa: BLE001,S110 - row assembly best-effort; partial rows returned
             pass
         return rows
 
@@ -201,7 +209,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                 servers = blueprint.metadata.get("mcp_servers")
                 if isinstance(servers, Mapping) and servers:
                     pack_servers[blueprint.id] = {str(k): v for k, v in servers.items()}
-        except Exception:  # noqa: BLE001 - pack discovery is best-effort
+        except Exception:  # noqa: BLE001,S110 - pack discovery is best-effort
             pass
         return load_mcp_servers(cwd=cwd, pack_servers=pack_servers)
 
@@ -262,19 +270,12 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
         Returns the same row shape /v1/mcp/servers does.
         """
 
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
+        body = await json_body(request, route="POST /v1/mcp/servers")
         name = body.get("name") or body.get("id") or "unnamed"
         transport_kind = (body.get("transport") or "stdio").lower()
 
         try:
             from fastmcp import Client
-            from fastmcp.client.transports import (
-                StdioTransport,
-                StreamableHttpTransport,
-            )
         except Exception as exc:
             raise HTTPException(
                 status_code=503,
@@ -302,7 +303,11 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                         )
                     ).model_dump(exclude_none=True),
                 )
-            transport = StdioTransport(command=command, args=list(args), env=dict(env) or None)
+            # Build via the single canonical helper (pdeathsig-wrapped on Linux);
+            # store the same normalized spec shape callers already expect.
+            transport = transport_from_spec(
+                {"transport": "stdio", "command": command, "args": list(args), "env": dict(env)}
+            )
             spec = {"transport": "stdio", "command": command, "args": list(args)}
         elif transport_kind in {"http", "streamable-http"}:
             url = body.get("url")
@@ -317,7 +322,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                         )
                     ).model_dump(exclude_none=True),
                 )
-            transport = StreamableHttpTransport(url=url)  # type: ignore[assignment]
+            transport = transport_from_spec({"transport": transport_kind, "url": url})
             spec = {"transport": "http", "url": url}
         else:
             raise HTTPException(
@@ -406,10 +411,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
+        body = await json_body(request, route="POST /v1/mcp/servers/{sid}/call")
         tool_name = body.get("tool")
         tool_args = body.get("args") or {}
         requested_session_id = str(body.get("session_id") or "").strip()
@@ -476,10 +478,6 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
 
             try:
                 from fastmcp import Client
-                from fastmcp.client.transports import (
-                    StdioTransport,
-                    StreamableHttpTransport,
-                )
             except Exception as exc:
                 raise HTTPException(
                     status_code=503,
@@ -493,24 +491,20 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ) from exc
 
             spec = info.get("spec", {})
-            if spec.get("transport") == "stdio":
-                transport = StdioTransport(
-                    command=spec["command"],
-                    args=spec.get("args") or [],
-                )
-            elif spec.get("transport") == "http":
-                transport = StreamableHttpTransport(url=spec["url"])  # type: ignore[assignment]
-            else:
+            try:
+                transport = transport_from_spec(spec)
+            except MCPTransportError as exc:
                 raise HTTPException(
-                    status_code=500,
+                    status_code=422,
                     detail=ErrorEnvelope(
                         error=ErrorInfo(
-                            error="internal_error",
-                            message=f"unknown stored transport: {spec!r}",
-                            recoverable=False,
+                            error="mcp_spec_invalid",
+                            message=str(exc),
+                            details={"id": sid, "spec": spec},
+                            recoverable=True,
                         )
                     ).model_dump(exclude_none=True),
-                )
+                ) from exc
 
             # Fire tool observer manually so this call shows up in
             # tools_called + tool.call.* SSE events identically to an
@@ -518,11 +512,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
             tool_observer = getattr(app.state, "pending_tool_observer", None)
             if tool_observer is None:
                 tool_observer = app.state.make_tool_observer()
-            if tool_observer is not None:
-                try:
-                    tool_observer(observer_name, tool_args, "started", None)
-                except Exception:
-                    pass
+            notify_tool_observer(tool_observer, observer_name, tool_args, "started")
             try:
                 async with Client(transport) as client:
                     result = await client.call_tool(tool_name, tool_args)
@@ -535,11 +525,9 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                         }
                     )
             except Exception as exc:  # noqa: BLE001
-                if tool_observer is not None:
-                    try:
-                        tool_observer(observer_name, tool_args, "completed", repr(exc))
-                    except Exception:
-                        pass
+                notify_tool_observer(
+                    tool_observer, observer_name, tool_args, "completed", error=repr(exc)
+                )
                 raise HTTPException(
                     status_code=502,
                     detail=ErrorEnvelope(
@@ -550,19 +538,17 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                         )
                     ).model_dump(exclude_none=True),
                 ) from exc
-            if tool_observer is not None:
-                try:
-                    tool_result_text = "\n".join(str(item.get("text", item)) for item in content)
-                    if not tool_result_text:
-                        data = getattr(result, "data", None)
-                        tool_result_text = (
-                            json.dumps(data, sort_keys=True, default=str)
-                            if isinstance(data, Mapping)
-                            else str(data if data is not None else result)
-                        )
-                    tool_observer(observer_name, tool_args, "completed", None, tool_result_text)
-                except Exception:
-                    pass
+            tool_result_text = "\n".join(str(item.get("text", item)) for item in content)
+            if not tool_result_text:
+                data = getattr(result, "data", None)
+                tool_result_text = (
+                    json.dumps(data, sort_keys=True, default=str)
+                    if isinstance(data, Mapping)
+                    else str(data if data is not None else result)
+                )
+            notify_tool_observer(
+                tool_observer, observer_name, tool_args, "completed", result=tool_result_text
+            )
             return {
                 "server_id": sid,
                 "tool": tool_name,
@@ -628,10 +614,6 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         try:
             from fastmcp import Client
-            from fastmcp.client.transports import (
-                StdioTransport,
-                StreamableHttpTransport,
-            )
         except Exception as exc:
             raise HTTPException(
                 status_code=503,
@@ -666,31 +648,10 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             )
 
-        if transport_kind == "stdio":
-            command = spec.get("command")
-            if not (isinstance(command, str) and command.strip()):
-                raise _spec_invalid(
-                    f"MCP server {sid} has a stdio transport spec with no "
-                    "'command'; cannot reconnect"
-                )
-            transport: Any = StdioTransport(
-                command=command,
-                args=spec.get("args") or [],
-            )
-        elif transport_kind in {"http", "streamable-http", "sse"}:
-            url = spec.get("url")
-            if not (isinstance(url, str) and url.strip()):
-                raise _spec_invalid(
-                    f"MCP server {sid} has an {transport_kind} transport spec "
-                    "with no 'url'; cannot reconnect"
-                )
-            transport = StreamableHttpTransport(url=url)
-        else:
-            raise _spec_invalid(
-                f"MCP server {sid} has no reconnectable transport spec "
-                f"(transport={transport_kind or 'missing'!r}); expected "
-                "stdio or http"
-            )
+        try:
+            transport: Any = transport_from_spec(spec)
+        except MCPTransportError as exc:
+            raise _spec_invalid(f"MCP server {sid} cannot reconnect: {exc}") from exc
 
         # Re-probe identically to install: open, list tools, close. The whole
         # connect + list-tools round-trip is bounded by a timeout so a hung
@@ -839,7 +800,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
             from clio_agent.tools.gateway import list_capabilities
 
             caps = list_capabilities()
-        except Exception:
+        except Exception:  # noqa: BLE001 - gateway capabilities optional; empty on failure
             return []
         out = []
         for tool in caps:
@@ -871,10 +832,6 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         try:
             from fastmcp import Client
-            from fastmcp.client.transports import (
-                StdioTransport,
-                StreamableHttpTransport,
-            )
         except Exception as exc:
             raise HTTPException(
                 status_code=503,
@@ -887,15 +844,20 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             ) from exc
         spec = info.get("spec", {})
-        if spec.get("transport") == "stdio":
-            transport = StdioTransport(
-                command=spec["command"],
-                args=spec.get("args") or [],
-            )
-        elif spec.get("transport") == "http":
-            transport = StreamableHttpTransport(url=spec["url"])  # type: ignore[assignment]
-        else:
-            return []
+        try:
+            transport = transport_from_spec(spec)
+        except MCPTransportError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="mcp_spec_invalid",
+                        message=str(exc),
+                        details={"id": sid, "spec": spec},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
         rows: list[dict[str, Any]] = []
         try:
             async with Client(transport) as client:

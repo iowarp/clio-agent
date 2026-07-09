@@ -11,6 +11,7 @@ import dspy
 import pytest
 from fastapi.testclient import TestClient
 
+from clio_agent import conf
 from clio_agent.agent import ClioAgent
 from clio_agent.gact import context as ctx
 from clio_agent.gact.agent_blueprints import (
@@ -18,6 +19,9 @@ from clio_agent.gact.agent_blueprints import (
     DEFAULT_REGISTRY_COMMIT,
     DEFAULT_REGISTRY_REF,
     DEFAULT_REGISTRY_URL,
+    default_registry_install_source,
+    default_registry_metadata,
+    default_registry_url,
     discover_agent_blueprints,
     load_agent_blueprint_path,
     load_agent_blueprints,
@@ -25,7 +29,6 @@ from clio_agent.gact.agent_blueprints import (
 )
 from clio_agent.gact.app import (
     _active_base_agent_tool_executor,
-    _append_prediction_workflow_state,
     _append_session_workflow_state_context,
     _blueprint_fanout_config,
     _blueprint_module_kind,
@@ -62,6 +65,22 @@ from clio_agent.gact.app import (
 )
 from clio_agent.gact.types import AgentDef
 from tests.test_gact.conftest import complete_turn
+from tests.test_gact.earthscope_schema import EARTHSCOPE_WORKFLOW_STATE_SCHEMA
+
+
+def _fake_resolved_spec(provider: str, model: str) -> Any:
+    """Stand in for a ``ResolvedLMSpec`` in tests that patch ``_dynamic_agent_lm_config``.
+
+    The per-expert LM path (design §4) makes ``_dynamic_agent_lm_config`` return a
+    ``ResolvedLMSpec`` whose ``materialize`` yields the runnable config. Tests that
+    stub the resolver only care about the provider/model, so this returns a light
+    object exposing the same ``materialize(cred_resolver) -> config`` contract.
+    """
+
+    def _materialize(cred_resolver: Any = None) -> Any:
+        return SimpleNamespace(provider=provider, model=model)
+
+    return SimpleNamespace(materialize=_materialize)
 
 
 class _SinkArc:
@@ -150,8 +169,14 @@ REMOTE BLUEPRINT ORCHESTRATOR MARKER.
     )
 
 
-def _write_default_registry_blueprint(home: Path) -> Path:
-    root = home / ".config" / "clio-agent" / "agent-blueprints" / DEFAULT_AGENT_BLUEPRINT_ID
+def _write_default_registry_blueprint(config_dir: Path) -> Path:
+    # ``config_dir`` is the resolved per-user config root (the value
+    # ``CLIO_USER_DIR`` resolves to for both ``user_config_dir`` and
+    # ``user_config_dir_for``). Writing the blueprint under
+    # ``<config_dir>/agent-blueprints/<id>`` mirrors the production install root
+    # on every OS, so the test-written blueprint is the one discovered (the
+    # Linux-only ``home/.config`` layout does not take effect on Windows).
+    root = config_dir / "agent-blueprints" / DEFAULT_AGENT_BLUEPRINT_ID
     _write_blueprint(root, blueprint_id=DEFAULT_AGENT_BLUEPRINT_ID)
     root.joinpath(".clio-install.md").write_text(
         "\n".join(
@@ -177,7 +202,12 @@ def test_default_registry_agent_blueprint_is_discoverable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    _write_default_registry_blueprint(tmp_path)
+    # Isolate the per-user config dir with the cross-OS ``CLIO_USER_DIR``
+    # override; the injected ``home=``/XDG layout is Linux-only and would read
+    # the developer's real store on Windows/macOS.
+    user_dir = tmp_path / "user-config"
+    monkeypatch.setenv("CLIO_USER_DIR", str(user_dir))
+    _write_default_registry_blueprint(user_dir)
     blueprints = {
         row.id: row for row in discover_agent_blueprints(home=tmp_path, cwd=tmp_path / "workspace")
     }
@@ -207,7 +237,11 @@ def test_builtin_agents_are_loaded_from_default_registry_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    _write_default_registry_blueprint(tmp_path)
+    # Isolate the per-user config dir with the cross-OS ``CLIO_USER_DIR``
+    # override (Linux-only home/.config layout does not take effect on Windows).
+    user_dir = tmp_path / "user-config"
+    monkeypatch.setenv("CLIO_USER_DIR", str(user_dir))
+    _write_default_registry_blueprint(user_dir)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     agents = {row.id: row for row in _builtin_agents()}
@@ -217,6 +251,75 @@ def test_builtin_agents_are_loaded_from_default_registry_snapshot(
     assert agents["root"].metadata["source_blueprint"] == "default_registry"
     assert "agent_blueprints/builtin" not in agents["root"].metadata["definition_path"]
     assert agents["variant"].metadata["install"]["commit"] == DEFAULT_REGISTRY_COMMIT
+
+
+def test_default_registry_url_default_is_https() -> None:
+    """Regression (#764): the baked-in default must be a keyless https remote."""
+
+    assert DEFAULT_REGISTRY_URL == "https://github.com/iowarp/clio-agent-marketplace.git"
+    assert default_registry_url() == DEFAULT_REGISTRY_URL
+
+
+def test_default_registry_url_env_override_selects_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (#764): CLIO_BLUEPRINT_REGISTRY_URL must drive URL selection."""
+
+    override = "https://example.com/custom-marketplace.git"
+    monkeypatch.setenv("CLIO_BLUEPRINT_REGISTRY_URL", override)
+    assert default_registry_url() == override
+    assert default_registry_metadata()["source"] == override
+    # An explicit override wins even when a dev checkout carries the
+    # marketplace submodule as a local install source.
+    assert default_registry_install_source() == override
+
+
+def test_default_registry_url_conf_file_wins_over_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (#764): file layer beats env, per conf.resolve precedence."""
+
+    workspace = tmp_path / "workspace"
+    (workspace / ".clio").mkdir(parents=True)
+    (workspace / ".clio" / "config.yaml").write_text(
+        "gact:\n  blueprint_registry:\n    url: https://example.com/file-marketplace.git\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(workspace)
+    monkeypatch.setenv("CLIO_BLUEPRINT_REGISTRY_URL", "https://example.com/env-marketplace.git")
+    conf.reload()
+    try:
+        assert default_registry_url() == "https://example.com/file-marketplace.git"
+    finally:
+        conf.reload()
+
+
+def test_default_registry_url_blank_configured_value_falls_back_with_warning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Regression (#764): a blank configured URL degrades loudly to the default."""
+
+    workspace = tmp_path / "workspace"
+    (workspace / ".clio").mkdir(parents=True)
+    (workspace / ".clio" / "config.yaml").write_text(
+        'gact:\n  blueprint_registry:\n    url: ""\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(workspace)
+    conf.reload()
+    try:
+        with caplog.at_level("WARNING", logger="clio_agent.gact.agent_blueprints"):
+            assert default_registry_url() == DEFAULT_REGISTRY_URL
+        assert any(
+            "blueprint_registry_url_fallback" in record.getMessage()
+            and "blank_configured_value" in record.getMessage()
+            for record in caplog.records
+        )
+    finally:
+        conf.reload()
 
 
 def test_workflow_state_normalizes_unicode_hyphens_in_path_fields() -> None:
@@ -238,7 +341,8 @@ def test_workflow_state_normalizes_unicode_hyphens_in_path_fields() -> None:
                     }
                 }
             )
-        ]
+        ],
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
 
     assert state["acquisition"]["local_path"] == "/tmp/.clio/artifacts/ndp-staging/MTA1.csv"
@@ -669,7 +773,8 @@ def test_workflow_state_merge_preserves_staged_acquisition_over_metadata_only(
                     }
                 }
             ),
-        ]
+        ],
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
 
     assert state["resource_candidate"]["status"] == "selected"
@@ -694,7 +799,7 @@ def test_ground_fabricated_local_artifact_path_rewrites_to_verified(tmp_path) ->
         "Plot (PNG): /home/x/.clio/artifacts/plots/P475_CI_LY_timeseries.png\n"
         "Source URL: https://ds2.datacollaboratory.org/raw_csv/P475.CI.LY_.20.csv"
     )
-    grounded = _ground_fabricated_local_artifact_paths(answer, state)
+    grounded = _ground_fabricated_local_artifact_paths(answer, state, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
 
     # The fabricated PNG path (not on disk) is rewritten to the verified one.
     assert str(real_png) in grounded
@@ -723,7 +828,7 @@ def test_ground_fabricated_csv_path_ignores_metadata_catalog_for_substitution(tm
         },
     }
     answer = "Staged station CSV: /tmp/SAN_timeseries.csv"
-    grounded = _ground_fabricated_local_artifact_paths(answer, state)
+    grounded = _ground_fabricated_local_artifact_paths(answer, state, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
 
     assert str(real_csv) in grounded
     assert "/tmp/SAN_timeseries.csv" not in grounded
@@ -736,7 +841,7 @@ def test_ground_fabricated_local_artifact_path_respects_missing_framing(tmp_path
     real_png.write_bytes(b"\x89PNG" + b"0" * 64)
     state = {"artifact": {"status": "ready", "path": str(real_png)}}
     answer = "No figure was produced; a PNG has not been staged at /tmp/expected/P475_plot.png yet."
-    grounded = _ground_fabricated_local_artifact_paths(answer, state)
+    grounded = _ground_fabricated_local_artifact_paths(answer, state, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
 
     # An honestly-framed missing/expected path must not be rewritten.
     assert grounded == answer
@@ -747,7 +852,8 @@ def test_ground_fabricated_local_artifact_path_no_verified_neutralizes() -> None
     # local artifact path must be neutralized rather than presented as real.
     answer = "Plot (PNG): /home/x/.clio/artifacts/plots/SAN_timeseries.png"
     grounded = _ground_fabricated_local_artifact_paths(
-        answer, {"acquisition": {"status": "blocked"}}
+        answer, {"acquisition": {"status": "blocked"}},
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
 
     assert "SAN_timeseries.png" not in grounded
@@ -772,7 +878,7 @@ def test_ground_fabricated_local_artifact_path_collapses_doubled_prefix(tmp_path
         "acquisition": {"local_path": real_s},
         "catalog": {"metadata_path": str(staging / "catalog.csv")},
     }
-    grounded = _ground_fabricated_local_artifact_paths(f"Staged CSV: {doubled}.", state)
+    grounded = _ground_fabricated_local_artifact_paths(f"Staged CSV: {doubled}.", state, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
     assert real_s in grounded
     assert doubled not in grounded
 
@@ -784,7 +890,8 @@ def test_ground_fabricated_local_artifact_path_keeps_honest_blocked_prose() -> N
         "written to /tmp/expected/figure.png once a station CSV is staged."
     )
     grounded = _ground_fabricated_local_artifact_paths(
-        answer, {"acquisition": {"status": "blocked"}}
+        answer, {"acquisition": {"status": "blocked"}},
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
 
     assert grounded == answer
@@ -833,7 +940,8 @@ def test_workflow_state_merge_preserves_non_empty_tool_provenance(tmp_path: Path
                     }
                 }
             ),
-        ]
+        ],
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
 
     assert state["resource_candidate"]["dataset_id"] == "1b0c1b93-f164-4025-bd7b-000252b5ca18"
@@ -862,7 +970,8 @@ def test_workflow_state_extraction_preserves_nested_child_structured_evidence() 
                     }
                 }
             )
-        ]
+        ],
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
 
     assert state["profile"]["status"] == "complete"
@@ -887,7 +996,8 @@ def test_workflow_state_downgrades_analysis_ready_without_staged_local_path() ->
                     }
                 }
             )
-        ]
+        ],
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
 
     assert state["acquisition"]["status"] == "candidate_found"
@@ -916,7 +1026,8 @@ def test_workflow_state_reclassifies_data_available_without_staged_local_path() 
                     }
                 }
             )
-        ]
+        ],
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
 
     assert state["acquisition"]["status"] == "candidate_found"
@@ -1038,7 +1149,7 @@ def test_blueprint_compiler_selects_declared_dspy_module_kind(
     monkeypatch.setattr(dspy, "ReAct", FakeReAct)
     monkeypatch.setattr(
         "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
-        lambda base_agent, agent_def: SimpleNamespace(provider="openai", model="gpt-5-mini"),
+        lambda base_agent, agent_def: _fake_resolved_spec("openai", "gpt-5-mini"),
     )
     monkeypatch.setattr(
         "clio_agent.gact.agents.builders._dynamic_agent_tools",
@@ -1140,7 +1251,7 @@ def test_blueprint_module_allows_handoff_only_root_output(monkeypatch: pytest.Mo
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
     monkeypatch.setattr(
         "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
-        lambda base_agent, agent_def: SimpleNamespace(provider="argonne", model="gpt-oss-120b"),
+        lambda base_agent, agent_def: _fake_resolved_spec("argonne", "gpt-oss-120b"),
     )
 
     module = _build_blueprint_dspy_module(
@@ -1177,7 +1288,7 @@ def test_blueprint_module_empty_answer_with_children_enters_repair_path(
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
     monkeypatch.setattr(
         "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
-        lambda base_agent, agent_def: SimpleNamespace(provider="argonne", model="gpt-oss-120b"),
+        lambda base_agent, agent_def: _fake_resolved_spec("argonne", "gpt-oss-120b"),
     )
     monkeypatch.setattr(
         "clio_agent.gact.agents.builders._runtime_dynamic_agent_children_context",
@@ -1231,7 +1342,7 @@ def test_blueprint_react_empty_answer_preserves_tool_trajectory(
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
     monkeypatch.setattr(
         "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
-        lambda base_agent, agent_def: SimpleNamespace(provider="argonne", model="gpt-oss-120b"),
+        lambda base_agent, agent_def: _fake_resolved_spec("argonne", "gpt-oss-120b"),
     )
     monkeypatch.setattr(
         "clio_agent.gact.agents.builders._dynamic_agent_tools", lambda base_agent, agent_def: []
@@ -1348,7 +1459,7 @@ def test_failed_child_delegation_output_summary_is_clean_prose() -> None:
     # No prose state block pollutes the summary anymore.
     assert "workflow state" not in summary.casefold()
     assert "workflow_state" not in summary
-    assert _workflow_state_from_outputs([summary]) == {}
+    assert _workflow_state_from_outputs([summary], schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA) == {}
 
 
 def test_failed_child_delegation_state_rides_structured_row() -> None:
@@ -1362,13 +1473,14 @@ def test_failed_child_delegation_state_rides_structured_row() -> None:
         error="AuthenticationError",
         message="token inactive",
         tools_called=[],
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
 
     assert state["delegation"]["status"] == "failed"
     assert state["delegation"]["failed_child"] == "earthscope_station_catalog"
     # The parent reads this structured field via _workflow_state_from_handoff_rows.
     failed_row = {"stage": "delegate.failed", "workflow_state": state}
-    assert _workflow_state_from_handoff_rows([failed_row])["delegation"]["status"] == "failed"
+    assert _workflow_state_from_handoff_rows([failed_row], schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)["delegation"]["status"] == "failed"
 
 
 def test_completed_child_state_is_structural_not_prose_in_continuation() -> None:
@@ -1400,11 +1512,11 @@ def test_completed_child_state_is_structural_not_prose_in_continuation() -> None
     # (a) No prose state block in the user-/parent-facing output text.
     assert "typed workflow state" not in output.casefold()
     assert "CLIO" not in output
-    assert _workflow_state_from_outputs([clean_answer]) == {}
+    assert _workflow_state_from_outputs([clean_answer], schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA) == {}
 
     # (b1) The structural carrier (the row's workflow_state field) holds the state,
     # readable by the parent's handoff-row reader.
-    recovered = _workflow_state_from_handoff_rows([completed_row])
+    recovered = _workflow_state_from_handoff_rows([completed_row], schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
     assert recovered["acquisition"]["status"] == "staged"
     assert recovered["station_catalog"]["station_ids"] == ["P472", "SIO5"]
 
@@ -1414,6 +1526,7 @@ def test_completed_child_state_is_structural_not_prose_in_continuation() -> None
         "acquire GNSS data near San Diego",
         SimpleNamespace(id="ndp_dataset_discovery"),
         [completed_row],
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
     assert '"status": "staged"' in resume_prompt
     assert "P472" in resume_prompt
@@ -1430,11 +1543,11 @@ def test_session_workflow_state_context_injects_ledger_state_structurally() -> N
     ]
     app = SimpleNamespace(state=SimpleNamespace(tool_call_ledger={"sess-1": ledger_rows}))
 
-    enriched = _append_session_workflow_state_context(app, "sess-1", "find more stations")
+    enriched = _append_session_workflow_state_context(app, "sess-1", "find more stations", schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
 
     assert "find more stations" in enriched
     assert '"status": "staged"' in enriched
-    assert _workflow_state_from_outputs([enriched])["acquisition"]["status"] == "staged"
+    assert _workflow_state_from_outputs([enriched], schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)["acquisition"]["status"] == "staged"
 
 
 def test_nested_handoff_tool_calls_preserve_child_result_evidence() -> None:
@@ -2197,41 +2310,30 @@ def test_prediction_workflow_state_read_structurally() -> None:
                 }
             }
         ),
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
 
     assert state["acquisition"]["status"] == "metadata_only"
     assert state["acquisition"]["analysis_ready"] is False
 
 
-def test_append_prediction_workflow_state_no_longer_pollutes_answer() -> None:
-    # The legacy appender is now an identity passthrough: the typed state must NOT
-    # appear in the answer text. State flows via _prediction_workflow_state instead.
-    answer = _append_prediction_workflow_state(
-        "metadata staged",
-        SimpleNamespace(workflow_state={"acquisition": {"status": "metadata_only"}}),
-    )
-
-    assert answer == "metadata staged"
-    assert "workflow state" not in answer.casefold()
-    assert "workflow_state" not in answer
-    assert _workflow_state_from_outputs([answer]) == {}
-
-
 def test_prediction_workflow_state_accepts_json_string_and_wrapped_mapping() -> None:
     # A typed field may arrive as a JSON string or already wrapped in
     # {"workflow_state": ...}; both normalize to the inner section mapping.
     from_string = _prediction_workflow_state(
-        SimpleNamespace(workflow_state='{"workflow_state": {"profile": {"status": "ready"}}}')
+        SimpleNamespace(workflow_state='{"workflow_state": {"profile": {"status": "ready"}}}'),
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
     assert from_string["profile"]["status"] == "ready"
 
     from_wrapped = _prediction_workflow_state(
-        SimpleNamespace(workflow_state={"workflow_state": {"artifact": {"status": "ready"}}})
+        SimpleNamespace(workflow_state={"workflow_state": {"artifact": {"status": "ready"}}}),
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
     assert from_wrapped["artifact"]["status"] == "ready"
 
-    assert _prediction_workflow_state(SimpleNamespace(workflow_state="")) == {}
-    assert _prediction_workflow_state(SimpleNamespace(workflow_state=None)) == {}
+    assert _prediction_workflow_state(SimpleNamespace(workflow_state=""), schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA) == {}
+    assert _prediction_workflow_state(SimpleNamespace(workflow_state=None), schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA) == {}
 
 
 def test_fallback_answer_from_delegation_uses_latest_completed_parent_resume() -> None:
@@ -2404,6 +2506,9 @@ def test_session_agent_overlay_is_session_local(tmp_path: Path) -> None:
                     "variant": {
                         "title": "Session A Variant Expert",
                         "default_model": "gpt-5-mini",
+                        "api_base": "https://alt.example.com/v1",
+                        "credential_ref": "openai:acctB",
+                        "transport": "exec",
                     }
                 }
             },
@@ -2414,9 +2519,17 @@ def test_session_agent_overlay_is_session_local(tmp_path: Path) -> None:
 
     assert agent_a["title"] == "Session A Variant Expert"
     assert agent_a["default_model"] == "gpt-5-mini"
+    # Per-expert provider identity (#818) is patchable through the session overlay.
+    assert agent_a["api_base"] == "https://alt.example.com/v1"
+    assert agent_a["credential_ref"] == "openai:acctB"
+    assert agent_a["transport"] == "exec"
     assert agent_a["metadata"]["agent_blueprint_overlay"]["status"] == "applied"
     assert agent_b["title"] == "Variant Expert"
     assert agent_b["default_model"] == ""
+    # A sibling session without the overlay keeps the empty defaults (session-local).
+    assert agent_b["api_base"] == ""
+    assert agent_b["credential_ref"] == ""
+    assert agent_b["transport"] == ""
 
 
 def test_session_agent_overlay_rejects_invalid_contracts(tmp_path: Path) -> None:
@@ -2649,7 +2762,11 @@ def test_agent_blueprint_marketplace_sources_persist_and_install_by_id(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    # Isolate the per-user config dir (where the source ledger persists) with
+    # the cross-OS ``CLIO_USER_DIR`` override; ``XDG_CONFIG_HOME`` is honored
+    # only on Linux and would let this test read the developer's real store on
+    # Windows/macOS (104 accumulated sources instead of the one written here).
+    monkeypatch.setenv("CLIO_USER_DIR", str(tmp_path / "user-config"))
     marketplace = tmp_path / "marketplace"
     _write_blueprint(marketplace / "genomics")
     workspace = tmp_path / "workspace"
@@ -3280,7 +3397,9 @@ def test_enabled_agent_blueprint_mcp_descriptor_probes_and_calls_tool(
     import fastmcp.client.transports as transports
 
     monkeypatch.setattr(fastmcp, "Client", FakeClient)
-    monkeypatch.setattr(transports, "StdioTransport", lambda command, args: (command, args))
+    monkeypatch.setattr(
+        transports, "StdioTransport", lambda command, args, env=None: (command, args)
+    )
 
     workspace = tmp_path / "workspace"
     root = workspace / ".clio" / "agent-blueprints" / "earth"
@@ -3363,7 +3482,9 @@ def test_enabled_agent_blueprint_mcp_tool_reenables_session_expert(
     import fastmcp.client.transports as transports
 
     monkeypatch.setattr(fastmcp, "Client", FakeClient)
-    monkeypatch.setattr(transports, "StdioTransport", lambda command, args: (command, args))
+    monkeypatch.setattr(
+        transports, "StdioTransport", lambda command, args, env=None: (command, args)
+    )
 
     workspace = tmp_path / "workspace"
     root = workspace / ".clio" / "agent-blueprints" / "earth"

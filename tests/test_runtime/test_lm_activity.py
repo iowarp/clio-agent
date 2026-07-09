@@ -16,17 +16,21 @@ from __future__ import annotations
 import pytest
 
 from clio_agent import config as cfg
+from clio_agent.lm import io_logging
 from clio_agent.runtime import lm_activity
 
 
 @pytest.fixture(autouse=True)
 def _reset_state(monkeypatch):
-    # Isolate the module-global tracker between tests and pin the clock.
-    lm_activity._STATE.update({"inflight": 0.0, "started": 0.0, "last": 0.0})
+    # Isolate the per-session tracker between tests and pin the clock. These unit
+    # tests drive note_lm_* with no GACT session bound, so all activity lands in
+    # the unattributed "" bucket and lm_call_in_flight() (no arg) reads it via the
+    # global-any fallback.
+    lm_activity._STATE.clear()
     monkeypatch.delenv("CLIO_MAX_LM_CALL_S", raising=False)
     monkeypatch.delenv("CLIO_LM_INTER_TOKEN_IDLE_S", raising=False)
     yield
-    lm_activity._STATE.update({"inflight": 0.0, "started": 0.0, "last": 0.0})
+    lm_activity._STATE.clear()
 
 
 def _clock(monkeypatch):
@@ -37,6 +41,29 @@ def _clock(monkeypatch):
 
 
 def test_not_in_flight_when_idle():
+    assert lm_activity.lm_call_in_flight() is False
+
+
+def test_drained_session_bucket_is_evicted():
+    # #761/#757 no-unbounded-growth: per-session buckets must not accumulate. A
+    # session whose LM calls have all ended leaves NO residual bucket in _STATE.
+    lm_activity.note_lm_start()
+    assert "" in lm_activity._STATE  # unattributed bucket created on start
+    lm_activity.note_lm_end()
+    assert "" not in lm_activity._STATE  # drained -> evicted (was retained before the fix)
+    assert lm_activity.lm_call_in_flight() is False
+
+
+def test_bucket_survives_until_last_overlapping_call_ends():
+    # Eviction must key on the drain, not any end: with two overlapping calls in
+    # one bucket, the bucket persists until the LAST one ends.
+    lm_activity.note_lm_start()
+    lm_activity.note_lm_start()
+    lm_activity.note_lm_end()
+    assert "" in lm_activity._STATE  # one still in flight -> bucket retained
+    assert lm_activity.lm_call_in_flight() is True
+    lm_activity.note_lm_end()
+    assert "" not in lm_activity._STATE  # both ended -> evicted
     assert lm_activity.lm_call_in_flight() is False
 
 
@@ -213,8 +240,8 @@ def test_is_transient_provider_error_classifies():
 
 def test_call_retries_transient_then_succeeds(monkeypatch):
     lm = cfg._io_logging_lm_cls()(model="openai/dummy")
-    monkeypatch.setattr(cfg, "_lm_transient_retries", lambda: 2)
-    monkeypatch.setattr(cfg, "_lm_transient_backoff_s", lambda: 0.0)
+    monkeypatch.setattr(io_logging, "_lm_transient_retries", lambda: 2)
+    monkeypatch.setattr(io_logging, "_lm_transient_backoff_s", lambda: 0.0)
 
     calls = {"n": 0}
 
@@ -232,8 +259,8 @@ def test_call_retries_transient_then_succeeds(monkeypatch):
 
 def test_call_does_not_retry_non_transient(monkeypatch):
     lm = cfg._io_logging_lm_cls()(model="openai/dummy")
-    monkeypatch.setattr(cfg, "_lm_transient_retries", lambda: 3)
-    monkeypatch.setattr(cfg, "_lm_transient_backoff_s", lambda: 0.0)
+    monkeypatch.setattr(io_logging, "_lm_transient_retries", lambda: 3)
+    monkeypatch.setattr(io_logging, "_lm_transient_backoff_s", lambda: 0.0)
 
     calls = {"n": 0}
 
@@ -249,8 +276,8 @@ def test_call_does_not_retry_non_transient(monkeypatch):
 
 def test_call_exhausts_transient_retries_then_raises(monkeypatch):
     lm = cfg._io_logging_lm_cls()(model="openai/dummy")
-    monkeypatch.setattr(cfg, "_lm_transient_retries", lambda: 2)
-    monkeypatch.setattr(cfg, "_lm_transient_backoff_s", lambda: 0.0)
+    monkeypatch.setattr(io_logging, "_lm_transient_retries", lambda: 2)
+    monkeypatch.setattr(io_logging, "_lm_transient_backoff_s", lambda: 0.0)
 
     calls = {"n": 0}
 

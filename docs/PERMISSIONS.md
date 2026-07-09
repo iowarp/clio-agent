@@ -62,7 +62,7 @@ Three resolution paths:
 
 This is the current wired behavior. The broader TUI surfacing plan for durable
 policy rules, audit visibility, and discoverability is tracked separately in
-`PERMISSION_SURFACING_DESIGN.md`. The important distinction is:
+`archive/PERMISSION_SURFACING_DESIGN.md`. The important distinction is:
 
 - CLIO already has the backend permission system.
 - The remaining work is making that system understandable and manageable from

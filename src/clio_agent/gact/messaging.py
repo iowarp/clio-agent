@@ -259,6 +259,6 @@ def _dspy_images_from_parts(parts: list[Part]) -> list[Any]:
                     continue
                 media_type = part.media_type or part.metadata.get("media_type") or "image/png"
                 images.append(dspy.Image(f"data:{media_type};base64,{data}"))
-        except Exception:
+        except Exception:  # noqa: BLE001 - undecodable image part skipped
             continue
     return images

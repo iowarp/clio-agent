@@ -1,23 +1,32 @@
-"""IOWarp CTE (Convergent Tiered Environment) storage backend for ARC.
+"""Persistent record backends for ARC.
 
-Integrates ARC Memory with IOWarp's multi-tier storage system for automatic
-data migration across tiers based on access patterns.
+This module defines the storage seam ARC records go through and the two
+concrete backends that implement it. It is the durable tier beneath the
+in-memory hot layer (``LRUCache`` + ``BTreeIndex`` in ``memory.py``); it does
+NOT do access-pattern-driven tier migration -- there is no hot/warm/cold/archive
+mover here.
 
-Architecture:
-    - Hot tier: In-memory cache (handled by LRUCache in memory.py)
-    - Warm tier: SSD/local disk (default for active data)
-    - Cold tier: Network storage/HDF5 (for historical data)
-    - Archive tier: Tape/long-term storage (for old data)
+The seam -- :class:`ARCStore` (a ``Protocol``):
+    ``put(kind, name, data, search_text=...)`` / ``get(kind, name)`` /
+    ``scan(kind, prefix)`` over opaque ``bytes`` keyed by ``(kind, name)``.
+    Any backend that satisfies it plugs in.
 
-Tier Migration Policy:
-    - Hot → Warm: 1 day (handled by LRU cache eviction)
-    - Warm → Cold: 7 days (infrequent access)
-    - Cold → Archive: 30 days (historical data)
+Backends:
+    - :class:`LocalFSStore` -- plain files under ``<data_dir>``: one
+      ``<kind>/<name>.msgpack`` record per key plus a ``<kind>/<name>.search``
+      plain-text companion for the degraded keyword-overlap search. Durable on
+      disk; no external process.
+    - :class:`CTEStore` -- the clio-core CTE (Convergent Tiered Environment)
+      binding, connecting to a shared per-user daemon (connect-or-spawn, stopped
+      at interpreter exit via ``atexit``). Its DRAM tier is the live working set;
+      a file tier (``<user_data_dir>/cte/storage.bin``) backs it. On-disk
+      recovery of the file tier is still WIP, so for guaranteed disk durability
+      today prefer ``CLIO_ARC_STORE=local``.
 
-Graceful Degradation:
-    If IOWarp is unavailable, falls back to local filesystem storage.
-
-See PLAN.md v0.3.0 Task 2 for requirements.
+Backend selection is FAIL-LOUD, not a silent fallback: see :func:`make_arc_store`.
+``"cte"`` is the default; if its binding is absent or fails to init it RAISES --
+it does not quietly degrade to ``LocalFSStore``. ``LocalFSStore`` is used only
+when ``CLIO_ARC_STORE=local`` (or ``backend="local"``) is selected explicitly.
 """
 
 import atexit
@@ -42,10 +51,6 @@ logger = logging.getLogger(__name__)
 ARC_KINDS: tuple[str, ...] = (
     "conversations",
     "invocations",
-    "metrics",
-    "context",
-    "profiles",
-    "procedural",
     "variants",
     "segments",  # live context plane: one record per (session_id, scope)
 )
@@ -257,14 +262,16 @@ def _resolve_runtime_port(config_path: str) -> int:
     order (``$CLIO_SERVER_CONF`` / ``$CHI_SERVER_CONF``, the passed ``config_path``,
     ``~/.clio/clio.yaml``), defaulting to :data:`_DEFAULT_RUNTIME_PORT`.
     """
-    override = os.environ.get("CLIO_CORE_PORT", "").strip()
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    override = conf.resolve("arc.core_port", env="CLIO_CORE_PORT", default="", cast=conf.as_str).strip()
     if override:
         try:
             return int(override)
         except ValueError:
             logger.warning("ignoring non-integer CLIO_CORE_PORT=%r", override)
     candidates = [
-        os.environ.get("CLIO_SERVER_CONF", "").strip(),
+        conf.resolve("arc.server_conf", env="CLIO_SERVER_CONF", default="", cast=conf.as_str).strip(),
         os.environ.get("CHI_SERVER_CONF", "").strip(),
         config_path,
         str(Path.home() / ".clio" / "clio.yaml"),
@@ -329,12 +336,12 @@ def _runtime_launcher_path(iowarp_core: object) -> Optional[str]:
 def _detached_popen_kwargs() -> "dict[str, object]":
     """Popen kwargs that detach the daemon so it outlives the spawning process.
 
-    POSIX: a new session (``setsid``) → own session/group leader. Windows: a detached
-    process in a new process group so a Ctrl-C / parent exit does not propagate to it.
+    POSIX: ``setsid``. Windows: ``CREATE_NO_WINDOW`` in a new process group, NOT
+    ``DETACHED_PROCESS``: no console breaks the daemon's ZeroMQ Winsock init (#870).
     """
     if sys.platform.startswith("win"):
         flags = 0
-        flags |= getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+        flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
         flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
         return {"creationflags": flags, "close_fds": True}
     return {"start_new_session": True, "close_fds": True}
@@ -525,23 +532,36 @@ def _kill_daemon_pidfile() -> None:
             proc.wait(timeout=5.0)
         except psutil.TimeoutExpired:
             proc.kill()
-    except Exception:  # noqa: BLE001 - process already gone / no permission: best-effort
+    except Exception:  # noqa: BLE001,S110 - process already gone / no permission: best-effort
         pass
     with contextlib.suppress(OSError):
         pidfile.unlink()
 
 
 def _stop_runtime_daemon(config_path: str, log_level: str) -> None:
-    """Stop the shared daemon cleanly (``clio_run stop``), with a kill fallback."""
+    """Stop the shared daemon cleanly (``clio_run stop``), with a kill fallback.
+
+    Mirrors the spawn path: the launcher name (``.exe`` on Windows) comes from
+    ``_runtime_launcher_path`` and the shared-library env var (``PATH`` /
+    ``DYLD_LIBRARY_PATH`` / ``LD_LIBRARY_PATH``) from ``_dynamic_library_env_var``,
+    so the clean stop works on every platform the spawn does (issue #765).
+    """
     stopped = False
     try:
         import iowarp_core  # noqa: PLC0415
 
-        exe = os.path.join(iowarp_core.get_bin_dir(), "clio_run")  # type: ignore[attr-defined]
-        if os.path.exists(exe):
+        exe = _runtime_launcher_path(iowarp_core)
+        if exe is None:
+            logger.warning(
+                "clean clio-core daemon stop unavailable "
+                "(reason=launcher_not_found bin_dir=%r); falling back to pidfile kill",
+                iowarp_core.get_bin_dir(),  # type: ignore[attr-defined]
+            )
+        else:
             env = os.environ.copy()
-            env["LD_LIBRARY_PATH"] = (
-                iowarp_core.get_lib_dir() + os.pathsep + env.get("LD_LIBRARY_PATH", "")  # type: ignore[attr-defined]
+            lib_var = _dynamic_library_env_var()
+            env[lib_var] = (
+                iowarp_core.get_lib_dir() + os.pathsep + env.get(lib_var, "")  # type: ignore[attr-defined]
             )
             env.setdefault("CTP_LOG_LEVEL", log_level)
             if config_path:
@@ -556,7 +576,13 @@ def _stop_runtime_daemon(config_path: str, log_level: str) -> None:
                 check=False,
             )
             stopped = True
-    except (subprocess.TimeoutExpired, OSError, ImportError):
+    except (subprocess.TimeoutExpired, OSError, ImportError) as exc:
+        logger.warning(
+            "clean clio-core daemon stop failed (reason=%s: %s); "
+            "falling back to pidfile kill",
+            type(exc).__name__,
+            exc,
+        )
         stopped = False
     # Confirm the port actually freed; fall back to a direct kill if not.
     if not stopped or _runtime_alive(_resolve_runtime_port(config_path)):
@@ -657,13 +683,11 @@ class CTEStore:
             "durability today."
         )
 
-    def release(self) -> None:
-        """Detach this process from the shared runtime; stop it if we were the last.
-
-        Wired into the gact server's lifespan shutdown so leaving the TUI releases the
-        whole runtime. Idempotent; a no-op if another client is still attached.
-        """
-        release_runtime_client(self._config_path, self._log_level)
+    # NOTE: there is deliberately NO instance ``release()`` method. The shared
+    # clio-core runtime is released exactly once, last-one-out, via the
+    # module-level :func:`release_runtime_client` registered with ``atexit`` in
+    # :meth:`_ensure_runtime`. See that method and the gact lifespan note in
+    # ``gact/app.py`` for why atexit — not a lifespan hook — owns shutdown.
 
     @classmethod
     def _ensure_runtime(cls, config_path: str, log_level: str, settle_s: float) -> None:
@@ -704,10 +728,14 @@ class CTEStore:
             cte.initialize_cte(config_path, cte.PoolQuery.Dynamic())  # "" => ~/.clio/clio.yaml
             cls._initialized = True
 
-            # Stash for the release path, and register an atexit fallback so a clean
-            # Python exit (legacy agent, tests, scripts) still does last-one-out. The
-            # gact server calls release_runtime_client() from its lifespan shutdown for
-            # the SIGTERM / TUI-leave path (where atexit does not run).
+            # Stash the params and register the last-one-out release with atexit.
+            # atexit is THE shutdown mechanism — not a duplicate/fallback. uvicorn
+            # handles SIGTERM by returning from its serve loop, so the interpreter
+            # exits normally and atexit fires ("I leave the TUI, everything gets
+            # released"). The gact lifespan hook DELIBERATELY does NOT call
+            # release_runtime_client (see gact/app.py lifespan note): doing so would
+            # wrongly stop the SHARED daemon on any app teardown that is not a
+            # process exit (e.g. a second app in the same process).
             global _active_config_path, _active_log_level
             _active_config_path = config_path
             _active_log_level = log_level
@@ -920,11 +948,17 @@ def make_arc_store(
     that ARC is no longer on clio-core). ``LocalFSStore`` is used ONLY when ``"local"``
     is selected explicitly (``CLIO_ARC_STORE=local`` or ``backend="local"``).
     """
-    choice = (backend or os.environ.get("CLIO_ARC_STORE", "cte")).strip().lower()
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    choice = (
+        backend or conf.resolve("arc.store", env="CLIO_ARC_STORE", default="cte", cast=conf.as_str)
+    ).strip().lower()
     if choice == "local":
         return LocalFSStore(data_dir)
     if choice == "cte":
-        cfg = config_path or os.environ.get("CLIO_ARC_STORE_CONFIG", "")
+        cfg = config_path or conf.resolve(
+            "arc.store_config", env="CLIO_ARC_STORE_CONFIG", default="", cast=conf.as_str
+        )
         if not cfg:
             # Prefer a per-workspace clio-core config under ``.clio/core`` if present;
             # otherwise seed/use the default DRAM↔disk hierarchy on the OS data dir.

@@ -10,11 +10,43 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import requests
 from fastapi.testclient import TestClient
 
 from clio_agent.config import LMProviderConfig
 from clio_agent.gact.app import build_app
 from clio_agent.gact.providers.config import _effective_lm_config
+from clio_agent.runtime.status import RuntimeProbe
+
+
+def _patch_doctor(monkeypatch: Any, probe: RuntimeProbe) -> None:
+    """Swap the unified doctor engine into /v1/health for a deterministic probe."""
+
+    def _fake(
+        *, api_state: Any = None, api_error: Any = None, env: Any = None, lm_timeout: float = 1.0
+    ):
+        return probe.collect(api_state=api_state, api_error=api_error)
+
+    monkeypatch.setattr("clio_agent.gact.routes.system.collect_runtime_status", _fake)
+
+
+class _RebindLMStub:
+    """Mixin: a bound ``rebind_lms`` for bind-path ClioAgent stubs.
+
+    The provider bind now calls ``agent.rebind_lms(cfg)`` (on a freshly built agent or
+    a ``copy.copy`` of the existing one), so a stub standing in for ClioAgent needs a
+    real bound method that rebuilds the four LM-surface fields together.
+    """
+
+    def rebind_lms(self, cfg: Any) -> None:
+        self._provider_config = cfg
+        self._main_lm = SimpleNamespace(
+            model=getattr(cfg, "model", ""), provider=getattr(cfg, "provider", ""), history=[]
+        )
+        self._planner_lm = SimpleNamespace(
+            model=getattr(cfg, "model", ""), provider=getattr(cfg, "provider", ""), history=[]
+        )
+        self._dspy_adapter = SimpleNamespace(provider=getattr(cfg, "provider", ""))
 
 
 def _wait_lm_provider_ready(c: TestClient, timeout_s: float = 5.0) -> dict[str, Any]:
@@ -285,12 +317,28 @@ def test_provider_model_catalog_unknown_provider_404(tmp_path: Path) -> None:
     assert resp.status_code == 404
 
 
-def test_health_lm_row_when_unconfigured(tmp_path: Path) -> None:
-    app = build_app(sessions_path=tmp_path / "s.json")
-    with TestClient(app) as c:
-        rows = {r["name"]: r for r in c.get("/v1/health").json()["integrations"]}
-        assert rows["lm"]["status"] == "unavailable"
-        assert "PUT /v1/providers/lm" in rows["lm"]["detail"]
+def test_health_lm_row_is_unified_probe_lm_provider(tmp_path: Path, monkeypatch) -> None:
+    """#800: /v1/health's LM row is the unified doctor's ``lm_provider`` (from the
+    probe engine), not an app.state-derived ``lm`` row. An unreachable local
+    provider surfaces as an unavailable ``lm_provider`` row → 503."""
+
+    def _refused(*a: Any, **k: Any):
+        raise requests.ConnectionError("connection refused")
+
+    probe = RuntimeProbe(
+        env={"CLIO_ARC_STORE": "local", "CLIO_DATA_DIR": str(tmp_path)},
+        http_get=_refused,
+        gateway_lister=lambda: [{"name": "hdf5_x"}],
+        module_checker=lambda name: True,
+        port_checker=lambda port: False,
+        clio_runtime_dir=tmp_path / "clio-home",
+    )
+    _patch_doctor(monkeypatch, probe)
+    resp = TestClient(build_app(sessions_path=tmp_path / "s.json")).get("/v1/health")
+    rows = {r["name"]: r for r in resp.json()["integrations"]}
+    assert "lm" not in rows  # old hand-rolled row is gone
+    assert rows["lm_provider"]["status"] == "unavailable"
+    assert resp.status_code == 503
 
 
 def test_get_lm_provider_when_configured_from_boot_agent(tmp_path: Path) -> None:
@@ -311,8 +359,11 @@ def test_get_lm_provider_when_configured_from_boot_agent(tmp_path: Path) -> None
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     with TestClient(app) as c:
         body = c.get("/v1/providers/lm").json()
-        rows = {r["name"]: r for r in c.get("/v1/health").json()["integrations"]}
 
+    # #800: /v1/health no longer derives its LM row from the boot agent's
+    # _provider_config — the unified doctor probes the real runtime. This test
+    # now only pins the GET /v1/providers/lm surface (the LM-config source of
+    # truth); the health lm_provider row is covered in test_doctor_integrations.
     assert body["configured"] is True
     assert body["provider"] == "lm_studio"
     assert body["api_base"] == "http://127.0.0.1:1234/v1"
@@ -321,34 +372,34 @@ def test_get_lm_provider_when_configured_from_boot_agent(tmp_path: Path) -> None
     assert body["max_tokens"] == 4096
     assert body["context_length"] == 32768
     assert body["transport"] is None
-    assert rows["lm"]["status"] == "ready"
-    assert rows["lm"]["detail"] == "lm_studio/qwopus3.5-9b-v3"
 
 
-def test_health_reports_argonne_token_failure_when_connected(tmp_path: Path, monkeypatch) -> None:
-    """A connected ALCF provider is unavailable if its Globus token is missing."""
+def test_health_surfaces_argonne_token_missing_via_probe(tmp_path: Path, monkeypatch) -> None:
+    """#800: the unified doctor surfaces an ALCF provider with no stored Globus
+    token as a misconfigured ``lm_provider`` row (degraded chip) — the token
+    check now lives in the probe engine, not the health handler."""
 
     monkeypatch.setattr("clio_agent.providers.argonne_auth.tokens_exist", lambda: False)
 
-    agent = SimpleNamespace(
-        _provider_config=SimpleNamespace(
-            provider="argonne",
-            api_base="https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",
-            model="meta-llama/Meta-Llama-3.1-8B-Instruct",
-            temperature=0.0,
-            max_tokens=4096,
-            context_length=0,
-            thinking_budget=0,
-        )
+    probe = RuntimeProbe(
+        env={
+            "CLIO_LM_PROVIDER": "argonne",
+            "CLIO_ARC_STORE": "local",
+            "CLIO_DATA_DIR": str(tmp_path),
+        },
+        gateway_lister=lambda: [{"name": "hdf5_x"}],
+        module_checker=lambda name: True,  # globus_sdk importable
+        port_checker=lambda port: False,
+        clio_runtime_dir=tmp_path / "clio-home",
     )
-    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
-    with TestClient(app) as c:
-        resp = c.get("/v1/health")
+    _patch_doctor(monkeypatch, probe)
+    resp = TestClient(build_app(sessions_path=tmp_path / "s.json")).get("/v1/health")
 
-    assert resp.status_code == 503
-    rows = {r["name"]: r for r in resp.json()["integrations"]}
-    assert rows["lm"]["status"] == "unavailable"
-    assert "token missing" in rows["lm"]["detail"]
+    body = resp.json()
+    rows = {r["name"]: r for r in body["integrations"]}
+    assert rows["lm_provider"]["status"] == "degraded"  # misconfigured -> degraded chip
+    assert "Globus tokens" in rows["lm_provider"]["summary"]
+    assert body["overall_status"] == "degraded"
 
 
 def test_get_lm_provider_when_configured_via_put(tmp_path: Path, monkeypatch) -> None:
@@ -357,7 +408,7 @@ def test_get_lm_provider_when_configured_via_put(tmp_path: Path, monkeypatch) ->
 
     fake_agent_constructed: dict[str, Any] = {}
 
-    class _StubAgent:
+    class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             fake_agent_constructed["called"] = True
             self.arc = type(
@@ -423,11 +474,9 @@ def test_get_lm_provider_when_configured_via_put(tmp_path: Path, monkeypatch) ->
         assert app.state.lm_config["context_length"] == 16384
         refreshed_session = c.get(f"/v1/sessions/{stale_session['id']}").json()
         assert refreshed_session["model"] == {"provider_id": "", "model_id": "", "variant": ""}
-
-        # Health row flips to ready.
-        rows = {r["name"]: r for r in c.get("/v1/health").json()["integrations"]}
-        assert rows["lm"]["status"] == "ready"
-        assert "openai/claude-haiku-4-5-20251001" in rows["lm"]["detail"]
+        # #800: /v1/health no longer mirrors the PUT'd LM config — the unified
+        # doctor probes the real runtime (and folds a cached handshake into the
+        # lm_provider row). That surface is covered in test_doctor_integrations.
 
 
 def test_put_argonne_uses_provider_default_max_tokens_when_omitted(
@@ -437,7 +486,7 @@ def test_put_argonne_uses_provider_default_max_tokens_when_omitted(
 
     captured: dict[str, Any] = {}
 
-    class _StubAgent:
+    class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             self.arc = type(
                 "ARC",
@@ -500,7 +549,7 @@ def test_put_argonne_preset_id_normalizes_to_runtime_provider_kind(
 
     captured: dict[str, Any] = {}
 
-    class _StubAgent:
+    class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             self.arc = type(
                 "ARC",
@@ -561,7 +610,7 @@ def test_put_argonne_ignores_placeholder_api_key(tmp_path: Path, monkeypatch) ->
 
     captured: dict[str, Any] = {}
 
-    class _StubAgent:
+    class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             self.arc = type(
                 "ARC",
@@ -615,12 +664,10 @@ def test_argonne_runtime_refresh_updates_live_lm_kwargs(monkeypatch) -> None:
     monkeypatch.setattr("clio_agent.config._resolve_argonne_api_key", lambda: "runtime-token")
     main_lm = SimpleNamespace(kwargs={"api_key": "old-token"})
     planner_lm = SimpleNamespace(kwargs={"api_key": "old-token"})
-    router_lm = SimpleNamespace(kwargs={"api_key": "old-token"})
     agent = SimpleNamespace(
         _provider_config=SimpleNamespace(provider="argonne", api_key="old-token"),
         _main_lm=main_lm,
         _planner_lm=planner_lm,
-        _router_lm=router_lm,
     )
 
     _refresh_argonne_lm_token(agent)
@@ -628,7 +675,6 @@ def test_argonne_runtime_refresh_updates_live_lm_kwargs(monkeypatch) -> None:
     assert agent._provider_config.api_key == "runtime-token"
     assert main_lm.kwargs["api_key"] == "runtime-token"
     assert planner_lm.kwargs["api_key"] == "runtime-token"
-    assert router_lm.kwargs["api_key"] == "runtime-token"
 
 
 def test_put_lm_provider_accepts_codex_sdk_transport(tmp_path: Path, monkeypatch) -> None:
@@ -636,7 +682,7 @@ def test_put_lm_provider_accepts_codex_sdk_transport(tmp_path: Path, monkeypatch
     captured: dict[str, Any] = {}
     monkeypatch.delenv("CLIO_CODEX_TRANSPORT", raising=False)
 
-    class _StubAgent:
+    class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             self.arc = type(
                 "ARC",
@@ -683,7 +729,10 @@ def test_put_lm_provider_accepts_codex_sdk_transport(tmp_path: Path, monkeypatch
     assert captured["cfg"].api_key == "x"
     assert captured["cfg"].codex_transport == "sdk"
     assert app.state.lm_config["transport"] == "sdk"
-    assert os.environ["CLIO_CODEX_TRANSPORT"] == "sdk"
+    # Demoted bind (design §5): transport travels on the config / store default,
+    # NOT process-global env. The bind must not stamp CLIO_CODEX_TRANSPORT.
+    assert "CLIO_CODEX_TRANSPORT" not in os.environ
+    assert app.state.provider_profiles.default.transport == "sdk"
 
 
 def test_put_lm_provider_accepts_claude_code_exec_transport(tmp_path: Path, monkeypatch) -> None:
@@ -691,7 +740,7 @@ def test_put_lm_provider_accepts_claude_code_exec_transport(tmp_path: Path, monk
     monkeypatch.delenv("CLIO_CLAUDE_CODE_TRANSPORT", raising=False)
     captured: dict[str, Any] = {}
 
-    class _StubAgent:
+    class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             self.arc = type(
                 "ARC",
@@ -738,17 +787,17 @@ def test_put_lm_provider_accepts_claude_code_exec_transport(tmp_path: Path, monk
     assert captured["cfg"].api_key == "x"
     assert captured["cfg"].claude_code_transport == "exec"
     assert app.state.lm_config["transport"] == "exec"
-    assert os.environ["CLIO_CLAUDE_CODE_TRANSPORT"] == "exec"
+    # Demoted bind (design §5): no process-global env stamping.
+    assert "CLIO_CLAUDE_CODE_TRANSPORT" not in os.environ
+    assert app.state.provider_profiles.default.transport == "exec"
 
 
-def test_put_lm_provider_defaults_claude_code_to_sdk_transport(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_put_lm_provider_defaults_claude_code_to_sdk_transport(tmp_path: Path, monkeypatch) -> None:
     """Claude Code should use the streaming-capable SDK path unless exec is explicit."""
     monkeypatch.delenv("CLIO_CLAUDE_CODE_TRANSPORT", raising=False)
     captured: dict[str, Any] = {}
 
-    class _StubAgent:
+    class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             self.arc = type(
                 "ARC",
@@ -794,7 +843,9 @@ def test_put_lm_provider_defaults_claude_code_to_sdk_transport(
     assert captured["cfg"].api_key == "x"
     assert captured["cfg"].claude_code_transport == "sdk"
     assert app.state.lm_config["transport"] == "sdk"
-    assert os.environ["CLIO_CLAUDE_CODE_TRANSPORT"] == "sdk"
+    # Demoted bind (design §5): no process-global env stamping.
+    assert "CLIO_CLAUDE_CODE_TRANSPORT" not in os.environ
+    assert app.state.provider_profiles.default.transport == "sdk"
 
 
 def test_put_lm_provider_applies_lm_studio_context_length(tmp_path: Path, monkeypatch) -> None:
@@ -817,7 +868,7 @@ def test_put_lm_provider_applies_lm_studio_context_length(tmp_path: Path, monkey
         def json(self) -> dict[str, Any]:
             return {"instance_id": "qwopus3.5-9b-v3", "status": "loaded"}
 
-    class _StubAgent:
+    class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             self.arc = type(
                 "ARC",
@@ -914,7 +965,7 @@ def test_put_lm_provider_reuses_loaded_lm_studio_model(tmp_path: Path, monkeypat
                 ],
             }
 
-    class _StubAgent:
+    class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             self.arc = type(
                 "ARC",
@@ -1017,7 +1068,12 @@ def test_put_lm_provider_invalid_returns_400(tmp_path: Path, monkeypatch) -> Non
 
 
 def test_put_lm_provider_failed_first_connect_restores_env(tmp_path: Path, monkeypatch) -> None:
-    """A rejected provider swap must not leak failed settings into env."""
+    """A rejected provider swap must not touch process-global env.
+
+    The demoted bind (design §5) no longer stamps ``os.environ`` at all, so a
+    failed connect leaves the pre-existing env untouched by construction — there
+    is nothing to leak and nothing to restore.
+    """
 
     before = {
         "CLIO_LM_PROVIDER": "lm_studio",
@@ -1096,3 +1152,180 @@ def test_turn_timeout_precedence_runtime_over_conf() -> None:
     finally:
         os.environ.pop("CLIO_GACT_TURN_TIMEOUT_S", None)
         conf.reload()
+
+
+# ---- demoted default-only bind (design §5 / §9 step 8) --------------------
+
+
+def _make_stub_agent_cls() -> type:
+    """A minimal ClioAgent stub whose construction needs no live LM.
+
+    Only the ``arc`` surface the bind path touches is provided; the bind rebinds
+    ``_provider_config`` / ``_main_lm`` / ``_planner_lm`` / ``_dspy_adapter`` onto the
+    instance via ``rebind_lms``.
+    """
+
+    class _StubAgent(_RebindLMStub):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.arc = type(
+                "ARC",
+                (),
+                {
+                    "get_cache_stats": lambda self: {
+                        "hits": 0,
+                        "misses": 0,
+                        "hit_rate": 0.0,
+                        "capacity": 10,
+                    }
+                },
+            )()
+
+        def forward(self, *args: Any, **kwargs: Any) -> Any:
+            return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
+
+    return _StubAgent
+
+
+def _stub_lm_bind(monkeypatch) -> None:
+    """Stub the LM factories + ClioAgent + handshake so a PUT needs no network."""
+
+    monkeypatch.setattr("clio_agent.agent.ClioAgent", _make_stub_agent_cls())
+    monkeypatch.setattr(
+        "clio_agent.config.create_lm", lambda cfg: type("LM", (), {"history": []})()
+    )
+    monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda cfg: object())
+    monkeypatch.setattr("clio_agent.config.create_planner_lm", lambda cfg: object())
+
+    async def _no_handshake(ctx: Any, **kwargs: Any) -> Any:
+        # No network from a unit test; the bind catches this and keeps the static
+        # PROVIDER_DEFAULTS caps (the demoted bind never blocks on a handshake).
+        raise RuntimeError("handshake disabled in test")
+
+    monkeypatch.setattr("clio_agent.providers.handshake.run_handshake", _no_handshake)
+
+
+_REMOVED_BIND_ENV_KEYS = (
+    "CLIO_LM_PROVIDER",
+    "CLIO_LM_API_BASE",
+    "CLIO_LM_MODEL",
+    "CLIO_LM_API_KEY",
+    "CLIO_CODEX_TRANSPORT",
+    "CLIO_CLAUDE_CODE_TRANSPORT",
+)
+
+
+def test_concurrent_default_swaps_yield_one_consistent_snapshot(tmp_path: Path) -> None:
+    """Concurrent default-profile swaps converge on ONE internally-consistent
+    default snapshot — never a torn multi-key mix.
+
+    This is the concurrency-safety proof that replaces the reverted
+    ``lm_bind_lock``'s failing-first test (design §1/§5/§9 step 8). It hammers the
+    exact critical operation the demoted ``_apply_lm_provider`` performs — the RCU
+    pointer swap ``app.state.provider_profiles =
+    app.state.provider_profiles.with_default(spec)`` — from many threads racing on
+    a barrier, against the real per-app store on ``app.state``.
+
+    Because ``with_default`` builds a whole new immutable snapshot and the
+    assignment is a single atomic pointer store under the GIL, the losing writer is
+    fully overwritten (last-writer-wins): the surviving default's ``provider`` /
+    ``model`` / ``api_base`` all belong to the SAME provider, never a half-A/half-B
+    mix. This is precisely the guarantee the reverted ``app.state`` lock could not
+    give (it guarded the *wrong-scoped* process-global ``os.environ`` +
+    ``main_thread_config``); here there is no shared mutable global left to tear, so
+    no lock is needed. We also assert the swap touches no process-global env.
+
+    (Driven at the swap level rather than via two concurrent HTTP PUTs because
+    neither ``TestClient`` nor ``httpx.ASGITransport`` can service two concurrent
+    requests without interleaving their *bodies* — that tears the request, not the
+    store. The store swap here is the route's only shared-mutable-state write; the
+    resolved config/spec are per-call locals that never cross threads.)
+    """
+    import threading
+
+    from clio_agent.gact.providers.profile_store import ProviderProfileStore
+    from clio_agent.providers.lm_spec import LMSpec
+
+    for key in _REMOVED_BIND_ENV_KEYS:
+        os.environ.pop(key, None)
+    env_before = dict(os.environ)
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+
+    # One distinct whole spec per provider (the same immutable ``LMSpec`` shape
+    # ``spec_from_config`` yields in ``_apply_lm_provider``), each carrying a
+    # consistent provider/model/api_base triple.
+    specs = [
+        LMSpec(provider=f"prov{i}", model=f"model-{i}", api_base=f"http://{i}.example/v1")
+        for i in range(12)
+    ]
+    expected = {spec.provider: (spec.api_base, spec.model) for spec in specs}
+
+    barrier = threading.Barrier(len(specs))
+
+    def _swap(spec: LMSpec) -> None:
+        barrier.wait()  # maximise the race window
+        for _ in range(300):
+            store = app.state.provider_profiles
+            app.state.provider_profiles = store.with_default(spec)
+
+    threads = [threading.Thread(target=_swap, args=(spec,)) for spec in specs]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+        assert not thread.is_alive()
+
+    store = app.state.provider_profiles
+    assert isinstance(store, ProviderProfileStore)
+    default = store.default
+    # The surviving default is ONE whole provider's spec, never a torn mix.
+    assert default.provider in expected, default
+    assert (default.api_base, default.model) == expected[default.provider]
+
+    # The RCU swap never touched process-global env.
+    assert dict(os.environ) == env_before
+    for key in _REMOVED_BIND_ENV_KEYS:
+        assert key not in os.environ, key
+
+
+def test_single_provider_bind_reports_ready_from_store_default(tmp_path: Path, monkeypatch) -> None:
+    """Backward-compat: a single-provider bind + GET + /wait still report 'ready'
+    with the bound provider, and the read side reports the store default profile.
+    """
+    _stub_lm_bind(monkeypatch)
+    for key in _REMOVED_BIND_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        resp = c.put(
+            "/v1/providers/lm",
+            json={
+                "provider": "openai",
+                "api_base": "http://single.example/v1",
+                "model": "the-model",
+                "api_key": "key",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+
+        info = c.get("/v1/providers/lm").json()
+        assert info["configured"] is True
+        assert info["provider"] == "openai"
+        assert info["model"] == "the-model"
+        assert info["api_base"] == "http://single.example/v1"
+
+        waited = c.get("/v1/providers/lm/wait").json()
+        assert waited["state"] == "ready"
+        assert waited["provider"] == "openai"
+        assert waited["model"] == "the-model"
+
+    # The read side reports the default profile straight off the per-app store.
+    default = app.state.provider_profiles.default
+    assert default.provider == "openai"
+    assert default.model == "the-model"
+    assert default.api_base == "http://single.example/v1"
+
+    # And no env was stamped by the demoted bind.
+    for key in _REMOVED_BIND_ENV_KEYS:
+        assert key not in os.environ, key
