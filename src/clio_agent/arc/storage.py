@@ -336,12 +336,12 @@ def _runtime_launcher_path(iowarp_core: object) -> Optional[str]:
 def _detached_popen_kwargs() -> "dict[str, object]":
     """Popen kwargs that detach the daemon so it outlives the spawning process.
 
-    POSIX: a new session (``setsid``) → own session/group leader. Windows: a detached
-    process in a new process group so a Ctrl-C / parent exit does not propagate to it.
+    POSIX: ``setsid``. Windows: ``CREATE_NO_WINDOW`` in a new process group, NOT
+    ``DETACHED_PROCESS``: no console breaks the daemon's ZeroMQ Winsock init (#870).
     """
     if sys.platform.startswith("win"):
         flags = 0
-        flags |= getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+        flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
         flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
         return {"creationflags": flags, "close_fds": True}
     return {"start_new_session": True, "close_fds": True}
