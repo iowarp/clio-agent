@@ -267,9 +267,7 @@ class DemoResult:
         failed = [row for row in rows if row.get("ok") is False]
         resultful = [row for row in successful if _tool_row_has_result_evidence(row)]
         review_gaps = [
-            _tool_name(row)
-            for row in successful
-            if not _tool_row_has_result_evidence(row)
+            _tool_name(row) for row in successful if not _tool_row_has_result_evidence(row)
         ]
         return {
             "tool_rows": len(rows),
@@ -300,6 +298,16 @@ class DemoResult:
         """Return stream fallback metadata, if present."""
         row = (self.message.get("metadata") or {}).get("stream_fallback") or {}
         return row if isinstance(row, dict) else {}
+
+    @property
+    def turn_degradations(self) -> list[dict[str, Any]]:
+        """Return the unified turn-degradation payloads for the message (a LIST).
+
+        Unlike :attr:`stream_fallback` (a single-slot dict), the #736 unify ledger
+        is a LIST of typed content/config degradations drained onto the assistant
+        message at finalize; readers iterate it.
+        """
+        return (self.message.get("metadata") or {}).get("turn_degradations") or []
 
     @property
     def route_source(self) -> str:
@@ -394,7 +402,9 @@ class DemoResult:
     ) -> bool:
         """Return whether visible prose cites a different path for a verified artifact."""
 
-        visible_paths = _artifact_paths({"parts": [{"type": "text", "text": self.observed_excerpt_text}]})
+        visible_paths = _artifact_paths(
+            {"parts": [{"type": "text", "text": self.observed_excerpt_text}]}
+        )
         if not visible_paths:
             return False
         verified_by_name = {
@@ -407,9 +417,7 @@ class DemoResult:
             verified_path = verified_by_name.get(name)
             if not verified_path:
                 continue
-            if str(Path(visible_path).expanduser()) != str(
-                Path(verified_path).expanduser()
-            ):
+            if str(Path(visible_path).expanduser()) != str(Path(verified_path).expanduser()):
                 return True
         return False
 
@@ -488,10 +496,7 @@ class DemoResult:
             gaps.append("selected station id")
         if "http" not in visible_raw and "source url" not in visible:
             gaps.append("NDP source URL")
-        if not (
-            "distance" in visible
-            or re.search(r"\b\d+(?:\.\d+)?\s*km\b", visible_raw, re.I)
-        ):
+        if not ("distance" in visible or re.search(r"\b\d+(?:\.\d+)?\s*km\b", visible_raw, re.I)):
             gaps.append("station-region distance/provenance")
         if not any(
             term in visible
@@ -529,9 +534,7 @@ class DemoResult:
                 continue
             args = tool.get("args") if isinstance(tool.get("args"), dict) else {}
             result = tool.get("result") if isinstance(tool.get("result"), dict) else {}
-            coverage = (
-                result.get("search_coverage") if isinstance(result, dict) else {}
-            )
+            coverage = result.get("search_coverage") if isinstance(result, dict) else {}
             if not isinstance(coverage, dict):
                 coverage = {}
             resource_format = str(
@@ -540,12 +543,16 @@ class DemoResult:
             if resource_format.upper() != "CSV":
                 continue
             station_search = coverage.get("station_resource_search") is True
-            station = str(
-                coverage.get("station_code")
-                or coverage.get("resource_name")
-                or args.get("resource_name")
-                or ""
-            ).strip().upper()
+            station = (
+                str(
+                    coverage.get("station_code")
+                    or coverage.get("resource_name")
+                    or args.get("resource_name")
+                    or ""
+                )
+                .strip()
+                .upper()
+            )
             if not station or not station_search:
                 continue
             counts[station] = counts.get(station, 0) + 1
@@ -728,10 +735,7 @@ class DemoResult:
                 if isinstance(self.case.expected_agent, str)
                 else self.case.expected_agent
             )
-            if (
-                not self.case.agent_blueprint_id
-                and self.selected_agent not in expected_agents
-            ):
+            if not self.case.agent_blueprint_id and self.selected_agent not in expected_agents:
                 return False
         if self.case.agent_blueprint_id:
             if self.active_agent_blueprint_id != self.case.agent_blueprint_id:
@@ -921,18 +925,10 @@ class DemoResult:
         """Return compact semantic trace proof for machine-readable evidence rows."""
         event_types = [event_type for event_type in self.semantic_event_types if event_type]
         trace_ids = sorted(
-            {
-                str(row.get("trace_id") or "")
-                for row in self.semantic_events
-                if row.get("trace_id")
-            }
+            {str(row.get("trace_id") or "") for row in self.semantic_events if row.get("trace_id")}
         )
         turn_ids = sorted(
-            {
-                str(row.get("turn_id") or "")
-                for row in self.semantic_events
-                if row.get("turn_id")
-            }
+            {str(row.get("turn_id") or "") for row in self.semantic_events if row.get("turn_id")}
         )
         live_count = sum(1 for row in self.semantic_events if row.get("live_observed") is True)
         return {
@@ -942,7 +938,8 @@ class DemoResult:
             "unique_event_types": sorted(set(event_types)),
             "trace_ids": trace_ids,
             "turn_ids": turn_ids,
-            "has_live_trace": bool(self.semantic_events) and live_count == len(self.semantic_events),
+            "has_live_trace": bool(self.semantic_events)
+            and live_count == len(self.semantic_events),
             "invalid_tool_selection_count": len(self.invalid_tool_selections),
         }
 
@@ -953,9 +950,7 @@ def _message_text(message: dict[str, Any]) -> str:
 
 def _visible_message_text(message: dict[str, Any]) -> str:
     return "\n".join(
-        str(part.get("text", ""))
-        for part in message.get("parts", [])
-        if part.get("type") == "text"
+        str(part.get("text", "")) for part in message.get("parts", []) if part.get("type") == "text"
     )
 
 
@@ -1178,7 +1173,9 @@ def _semantic_handoffs(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
             {
                 "agent_id": agent_id,
                 "parent_id": parent_id,
-                "return_to": parent_id if stage in {"delegate.completed", "delegate.failed"} else "",
+                "return_to": parent_id
+                if stage in {"delegate.completed", "delegate.failed"}
+                else "",
                 "stage": stage,
                 "status": str(payload.get("status") or row.get("status") or ""),
                 "delegation_lifecycle": str(payload.get("delegation_lifecycle") or "sync"),
@@ -1247,8 +1244,7 @@ def _artifact_paths(message: dict[str, Any]) -> list[str]:
                 if "url" in key_text or key_text in {"resource_name", "resource"}:
                     continue
                 item_trusted = trusted or any(
-                    token in key_text
-                    for token in ("artifact", "output", "plot", "path", "file")
+                    token in key_text for token in ("artifact", "output", "plot", "path", "file")
                 )
                 if item_trusted:
                     paths.extend(_artifact_strings(item, trusted=True))
@@ -1294,10 +1290,7 @@ def _artifact_paths(message: dict[str, Any]) -> list[str]:
     seen_normalized: set[str] = set()
     for path in cleaned_candidates:
         basename = Path(path).name
-        if (
-            basename in existing_basenames
-            and not Path(path).expanduser().exists()
-        ):
+        if basename in existing_basenames and not Path(path).expanduser().exists():
             continue
         normalized = str(Path(path).expanduser())
         if normalized not in seen_normalized:
@@ -1312,10 +1305,7 @@ def _artifact_paths(message: dict[str, Any]) -> list[str]:
     }
     for path in metadata_input_candidates:
         basename = Path(path).name
-        if (
-            basename in existing_metadata_basenames
-            and not Path(path).expanduser().exists()
-        ):
+        if basename in existing_metadata_basenames and not Path(path).expanduser().exists():
             continue
         normalized = str(Path(path).expanduser())
         if normalized not in seen_normalized:
@@ -1355,10 +1345,7 @@ def _is_staged_metadata_input_path(path: str) -> bool:
     """Return whether a staged path is acquisition metadata, not a produced artifact."""
 
     candidate = Path(_clean_path_candidate(path))
-    return (
-        candidate.name == "earthscope_converted_data.csv"
-        and "ndp-staging" in candidate.parts
-    )
+    return candidate.name == "earthscope_converted_data.csv" and "ndp-staging" in candidate.parts
 
 
 def _path_like_strings(value: Any, *, ignored_keys: set[str] | None = None) -> list[str]:
@@ -1471,10 +1458,7 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     phi2 = math.radians(lat2)
     dphi = math.radians(lat2 - lat1)
     dlambda = math.radians(lon2 - lon1)
-    a = (
-        math.sin(dphi / 2) ** 2
-        + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
-    )
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
     return 2 * radius_km * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
@@ -1614,9 +1598,7 @@ def _route_metrics(result: DemoResult) -> dict[str, Any]:
     """Return aggregate routing/tool metrics for benchmark comparison."""
     graph = _route_graph(result)
     expert_nodes = [row for row in graph["nodes"] if row.get("type") == "expert"]
-    child_session_branch_edges = [
-        row for row in graph["edges"] if row.get("kind") == "branch"
-    ]
+    child_session_branch_edges = [row for row in graph["edges"] if row.get("kind") == "branch"]
     sync_handoff_pairs: set[tuple[str, str]] = set()
     for row in graph["edges"]:
         kind = row.get("kind")
@@ -1747,14 +1729,13 @@ def _case_observed_semantic_proofs(result: DemoResult) -> tuple[str, ...]:
         elif proof == "root_delegation":
             proof_observed = route_ok and result.route_metrics["expert_depth"] > 0
         elif proof == "nested_tier3":
-            proof_observed = bool(result.child_sessions) or result.route_metrics[
-                "expert_depth"
-            ] >= 3
-        elif proof == "sync_parent_return":
             proof_observed = (
-                result.route_metrics["sync_handoff_count"] > 0
-                and not _missing_sync_return_pairs(result)
+                bool(result.child_sessions) or result.route_metrics["expert_depth"] >= 3
             )
+        elif proof == "sync_parent_return":
+            proof_observed = result.route_metrics[
+                "sync_handoff_count"
+            ] > 0 and not _missing_sync_return_pairs(result)
         elif proof == "failure_recovery":
             proof_observed = (
                 any(name.startswith("ndp_") for name in result.tool_names)
@@ -1853,9 +1834,7 @@ def _enabled_mcp_execution_observed(result: DemoResult) -> bool:
         if isinstance(tool, str)
     }
     called_tools = {
-        str(action.get("tool") or "")
-        for action in call_actions
-        if str(action.get("tool") or "")
+        str(action.get("tool") or "") for action in call_actions if str(action.get("tool") or "")
     }
     trusted = any(
         isinstance(action.get("trust"), Mapping)
@@ -1900,9 +1879,7 @@ def _workspace_memory_scope_observed(result: DemoResult) -> bool:
         )
     evidence = result.expected_evidence_text.lower()
     return result.passed and (
-        "workspace_scope" in evidence
-        or "policy_decision" in evidence
-        or "memory_scope" in evidence
+        "workspace_scope" in evidence or "policy_decision" in evidence or "memory_scope" in evidence
     )
 
 
@@ -2921,7 +2898,10 @@ def _result_from_case_row(row: dict[str, Any]) -> DemoResult:
         "parts": [
             routing,
             {"type": "text", "text": str(row.get("answer_excerpt") or "")},
-            {"type": "text", "text": "\n".join(str(path) for path in row.get("artifacts", []) or [])},
+            {
+                "type": "text",
+                "text": "\n".join(str(path) for path in row.get("artifacts", []) or []),
+            },
         ],
         "metadata": {
             "tools_called": row.get("tools_called") or [],
@@ -4472,7 +4452,11 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             agent_blueprint_id="ndp-environmental-hazards",
             expected_agent=("main", "catalog", "geospatial", "visualization"),
             expected_tool_prefixes=("ndp_",),
-            expected_tools=("ndp_search_datasets", "ndp_get_dataset_details", "ndp_query_arcgis_features"),
+            expected_tools=(
+                "ndp_search_datasets",
+                "ndp_get_dataset_details",
+                "ndp_query_arcgis_features",
+            ),
             expected_handoff_agents=("catalog", "geospatial"),
             expected_terms=("USA Current Wildfires", "FeatureServer", "feature"),
             min_expert_depth=2,
@@ -4507,7 +4491,11 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             agent_blueprint_id="ndp-environmental-hazards",
             expected_agent=("main", "catalog", "geospatial", "visualization"),
             expected_tool_prefixes=("ndp_",),
-            expected_tools=("ndp_search_datasets", "ndp_get_dataset_details", "ndp_query_arcgis_features"),
+            expected_tools=(
+                "ndp_search_datasets",
+                "ndp_get_dataset_details",
+                "ndp_query_arcgis_features",
+            ),
             expected_handoff_agents=("geospatial",),
             expected_terms=("NWS", "warning", "FeatureServer"),
             min_expert_depth=2,
@@ -4515,7 +4503,14 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             min_artifacts=1,
             timeout_s=720.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
-            complexity_tags=("marketplace", "ndp", "weather", "warnings", "arcgis", "agent-blueprint"),
+            complexity_tags=(
+                "marketplace",
+                "ndp",
+                "weather",
+                "warnings",
+                "arcgis",
+                "agent-blueprint",
+            ),
             prompt=(
                 "Using the active NDP environmental hazards agent, search NDP for California "
                 "NWS watches and warnings, inspect the dataset details, query its ArcGIS "
@@ -5300,9 +5295,7 @@ def _semantic_regression_audit(results: list[DemoResult]) -> list[dict[str, Any]
 
     missing_declared = sorted(set(_SEMANTIC_REGRESSION_REQUIRED_PROOFS) - set(declared))
     missing_observed = sorted(
-        proof
-        for proof in _SEMANTIC_REGRESSION_REQUIRED_PROOFS
-        if not observed_by_proof.get(proof)
+        proof for proof in _SEMANTIC_REGRESSION_REQUIRED_PROOFS if not observed_by_proof.get(proof)
     )
     passing_results = [result for result in results if result.passed]
     missing_route_evidence = [
@@ -5350,8 +5343,7 @@ def _semantic_regression_audit(results: list[DemoResult]) -> list[dict[str, Any]
             "required": len(results),
             "passed": not forbidden,
             "details": [
-                f"{result.case.case_id}: route_source={result.route_source}"
-                for result in forbidden
+                f"{result.case.case_id}: route_source={result.route_source}" for result in forbidden
             ],
         },
         {
@@ -5425,9 +5417,9 @@ def _provider_lane_audit(results: list[DemoResult], lane: str) -> list[dict[str,
                 result.case.min_artifacts > 0
                 or result.passed
                 and (
-                ".png" in result.text.lower()
-                or any(path.lower().endswith(".png") for path in result.artifacts)
-                or result.route_metrics["artifact_count"] > 0
+                    ".png" in result.text.lower()
+                    or any(path.lower().endswith(".png") for path in result.artifacts)
+                    or result.route_metrics["artifact_count"] > 0
                 )
             )
         ]
@@ -5441,9 +5433,7 @@ def _provider_lane_audit(results: list[DemoResult], lane: str) -> list[dict[str,
             )
         ]
         missing_sync_return_evidence = [
-            result
-            for result in passing_results
-            if _missing_sync_return_pairs(result)
+            result for result in passing_results if _missing_sync_return_pairs(result)
         ]
         return [
             {
@@ -5681,13 +5671,9 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
     all_tools = sorted({tool for result in results for tool in result.tool_names if tool})
     all_files = sorted({path for result in results for path in result.data_files})
     tool_rows_total = sum(result.tool_result_evidence["tool_rows"] for result in results)
-    tool_success_total = sum(
-        result.tool_result_evidence["successful_rows"] for result in results
-    )
+    tool_success_total = sum(result.tool_result_evidence["successful_rows"] for result in results)
     tool_failed_total = sum(result.tool_result_evidence["failed_rows"] for result in results)
-    tool_resultful_total = sum(
-        result.tool_result_evidence["resultful_rows"] for result in results
-    )
+    tool_resultful_total = sum(result.tool_result_evidence["resultful_rows"] for result in results)
     tool_result_review_gaps = [
         (result.case.case_id, tool)
         for result in results
@@ -5696,7 +5682,9 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
     artifact_rows = [
         row for result in results for row in result.artifact_evidence if row.get("path")
     ]
-    verified_artifacts = [row for row in artifact_rows if row.get("exists") and row.get("size_bytes", 0) > 0]
+    verified_artifacts = [
+        row for row in artifact_rows if row.get("exists") and row.get("size_bytes", 0) > 0
+    ]
     session_logs = [result for result in results if result.session_messages]
     child_session_logs = sum(len(result.child_session_messages) for result in results)
     semantic_traced = [
@@ -5715,9 +5703,7 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
             for event_type in result.semantic_trace_summary["unique_event_types"]
         }
     )
-    invalid_tool_selections = [
-        row for result in results for row in result.invalid_tool_selections
-    ]
+    invalid_tool_selections = [row for result in results for row in result.invalid_tool_selections]
     invalid_tool_examples = sorted(
         {
             (
@@ -5802,10 +5788,7 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
                 "- Successful tool rows with result evidence: "
                 f"{tool_resultful_total}/{tool_success_total}"
             ),
-            (
-                "- Tool result evidence gaps needing trace review: "
-                f"{len(tool_result_review_gaps)}"
-            ),
+            (f"- Tool result evidence gaps needing trace review: {len(tool_result_review_gaps)}"),
             f"- Data/input files referenced: {len(all_files)}",
             f"- Artifacts verified on disk: {len(verified_artifacts)}/{len(artifact_rows)}",
             f"- Root session logs captured: {len(session_logs)}/{len(results)}",
@@ -5841,11 +5824,7 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
         ]
     )
     active_blueprints = sorted(
-        {
-            result.active_agent_blueprint_id
-            for result in results
-            if result.active_agent_blueprint_id
-        }
+        {result.active_agent_blueprint_id for result in results if result.active_agent_blueprint_id}
     )
     if active_blueprints:
         lines.append(f"- Active Agent Blueprints: {', '.join(active_blueprints)}")
@@ -5891,9 +5870,7 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
                 )
                 + " |"
             )
-        provider_details = [
-            detail for item in provider_audit for detail in item.get("details", [])
-        ]
+        provider_details = [detail for item in provider_audit for detail in item.get("details", [])]
         if provider_details:
             lines.extend(["", "Provider evidence details:", ""])
         lines.extend(f"- {detail}" for detail in provider_details)
@@ -5961,21 +5938,22 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
             f"carry result evidence; {evidence['failed_rows']} failed rows"
         )
         if evidence["review_gap_tools"]:
-            tool_result_text += (
-                "; review gaps: "
-                + ", ".join(str(tool) for tool in evidence["review_gap_tools"][:8])
+            tool_result_text += "; review gaps: " + ", ".join(
+                str(tool) for tool in evidence["review_gap_tools"][:8]
             )
         if evidence["failed_tools"]:
-            tool_result_text += (
-                "; failed tools: "
-                + ", ".join(str(tool) for tool in evidence["failed_tools"][:8])
+            tool_result_text += "; failed tools: " + ", ".join(
+                str(tool) for tool in evidence["failed_tools"][:8]
             )
         handoff_text = _handoff_summary(result) or "none"
         artifact_text = ", ".join(result.artifacts) or "none"
-        artifact_evidence_text = ", ".join(
-            f"{row['path']} ({'ok' if row.get('exists') and row.get('size_bytes', 0) > 0 else 'missing'}, {row.get('size_bytes', 0)} B)"
-            for row in result.artifact_evidence
-        ) or "none"
+        artifact_evidence_text = (
+            ", ".join(
+                f"{row['path']} ({'ok' if row.get('exists') and row.get('size_bytes', 0) > 0 else 'missing'}, {row.get('size_bytes', 0)} B)"
+                for row in result.artifact_evidence
+            )
+            or "none"
+        )
         action_text = ", ".join(
             f"{action.get('type')}={'ok' if action.get('ok') else 'failed'}"
             for action in result.actions

@@ -799,7 +799,9 @@ def test_ground_fabricated_local_artifact_path_rewrites_to_verified(tmp_path) ->
         "Plot (PNG): /home/x/.clio/artifacts/plots/P475_CI_LY_timeseries.png\n"
         "Source URL: https://ds2.datacollaboratory.org/raw_csv/P475.CI.LY_.20.csv"
     )
-    grounded = _ground_fabricated_local_artifact_paths(answer, state, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
+    grounded = _ground_fabricated_local_artifact_paths(
+        answer, state, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA
+    )
 
     # The fabricated PNG path (not on disk) is rewritten to the verified one.
     assert str(real_png) in grounded
@@ -828,7 +830,9 @@ def test_ground_fabricated_csv_path_ignores_metadata_catalog_for_substitution(tm
         },
     }
     answer = "Staged station CSV: /tmp/SAN_timeseries.csv"
-    grounded = _ground_fabricated_local_artifact_paths(answer, state, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
+    grounded = _ground_fabricated_local_artifact_paths(
+        answer, state, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA
+    )
 
     assert str(real_csv) in grounded
     assert "/tmp/SAN_timeseries.csv" not in grounded
@@ -841,7 +845,9 @@ def test_ground_fabricated_local_artifact_path_respects_missing_framing(tmp_path
     real_png.write_bytes(b"\x89PNG" + b"0" * 64)
     state = {"artifact": {"status": "ready", "path": str(real_png)}}
     answer = "No figure was produced; a PNG has not been staged at /tmp/expected/P475_plot.png yet."
-    grounded = _ground_fabricated_local_artifact_paths(answer, state, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
+    grounded = _ground_fabricated_local_artifact_paths(
+        answer, state, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA
+    )
 
     # An honestly-framed missing/expected path must not be rewritten.
     assert grounded == answer
@@ -852,7 +858,8 @@ def test_ground_fabricated_local_artifact_path_no_verified_neutralizes() -> None
     # local artifact path must be neutralized rather than presented as real.
     answer = "Plot (PNG): /home/x/.clio/artifacts/plots/SAN_timeseries.png"
     grounded = _ground_fabricated_local_artifact_paths(
-        answer, {"acquisition": {"status": "blocked"}},
+        answer,
+        {"acquisition": {"status": "blocked"}},
         schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
 
@@ -878,7 +885,9 @@ def test_ground_fabricated_local_artifact_path_collapses_doubled_prefix(tmp_path
         "acquisition": {"local_path": real_s},
         "catalog": {"metadata_path": str(staging / "catalog.csv")},
     }
-    grounded = _ground_fabricated_local_artifact_paths(f"Staged CSV: {doubled}.", state, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
+    grounded = _ground_fabricated_local_artifact_paths(
+        f"Staged CSV: {doubled}.", state, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA
+    )
     assert real_s in grounded
     assert doubled not in grounded
 
@@ -890,7 +899,8 @@ def test_ground_fabricated_local_artifact_path_keeps_honest_blocked_prose() -> N
         "written to /tmp/expected/figure.png once a station CSV is staged."
     )
     grounded = _ground_fabricated_local_artifact_paths(
-        answer, {"acquisition": {"status": "blocked"}},
+        answer,
+        {"acquisition": {"status": "blocked"}},
         schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
 
@@ -1092,25 +1102,52 @@ def test_skipped_delegated_handoff_does_not_execute_even_with_delegate_target() 
     )
 
 
-def test_latest_final_child_output_prefers_synthesis_summary() -> None:
-    output = _latest_final_child_output_summary(
-        [
-            {
-                "agent_id": "visualization",
-                "stage": "delegate.completed",
-                "status": "completed",
-                "output": "PNG artifact: /workspace/plot.png",
-            },
-            {
-                "agent_id": "synthesis",
-                "stage": "delegate.completed",
-                "status": "completed",
-                "output": "Final synthesized answer with cited data and caveats.",
-            },
-        ]
+def test_latest_final_child_output_keys_on_declarative_flag() -> None:
+    """(#736/principle-1) The terminal-child fallback selects by the DECLARATIVE
+    ``final_responder`` ids the caller resolves, NOT by child NAMES. A child literally
+    named ``synthesis`` that is NOT flagged is ignored; the flagged child (any name) is
+    chosen — the former ``("synthesis","final","report","summary")`` name tuple is gone."""
+
+    rows = [
+        {
+            "agent_id": "synthesis",
+            "stage": "delegate.completed",
+            "status": "completed",
+            "output": "name-matched synthesis output (must NOT be chosen)",
+        },
+        {
+            "agent_id": "narrator",
+            "stage": "delegate.completed",
+            "status": "completed",
+            "output": "the declared final responder's answer",
+        },
+    ]
+
+    assert (
+        _latest_final_child_output_summary(rows, {"narrator"})
+        == "the declared final responder's answer"
     )
 
-    assert output == "Final synthesized answer with cited data and caveats."
+
+def test_latest_final_child_output_no_declared_responder_declines() -> None:
+    """(#736/principle-1, no-silent-fallback) When the pack declares NO final responder
+    (``final_ids`` empty) there is no structural terminal child. Rather than silently
+    name-matching a child that merely LOOKS like a summariser, the selector returns "" —
+    an explicit decline. A child literally named ``synthesis`` is NOT auto-picked; the
+    caller owns the generic ordering fallback."""
+
+    rows = [
+        {
+            "agent_id": "synthesis",
+            "stage": "delegate.completed",
+            "status": "completed",
+            "output": "name-matched output the OLD tuple would have returned",
+        },
+    ]
+
+    assert _latest_final_child_output_summary(rows, frozenset()) == ""
+    # Default arg (no final_ids at all) declines identically.
+    assert _latest_final_child_output_summary(rows) == ""
 
 
 def test_blueprint_compiler_selects_declared_dspy_module_kind(
@@ -1480,7 +1517,12 @@ def test_failed_child_delegation_state_rides_structured_row() -> None:
     assert state["delegation"]["failed_child"] == "earthscope_station_catalog"
     # The parent reads this structured field via _workflow_state_from_handoff_rows.
     failed_row = {"stage": "delegate.failed", "workflow_state": state}
-    assert _workflow_state_from_handoff_rows([failed_row], schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)["delegation"]["status"] == "failed"
+    assert (
+        _workflow_state_from_handoff_rows([failed_row], schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)[
+            "delegation"
+        ]["status"]
+        == "failed"
+    )
 
 
 def test_completed_child_state_is_structural_not_prose_in_continuation() -> None:
@@ -1512,11 +1554,15 @@ def test_completed_child_state_is_structural_not_prose_in_continuation() -> None
     # (a) No prose state block in the user-/parent-facing output text.
     assert "typed workflow state" not in output.casefold()
     assert "CLIO" not in output
-    assert _workflow_state_from_outputs([clean_answer], schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA) == {}
+    assert (
+        _workflow_state_from_outputs([clean_answer], schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA) == {}
+    )
 
     # (b1) The structural carrier (the row's workflow_state field) holds the state,
     # readable by the parent's handoff-row reader.
-    recovered = _workflow_state_from_handoff_rows([completed_row], schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
+    recovered = _workflow_state_from_handoff_rows(
+        [completed_row], schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA
+    )
     assert recovered["acquisition"]["status"] == "staged"
     assert recovered["station_catalog"]["station_ids"] == ["P472", "SIO5"]
 
@@ -1543,11 +1589,18 @@ def test_session_workflow_state_context_injects_ledger_state_structurally() -> N
     ]
     app = SimpleNamespace(state=SimpleNamespace(tool_call_ledger={"sess-1": ledger_rows}))
 
-    enriched = _append_session_workflow_state_context(app, "sess-1", "find more stations", schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
+    enriched = _append_session_workflow_state_context(
+        app, "sess-1", "find more stations", schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA
+    )
 
     assert "find more stations" in enriched
     assert '"status": "staged"' in enriched
-    assert _workflow_state_from_outputs([enriched], schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)["acquisition"]["status"] == "staged"
+    assert (
+        _workflow_state_from_outputs([enriched], schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)[
+            "acquisition"
+        ]["status"]
+        == "staged"
+    )
 
 
 def test_nested_handoff_tool_calls_preserve_child_result_evidence() -> None:
@@ -2332,8 +2385,18 @@ def test_prediction_workflow_state_accepts_json_string_and_wrapped_mapping() -> 
     )
     assert from_wrapped["artifact"]["status"] == "ready"
 
-    assert _prediction_workflow_state(SimpleNamespace(workflow_state=""), schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA) == {}
-    assert _prediction_workflow_state(SimpleNamespace(workflow_state=None), schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA) == {}
+    assert (
+        _prediction_workflow_state(
+            SimpleNamespace(workflow_state=""), schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA
+        )
+        == {}
+    )
+    assert (
+        _prediction_workflow_state(
+            SimpleNamespace(workflow_state=None), schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA
+        )
+        == {}
+    )
 
 
 def test_fallback_answer_from_delegation_uses_latest_completed_parent_resume() -> None:

@@ -46,6 +46,7 @@ from clio_agent.gact.agents.composition import (
     _runtime_active_workspace_context,
     _runtime_dynamic_agent_children_context,
 )
+from clio_agent.gact.agents.migration_signals import check_final_responder_migration
 from clio_agent.gact.agents.resolution import (
     _active_workflow_state_schema,
     _runtime_child_agent_rows,
@@ -72,6 +73,7 @@ from clio_agent.gact.runtime.globals import (
 from clio_agent.gact.runtime.type_parsing import (
     _blueprint_module_kind,
     _parse_field_annotation,
+    _structured_output_enabled,
 )
 from clio_agent.gact.workflow_state.merge import _merge_workflow_state_mapping
 from clio_agent.runtime import trace
@@ -1080,13 +1082,6 @@ def _blueprint_runtime_signature(agent_def: "AgentDef", *, app: Any = None) -> A
         agent_def.structured_outputs if isinstance(agent_def.structured_outputs, Mapping) else {}
     )
 
-    def _structured_output_enabled(value: Any) -> bool:
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            return value.strip().lower() not in {"false", "0", "no", "off", "disabled"}
-        return value is not False
-
     # CLEAN CONTRACT: workflow_state is the ONE load-bearing structured output --
     # a TYPED dict the adapter forces the model to emit, and the channel the
     # agent->agent handoff actually travels on (carried STRUCTURALLY on every
@@ -1661,6 +1656,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 self.program._clio_expert_id = agent_def.id
             agent_prompt = agent_def.system_prompt.strip() or agent_def.description
             active_app = _ctx.active_app()
+            check_final_responder_migration(active_app, _ctx.active_session_id(), agent_def)
             # Always call it (do not short-circuit on active_app is None): the streamed
             # forward falls back to the sync _run_blueprint_dspy_agent build, which has
             # the session but NOT _ACTIVE_GACT_APP -- the function returns the cached
@@ -1794,9 +1790,13 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 if isinstance(self.agent_def.structured_outputs, Mapping)
                 else {}
             )
-            _answer_stream_visible = _agent_id_for_stream == "synthesis" or not bool(
-                _structured_outputs.get("workflow_state")
-            )
+            # DECLARATIVE flags via the shared truthiness helper (#736/C): a quoted
+            # author error (final_responder/workflow_state: "no"/"false") must NOT flip
+            # the gate — bool("no") is True. ``or False`` coalesces the off-by-default
+            # falsy values (absent/None/""/0) so only a real truthy value reaches it.
+            _answer_stream_visible = _structured_output_enabled(
+                _structured_outputs.get("final_responder") or False
+            ) or not _structured_output_enabled(_structured_outputs.get("workflow_state") or False)
             _visible_answer_token = _ctx.set_visible_answer_stream(_answer_stream_visible)
             if trace.HF_ON:
                 _ck_sp = kwargs.get("system_prompt", "")

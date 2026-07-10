@@ -50,7 +50,7 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/gact/agents/builders.py": 2209,
     "src/clio_agent/gact/agents/resolution.py": 803,
     "src/clio_agent/gact/app.py": 2527,
-    "src/clio_agent/gact/delegation.py": 960,
+    "src/clio_agent/gact/delegation.py": 958,
     "src/clio_agent/gact/routes/agents.py": 921,
     "src/clio_agent/gact/routes/blueprints.py": 859,
     "src/clio_agent/gact/routes/catalog.py": 880,
@@ -62,8 +62,8 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/gact/tool_observer.py": 946,
     "src/clio_agent/gact/transcript.py": 996,
     "src/clio_agent/gact/turn.py": 816,
-    "src/clio_agent/gact/turn_delegation.py": 1014,
-    "src/clio_agent/gact/turn_finalize.py": 966,
+    "src/clio_agent/gact/turn_delegation.py": 915,
+    "src/clio_agent/gact/turn_finalize.py": 938,
     "src/clio_agent/gact/types.py": 1143,
     "src/clio_agent/providers/claude_code_litellm.py": 1176,
     "src/clio_agent/runtime/status.py": 1222,
@@ -149,9 +149,7 @@ def check_file_size(
         if count > recorded:
             failures.append(Failure(rel, count, "regressed", recorded))
         elif count < recorded:
-            ratchet_downs.append(
-                RatchetDown(rel, count, recorded, under_cap=count <= max_lines)
-            )
+            ratchet_downs.append(RatchetDown(rel, count, recorded, under_cap=count <= max_lines))
     return Result(failures=failures, ratchet_downs=ratchet_downs)
 
 
@@ -183,10 +181,7 @@ def _print_report(result: Result, max_lines: int) -> None:
         if entry.kind == "new":
             print(f"  {entry.rel}:{entry.count} (new file exceeds cap {entry.limit})")
         else:
-            print(
-                f"  {entry.rel}:{entry.count} (regressed past recorded "
-                f"baseline {entry.limit})"
-            )
+            print(f"  {entry.rel}:{entry.count} (regressed past recorded baseline {entry.limit})")
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -167,6 +167,39 @@ No provider overrides.
     assert row.transport == ""
 
 
+def test_final_responder_parsed_into_structured_outputs(tmp_path: Path) -> None:
+    """``final_responder`` parses into AgentDef.structured_outputs as declarative
+    DATA and does NOT leak into the built signature's output fields (#736)."""
+
+    from clio_agent.gact.agents.builders import _blueprint_runtime_signature
+
+    path = tmp_path / "synthesis.md"
+    path.write_text(
+        """---
+id: synthesis
+title: Synthesis
+parent_id: main
+tier: 2
+module:
+  kind: chain_of_thought
+structured_outputs:
+  workflow_state: true
+  final_responder: true
+---
+Write the user-facing answer.
+""",
+        encoding="utf-8",
+    )
+
+    row = parse_expert_file(path, scope="workspace")
+
+    assert row.structured_outputs.get("final_responder") is True
+    assert row.structured_outputs.get("workflow_state") is True
+    # The flag is an inert declarative key: never a built signature output field.
+    signature = _blueprint_runtime_signature(row)
+    assert "final_responder" not in signature.output_fields
+
+
 def test_agent_def_provider_identity_fields_default_empty() -> None:
     """A bare AgentDef defaults the new provider-identity fields to '' (backward-compat)."""
 
@@ -267,7 +300,9 @@ def test_delegated_expert_public_prompt_excludes_parent_evidence_and_state() -> 
     )
 
     execution_prompt = _delegated_expert_prompt(row, fallback)
-    public_prompt = _delegated_expert_public_prompt(row, fallback, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
+    public_prompt = _delegated_expert_public_prompt(
+        row, fallback, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA
+    )
 
     assert "Parent evidence available for this delegated task" in execution_prompt
     assert "workflow_state" in execution_prompt

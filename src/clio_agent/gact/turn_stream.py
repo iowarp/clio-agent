@@ -135,8 +135,12 @@ async def emit_chunk(
         # the child's mid-word (e.g. parent paraphrases after "Los An|geles"),
         # we'd drop "Los An" and emit "geles" — a corrupted mid-word fragment
         # that also gets stored and breaks reload. Emitting the chunk instead
-        # keeps the text intact (any true full-line duplication is deduped by
-        # the client's dedupeRepeatedText).
+        # keeps the text intact. This suppressor (suppressed_parent_resume_offsets)
+        # is now the SOLE remaining server-side de-duplication compensation: it
+        # covers a streaming (non-workflow_state) orchestrator restating a
+        # resumed child's evidence. The client-side dedupeRepeatedText it once
+        # deferred to has been retired (gact-tui 8243eb63); #736 removed the
+        # post-TERMINAL parent resume, but intermediate resumes still reach here.
         chunk_ends_word = (not after) or after[:1].isspace() or text[-1:].isspace()
         if resume_output[offset:].startswith(text) and chunk_ends_word:
             state.suppressed_parent_resume_offsets[chunk_agent] = offset + len(text)

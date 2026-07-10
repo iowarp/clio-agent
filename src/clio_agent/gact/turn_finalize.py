@@ -48,7 +48,6 @@ from clio_agent.gact.agents.resolution import (
     _runtime_active_agent_blueprint_id,
 )
 from clio_agent.gact.delegation import (
-    _fallback_answer_from_delegation,
     _looks_like_structured_answer,
     _workflow_state_from_handoff_rows,
 )
@@ -79,6 +78,10 @@ from clio_agent.gact.tool_observer import (
     _sanitize_handoff_tool_metadata,
     _sanitize_tools_called_metadata,
 )
+from clio_agent.gact.turn_degradation import (
+    assemble_stream_and_degradation_metadata,
+    substitute_answer_from_delegation_evidence,
+)
 from clio_agent.gact.turn_nanoagents import spawn_nanoagents
 from clio_agent.gact.turn_stream import settle_turn_transcript
 from clio_agent.gact.types import (
@@ -88,7 +91,7 @@ from clio_agent.gact.types import (
     Tokens,
     UserQuestion,
 )
-from clio_agent.gact.usage import _reasoning_records_from_history_slice
+from clio_agent.gact.usage import capture_reasoning_log
 from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
@@ -99,19 +102,6 @@ if TYPE_CHECKING:
     from clio_agent.gact.turn_state import TurnState
 
 logger = logging.getLogger(__name__)
-
-
-def _capture_reasoning_enabled() -> bool:
-    """Whether finalize persists per-call reasoning onto assistant metadata.
-
-    ``runtime.capture_reasoning`` / ``CLIO_CAPTURE_REASONING`` (default on);
-    set to 0 to avoid the metadata growth.
-    """
-    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
-
-    return conf.resolve(
-        "runtime.capture_reasoning", env="CLIO_CAPTURE_REASONING", default=True, cast=conf.as_bool
-    )
 
 
 def maybe_pause_for_user(
@@ -264,7 +254,7 @@ def finalize_turn(
     )
 
     if state.error_info is None and not state.answer_text and state.expert_handoffs:
-        state.answer_text = _fallback_answer_from_delegation(state.expert_handoffs)
+        state.answer_text = substitute_answer_from_delegation_evidence(state)
 
     # Final user-facing text only: correct any fabricated local artifact path the
     # answer presents as produced — whether the synthesizing expert composed a
@@ -276,9 +266,7 @@ def finalize_turn(
     if state.answer_text and state.expert_handoffs:
         state.answer_text = _ground_fabricated_local_artifact_paths(
             state.answer_text,
-            _workflow_state_from_handoff_rows(
-                state.expert_handoffs, schema=state.workflow_schema
-            ),
+            _workflow_state_from_handoff_rows(state.expert_handoffs, schema=state.workflow_schema),
             schema=state.workflow_schema,
         )
 
@@ -405,7 +393,9 @@ def finalize_turn(
     # live-vs-batch stream provenance below is unchanged; the canonical
     # answer channel was taken above, while its part could still be open.
     state.transcript.close_open_text()
-    if state.thinking_text and not state.transcript.has_closed_text(responder_agent_id, "reasoning"):
+    if state.thinking_text and not state.transcript.has_closed_text(
+        responder_agent_id, "reasoning"
+    ):
         state.transcript.append_part(
             Part(
                 id=_new_part_id(),
@@ -508,24 +498,16 @@ def finalize_turn(
             "effective_agent_id": state.selected_agent or state.turn_agent_id,
             "scope": "turn",
         }
-    # ``current_stream_part_id`` (captured BEFORE the finalize appends above)
-    # keeps the legacy semantic: a text part opened since the last mid-turn
-    # runtime boundary marks the turn's text as live-streamed even after it
-    # closed. Per-part ``stream_source`` is no longer restamped here — every
-    # part carries the provenance its producer appended it with (#767 PR3:
-    # finalize never rewrites the ledger).
-    should_report_stream_provenance = (
-        bool(state.answer_text) or state.error_info is not None or has_live_parts
+    # Stamp stream provenance (verbatim behaviour) AND drain the unified
+    # turn-degradation ledger onto ``.metadata.turn_degradations`` — the single
+    # reader of that ledger (see turn_degradation.py; delete its drain and the
+    # ledger becomes write-only again).
+    assemble_stream_and_degradation_metadata(
+        state,
+        stream_fallback=stream_fallback,
+        current_stream_part_id=current_stream_part_id,
+        has_live_parts=has_live_parts,
     )
-    text_stream_source = ""
-    if bool(state.answer_text) or state.error_info is not None:
-        text_stream_source = "live" if current_stream_part_id is not None else "batch"
-    elif has_live_parts:
-        text_stream_source = "live"
-    if should_report_stream_provenance and text_stream_source:
-        state.assistant_metadata["stream_source"] = text_stream_source
-    if text_stream_source == "batch" and (bool(state.answer_text) or state.error_info is not None):
-        state.assistant_metadata["stream_fallback"] = stream_fallback
     # A live observer completion can arrive after the immediate post-forward drain
     # but before the assistant message is persisted. Reconcile once more at the
     # final metadata boundary so reloads retain the same tool facts as the live bus.
@@ -548,28 +530,10 @@ def finalize_turn(
         state.assistant_metadata["agent_runtime"] = state.agent_runtime
     if state.prompt_resolution:
         state.assistant_metadata["prompt_resolution"] = state.prompt_resolution
-    # Reasoning capture: log the chain-of-thought tokens for EVERY LM call this
-    # turn (planner + each expert + chat), extracted from dspy.lm.history. Most
-    # stacks discard reasoning_content; we persist (question, reasoning, response)
-    # on the assistant message metadata because the reasoning has scientific
-    # value for analysing how the model reached its answer. Gated by
-    # CLIO_CAPTURE_REASONING (default on); set to 0 to avoid the metadata growth.
-    if _capture_reasoning_enabled():
-        try:
-            _reasoning_log = _reasoning_records_from_history_slice(state.history_start, state.app)
-        except Exception:  # noqa: BLE001 - reasoning capture is best-effort, never fail a turn
-            _reasoning_log = []
-        if _reasoning_log:
-            state.assistant_metadata["reasoning_log"] = _reasoning_log
-            trace.event(
-                "REASONING",
-                "captured %d call(s): %s",
-                len(_reasoning_log),
-                "; ".join(
-                    f"{(r['model'] or '?').split('/')[-1]}={r['reasoning_chars']}c"
-                    for r in _reasoning_log
-                ),
-            )
+    # Reasoning capture: persist per-call chain-of-thought onto the assistant
+    # message metadata (owner: usage.capture_reasoning_log). Best-effort, gated
+    # by CLIO_CAPTURE_REASONING; mutates state.assistant_metadata in place.
+    capture_reasoning_log(state)
     # iowarp/clio-agent#6: the transcript is the sole minter of the assistant
     # message id — reuse it when a producer already minted it (stream tap /
     # tool observer / the finalize appends above); a turn with no parts at
@@ -593,7 +557,9 @@ def finalize_turn(
         parts=assistant_parts,
         tokens=Tokens(**state.turn_tokens),
         cost_usd=state.turn_cost,
-        stop_reason="cancelled" if state.cancelled_turn else ("error" if state.error_info else "end_turn"),
+        stop_reason="cancelled"
+        if state.cancelled_turn
+        else ("error" if state.error_info else "end_turn"),
         error_info=state.error_info,
         metadata=state.assistant_metadata,
     )
@@ -688,8 +654,12 @@ def finalize_turn(
     )
 
     # Persist + settle.
-    final_status = "cancelled" if state.cancelled_turn else ("error" if state.error_info else "idle")
-    retry_status = "cancelled" if state.cancelled_turn else ("failed" if state.error_info else "completed")
+    final_status = (
+        "cancelled" if state.cancelled_turn else ("error" if state.error_info else "idle")
+    )
+    retry_status = (
+        "cancelled" if state.cancelled_turn else ("failed" if state.error_info else "completed")
+    )
     _append_session_message(state.app, state.sid, assistant_msg)
     # #767 PR3: the ledger is already frozen by transcript.finalize(); settle
     # retires it from the registry so a late producer op is rejected +
@@ -718,7 +688,9 @@ def finalize_turn(
     if state.cancelled_turn and state.error_info is not None:
         cancellation_status = {
             "execution_cancellation": state.error_info.details.get("execution_cancellation"),
-            "executor_work_may_continue": state.error_info.details.get("executor_work_may_continue"),
+            "executor_work_may_continue": state.error_info.details.get(
+                "executor_work_may_continue"
+            ),
             "cancellation_attempt": state.error_info.details.get("cancellation_attempt", {}),
         }
     state.bus.publish(

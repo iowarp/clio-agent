@@ -285,13 +285,13 @@ def _latest_completed_child_output_summary(
     return latest
 
 
-def _latest_final_child_output_summary(rows: list[dict[str, Any]]) -> str:
-    """Return completed synthesis/final-report output when a parent finalizes poorly."""
-
-    return _latest_completed_child_output_summary(
-        rows,
-        ("synthesis", "final", "final_report", "report", "summary"),
-    )
+def _latest_final_child_output_summary(
+    rows: list[dict[str, Any]], final_ids: Iterable[str] = ()
+) -> str:
+    """Latest completed DECLARATIVELY-flagged final-responder child output (``final_ids``
+    via ``final_responder_ids``, never child NAMES — principle #1); ``""`` if none flagged."""
+    ids = {str(c).strip() for c in final_ids if str(c).strip()}
+    return _latest_completed_child_output_summary(rows, ids) if ids else ""
 
 
 def _bubbled_child_evidence_output_summary(
@@ -820,9 +820,7 @@ def _failed_child_delegation_workflow_state(
         "error": error,
         "message": message,
     }
-    schema.apply_failure_rules(
-        state, child_agent_id=child_agent_id, error=error, message=message
-    )
+    schema.apply_failure_rules(state, child_agent_id=child_agent_id, error=error, message=message)
     return state
 
 
