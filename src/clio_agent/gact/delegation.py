@@ -31,7 +31,6 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterable, Iterator, Mapping
-from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.runtime.globals import _jsonish
@@ -523,191 +522,65 @@ def _delegated_expert_prompt(row: Mapping[str, Any], fallback: str) -> str:
     return fallback
 
 
-def _delegated_expert_public_prompt(
-    row: Mapping[str, Any], fallback: str, *, schema: "WorkflowStateSchema"
-) -> str:
+# The server's OWN marker constants: the fixed strings that
+# ``_delegated_expert_prompt`` / ``_append_accumulated_workflow_state_context`` /
+# ``_dynamic_parent_resume_prompt`` APPEND when they compose a child execution
+# prompt by JOINING the public task with server-supplied execution context.
+# Splitting a SERVER-COMPOSED prompt back at the SERVER's OWN constant recovers
+# the public-task half — structural string handling of a string clio authored,
+# split at a boundary clio authored — never a heuristic match against arbitrary
+# model prose (superseding principle #1). See #881.
+_SERVER_APPENDED_CONTEXT_MARKERS: tuple[str, ...] = (
+    "Parent evidence available for this delegated task:",
+    "Accumulated typed workflow state from prior CLIO tool evidence",
+    "Authoritative typed workflow_state accumulated from the completed",
+)
+
+
+def _public_task_from_composed_prompt(prompt: str) -> str:
+    """Recover the public task half of a SERVER-composed child prompt.
+
+    :func:`_delegated_expert_prompt` and
+    :func:`_append_accumulated_workflow_state_context` build a child prompt by
+    joining the public task with server-appended execution context (parent
+    evidence, the accumulated ``{"workflow_state": ...}`` block) at the fixed
+    marker constants in :data:`_SERVER_APPENDED_CONTEXT_MARKERS`. Because the
+    server authored both the join and the markers, splitting the composed string
+    back at those owned constants is structural — it recovers the public task
+    without ever matching a keyword against model prose.
+    """
+
+    public = prompt.strip()
+    for marker in _SERVER_APPENDED_CONTEXT_MARKERS:
+        index = public.find(marker)
+        if index >= 0:
+            public = public[:index].rstrip()
+    json_index = public.find('{"workflow_state"')
+    if json_index >= 0:
+        public = public[:json_index].rstrip()
+    return public.strip()
+
+
+def _delegated_expert_public_prompt(row: Mapping[str, Any], fallback: str) -> str:
     """Return the public task text for an agent-call transcript event.
 
-    This is intentionally narrower than :func:`_delegated_expert_prompt`: child
-    execution may need parent evidence and typed workflow state, but the GACT
-    transcript action prompt is the task shown under ``call(agent)``. Execution
-    context must travel privately in the child prompt or structurally in state
-    events, not as public transcript prose.
+    The parent model's own instruction —
+    ``row['question' | 'input' | 'prompt' | 'request']`` — is MODEL OUTPUT and is
+    returned VERBATIM. The server no longer scrubs contract vocabulary out of it:
+    epic #880's rule is that the client renders verbatim and the server fixes
+    leaks at the root, so a sentence in which the model happens to name a typed
+    field is the model's own text and stays intact.
+
+    Only the ``fallback`` may be a prompt the SERVER itself composed by appending
+    execution context, so it is split back at the server's owned marker constants
+    to recover the public task (see :func:`_public_task_from_composed_prompt`).
     """
 
     for key in ("question", "input", "prompt", "request"):
         value = str(row.get(key) or "").strip()
         if value:
-            return _clean_public_delegation_prompt(value, schema=schema)
-    return _clean_public_delegation_prompt(fallback, schema=schema)
-
-
-@lru_cache(maxsize=None)
-def _scrub_alternation(members: tuple[str, ...]) -> str:
-    """Return a longest-first, regex-escaped alternation of the alias members.
-
-    Longest-first ordering keeps a longer member (``datasets``) from being
-    pre-empted by a prefix member (``dataset``) so the trailing ``\\.field``
-    continuation still matches. An empty tuple yields a never-match sentinel so a
-    schema that declares no scrub aliases (the generic default) strips nothing.
-    """
-
-    if not members:
-        return "(?!)"
-    ordered = sorted(dict.fromkeys(members), key=lambda member: (-len(member), member))
-    return "|".join(re.escape(member) for member in ordered)
-
-
-def _clean_public_delegation_prompt(text: str, *, schema: "WorkflowStateSchema") -> str:
-    """Strip CLIO execution contract context from a public agent-call prompt.
-
-    The domain half of the scrub vocabulary (section paths, field names, trailing
-    orphan sections) is declared by the pack ``schema``; the CLIO-carrier half
-    (``workflow[_ ]state`` / ``structured state`` / the ``{"workflow_state"`` JSON
-    block) stays in core.
-    """
-
-    public = text.strip()
-    for marker in (
-        "Parent evidence available for this delegated task:",
-        "Accumulated typed workflow state from prior CLIO tool evidence",
-        "Authoritative typed workflow_state accumulated from the completed",
-    ):
-        index = public.find(marker)
-        if index >= 0:
-            public = public[:index].rstrip()
-
-    json_index = public.find('{"workflow_state"')
-    if json_index >= 0:
-        public = public[:json_index].rstrip()
-
-    sections_alternation = _scrub_alternation(schema.aliases.sections)
-    orphan_alternation = _scrub_alternation(schema.aliases.orphan_sections)
-    fields_alternation = _scrub_alternation(schema.aliases.fields)
-    state_path = rf"(?:{sections_alternation})\.[A-Za-z0-9_]+"
-    state_field = rf"(?:{fields_alternation}|workflow[_ ]state|structured state)"
-    public = re.sub(
-        rf"(?is)\s*\(\d+\)\s*[^.;\n]*\b(?:{state_path}|{state_field})\b[^.;\n]*(?:[.;]|$)",
-        " ",
-        public,
-    )
-    public = re.sub(
-        rf"(?is)\s+using\b[^.?!\n]*\b(?:{state_path}|{state_field})\b[^.?!\n]*(?=[.?!]|$)",
-        "",
-        public,
-    )
-    public = re.sub(
-        rf"(?is)(^|[.!?]\s+)Until\b[^.\n]*?\b{state_path}\b[^.\n]*?\bworkflow\s+state\b,\s*[^.?!\n]*(?:[.?!]|$)",
-        lambda match: match.group(1) if match.group(1).strip() else "",
-        public,
-    )
-    public = re.sub(
-        rf"(?is)\s*,?\s*\b(?:which|that)\s+[^.?!\n]*\b{state_path}\b[^.?!\n]*(?:\bworkflow[_ ]state\b[^.?!\n]*)?",
-        "",
-        public,
-    )
-
-    # Public call prompts should describe the work, not the private CLIO output
-    # carrier. Keep the rest of the task while removing the contract sentence.
-    public = re.sub(
-        r"(?is)(^|[.!?]\s+)[^.?!\n]*\bworkflow_state\b[^.?!\n]*(?:[.?!]|$)",
-        lambda match: match.group(1) if match.group(1).strip() else "",
-        public,
-    )
-    state_field_sentence_pattern = re.compile(
-        rf"(?is)(^|[.!?]\s+)[^.?!\n]*\b{state_path}\b[^.?!\n]*(?:[.?!]|$)"
-    )
-    while True:
-        cleaned = state_field_sentence_pattern.sub(
-            lambda match: match.group(1) if match.group(1).strip() else "",
-            public,
-        )
-        if cleaned == public:
-            break
-        public = cleaned
-    public = re.sub(
-        rf"(?is)\s*\([^()\n]*\b{state_path}\b[^()\n]*\)",
-        "",
-        public,
-    )
-    public = re.sub(
-        r"(?is)(^|[.!?]\s+)[^.?!\n]*\bworkflow\s+state\b[^.?!\n]*(?:[.?!]|$)",
-        lambda match: match.group(1) if match.group(1).strip() else "",
-        public,
-    )
-    public = re.sub(
-        rf"(?is)([.!?])\s+\b(?:{orphan_alternation})\s+so\s+that\b[^.?!\n]*(?:[.?!]|$)",
-        r"\1",
-        public,
-    )
-    public = re.sub(
-        rf"(?is)([.!?])\s+\b(?:{orphan_alternation})\s*[.?!]\s+",
-        r"\1 ",
-        public,
-    )
-    public = re.sub(
-        rf"(?is)([.!?])\s+\b(?:{orphan_alternation})\s*[.?!]\s*$",
-        r"\1",
-        public,
-    )
-    return re.sub(r"[ \t]+\n", "\n", public).strip()
-
-
-def _clean_public_transcript_text(
-    text: str, *, schema: "WorkflowStateSchema", preserve_whitespace: bool = False
-) -> str:
-    """Strip CLIO contract prose from visible thought/answer transcript text.
-
-    ``preserve_whitespace`` keeps the text's exact leading/trailing/inner spacing
-    after the contract-prose removal. Use it for STREAMING chunks: each token
-    delta must keep its boundary whitespace so concatenated chunks read
-    ``"thinking next"`` and not ``"thinkingnext"``. The default (full-text)
-    behavior still trims and collapses runs of spaces for one-shot cleaning.
-
-    The fenced-block intro labels and the structured-field paragraph vocabulary
-    are declared by the pack ``schema``; the CLIO-carrier ``workflow_state`` /
-    ``structured state`` tokens stay in core.
-    """
-
-    public = _clean_public_delegation_prompt(text, schema=schema)
-    # DSPy ChatAdapter field markers ([[ ## field ## ]]) must never reach the
-    # visible transcript. They survive into a field's text when the model
-    # re-emits a marker mid-field (self-referential) — DSPy's StreamListener then
-    # folds the SECOND marker into the field content (e.g. a `next_thought` chunk
-    # that contains a literal "[[ ## next_thought ## ]]"). Strip any that leaked;
-    # collapse to a single space so the two halves of the field rejoin cleanly.
-    public = re.sub(r"\s*\[\[\s*##\s*[A-Za-z0-9_]+\s*##\s*\]\]\s*", " ", public)
-    fence_alternation = _scrub_alternation(schema.aliases.fence_labels)
-    fields_alternation = _scrub_alternation(schema.aliases.fields)
-    public = re.sub(
-        rf"(?ims)\n*\s*[A-Za-z ]*(?:{fence_alternation}):\s*```(?:json)?\s*[\s\S]*?\bworkflow_state\b[\s\S]*?```",
-        "",
-        public,
-    )
-    public = re.sub(
-        r"(?ims)```(?:json)?\s*[\s\S]*?\bworkflow_state\b[\s\S]*?```",
-        "",
-        public,
-    )
-    public = re.sub(
-        rf"(?ims)(^|\n\n)[^\n]*(?:\b(?:{fields_alternation})\b|\bstructured state\b)[\s\S]*?(?=\n\n|$)",
-        lambda match: match.group(1) if match.group(1).strip() else "",
-        public,
-    )
-    # #880: the natural-language keyword heuristic that deleted any sentence
-    # containing the phrase 'typed workflow state' from the model's answer is
-    # REMOVED — clio core must not decide visibility of model prose by matching a
-    # keyword (superseding principle #1). The structural markers above ([[ ## ]]
-    # DSPy field markers, fenced workflow_state JSON blocks) are format-only and
-    # stay.
-    if preserve_whitespace:
-        # The inner cleaner strips boundary whitespace; re-attach the ORIGINAL
-        # leading/trailing whitespace around the cleaned core so streamed chunks
-        # keep their spacing ("thinking " stays "thinking ", not "thinking").
-        leading = text[: len(text) - len(text.lstrip())]
-        trailing = text[len(text.rstrip()) :]
-        return f"{leading}{public.strip()}{trailing}"
-    return re.sub(r" {2,}", " ", public).strip()
+            return value
+    return _public_task_from_composed_prompt(fallback)
 
 
 def _append_accumulated_workflow_state_context(prompt: str, state: Mapping[str, Any]) -> str:

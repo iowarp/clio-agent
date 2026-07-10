@@ -415,7 +415,6 @@ from clio_agent.gact.delegation import (  # noqa: E402,F401
     _append_accumulated_workflow_state_context,
     _append_session_workflow_state_context,
     _bubbled_child_evidence_output,
-    _clean_public_transcript_text,
     _coerce_expert_handoff_rows,
     _compact_exact_evidence_index,
     _delegated_expert_agent_id,

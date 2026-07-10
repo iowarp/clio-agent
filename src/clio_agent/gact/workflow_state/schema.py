@@ -61,12 +61,24 @@ class WorkflowFailureRule(BaseModel):
 
 
 class WorkflowScrubAliases(BaseModel):
+    """Accepted-but-INERT since #881.
+
+    These aliases drove the public-prompt and visible-transcript prose scrubbers
+    in :mod:`clio_agent.gact.delegation`, both DELETED in #881: the client renders
+    model prose VERBATIM and the server fixes leaks at the root, so clio no longer
+    edits a model's visible text by matching a declared vocabulary. The fields are
+    RETAINED (not removed) purely for pack compatibility — external marketplace
+    ``AGENT.md`` blueprints already declare ``workflow_state.aliases`` and
+    :class:`WorkflowStateSchema` is ``extra="forbid"``, so dropping the field
+    would reject those blueprints at load. Nothing in core reads these values.
+    """
+
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    sections: tuple[str, ...] = ()  # the `state_path` alternation members
-    orphan_sections: tuple[str, ...] = ()  # the trailing-orphan-sentence subset
-    fields: tuple[str, ...] = ()  # domain field names (metadata_path, analysis_ready)
-    fence_labels: tuple[str, ...] = ()  # "<words> region:" fence-intro labels
+    sections: tuple[str, ...] = ()  # (inert since #881) former `state_path` members
+    orphan_sections: tuple[str, ...] = ()  # (inert since #881) trailing-orphan subset
+    fields: tuple[str, ...] = ()  # (inert since #881) former domain field names
+    fence_labels: tuple[str, ...] = ()  # (inert since #881) former fence-intro labels
 
 
 class WorkflowStateSchema(BaseModel):
@@ -110,9 +122,7 @@ class WorkflowStateSchema(BaseModel):
 
     def normalize_section(self, section: str, value: Mapping[str, Any]) -> dict[str, Any]:
         """Byte-identical port of merge.py:139-171 driven by the declaration."""
-        normalized = {
-            str(k): _normalize_workflow_state_scalar(str(k), v) for k, v in value.items()
-        }
+        normalized = {str(k): _normalize_workflow_state_scalar(str(k), v) for k, v in value.items()}
         rule = self.sections.get(section)
         r = rule.readiness if rule is not None else None
         if r is None:

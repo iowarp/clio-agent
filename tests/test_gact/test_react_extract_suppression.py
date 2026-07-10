@@ -33,7 +33,6 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from clio_agent.gact import context as _ctx
-from clio_agent.gact.agents.resolution import _active_workflow_state_schema
 from clio_agent.gact.app import build_app
 from clio_agent.gact.tool_observer import _open_turn_transcript
 from clio_agent.gact.turn_state import TurnState
@@ -126,9 +125,8 @@ def _drive(
     client = TestClient(app)
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
     sess = app.state.sessions.get(sid)
-    schema = _active_workflow_state_schema(app, sid)
     turn_id, trace_id = "turn_878", "trace_878"
-    transcript = _open_turn_transcript(app, sid, turn_id, schema=schema)
+    transcript = _open_turn_transcript(app, sid, turn_id)
 
     loop = asyncio.new_event_loop()
     loop_thread = threading.Thread(target=loop.run_forever, daemon=True)

@@ -126,7 +126,6 @@ def _finalize_answer_texts(agent_def: AgentDef, answer_text: str) -> list[str]:
         session_id="sess_asv",
         turn_id="turn_asv",
         publisher=_CapturePublisher(),
-        clean_text=lambda text: text,
     )
     visible = answer_stream_visible(agent_def)
     channel = transcript.turn_answer_stream(agent_def.id, "main")

@@ -21,6 +21,19 @@ retired vocabulary reappears in CODE:
   regex signature ``typed\\s+workflow`` (superseding principle #1: clio core must
   not decide visibility of model prose by keyword matching).
 
+* the visible-text prose cleaners #881 deleted -- the whole scrub seam that
+  edited a model's visible thought/answer prose against a declared vocabulary::
+
+      _clean_public_transcript_text   (the transcript visible-text scrubber)
+      _clean_public_delegation_prompt (the public-call-prompt scrubber)
+      _scrub_alternation              (their shared alias-alternation builder)
+
+  Epic #880/#881: the client renders model prose VERBATIM and the server fixes
+  leaks at the root (the #877 line-start marker split), so no core code may
+  scrub a model's visible text. The kept ``_delegated_expert_public_prompt``
+  splits a SERVER-COMPOSED prompt at the server's OWN marker constants (structural
+  string handling), which is not a prose matcher and is not banned.
+
 MATCHING RULES (documented per #880 hazard 8):
 
 * The scan is TOKEN-based (:mod:`tokenize`), NOT a raw substring grep. ``COMMENT``
@@ -33,11 +46,11 @@ MATCHING RULES (documented per #880 hazard 8):
   ``scripts/`` and lists the banned tokens in its own vocabulary, so it is never
   self-flagged.
 * ``typed\\s+workflow`` is the precise signature of the DELETED return-path prose
-  matcher. The KEPT public-call-prompt cleaner
-  (``delegation._clean_public_delegation_prompt``) uses ``workflow[_ ]state`` /
-  ``\\bworkflow\\s+state\\b`` (schema-declared + core-carrier scrub of clio's OWN
-  injected prompt context, the allowed grounding half) -- those are deliberately
-  NOT banned, so the guard targets only the removed heuristic.
+  matcher. The literal token ``workflow_state`` itself is NOT banned: it is the
+  first-class typed structured field on the delegation return contract and the key
+  of the server-composed grounding block, both of which core legitimately reads
+  and writes. The guard bans only the prose-scrubbing FUNCTIONS (above) and the
+  ``typed\\s+workflow`` heuristic signature, never the structured field name.
 
 Run as part of CI (blocking) and locally::
 
@@ -65,6 +78,12 @@ BANNED_IDENTIFIERS: tuple[str, ...] = (
     "_expert_result_summary",
     "_failed_child_delegation_output_summary",
     "_compact_handoff_text",
+    # #881: the visible-text prose cleaners — the scrub seam that edited a model's
+    # visible thought/answer/prompt prose against a declared vocabulary. Deleted;
+    # must not grow back (the client renders verbatim, the root is fixed at #877).
+    "_clean_public_transcript_text",
+    "_clean_public_delegation_prompt",
+    "_scrub_alternation",
 )
 
 # Regex-signature of the DELETED prose matcher (the ``typed workflow state``

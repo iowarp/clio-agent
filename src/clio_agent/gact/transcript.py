@@ -47,7 +47,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from typing import Any, Optional, Protocol
 
 from clio_agent.gact.events import Event, EventBus
@@ -135,10 +135,11 @@ class TurnTranscript:
     - Append-only; arrival order IS persisted order; a 1-based sequence is
       stamped at :meth:`finalize` (stamping it on the ``part.added`` wire event
       would change today's byte-for-byte event shapes, which PR1 must preserve).
-    - Text mutates exactly once: ``clean_text`` runs on the WHOLE buffer at
-      close (text parts only; provider thinking is verbatim); the cleaned
-      result is recorded into the close event AND the part. ``finalize()``
-      never rewrites text.
+    - Text is stored VERBATIM (#881): a streamed part carries the model's text
+      byte-for-byte to the close event AND the part; the server binds no
+      visible-text prose cleaner. The only close-time transform is dropping a
+      part that is whitespace-only after buffering (it carries no content).
+      ``finalize()`` never rewrites text.
     - Thread-safe: one re-entrant lock guards the ledger; events publish while
       holding it, so ledger order == bus order.
     - Appends after :meth:`finalize` are rejected and audited
@@ -152,13 +153,11 @@ class TurnTranscript:
         session_id: str,
         turn_id: str,
         publisher: TranscriptPublisher,
-        clean_text: Callable[[str], str],
     ) -> None:
         self.session_id = session_id
         self.turn_id = turn_id
         self.message_id: str = ""
         self._publisher = publisher
-        self._clean_text = clean_text
         # Re-entrant: append_part -> ensure_message / close_open_text nest.
         self._lock = threading.RLock()
         # THE ledger. This exact list object is also exposed through
@@ -512,8 +511,12 @@ class TurnTranscript:
         ``_tap_streamed`` bucket into ReAct steps. Computed SYNCHRONOUSLY in the
         caller's thread with NO cross-thread-close dependency (why ``has_closed_text``
         is rejected: it reads False for a not-yet-closed non-empty row -> double
-        render). ``survives_clean`` applies the SAME ``self._clean_text`` close drops
-        on. CONSUMING READ — called EXACTLY ONCE per tool-fire (the observer gate).
+        render). Since #881 the transcript stores text VERBATIM, so "survives as a
+        visible row" is exactly "has non-whitespace content" — the SAME whitespace-
+        only close drop :meth:`_close_open_text_locked` applies (the DSPy contract
+        markers that used to empty a slice are split off at the root, #877, and can
+        no longer reach a field's streamed text). CONSUMING READ — called EXACTLY
+        ONCE per tool-fire (the observer gate).
         """
 
         key = (agent_id, field)
@@ -522,9 +525,8 @@ class TurnTranscript:
             start = self._tap_gate_cursor.get(key, 0)
             self._tap_gate_cursor[key] = len(chunks)
             tail = "".join(chunks[start:])
-        if not tail.strip():
-            return (False, False)
-        return (True, bool(self._clean_text(tail).strip()))
+        survived = bool(tail.strip())
+        return (survived, survived)
 
     def raw_streamed_text(self) -> str:
         """Every accepted streamed chunk THIS turn, concatenated in arrival order.
@@ -677,12 +679,11 @@ class TurnTranscript:
         # publish loop consults this so live parts are never re-published.
         self._closed_live_part_ids.add(part.id)
         buffered = "".join(self._buffers.pop(part.id, []))
-        # Clean the COMPLETE buffer exactly once, at close — never per chunk,
-        # never again at finalize (the b1b25d2 invariant, now structural).
-        if part.type == "text" and buffered.strip():
-            buffered = self._clean_text(buffered)
+        # #881: text is stored VERBATIM — no visible-text prose cleaner runs here.
+        # The buffer is the model's text byte-for-byte; the only transform is the
+        # whitespace-only drop below (a part with no content emits nothing).
         if not buffered.strip():
-            # Empty after clean: remove from the ledger and emit nothing.
+            # Whitespace-only: remove from the ledger and emit nothing.
             # Identity-based removal — Part equality is by value and live
             # ledgers can hold equal-valued parts.
             for index, candidate in enumerate(self._parts):
@@ -914,24 +915,17 @@ class FieldStream:
                 return None
             if not fallback_text.strip():
                 return None
-            cleaned = transcript._clean_text(fallback_text)
-            if not cleaned.strip():
-                stream_audit(
-                    "transcript.dropped_empty_part",
-                    session_id=transcript.session_id,
-                    turn_id=transcript.turn_id,
-                    part_id="",
-                    part_type="text",
-                )
-                return None
+            # #881: the batch fallback is the model's answer field VERBATIM — the
+            # server binds no visible-text prose cleaner, so a non-whitespace
+            # fallback always lands (the whitespace-only case returned above).
             part = transcript._append_batch_text_locked(
                 self._agent_id,
                 self._field,
-                cleaned,
+                fallback_text,
                 extra_metadata=fallback_metadata,
             )
             self.part_id = part.id
-            return cleaned
+            return fallback_text
 
 
 class TurnTranscriptRegistry:
@@ -952,7 +946,6 @@ class TurnTranscriptRegistry:
         sid: str,
         turn_id: str,
         publisher: TranscriptPublisher,
-        clean_text: Callable[[str], str],
     ) -> TurnTranscript:
         """Open the ledger for ``sid``'s new turn, evicting any leaked one loudly."""
 
@@ -976,7 +969,6 @@ class TurnTranscriptRegistry:
                 session_id=sid,
                 turn_id=turn_id,
                 publisher=publisher,
-                clean_text=clean_text,
             )
             self._by_session[sid] = transcript
             return transcript

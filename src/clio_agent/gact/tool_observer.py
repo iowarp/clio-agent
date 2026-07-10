@@ -58,7 +58,6 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
     from clio_agent.gact.transcript import TurnTranscript
-    from clio_agent.gact.workflow_state.schema import WorkflowStateSchema
 
 logger = logging.getLogger(__name__)
 
@@ -243,9 +242,7 @@ def _session_turn_transcript(app: "FastAPI", sid: str) -> "Optional[TurnTranscri
     return registry.get(sid)
 
 
-def _open_turn_transcript(
-    app: "FastAPI", sid: str, turn_id: str, *, schema: "WorkflowStateSchema"
-) -> "TurnTranscript":
+def _open_turn_transcript(app: "FastAPI", sid: str, turn_id: str) -> "TurnTranscript":
     """Open the turn's TurnTranscript ledger (#767 PR2) — turn-loop entrypoint.
 
     Opens the registry ledger for ``sid``/``turn_id``, ADOPTS an ask_user-
@@ -256,12 +253,12 @@ def _open_turn_transcript(
     ``app.state`` dicts so untouched finalize reads and the live projection
     keep working during the PR2/PR3 window.
 
-    ``schema`` is the turn's pack workflow_state schema (#767 Phase C): the live
-    transcript-text scrubber bound below closes over it so streamed chunks are
-    cleaned against the active pack's declared vocabulary.
+    The ledger stores every streamed thought/answer part VERBATIM (#881): the
+    server no longer binds a visible-text prose cleaner here — model prose flows
+    to the wire byte-for-byte and the DSPy contract markers are split off at the
+    root (the #877 line-start detector), not scrubbed out of the transcript.
     """
 
-    from clio_agent.gact.delegation import _clean_public_transcript_text  # noqa: PLC0415
     from clio_agent.gact.transcript import EventBusTranscriptPublisher  # noqa: PLC0415
 
     carried_msg_id = str(
@@ -273,7 +270,6 @@ def _open_turn_transcript(
         sid,
         turn_id,
         EventBusTranscriptPublisher(app.state.bus, sid),
-        lambda text: _clean_public_transcript_text(text, schema=schema, preserve_whitespace=True),
     )
     if carried_msg_id or carried_parts or carried_keys:
         transcript.adopt_carried_state(

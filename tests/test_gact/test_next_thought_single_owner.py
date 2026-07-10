@@ -52,13 +52,20 @@ what these scenarios exercise, so the rationale sits with the driver):
   tool_call, and the clear only fires because those keys coincide.
 
 * Per-step latch soundness (#883, formerly deferred as an S2-review LOW). The gate
-  now consumes a PER-STEP tap slice via ``tap_step_survives_clean``: a ``(agent,
+  consumes a PER-STEP tap slice via ``tap_step_survives_clean``: a ``(agent,
   field)`` cursor carves the append-only tap bucket into ReAct steps, so a mixed
-  turn — step 1 streams surviving ``next_thought`` prose, step 2 streams a
-  marker-only ``next_thought`` that cleans to empty — clears step 1's copy but
-  KEEPS step 2's (``test_multistep_marker_only_step2_kept``). The old whole-turn
-  ``streamed_field_started`` latch would have cleared step 2 too — the exact #883
-  marker-only vanish this file's central sabotage test now pins.
+  turn — step 1 streams surviving ``next_thought`` prose, step 2 streams NOTHING
+  (an SDK/batch gap) — clears step 1's copy but KEEPS step 2's
+  (``test_multistep_no_stream_step2_kept``). The old whole-turn
+  ``streamed_field_started`` latch would have cleared step 2 too — the per-step
+  cursor prevents that.
+
+  (Pre-#881 this used a step-2 marker-only ``next_thought`` that "cleaned to
+  empty". #881 deleted the visible-text prose cleaner and #877 fixes the root —
+  a ChatAdapter field marker is split off as contract at a line-start and can no
+  longer reach a field's STREAMED text — so the "marker-only vanish" class is now
+  impossible. The realistic "step streamed no surviving row" case is a step that
+  streams nothing; a step that DID stream real prose always owns its row.)
 """
 
 from __future__ import annotations
@@ -74,7 +81,6 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from clio_agent.gact import context as _ctx
-from clio_agent.gact.agents.resolution import _active_workflow_state_schema
 from clio_agent.gact.app import build_app
 from clio_agent.gact.message_wire import normalize_thought_ownership
 from clio_agent.gact.thought_dedup import read_boundary_clean, survives_clean
@@ -84,21 +90,15 @@ from clio_agent.gact.turn_stream import emit_chunk
 from clio_agent.gact.types import Message, Part
 from clio_agent.runtime.lm_activity import note_lm_answer_delta, set_live_chunk_emitter
 
-# The clean next_thought the model emits for its geocode step. Plain prose, so the
-# transcript's public-text cleaner keeps it verbatim.
+# The clean next_thought the model emits for its geocode step. Plain prose that
+# reaches the wire VERBATIM (there is no visible-text cleaner since #881). It also
+# names a typed field ("workflow_state") to prove the deleted scrub does not return.
 NEXT = (
     "The user asked to resolve the place name Los Angeles to a geographic region, "
-    "so I call geo_geocode to look it up."
+    "so I call geo_geocode and record it in workflow_state."
 )
 # The raw DSPy reasoning channel (marker-laden) — never the tool_call's home.
 RAW_REASONING = f"```[[ ## next_thought ## ]]\n{NEXT}"
-
-# A next_thought that streams ONLY a ChatAdapter field marker (no surviving prose)
-# — it cleans to empty, so its visible row is dropped at close. This is the #883
-# marker-only vanish class. NOTE: the spec's ``"```[[ ## next_thought ## ]]\n"`` does
-# NOT clean to empty (the real transcript cleaner keeps a bare leading ``` fence), so
-# we use the bare marker, which ``_clean_public_transcript_text`` verifiably empties.
-MARKER_ONLY = "[[ ## next_thought ## ]]\n"
 
 REACT_SCOPE = "geospatial"
 
@@ -249,10 +249,11 @@ def _drive_scenario(
     """Build a real app + ledger + observer and drive the real tap/observer path.
 
     ``chunk_text`` is the next_thought tap chunk streamed for step 1 (default the
-    surviving ``NEXT`` prose; pass ``MARKER_ONLY`` for the cleans-to-empty case).
-    ``step2`` optionally drives a SECOND ReAct step on the same agent — a dict
-    ``{"stream": str|None, "tool": name, "thought": str, "args": {...}}`` — so a
-    within-turn mixed transport (step1 survives, step2 marker-only) is exercised.
+    surviving ``NEXT`` prose; any non-whitespace chunk survives verbatim as a
+    visible row since #881). ``step2`` optionally drives a SECOND ReAct step on the
+    same agent — a dict ``{"stream": str|None, "tool": name, "thought": str,
+    "args": {...}}`` — so a within-turn mixed transport (step1 streams a surviving
+    row, step2 streams nothing) is exercised.
 
     Returns the settled ledger facts + the captured stream_audit records, and the
     live ``app``/``client``/``sid`` so the caller can persist + reload.
@@ -264,10 +265,9 @@ def _drive_scenario(
     client = TestClient(app)
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
     sess = app.state.sessions.get(sid)
-    schema = _active_workflow_state_schema(app, sid)
     turn_id = "turn_s2"
     trace_id = "trace_s2"
-    transcript = _open_turn_transcript(app, sid, turn_id, schema=schema)
+    transcript = _open_turn_transcript(app, sid, turn_id)
 
     # A real event loop running in a background thread — the tap schedules the
     # visible emit onto it cross-thread exactly like the turn loop.
@@ -310,13 +310,12 @@ def _drive_scenario(
 
         if stream_next_thought:
             # Streaming path: the REAL tap records (agent, next_thought) in-thread
-            # and schedules the visible emit onto the loop.
+            # and schedules the visible emit onto the loop. Any non-whitespace chunk
+            # survives verbatim as a visible row (#881: no cleaner drops it).
             note_lm_answer_delta(chunk_text, field="next_thought")
-            if chunk_text.strip() and chunk_text != MARKER_ONLY:
+            if chunk_text.strip():
                 _wait_for_visible_part(transcript)
             else:
-                # Marker-only: the row is added (open) then dropped at close. Wait
-                # for the open part to exist so the tool-fire close is not raced.
                 _wait_for_next_thought_count(transcript, 1)
 
         # The ReAct step's thought is on the runtime context; the observer reads it.
@@ -431,6 +430,19 @@ def test_sdk_gap_next_thought_kept_on_tool_call_no_content_loss(tmp_path, monkey
     # No-silent-fallback: the KEEP path emitted its structured reason.
     assert "thought_kept_no_visible_row" in facts["audit_reasons"]
 
+    # #883 audit-label guarantee (independent of the deleted #881 cleaner): the KEEP
+    # record is NOT a suppression, and it carries the per-step span as its step_id
+    # label so the no-silent-fallback trace attributes the decision to its ReAct step.
+    keep = [
+        r
+        for r in facts["records"]
+        if r.get("stage") == _TOOL_THOUGHT_STAGE
+        and r.get("duplicate_reason") == "thought_kept_no_visible_row"
+    ]
+    assert len(keep) == 1
+    assert keep[0].get("duplicate_suppressed") is False
+    assert keep[0].get("step_id") == "span_step1"  # per-step audit label populated
+
     # must-fix 3: persist + reload — with no visible row, the read boundary must
     # NOT clear the tool_call thought (it is the thought's only home).
     msg_id = _persist_message(
@@ -452,12 +464,12 @@ def _tool_call_by_name(transcript, name: str):
     return calls[0]
 
 
-def test_multistep_marker_only_step2_kept(tmp_path, monkeypatch) -> None:
+def test_multistep_no_stream_step2_kept(tmp_path, monkeypatch) -> None:
     """Case (c): one agent, two steps. Step 1 streams surviving prose + fires
-    geo_geocode (its copy is CLEARED); step 2 streams a marker-only next_thought
-    that cleans to empty + fires geo_bbox with a distinct thought (its copy is
-    KEPT — the #883 vanish class). Exactly one visible row survives; live == reload.
-    """
+    geo_geocode (its copy is CLEARED); step 2 streams NOTHING (an SDK/batch gap) +
+    fires geo_bbox with a distinct thought (its copy is KEPT — no surviving row).
+    Exactly one visible row survives; live == reload. The per-step tap cursor is
+    what keeps step 2's copy — the old whole-turn latch would have cleared it."""
 
     step2_thought = "Now compute its bounding box"
     facts = _drive_scenario(
@@ -465,12 +477,12 @@ def test_multistep_marker_only_step2_kept(tmp_path, monkeypatch) -> None:
         monkeypatch,
         stream_next_thought=True,
         chunk_text=NEXT,
-        step2={"stream": MARKER_ONLY, "tool": "geo_bbox", "thought": step2_thought},
+        step2={"stream": None, "tool": "geo_bbox", "thought": step2_thought},
     )
 
     transcript = facts["transcript"]
-    # Step 1's prose survives as the sole visible next_thought row; step 2's
-    # marker-only row was dropped at close.
+    # Step 1's prose survives as the sole visible next_thought row; step 2 streamed
+    # no row.
     assert len(facts["visible"]) == 1
 
     step1 = _tool_call_by_name(transcript, "geo_geocode")
@@ -480,7 +492,29 @@ def test_multistep_marker_only_step2_kept(tmp_path, monkeypatch) -> None:
 
     reasons = facts["audit_reasons"]
     assert "next_thought_owns_visible_text_row" in reasons
-    assert "thought_kept_next_thought_cleaned_empty" in reasons
+    assert "thought_kept_no_visible_row" in reasons
+
+    # #883 audit-label guarantee: the two decisions carry DISTINCT per-step step_id
+    # labels (span_step1 for the suppressed step-1 copy, span_step2 for the kept
+    # step-2 copy), and only the suppression is flagged duplicate_suppressed. This is
+    # the per-step attribution the whole-turn latch could not express.
+    tool_thought_records = [r for r in facts["records"] if r.get("stage") == _TOOL_THOUGHT_STAGE]
+    suppressed = [
+        r
+        for r in tool_thought_records
+        if r.get("duplicate_reason") == "next_thought_owns_visible_text_row"
+    ]
+    kept = [
+        r
+        for r in tool_thought_records
+        if r.get("duplicate_reason") == "thought_kept_no_visible_row"
+    ]
+    assert len(suppressed) == 1
+    assert suppressed[0].get("duplicate_suppressed") is True
+    assert suppressed[0].get("step_id") == "span_step1"
+    assert len(kept) == 1
+    assert kept[0].get("duplicate_suppressed") is False
+    assert kept[0].get("step_id") == "span_step2"
 
     # Persist the settled ledger and reload: the read boundary must reproduce the
     # SAME per-step ownership (step1 cleared, step2 kept).
@@ -599,36 +633,33 @@ def test_historical_reload_without_visible_row_keeps_tool_thought(tmp_path, monk
     assert "next_thought_owns_visible_text_row" not in _tool_thought_reasons(records)
 
 
-# --- case (b): marker-only single step, live --------------------------------
+# --- case (b): single step, streamed row survives VERBATIM (#881) -----------
 
 
-def test_marker_only_next_thought_kept_live(tmp_path, monkeypatch) -> None:
-    """Case (b): a step whose next_thought streams a marker that cleans to empty
-    KEEPS its tool_call.thought (the #883 vanish class). The visible row is dropped,
-    a transcript.dropped_empty_part fires, and the KEEP audit carries a step_id."""
+def test_streamed_next_thought_survives_verbatim_and_clears_copy(tmp_path, monkeypatch) -> None:
+    """#881: a step whose next_thought streams real prose — including a sentence
+    that NAMES a typed workflow_state field, exactly what the deleted cleaner used
+    to strip — keeps that row VERBATIM as the visible home and CLEARS the redundant
+    tool_call.thought. Renders exactly once, on the visible row. Goes red the moment
+    any prose scrub returns to the visible next_thought path."""
 
-    facts = _drive_scenario(tmp_path, monkeypatch, stream_next_thought=True, chunk_text=MARKER_ONLY)
+    facts = _drive_scenario(tmp_path, monkeypatch, stream_next_thought=True, chunk_text=NEXT)
 
-    assert len(facts["visible"]) == 0  # marker-only row dropped at close
+    # The visible row survived BYTE-FOR-BYTE (workflow_state sentence intact).
+    assert len(facts["visible"]) == 1
+    assert facts["visible"][0].text == NEXT
+    assert "workflow_state" in facts["visible"][0].text
+
     tool_calls = facts["tool_calls"]
     assert len(tool_calls) == 1
-    assert (tool_calls[0].thought or "").strip() == NEXT  # KEPT
+    assert (tool_calls[0].thought or "") == ""  # cleared: the visible row owns it
 
     reasons = facts["audit_reasons"]
-    assert "thought_kept_next_thought_cleaned_empty" in reasons
-    keep = [
-        r
-        for r in facts["records"]
-        if r.get("duplicate_reason") == "thought_kept_next_thought_cleaned_empty"
-    ]
-    assert keep and keep[0].get("duplicate_suppressed") is False
-    assert keep[0].get("step_id") == "span_step1"  # audit label populated
+    assert "next_thought_owns_visible_text_row" in reasons
+    # No row was dropped (verbatim survival, not a clean-to-empty vanish).
+    assert not [r for r in facts["records"] if r.get("stage") == "transcript.dropped_empty_part"]
 
-    # The visible row was dropped from the ledger (empty after clean).
-    dropped = [r for r in facts["records"] if r.get("stage") == "transcript.dropped_empty_part"]
-    assert dropped, "marker-only next_thought row must drop at close"
-
-    # Persist + reload: the thought stays on the tool_call (its only home).
+    # Persist + reload: the visible row is the sole home; the copy stays cleared.
     msg_id = _persist_message(
         facts["app"],
         facts["sid"],
@@ -637,29 +668,24 @@ def test_marker_only_next_thought_kept_live(tmp_path, monkeypatch) -> None:
         turn_id=facts["turn_id"],
     )
     reloaded = _reload_tool_call(facts["client"], facts["sid"], msg_id)
-    assert reloaded.get("thought", "") == NEXT
+    assert reloaded.get("thought", "") == ""
 
 
 # --- transcript predicate unit tests ----------------------------------------
 
 
 def _make_transcript(app, sid):
-    """Build a real TurnTranscript with the app's schema-bound clean_text."""
+    """Build a real TurnTranscript (text stored VERBATIM since #881 — no cleaner)."""
 
-    from clio_agent.gact.delegation import _clean_public_transcript_text
     from clio_agent.gact.transcript import (
         EventBusTranscriptPublisher,
         TurnTranscript,
     )
 
-    schema = _active_workflow_state_schema(app, sid)
     return TurnTranscript(
         session_id=sid,
         turn_id="t_unit",
         publisher=EventBusTranscriptPublisher(app.state.bus, sid),
-        clean_text=lambda text: _clean_public_transcript_text(
-            text, schema=schema, preserve_whitespace=True
-        ),
     )
 
 
@@ -685,42 +711,45 @@ def test_double_gate_call_is_guarded_noop(tmp_path) -> None:
     assert second == (False, False)  # slice consumed -> KEEP, never a stale re-clear
 
 
-def test_survives_clean_equals_drop_predicate(tmp_path) -> None:
-    """7.7: the gate's survival bit is byte-for-byte the close-time drop predicate.
-    For each text, tap_step_survives_clean's survival == bool(_clean_text().strip()),
-    and driving a REAL close drops the row iff survival is False."""
+def test_survives_clean_equals_whitespace_drop_predicate(tmp_path) -> None:
+    """7.7: since #881 the transcript stores text VERBATIM, so the gate's survival
+    bit is exactly the close-time whitespace-only drop predicate. For each text,
+    tap_step_survives_clean's survival == bool(text.strip()). A marker the model
+    injected mid-content is NOT scrubbed — it survives (it can't reach field content
+    on the real wire, #877, but if injected it is kept, never emptied by a cleaner)."""
 
     app, _client, sid = _fresh_app(tmp_path)
     t = _make_transcript(app, sid)
     cases = [
         ("prose", "The user asked to geocode Los Angeles."),
-        ("marker", MARKER_ONLY),
+        ("marker_survives", "[[ ## next_thought ## ]]\n"),  # #881: no longer emptied
         ("whitespace", "   \n  "),
-        ("mixed", f"{MARKER_ONLY}kept prose"),
+        ("mixed", "kept prose [[ ## next_thought ## ]]"),
     ]
     for agent, text in cases:
         t.record_streamed_field_text(agent, "next_thought", text)
         _had, survived = t.tap_step_survives_clean(agent, "next_thought")
-        assert survived == bool(t._clean_text(text).strip()), f"predicate drift on {agent!r}"
+        assert survived == bool(text.strip()), f"predicate drift on {agent!r}"
 
 
 def test_survives_clean_close_drop_agreement(tmp_path) -> None:
-    """7.7 (real close): a marker-only row is DROPPED by the real close while a prose
-    row SURVIVES — the drop condition the gate's survival bit mirrors."""
+    """7.7 (real close): since #881 only a WHITESPACE-ONLY row is dropped by the real
+    close; a prose row (and any non-whitespace content) SURVIVES verbatim — the drop
+    condition the gate's survival bit mirrors."""
 
     app, _client, sid = _fresh_app(tmp_path)
     t = _make_transcript(app, sid)
     t.append_text_delta("a1", "next_thought", "real prose survives")
-    t.append_text_delta("a2", "next_thought", MARKER_ONLY)  # boundary closes a1
+    t.append_text_delta("a2", "next_thought", "   \n  ")  # boundary closes a1
     parts = t.finalize()
     kept = [p for p in parts if p.type == "text"]
     assert len(kept) == 1 and kept[0].text.strip() == "real prose survives"
 
 
-def test_marker_split_across_chunks(tmp_path) -> None:
-    """7.8: a marker split across two tap chunks must be JOINED before cleaning, so
-    the gate sees (True, False) -> KEEP (cleaning per-chunk would see the first half
-    as non-empty -> CLEAR -> vanish)."""
+def test_marker_split_across_chunks_joins_and_survives(tmp_path) -> None:
+    """7.8: the tap JOINS a step's chunks before the survival check (a per-chunk view
+    would miscount). Since #881 there is no cleaner, so a joined non-whitespace slice
+    — even one that happens to be a marker — SURVIVES as one slice (True, True)."""
 
     app, _client, sid = _fresh_app(tmp_path)
     t = _make_transcript(app, sid)
@@ -729,9 +758,7 @@ def test_marker_split_across_chunks(tmp_path) -> None:
 
     had, survived = t.tap_step_survives_clean(REACT_SCOPE, "next_thought")
     assert had is True
-    assert survived is False  # the JOINED slice cleans to empty
-    # Close agrees: the joined buffer cleans to empty.
-    assert not t._clean_text("[[ ## next_thought ## ]]\n").strip()
+    assert survived is True  # the JOINED slice is non-whitespace -> survives verbatim
 
 
 # --- pre-S2 reload fixtures + tests ------------------------------------------
@@ -890,7 +917,7 @@ def test_live_equals_reload_thought_field(tmp_path, monkeypatch) -> None:
         monkeypatch,
         stream_next_thought=True,
         chunk_text=NEXT,
-        step2={"stream": MARKER_ONLY, "tool": "geo_bbox", "thought": step2_thought},
+        step2={"stream": None, "tool": "geo_bbox", "thought": step2_thought},
     )
     live = {p.tool_name: (p.thought or "") for p in facts["tool_calls"]}
     assert live == {"geo_geocode": "", "geo_bbox": step2_thought}

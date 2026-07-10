@@ -46,17 +46,28 @@ def test_scan_skips_comment_referencing_the_ban() -> None:
     assert scan_source(text) == []
 
 
-def test_scan_does_not_flag_kept_public_prompt_cleaner_prose() -> None:
-    """The KEPT ``workflow_state`` grounding vocabulary is deliberately NOT banned.
+def test_scan_does_not_flag_structured_workflow_state_field() -> None:
+    """The structured ``workflow_state`` field vocabulary is deliberately NOT banned.
 
-    The public-prompt cleaner scrubs clio's OWN injected context using
-    ``workflow[_ ]state`` / ``Accumulated typed workflow state`` — none of which
-    match the precise deleted-matcher signature ``typed\\s+workflow``.
+    ``workflow_state`` is the first-class typed field on the delegation return
+    contract and the key of the server-composed grounding block — core reads and
+    writes it legitimately. Only the prose-SCRUBBING functions and the precise
+    deleted-matcher signature ``typed\\s+workflow`` are banned, never the field.
     """
     text = (
         'label = "Accumulated typed workflow state"\npat = re.compile(r"\\bworkflow\\s+state\\b")\n'
     )
     assert scan_source(text) == []
+
+
+def test_scan_flags_reintroduced_visible_text_cleaner_881() -> None:
+    """The #881 prose cleaners cannot grow back: a call to any of them is flagged."""
+    for needle in (
+        "_clean_public_transcript_text",
+        "_clean_public_delegation_prompt",
+        "_scrub_alternation",
+    ):
+        assert (1, needle) in scan_source(f"out = {needle}(text)\n"), needle
 
 
 def test_scan_fallback_scans_a_file_that_does_not_tokenize() -> None:

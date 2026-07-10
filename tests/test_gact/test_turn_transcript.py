@@ -1,12 +1,13 @@
 """Unit tests for the TurnTranscript single-writer part ledger (#767 PR1).
 
 Covers the design's §8.1 unit surface: open/delta/close lifecycle,
-``(agent, field)`` part splits, empty-after-clean drops, atomic-append
+``(agent, field)`` part splits, whitespace-only drops, atomic-append
 boundaries, once-key idempotency, 1-based arrival-order sequence,
-exactly-once whole-buffer cleaning, first-producer message minting, the
-FieldStream truth table, late-op auditing, thread interleaving, the
-non-blocking ``EventBus.publish`` precondition — plus the §8.2(a)
-transcript-level live==reload fold property over randomized op interleavings.
+verbatim whole-buffer storage (#881 — no visible-text cleaner), first-producer
+message minting, the FieldStream truth table, late-op auditing, thread
+interleaving, the non-blocking ``EventBus.publish`` precondition — plus the
+§8.2(a) transcript-level live==reload fold property over randomized op
+interleavings.
 """
 
 from __future__ import annotations
@@ -25,14 +26,10 @@ from clio_agent.gact.transcript import (
 )
 from clio_agent.gact.types import Part
 
+# A marker the MODEL might write in its own prose. Since #881 the transcript
+# stores text verbatim, so this survives to the wire unedited — the tests below
+# assert exactly that (it is no longer a "contract line to strip").
 CONTRACT_MARKER = "[[CONTRACT]]"
-
-
-def clean_marker_text(text: str) -> str:
-    """Test double for the contract-prose cleaner: strips marker lines."""
-
-    lines = [line for line in text.splitlines() if CONTRACT_MARKER not in line]
-    return "\n".join(lines).strip()
 
 
 class RecordingPublisher:
@@ -53,15 +50,12 @@ class RecordingPublisher:
 
 def make_transcript(
     publisher: RecordingPublisher | None = None,
-    *,
-    clean: Any = None,
 ) -> tuple[TurnTranscript, RecordingPublisher]:
     publisher = publisher or RecordingPublisher()
     transcript = TurnTranscript(
         session_id="sess_t",
         turn_id="turn_t",
         publisher=publisher,
-        clean_text=clean or clean_marker_text,
     )
     return transcript, publisher
 
@@ -166,13 +160,7 @@ def test_agent_or_field_change_splits_parts_and_closes_prior() -> None:
 
 
 def test_provider_thinking_opens_thinking_part_verbatim() -> None:
-    calls: list[str] = []
-
-    def spy_clean(text: str) -> str:
-        calls.append(text)
-        return clean_marker_text(text)
-
-    transcript, publisher = make_transcript(clean=spy_clean)
+    transcript, publisher = make_transcript()
     transcript.append_text_delta("main", "provider_thinking:anthropic", "raw ")
     transcript.append_text_delta("main", "provider_thinking:anthropic", f"{CONTRACT_MARKER} kept")
     transcript.close_open_text()
@@ -183,8 +171,7 @@ def test_provider_thinking_opens_thinking_part_verbatim() -> None:
     assert parts[0].metadata["thinking_source"] == "provider"
     assert parts[0].metadata["provider_source"] == "anthropic"
     assert parts[0].metadata["default_collapsed"] is True
-    # Verbatim: the cleaner NEVER runs on provider thinking.
-    assert calls == []
+    # Verbatim: provider thinking is stored byte-for-byte (no cleaner exists).
     assert parts[0].text == f"raw {CONTRACT_MARKER} kept"
     # #767 PR5: neither the turn.trace.delta nor the turn.text.delta twin is
     # published anymore — the thinking part rides message.part.* only.
@@ -192,32 +179,32 @@ def test_provider_thinking_opens_thinking_part_verbatim() -> None:
     assert publisher.of_type("turn.text.delta") == []
 
 
-def test_clean_text_runs_exactly_once_on_the_whole_buffer_at_close() -> None:
-    calls: list[str] = []
-
-    def spy_clean(text: str) -> str:
-        calls.append(text)
-        return clean_marker_text(text)
-
-    transcript, publisher = make_transcript(clean=spy_clean)
+def test_streamed_text_is_stored_verbatim_at_close() -> None:
+    """#881: the close stores the WHOLE streamed buffer BYTE-FOR-BYTE — the server
+    binds no visible-text cleaner, so a marker-looking line the MODEL wrote in its
+    own prose survives unedited. ``finalize`` never rewrites text."""
+    transcript, publisher = make_transcript()
     transcript.append_text_delta("main", "answer", "keep me\n")
-    transcript.append_text_delta("main", "answer", f"{CONTRACT_MARKER} drop this line\n")
+    transcript.append_text_delta("main", "answer", f"{CONTRACT_MARKER} the model wrote this\n")
     transcript.append_text_delta("main", "answer", "and me")
     transcript.close_open_text()
     transcript.close_open_text()  # idempotent
-    transcript.finalize()  # finalize never re-cleans
+    transcript.finalize()  # finalize never rewrites text
 
-    assert calls == [f"keep me\n{CONTRACT_MARKER} drop this line\nand me"]
+    verbatim = f"keep me\n{CONTRACT_MARKER} the model wrote this\nand me"
     completed = publisher.of_type("message.part.completed")
     assert len(completed) == 1
-    assert completed[0][1]["final_text"] == "keep me\nand me"
-    assert transcript.snapshot()[0].text == "keep me\nand me"
+    assert completed[0][1]["final_text"] == verbatim
+    assert transcript.snapshot()[0].text == verbatim
 
 
-def test_empty_after_clean_part_is_dropped_and_emits_nothing() -> None:
+def test_whitespace_only_part_is_dropped_and_emits_nothing() -> None:
+    """The ONLY close-time drop that remains (#881): a part that is whitespace-only
+    after buffering carries no content, so it is removed and the close emits
+    nothing. Any non-whitespace content is always kept verbatim (test above)."""
     transcript, publisher = make_transcript()
-    transcript.append_text_delta("main", "answer", f"{CONTRACT_MARKER} contract only\n")
-    transcript.append_text_delta("main", "answer", f"{CONTRACT_MARKER} more contract")
+    transcript.append_text_delta("main", "answer", "   \n")
+    transcript.append_text_delta("main", "answer", "  \t")
     transcript.close_open_text()
 
     assert transcript.snapshot() == []
@@ -382,12 +369,14 @@ def test_field_stream_streamed_then_finish_ignores_fallback(monkeypatch: Any) ->
 def test_field_stream_no_deltas_lands_one_batch_burst() -> None:
     transcript, publisher = make_transcript()
     stream = transcript.field_stream("main", "answer")
-    final = stream.finish(fallback_text=f"batch answer\n{CONTRACT_MARKER} dropped")
+    # #881: the batch fallback lands VERBATIM (no cleaner) — a marker-looking line
+    # the model wrote survives intact.
+    final = stream.finish(fallback_text=f"batch answer\n{CONTRACT_MARKER} kept")
 
-    assert final == "batch answer"
+    assert final == f"batch answer\n{CONTRACT_MARKER} kept"
     parts = transcript.snapshot()
     assert len(parts) == 1
-    assert parts[0].text == "batch answer"
+    assert parts[0].text == f"batch answer\n{CONTRACT_MARKER} kept"
     assert parts[0].metadata["stream_source"] == "batch"
     added = publisher.of_type("message.part.added")
     completed = publisher.of_type("message.part.completed")
@@ -395,7 +384,7 @@ def test_field_stream_no_deltas_lands_one_batch_burst() -> None:
     assert added[0][1]["stream_source"] == "batch"
     assert len(completed) == 1
     assert completed[0][1]["stream_source"] == "batch"
-    assert completed[0][1]["final_text"] == "batch answer"
+    assert completed[0][1]["final_text"] == f"batch answer\n{CONTRACT_MARKER} kept"
     # Batch bursts NEVER emit synthetic deltas (matches today's finalize shape).
     assert publisher.of_type("message.part.delta") == []
     assert stream.part_id == parts[0].id
@@ -417,7 +406,7 @@ def test_field_stream_survives_runtime_boundary_split() -> None:
 
     transcript, publisher = make_transcript()
     stream = transcript.field_stream("main", "answer")
-    stream.append("first half ")
+    stream.append("first half")  # #881: stored verbatim, no trailing-space trim
     transcript.append_part(tool_part("p_tool"))  # boundary closes the text part
     stream.append("second half")
     final = stream.finish(fallback_text="first half second half")
@@ -439,7 +428,7 @@ def test_registry_open_get_close_lifecycle() -> None:
     registry = TurnTranscriptRegistry()
     publisher = RecordingPublisher()
     assert registry.get("s1") is None
-    transcript = registry.open_turn("s1", "turn_1", publisher, clean_marker_text)
+    transcript = registry.open_turn("s1", "turn_1", publisher)
     assert registry.get("s1") is transcript
     assert registry.get("s2") is None
     registry.close("s1")
@@ -455,8 +444,8 @@ def test_registry_evicts_leaked_ledger_loudly(monkeypatch: Any) -> None:
     )
     registry = TurnTranscriptRegistry()
     publisher = RecordingPublisher()
-    stale = registry.open_turn("s1", "turn_old", publisher, clean_marker_text)
-    fresh = registry.open_turn("s1", "turn_new", publisher, clean_marker_text)
+    stale = registry.open_turn("s1", "turn_old", publisher)
+    fresh = registry.open_turn("s1", "turn_new", publisher)
     assert registry.get("s1") is fresh
     assert fresh is not stale
     leaked = [fields for stage, fields in audits if stage == "transcript.leaked_ledger_evicted"]
@@ -495,7 +484,7 @@ def fold_published_events(events: list[tuple[str, dict[str, Any]]]) -> list[dict
         wire = added[part_id]
         is_streamed_text = wire["type"] in {"text", "thinking"}
         if is_streamed_text and part_id not in final_texts:
-            continue  # dropped empty-after-clean: close emitted nothing
+            continue  # dropped whitespace-only part (#881): close emitted nothing
         folded.append(
             {
                 "id": part_id,
@@ -650,7 +639,6 @@ async def test_event_bus_transcript_publisher_reaches_subscribers() -> None:
         session_id="s1",
         turn_id="turn_1",
         publisher=EventBusTranscriptPublisher(bus, "s1"),
-        clean_text=clean_marker_text,
     )
     transcript.append_part(tool_part("p1"))
     await asyncio.wait_for(task, timeout=5)

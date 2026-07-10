@@ -186,10 +186,6 @@ def _run_finalize_seam(
         session_id="sess_736",
         turn_id="turn_736",
         publisher=_CapturePublisher(),
-        # Identity scrubber: the collapse is op-identity, not text-based, so a
-        # verbatim clean_text keeps the assertions exact without changing the
-        # mechanism under test.
-        clean_text=lambda text: text,
     )
 
     # (1) The terminal child (synthesis) lands its answer at its own LM-call site

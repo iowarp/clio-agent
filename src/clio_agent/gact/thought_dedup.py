@@ -46,9 +46,14 @@ class ThoughtDecision(NamedTuple):
 def survives_clean(text: str, clean: Callable[[str], str]) -> bool:
     """True iff ``text`` run through ``clean`` is non-blank.
 
-    The single survival predicate for both dedup paths (#883). Live injects the
-    transcript's schema-bound ``_clean_text``; reload injects ``read_boundary_clean``.
-    Format-only (does this clean to empty?), never a keyword/prose judgment.
+    The RELOAD-path survival predicate (#883): it injects ``read_boundary_clean``
+    to strip a pre-S2 raw marker-only persisted row so it does not falsely own a
+    step. Since #881 the LIVE path stores text VERBATIM and no longer cleans, so
+    its survival check is a plain whitespace test
+    (:meth:`TurnTranscript.tap_step_survives_clean`) — the DSPy contract markers
+    that used to empty a slice are split off at the root (#877) and can no longer
+    reach a field's streamed text. Format-only (does this clean to empty?), never
+    a keyword/prose judgment.
     """
 
     return bool(clean(text or "").strip())
