@@ -49,6 +49,7 @@ from clio_agent.gact.runtime.globals import (
     _new_message_id,
     _resolve_tool_session,
 )
+from clio_agent.gact.thought_dedup import TOOL_THOUGHT_STAGE, classify_live_thought
 from clio_agent.gact.types import Message, Part
 from clio_agent.runtime import trace
 from clio_agent.runtime.stream_audit import stream_audit
@@ -272,9 +273,7 @@ def _open_turn_transcript(
         sid,
         turn_id,
         EventBusTranscriptPublisher(app.state.bus, sid),
-        lambda text: _clean_public_transcript_text(
-            text, schema=schema, preserve_whitespace=True
-        ),
+        lambda text: _clean_public_transcript_text(text, schema=schema, preserve_whitespace=True),
     )
     if carried_msg_id or carried_parts or carried_keys:
         transcript.adopt_carried_state(
@@ -642,44 +641,33 @@ def _make_tool_observer(app: "FastAPI"):
                 )
             )
             step_thought = _ctx.active_step_thought()
-            # #732 (S2): next_thought is a DISTINCT VISIBLE loop element that owns its
-            # OWN streamed text row (note_lm_answer_delta -> emit_chunk ->
-            # append_text_delta, a ``text`` part with signature_field_name="next_thought").
-            # The copy the ReAct step also carries on tool_call.thought is the redundant
-            # duplication — clear it IFF that visible row exists this turn. OP-IDENTITY
-            # PRESENCE check ("did this channel produce a part this turn?"), never a
-            # string compare: the LM tap records the field's presence SYNCHRONOUSLY in
-            # this same executor thread (happens-before this observe()), and lm_activity
-            # records it ONLY in the visible-emit branch — so tap-presence ⟺ visible-row,
-            # and a field with NO visible row (SDK/batch gap) KEEPS its thought (no
-            # content loss, the attempt-1 blocker). Both branches emit a stream_audit
-            # reason (no silent fallback). (agent-id identity + turn-scope-latch soundness:
-            # module docstring of tests/test_gact/test_next_thought_single_owner.py.)
+            # #732/#883: next_thought owns its OWN streamed text row; the copy on
+            # tool_call.thought is redundant. Clear it IFF THIS step's next_thought
+            # tap slice SURVIVES cleaning as a visible row — a per-step, in-thread,
+            # format-only predicate (never a prose compare). A marker-only slice that
+            # cleans to empty, or no slice at all (SDK gap), KEEPS the thought so it
+            # never vanishes. Every outcome emits a structured reason (no silent
+            # fallback). See tests/test_gact/test_next_thought_single_owner.py.
             transcript = _session_turn_transcript(app, sid)
-            visible_row = transcript is not None and transcript.streamed_field_started(
-                invoking_expert, "next_thought"
+            had_stream, survived = (
+                transcript.tap_step_survives_clean(invoking_expert, "next_thought")
+                if transcript is not None
+                else (False, False)
             )
-            if not step_thought or visible_row:
-                if step_thought:
-                    stream_audit(
-                        "bridge.tool_thought",
-                        agent_id=invoking_expert,
-                        field="next_thought",
-                        visible=False,
-                        duplicate_suppressed=True,
-                        duplicate_reason="next_thought_owns_visible_text_row",
-                        head=step_thought[:120],
-                    )
-                step_thought = ""
-            else:
+            decision = classify_live_thought(had_stream, survived)
+            if step_thought:
                 stream_audit(
-                    "bridge.tool_thought",
+                    TOOL_THOUGHT_STAGE,
                     agent_id=invoking_expert,
                     field="next_thought",
-                    duplicate_suppressed=False,
-                    duplicate_reason="thought_kept_no_visible_row",
+                    visible=False,
+                    duplicate_suppressed=decision.clear,
+                    duplicate_reason=decision.reason,
+                    step_id=_ctx.active_parent_span_id(),
                     head=step_thought[:120],
                 )
+            if decision.clear or not step_thought:
+                step_thought = ""
             _append_live_assistant_part(
                 app,
                 sid,

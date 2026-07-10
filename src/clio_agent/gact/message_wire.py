@@ -15,87 +15,91 @@ client that renders ``tool_call.thought`` verbatim (as it now must, the client
 dedup having been deleted) would show the thought TWICE on reload of that old
 data. This module closes that gap at the READ boundary.
 
-The gate is an OP-IDENTITY PRESENCE check — "does this SAME message contain a
-same-agent ``next_thought`` text row?" — never a string comparison. It mirrors
-the observer's ``TurnTranscript.streamed_field_started`` gate; the three prose
-heuristics deleted in S2 are NOT reintroduced here. Both this module and the live
-observer therefore key single-representation off the presence of the visible row,
-not off the text it carries.
+The gate is a PER-STEP POSITIONAL consume that mirrors the live observer (#883):
+a surviving ``next_thought`` text row marks its agent pending; the NEXT same-agent
+``tool_call`` consumes it and is cleared iff it carried a copy; every ``tool_call``
+ends its agent's step. Survival is the shared ``thought_dedup.survives_clean``
+kernel (with ``read_boundary_clean``) both paths call, so live and reload cannot
+drift across the ``_clean_text`` boundary — the exact divergence #883 names. A
+format-only "does this clean to empty?" test, never a prose comparison; the three
+S2 heuristics are NOT reintroduced.
 
-No silent fallback: every clear emits the same structured ``stream_audit`` reason
-(``next_thought_owns_visible_text_row``) the live gate emits, tagged
-``origin="message_read"`` so reload-time normalization is distinguishable in the
-audit trail from the live-emit clear. A message with no visible ``next_thought``
-row (the SDK/batch-gap shape, scenario B) is returned UNCHANGED — its
+No silent fallback: every clear emits ``next_thought_owns_visible_text_row`` and
+every meaningful KEEP (a rowless copy whose agent owned a row elsewhere in the
+message — the over-clear the old set logic would have made)
+``thought_kept_no_surviving_next_thought_row``, both tagged ``origin="message_read"``.
+A plain no-row message (scenario B) is returned UNCHANGED — its
 ``tool_call.thought`` is that thought's only home and is kept.
 """
 
 from __future__ import annotations
 
+from clio_agent.gact.thought_dedup import (
+    REASON_OWNS_ROW,
+    REASON_RELOAD_KEEP,
+    TOOL_THOUGHT_STAGE,
+    read_boundary_clean,
+    survives_clean,
+)
 from clio_agent.gact.types import Message, Part
 from clio_agent.runtime.stream_audit import stream_audit
 
 
-def _visible_next_thought_agents(parts: list[Part]) -> set[str]:
-    """Agents that emitted a non-empty visible ``next_thought`` text row here.
-
-    Op-identity presence: a ``text`` part carrying
-    ``metadata["signature_field_name"] == "next_thought"`` with non-blank text is
-    the visible row that owns the thought for its agent. Blank rows do not count
-    (an empty-after-clean row is dropped from the ledger and owns nothing).
-    """
-
-    agents: set[str] = set()
-    for part in parts:
-        if (
-            part.type == "text"
-            and (part.text or "").strip()
-            and part.metadata.get("signature_field_name") == "next_thought"
-        ):
-            agents.add(part.agent_id)
-    return agents
-
-
 def normalize_thought_ownership(message: Message) -> Message:
-    """Return ``message`` with redundant ``tool_call.thought`` copies cleared.
+    """Clear each tool_call.thought that its OWN ReAct step's next_thought row owns.
 
-    A ``tool_call`` part's ``thought`` is cleared IFF the SAME message already
-    carries a same-agent visible ``next_thought`` text row (op-identity presence;
-    never a string compare). When nothing needs clearing — no visible row, or no
-    tool_call carrying a same-agent copy (the new-session shape, where the live
-    observer already emptied it) — the original message is returned unchanged, so
-    this is a no-op for post-S2 data and only repairs pre-S2 persisted sessions.
-
-    Each clear emits a ``stream_audit`` ``bridge.tool_thought`` record with
-    ``duplicate_reason="next_thought_owns_visible_text_row"`` and
-    ``origin="message_read"`` (no silent drop).
+    Per-step POSITIONAL consume mirroring the live gate: walking parts in order, a
+    surviving next_thought text row marks its agent 'pending'; the NEXT same-agent
+    tool_call consumes it and is cleared iff it carried a copy. A tool_call ALWAYS
+    ends its agent's step (resets pending) even when its thought was already blanked
+    live — so a later ROWLESS step (marker-only / SDK-gap) is KEPT, matching live.
+    Survival uses the shared ``survives_clean`` kernel with ``read_boundary_clean``
+    so a pre-S2 raw marker-only row cleans to empty and does not falsely own a step.
     """
 
     parts = message.parts
-    owned = _visible_next_thought_agents(parts)
-    if not owned:
-        return message
+    pending: dict[str, bool] = {}  # agent -> current step owns a surviving row
+    owned_any: dict[str, bool] = {}  # agent -> owned a surviving row anywhere
+    clear_ids: set[str] = set()
+    kept_calls: list[Part] = []  # rowless non-blank tool_calls, for the KEEP audit
+    for part in parts:
+        if (
+            part.type == "text"
+            and part.metadata.get("signature_field_name") == "next_thought"
+            and survives_clean(part.text or "", read_boundary_clean)
+        ):
+            pending[part.agent_id] = True
+            owned_any[part.agent_id] = True
+        elif part.type == "tool_call":
+            if pending.get(part.agent_id) and (part.thought or "").strip():
+                clear_ids.add(part.id)
+            elif (part.thought or "").strip() and owned_any.get(part.agent_id):
+                kept_calls.append(part)  # over-clear the OLD set logic would have made
+            pending[part.agent_id] = False  # LOAD-BEARING: tool_call always ends the step
 
-    clear_ids = {
-        part.id
-        for part in parts
-        if part.type == "tool_call"
-        and (part.thought or "").strip()
-        and part.agent_id in owned
-    }
+    for part in kept_calls:  # reload KEEP audit (no silent reload keep)
+        stream_audit(
+            TOOL_THOUGHT_STAGE,
+            agent_id=part.agent_id,
+            field="next_thought",
+            visible=False,
+            duplicate_suppressed=False,
+            duplicate_reason=REASON_RELOAD_KEEP,
+            origin="message_read",
+            head=(part.thought or "")[:120],
+        )
     if not clear_ids:
         return message
-
     new_parts: list[Part] = []
     for part in parts:
         if part.id in clear_ids:
             stream_audit(
-                "bridge.tool_thought",
+                TOOL_THOUGHT_STAGE,
                 agent_id=part.agent_id,
                 field="next_thought",
                 visible=False,
                 duplicate_suppressed=True,
-                duplicate_reason="next_thought_owns_visible_text_row",
+                duplicate_reason=REASON_OWNS_ROW,
                 origin="message_read",
                 head=(part.thought or "")[:120],
             )

@@ -95,6 +95,10 @@ def _fold_published_parts(history: list[Any], message_id: str) -> list[dict[str,
                 "type": part.get("type", ""),
                 "agent_id": part.get("agent_id", ""),
                 "text": part.get("text", "") or "",
+                # #883: fold tool_call.thought so live==reload ranges over the field
+                # the presentation model dedups (a tool_call gets one added event and
+                # no delta/completed, so its thought is final at add).
+                "thought": part.get("thought", "") or "",
                 "stream_source": str((part.get("metadata") or {}).get("stream_source") or ""),
                 "live_text": (
                     payload.get("stream_source") == "live"
@@ -155,6 +159,7 @@ def _live_equals_reload_property(monkeypatch):
                     "type": part.type,
                     "agent_id": part.agent_id,
                     "text": part.text or "",
+                    "thought": part.thought or "",
                     "stream_source": str(part.metadata.get("stream_source") or ""),
                 }
                 for part in msg.parts
@@ -166,6 +171,7 @@ def _live_equals_reload_property(monkeypatch):
                     "type": p["type"],
                     "agent_id": p["agent_id"],
                     "text": p["text"],
+                    "thought": p["thought"],
                     "stream_source": p["stream_source"],
                 }
                 for index, p in enumerate(folded, start=1)
@@ -177,7 +183,9 @@ def _live_equals_reload_property(monkeypatch):
                     f"  persisted parts   -> {persisted}"
                 )
         except Exception as exc:  # noqa: BLE001 - the property check must never mask the turn
-            violations.append(f"live==reload check crashed for {getattr(msg, 'id', '?')!r}: {exc!r}")
+            violations.append(
+                f"live==reload check crashed for {getattr(msg, 'id', '?')!r}: {exc!r}"
+            )
         return result
 
     monkeypatch.setattr(gact_app, "_append_session_message", _checked_append)

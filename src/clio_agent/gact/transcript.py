@@ -178,15 +178,14 @@ class TurnTranscript:
         # (agent_id, field) -> raw streamed chunks THIS turn (turn-scoped by
         # construction — subsumes app.state.live_streamed_field_text, #757).
         self._streamed: dict[tuple[str, str], list[str]] = {}
-        # (agent_id, field) -> chunks recorded SYNCHRONOUSLY by the LM stream tap,
-        # in the tap's own (executor) thread, BEFORE the cross-thread
-        # ``append_text_delta`` is scheduled onto the loop (#732). The tool
-        # observer's thought-dedup gate runs in that SAME executor thread, so it
-        # must read a source written before the tool fires — not the ledger's
-        # ``_streamed``, which the loop populates asynchronously and may not have
-        # drained yet. This restores the happens-before the retired synchronous
-        # ``live_streamed_field_text`` buffer provided (audit #732).
+        # (agent_id, field) -> chunks recorded SYNCHRONOUSLY by the LM stream tap in
+        # the executor thread, BEFORE the cross-thread ``append_text_delta`` is
+        # scheduled (#732) — the SAME thread the thought-dedup gate reads on.
         self._tap_streamed: dict[tuple[str, str], list[str]] = {}
+        # Per-(agent,field) high-water cursor INTO _tap_streamed, advanced once per
+        # tool-fire by the observer gate — carves the append-only tap bucket into
+        # per-ReAct-step slices so step N is not latched by step N-1's chunks (#883).
+        self._tap_gate_cursor: dict[tuple[str, str], int] = {}
         # Every accepted streamed chunk in arrival order, across agents AND
         # fields (provider thinking included) — the whole-turn concat the
         # timeout/StreamingOutputError partials read; byte-identical to the
@@ -492,15 +491,11 @@ class TurnTranscript:
     def record_streamed_field_text(self, agent_id: str, field: str, chunk: str) -> None:
         """Record a streamed contract-field ``chunk`` SYNCHRONOUSLY from the LM tap.
 
-        The LM stream tap (``lm_activity.note_lm_answer_delta``) runs in the
-        expert's executor thread and schedules the visible delta onto the turn's
-        loop cross-thread (fire-and-forget). The tool observer's thought-dedup
-        gate runs in that SAME executor thread when a tool fires, so it cannot
-        rely on the loop having drained the scheduled ``append_text_delta`` yet.
-        The tap therefore records here first, in-thread, giving the gate a source
-        with a real happens-before — exactly the guarantee the retired
-        ``live_streamed_field_text`` buffer provided (#732). Turn-scoped by
-        construction (one ledger per turn), so a prior turn never leaks in.
+        The LM stream tap runs in the expert's executor thread and schedules the
+        visible delta onto the loop cross-thread. The thought-dedup gate runs in
+        that SAME executor thread when a tool fires, so the tap records here first,
+        in-thread, giving the gate a source with a real happens-before (#732).
+        Turn-scoped by construction, so a prior turn never leaks in.
         """
 
         if not chunk:
@@ -509,22 +504,27 @@ class TurnTranscript:
         with self._lock:
             self._tap_streamed.setdefault(key, []).append(chunk)
 
-    def streamed_field_started(self, agent_id: str, field: str) -> bool:
-        """True when ``(agent_id, field)`` produced a streamed text chunk this turn.
+    def tap_step_survives_clean(self, agent_id: str, field: str) -> tuple[bool, bool]:
+        """Per-step (consumed) tap classification for the #883 thought-dedup gate.
 
-        The OP-IDENTITY presence check the tool observer's thought-dedup gate
-        reads (#732 / S2): "did this channel emit a visible text row?", never a
-        string comparison. Prefers the tap copy (:meth:`record_streamed_field_text`,
-        written synchronously in the LM tap thread before the cross-thread
-        :meth:`append_text_delta` schedules) and falls back to the ledger deltas.
-        ``note_lm_answer_delta`` records the tap ONLY inside its visible-emit
-        branch, so tap-presence ⟺ visible-row-emitted — no visible row reads
-        ``False`` and keeps the copy.
+        Returns ``(had_stream, survives_clean)`` for the tap slice since the LAST
+        call for ``(agent_id, field)`` — a per-key cursor carves the append-only
+        ``_tap_streamed`` bucket into ReAct steps. Computed SYNCHRONOUSLY in the
+        caller's thread with NO cross-thread-close dependency (why ``has_closed_text``
+        is rejected: it reads False for a not-yet-closed non-empty row -> double
+        render). ``survives_clean`` applies the SAME ``self._clean_text`` close drops
+        on. CONSUMING READ — called EXACTLY ONCE per tool-fire (the observer gate).
         """
 
         key = (agent_id, field)
         with self._lock:
-            return bool(self._tap_streamed.get(key) or self._streamed.get(key))
+            chunks = self._tap_streamed.get(key, [])
+            start = self._tap_gate_cursor.get(key, 0)
+            self._tap_gate_cursor[key] = len(chunks)
+            tail = "".join(chunks[start:])
+        if not tail.strip():
+            return (False, False)
+        return (True, bool(self._clean_text(tail).strip()))
 
     def raw_streamed_text(self) -> str:
         """Every accepted streamed chunk THIS turn, concatenated in arrival order.
@@ -609,9 +609,7 @@ class TurnTranscript:
 
         return FieldStream(self, agent_id, field)
 
-    def turn_answer_stream(
-        self, responder_agent_id: str, *also_covering: str
-    ) -> "FieldStream":
+    def turn_answer_stream(self, responder_agent_id: str, *also_covering: str) -> "FieldStream":
         """The finalize-scoped exactly-once handle for the turn's canonical answer.
 
         The channel covers the AGENT LABELS the turn's top-level answer can
@@ -628,9 +626,9 @@ class TurnTranscript:
         responder's distinct final answer.
         """
 
-        covers = frozenset(
-            {responder_agent_id, *also_covering} - {""}
-        ) or frozenset({responder_agent_id})
+        covers = frozenset({responder_agent_id, *also_covering} - {""}) or frozenset(
+            {responder_agent_id}
+        )
         return FieldStream(self, responder_agent_id, "answer", covers=covers)
 
     # -- the reader (finalize; loop-only) --------------------------------------
