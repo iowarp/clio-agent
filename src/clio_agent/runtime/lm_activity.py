@@ -110,6 +110,30 @@ def set_live_chunk_emitter(loop: Any, emit_coro: Any, record_dedup: Any = None) 
     _LIVE_CHUNK_EMITTER.set((loop, emit_coro, record_dedup))
 
 
+def note_suppressed_extract_field(
+    field: str, text: str, *, agent_id: str, kind: str, session_id: str = ""
+) -> None:
+    """Record a ``kind: react`` EXTRACT-field suppression reason (#878).
+
+    Shared by both visible-emit seams (this module's live tap and
+    ``streaming._emit_visible_chunk``) so the no-silent-fallback record is emitted
+    identically wherever a react ``reasoning``/``answer`` field is dropped.
+    """
+    stream_audit(
+        "bridge.contract_field",
+        agent_id=agent_id or "",
+        session_id=session_id,
+        field=field,
+        chunk_len=len(text),
+        visible=False,
+        duplicate_suppressed=True,
+        duplicate_reason="react_extract_field_suppressed",
+        module_kind=kind,
+        head=text[:120],
+        full_text=text[:12000],
+    )
+
+
 def note_lm_answer_delta(text: str, *, field: str = "answer") -> None:
     """Stream a generated output-field delta to the live UI via the turn publisher.
 
@@ -132,11 +156,41 @@ def note_lm_answer_delta(text: str, *, field: str = "answer") -> None:
     agent_id = ""
     try:
         from clio_agent.gact.context import (  # noqa: PLC0415
+            active_react_kind,
             active_react_scope,
             active_visible_answer_stream,
+            react_extract_field_suppressed,
         )
 
         agent_id = active_react_scope()
+        kind = active_react_kind()
+        # No-silent-fallback: a react scope is active but its kind never resolved.
+        # Do NOT assume not-react (would leak a react EXTRACT) nor blanket-suppress
+        # (would delete a CoT expert's visible reasoning). Keep today's safe
+        # CoT-visible behavior below and record the resolution miss so it surfaces
+        # at the seam rather than hiding (#878).
+        if agent_id and not kind:
+            stream_audit(
+                "bridge.contract_field",
+                agent_id=agent_id,
+                field=field,
+                chunk_len=len(text),
+                visible=False,
+                normalized_event="",
+                duplicate_suppressed=False,
+                duplicate_reason="react_kind_unresolved",
+                head=text[:120],
+                full_text=text[:12000],
+            )
+        # #878: a `kind: react` expert's redundant EXTRACT reasoning/answer is
+        # gated STRUCTURALLY on the declared module.kind (never the field name).
+        # answer_is_deliverable=False here: a nested react expert's answer VALUE
+        # flows to the delegation return contract, and a top-level react
+        # responder's deliverable is re-added once at finalize via answer_channel —
+        # so the tap copy is always redundant.
+        if react_extract_field_suppressed(kind, field, answer_is_deliverable=False):
+            note_suppressed_extract_field(field, text, agent_id=agent_id, kind=kind)
+            return
         visible_fields = {"reasoning", "next_thought"}
         if field == "answer" and active_visible_answer_stream():
             visible_fields.add("answer")

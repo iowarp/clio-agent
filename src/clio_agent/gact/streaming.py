@@ -678,12 +678,12 @@ async def _try_streamed_forward(
     emitted_any = False
     previous_stream_field = ""
     provider_event_index = 0
-    # Seed the reasoning-heartbeat clock so the first reasoning chunk publishes
-    # immediately (refreshing the watchdog the moment the model starts thinking).
+    # Seed the heartbeat clock so the first reasoning chunk publishes immediately.
     last_reasoning_heartbeat = time.monotonic() - _REASONING_HEARTBEAT_S
 
     async def _emit_visible_chunk(text: str, field_name: str = "") -> None:
         nonlocal emitted_any, previous_stream_field
+        # #878: only ``answer`` is listener-bound (test_stream_listeners_answer_only).
         prefix = _stream_response_prefix(field_name, previous_stream_field)
         if prefix:
             await emit_chunk(prefix)

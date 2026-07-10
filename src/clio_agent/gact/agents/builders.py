@@ -1783,14 +1783,12 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             blueprint_tool_rows_token = (
                 _ctx.set_blueprint_tool_rows(blueprint_tool_rows) if self.kind == "react" else None
             )
-            # ARC live-context-plane wiring for this expert's ReAct loop: the scope
-            # (the agent/expert tag), owning session, and the context window (the
-            # auto-compaction denominator). Only the react kind runs _RetainingReAct,
-            # but setting them unconditionally is harmless (predict/CoT never read).
-            _react_scope_token = _ctx.set_react_scope(str(getattr(self.agent_def, "id", "")))
+            _agent_id_for_stream = str(getattr(self.agent_def, "id", "") or "")
+            # ARC live-context-plane wiring (scope, session, window; harmless for
+            # predict/CoT). #878: module.kind rides the token; the gate is never by field.
+            _react_scope_token = _ctx.set_react_scope(_agent_id_for_stream, self.kind)
             _react_session_token = _ctx.set_react_session(active_session_id)
             _react_window_token = _ctx.set_react_window(_resolve_expert_context_window(self.config))
-            _agent_id_for_stream = str(getattr(self.agent_def, "id", "") or "")
             _structured_outputs = (
                 self.agent_def.structured_outputs
                 if isinstance(self.agent_def.structured_outputs, Mapping)
@@ -2071,6 +2069,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
         def __init__(self, base_agent: Any, agent_def: "AgentDef") -> None:
             super().__init__()
             self.agent_def = agent_def
+            self.kind = "react"  # always ReAct-with-extract; read by the #878 stream gate
             # Per-expert provider identity as data; the credential is resolved
             # fresh per forward() via ``self._resolved_spec.materialize`` (design
             # §4). ``self.config`` is the init-time materialization kept for
@@ -2132,8 +2131,9 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                         executor_work_may_continue=False,
                     )
                 )
-            # ARC live-context-plane wiring for this tool-user ReAct loop.
-            _react_scope_token = _ctx.set_react_scope(str(getattr(self.agent_def, "id", "")))
+            # ARC live-context-plane wiring; #878: module.kind rides the scope token.
+            _scope_id = str(getattr(self.agent_def, "id", ""))
+            _react_scope_token = _ctx.set_react_scope(_scope_id, self.kind)
             _react_session_token = _ctx.set_react_session(session_id)
             _react_window_token = _ctx.set_react_window(_resolve_expert_context_window(self.config))
             try:
