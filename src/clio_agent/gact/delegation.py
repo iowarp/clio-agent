@@ -86,11 +86,10 @@ def _coerce_expert_handoff_rows(value: Any) -> list[dict[str, Any]]:
 def _expert_handoff_fields(handoff: Mapping[str, Any]) -> dict[str, str]:
     """Return the structured handoff fields for an ``expert_handoff`` Part.
 
-    Mirrors the keys :func:`_expert_handoff_summary` reads so the message Part can
-    carry the delegation as typed fields (``parent_agent`` / ``child_agent`` /
-    ``stage`` / ``status``) instead of forcing a client to parse the prose label.
-    The generating party is the parent, so callers set ``Part.agent_id`` to
-    ``parent_agent``.
+    The message Part carries the delegation as typed fields (``parent_agent`` /
+    ``child_agent`` / ``stage`` / ``status``) instead of forcing a client to parse
+    a prose label. The generating party is the parent, so callers set
+    ``Part.agent_id`` to ``parent_agent``.
     """
 
     child = str(handoff.get("agent_id") or handoff.get("expert") or "").strip()
@@ -103,25 +102,6 @@ def _expert_handoff_fields(handoff: Mapping[str, Any]) -> dict[str, str]:
         "stage": stage,
         "status": status,
     }
-
-
-def _expert_handoff_summary(handoff: Mapping[str, Any]) -> str:
-    """Return a compact user-facing summary for an expert handoff part."""
-
-    agent = str(handoff.get("agent_id") or handoff.get("expert") or "expert")
-    parent = str(handoff.get("parent_id") or handoff.get("parent") or "").strip()
-    status = str(handoff.get("status") or "observed")
-    stage = str(handoff.get("stage") or handoff.get("dispatch_target") or "").strip()
-    output = str(
-        handoff.get("output") or handoff.get("output_summary") or handoff.get("summary") or ""
-    ).strip()
-    route = f"{parent} -> {agent}" if parent else agent
-    bits = [route, status]
-    if stage:
-        bits.append(stage)
-    if output:
-        bits.append(output)
-    return " | ".join(bits)
 
 
 # ------------------------------------------------------------------------- #
@@ -888,71 +868,4 @@ def _fallback_answer_from_delegation(handoffs: list[dict[str, Any]]) -> str:
         text = str(row.get("output") or row.get("output_summary") or "").strip()
         if text:
             return text
-    return ""
-
-
-# ------------------------------------------------------------------------- #
-# Structured-answer rendering (delegation return summaries) #
-# ------------------------------------------------------------------------- #
-
-
-def _looks_like_structured_answer(text: str) -> bool:
-    """True when an expert answer is machine-readable state, not prose."""
-
-    stripped = (text or "").lstrip()
-    if not stripped:
-        return False
-    return stripped[0] in "{[" or stripped.startswith("```json") or stripped.startswith("```JSON")
-
-
-def _render_return_summary(output: str) -> str:
-    """A human-readable one-liner for a child's return, from its GENUINE answer.
-
-    Prose answers pass through unchanged. Structured (JSON) answers — the typed
-    ``dspy.extract`` deliverable — are rendered into a compact, grounded summary
-    (a ``summary``/``description`` field if present, else the top-level scalar
-    fields) so the transcript shows the real result instead of a generic
-    "returned a compact result" placeholder. Returns "" when there is nothing
-    meaningful to show (caller supplies the fallback)."""
-
-    text = (output or "").strip()
-    if not text or not _looks_like_structured_answer(text):
-        return text
-    body = text
-    if body.startswith("```"):
-        body = body.strip("`")
-        body = body.split("\n", 1)[-1].strip() if "\n" in body else ""
-    try:
-        data = json.loads(body)
-    except Exception:  # noqa: BLE001 - non-JSON delegation body returned verbatim
-        return text
-    if isinstance(data, Mapping):
-        node: Mapping[str, Any] = data
-        # Unwrap a single-key namespace wrapper (e.g. {"<namespace>": {...}}) so the
-        # salient fields one level down are summarised, not just "{namespace}".
-        for _ in range(2):
-            if len(node) == 1:
-                only = next(iter(node.values()))
-                if isinstance(only, Mapping):
-                    node = only
-                    continue
-            break
-        for key in ("summary", "description", "answer", "result"):
-            value = node.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        scalars = []
-        for key, value in node.items():
-            if isinstance(value, bool) or isinstance(value, (str, int, float)):
-                text_value = str(value)
-                if len(text_value) > 60:
-                    text_value = text_value[:57] + "..."
-                scalars.append(f"{key}: {text_value}")
-            if len(scalars) >= 6:
-                break
-        if scalars:
-            return "; ".join(scalars)
-    if isinstance(data, list):
-        return f"{len(data)} item(s)"
-    # Structured but unrenderable (e.g. empty object): no meaningful one-liner.
     return ""

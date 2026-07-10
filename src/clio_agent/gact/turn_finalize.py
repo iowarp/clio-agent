@@ -47,10 +47,7 @@ from typing import TYPE_CHECKING, Any
 from clio_agent.gact.agents.resolution import (
     _runtime_active_agent_blueprint_id,
 )
-from clio_agent.gact.delegation import (
-    _looks_like_structured_answer,
-    _workflow_state_from_handoff_rows,
-)
+from clio_agent.gact.delegation import _workflow_state_from_handoff_rows
 from clio_agent.gact.enrichment import _finalize_context_frame
 from clio_agent.gact.events import Event, EventBus, _publish_transcript_event
 from clio_agent.gact.evidence import (
@@ -61,6 +58,7 @@ from clio_agent.gact.messaging import (
     _ask_user_options_from_action,
     _coerce_ask_user_action,
 )
+from clio_agent.gact.return_summary import _looks_like_structured_answer
 from clio_agent.gact.runtime.globals import (
     _emit_semantic_event,
     _iso_from_epoch,

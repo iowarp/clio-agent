@@ -59,7 +59,6 @@ from clio_agent.gact.delegation import (
     _append_accumulated_workflow_state_context,
     _append_session_workflow_state_context,
     _bubbled_child_evidence_output_summary,
-    _clean_public_transcript_text,
     _coerce_expert_handoff_rows,
     _delegated_expert_agent_id,
     _delegated_expert_prompt,
@@ -67,9 +66,7 @@ from clio_agent.gact.delegation import (
     _failed_child_delegation_workflow_state,
     _latest_delegation_output_summary,
     _latest_parent_resumed_output_summary,
-    _looks_like_structured_answer,
     _prediction_workflow_state,
-    _render_return_summary,
     _should_execute_delegated_handoff,
     _workflow_state_from_handoff_rows,
     _workflow_state_from_outputs,
@@ -77,6 +74,7 @@ from clio_agent.gact.delegation import (
 from clio_agent.gact.events import _publish_transcript_event
 from clio_agent.gact.evidence import _tool_agent_empty_answer_fallback
 from clio_agent.gact.messaging import _prediction_summary
+from clio_agent.gact.return_summary import _looks_like_structured_answer, public_return_summary
 from clio_agent.gact.runtime.globals import (
     _emit_semantic_event,
     _tool_session_context,
@@ -538,10 +536,8 @@ async def execute_delegated_experts(
             # handoff_output stays blanked for structured answers because it
             # feeds the parent RESUME PROMPT (which receives the typed
             # workflow_state separately, not raw JSON).
-            public_return_summary = (
-                _clean_public_transcript_text(
-                    _render_return_summary(output), schema=state.workflow_schema
-                )
+            public_summary = (
+                public_return_summary(output, schema=state.workflow_schema)
                 or f"{target.id} returned to {parent_agent.id}."
             )
             completed_row = {
@@ -565,7 +561,7 @@ async def execute_delegated_experts(
                 # Real, human-readable return summary — the same string the
                 # live delegation-return render shows, so the reload (/messages)
                 # render matches the live render (no change-on-reload).
-                "output_summary": public_return_summary,
+                "output_summary": public_summary,
                 # The GENUINE structured output for the "details" disclosure on
                 # reload (mirrors the live return's `response`). Empty for prose
                 # (the body already is the answer). Distinct from `output`, which
@@ -588,7 +584,7 @@ async def execute_delegated_experts(
                 f"{delegation_event_prefix}.completed",
                 turn_id=state.turn_id,
                 trace_id=state.trace_id,
-                summary=public_return_summary,
+                summary=public_summary,
                 actor={"agent_id": target.id, "role": "child_expert"},
                 subject={"agent_id": parent_agent.id, "role": "parent_expert"},
                 blueprint=delegation_blueprint,

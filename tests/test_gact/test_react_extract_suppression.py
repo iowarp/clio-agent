@@ -396,10 +396,16 @@ def test_return_contract_carries_answer_while_visible_parts_suppressed(tmp_path,
     assert _visible_parts(facts["transcript"], "answer") == []
     persisted = _persisted_text_fields(facts["client"], facts["sid"])
     assert "reasoning" not in persisted and "answer" not in persisted
-    # And the delegation render-source (row["output"]) would carry that VALUE.
-    from clio_agent.gact.delegation import _expert_handoff_summary
+    # And the delegation render-source carries that VALUE: a completed delegation
+    # row's typed ``output`` is what feeds the client's rendered output_summary.
+    from clio_agent.gact.delegation import _latest_delegation_output_summary
 
-    assert ANSWER in _expert_handoff_summary({"agent_id": "geospatial", "output": result.answer})
+    assert (
+        _latest_delegation_output_summary(
+            [{"stage": "delegate.completed", "agent_id": "geospatial", "output": result.answer}]
+        )
+        == ANSWER
+    )
 
 
 class _AttrDict(dict):

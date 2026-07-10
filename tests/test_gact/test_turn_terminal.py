@@ -447,7 +447,7 @@ def test_final_responder_structured_answer_emits_structured_reason(
     """A structured (JSON) terminal answer routes output_raw to the deliverable and
     emits the ``final_responder_structured_answer`` reason."""
 
-    from clio_agent.gact.delegation import _looks_like_structured_answer
+    from clio_agent.gact.return_summary import _looks_like_structured_answer
 
     audits: list[dict[str, Any]] = []
     monkeypatch.setattr(
