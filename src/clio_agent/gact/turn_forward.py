@@ -55,7 +55,7 @@ from clio_agent.gact.runtime.globals import (
     _tool_session_context,
     _UnsupportedSessionAgent,
 )
-from clio_agent.gact.runtime.type_parsing import _blueprint_module_kind
+from clio_agent.gact.runtime.type_parsing import _blueprint_module_kind, answer_stream_visible
 from clio_agent.gact.streaming import (
     _agent_forward_compat,
     _run_dynamic_agent_compat,
@@ -153,6 +153,12 @@ async def forward_turn(state: "TurnState") -> Any:
             raise _UnsupportedSessionAgent(state.active_agent_id)
         state.prompt_resolution = dict(dynamic_agent.metadata.get("prompt_resolution") or {})
         state.dynamic_agent_used = dynamic_agent
+        # #880: capture, at the source, whether this responder's typed ``answer`` is
+        # a VISIBLE deliverable — decided STRUCTURALLY from its declared
+        # structured_outputs (final_responder OR no workflow_state). finalize reads
+        # this to blank a workflow_state extract expert's batch answer fallback,
+        # never re-deriving it by sniffing whether the answer text looks like JSON.
+        state.answer_stream_visible = answer_stream_visible(dynamic_agent)
         runner = _blueprint_runner_for_agent(dynamic_agent)
         dynamic_kind = (
             _blueprint_module_kind(dynamic_agent)
@@ -323,7 +329,9 @@ async def forward_turn(state: "TurnState") -> Any:
                     summary="LLM request started for CLIO orchestrator.",
                     actor=llm_actor,
                     subject=llm_subject,
-                    provider=_llm_provider_payload(state.app, state.active_agent_id or "orchestrator"),
+                    provider=_llm_provider_payload(
+                        state.app, state.active_agent_id or "orchestrator"
+                    ),
                     payload={
                         "request_mode": "streamed",
                         "routing_mode": routing_override,
@@ -356,7 +364,9 @@ async def forward_turn(state: "TurnState") -> Any:
                         summary="LLM response completed for CLIO orchestrator.",
                         actor=llm_actor,
                         subject=llm_subject,
-                        provider=_llm_provider_payload(state.app, state.active_agent_id or "orchestrator"),
+                        provider=_llm_provider_payload(
+                            state.app, state.active_agent_id or "orchestrator"
+                        ),
                         payload=_prediction_summary(state.pred),
                     )
                 if state.pred is None:
@@ -370,7 +380,9 @@ async def forward_turn(state: "TurnState") -> Any:
                         summary="Synchronous LLM request started for CLIO orchestrator.",
                         actor=llm_actor,
                         subject=llm_subject,
-                        provider=_llm_provider_payload(state.app, state.active_agent_id or "orchestrator"),
+                        provider=_llm_provider_payload(
+                            state.app, state.active_agent_id or "orchestrator"
+                        ),
                         payload={
                             "request_mode": "sync",
                             "routing_mode": routing_override,
@@ -407,7 +419,9 @@ async def forward_turn(state: "TurnState") -> Any:
                         summary="Synchronous LLM response completed for CLIO orchestrator.",
                         actor=llm_actor,
                         subject=llm_subject,
-                        provider=_llm_provider_payload(state.app, state.active_agent_id or "orchestrator"),
+                        provider=_llm_provider_payload(
+                            state.app, state.active_agent_id or "orchestrator"
+                        ),
                         payload=_prediction_summary(state.pred),
                     )
     if state.dynamic_agent_used is not None and state.dynamic_agent_used.source == "expert_pack":

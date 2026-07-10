@@ -64,6 +64,23 @@ _TURN_DEGRADATION_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
             "downgrade the user sees is queryable rather than silent."
         ),
     },
+    "tool_agent_evidence_substituted_for_empty_answer": {
+        "category": "delegation_degradation",
+        "recovery_actions": [
+            "inspect_child_tool_agent_final_answer",
+            "review_substituted_tool_trajectory_evidence",
+        ],
+        "description": (
+            "A tool-backed child expert returned with an EMPTY prose answer but a "
+            "non-empty ReAct tool trajectory, so the delegation ``output`` was "
+            "substituted with bounded tool-observation evidence recovered from that "
+            "trajectory (evidence._tool_agent_empty_answer_fallback) instead of the "
+            "child's own answer. Recorded so the substituted, server-composed "
+            "``output`` the parent (and UI 'show more') sees is queryable rather than "
+            "a silent content swap — the analogue of final_responder_empty_answer for "
+            "a delegated tool agent."
+        ),
+    },
     "answer_substituted_from_delegation_evidence": {
         "category": "delegation_degradation",
         "recovery_actions": [

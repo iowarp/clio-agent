@@ -123,15 +123,21 @@ def _dynamic_parent_resume_prompt(
     merged_state: dict[str, Any] = {}
     completed_ids: list[str] = []
     for row in executed_handoffs:
-        if str(row.get("stage") or "") != "delegate.completed":
+        stage = str(row.get("stage") or "")
+        if stage not in ("delegate.completed", "delegate.failed"):
             continue
         agent_id = str(row.get("agent_id") or row.get("delegate_to") or "")
-        if agent_id and agent_id not in completed_ids:
-            completed_ids.append(agent_id)
         status = str(row.get("status") or "")
-        summary = str(
-            row.get("output") or row.get("output_summary") or row.get("summary") or ""
-        ).strip()
+        if agent_id and status != "failed" and agent_id not in completed_ids:
+            completed_ids.append(agent_id)
+        # #880: the result line renders the child's answer VERBATIM from the typed
+        # ``output`` field (no server-authored summary). A FAILED child carries an
+        # EMPTY ``output`` (CONFIRMED) and surfaces the failure from its typed
+        # ``error``/``message`` fields — rendering typed state into a prompt is
+        # allowed grounding; authoring text into ``output`` is not.
+        summary = str(row.get("output") or "").strip()
+        if not summary and status == "failed":
+            summary = f"failed: {row.get('error') or ''} {row.get('message') or ''}".strip()
         children = row.get("children")
         child_note = ""
         if isinstance(children, list) and children:
@@ -203,11 +209,11 @@ def _iter_delegation_return_rows(rows: list[dict[str, Any]]) -> Iterator[dict[st
             yield from _iter_delegation_return_rows(child_rows)
 
 
-def _latest_parent_resumed_output_summary(
+def _latest_parent_resumed_output(
     rows: list[dict[str, Any]],
     parent_id: str,
 ) -> str:
-    """Return the latest compact output from a resumed delegated parent."""
+    """Return the latest ``output`` (the child's answer, verbatim) from a resumed parent."""
 
     latest = ""
     stack = list(rows)
@@ -217,35 +223,31 @@ def _latest_parent_resumed_output_summary(
             str(row.get("agent_id") or "") == parent_id
             and str(row.get("stage") or "") == "parent.resumed"
         ):
-            summary = str(
-                row.get("output") or row.get("output_summary") or row.get("summary") or ""
-            ).strip()
-            if summary:
-                latest = summary
+            output = str(row.get("output") or "").strip()
+            if output:
+                latest = output
         children = row.get("children")
         if isinstance(children, list):
             stack.extend(child for child in children if isinstance(child, dict))
     return latest
 
 
-def _latest_delegation_output_summary(rows: list[dict[str, Any]]) -> str:
-    """Return the latest completed delegated child output from nested rows."""
+def _latest_delegation_output(rows: list[dict[str, Any]]) -> str:
+    """Return the latest completed delegated child ``output`` (verbatim) from nested rows."""
 
     latest = ""
     for row in _iter_delegation_return_rows(rows):
-        summary = str(
-            row.get("output") or row.get("output_summary") or row.get("summary") or ""
-        ).strip()
-        if summary:
-            latest = summary
+        output = str(row.get("output") or "").strip()
+        if output:
+            latest = output
     return latest
 
 
-def _latest_completed_child_output_summary(
+def _latest_completed_child_output(
     rows: list[dict[str, Any]],
     child_ids: Iterable[str],
 ) -> str:
-    """Return the latest completed output from one of the named child experts."""
+    """Return the latest completed ``output`` (verbatim) from one of the named children."""
 
     target_ids = {str(child_id).strip() for child_id in child_ids if str(child_id).strip()}
     if not target_ids:
@@ -257,34 +259,30 @@ def _latest_completed_child_output_summary(
             and str(row.get("status") or "") in {"", "completed"}
             and str(row.get("agent_id") or row.get("delegate_to") or "").strip() in target_ids
         ):
-            summary = str(
-                row.get("output") or row.get("output_summary") or row.get("summary") or ""
-            ).strip()
-            if summary:
-                latest = summary
+            output = str(row.get("output") or "").strip()
+            if output:
+                latest = output
     return latest
 
 
-def _latest_final_child_output_summary(
-    rows: list[dict[str, Any]], final_ids: Iterable[str] = ()
-) -> str:
-    """Latest completed DECLARATIVELY-flagged final-responder child output (``final_ids``
+def _latest_final_child_output(rows: list[dict[str, Any]], final_ids: Iterable[str] = ()) -> str:
+    """Latest completed DECLARATIVELY-flagged final-responder child ``output`` (``final_ids``
     via ``final_responder_ids``, never child NAMES — principle #1); ``""`` if none flagged."""
     ids = {str(c).strip() for c in final_ids if str(c).strip()}
-    return _latest_completed_child_output_summary(rows, ids) if ids else ""
+    return _latest_completed_child_output(rows, ids) if ids else ""
 
 
-def _bubbled_child_evidence_output_summary(
+def _bubbled_child_evidence_output(
     rows: list[dict[str, Any]],
     parent_id: str,
     declared_child_ids: Iterable[str],
 ) -> str:
-    """Return the best child-subtree result for strict-depth parent completion."""
+    """Return the best child-subtree ``output`` for strict-depth parent completion."""
 
-    return _latest_parent_resumed_output_summary(
+    return _latest_parent_resumed_output(
         rows,
         parent_id,
-    ) or _latest_completed_child_output_summary(rows, declared_child_ids)
+    ) or _latest_completed_child_output(rows, declared_child_ids)
 
 
 # ------------------------------------------------------------------------- #
@@ -472,12 +470,10 @@ def _workflow_state_from_handoff_rows(
         raw_state = row.get("workflow_state")
         if isinstance(raw_state, Mapping):
             _merge_workflow_state_mapping(state, raw_state, schema=schema)
-        for output_key in ("output_summary", "summary"):
-            output = str(row.get(output_key) or "").strip()
-            if output:
-                _merge_workflow_state_mapping(
-                    state, _workflow_state_from_outputs([output], schema=schema), schema=schema
-                )
+        # #880: typed state rides row["workflow_state"] ONLY. The former
+        # summary-prose scrape (parsing typed machine state out of a
+        # human-readable summary sentence the server wrote) is deleted — there is
+        # no server-authored summary to parse anymore.
         for call in row.get("tools_called") or []:
             if isinstance(call, Mapping):
                 call_state = call.get("workflow_state")
@@ -698,11 +694,12 @@ def _clean_public_transcript_text(
         lambda match: match.group(1) if match.group(1).strip() else "",
         public,
     )
-    public = re.sub(
-        r"(?is)(^|[.!?]\s+)[^.?!\n]*\btyped\s+workflow[_ ]state\b[^.?!\n]*(?:[.?!]|$)",
-        lambda match: match.group(1) if match.group(1).strip() else "",
-        public,
-    )
+    # #880: the natural-language keyword heuristic that deleted any sentence
+    # containing the phrase 'typed workflow state' from the model's answer is
+    # REMOVED — clio core must not decide visibility of model prose by matching a
+    # keyword (superseding principle #1). The structural markers above ([[ ## ]]
+    # DSPy field markers, fenced workflow_state JSON blocks) are format-only and
+    # stay.
     if preserve_whitespace:
         # The inner cleaner strips boundary whitespace; re-attach the ORIGINAL
         # leading/trailing whitespace around the cleaned core so streamed chunks
@@ -804,26 +801,6 @@ def _failed_child_delegation_workflow_state(
     return state
 
 
-def _failed_child_delegation_output_summary(
-    *,
-    child_agent_id: str,
-    parent_agent_id: str,
-    error: str,
-    message: str,
-) -> str:
-    """Return compact parent-consumable text for a failed child expert.
-
-    The failure's typed ``workflow_state`` is carried STRUCTURALLY on the failed
-    delegation row's ``workflow_state`` field (see the caller); it is NOT
-    serialized into this human-readable summary text anymore.
-    """
-
-    return (
-        f"Child expert {child_agent_id!r} failed while delegated from "
-        f"{parent_agent_id!r}: {error}. {message}"
-    )
-
-
 def _prediction_workflow_state(result: Any, *, schema: "WorkflowStateSchema") -> dict[str, Any]:
     """Return a prediction's first-class typed ``workflow_state`` as a Mapping.
 
@@ -865,7 +842,7 @@ def _fallback_answer_from_delegation(handoffs: list[dict[str, Any]]) -> str:
             continue
         if str(row.get("status") or "") not in {"", "completed"}:
             continue
-        text = str(row.get("output") or row.get("output_summary") or "").strip()
+        text = str(row.get("output") or "").strip()
         if text:
             return text
     return ""

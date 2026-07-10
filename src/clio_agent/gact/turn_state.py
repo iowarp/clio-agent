@@ -87,6 +87,13 @@ class TurnState:
     # --- Mutable accumulators (reassigned as the turn progresses) ---
     error_info: "Optional[ErrorInfo]" = None
     answer_text: str = ""
+    # #880: whether ``answer_text`` is a VISIBLE deliverable, decided STRUCTURALLY
+    # from the responder's declared structured_outputs (``answer_stream_visible``),
+    # set at the source in turn_forward. A ``workflow_state`` extract expert (not
+    # the final_responder) has its typed answer flow to the delegation return
+    # contract behind *show more*, never into the visible answer lane — so finalize
+    # blanks its batch fallback. Never re-derived by sniffing the answer text.
+    answer_stream_visible: bool = True
     selected_agent: str = ""
     rationale: str = ""
     route_source: str = ""

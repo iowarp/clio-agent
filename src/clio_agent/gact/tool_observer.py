@@ -548,7 +548,7 @@ def _emit_live_tool_route_context(app: "FastAPI", sid: str, tool_name: str) -> N
             "delegation_lifecycle": "sync",
             "execution_mode": "tool",
             "depth": 1,
-            "output_summary": f"Preparing {tool_name}.",
+            # #880: pending state rides the typed status/stage fields, not prose.
         }
         handoff_fields = _expert_handoff_fields(row)
         _append_live_assistant_part_once(

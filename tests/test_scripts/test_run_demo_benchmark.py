@@ -124,9 +124,7 @@ def test_select_real_orchestrator_lane_cases() -> None:
     selected, missing = bench._select_cases(cases, lane="real_orchestrator", case_ids=())
 
     assert missing == []
-    assert [case.case_id for case in selected] == list(
-        bench._BENCHMARK_LANES["real_orchestrator"]
-    )
+    assert [case.case_id for case in selected] == list(bench._BENCHMARK_LANES["real_orchestrator"])
 
 
 def test_select_semantic_regression_lane_cases() -> None:
@@ -175,9 +173,7 @@ def test_select_marketplace_agents_lane_cases() -> None:
     selected, missing = bench._select_cases(cases, lane="marketplace_agents", case_ids=())
 
     assert missing == []
-    assert [case.case_id for case in selected] == list(
-        bench._BENCHMARK_LANES["marketplace_agents"]
-    )
+    assert [case.case_id for case in selected] == list(bench._BENCHMARK_LANES["marketplace_agents"])
 
 
 def test_real_orchestrator_is_run_benchmark_default_lane() -> None:
@@ -300,9 +296,7 @@ def test_case_row_records_route_file_and_artifact_evidence(tmp_path) -> None:
     row = bench._case_row(result)
 
     assert row["data_files"] == [str(data_file), str(png_input)]
-    assert row["artifact_evidence"] == [
-        {"path": str(artifact), "exists": True, "size_bytes": 3}
-    ]
+    assert row["artifact_evidence"] == [{"path": str(artifact), "exists": True, "size_bytes": 3}]
     assert row["route_metrics"]["expert_depth"] == 2
     assert row["route_metrics"]["tool_call_count"] == 1
     assert row["route_graph"]["edges"][:2] == [
@@ -364,8 +358,7 @@ def test_format_live_event_line_renders_compact_semantic_event() -> None:
     )
 
     assert line == (
-        "semantic llm.request.started | agent=data | status=running | "
-        "LLM request started for data."
+        "semantic llm.request.started | agent=data | status=running | LLM request started for data."
     )
 
 
@@ -785,12 +778,12 @@ def test_case_row_observed_excerpt_prefers_completed_synthesis_handoff() -> None
             {
                 "agent_id": "analysis",
                 "status": "completed",
-                "output_summary": "analysis evidence",
+                "output": "analysis evidence",
             },
             {
                 "agent_id": "synthesis",
                 "status": "completed",
-                "output_summary": "final scientific brief",
+                "output": "final scientific brief",
             },
         ],
     )
@@ -822,7 +815,7 @@ def test_case_row_prefers_visible_answer_over_internal_handoff_state() -> None:
             {
                 "agent_id": "synthesis",
                 "status": "completed",
-                "output_summary": (
+                "output": (
                     "final clean EarthScope brief\n\n"
                     "CLIO typed workflow state:\n"
                     '{"workflow_state":{"report":{"status":"ready"}}}'
@@ -867,14 +860,14 @@ def test_nested_expert_handoffs_count_for_case_expectations(tmp_path: Path) -> N
         {
             "agent_id": "data",
             "children": [{"agent_id": "ndp_catalog"}],
-            "output_summary": "NDP blocker returned.",
+            "output": "NDP blocker returned.",
         },
         {
             "agent_id": "analysis",
             "children": [{"agent_id": "sac_format"}],
-            "output_summary": "SAC statistics complete.",
+            "output": "SAC statistics complete.",
         },
-        {"agent_id": "visualization", "output_summary": f"PNG artifact: {png}"},
+        {"agent_id": "visualization", "output": f"PNG artifact: {png}"},
     ]
     result = bench.DemoResult(
         case=bench.DemoCase(
@@ -900,7 +893,13 @@ def test_nested_expert_handoffs_count_for_case_expectations(tmp_path: Path) -> N
         agent_blueprint={"active_agent_blueprint_id": "seismic-waveform-review"},
     )
 
-    assert result.handoff_agent_ids == ["data", "ndp_catalog", "analysis", "sac_format", "visualization"]
+    assert result.handoff_agent_ids == [
+        "data",
+        "ndp_catalog",
+        "analysis",
+        "sac_format",
+        "visualization",
+    ]
     assert result.passed is True
 
 
@@ -979,10 +978,7 @@ def test_remote_png_urls_do_not_count_as_local_artifacts(tmp_path: Path) -> None
     png = tmp_path / "local.png"
     png.write_bytes(b"png")
     message = _message(
-        text=(
-            "Remote reference https://example.org/generated.png and "
-            f"local artifact {png}"
-        ),
+        text=(f"Remote reference https://example.org/generated.png and local artifact {png}"),
         tools=[],
     )
 
@@ -1156,9 +1152,7 @@ def test_coordinate_earthscope_case_accepts_typed_blocker_without_analysis(
             },
         }
     }
-    case = bench._canonical_cases_by_id()[
-        "marketplace_earthscope_gnss_region_coordinate_mutation"
-    ]
+    case = bench._canonical_cases_by_id()["marketplace_earthscope_gnss_region_coordinate_mutation"]
     message = _message(
         text=(
             "EarthScope GNSS acquisition blocker: station metadata was staged, "
@@ -1175,7 +1169,7 @@ def test_coordinate_earthscope_case_accepts_typed_blocker_without_analysis(
                 "agent_id": "geospatial",
                 "parent_id": "main",
                 "stage": "delegate.completed",
-                "output_summary": '{"workflow_state":{"geospatial":{"status":"resolved"}}}',
+                "output": '{"workflow_state":{"geospatial":{"status":"resolved"}}}',
             },
             {
                 "agent_id": "main",
@@ -1186,31 +1180,31 @@ def test_coordinate_earthscope_case_accepts_typed_blocker_without_analysis(
                 "agent_id": "data",
                 "parent_id": "main",
                 "stage": "delegate.completed",
-                "output_summary": str(workflow_state),
+                "output": str(workflow_state),
             },
             {
                 "agent_id": "ndp_dataset_discovery",
                 "parent_id": "data",
                 "stage": "delegate.completed",
-                "output_summary": '{"workflow_state":{"catalog":{"status":"metadata_found"}}}',
+                "output": '{"workflow_state":{"catalog":{"status":"metadata_found"}}}',
             },
             {
                 "agent_id": "earthscope_station_catalog",
                 "parent_id": "data",
                 "stage": "delegate.completed",
-                "output_summary": '{"workflow_state":{"station_catalog":{"status":"ranked_metadata_only"}}}',
+                "output": '{"workflow_state":{"station_catalog":{"status":"ranked_metadata_only"}}}',
             },
             {
                 "agent_id": "ndp_resource_resolver",
                 "parent_id": "data",
                 "stage": "delegate.completed",
-                "output_summary": str(workflow_state),
+                "output": str(workflow_state),
             },
             {
                 "agent_id": "synthesis",
                 "parent_id": "main",
                 "stage": "delegate.completed",
-                "output_summary": "Final bounded blocker summary.",
+                "output": "Final bounded blocker summary.",
             },
         ],
     )
@@ -1245,7 +1239,7 @@ def test_expected_terms_can_match_tool_and_handoff_evidence() -> None:
     message["metadata"]["expert_handoffs"] = [
         {
             "agent_id": "genomics",
-            "output_summary": "FASTA and VCF tool evidence returned.",
+            "output": "FASTA and VCF tool evidence returned.",
         }
     ]
     result = bench.DemoResult(
@@ -1471,10 +1465,11 @@ def test_render_report_includes_provider_lane_audit(tmp_path) -> None:
     assert "## Provider Lane Audit" in report
     assert "## Extended Stress Coverage Audit" in report
     assert "Semantic trace events captured: 3 events across 1/5 cases (3 live-observed)" in report
-    assert "Semantic event types: llm.request.started, tool.selection.invalid, turn.started" in report
     assert (
-        "Invalid tool selections blocked: 1 "
-        "(workflow_hdf5_overview:variant_impact->shell_bash)"
+        "Semantic event types: llm.request.started, tool.selection.invalid, turn.started" in report
+    )
+    assert (
+        "Invalid tool selections blocked: 1 (workflow_hdf5_overview:variant_impact->shell_bash)"
     ) in report
     assert (
         "Semantic trace: 3 events, 3 live, "
@@ -1541,7 +1536,9 @@ def test_render_report_surfaces_tool_result_evidence_gaps(tmp_path: Path) -> Non
     assert "Successful tool rows with result evidence: 1/2" in report
     assert "## Tool Result Evidence Review" in report
     assert "`earthscope_trace_review`: `ndp_stage_resource`" in report
-    assert "Tool result evidence: 1/2 successful rows carry result evidence; 1 failed rows" in report
+    assert (
+        "Tool result evidence: 1/2 successful rows carry result evidence; 1 failed rows" in report
+    )
     assert "failed tools: ndp_search_datasets" in report
 
 
@@ -1698,7 +1695,9 @@ def test_real_orchestrator_lane_audit_requires_no_shortcuts() -> None:
     audit = bench._provider_lane_audit([good, shortcut], "real_orchestrator")
 
     shortcut_row = next(
-        item for item in audit if item["criterion"] == "all selected cases avoid shortcut route sources"
+        item
+        for item in audit
+        if item["criterion"] == "all selected cases avoid shortcut route sources"
     )
     assert shortcut_row["passed"] is False
     assert shortcut_row["observed"] == 1
@@ -1727,7 +1726,9 @@ def test_real_orchestrator_lane_audit_requires_artifact_verification() -> None:
     audit = bench._provider_lane_audit([result], "real_orchestrator")
 
     artifact_row = next(
-        item for item in audit if item["criterion"] == "artifact-producing cases verify artifacts on disk"
+        item
+        for item in audit
+        if item["criterion"] == "artifact-producing cases verify artifacts on disk"
     )
     assert artifact_row["passed"] is False
     assert artifact_row["observed"] == 0
@@ -1764,7 +1765,9 @@ def test_real_orchestrator_audit_no_longer_requires_sac_plot() -> None:
     audit = bench._provider_lane_audit([result], "real_orchestrator")
 
     artifact_row = next(
-        item for item in audit if item["criterion"] == "artifact-producing cases verify artifacts on disk"
+        item
+        for item in audit
+        if item["criterion"] == "artifact-producing cases verify artifacts on disk"
     )
     assert artifact_row["required"] == 1
     assert artifact_row["observed"] == 0
@@ -1867,7 +1870,9 @@ def test_semantic_regression_audit_reports_missing_proof_evidence() -> None:
         if item["criterion"] == "semantic-regression passing evidence covers required proof classes"
     )
     case_row = next(
-        item for item in audit if item["criterion"] == "each declared case proof is observed in session evidence"
+        item
+        for item in audit
+        if item["criterion"] == "each declared case proof is observed in session evidence"
     )
     assert declared_row["passed"] is False
     assert "command_mcp_skill_scope" in "\n".join(declared_row["details"])
@@ -1876,9 +1881,7 @@ def test_semantic_regression_audit_reports_missing_proof_evidence() -> None:
     assert observed_row["passed"] is False
     assert "workspace_memory_scope" in "\n".join(observed_row["details"])
     assert case_row["passed"] is False
-    assert case_row["details"] == [
-        "memory: workspace_memory_scope declared but not observed"
-    ]
+    assert case_row["details"] == ["memory: workspace_memory_scope declared but not observed"]
 
 
 def test_command_mcp_skill_scope_requires_structured_capability_evidence() -> None:
@@ -2118,7 +2121,9 @@ def test_render_existing_jsonl_can_gate_missing_semantic_evidence(tmp_path: Path
     assert "workspace_memory_scope" in report_text
 
 
-def test_render_existing_jsonl_without_gate_keeps_report_rendering_permissive(tmp_path: Path) -> None:
+def test_render_existing_jsonl_without_gate_keeps_report_rendering_permissive(
+    tmp_path: Path,
+) -> None:
     result = bench.DemoResult(
         case=bench.DemoCase(
             case_id="memory_scope",
@@ -2328,7 +2333,7 @@ def test_artifact_case_requires_user_visible_png_reference(tmp_path: Path) -> No
                 "agent_id": "synthesis",
                 "status": "completed",
                 "stage": "delegate.completed",
-                "output_summary": f"PNG artifact: {png}",
+                "output": f"PNG artifact: {png}",
             }
         ],
     )
@@ -2382,7 +2387,7 @@ def test_final_no_data_answer_contradicting_staged_acquisition_fails(tmp_path: P
                 "agent_id": "synthesis",
                 "status": "completed",
                 "stage": "delegate.completed",
-                "output_summary": (
+                "output": (
                     '{"workflow_state":{"acquisition":{"status":"staged",'
                     '"analysis_ready":true,"local_path":"'
                     + str(csv)
@@ -2422,7 +2427,14 @@ def test_final_no_data_answer_contradicting_staged_acquisition_fails(tmp_path: P
 
 
 def test_visible_answer_misstating_verified_artifact_path_fails(tmp_path: Path) -> None:
-    workspace_csv = tmp_path / "workspace" / ".clio" / "artifacts" / "ndp-staging" / "earthscope_converted_data.csv"
+    workspace_csv = (
+        tmp_path
+        / "workspace"
+        / ".clio"
+        / "artifacts"
+        / "ndp-staging"
+        / "earthscope_converted_data.csv"
+    )
     workspace_csv.parent.mkdir(parents=True)
     workspace_csv.write_text("Site,Latitude,Longitude\nUCSF,37.763,-122.458\n", encoding="utf-8")
     wrong_csv = tmp_path / ".clio" / "artifacts" / "ndp-staging" / "earthscope_converted_data.csv"
@@ -2555,7 +2567,7 @@ def test_earthscope_region_visible_answer_fails_scan_limited_overclaims(tmp_path
                 "agent_id": "synthesis",
                 "status": "completed",
                 "stage": "delegate.completed",
-                "output_summary": bench.json.dumps(workflow_state),
+                "output": bench.json.dumps(workflow_state),
             }
         ],
     )
@@ -2794,7 +2806,9 @@ def test_earthscope_positive_scientific_final_brief_passes(tmp_path: Path) -> No
     station_csv.write_text("time,east,north,up,sigEE,sigNN,sigUU\n", encoding="utf-8")
     png = tmp_path / "MTA1_time_series.png"
     png.write_bytes(b"png")
-    source_url = "https://ds2.datacollaboratory.org/Earthscope_api_dec2024/raw_csv/MTA1.CI.LY_.30.csv"
+    source_url = (
+        "https://ds2.datacollaboratory.org/Earthscope_api_dec2024/raw_csv/MTA1.CI.LY_.30.csv"
+    )
     message = _message(
         text=(
             "For the 34.05 N, 118.25 W / 75 km region, selected station MTA1 "
@@ -2972,8 +2986,7 @@ def test_earthscope_region_verifier_uses_metadata_data_file_for_station_csv(
     catalog.parent.mkdir(parents=True)
     png.parent.mkdir(parents=True, exist_ok=True)
     catalog.write_text(
-        "Site,Latitude,(deg),Longitude,(deg)\n"
-        "MTA1,34.05522077,-118.24550778\n",
+        "Site,Latitude,(deg),Longitude,(deg)\nMTA1,34.05522077,-118.24550778\n",
         encoding="utf-8",
     )
     station_csv.write_text("time,east,north,up\n2026-01-01,0,0,0\n", encoding="utf-8")
@@ -3099,8 +3112,7 @@ def test_earthscope_region_station_csv_within_radius_passes(tmp_path: Path) -> N
 
 def test_marketplace_canonical_cases_require_nonseismic_complex_hierarchy() -> None:
     cases = {
-        case.case_id: case
-        for case in bench._make_cases(bench._canonical_benchmark_manifest())
+        case.case_id: case for case in bench._make_cases(bench._canonical_benchmark_manifest())
     }
     materials = cases["marketplace_materials_crystal_review"]
     proteomics = cases["marketplace_proteomics_mzml_review"]
@@ -3141,8 +3153,7 @@ def test_marketplace_canonical_cases_require_nonseismic_complex_hierarchy() -> N
 
 def test_earthscope_topology_cases_use_distinct_blueprint_variants() -> None:
     cases = {
-        case.case_id: case
-        for case in bench._make_cases(bench._canonical_benchmark_manifest())
+        case.case_id: case for case in bench._make_cases(bench._canonical_benchmark_manifest())
     }
 
     assert (
@@ -3157,12 +3168,14 @@ def test_earthscope_topology_cases_use_distinct_blueprint_variants() -> None:
         cases["marketplace_earthscope_gnss_region_depth_topology"].agent_blueprint_id
         == "earthscope-gnss-region-depth"
     )
-    assert "marketplace_earthscope_gnss_region_width_topology" in bench._BENCHMARK_LANES[
-        "marketplace_earthscope"
-    ]
-    assert "marketplace_earthscope_gnss_region_depth_topology" in bench._BENCHMARK_LANES[
-        "marketplace_earthscope"
-    ]
+    assert (
+        "marketplace_earthscope_gnss_region_width_topology"
+        in bench._BENCHMARK_LANES["marketplace_earthscope"]
+    )
+    assert (
+        "marketplace_earthscope_gnss_region_depth_topology"
+        in bench._BENCHMARK_LANES["marketplace_earthscope"]
+    )
     assert cases["marketplace_earthscope_gnss_region_depth_topology"].min_expert_depth >= 9
     assert cases["marketplace_earthscope_gnss_region_width_topology"].min_branch_count >= 8
 
@@ -3263,7 +3276,12 @@ def test_marketplace_audit_distinguishes_complex_hierarchy_from_smoke() -> None:
 
 def test_render_report_from_multiple_jsonls_combines_marketplace_evidence(tmp_path: Path) -> None:
     blueprints = [
-        ("marketplace_genomics_reference_review", "genomics-review", "reference", "genomics_inspect_fasta"),
+        (
+            "marketplace_genomics_reference_review",
+            "genomics-review",
+            "reference",
+            "genomics_inspect_fasta",
+        ),
         (
             "marketplace_materials_crystal_review",
             "materials-crystal-review",
@@ -3282,7 +3300,12 @@ def test_render_report_from_multiple_jsonls_combines_marketplace_evidence(tmp_pa
             "mass_spec",
             "mass_spec_inspect_mzml",
         ),
-        ("marketplace_seismic_waveform_review", "seismic-waveform-review", "data", "sac_plot_traces"),
+        (
+            "marketplace_seismic_waveform_review",
+            "seismic-waveform-review",
+            "data",
+            "sac_plot_traces",
+        ),
     ]
     rows: list[dict[str, object]] = []
     for case_id, blueprint_id, child_agent, tool_name in blueprints:

@@ -2121,7 +2121,10 @@ class ClioAgent(dspy.Module):
     ) -> None:
         """Record an expert-stage handoff without relying on final route labels."""
         metadata = self._expert_result_metadata(result)
-        output_summary = self._expert_result_summary(result)
+        # #880: no server-authored summary of the expert result. The expert's
+        # deliverable rides ``output`` verbatim (empty here on the Tier-1 native
+        # path, which has no parent-bound answer to carry); clio never synthesizes
+        # a field-picked one-liner of the model's structured output.
         parent_id = self._registered_parent_id(expert_id)
         trace.record_expert_handoff(
             agent_id=expert_id,
@@ -2129,8 +2132,7 @@ class ClioAgent(dspy.Module):
             dispatch_target=dispatch_target,
             stage=stage,
             status=status,
-            input_summary=self._compact_handoff_text(input_summary),
-            output_summary=output_summary,
+            input_summary=input_summary,
             duration_ms=duration_ms,
             error=error,
             metadata=metadata,
@@ -2150,33 +2152,6 @@ class ClioAgent(dspy.Module):
         if isinstance(metadata, Mapping):
             return dict(metadata)
         return {}
-
-    @classmethod
-    def _expert_result_summary(cls, result: Any | None) -> str:
-        """Return a compact human-readable expert output summary."""
-        if result is None:
-            return ""
-        candidates = (
-            getattr(result, "analysis", ""),
-            getattr(result, "visualization_description", ""),
-            getattr(result, "answer", ""),
-        )
-        for candidate in candidates:
-            text = cls._coerce_text(candidate).strip()
-            if text:
-                return cls._compact_handoff_text(text)
-        file_path = cls._coerce_text(getattr(result, "file_path", "")).strip()
-        if file_path:
-            return cls._compact_handoff_text(f"Artifact: {file_path}")
-        return ""
-
-    @staticmethod
-    def _compact_handoff_text(text: str, *, limit: int = 500) -> str:
-        """Compact one handoff field for durable metadata."""
-        normalized = " ".join(str(text).split())
-        if len(normalized) <= limit:
-            return normalized
-        return normalized[: limit - 15].rstrip() + "...[truncated]"
 
     def _run_chat_agent(
         self,
@@ -2384,8 +2359,7 @@ class ClioAgent(dspy.Module):
                     exc,
                 )
         logger.warning(
-            "no prior context recovered; expert runs cold "
-            "reason=context_unavailable session=%s",
+            "no prior context recovered; expert runs cold reason=context_unavailable session=%s",
             session_id,
         )
         return "No prior context"

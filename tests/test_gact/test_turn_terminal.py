@@ -37,13 +37,13 @@ def _state() -> SimpleNamespace:
 
 
 def _completed_row(agent_id: str, **overrides: Any) -> dict[str, Any]:
+    # #880: ONE output channel — ``output`` IS the child's answer, verbatim. The
+    # retired output_raw/output_summary keys do not exist on the row shape.
     row = {
         "agent_id": agent_id,
         "status": "completed",
         "stage": "delegate.completed",
         "output": "",
-        "output_raw": "",
-        "output_summary": "",
         "workflow_state": {},
     }
     row.update(overrides)
@@ -147,10 +147,12 @@ def test_adopt_drops_parent_reasoning_to_avoid_child_mislabel() -> None:
     assert not getattr(deliverable, "trajectory", None)
 
 
-def test_adopt_prefers_output_raw_for_structured_answer() -> None:
+def test_adopt_carries_structured_answer_verbatim_on_output() -> None:
+    # #880: a structured (JSON) final-responder answer rides ``output`` byte-for-byte
+    # (no output_raw channel); adopt carries it verbatim as the deliverable.
     schema = WorkflowStateSchema()
     parent_pred = dspy.Prediction(answer="restate", selected_expert="main", next_expert="synthesis")
-    row = _completed_row("synthesis", output="", output_raw='{"result": 1}')
+    row = _completed_row("synthesis", output='{"result": 1}')
 
     deliverable = adopt_final_responder_answer(parent_pred, row, "synthesis", schema=schema)
 
@@ -441,13 +443,14 @@ def test_final_responder_empty_answer_surfaces_delegation_evidence() -> None:
     assert _fallback_answer_from_delegation(handoffs) == "evidence the child returned"
 
 
-def test_final_responder_structured_answer_emits_structured_reason(
+def test_final_responder_structured_answer_carried_verbatim_and_settled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A structured (JSON) terminal answer routes output_raw to the deliverable and
-    emits the ``final_responder_structured_answer`` reason."""
-
-    from clio_agent.gact.return_summary import _looks_like_structured_answer
+    """#880: a structured (JSON) terminal answer rides ``output`` byte-for-byte and is
+    adopted verbatim as the deliverable. The former output/output_raw split — and its
+    cosmetic ``final_responder_structured_answer`` reason — are GONE: any non-empty
+    answer settles with the single ``final_responder_settled`` reason (the only real
+    decision is empty-vs-nonempty, a structural fact of ``output``)."""
 
     audits: list[dict[str, Any]] = []
     monkeypatch.setattr(
@@ -456,7 +459,7 @@ def test_final_responder_structured_answer_emits_structured_reason(
 
     schema = WorkflowStateSchema()
     latest_pred = dspy.Prediction(answer="", selected_expert="main", next_expert="synthesis")
-    completed = [_completed_row("synthesis", output="", output_raw='{"answer": "x"}')]
+    completed = [_completed_row("synthesis", output='{"answer": "x"}')]
 
     pred, stop = asyncio.run(
         settle_parent_next_pred(
@@ -473,19 +476,23 @@ def test_final_responder_structured_answer_emits_structured_reason(
     )
 
     assert stop is True
+    # The JSON answer is carried BYTE-FOR-BYTE (no summary, no blanking).
     assert pred.answer == '{"answer": "x"}'
-    assert _looks_like_structured_answer(pred.answer) is True
-    assert any(f.get("reason") == "final_responder_structured_answer" for f in audits)
+    reasons = [f.get("reason") for f in audits]
+    assert "final_responder_settled" in reasons
+    # The retired content-sniff reason no longer exists on any path.
+    assert "final_responder_structured_answer" not in reasons
 
 
 def test_final_responder_reason_is_structural_not_prose(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """(#736/B) The stream_audit reason LABEL keys on the row's STRUCTURE (which channel
-    carried the answer: prose ``output`` vs typed ``output_raw``), NEVER on sniffing
-    whether the answer text looks like JSON. A prose answer that merely STARTS with '{'
-    (carried on the ``output`` channel, ``output_raw`` blank) is labeled ``settled``,
-    not ``structured_answer`` — proving no prose-content heuristic drives the label."""
+    """(#880) The stream_audit reason LABEL is decided by the row's STRUCTURE — the only
+    real decision is empty-vs-nonempty ``output`` — NEVER by sniffing whether the answer
+    text looks like JSON. An answer whose content merely STARTS with '{' settles with the
+    single ``final_responder_settled`` reason (the retired ``final_responder_structured_answer``
+    content-sniff reason no longer exists on any path), proving no prose-content heuristic
+    drives the label."""
 
     audits: list[dict[str, Any]] = []
     monkeypatch.setattr(

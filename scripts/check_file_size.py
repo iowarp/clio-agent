@@ -42,7 +42,7 @@ DEFAULT_MAX_LINES = 800
 # falls under DEFAULT_MAX_LINES) in the same change. Paths are relative to the
 # repository root and use forward slashes.
 RATCHET_BASELINE: dict[str, int] = {
-    "src/clio_agent/agent.py": 2715,
+    "src/clio_agent/agent.py": 2689,
     "src/clio_agent/arc/memory.py": 1394,
     "src/clio_agent/arc/segments.py": 1117,
     "src/clio_agent/arc/storage.py": 978,
@@ -50,7 +50,7 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/gact/agents/builders.py": 2209,
     "src/clio_agent/gact/agents/resolution.py": 803,
     "src/clio_agent/gact/app.py": 2526,
-    "src/clio_agent/gact/delegation.py": 871,
+    "src/clio_agent/gact/delegation.py": 848,
     "src/clio_agent/gact/routes/agents.py": 921,
     "src/clio_agent/gact/routes/blueprints.py": 859,
     "src/clio_agent/gact/routes/catalog.py": 880,
@@ -62,8 +62,8 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/gact/tool_observer.py": 934,
     "src/clio_agent/gact/transcript.py": 994,
     "src/clio_agent/gact/turn.py": 816,
-    "src/clio_agent/gact/turn_delegation.py": 911,
-    "src/clio_agent/gact/turn_finalize.py": 936,
+    "src/clio_agent/gact/turn_delegation.py": 913,
+    "src/clio_agent/gact/turn_finalize.py": 935,
     "src/clio_agent/gact/types.py": 1143,
     "src/clio_agent/providers/claude_code_litellm.py": 1176,
     "src/clio_agent/runtime/status.py": 1222,

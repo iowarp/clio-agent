@@ -129,8 +129,6 @@ def _adopt_and_derive_responder(
         "status": "completed",
         "stage": "delegate.completed",
         "output": _CHILD_ANSWER,
-        "output_raw": "",
-        "output_summary": "",
         "workflow_state": {},
     }
     deliverable = adopt_final_responder_answer(

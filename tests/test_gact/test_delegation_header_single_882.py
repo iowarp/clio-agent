@@ -98,9 +98,7 @@ def _drive_failed_delegation(
             events.append((event_type, dict(kw.get("payload") or {})))
             return real_emit(_app, _sid, event_type, **kw)
 
-        monkeypatch.setattr(
-            "clio_agent.gact.turn_delegation._emit_semantic_event", _recording_emit
-        )
+        monkeypatch.setattr("clio_agent.gact.turn_delegation._emit_semantic_event", _recording_emit)
 
     parent = AgentDef(id="root", source="expert_pack", title="Root")
     child = AgentDef(id="analysis", source="expert_pack", title="Analysis", parent_id="root")
@@ -210,3 +208,59 @@ def test_failed_delegation_reload_equals_live(
             if s not in _RETURN_LANE_STAGES and s not in _DROPPED_STAGES
         ]
         assert header_lane == ["delegate.started"]
+
+
+def test_failed_child_output_is_empty_and_failure_rides_typed_fields_on_the_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#880 (CONFIRMED): a FAILED child's ``output`` is EMPTY on the STORED row, and the
+    failure rides the typed ``status``/``error``/``message`` fields — never a
+    server-authored failure sentence in ``output``.
+
+    This drives the REAL failure branch of ``execute_delegated_experts`` and asserts on
+    the value the row STORES (not a hand-built fixture). Restoring an authored failure
+    sentence into ``output`` (e.g. ``output=f"Child {id} failed: ..."``) turns this RED,
+    even though it uses no banned identifier and would slip past
+    ``scripts/check_no_summaries.py``.
+    """
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_StubAgent())
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        executed = _drive_failed_delegation(app, sid, monkeypatch)
+
+        # The STORED row: output is byte-for-byte empty; the failure is typed.
+        failed = executed[-1]
+        assert failed["status"] == "failed"
+        assert failed["output"] == ""
+        assert failed["error"] == "RuntimeError"
+        assert failed["message"] == "child blew up"
+
+
+def test_failed_child_part_metadata_carries_empty_output_and_typed_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """reload == live: the persisted ``expert_handoff`` Part.metadata (the value the wire
+    carries and the new client render depends on) holds ``output == ""`` plus the typed
+    ``status``/``error``/``message``. The failure is visible from typed fields, never
+    from authored ``output`` prose."""
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_StubAgent())
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        _drive_failed_delegation(app, sid, monkeypatch)
+
+        reloaded = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+        handoff_meta = [
+            (p.get("metadata") or {})
+            for m in reloaded
+            if m["role"] == "assistant"
+            for p in m.get("parts", [])
+            if p.get("type") == "expert_handoff"
+        ]
+        conclusion = [meta for meta in handoff_meta if str(meta.get("status") or "") == "failed"]
+        assert conclusion, "no failed conclusion handoff part on the wire"
+        meta = conclusion[-1]
+        assert str(meta.get("output") or "") == ""
+        assert meta.get("error") == "RuntimeError"
+        assert meta.get("message") == "child blew up"

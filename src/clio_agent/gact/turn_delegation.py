@@ -58,14 +58,13 @@ from clio_agent.gact.agents.resolution import (
 from clio_agent.gact.delegation import (
     _append_accumulated_workflow_state_context,
     _append_session_workflow_state_context,
-    _bubbled_child_evidence_output_summary,
+    _bubbled_child_evidence_output,
     _coerce_expert_handoff_rows,
     _delegated_expert_agent_id,
     _delegated_expert_prompt,
-    _failed_child_delegation_output_summary,
     _failed_child_delegation_workflow_state,
-    _latest_delegation_output_summary,
-    _latest_parent_resumed_output_summary,
+    _latest_delegation_output,
+    _latest_parent_resumed_output,
     _prediction_workflow_state,
     _should_execute_delegated_handoff,
     _workflow_state_from_handoff_rows,
@@ -74,14 +73,13 @@ from clio_agent.gact.delegation import (
 from clio_agent.gact.events import _publish_transcript_event
 from clio_agent.gact.evidence import _tool_agent_empty_answer_fallback
 from clio_agent.gact.messaging import _prediction_summary
-from clio_agent.gact.return_summary import _looks_like_structured_answer, public_return_summary
 from clio_agent.gact.runtime.globals import (
     _emit_semantic_event,
     _tool_session_context,
     _TurnCancelled,
     _TurnTimedOut,
 )
-from clio_agent.gact.runtime.type_parsing import _blueprint_module_kind
+from clio_agent.gact.runtime.type_parsing import _blueprint_module_kind, answer_stream_visible
 from clio_agent.gact.streaming import _extract_tools_called, _run_dynamic_agent_compat
 from clio_agent.gact.tool_observer import (
     _append_live_assistant_part,
@@ -90,6 +88,7 @@ from clio_agent.gact.tool_observer import (
     _sanitize_handoff_tool_metadata,
     _sanitize_tools_called_metadata,
 )
+from clio_agent.gact.turn_degradation import record_turn_degradation
 from clio_agent.gact.turn_delegation_arc import (
     _arc_write_orchestrator_route,
     _arc_write_terminal_expert,
@@ -210,8 +209,12 @@ async def run_dynamic_agent_sync(state: "TurnState", agent_def: "AgentDef", prom
     # scan. The TURN-level responder's own terminal answer is deliberately
     # left to finalize's canonical-answer channel (its fallback text is
     # grounded against on-disk artifacts there). Delegating rounds settle
-    # nothing (the deliverable is the delegation, not an answer); structured
-    # (JSON) answers stay out of the visible transcript, as before.
+    # nothing (the deliverable is the delegation, not an answer); an expert
+    # whose typed ``answer`` is NOT a visible deliverable (it declares a
+    # ``workflow_state`` extract, not final_responder) stays out of the visible
+    # transcript — decided STRUCTURALLY from its declared structured_outputs
+    # (``answer_stream_visible``), never by sniffing whether the text looks like
+    # JSON (#880).
     _expert_id = str(getattr(agent_def, "id", "") or "")
     _answer_text = str(getattr(_pred, "answer", "") or "").strip()
     _next_expert = str(getattr(_pred, "next_expert", "") or "").strip()
@@ -223,7 +226,7 @@ async def run_dynamic_agent_sync(state: "TurnState", agent_def: "AgentDef", prom
         and _is_terminal
         and _expert_id
         and _expert_id != state.invocation_agent_id
-        and not _looks_like_structured_answer(_answer_text)
+        and answer_stream_visible(agent_def)
     ):
         state.transcript.field_stream(_expert_id, "answer").finish(fallback_text=_answer_text)
     # WS2: capture a TERMINAL CoT/predict expert's reasoning + answer in its own
@@ -456,13 +459,28 @@ async def execute_delegated_experts(
             # tool-trajectory evidence or the latest nested-child summary -- a
             # non-empty answer IS the agent's deliverable and is left untouched.
             if not raw_answer:
+                # ``_tool_agent_empty_answer_fallback`` is the ONE branch here that
+                # SERVER-COMPOSES text into ``output`` (the two others surface a
+                # child's own answer verbatim); when it lands, record a typed
+                # degradation (no-silent-fallback #880) so the substituted ``output``
+                # the parent + UI 'show more' render stays queryable.
+                tool_evidence = _tool_agent_empty_answer_fallback(
+                    getattr(pred_child, "trajectory", None)
+                )
                 fallback = (
-                    _tool_agent_empty_answer_fallback(getattr(pred_child, "trajectory", None))
-                    or _latest_parent_resumed_output_summary(nested, target.id)
-                    or _latest_delegation_output_summary(nested)
+                    tool_evidence
+                    or _latest_parent_resumed_output(nested, target.id)
+                    or _latest_delegation_output(nested)
                 )
                 if fallback:
                     output = fallback
+                if tool_evidence and fallback is tool_evidence:
+                    record_turn_degradation(
+                        state.app,
+                        state.sid,
+                        "tool_agent_evidence_substituted_for_empty_answer",
+                        f"parent={parent_agent.id} child={target.id}",
+                    )
             if nested and (
                 _user_agent_bool_param(
                     target,
@@ -479,7 +497,7 @@ async def execute_delegated_experts(
                     session_id=state.sid,
                 )
                 output = (
-                    _bubbled_child_evidence_output_summary(
+                    _bubbled_child_evidence_output(
                         nested,
                         target.id,
                         declared_target_child_ids,
@@ -529,17 +547,12 @@ async def execute_delegated_experts(
                         workflow_state, row_state, schema=state.workflow_schema
                     )
             child_tools_called = _sanitize_tools_called_metadata(child_tools_called)
-            handoff_output = "" if _looks_like_structured_answer(output) else output
-            # The PUBLIC return summary is derived from the child's GENUINE
-            # answer (structured answers rendered to a readable one-liner) so
-            # the transcript shows the real result, not a generic placeholder.
-            # handoff_output stays blanked for structured answers because it
-            # feeds the parent RESUME PROMPT (which receives the typed
-            # workflow_state separately, not raw JSON).
-            public_summary = (
-                public_return_summary(output, schema=state.workflow_schema)
-                or f"{target.id} returned to {parent_agent.id}."
-            )
+            # #880: ``output`` IS the child's answer, byte-for-byte, ALWAYS. No
+            # blanking of structured answers, no server-authored summary. If the
+            # child's answer is a JSON blob, the parent gets that blob and the UI
+            # renders it verbatim behind *show more*. The typed workflow_state
+            # rides ``workflow_state`` (the structured carrier) on this row, so the
+            # parent still routes on typed state, not on parsing the output text.
             completed_row = {
                 **row,
                 "agent_id": target.id,
@@ -557,16 +570,7 @@ async def execute_delegated_experts(
                 "duration_ms": duration_ms,
                 "execution_mode": execution_mode,
                 "input": prompt,
-                "output": handoff_output,
-                # Real, human-readable return summary — the same string the
-                # live delegation-return render shows, so the reload (/messages)
-                # render matches the live render (no change-on-reload).
-                "output_summary": public_summary,
-                # The GENUINE structured output for the "details" disclosure on
-                # reload (mirrors the live return's `response`). Empty for prose
-                # (the body already is the answer). Distinct from `output`, which
-                # stays blanked to keep the parent resume prompt clean.
-                "output_raw": output if _looks_like_structured_answer(output) else "",
+                "output": output,
                 "workflow_state": workflow_state,
                 "tools_called": child_tools_called,
                 "children": [
@@ -584,7 +588,7 @@ async def execute_delegated_experts(
                 f"{delegation_event_prefix}.completed",
                 turn_id=state.turn_id,
                 trace_id=state.trace_id,
-                summary=public_summary,
+                summary=f"{target.id} returned to {parent_agent.id}.",
                 actor={"agent_id": target.id, "role": "child_expert"},
                 subject={"agent_id": parent_agent.id, "role": "parent_expert"},
                 blueprint=delegation_blueprint,
@@ -631,7 +635,7 @@ async def execute_delegated_experts(
                 "delegation_lifecycle": "sync",
                 "resumed_from": target.id,
                 "depth": depth,
-                "output": handoff_output,
+                "output": output,
                 "workflow_state": workflow_state,
             }
             _emit_semantic_event(
@@ -691,12 +695,12 @@ async def execute_delegated_experts(
                 tools_called=child_tools_called,
                 schema=state.workflow_schema,
             )
-            output = _failed_child_delegation_output_summary(
-                child_agent_id=target.id,
-                parent_agent_id=parent_agent.id,
-                error=error_name,
-                message=error_message,
-            )
+            # #880 (CONFIRMED): ``output`` is EMPTY on failure. No server-authored
+            # failure sentence rides ``output`` — the failure rides the typed
+            # ``status``/``error``/``message`` fields on this row (and the failure
+            # ``workflow_state`` above). The parent's resume prompt renders the
+            # failure from those typed fields (allowed grounding), never from
+            # authored prose.
             child_tools_called = _sanitize_tools_called_metadata(child_tools_called)
             failed_row = {
                 **row,
@@ -714,7 +718,7 @@ async def execute_delegated_experts(
                 "execution_mode": execution_mode,
                 "error": error_name,
                 "message": error_message,
-                "output": output,
+                "output": "",
                 "workflow_state": workflow_state,
                 "tools_called": child_tools_called,
             }
@@ -882,9 +886,7 @@ async def settle_dynamic_agent_delegations(
             cid = str(row.get("agent_id") or row.get("delegate_to") or "").strip()
             if cid:
                 completed_child_ids.add(cid)
-                completed_child_outputs[cid] = str(
-                    row.get("output") or row.get("output_summary") or row.get("summary") or ""
-                ).strip()
+                completed_child_outputs[cid] = str(row.get("output") or "").strip()
         if not completed_this_round:
             # Child could not run (unavailable / cycle / error). Stop instead of
             # looping; the parent's current answer carries whatever evidence exists.

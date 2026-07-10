@@ -50,6 +50,30 @@ def _structured_output_enabled(value: Any) -> bool:
     return value is not False
 
 
+def answer_stream_visible(agent_def: "AgentDef | None") -> bool:
+    """Whether ``agent_def``'s ``answer`` is a VISIBLE deliverable (structural, #880).
+
+    Mirrors the signature builder's ``_answer_stream_visible`` computation
+    (``agents/builders.py``): an expert's ``answer`` is the user-facing visible
+    deliverable when it declares itself the ``final_responder`` OR does NOT declare
+    a typed ``workflow_state`` output. A ``workflow_state`` expert that is not the
+    final responder produces a typed ``dspy.extract`` deliverable whose value flows
+    to the delegation return contract behind *show more*, never into the visible
+    answer lane.
+
+    This is the STRUCTURAL replacement for the deleted ``_looks_like_structured_answer``
+    content sniff (#880): visibility is decided from the expert's DECLARED
+    ``structured_outputs``, never by inspecting whether the answer text looks like
+    JSON. ``None`` (an unresolved / built-in responder) is visible by default.
+    """
+    so = getattr(agent_def, "structured_outputs", None)
+    if not isinstance(so, Mapping):
+        so = {}
+    return _structured_output_enabled(so.get("final_responder") or False) or (
+        not _structured_output_enabled(so.get("workflow_state") or False)
+    )
+
+
 def _blueprint_module_kind(agent_def: "AgentDef") -> str:
     """Return the validated ``module.kind`` of a blueprint AgentDef.
 

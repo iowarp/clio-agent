@@ -58,7 +58,6 @@ from clio_agent.gact.messaging import (
     _ask_user_options_from_action,
     _coerce_ask_user_action,
 )
-from clio_agent.gact.return_summary import _looks_like_structured_answer
 from clio_agent.gact.runtime.globals import (
     _emit_semantic_event,
     _iso_from_epoch,
@@ -409,8 +408,10 @@ def finalize_turn(
     # burst), the fallback is audited + ignored BY OP IDENTITY; otherwise ONE
     # batch added+completed burst lands now. Never both; never a text swap
     # (the streamed part's close already carried the cleaned buffer as
-    # final_text — there is nothing to swap). Structured (JSON) answers stay
-    # out of the visible transcript, as before.
+    # final_text — there is nothing to swap). A responder whose typed ``answer``
+    # is NOT a visible deliverable (a ``workflow_state`` extract expert, not the
+    # final_responder) stays out of the visible transcript — decided STRUCTURALLY
+    # from ``state.answer_stream_visible`` (set in turn_forward), not by sniffing (#880).
     stream_fallback = _pop_stream_fallback(state.app, state.sid)
     batch_turn_text = current_stream_part_id is None
     if (
@@ -420,9 +421,7 @@ def finalize_turn(
     ):
         stream_fallback = _stream_fallback_payload("sync_execution_path")
     answer_channel.finish(
-        fallback_text=(
-            "" if _looks_like_structured_answer(state.answer_text) else str(state.answer_text or "")
-        ),
+        fallback_text=(str(state.answer_text or "") if state.answer_stream_visible else ""),
         fallback_metadata=(
             {"stream_fallback": stream_fallback} if stream_fallback and batch_turn_text else {}
         ),

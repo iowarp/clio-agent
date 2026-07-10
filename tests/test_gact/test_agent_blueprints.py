@@ -33,7 +33,7 @@ from clio_agent.gact.app import (
     _blueprint_fanout_config,
     _blueprint_module_kind,
     _blueprint_runtime_signature,
-    _bubbled_child_evidence_output_summary,
+    _bubbled_child_evidence_output,
     _build_blueprint_dspy_module,
     _build_child_expert_tool,
     _build_fanout_tool,
@@ -43,13 +43,12 @@ from clio_agent.gact.app import (
     _dynamic_child_expert_tools,
     _dynamic_parent_resume_prompt,
     _extract_tools_called_from_trajectory,
-    _failed_child_delegation_output_summary,
     _failed_child_delegation_workflow_state,
     _fallback_answer_from_delegation,
     _gact_app_context,
     _gact_turn_timeout_s,
     _ground_fabricated_local_artifact_paths,
-    _latest_final_child_output_summary,
+    _latest_final_child_output,
     _merge_tool_call_rows,
     _prediction_structured_metadata,
     _prediction_workflow_state,
@@ -1083,7 +1082,7 @@ def test_strict_depth_bubble_prefers_resumed_child_subtree_over_parent_draft() -
     ]
 
     assert (
-        _bubbled_child_evidence_output_summary(
+        _bubbled_child_evidence_output(
             rows[0]["children"],
             "geospatial",
             {"ndp_dataset_discovery"},
@@ -1123,10 +1122,7 @@ def test_latest_final_child_output_keys_on_declarative_flag() -> None:
         },
     ]
 
-    assert (
-        _latest_final_child_output_summary(rows, {"narrator"})
-        == "the declared final responder's answer"
-    )
+    assert _latest_final_child_output(rows, {"narrator"}) == "the declared final responder's answer"
 
 
 def test_latest_final_child_output_no_declared_responder_declines() -> None:
@@ -1145,9 +1141,9 @@ def test_latest_final_child_output_no_declared_responder_declines() -> None:
         },
     ]
 
-    assert _latest_final_child_output_summary(rows, frozenset()) == ""
+    assert _latest_final_child_output(rows, frozenset()) == ""
     # Default arg (no final_ids at all) declines identically.
-    assert _latest_final_child_output_summary(rows) == ""
+    assert _latest_final_child_output(rows) == ""
 
 
 def test_blueprint_compiler_selects_declared_dspy_module_kind(
@@ -1479,24 +1475,31 @@ def test_merge_tool_call_rows_deduplicates_matching_call_id_with_result_evidence
     assert rows[0]["call_id"] == "call_same"
 
 
-def test_failed_child_delegation_output_summary_is_clean_prose() -> None:
-    # The failure summary is human-readable prose ONLY: the typed workflow_state is
-    # carried STRUCTURALLY on the failed delegation row's ``workflow_state`` field
-    # (asserted in test_failed_child_delegation_state_rides_structured_row), not
-    # serialized into this answer text.
-    summary = _failed_child_delegation_output_summary(
-        child_agent_id="earthscope_station_catalog",
-        parent_agent_id="ndp_dataset_discovery",
-        error="AuthenticationError",
-        message="token inactive",
+def test_failed_child_delegation_output_is_empty_and_state_rides_typed_fields() -> None:
+    # #880 (CONFIRMED): a failed child's ``output`` is EMPTY — no server-authored
+    # failure sentence. The failure rides the typed ``status``/``error``/``message``
+    # fields on the row (and the failure ``workflow_state``); the parent's resume
+    # prompt renders it from those typed fields, never from authored prose.
+    failed_row = {
+        "agent_id": "earthscope_station_catalog",
+        "parent_id": "ndp_dataset_discovery",
+        "stage": "delegate.failed",
+        "status": "failed",
+        "error": "AuthenticationError",
+        "message": "token inactive",
+        "output": "",
+    }
+    resume = _dynamic_parent_resume_prompt(
+        "acquire GNSS data",
+        AgentDef(id="ndp_dataset_discovery", source="expert_pack", title="NDP"),
+        [failed_row],
+        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
-
-    assert "Child expert 'earthscope_station_catalog' failed" in summary
-    assert "AuthenticationError" in summary
-    # No prose state block pollutes the summary anymore.
-    assert "workflow state" not in summary.casefold()
-    assert "workflow_state" not in summary
-    assert _workflow_state_from_outputs([summary], schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA) == {}
+    # The failure surfaces from typed fields (allowed grounding), byte-authored by
+    # neither the model's ``output`` nor a server summary.
+    assert "AuthenticationError" in resume
+    assert "token inactive" in resume
+    assert "status=failed" in resume
 
 
 def test_failed_child_delegation_state_rides_structured_row() -> None:

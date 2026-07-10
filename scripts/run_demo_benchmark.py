@@ -341,9 +341,9 @@ class DemoResult:
                 "agent_id",
                 "dispatch_target",
                 "input_summary",
-                "output_summary",
-                "return_output_summary",
-                "local_output_summary",
+                # #880: the delegation return contract carries the child's answer
+                # verbatim on ``output`` (no server-authored summary channels).
+                "output",
                 "workflow_state",
                 "local_workflow_state",
                 "metadata",
@@ -967,7 +967,7 @@ def _observed_excerpt_text(result: DemoResult) -> str:
         agent_id = str(handoff.get("agent_id") or handoff.get("dispatch_target") or "")
         if agent_id != "synthesis":
             continue
-        output = str(handoff.get("output_summary") or "").strip()
+        output = str(handoff.get("output") or "").strip()
         if output:
             return output
     return result.visible_text

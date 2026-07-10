@@ -343,7 +343,9 @@ def test_react_next_thought_stays_visible(tmp_path, monkeypatch) -> None:
     assert "next_thought" in _persisted_text_fields(facts["client"], facts["sid"])
 
 
-def test_return_contract_carries_answer_while_visible_parts_suppressed(tmp_path, monkeypatch) -> None:
+def test_return_contract_carries_answer_while_visible_parts_suppressed(
+    tmp_path, monkeypatch
+) -> None:
     """VALUE preservation (#878): suppressing the visible reasoning/answer PARTS
     must NOT drop the extract answer VALUE. Drive a REAL ``_RetainingReAct.forward``
     whose extract fires the tap (both fields suppressed on the wire) and returns a
@@ -396,12 +398,13 @@ def test_return_contract_carries_answer_while_visible_parts_suppressed(tmp_path,
     assert _visible_parts(facts["transcript"], "answer") == []
     persisted = _persisted_text_fields(facts["client"], facts["sid"])
     assert "reasoning" not in persisted and "answer" not in persisted
-    # And the delegation render-source carries that VALUE: a completed delegation
-    # row's typed ``output`` is what feeds the client's rendered output_summary.
-    from clio_agent.gact.delegation import _latest_delegation_output_summary
+    # And the delegation return contract carries that VALUE byte-for-byte: a
+    # completed delegation row's typed ``output`` IS the child's answer, which the
+    # client renders verbatim behind *show more* (#880).
+    from clio_agent.gact.delegation import _latest_delegation_output
 
     assert (
-        _latest_delegation_output_summary(
+        _latest_delegation_output(
             [{"stage": "delegate.completed", "agent_id": "geospatial", "output": result.answer}]
         )
         == ANSWER

@@ -119,12 +119,9 @@ def adopt_final_responder_answer(
         the parent's state merged with the child's returned state.
     """
 
-    answer = str(
-        completed_row.get("output")
-        or completed_row.get("output_raw")
-        or completed_row.get("output_summary")
-        or ""
-    ).strip()
+    # #880: ``output`` IS the child's answer, byte-for-byte (structured or prose).
+    # The former output_raw/output_summary channels are gone — one source.
+    answer = str(completed_row.get("output") or "").strip()
     pred = parent_pred.copy() if hasattr(parent_pred, "copy") else parent_pred
     pred.answer = answer
     pred.selected_expert = child_id
@@ -187,18 +184,13 @@ async def settle_parent_next_pred(
             final_row, child_id = row, cid
             break
     if final_row is not None:
-        # STRUCTURAL channel read (never a prose-content sniff — #736/B): the completed
-        # row is BUILT with the child's prose answer on ``output`` and its typed
-        # ``dspy.extract`` (JSON) answer on ``output_raw``, with the other blanked
-        # (see turn_delegation completed-row build). So the answer's SHAPE is known from
-        # WHICH channel carried it, not from inspecting the text — a prose answer that
-        # merely opens with '{' is still prose. The reason label is cosmetic (adopt/stop
-        # are identical either way); keeping it structural keeps a future change from
-        # quietly hanging a real decision on a content heuristic.
-        output_text = str(final_row.get("output") or "").strip()
-        output_raw = str(final_row.get("output_raw") or "").strip()
-        summary_text = str(final_row.get("output_summary") or "").strip()
-        answer = output_text or output_raw or summary_text
+        # #880: ONE source — ``output`` IS the child's answer, byte-for-byte
+        # (structured or prose). The former output/output_raw/output_summary split
+        # is gone, so the settle no longer distinguishes structured-vs-prose (the
+        # #736/B reason label was cosmetic: adopt/stop are identical either way).
+        # The only real decision is empty-vs-nonempty, which is a structural fact
+        # of the ``output`` field, never a prose-content sniff.
+        answer = str(final_row.get("output") or "").strip()
         if not answer:
             # No-silent-fallback: the terminal child returned nothing. Still end
             # the settle (do not paper over emptiness by re-invoking the parent)
@@ -217,9 +209,6 @@ async def settle_parent_next_pred(
                 reason,
                 f"parent={parent_agent.id} child={child_id}",
             )
-        elif output_raw and not output_text:
-            # Answer rode the typed ``output_raw`` channel: the structured deliverable.
-            reason = "final_responder_structured_answer"
         else:
             reason = "final_responder_settled"
         stream_audit(

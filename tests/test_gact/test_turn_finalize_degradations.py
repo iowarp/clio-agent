@@ -59,8 +59,6 @@ def _completed_row(agent_id: str, **overrides: Any) -> dict[str, Any]:
         "status": "completed",
         "stage": "delegate.completed",
         "output": "",
-        "output_raw": "",
-        "output_summary": "",
         "workflow_state": {},
     }
     row.update(overrides)
@@ -73,7 +71,6 @@ def _parent_resumed_row(text: str) -> dict[str, Any]:
         "status": "completed",
         "stage": "parent.resumed",
         "output": text,
-        "output_summary": text,
         "workflow_state": {},
     }
 
