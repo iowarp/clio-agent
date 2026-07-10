@@ -606,10 +606,7 @@ async def execute_delegated_experts(
                     stage=str(completed_row.get("stage") or ""),
                     status=str(completed_row.get("status") or ""),
                     text=f"{parent_agent.id} <- {target.id}",
-                    metadata={
-                        **_handoff_part_metadata(completed_row),
-                        "stream_source": "live",
-                    },
+                    metadata={**_handoff_part_metadata(completed_row), "stream_source": "live"},
                 ),
             )
             if workflow_state:
@@ -738,6 +735,12 @@ async def execute_delegated_experts(
                 },
                 payload=_sanitize_handoff_tool_metadata(failed_row),
             )
+            # #882: success AND failure conclude on the SAME terminal lane, so a
+            # verbatim (dedup-free) client renders one header + one conclusion; the
+            # outcome rides `status`. Both the typed `stage` and its legacy
+            # `metadata["stage"]` mirror read from this ONE row, so the part can never
+            # name two lanes. Contract: `Part.stage` in gact/types.py.
+            concluded_row = {**failed_row, "stage": "delegate.completed"}
             _append_live_assistant_part(
                 state.app,
                 state.sid,
@@ -747,13 +750,10 @@ async def execute_delegated_experts(
                     agent_id=parent_agent.id,
                     parent_agent=parent_agent.id,
                     child_agent=target.id,
-                    stage=str(failed_row.get("stage") or ""),
-                    status=str(failed_row.get("status") or ""),
+                    stage=str(concluded_row.get("stage") or ""),
+                    status=str(concluded_row.get("status") or ""),
                     text=f"{parent_agent.id} -> {target.id} (failed)",
-                    metadata={
-                        **_handoff_part_metadata(failed_row),
-                        "stream_source": "live",
-                    },
+                    metadata={**_handoff_part_metadata(concluded_row), "stream_source": "live"},
                 ),
             )
             executed.append(_sanitize_handoff_tool_metadata(failed_row))
