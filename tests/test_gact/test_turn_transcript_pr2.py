@@ -51,7 +51,6 @@ def _make_transcript() -> tuple[TurnTranscript, _RecordingPublisher]:
             session_id="sess_t",
             turn_id="turn_t",
             publisher=publisher,
-            clean_text=lambda text: text,
         ),
         publisher,
     )

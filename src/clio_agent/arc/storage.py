@@ -721,9 +721,9 @@ class CTEStore:
             # a one-time startup banner on stderr is an acceptable trade for never
             # crashing the host process.
             #
-            # default_with_runtime=False => CLIENT ONLY: attach to the shared daemon,
-            # never self-start an embedded (process-bound, port-exclusive) runtime.
-            cte.chimaera_init(cte.ChimaeraMode.kClient, False)
+            # CLIENT ONLY attach; resolve renamed clio_init/RuntimeMode (was chimaera_*).
+            client_init = getattr(cte, "clio_init", None) or cte.chimaera_init
+            client_init((getattr(cte, "RuntimeMode", None) or cte.ChimaeraMode).kClient, False)
             time.sleep(settle_s)  # let the client handshake settle
             cte.initialize_cte(config_path, cte.PoolQuery.Dynamic())  # "" => ~/.clio/clio.yaml
             cls._initialized = True

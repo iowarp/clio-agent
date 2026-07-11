@@ -151,7 +151,6 @@ def test_field_stream_call_site_pattern_is_exactly_once() -> None:
         session_id="sess_x",
         turn_id="turn_x",
         publisher=_Pub(),
-        clean_text=lambda text: text,
     )
     # Child A streamed its answer through the tap; the settle-time handle must
     # treat the channel as already landed.
@@ -191,7 +190,6 @@ def test_turn_answer_channel_covers_the_tap_attribution_label() -> None:
         session_id="sess_y",
         turn_id="turn_y",
         publisher=_Pub(),
-        clean_text=lambda text: text,
     )
     transcript.append_text_delta("main", "answer", "the streamed answer")
     channel = transcript.turn_answer_stream("code_expert", "main")
@@ -218,7 +216,6 @@ def test_turn_answer_channel_does_not_cover_a_delegated_childs_answer() -> None:
         session_id="sess_z",
         turn_id="turn_z",
         publisher=_Pub(),
-        clean_text=lambda text: text,
     )
     # The child's non-streamed answer settled at its LM-call site.
     transcript.field_stream("schema_review", "answer").finish(fallback_text="SCHEMA_OK")

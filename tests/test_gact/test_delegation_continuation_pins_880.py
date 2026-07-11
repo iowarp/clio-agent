@@ -1,3 +1,22 @@
+"""#880 — delegation-continuation invariants that SURVIVE the deleted summary layer.
+
+``tests/test_gact/test_delegation_contract_compaction.py`` was retired wholesale when
+the server-authored ``return_summary.py`` layer was deleted. But three of its pins
+guarded invariants of code paths that STILL EXIST and are MORE load-bearing now that
+``output`` carries the child's answer verbatim (a potentially 4000-char JSON blob):
+
+* :func:`_expert_handoff_fields` — the typed parent/child/stage/status extraction a
+  client consumes instead of parsing a prose label.
+* :func:`_dynamic_parent_resume_prompt` — the parent resume prompt receives the child's
+  ``output`` VERBATIM with no truncation (critical: a long structured answer must not be
+  silently clipped before the parent routes on it).
+* :func:`_latest_parent_resumed_output` (renamed from ``*_output_summary``) — prefers the
+  FINAL nested ``parent.resumed`` result when several are present.
+
+These are re-pinned here (the renderer/summary pins were correctly retired with
+``return_summary.py``); the code paths they exercise are live production code.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -5,7 +24,7 @@ from dataclasses import dataclass
 from clio_agent.gact.app import (
     _dynamic_parent_resume_prompt,
     _expert_handoff_fields,
-    _latest_parent_resumed_output_summary,
+    _latest_parent_resumed_output,
 )
 from clio_agent.gact.types import Part
 from tests.test_gact.earthscope_schema import EARTHSCOPE_WORKFLOW_STATE_SCHEMA
@@ -17,7 +36,7 @@ class _Agent:
 
 
 def test_expert_handoff_part_carries_structured_fields_from_row() -> None:
-    """An expert_handoff Part exposes the delegation as typed fields (parent/child/
+    """An ``expert_handoff`` Part exposes the delegation as typed fields (parent/child/
     stage/status) drawn from the structured row, so a client never parses the prose
     ``text`` label to attribute the handoff."""
 
@@ -26,7 +45,7 @@ def test_expert_handoff_part_carries_structured_fields_from_row() -> None:
         "parent_id": "main",  # the parent that made it
         "stage": "delegate.completed",
         "status": "completed",
-        "output_summary": "staged waveform",
+        "output": "staged waveform",  # the child's answer rides ``output`` verbatim
     }
     fields = _expert_handoff_fields(row)
     assert fields == {
@@ -56,9 +75,12 @@ def test_expert_handoff_part_carries_structured_fields_from_row() -> None:
 
 
 def test_parent_resume_prompt_receives_genuine_child_output_verbatim() -> None:
-    # The child's GENUINE output flows to the parent verbatim — no heuristic
-    # compaction/truncation. A long output is NOT trimmed, and no truncation
-    # scaffolding marker is injected.
+    """The child's GENUINE ``output`` flows to the parent VERBATIM — no truncation.
+
+    More load-bearing after #880: ``output`` may be a long structured answer, and the
+    parent must see all of it (including the last line) to route correctly. A
+    re-introduced heuristic truncation would drop routing-critical tail content.
+    """
     child_output = "\n".join(
         [
             "Analysis completed from fresh SAC evidence.",
@@ -91,7 +113,10 @@ def test_parent_resume_prompt_receives_genuine_child_output_verbatim() -> None:
     assert "truncated" not in prompt
 
 
-def test_latest_parent_resumed_output_summary_prefers_final_nested_parent_result() -> None:
+def test_latest_parent_resumed_output_prefers_final_nested_parent_result() -> None:
+    """``_latest_parent_resumed_output`` returns the LAST ``parent.resumed`` output for
+    the coordinator, so the feed to the empty-answer fallback / strict-depth completion
+    is the final coordinator answer, not an earlier intermediate one."""
     rows = [
         {
             "stage": "delegate.completed",
@@ -120,6 +145,6 @@ def test_latest_parent_resumed_output_summary_prefers_final_nested_parent_result
     ]
 
     assert (
-        _latest_parent_resumed_output_summary(rows, "cohort_qc")
+        _latest_parent_resumed_output(rows, "cohort_qc")
         == "Final coordinator answer with metrics and manifest caveat."
     )

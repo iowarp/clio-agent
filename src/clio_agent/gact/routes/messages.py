@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Response
 
 from clio_agent.gact.events import Event
+from clio_agent.gact.message_wire import normalize_thought_ownership
 from clio_agent.gact.providers.config import (
     _active_lm_supports_vision,
     _effective_lm_config,
@@ -431,8 +432,12 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         # #731: serialize via ``to_wire`` (not ``model_dump(exclude_none)``) so the
         # reloaded parts are byte-for-byte the slim, arrival-ordered shape the live
         # SSE stream delivered — a reloaded conversation matches what streamed.
+        # #732/S2: normalize single-representation at the read boundary first, so a
+        # pre-S2 message carrying BOTH a next_thought text row and a populated
+        # tool_call.thought reloads with the redundant copy cleared (op-identity,
+        # never a string compare); a no-op for post-S2 rows.
         return {
-            "messages": [m.to_wire() for m in rows],
+            "messages": [normalize_thought_ownership(m).to_wire() for m in rows],
             "next_cursor": next_cursor,
         }
 
@@ -444,7 +449,9 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
             raise _session_not_found(sid)
         for msg in app.state.messages.get(sid, []):
             if msg.id == message_id:
-                return msg.to_wire()  # #731: slim, arrival-ordered parts (matches SSE)
+                # #731: slim, arrival-ordered parts (matches SSE). #732/S2: read-
+                # boundary single-representation normalization (see list_messages).
+                return normalize_thought_ownership(msg).to_wire()
         raise HTTPException(
             status_code=404,
             detail=ErrorEnvelope(

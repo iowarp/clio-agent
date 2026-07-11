@@ -25,7 +25,6 @@ from clio_agent.gact.app import (
     build_app,
 )
 from clio_agent.gact.types import AgentDef
-from tests.test_gact.earthscope_schema import EARTHSCOPE_WORKFLOW_STATE_SCHEMA
 
 
 @dataclass
@@ -452,9 +451,7 @@ async def test_expert_stream_responses_emit_live_field_chunks(
     assert all(listener.predict is not None for listener in listeners)
     assert {listener.signature_field_name for listener in listeners} == {"answer"}
     audit_rows = [
-        json.loads(line)
-        for line in audit_path.read_text(encoding="utf-8").splitlines()
-        if line
+        json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines() if line
     ]
     raw_events = [row for row in audit_rows if row["stage"] == "provider.raw_event"]
     assert [row["provider"] for row in raw_events] == [
@@ -970,42 +967,24 @@ def test_streamify_final_prediction_without_chunks_has_specific_fallback(
     )
 
 
-def test_streamed_answer_is_cleaned_once_whole_not_per_chunk(
+def test_streamed_visible_answer_survives_to_wire_verbatim(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """B2: the CLIO contract-prose cleaner runs ONCE on the whole buffered answer
-    at part close — never per streamed chunk. Per-chunk cleaning let the cleaner's
-    multiline block/line regexes match a CHUNK boundary and leak a truncated
-    fragment (the " station in a…" / "The acquis…" / "d MTA1…" artifacts). A
-    sub-agent's streamed answer part (closed on the agent-change boundary) must
-    equal the WHOLE-text clean, not the corrupt per-chunk concatenation."""
-    from clio_agent.gact.delegation import _clean_public_transcript_text
+    """#881: a visible thinking/text part carries the model's prose to the wire
+    BYTE-FOR-BYTE. A sentence that NAMES a typed workflow_state field — exactly the
+    kind the deleted transcript cleaner used to strip — must survive UNEDITED
+    across the streamed-chunk buffer -> close -> persist path. This goes RED the
+    instant any prose scrub returns to the streamed-text path."""
 
-    # A sub-agent answer whose "typed workflow_state" sentence straddles a chunk
-    # boundary: per-chunk cleaning half-removes it and leaks "persisted." into the
-    # prose; whole-text cleaning removes the complete sentence and keeps the rest.
+    # The chunks split the "workflow_state shows ..." sentence across a boundary:
+    # the old per-chunk/whole-text cleaner distinction is gone, so the persisted
+    # part is simply the concatenation, verbatim.
     sub_chunks = [
         "I identified MTA1 as the nearest ranked station. ",
-        "The typed workflow_state was ",
-        "persisted. Coverage exists in the region.",
+        "The typed workflow_state shows ",
+        "station_catalog is complete. Coverage exists in the region.",
     ]
-    sub_full = "".join(sub_chunks)
-    sub_whole = _clean_public_transcript_text(sub_full, preserve_whitespace=True, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
-
-    def _per_chunk(cs: list[str]) -> str:
-        out: list[str] = []
-        for c in cs:
-            t = _clean_public_transcript_text(c, preserve_whitespace=True, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
-            if t:
-                out.append(t)
-        return "".join(out)
-
-    per_chunk = _per_chunk(sub_chunks)
-    # Precondition: the two strategies genuinely differ for this input, else the
-    # test proves nothing. Per-chunk leaks the mid-sentence "persisted" fragment.
-    assert per_chunk != sub_whole
-    assert "persisted" in per_chunk
-    assert "persisted" not in sub_whole
+    verbatim = "".join(sub_chunks)
 
     async def fake_streamed_forward(
         app: Any,
@@ -1018,7 +997,7 @@ def test_streamed_answer_is_cleaned_once_whole_not_per_chunk(
         del app, enriched_text, sid, session_mode, session_edit_mode
         for chunk in sub_chunks:
             await emit_chunk(chunk, "data", "answer")
-        # Agent change → closes the "data" answer part (whole-text clean applies).
+        # Agent change → closes the "data" answer part (stored verbatim).
         await emit_chunk("Final orchestrator answer.", "main", "answer")
         return _Pred(answer="Final orchestrator answer.", selected_expert="", routing_rationale="")
 
@@ -1039,14 +1018,9 @@ def test_streamed_answer_is_cleaned_once_whole_not_per_chunk(
         if p["type"] == "text" and p.get("agent_id") == "data" and (p["text"] or "").strip()
     ]
     assert data_parts, "expected the sub-agent (data) streamed answer part"
-    body = data_parts[-1]["text"]
-    # The persisted sub-agent answer is the WHOLE-cleaned text — no leaked
-    # "persisted." fragment, surrounding prose intact (no mid-sentence truncation).
-    assert body == sub_whole
-    assert body != per_chunk
-    assert "I identified MTA1 as the nearest ranked station." in body
-    assert "Coverage exists in the region." in body
-    assert "persisted" not in body
+    # BYTE-FOR-BYTE: the persisted visible part is the model's text verbatim —
+    # the workflow_state sentence is intact, nothing scrubbed or truncated.
+    assert data_parts[-1]["text"] == verbatim
 
 
 def test_streamed_field_buffer_cleared_at_turn_end_and_turn_scoped(

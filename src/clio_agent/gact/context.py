@@ -69,6 +69,13 @@ class RuntimeContext:
     turn: TurnContext = field(default_factory=TurnContext)
     # ---- expert / react-loop layer (formerly the REACT_* + BLUEPRINT vars) ----
     react_scope: str = ""  # _ACTIVE_REACT_SCOPE
+    # The declared ``module.kind`` (predict|chain_of_thought|react) of the expert
+    # owning ``react_scope``. Resolved ONCE per expert forward and threaded through
+    # here so the live-stream emit gate can suppress a `kind: react` expert's
+    # redundant EXTRACT fields (reasoning/answer) STRUCTURALLY — never by matching a
+    # field name, which would also delete a chain_of_thought expert's visible
+    # reasoning (#878). Empty off-scope (main planner / CLI / optimizer).
+    react_kind: str = ""  # module.kind of the active expert
     # The current ReAct step's reasoning, set by the react loop BEFORE it invokes
     # the step's tool so the tool observer (which runs synchronously on the react
     # thread) can stamp it onto the ``tool_call`` part — one LLM turn = thought +
@@ -135,6 +142,50 @@ def active_tool_session_id() -> str:
 def active_react_scope() -> str:
     """``_ACTIVE_REACT_SCOPE.get()``."""
     return _RUNTIME.get().react_scope
+
+
+def active_react_kind() -> str:
+    """The declared ``module.kind`` of the expert owning the active react scope.
+
+    One of ``predict`` / ``chain_of_thought`` / ``react`` while an expert forward
+    is on the stack; ``""`` off-scope (the main planner, CLI, optimizer). Read at
+    the live-stream emit gate to decide, structurally, whether a contract field is
+    a react expert's redundant EXTRACT field (#878).
+    """
+    return _RUNTIME.get().react_kind
+
+
+def react_extract_field_suppressed(kind: str, field: str, *, answer_is_deliverable: bool) -> bool:
+    """Whether a ``kind: react`` expert's contract ``field`` is a redundant EXTRACT
+    field that must NOT become a visible transcript part (#878).
+
+    Shared by BOTH visible-emit seams (the io_logging live tap
+    ``lm_activity.note_lm_answer_delta`` for nested/synchronous experts, and the
+    ``streamify`` pump ``streaming._emit_visible_chunk`` for a top-level program) so
+    the kind-gate logic lives in exactly one place.
+
+    A ``kind: react`` expert's visible conversation is its per-step ``next_thought``
+    (plus its tool calls). Its final ``ChainOfThought`` EXTRACT emits ``reasoning``
+    and ``answer``:
+
+    * ``reasoning`` — the extract's own chain-of-thought, never parent-bound, no
+      conversational standing. Always suppressed.
+    * ``answer`` — redundant with the delegation return contract (``row["output"]``
+      carries the VALUE, rendered behind *show more*), EXCEPT when this LM call is
+      the TOP-LEVEL deliverable stream (``answer_is_deliverable``), where the answer
+      is the user-facing turn output and must stay visible.
+
+    Only ``react`` is gated. ``chain_of_thought``/``predict`` (and off-scope, empty
+    ``kind``) return ``False`` so their ``reasoning`` stays fully visible — the
+    reverted attempt deleted exactly those transcripts by suppressing on field name.
+    """
+    if kind != "react":
+        return False
+    if field == "reasoning":
+        return True
+    if field == "answer":
+        return not answer_is_deliverable
+    return False
 
 
 def active_step_thought() -> str:
@@ -292,10 +343,22 @@ def set_visible_answer_stream(visible: bool) -> contextvars.Token[RuntimeContext
     return _RUNTIME.set(replace(cur, visible_answer_stream=bool(visible)))
 
 
-def set_react_scope(scope: str) -> contextvars.Token[RuntimeContext]:
-    """Set ``react_scope`` (``_ACTIVE_REACT_SCOPE.set``)."""
+def set_react_scope(scope: str, kind: str = "") -> contextvars.Token[RuntimeContext]:
+    """Set ``react_scope`` and the expert's ``react_kind`` in ONE transition.
+
+    ``react_kind`` rides the same token as ``react_scope`` (they enter and leave
+    scope together at each expert forward site), so the single-var layer restores
+    both on ``reset`` with no separate LIFO ordering to get wrong (#878)."""
     cur = _RUNTIME.get()
-    return _RUNTIME.set(replace(cur, react_scope=scope))
+    return _RUNTIME.set(replace(cur, react_scope=scope, react_kind=kind))
+
+
+def set_react_kind(kind: str) -> contextvars.Token[RuntimeContext]:
+    """Set ``react_kind`` alone (its own token). Used where the kind is threaded
+    independently of the scope, e.g. in tests; production folds it into
+    :func:`set_react_scope` (#878)."""
+    cur = _RUNTIME.get()
+    return _RUNTIME.set(replace(cur, react_kind=kind))
 
 
 def set_step_thought(thought: str, reasoning: str = "") -> contextvars.Token[RuntimeContext]:

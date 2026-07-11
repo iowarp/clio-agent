@@ -411,7 +411,6 @@ def test_shimmed_producers_emit_identical_stream_as_legacy(tmp_path: Path) -> No
             shimmed_sid,
             "",  # legacy path stamps turn_id from the (empty) off-turn context
             EventBusTranscriptPublisher(app.state.bus, shimmed_sid),
-            lambda text: text,
         )
         _drive_live_part_producers(app, shimmed_sid)
 

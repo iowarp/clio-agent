@@ -28,6 +28,9 @@ from clio_agent.providers._cli_provider import (
     messages_to_prompt,
     register_custom_provider,
 )
+from clio_agent.providers.claude_code_thinking_split import (
+    _split_provider_thinking_contract_delta,
+)
 from clio_agent.runtime import trace
 from clio_agent.runtime.stream_audit import stream_audit
 
@@ -442,60 +445,6 @@ def _sdk_stream_event_thinking(event: dict[str, Any]) -> str:
     if delta.get("type") == "thinking_delta":
         return str(delta.get("thinking") or "")
     return ""
-
-
-_DSPY_FIELD_MARKERS = (
-    "[[ ## reasoning ## ]]",
-    "[[ ## answer ## ]]",
-    "[[ ## next_thought ## ]]",
-    "[[ ## next_expert ## ]]",
-    "[[ ## next_task ## ]]",
-    "[[ ## next_tool_name ## ]]",
-    "[[ ## next_tool_args ## ]]",
-    "[[ ## workflow_state ## ]]",
-    "[[ ## completed ## ]]",
-)
-_DSPY_FIELD_MARKER_PREFIX_MAX = max(len(marker) for marker in _DSPY_FIELD_MARKERS) - 1
-
-
-def _first_dspy_field_marker_index(text: str) -> int:
-    """Return the first DSPy ChatAdapter field marker offset in ``text``."""
-
-    indexes = [idx for marker in _DSPY_FIELD_MARKERS if (idx := text.find(marker)) >= 0]
-    return min(indexes) if indexes else -1
-
-
-def _split_provider_thinking_contract_delta(
-    text: str,
-    *,
-    marker_tail: str,
-    contract_started: bool,
-) -> tuple[str, str, str, bool]:
-    """Split Claude SDK thinking into hidden provider thinking and DSPy text.
-
-    Claude Code SDK can stream the DSPy ChatAdapter contract on
-    ``thinking_delta`` before it later emits a bursty ``text_delta`` copy. Once a
-    ``[[ ## field ## ]]`` marker appears, that suffix is no longer merely
-    provider-internal thinking for CLIO: it is the model's structured contract and
-    must enter the normal LiteLLM text stream immediately so field extractors can
-    publish visible deltas over time.
-
-    Returns ``(provider_thinking, contract_text, next_tail, next_started)``.
-    """
-
-    if not text:
-        return "", "", marker_tail, contract_started
-    if contract_started:
-        return "", text, marker_tail, True
-
-    combined = marker_tail + text
-    marker_index = _first_dspy_field_marker_index(combined)
-    if marker_index >= 0:
-        return combined[:marker_index], combined[marker_index:], "", True
-
-    next_tail = combined[-_DSPY_FIELD_MARKER_PREFIX_MAX:]
-    provider_text = combined[: max(0, len(combined) - len(next_tail))]
-    return provider_text, "", next_tail, False
 
 
 def _streaming_chunk(

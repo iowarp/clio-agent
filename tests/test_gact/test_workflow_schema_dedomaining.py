@@ -5,8 +5,10 @@ readiness/blocker prose, artifact fields+extensions, scrub aliases, failure
 rules) out of the core engine (``workflow_state/merge.py``, ``evidence.py``,
 ``delegation.py``) and into a pack-declared :class:`WorkflowStateSchema`. The
 core must now be a *generic* engine: give it a DIFFERENT vocabulary and it must
-merge, ground, stamp, and scrub that vocabulary just as faithfully — with zero
-EarthScope leakage.
+merge, ground, and stamp that vocabulary just as faithfully — with zero
+EarthScope leakage. (The prose-scrub half of Slice B was DELETED in #881; the
+``aliases`` block stays declarable for pack compatibility but is inert, so the
+widget schema below still declares it to prove a non-EarthScope pack validates.)
 
 This module proves that two ways:
 
@@ -27,7 +29,6 @@ from clio_agent.gact.app import (
     _ground_fabricated_local_artifact_paths,
     _merge_workflow_state_mapping,
 )
-from clio_agent.gact.delegation import _clean_public_delegation_prompt
 from clio_agent.gact.workflow_state.schema import (
     WorkflowFailureRule,
     WorkflowScrubAliases,
@@ -137,9 +138,7 @@ def test_widget_grounding_rewrites_svg_and_leaves_csv_png_untouched(tmp_path: Pa
         "Table (CSV): /tmp/render/fabricated_table.csv\n"
         "Preview (PNG): /tmp/render/fabricated_preview.png"
     )
-    grounded = _ground_fabricated_local_artifact_paths(
-        answer, state, schema=WIDGET_FACTORY_SCHEMA
-    )
+    grounded = _ground_fabricated_local_artifact_paths(answer, state, schema=WIDGET_FACTORY_SCHEMA)
 
     # The fabricated SVG (not on disk) is rewritten to the verified one.
     assert str(real_svg) in grounded
@@ -171,22 +170,6 @@ def test_widget_failure_rule_stamps_molding_not_earthscope_sections() -> None:
     # EarthScope sections are not in the widget schema — never stamped.
     assert state["acquisition"] == {"status": "staged"}
     assert state["resource_discovery"] == {"status": "resource_found"}
-
-
-def test_widget_scrub_strips_molding_prose_and_leaves_earthscope_prose() -> None:
-    """The scrubber removes a sentence citing a widget state path
-    (``molding.pour_temp``) but leaves an ``acquisition.local_path`` sentence
-    alone — the widget schema does not declare the EarthScope ``acquisition``
-    section, so it is not part of this pack's scrub vocabulary."""
-
-    prose = (
-        "Read molding.pour_temp before starting the press run. "
-        "Then load acquisition.local_path to inspect the archived data."
-    )
-    cleaned = _clean_public_delegation_prompt(prose, schema=WIDGET_FACTORY_SCHEMA)
-
-    assert "molding.pour_temp" not in cleaned
-    assert "acquisition.local_path" in cleaned
 
 
 # --------------------------------------------------------------------------- #

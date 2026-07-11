@@ -110,6 +110,30 @@ def set_live_chunk_emitter(loop: Any, emit_coro: Any, record_dedup: Any = None) 
     _LIVE_CHUNK_EMITTER.set((loop, emit_coro, record_dedup))
 
 
+def note_suppressed_extract_field(
+    field: str, text: str, *, agent_id: str, kind: str, session_id: str = ""
+) -> None:
+    """Record a ``kind: react`` EXTRACT-field suppression reason (#878).
+
+    Shared by both visible-emit seams (this module's live tap and
+    ``streaming._emit_visible_chunk``) so the no-silent-fallback record is emitted
+    identically wherever a react ``reasoning``/``answer`` field is dropped.
+    """
+    stream_audit(
+        "bridge.contract_field",
+        agent_id=agent_id or "",
+        session_id=session_id,
+        field=field,
+        chunk_len=len(text),
+        visible=False,
+        duplicate_suppressed=True,
+        duplicate_reason="react_extract_field_suppressed",
+        module_kind=kind,
+        head=text[:120],
+        full_text=text[:12000],
+    )
+
+
 def note_lm_answer_delta(text: str, *, field: str = "answer") -> None:
     """Stream a generated output-field delta to the live UI via the turn publisher.
 
@@ -132,25 +156,41 @@ def note_lm_answer_delta(text: str, *, field: str = "answer") -> None:
     agent_id = ""
     try:
         from clio_agent.gact.context import (  # noqa: PLC0415
+            active_react_kind,
             active_react_scope,
             active_visible_answer_stream,
+            react_extract_field_suppressed,
         )
 
         agent_id = active_react_scope()
-        # #732: record the streamed field text into the turn transcript's
-        # tap-dedup buffer SYNCHRONOUSLY, in THIS executor thread, before the
-        # cross-thread emit is scheduled below. The tool observer's thought-dedup
-        # gate runs in this same thread when a tool fires, so it must read a source
-        # written before the tool call — not the ledger's async ``append_text_delta``
-        # (scheduled onto the loop, possibly not drained yet). This restores the
-        # happens-before the retired ``live_streamed_field_text`` buffer provided.
-        # Keyed by the same ``active_react_scope()`` the gate queries with; skipped
-        # off-scope (agent_id empty), matching the old buffer's guard.
-        if record_dedup is not None and agent_id:
-            try:
-                record_dedup(agent_id, field, text)
-            except Exception:  # noqa: BLE001,S110 - dedup capture is best-effort
-                pass
+        kind = active_react_kind()
+        # No-silent-fallback: a react scope is active but its kind never resolved.
+        # Do NOT assume not-react (would leak a react EXTRACT) nor blanket-suppress
+        # (would delete a CoT expert's visible reasoning). Keep today's safe
+        # CoT-visible behavior below and record the resolution miss so it surfaces
+        # at the seam rather than hiding (#878).
+        if agent_id and not kind:
+            stream_audit(
+                "bridge.contract_field",
+                agent_id=agent_id,
+                field=field,
+                chunk_len=len(text),
+                visible=False,
+                normalized_event="",
+                duplicate_suppressed=False,
+                duplicate_reason="react_kind_unresolved",
+                head=text[:120],
+                full_text=text[:12000],
+            )
+        # #878: a `kind: react` expert's redundant EXTRACT reasoning/answer is
+        # gated STRUCTURALLY on the declared module.kind (never the field name).
+        # answer_is_deliverable=False here: a nested react expert's answer VALUE
+        # flows to the delegation return contract, and a top-level react
+        # responder's deliverable is re-added once at finalize via answer_channel —
+        # so the tap copy is always redundant.
+        if react_extract_field_suppressed(kind, field, answer_is_deliverable=False):
+            note_suppressed_extract_field(field, text, agent_id=agent_id, kind=kind)
+            return
         visible_fields = {"reasoning", "next_thought"}
         if field == "answer" and active_visible_answer_stream():
             visible_fields.add("answer")
@@ -179,6 +219,24 @@ def note_lm_answer_delta(text: str, *, field: str = "answer") -> None:
     except Exception:  # noqa: BLE001 - scope unavailable off-turn (CLI/optimizer)
         agent_id = ""
     try:
+        # #732 (S2): record the streamed field text into the turn transcript's
+        # tap-dedup buffer SYNCHRONOUSLY, in THIS executor thread, before the
+        # cross-thread emit is scheduled below. RELOCATED here (was unconditional,
+        # before the visible_fields gate) so the tap records presence IFF this field
+        # is actually emitted as a VISIBLE text row: a non-visible contract field
+        # returns above and never reaches here. This ties tap-presence to visible
+        # emission — tap(agent,field) non-empty ⟺ a visible row was emitted — so the
+        # tool observer's op-identity thought-dedup gate can never clear a thought
+        # whose next_thought has no visible row (the attempt-1 vanish). The tool
+        # observer runs in this SAME executor thread when a tool fires, so it reads a
+        # source written before the tool call — the happens-before the retired
+        # ``live_streamed_field_text`` buffer provided. Skipped off-scope (agent_id
+        # empty), matching the old buffer's guard.
+        if record_dedup is not None and agent_id:
+            try:
+                record_dedup(agent_id, field, text)
+            except Exception:  # noqa: BLE001,S110 - dedup capture is best-effort
+                pass
         stream_audit(
             "bridge.contract_field",
             agent_id=agent_id or "",

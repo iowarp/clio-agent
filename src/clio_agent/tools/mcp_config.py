@@ -408,6 +408,20 @@ def pdeathsig_wrapped_command(command: str, args: Sequence[str]) -> tuple[str, l
     return setpriv, ["--pdeathsig", "SIGKILL", "--", command, *arg_list]
 
 
+def _mcp_uv_cache_dir() -> Path:
+    """Return the dedicated uv cache dir for MCP stdio spawns (under the user cache).
+
+    A clio-owned cache directory that ``uvx``/``uv run`` MCP launchers use instead of
+    the developer's ambient uv cache, isolating them from the concurrent-spawn archive
+    race and from ``uv cache prune/clean`` deleting ephemeral envs under a running
+    server (astral-sh/uv#11694). Resolved through :mod:`clio_agent.paths` so it honours
+    the canonical per-user cache location on every OS.
+    """
+    from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
+
+    return paths.user_cache_dir() / "mcp-uv-cache"
+
+
 def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
     """Turn a spec into the ``server`` arg FastMCP's ``Client`` accepts.
 
@@ -438,20 +452,36 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
                 f"PATH for the clio-agent process. source={spec.source or 'unknown'}"
             )
 
-        # Merge ``os.environ`` under the spec vars whenever we hand the subprocess
-        # an explicit env, so PATH (and the rest of the parent environment) survives.
-        # A bare ``dict(spec.env)`` would give the child ONLY the spec vars and drop
-        # PATH -> anything it execs by name fails with ``os error 2``.
-        env: dict[str, str] | None = {**os.environ, **dict(spec.env)} if spec.env else None
+        # Merge ``os.environ`` under the spec vars: we always hand the subprocess an
+        # explicit env (so the UV_CACHE_DIR isolation below can apply), and PATH plus
+        # the rest of the parent environment must survive. A bare ``dict(spec.env)``
+        # would give the child ONLY the spec vars and drop PATH -> anything it execs by
+        # name fails with ``os error 2``.
+        env: dict[str, str] = {**os.environ, **dict(spec.env)}
         if cwd:
             # Pin clio-kit's artifacts root to the workspace so staged resources
             # and generated artifacts land in the workspace even when the
             # launcher (e.g. ``uv run --directory <pkg>``) changes the process
             # cwd away from it. ``artifacts_root()`` honours ``CLIO_KIT_ARTIFACTS``
             # before falling back to cwd, so this is the destination regardless of
-            # what the model passes or omits. Merge ``os.environ`` so the
-            # subprocess keeps PATH etc. now that we hand it an explicit env.
-            env = {**os.environ, **(dict(spec.env)), "CLIO_KIT_ARTIFACTS": cwd}
+            # what the model passes or omits.
+            env["CLIO_KIT_ARTIFACTS"] = cwd
+        # Isolate any uvx/``uv run`` MCP launcher onto a dedicated uv cache, unless the
+        # DECLARATION explicitly set ``UV_CACHE_DIR`` (declaration wins; the developer's
+        # ambient ``UV_CACHE_DIR`` is deliberately overridden — the whole point is
+        # isolation from it). Two failures on the shared cache broke live servers:
+        # (1) four concurrent cold-cache ``uvx`` spawns race building the same ephemeral
+        # env archive, truncating ``pyvenv.cfg`` ("Cannot find home in ...archive-v0/
+        # .../pyvenv.cfg") -> the proxy drops on ``list_tools`` and every tool-declaring
+        # expert fails to build; (2) a concurrent ``uv cache prune/clean`` deletes
+        # ephemeral envs out from under a RUNNING server (astral-sh/uv#11694). A
+        # dedicated, clio-owned cache dir keeps MCP spawns off the shared cache both
+        # collide on. Created lazily here so a deployment that never spawns stdio MCP
+        # servers pays nothing.
+        if "UV_CACHE_DIR" not in spec.env:
+            uv_cache = _mcp_uv_cache_dir()
+            uv_cache.mkdir(parents=True, exist_ok=True)
+            env["UV_CACHE_DIR"] = str(uv_cache)
         return StdioTransport(
             command=resolved,
             args=list(spec.args),

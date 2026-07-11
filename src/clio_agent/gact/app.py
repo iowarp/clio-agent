@@ -414,8 +414,7 @@ from clio_agent.gact.agents.runtime import (  # noqa: E402,F401
 from clio_agent.gact.delegation import (  # noqa: E402,F401
     _append_accumulated_workflow_state_context,
     _append_session_workflow_state_context,
-    _bubbled_child_evidence_output_summary,
-    _clean_public_transcript_text,
+    _bubbled_child_evidence_output,
     _coerce_expert_handoff_rows,
     _compact_exact_evidence_index,
     _delegated_expert_agent_id,
@@ -423,16 +422,14 @@ from clio_agent.gact.delegation import (  # noqa: E402,F401
     _delegated_expert_public_prompt,
     _dynamic_parent_resume_prompt,
     _expert_handoff_fields,
-    _expert_handoff_summary,
-    _failed_child_delegation_output_summary,
     _failed_child_delegation_workflow_state,
     _fallback_answer_from_delegation,
     _iter_delegation_return_rows,
     _json_objects_from_text,
-    _latest_completed_child_output_summary,
-    _latest_delegation_output_summary,
-    _latest_final_child_output_summary,
-    _latest_parent_resumed_output_summary,
+    _latest_completed_child_output,
+    _latest_delegation_output,
+    _latest_final_child_output,
+    _latest_parent_resumed_output,
     _merge_workflow_state_from_value,
     _prediction_workflow_state,
     _should_execute_delegated_handoff,
@@ -2447,9 +2444,10 @@ def run_server(
     # immediately, beating gact-tui's 3-second deploy probe. POST /messages
     # 503s until app.state.agent is stamped by the background task.
     app_to_run: FastAPI = build_app()
-    if not no_agent and conf.resolve(
-        "lm.provider", env="CLIO_LM_PROVIDER", default="", cast=conf.as_str
-    ) != "":
+    if (
+        not no_agent
+        and conf.resolve("lm.provider", env="CLIO_LM_PROVIDER", default="", cast=conf.as_str) != ""
+    ):
         app_to_run.state.want_agent = True
 
     uvicorn.run(

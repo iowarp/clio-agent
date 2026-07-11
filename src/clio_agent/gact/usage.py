@@ -28,9 +28,12 @@ from typing import TYPE_CHECKING, Any, Optional
 # runtime.globals (where _active_lm_last_reasoning consumes it). Reuse it here
 # instead of carrying a second copy.
 from clio_agent.gact.runtime.globals import _entry_reasoning_text
+from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+
+    from clio_agent.gact.turn_state import TurnState
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +48,8 @@ __all__ = [
     "_usage_from_dspy_history",
     "_estimate_cost_usd",
     "_PRICE_TABLE_PER_M",
+    "_capture_reasoning_enabled",
+    "capture_reasoning_log",
 ]
 
 
@@ -219,6 +224,52 @@ def _reasoning_records_from_history_slice(
                 }
             )
     return records
+
+
+def _capture_reasoning_enabled() -> bool:
+    """Whether finalize persists per-call reasoning onto assistant metadata.
+
+    ``runtime.capture_reasoning`` / ``CLIO_CAPTURE_REASONING`` (default on);
+    set to 0 to avoid the metadata growth.
+    """
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    return conf.resolve(
+        "runtime.capture_reasoning", env="CLIO_CAPTURE_REASONING", default=True, cast=conf.as_bool
+    )
+
+
+def capture_reasoning_log(state: "TurnState") -> None:
+    """Persist per-call reasoning traces onto the assistant message metadata.
+
+    Args:
+        state: The in-flight turn state; its ``assistant_metadata`` is mutated
+            in place (``reasoning_log`` key) when any LM call this turn carried
+            reasoning tokens. A best-effort capture — never fails the turn.
+    """
+
+    # Reasoning capture: log the chain-of-thought tokens for EVERY LM call this
+    # turn (planner + each expert + chat), extracted from dspy.lm.history. Most
+    # stacks discard reasoning_content; we persist (question, reasoning, response)
+    # on the assistant message metadata because the reasoning has scientific
+    # value for analysing how the model reached its answer. Gated by
+    # CLIO_CAPTURE_REASONING (default on); set to 0 to avoid the metadata growth.
+    if _capture_reasoning_enabled():
+        try:
+            _reasoning_log = _reasoning_records_from_history_slice(state.history_start, state.app)
+        except Exception:  # noqa: BLE001 - reasoning capture is best-effort, never fail a turn
+            _reasoning_log = []
+        if _reasoning_log:
+            state.assistant_metadata["reasoning_log"] = _reasoning_log
+            trace.event(
+                "REASONING",
+                "captured %d call(s): %s",
+                len(_reasoning_log),
+                "; ".join(
+                    f"{(r['model'] or '?').split('/')[-1]}={r['reasoning_chars']}c"
+                    for r in _reasoning_log
+                ),
+            )
 
 
 def _usage_from_dspy_history() -> dict[str, Any]:

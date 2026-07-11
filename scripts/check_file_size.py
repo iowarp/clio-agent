@@ -42,15 +42,14 @@ DEFAULT_MAX_LINES = 800
 # falls under DEFAULT_MAX_LINES) in the same change. Paths are relative to the
 # repository root and use forward slashes.
 RATCHET_BASELINE: dict[str, int] = {
-    "src/clio_agent/agent.py": 2715,
+    "src/clio_agent/agent.py": 2689,
     "src/clio_agent/arc/memory.py": 1394,
     "src/clio_agent/arc/segments.py": 1117,
     "src/clio_agent/arc/storage.py": 978,
     "src/clio_agent/gact/agent_blueprints.py": 1100,
     "src/clio_agent/gact/agents/builders.py": 2209,
     "src/clio_agent/gact/agents/resolution.py": 803,
-    "src/clio_agent/gact/app.py": 2527,
-    "src/clio_agent/gact/delegation.py": 960,
+    "src/clio_agent/gact/app.py": 2525,
     "src/clio_agent/gact/routes/agents.py": 921,
     "src/clio_agent/gact/routes/blueprints.py": 859,
     "src/clio_agent/gact/routes/catalog.py": 880,
@@ -59,13 +58,13 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/gact/routes/sessions.py": 1478,
     "src/clio_agent/gact/runtime/globals.py": 923,
     "src/clio_agent/gact/streaming.py": 1027,
-    "src/clio_agent/gact/tool_observer.py": 977,
-    "src/clio_agent/gact/transcript.py": 996,
-    "src/clio_agent/gact/turn.py": 816,
-    "src/clio_agent/gact/turn_delegation.py": 1014,
-    "src/clio_agent/gact/turn_finalize.py": 966,
+    "src/clio_agent/gact/tool_observer.py": 930,
+    "src/clio_agent/gact/transcript.py": 986,
+    "src/clio_agent/gact/turn.py": 814,
+    "src/clio_agent/gact/turn_delegation.py": 913,
+    "src/clio_agent/gact/turn_finalize.py": 935,
     "src/clio_agent/gact/types.py": 1143,
-    "src/clio_agent/providers/claude_code_litellm.py": 1227,
+    "src/clio_agent/providers/claude_code_litellm.py": 1176,
     "src/clio_agent/runtime/status.py": 1222,
     "src/clio_agent/tools/execution.py": 1187,
     "src/clio_agent/ui/cli.py": 1156,
@@ -149,9 +148,7 @@ def check_file_size(
         if count > recorded:
             failures.append(Failure(rel, count, "regressed", recorded))
         elif count < recorded:
-            ratchet_downs.append(
-                RatchetDown(rel, count, recorded, under_cap=count <= max_lines)
-            )
+            ratchet_downs.append(RatchetDown(rel, count, recorded, under_cap=count <= max_lines))
     return Result(failures=failures, ratchet_downs=ratchet_downs)
 
 
@@ -183,10 +180,7 @@ def _print_report(result: Result, max_lines: int) -> None:
         if entry.kind == "new":
             print(f"  {entry.rel}:{entry.count} (new file exceeds cap {entry.limit})")
         else:
-            print(
-                f"  {entry.rel}:{entry.count} (regressed past recorded "
-                f"baseline {entry.limit})"
-            )
+            print(f"  {entry.rel}:{entry.count} (regressed past recorded baseline {entry.limit})")
 
 
 def main(argv: list[str] | None = None) -> int:
