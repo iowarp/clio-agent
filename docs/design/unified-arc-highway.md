@@ -85,6 +85,20 @@ This is the *minimum common product*: the smallest event set from which **every*
 | **Ingest reliability** | Every producer is **best-effort-with-swallow**: `LiveRuntimeContext.fold` bare `except: pass` (`live.py:274-277`); working-set append logs+continues (`runtime.py:168-174`); delegation writes likewise (`turn_delegation_arc.py:76-78,129`) | Once the log is the ONE copy, a dropped write is permanent multi-view loss. **Promote to must-succeed-or-typed-fail** in the SAME step that removes each old write path (§3.4). |
 | Chunked O(chunk) append | `_events` chunk family (`arc/live.py:74-109`, `arc/memory.py:886-904`) | Keep as the append primitive; but §2.10 bounds its concurrency/read cost. |
 
+**External operators (owner ruling, 2026-07-12 — load-bearing for Q1):** an entire context-management
+system EXTERNAL to the agent operates by communicating with **clio-core** directly:
+`external operator -> operation() -> context_blob -> agent sees effect`. Therefore:
+(a) op records carry **actor attribution** (agent-originated vs `external_operator`) — an external
+op is a first-class action→result log atom like any other, or reproducibility breaks exactly where
+the external system touches the context; (b) the in-process context projection is NOT the only
+writer's view — it must **observe externally-applied ops** (the "agent sees effect" half): the
+projection checks a log epoch/version at defined points (turn boundary at minimum; a clio-core
+change-notification if/when available) and folds any externally-appended ops before composing
+context — this is an epoch CHECK on the hot path (cheap), never a fold-from-scratch; (c) this is
+why clio-core stays the DEFAULT log home (§5.2 Q1): the external operators speak to clio-core —
+a file-backed default would leave them nothing to operate on. Under the loud LocalFS degradation
+(#897) the external-operator pathway is unavailable and the degradation row must SAY so.
+
 **Consequence:** the canonical store is the ARC event log **extended (part atoms, transcript ops, raw lane, ingest contract) and unified** on the existing `SegmentStore → ARCStore → CTE/LocalFS` seam. It adds NO new store (RULE 4).
 
 ### 2.3 Schema (the normalized atom + op record) — new kinds, no migration of old records
