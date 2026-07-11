@@ -36,6 +36,7 @@ from clio_agent.providers.claude_code_audit import (
 from clio_agent.providers.claude_code_bridge import (
     build_model_response as _build_model_response,
 )
+from clio_agent.providers.claude_code_options import build_sdk_options, thinking_key
 from clio_agent.providers.claude_code_thinking_split import (
     _split_provider_thinking_contract_delta,
 )
@@ -227,16 +228,11 @@ class _SdkSession:
     """Process-wide persistent Claude Agent SDK session (#715).
 
     One ``ClaudeSDKClient`` CLI connection is opened once and reused across every LM
-    call, so calls after the first avoid the ~10-15s cold start that the ``exec`` path
-    (and a fresh ``query()``) pays. All SDK I/O runs on a single dedicated asyncio loop
-    in a daemon thread; clio's worker threads submit coroutines via
-    ``run_coroutine_threadsafe`` and block on the result, so concurrent calls are
-    serialized onto the one connection (the client handles one query/receive cycle at a
-    time). The connection is opened lazily and rebuilt when the bound model/cwd changes.
-
-    Bare-model transport, mirroring :func:`_run_exec`: Claude Code's own tools are
-    disabled, ``max_turns=1``, and ``setting_sources=[]`` so the model sees only clio's
-    transcript (no ``~/.claude`` CLAUDE.md/settings) and clio's ReAct loop drives tools.
+    call, so calls after the first avoid the ~10-15s cold start. All SDK I/O runs on a
+    single dedicated asyncio loop in a daemon thread; worker threads submit coroutines
+    via ``run_coroutine_threadsafe`` and block, serializing concurrent calls onto the
+    one connection. The connection is opened lazily (see :func:`build_sdk_options` for
+    the bare-model transport options) and rebuilt when model/cwd/thinking change.
     """
 
     def __init__(self) -> None:
@@ -246,6 +242,7 @@ class _SdkSession:
         self._client: Any = None
         self._model: str | None = None
         self._cwd: str | None = None
+        self._thinking_key: str | None = None
 
     def _ensure_loop(self) -> None:
         if self._loop is not None:
@@ -259,19 +256,12 @@ class _SdkSession:
     def _submit(self, coro: Any, timeout: float | None) -> Any:
         return asyncio.run_coroutine_threadsafe(coro, self._loop).result(timeout=timeout)
 
-    async def _aconnect(self, model: str, cwd: str | None) -> Any:
-        from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient  # noqa: PLC0415
+    async def _aconnect(self, model: str, cwd: str | None, thinking: dict[str, Any] | None) -> Any:
+        from claude_agent_sdk import ClaudeSDKClient  # noqa: PLC0415
 
-        options = ClaudeAgentOptions(
-            tools=[],
-            model=model,
-            max_turns=1,
-            allowed_tools=[],
-            permission_mode="bypassPermissions",
-            setting_sources=[],
-            cwd=cwd,
+        client = ClaudeSDKClient(
+            options=build_sdk_options(model=model, cwd=cwd, stream=False, thinking=thinking)
         )
-        client = ClaudeSDKClient(options=options)
         await client.connect()
         return client
 
@@ -301,10 +291,16 @@ class _SdkSession:
             self._submit(self._client.disconnect(), timeout=15.0)
         except Exception:  # noqa: BLE001 - best-effort teardown; never block the caller
             logger.warning("claude sdk client disconnect failed", exc_info=True)
-        self._client = self._model = self._cwd = None
+        self._client = self._model = self._cwd = self._thinking_key = None
 
     def complete(
-        self, *, prompt: str, model: str, timeout: float | None, cwd: str | None
+        self,
+        *,
+        prompt: str,
+        model: str,
+        timeout: float | None,
+        cwd: str | None,
+        thinking: dict[str, Any] | None = None,
     ) -> tuple[str, dict[str, Any]]:
         try:
             import claude_agent_sdk  # noqa: F401,PLC0415
@@ -314,12 +310,18 @@ class _SdkSession:
                 "(install the 'claude-code' extra)."
             ) from exc
 
+        tkey = thinking_key(thinking)
         with self._lock:
             self._ensure_loop()
-            if self._client is None or self._model != model or self._cwd != cwd:
+            if (
+                self._client is None
+                or self._model != model
+                or self._cwd != cwd
+                or self._thinking_key != tkey
+            ):
                 self._reset_client()
-                self._client = self._submit(self._aconnect(model, cwd), timeout=60.0)
-                self._model, self._cwd = model, cwd
+                self._client = self._submit(self._aconnect(model, cwd, thinking), timeout=60.0)
+                self._model, self._cwd, self._thinking_key = model, cwd, tkey
             try:
                 text, usage = self._submit(self._aquery(prompt), timeout=timeout)
             except TimeoutError as exc:
@@ -344,26 +346,24 @@ class _SdkSession:
 class _SdkSessionPool:
     """Keyed pool of persistent Claude Agent SDK sessions (#818).
 
-    Maps ``(model, cwd)`` to a dedicated :class:`_SdkSession`, so two experts that
-    want *different* ``claude_code`` models can run concurrently — each holds its own
-    CLI connection (and its own asyncio loop/thread) instead of thrashing one shared
-    ``_SdkSession`` that would tear down and reconnect on every model/cwd flip.
-
-    Same-key calls still share one session and serialize onto its single connection
-    (the SDK client handles one query/receive cycle at a time); distinct-key calls
-    never contend. The per-app profile store (#818) makes concurrent distinct
-    ``claude_code`` experts *expressible*, and this pool makes them *safe*: the pool
-    lock is held only for the O(1) session lookup/creation, never across a completion.
+    Maps ``(model, cwd, thinking)`` to a dedicated :class:`_SdkSession`, so experts
+    that want *different* ``claude_code`` models or thinking levels run concurrently —
+    each holds its own CLI connection instead of thrashing one shared session that
+    reconnects on every flip. Same-key calls share one session and serialize onto its
+    single connection; distinct-key calls never contend. The pool lock is held only
+    for the O(1) session lookup/creation, never across a completion.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._sessions: dict[tuple[str, str | None], _SdkSession] = {}
+        self._sessions: dict[tuple[str, str | None, str | None], _SdkSession] = {}
 
-    def _session_for(self, model: str, cwd: str | None) -> _SdkSession:
-        """Return (creating if needed) the session bound to ``(model, cwd)``."""
+    def _session_for(
+        self, model: str, cwd: str | None, thinking_id: str | None = None
+    ) -> _SdkSession:
+        """Return (creating if needed) the session bound to ``(model, cwd, thinking)``."""
 
-        key = (model, cwd)
+        key = (model, cwd, thinking_id)
         with self._lock:
             session = self._sessions.get(key)
             if session is None:
@@ -372,12 +372,18 @@ class _SdkSessionPool:
             return session
 
     def complete(
-        self, *, prompt: str, model: str, timeout: float | None, cwd: str | None
+        self,
+        *,
+        prompt: str,
+        model: str,
+        timeout: float | None,
+        cwd: str | None,
+        thinking: dict[str, Any] | None = None,
     ) -> tuple[str, dict[str, Any]]:
-        """Complete one turn on the session keyed by ``(model, cwd)``."""
+        """Complete one turn on the session keyed by ``(model, cwd, thinking)``."""
 
-        return self._session_for(model, cwd).complete(
-            prompt=prompt, model=model, timeout=timeout, cwd=cwd
+        return self._session_for(model, cwd, thinking_key(thinking)).complete(
+            prompt=prompt, model=model, timeout=timeout, cwd=cwd, thinking=thinking
         )
 
     def close(self) -> None:
@@ -400,14 +406,18 @@ def _run_sdk(
     model: str,
     timeout: float | None = 180.0,
     cwd: str | None = None,
+    thinking: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Run one completion via the keyed Claude Agent SDK session pool (#715, #818).
 
     Delegates to the process-wide :data:`_SDK_SESSION_POOL`, which keeps one CLI
-    connection per ``(model, cwd)`` so distinct-model experts run concurrently without
-    reconnect thrash. Returns ``(text, usage)`` in the same shape as :func:`_run_exec`.
+    connection per ``(model, cwd, thinking)`` so distinct-model/thinking experts run
+    concurrently without reconnect thrash. Returns ``(text, usage)`` in the same
+    shape as :func:`_run_exec`.
     """
-    return _SDK_SESSION_POOL.complete(prompt=prompt, model=model, timeout=timeout, cwd=cwd)
+    return _SDK_SESSION_POOL.complete(
+        prompt=prompt, model=model, timeout=timeout, cwd=cwd, thinking=thinking
+    )
 
 
 def _sdk_stream_event_text(event: dict[str, Any]) -> str:
@@ -476,12 +486,12 @@ async def _astream_sdk(
     timeout: float | None = 180.0,
     cwd: str | None = None,
     call_index: int = 0,
+    thinking: dict[str, Any] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Stream one Claude Code SDK call as LiteLLM-compatible chunks."""
     try:
         from claude_agent_sdk import (  # noqa: PLC0415
             AssistantMessage,
-            ClaudeAgentOptions,
             ClaudeSDKClient,
             ResultMessage,
             StreamEvent,
@@ -493,16 +503,7 @@ async def _astream_sdk(
             "(install the 'claude-code' extra)."
         ) from exc
 
-    options = ClaudeAgentOptions(
-        tools=[],
-        model=model,
-        max_turns=1,
-        allowed_tools=[],
-        permission_mode="bypassPermissions",
-        setting_sources=[],
-        cwd=cwd,
-        include_partial_messages=True,
-    )
+    options = build_sdk_options(model=model, cwd=cwd, stream=True, thinking=thinking)
     call_id = uuid.uuid4().hex
     emit_call_started(  # BEFORE connect: SDK spawn cold-start counts in the call, not the gap (#891)
         call_id=call_id,
@@ -834,6 +835,8 @@ class ClaudeCodeLLM(CustomLLM):
             )
         timeout_s = float(timeout) if timeout else 180.0
         cwd = params.get("claude_code_cwd", os.getcwd())
+        # Provider-generic thinking (#895): resolved SDK config, or None = default.
+        thinking = params.get("claude_code_thinking")
         trace.HF_ON and trace.hot(
             "CLAUDE-CODE-IO",
             "request call=%d json=%s",
@@ -842,6 +845,7 @@ class ClaudeCodeLLM(CustomLLM):
                 {
                     "call": call_index,
                     "mode": "completion",
+                    "thinking": thinking,
                     "model": clean_model,
                     "transport": transport,
                     "api_base": api_base,
@@ -880,7 +884,13 @@ class ClaudeCodeLLM(CustomLLM):
         )
         started = time.monotonic()
         if transport == "sdk":
-            text, usage = _run_sdk(prompt=prompt, model=clean_model, timeout=timeout_s, cwd=cwd)
+            text, usage = _run_sdk(
+                prompt=prompt,
+                model=clean_model,
+                timeout=timeout_s,
+                cwd=cwd,
+                thinking=thinking,
+            )
         else:
             text, usage = _run_exec(
                 prompt=prompt,
@@ -1039,6 +1049,8 @@ class ClaudeCodeLLM(CustomLLM):
         prompt = _messages_to_claude_prompt(messages)
         timeout_s = float(timeout) if timeout else 180.0
         cwd = params.get("claude_code_cwd", os.getcwd())
+        # Provider-generic thinking (#895): resolved SDK thinking config, or None.
+        thinking = params.get("claude_code_thinking")
         trace.HF_ON and trace.hot(
             "CLAUDE-CODE-IO",
             "request call=%d json=%s",
@@ -1047,6 +1059,7 @@ class ClaudeCodeLLM(CustomLLM):
                 {
                     "call": call_index,
                     "mode": "astreaming",
+                    "thinking": thinking,
                     "model": clean_model,
                     "transport": transport,
                     "api_base": api_base,
@@ -1088,6 +1101,7 @@ class ClaudeCodeLLM(CustomLLM):
                     timeout=timeout_s,
                     cwd=cwd,
                     call_index=call_index,
+                    thinking=thinking,
                 ):
                     chunk_count += 1
                     text_chars += len(str(chunk.get("text") or ""))
@@ -1155,9 +1169,7 @@ class ClaudeCodeLLM(CustomLLM):
 
 # The once-per-process LiteLLM registration guard is the shared CLI-provider
 # machinery (identical lifecycle to codex; only the provider key differs).
-ensure_registered, _reset_for_tests = register_custom_provider(
-    "claude_code", ClaudeCodeLLM
-)
+ensure_registered, _reset_for_tests = register_custom_provider("claude_code", ClaudeCodeLLM)
 
 
 __all__ = [

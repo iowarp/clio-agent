@@ -182,8 +182,9 @@ def test_custom_llm_sdk_transport_routes_to_run_sdk(monkeypatch) -> None:
     """transport='sdk' dispatches to the Agent SDK path (not `claude -p` exec)."""
     seen: dict = {}
 
-    def _fake_sdk(*, prompt, model, timeout, cwd):
+    def _fake_sdk(*, prompt, model, timeout, cwd, thinking=None):
         seen["model"] = model
+        seen["thinking"] = thinking
         return "sdk says hi", {"input_tokens": 2, "output_tokens": 3}
 
     monkeypatch.setattr(claude_code_litellm, "_run_sdk", _fake_sdk)

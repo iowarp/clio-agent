@@ -96,6 +96,22 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
             cfg["transport"] = getattr(provider_config, "codex_transport", None)
         elif provider == "claude_code":
             cfg["transport"] = getattr(provider_config, "claude_code_transport", None)
+    # Effective thinking level (#895): surface both the raw level and the resolved
+    # per-provider effect so the knob is never invisible (doctor/status field-map).
+    level = getattr(provider_config, "thinking_level", None)
+    if level is not None:
+        cfg["thinking_level"] = level
+    try:
+        from clio_agent.providers.thinking import resolve_thinking  # noqa: PLC0415
+
+        plan = resolve_thinking(
+            str(cfg.get("provider") or ""),
+            cfg.get("thinking_level"),
+            int(cfg.get("thinking_budget") or 0),
+        )
+        cfg["thinking_effective"] = plan.display
+    except Exception:  # noqa: BLE001 - status must never fail on a display derivation
+        pass
     return cfg
 
 

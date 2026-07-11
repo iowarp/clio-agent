@@ -1,0 +1,372 @@
+#!/usr/bin/env python3
+"""Thinking-level acceptance experiment harness (#895).
+
+Runs ONE thinking level end to end against a live gact server + the real
+claude_code transport, then records the numbers the owner's acceptance
+experiment compares across levels (SDK default vs medium vs low):
+
+  * turn wall-clock,
+  * output tokens,
+  * thinking-vs-content token/char split (from the stream audit + the
+    ``analyze_turn_waterfall.py`` drill-down),
+
+and appends one row to a JSONL results file. The orchestrator invokes this once
+per ``--level`` (off/low/medium/high, plus the unset SDK default via
+``--level default``); the human then fills the ``passed`` verdict per level from
+the honest-answer / correct-delegation / no-fabrication check.
+
+Sequencing (matches the owner spec):
+  1. boot a server with the level set + stream audit on (unless ``--backend-url``),
+  2. **pre-allow permissions via PUT /v1/policies FIRST**,
+  3. create workspace + a blueprint session,
+  4. POST the LA one-shot question and wait for the turn to finish,
+  5. run ``analyze_turn_waterfall.py`` on the capture,
+  6. append the results row.
+
+This is experiment PREP — it is not run in CI and does not run itself. Use
+``--dry-run`` to validate wiring (env, endpoints, results path) without booting a
+server or spending an LM turn.
+
+Usage::
+
+    uv run python scripts/run_thinking_experiment.py --level low \
+        --provider claude_code --model haiku \
+        --blueprint earthscope-gnss-region \
+        --results out/thinking_experiment.jsonl
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# The LA one-shot: a data-grounded EarthScope/NDP question with a vivid, checkable
+# output (the acceptance case). Override with --question for other cases.
+DEFAULT_QUESTION = (
+    "Using the EarthScope GNSS station metadata in this workspace, identify which US "
+    "state hosts the most stations and report the count, then name the single "
+    "northernmost station with its latitude. Answer concretely from the data; do not "
+    "fabricate station names or coordinates."
+)
+
+TERMINAL_STATUSES = {"idle", "finished", "error", "cancelled"}
+
+
+@dataclass
+class ExperimentPlan:
+    """Fully-resolved run configuration (assembled from CLI args)."""
+
+    level: str
+    provider: str
+    model: str
+    transport: str
+    blueprint: str
+    question: str
+    workspace_root: Path
+    results_path: Path
+    audit_path: Path
+    waterfall_path: Path
+    host: str
+    port: int
+    backend_url: str
+    turn_timeout_s: float
+    boot_timeout_s: float
+
+    @property
+    def base_url(self) -> str:
+        return self.backend_url or f"http://{self.host}:{self.port}"
+
+
+def server_env(plan: ExperimentPlan) -> dict[str, str]:
+    """Environment for the booted server: provider + level + stream audit on.
+
+    The level rides ``CLIO_LM_THINKING_LEVEL`` (env-settable knob, #895) so no
+    PUT round-trip is needed; ``default`` means "send nothing — the provider/CLI
+    default governs" and is expressed by simply not setting the level.
+    """
+    env = dict(os.environ)
+    env["CLIO_LM_PROVIDER"] = plan.provider
+    env["CLIO_LM_MODEL"] = plan.model
+    if plan.provider == "claude_code":
+        env["CLIO_CLAUDE_CODE_TRANSPORT"] = plan.transport
+    if plan.level and plan.level != "default":
+        env["CLIO_LM_THINKING_LEVEL"] = plan.level
+    else:
+        env.pop("CLIO_LM_THINKING_LEVEL", None)
+    env["CLIO_STREAM_AUDIT_LOG"] = str(plan.audit_path)
+    return env
+
+
+def _allow_all_policies() -> list[dict[str, Any]]:
+    """A blanket workspace-scoped allow so the turn never blocks on HITL."""
+    return [{"scope": "workspace", "action": "allow", "tool_name_pattern": "*"}]
+
+
+class _Client:
+    """Tiny JSON HTTP client (requests) with a shared base URL + timeout."""
+
+    def __init__(self, base_url: str, timeout: float = 30.0) -> None:
+        import requests  # noqa: PLC0415 - optional dep, only needed for a live run
+
+        self._requests = requests
+        self._base = base_url.rstrip("/")
+        self._timeout = timeout
+
+    def call(self, method: str, path: str, body: dict | None = None) -> dict:
+        resp = self._requests.request(
+            method, f"{self._base}{path}", json=body, timeout=self._timeout
+        )
+        resp.raise_for_status()
+        return resp.json() if resp.content else {}
+
+
+def _wait_for_health(client: _Client, timeout_s: float) -> None:
+    deadline = time.monotonic() + timeout_s
+    last_err: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            client.call("GET", "/v1/health")
+            return
+        except Exception as exc:  # noqa: BLE001 - retry until the port is up
+            last_err = exc
+            time.sleep(1.0)
+    raise TimeoutError(f"server did not become healthy in {timeout_s}s: {last_err}")
+
+
+def _ensure_workspace(client: _Client, name: str, root: Path) -> str:
+    existing = client.call("GET", "/v1/workspaces").get("workspaces", [])
+    for ws in existing:
+        if ws.get("name") == name:
+            return str(ws["id"])
+    created = client.call("POST", "/v1/workspaces", {"name": name, "root_path": str(root)})
+    return str(created["id"])
+
+
+def _create_session(client: _Client, workspace_id: str, blueprint: str) -> str:
+    created = client.call(
+        "POST", "/v1/sessions", {"title": "thinking-experiment", "workspace_id": workspace_id}
+    )
+    sid = str(created["id"])
+    if blueprint:
+        client.call("POST", f"/v1/sessions/{sid}/agent-blueprint", {"blueprint_id": blueprint})
+    return sid
+
+
+def _session_row(client: _Client, workspace_id: str, sid: str) -> dict:
+    sessions = client.call("GET", f"/v1/sessions?workspace_id={workspace_id}").get("sessions", [])
+    for s in sessions:
+        if s.get("id") == sid:
+            return s
+    return {}
+
+
+def _run_turn(client: _Client, plan: ExperimentPlan, workspace_id: str, sid: str) -> float:
+    """POST the question, poll until terminal, return wall-clock seconds."""
+    started = time.monotonic()
+    client.call("POST", f"/v1/sessions/{sid}/messages", {"text": plan.question})
+    deadline = started + plan.turn_timeout_s
+    while time.monotonic() < deadline:
+        row = _session_row(client, workspace_id, sid)
+        if row.get("status") in TERMINAL_STATUSES and int(row.get("message_count") or 0) >= 2:
+            return time.monotonic() - started
+        time.sleep(2.0)
+    raise TimeoutError(f"turn did not finish within {plan.turn_timeout_s}s")
+
+
+def _run_waterfall(plan: ExperimentPlan, session_id: str) -> dict:
+    """Invoke analyze_turn_waterfall.py and return its parsed JSON summary."""
+    cmd = [
+        sys.executable,
+        str(REPO_ROOT / "scripts" / "analyze_turn_waterfall.py"),
+        "--audit",
+        str(plan.audit_path),
+        "--session-id",
+        session_id,
+        "--json-out",
+        str(plan.waterfall_path),
+    ]
+    subprocess.run(cmd, check=True, cwd=str(REPO_ROOT))
+    if plan.waterfall_path.exists():
+        return json.loads(plan.waterfall_path.read_text(encoding="utf-8"))
+    return {}
+
+
+def _thinking_share(plan: ExperimentPlan) -> dict[str, int]:
+    """Sum claude_code_sdk thinking vs content chars from the stream audit."""
+    thinking = content = 0
+    if not plan.audit_path.exists():
+        return {"thinking_chars": 0, "content_chars": 0}
+    for line in plan.audit_path.read_text(encoding="utf-8").splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if row.get("stage") == "provider.raw_event" and row.get("provider") == "claude_code_sdk":
+            thinking += int(row.get("thinking_len") or 0)
+            content += int(row.get("text_len") or 0)
+    return {"thinking_chars": thinking, "content_chars": content}
+
+
+def _sum_output_tokens(waterfall: dict) -> int | None:
+    """Sum per-call ``output_tokens`` from the waterfall report (None if absent)."""
+    calls = waterfall.get("calls") or []
+    totals = [int(c["output_tokens"]) for c in calls if c.get("output_tokens") is not None]
+    return sum(totals) if totals else None
+
+
+def append_result(plan: ExperimentPlan, row: dict[str, Any]) -> None:
+    """Append one JSONL results row (the orchestrator aggregates across levels)."""
+    plan.results_path.parent.mkdir(parents=True, exist_ok=True)
+    with plan.results_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row, sort_keys=True))
+        f.write("\n")
+
+
+def build_plan(args: argparse.Namespace) -> ExperimentPlan:
+    out_dir = Path(args.out_dir).resolve()
+    workspace_root = (
+        Path(args.workspace_root).resolve() if args.workspace_root else out_dir / "workspace"
+    )
+    return ExperimentPlan(
+        level=args.level,
+        provider=args.provider,
+        model=args.model,
+        transport=args.transport,
+        blueprint=args.blueprint,
+        question=args.question,
+        workspace_root=workspace_root,
+        results_path=Path(args.results).resolve(),
+        audit_path=(out_dir / f"stream_audit_{args.level}.jsonl").resolve(),
+        waterfall_path=(out_dir / f"waterfall_{args.level}.json").resolve(),
+        host=args.host,
+        port=args.port,
+        backend_url=args.backend_url,
+        turn_timeout_s=args.turn_timeout_s,
+        boot_timeout_s=args.boot_timeout_s,
+    )
+
+
+def run(plan: ExperimentPlan) -> dict[str, Any]:
+    """Execute the full experiment for one level; return the results row."""
+    plan.workspace_root.mkdir(parents=True, exist_ok=True)
+    plan.audit_path.parent.mkdir(parents=True, exist_ok=True)
+    plan.audit_path.write_text("", encoding="utf-8")  # fresh capture
+
+    proc: subprocess.Popen | None = None
+    if not plan.backend_url:
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "from clio_agent.gact.app import run_server; "
+                f"run_server(host='{plan.host}', port={plan.port})",
+            ],
+            env=server_env(plan),
+            cwd=str(REPO_ROOT),
+        )
+    try:
+        client = _Client(plan.base_url)
+        _wait_for_health(client, plan.boot_timeout_s)
+        # (2) Pre-allow permissions FIRST — before any session or turn.
+        client.call("PUT", "/v1/policies", {"policies": _allow_all_policies()})
+        workspace_id = _ensure_workspace(client, "thinking-experiment", plan.workspace_root)
+        sid = _create_session(client, workspace_id, plan.blueprint)
+        wall_s = _run_turn(client, plan, workspace_id, sid)
+        waterfall = _run_waterfall(plan, sid)
+        share = _thinking_share(plan)
+        row = {
+            "level": plan.level,
+            "provider": plan.provider,
+            "model": plan.model,
+            "transport": plan.transport,
+            "session_id": sid,
+            "wall_clock_s": round(wall_s, 2),
+            "thinking_chars": share["thinking_chars"],
+            "content_chars": share["content_chars"],
+            "output_tokens": _sum_output_tokens(waterfall),
+            "waterfall": plan.waterfall_path.name,
+            "passed": None,  # human fills the honest-answer/delegation/no-fab verdict
+        }
+        append_result(plan, row)
+        return row
+    finally:
+        if proc is not None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument(
+        "--level",
+        required=True,
+        choices=["default", "off", "low", "medium", "high"],
+        help="thinking level for this run ('default' sends nothing → SDK/CLI default)",
+    )
+    p.add_argument("--provider", default="claude_code")
+    p.add_argument("--model", default="haiku")
+    p.add_argument("--transport", default="sdk")
+    p.add_argument("--blueprint", default="earthscope-gnss-region")
+    p.add_argument("--question", default=DEFAULT_QUESTION)
+    p.add_argument("--workspace-root", default="")
+    p.add_argument("--out-dir", default=str(REPO_ROOT / "out" / "thinking_experiment"))
+    p.add_argument(
+        "--results", default=str(REPO_ROOT / "out" / "thinking_experiment" / "results.jsonl")
+    )
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8109)
+    p.add_argument(
+        "--backend-url",
+        default="",
+        help="use an already-running server instead of booting one (skips level env)",
+    )
+    p.add_argument("--turn-timeout-s", type=float, default=1800.0)
+    p.add_argument("--boot-timeout-s", type=float, default=120.0)
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the resolved plan + server env and exit (no server, no LM turn)",
+    )
+    return p.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+    plan = build_plan(args)
+    if args.dry_run:
+        print("PLAN:")
+        for key, value in plan.__dict__.items():
+            print(f"  {key} = {value}")
+        env = server_env(plan)
+        print("SERVER ENV (thinking-relevant):")
+        for key in (
+            "CLIO_LM_PROVIDER",
+            "CLIO_LM_MODEL",
+            "CLIO_CLAUDE_CODE_TRANSPORT",
+            "CLIO_LM_THINKING_LEVEL",
+            "CLIO_STREAM_AUDIT_LOG",
+        ):
+            print(f"  {key} = {env.get(key, '<unset>')}")
+        print(f"base_url = {plan.base_url}")
+        return 0
+    row = run(plan)
+    print(json.dumps(row, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
