@@ -522,6 +522,43 @@ def _delegated_expert_prompt(row: Mapping[str, Any], fallback: str) -> str:
     return fallback
 
 
+def _delegate_started_row(
+    row: Mapping[str, Any],
+    *,
+    target: "AgentDef",
+    parent_id: str,
+    depth: int,
+    execution_mode: str,
+    passed_workflow_state: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Build the ``delegate.started`` handoff row for a sync delegation.
+
+    #888: attach the typed ``workflow_state`` snapshot the parent PASSES INTO the
+    child (the same mapping :func:`_append_accumulated_workflow_state_context`
+    renders into the child's execution prompt) as a typed carrier on the row — so
+    "what was this child seeded with" is visible on the wire, not just composed
+    into the prompt. Typed data on a typed carrier: no authored text, no prose.
+    Non-empty mapping -> ``workflow_state`` key present; empty/None -> key ABSENT
+    (never present-and-empty), matching the #885 shape discipline.
+    """
+
+    started: dict[str, Any] = {
+        **row,
+        "agent_id": target.id,
+        "parent_id": parent_id,
+        "pack_id": str(target.metadata.get("pack_id") or ""),
+        "pack_version": str(target.metadata.get("pack_version") or ""),
+        "status": "running",
+        "stage": "delegate.started",
+        "delegation_lifecycle": "sync",
+        "depth": depth,
+        "execution_mode": execution_mode,
+    }
+    if passed_workflow_state:
+        started["workflow_state"] = dict(passed_workflow_state)
+    return started
+
+
 # The server's OWN marker constants: the fixed strings that
 # ``_delegated_expert_prompt`` / ``_append_accumulated_workflow_state_context`` /
 # ``_dynamic_parent_resume_prompt`` APPEND when they compose a child execution

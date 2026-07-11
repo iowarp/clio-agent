@@ -60,6 +60,7 @@ from clio_agent.gact.delegation import (
     _append_session_workflow_state_context,
     _bubbled_child_evidence_output,
     _coerce_expert_handoff_rows,
+    _delegate_started_row,
     _delegated_expert_agent_id,
     _delegated_expert_prompt,
     _failed_child_delegation_workflow_state,
@@ -251,6 +252,7 @@ async def execute_delegated_experts(
     rows: list[dict[str, Any]],
     *,
     source_text: str,
+    passed_workflow_state: Optional[Mapping[str, Any]] = None,
     completed_child_ids: set[str] | None = None,
     completed_child_outputs: dict[str, str] | None = None,
     depth: int = 0,
@@ -357,18 +359,15 @@ async def execute_delegated_experts(
             "child_expert": target.id,
         }
         started_at = time.perf_counter()
-        started_row = {
-            **row,
-            "agent_id": target.id,
-            "parent_id": parent_agent.id,
-            "pack_id": str(target.metadata.get("pack_id") or ""),
-            "pack_version": str(target.metadata.get("pack_version") or ""),
-            "status": "running",
-            "stage": "delegate.started",
-            "delegation_lifecycle": "sync",
-            "depth": depth,
-            "execution_mode": execution_mode,
-        }
+        # #888: delegate.started carries the parent's passed-down typed snapshot.
+        started_row = _delegate_started_row(
+            row,
+            target=target,
+            parent_id=parent_agent.id,
+            depth=depth,
+            execution_mode=execution_mode,
+            passed_workflow_state=passed_workflow_state,
+        )
         _emit_semantic_event(
             state.app,
             state.sid,
@@ -873,6 +872,7 @@ async def settle_dynamic_agent_delegations(
             parent_agent,
             requested_rows,
             source_text=current_evidence or source_text,
+            passed_workflow_state=parent_state,  # #888: typed mapping, not prose
             completed_child_ids=completed_child_ids,
             completed_child_outputs=completed_child_outputs,
         )

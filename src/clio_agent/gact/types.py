@@ -616,12 +616,12 @@ class Part(BaseModel):
     # facing payload).
     execution_path: str = ""
 
-    # expert_handoff (CLIO extension). Typed mirror of the delegation row so a client reads
-    # the handoff from fields, not the bespoke ``text``. ``parent_agent`` delegated to
-    # ``child_agent``; ``stage`` is the lifecycle phase (``parent.resumed`` = orchestrator
-    # return twin) and the outcome reuses ``status``. Exactly ONE ``delegate.started`` + ONE
-    # ``delegate.completed`` per delegation — a FAILURE concludes there too with
-    # ``status="failed"`` (#882); ``delegate.failed`` stays on the row + event. No dedup.
+    # expert_handoff (CLIO extension). Typed mirror of the delegation row; client reads fields,
+    # not ``text``. ``parent_agent`` delegated to ``child_agent``; ``stage`` = lifecycle phase
+    # (``parent.resumed`` = orchestrator return twin), outcome reuses ``status``. ONE
+    # ``delegate.started`` + ONE ``delegate.completed`` per delegation; a FAILURE concludes there
+    # with ``status="failed"`` (#882), no dedup. #888: ``delegate.started`` + ``metadata`` carry
+    # the typed ``workflow_state`` the parent PASSED INTO the child (only when non-empty, #885).
     parent_agent: str = ""
     child_agent: str = ""
     stage: str = ""
