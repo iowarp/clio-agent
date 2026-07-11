@@ -822,6 +822,7 @@ from clio_agent.gact.permission_gate import (  # noqa: E402,F401
     _policy_action_for_tool,
     _record_resolved_permission,
 )
+from clio_agent.gact.resident_ledgers import build_resident_ledger_set, seed_metrics_counters
 from clio_agent.gact.sessions import SessionStore, _default_store_path
 
 # Live-streaming + prediction-rendering cluster (#714 decomposition) moved to
@@ -1286,20 +1287,19 @@ def build_app(
     # (ARC's arc.op op-logger AND highway-derive sink are wired via _set_app_arc
     # whenever app.state.arc is assigned — see _set_app_arc; the highway closure reads
     # app.state.semantic_event_sink at fire-time, so this construction order is fine.)
-    # message log keyed by session_id. Populated by
-    # POST /messages, read by GET /messages, and backed by per-session
-    # JSON ledgers so adapter deletion/redeploy preserves transcripts.
+    # Durable per-session message log (POST /messages writes, GET /messages reads);
+    # per-session JSON ledgers so adapter deletion/redeploy preserves transcripts.
     app.state.message_store = MessageStore(path=session_store_path.parent / "messages")
-    app.state.messages = app.state.message_store.load_all()
-    # #770 C3: running metrics aggregate so GET /v1/metrics reads a counter
-    # instead of re-walking every message of every session on each poll. Seeded
-    # once from the loaded ledger, then kept live by the session_store write
-    # seams (_append/_extend/_replace/_delete_session_messages).
-    app.state.metrics_counters = MetricsCounters()
-    app.state.metrics_counters.rebuild(app.state.messages)
-    # #770 C3: bounded eviction-audit trail for the in-memory ledgers below;
-    # every retention drop records a typed reason here (no silent drop).
+    # #770 C3: bounded eviction-audit trail (init before the resident set).
     init_retention_state(app)
+    # #770 C3 / #889: running metrics aggregate, seeded by a streaming parse-and-
+    # DISCARD walk so the metrics wire stays byte-identical across a restart WITHOUT
+    # pinning every transcript in RAM.
+    app.state.metrics_counters = MetricsCounters()
+    seed_metrics_counters(app.state.message_store, app.state.metrics_counters)
+    # #889: BOUNDED (LRU + byte cap + idle-TTL) resident projection over the store —
+    # boots empty (index only), materializes lazily. See gact.resident_ledgers.
+    app.state.messages = build_resident_ledger_set(app)
     # cooperative cancellation flags. POST /cancel
     # adds a sid; the POST-message handler checks + clears after the
     # agent returns. Set (not dict) because the flag's presence IS
