@@ -106,9 +106,22 @@ def _replace_session_messages(
 
 
 def _delete_session_messages(app: "FastAPI", session_id: str) -> None:
-    """Remove one session's message ledger from memory and disk."""
+    """Remove one session's message ledger from memory and disk.
 
-    app.state.messages.pop(session_id, None)
+    Uses the resident set's non-materializing :meth:`~clio_agent.gact.resident_ledgers.ResidentLedgerSet.discard`
+    when available so deleting an EVICTED session does not rehydrate its (possibly
+    huge) ledger from disk just to drop it — which would also emit a misleading
+    ``rehydrate`` audit row and transiently count the doomed ledger against the byte
+    cap, evicting warm sessions to make room for one deleted immediately after. Falls
+    back to ``pop`` for a plain-dict ``app.state.messages`` (older/test wiring).
+    """
+
+    messages = app.state.messages
+    discard = getattr(messages, "discard", None)
+    if callable(discard):
+        discard(session_id)
+    else:
+        messages.pop(session_id, None)
     counters = _metrics_counters(app)
     if counters is not None:
         counters.remove_session(session_id)
