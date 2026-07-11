@@ -28,6 +28,14 @@ from clio_agent.providers._cli_provider import (
     messages_to_prompt,
     register_custom_provider,
 )
+from clio_agent.providers.claude_code_audit import (
+    active_gact_ids,
+    emit_call_started,
+    emit_call_usage,
+)
+from clio_agent.providers.claude_code_bridge import (
+    build_model_response as _build_model_response,
+)
 from clio_agent.providers.claude_code_thinking_split import (
     _split_provider_thinking_contract_delta,
 )
@@ -38,7 +46,7 @@ logger = logging.getLogger(__name__)
 
 try:
     from litellm import CustomLLM
-    from litellm.types.utils import Choices, Message, ModelResponse, Usage
+    from litellm.types.utils import ModelResponse
 except ImportError as e:  # pragma: no cover - litellm is a hard dep
     raise ImportError("litellm must be installed to use the Claude Code provider") from e
 
@@ -82,21 +90,6 @@ def _trace_json(value: Any) -> str:
         return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
     except TypeError:
         return json.dumps(str(value), ensure_ascii=False)
-
-
-def _active_gact_ids() -> tuple[str, str, str]:
-    """Return active GACT session, turn, and trace ids for audit rows."""
-
-    try:
-        from clio_agent.gact.context import (  # noqa: PLC0415
-            active_session_id,
-            active_trace_id,
-            active_turn_id,
-        )
-
-        return active_session_id(), active_turn_id(), active_trace_id()
-    except Exception:  # noqa: BLE001 - provider audit must never break calls
-        return "", "", ""
 
 
 def _messages_to_claude_prompt(messages: list[dict[str, Any]]) -> str:
@@ -193,7 +186,7 @@ def _run_exec(
     if not text:
         raise ClaudeCodeExecError(f"claude -p returned empty content (model={model})")
     usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
-    session_id, turn_id, trace_id = _active_gact_ids()
+    session_id, turn_id, trace_id = active_gact_ids()
     stream_audit(
         "provider.raw_event",
         provider="claude_code_exec",
@@ -510,6 +503,14 @@ async def _astream_sdk(
         cwd=cwd,
         include_partial_messages=True,
     )
+    call_id = uuid.uuid4().hex
+    emit_call_started(  # BEFORE connect: SDK spawn cold-start counts in the call, not the gap (#891)
+        call_id=call_id,
+        call_index=call_index,
+        model=model,
+        transport="sdk",
+        prompt=prompt,
+    )
     client = ClaudeSDKClient(options=options)
     emitted_partial = False
     final_text = ""
@@ -749,6 +750,14 @@ async def _astream_sdk(
             f"claude agent sdk timed out after {timeout}s (model={model})"
         ) from exc
     finally:
+        emit_call_usage(  # BEFORE disconnect: record call end even if teardown raises (#891)
+            call_id=call_id,
+            call_index=call_index,
+            model=model,
+            transport="sdk",
+            usage=final_usage,
+            output_chars=len(final_text),
+        )
         try:
             await client.disconnect()
         except Exception:  # noqa: BLE001 - best-effort teardown
@@ -787,39 +796,6 @@ async def _astream_sdk(
         )
     else:
         raise ClaudeCodeExecError(f"claude agent sdk returned empty content (model={model})")
-
-
-def _build_model_response(
-    *,
-    text: str,
-    model: str,
-    usage_payload: dict[str, Any] | None = None,
-    request_id: str | None = None,
-) -> ModelResponse:
-    """Wrap a Claude Code result in a LiteLLM ``ModelResponse``."""
-    usage_payload = usage_payload or {}
-    prompt_tokens = int(usage_payload.get("input_tokens", 0) or 0)
-    prompt_tokens += int(usage_payload.get("cache_creation_input_tokens", 0) or 0)
-    prompt_tokens += int(usage_payload.get("cache_read_input_tokens", 0) or 0)
-    completion_tokens = int(usage_payload.get("output_tokens", 0) or 0)
-    return ModelResponse(
-        id=request_id or f"claude-code-{uuid.uuid4().hex}",
-        choices=[
-            Choices(
-                index=0,
-                message=Message(role="assistant", content=text),
-                finish_reason="stop",
-            )
-        ],
-        created=int(time.time()),
-        model=f"claude_code/{model}",
-        object="chat.completion",
-        usage=Usage(
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=prompt_tokens + completion_tokens,
-        ),
-    )
 
 
 class ClaudeCodeLLM(CustomLLM):
@@ -894,6 +870,14 @@ class ClaudeCodeLLM(CustomLLM):
             timeout_s,
             cwd or "",
         )
+        call_id = uuid.uuid4().hex
+        emit_call_started(
+            call_id=call_id,
+            call_index=call_index,
+            model=clean_model,
+            transport=transport,
+            prompt=prompt,
+        )
         started = time.monotonic()
         if transport == "sdk":
             text, usage = _run_sdk(prompt=prompt, model=clean_model, timeout=timeout_s, cwd=cwd)
@@ -905,6 +889,14 @@ class ClaudeCodeLLM(CustomLLM):
                 cwd=cwd,
                 call_index=call_index,
             )
+        emit_call_usage(
+            call_id=call_id,
+            call_index=call_index,
+            model=clean_model,
+            transport=transport,
+            usage=usage,
+            output_chars=len(text),
+        )
         trace.HF_ON and trace.hot(
             "CLAUDE-CODE-CALL",
             "completion_end call=%d model=%s transport=%s elapsed_ms=%.1f text_chars=%d",
