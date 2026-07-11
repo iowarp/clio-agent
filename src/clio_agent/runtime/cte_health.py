@@ -145,3 +145,91 @@ def probe_cte_ram_cap(*, env: Mapping[str, str] | None = None) -> list[Integrati
             required=True,
         )
     ]
+
+
+def probe_cte_liveness(*, snapshot: list[dict] | None = None) -> list[IntegrationStatus]:
+    """Surface a quarantined (daemon-lost) CTE store as a doctor row (#892).
+
+    Quarantine is per-process in-memory state on a live ``CTEStore``'s liveness gate,
+    not something a socket probe can observe — so this reads the process-local gate
+    registry (:func:`clio_agent.arc.cte_liveness.liveness_snapshot`). It is meaningful
+    only when the report runs IN the process that holds the store (e.g. the gact
+    server's own status route); a separate doctor CLI holds no gate and correctly
+    reports nothing.
+
+    Returns:
+        A single DEGRADED row when any gate is quarantined (a store wedged after a
+        daemon loss, ops raising ``CTERuntimeLostError`` until the daemon returns); a
+        single READY row when live gates exist and none is quarantined; and an empty
+        list when this process holds no CTE store (nothing to report).
+
+    Args:
+        snapshot: Optional injected gate snapshot (list of status dicts) for testing;
+            defaults to the live process registry.
+    """
+    if snapshot is None:
+        from clio_agent.arc.cte_liveness import liveness_snapshot  # noqa: PLC0415
+
+        snapshot = liveness_snapshot()
+    if not snapshot:
+        return []
+
+    quarantined = [gate for gate in snapshot if gate.get("quarantined")]
+    if quarantined:
+        gate = quarantined[0]
+        port = gate.get("port")
+        return [
+            IntegrationStatus(
+                name="cte_liveness",
+                state=IntegrationState.DEGRADED,
+                summary=(
+                    f"{len(quarantined)} of {len(snapshot)} clio-core CTE store(s) are "
+                    "QUARANTINED after a runtime-daemon loss; ARC ops raise "
+                    "CTERuntimeLostError until the daemon returns (guards against the "
+                    "clio-core#722 host access violation)."
+                ),
+                config_source="runtime:cte_liveness_gate",
+                next_action=(
+                    "Restart the shared clio-core daemon (clio start / clio_run start); "
+                    "the store reconnects on the next ARC op. Or set CLIO_ARC_STORE=local."
+                ),
+                endpoint=None if port is None else f"127.0.0.1:{port}",
+                fallback="none",
+                details={
+                    "reason": "cte_store_quarantined",
+                    "quarantined_gates": len(quarantined),
+                    "total_gates": len(snapshot),
+                    "gate_reason": gate.get("reason", ""),
+                },
+                required=True,
+            )
+        ]
+    return [
+        IntegrationStatus(
+            name="cte_liveness",
+            state=IntegrationState.READY,
+            summary=(
+                f"{len(snapshot)} clio-core CTE store liveness gate(s) active and healthy; "
+                "ops are guarded against a runtime-daemon loss (#892)."
+            ),
+            config_source="runtime:cte_liveness_gate",
+            next_action="No action required.",
+            capabilities=["daemon-loss-guard"],
+            details={"reason": "cte_liveness_healthy", "total_gates": len(snapshot)},
+            required=True,
+        )
+    ]
+
+
+def probe_cte_health(*, env: Mapping[str, str] | None = None) -> list[IntegrationStatus]:
+    """Aggregate the CTE doctor rows: ram hot-tier cap (#890) + liveness gate (#892).
+
+    A single collection seam so the doctor wires ONE call for both CTE sub-checks.
+
+    Args:
+        env: Environment mapping forwarded to :func:`probe_cte_ram_cap`.
+
+    Returns:
+        The concatenated ram-cap and liveness rows (each may be empty).
+    """
+    return [*probe_cte_ram_cap(env=env), *probe_cte_liveness()]

@@ -34,7 +34,6 @@ import base64
 import contextlib
 import logging
 import os
-import socket
 import subprocess
 import sys
 import threading
@@ -54,6 +53,19 @@ from clio_agent.arc.cte_config import (  # noqa: F401 - re-exported for callers/
     _default_cte_file_capacity,
     _default_cte_ram_capacity,
     default_cte_config_path,
+)
+
+# The daemon port-resolution + socket-liveness helpers moved to the liveness owner
+# module (iowarp/clio-agent#892). Re-exported so callers/tests reaching
+# ``storage._runtime_alive`` / ``_resolve_runtime_port`` / ``_read_yaml_port`` /
+# ``_DEFAULT_RUNTIME_PORT`` keep working while the liveness gate has a single home.
+from clio_agent.arc.cte_liveness import (  # noqa: F401 - re-exported for callers/tests
+    _DEFAULT_RUNTIME_PORT,
+    CTERuntimeLostError,
+    LivenessGate,
+    _read_yaml_port,
+    _resolve_runtime_port,
+    _runtime_alive,
 )
 
 logger = logging.getLogger(__name__)
@@ -246,64 +258,7 @@ class LocalFSStore:
 # connect()."
 # --------------------------------------------------------------------------- #
 
-_DEFAULT_RUNTIME_PORT = 9413
 _RUNTIME_START_TIMEOUT_S = 30.0
-
-
-def _read_yaml_port(path: str) -> Optional[int]:
-    """Return ``networking.port`` from a clio-core YAML config, or None if absent."""
-    p = Path(path)
-    if not p.is_file():
-        return None
-    try:
-        import yaml  # noqa: PLC0415
-
-        data = yaml.safe_load(p.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001 - a parse miss falls through to the default port
-        return None
-    if isinstance(data, dict):
-        net = data.get("networking")
-        if isinstance(net, dict) and isinstance(net.get("port"), int):
-            return int(net["port"])
-    return None
-
-
-def _resolve_runtime_port(config_path: str) -> int:
-    """Resolve the chimaera RPC port so liveness probes match what the daemon binds.
-
-    Honours the ``CLIO_CORE_PORT`` override, then mirrors clio-core's config lookup
-    order (``$CLIO_SERVER_CONF`` / ``$CHI_SERVER_CONF``, the passed ``config_path``,
-    ``~/.clio/clio.yaml``), defaulting to :data:`_DEFAULT_RUNTIME_PORT`.
-    """
-    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
-
-    override = conf.resolve("arc.core_port", env="CLIO_CORE_PORT", default="", cast=conf.as_str).strip()
-    if override:
-        try:
-            return int(override)
-        except ValueError:
-            logger.warning("ignoring non-integer CLIO_CORE_PORT=%r", override)
-    candidates = [
-        conf.resolve("arc.server_conf", env="CLIO_SERVER_CONF", default="", cast=conf.as_str).strip(),
-        os.environ.get("CHI_SERVER_CONF", "").strip(),
-        config_path,
-        str(Path.home() / ".clio" / "clio.yaml"),
-    ]
-    for cand in candidates:
-        if cand:
-            port = _read_yaml_port(cand)
-            if port is not None:
-                return port
-    return _DEFAULT_RUNTIME_PORT
-
-
-def _runtime_alive(port: int) -> bool:
-    """True if a clio-core runtime is accepting connections on ``127.0.0.1:port``."""
-    try:
-        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
-            return True
-    except OSError:
-        return False
 
 
 @contextlib.contextmanager
@@ -591,8 +546,7 @@ def _stop_runtime_daemon(config_path: str, log_level: str) -> None:
             stopped = True
     except (subprocess.TimeoutExpired, OSError, ImportError) as exc:
         logger.warning(
-            "clean clio-core daemon stop failed (reason=%s: %s); "
-            "falling back to pidfile kill",
+            "clean clio-core daemon stop failed (reason=%s: %s); falling back to pidfile kill",
             type(exc).__name__,
             exc,
         )
@@ -688,6 +642,10 @@ class CTEStore:
         self._client = cte.get_cte_client()
         self._config_path = config_path
         self._log_level = log_level
+        # Liveness gate (#892): every op below routes through this before the native
+        # binding, so a dead daemon raises CTERuntimeLostError instead of AV-ing the
+        # host process (clio-core#722). See clio_agent.arc.cte_liveness.
+        self._gate = LivenessGate(config_path=config_path, log_level=log_level)
         logger.info(
             "CTEStore active: clio-core CTE is the ARC backend (shared daemon runtime). "
             "The DEFAULT config is a DRAM hot tier + file cold tier; durable + "
@@ -755,6 +713,25 @@ class CTEStore:
             atexit.register(release_runtime_client, config_path, log_level)
             logger.info("CTE client attached to shared clio-core runtime")
 
+    # ---- liveness gate (#892) ----
+
+    def _live(self) -> None:
+        """Gate an op: raise ``CTERuntimeLostError`` before the native binding if dead."""
+        self._gate.ensure_live(self._reconnect)
+
+    def _reconnect(self) -> None:
+        """Rebuild the CTE client binding via the connect-or-spawn seam (one attempt).
+
+        Reuses :func:`_ensure_runtime_daemon` — which spawns + rebinds under the
+        host-global file lock and FAILS LOUD if a fresh daemon never binds the port,
+        overwriting a stale pidfile in the process (clio-core#725) — then re-fetches
+        the native client handle. Raises on failure so the gate stays quarantined.
+        """
+        import iowarp_core  # noqa: PLC0415
+
+        _ensure_runtime_daemon(iowarp_core, self._config_path, self._log_level)
+        self._client = self._cte.get_cte_client()
+
     # ---- ARCStore Protocol ----
 
     def put(
@@ -766,6 +743,7 @@ class CTEStore:
         tier: str = "warm",
         search_text: Optional[str] = None,
     ) -> None:
+        self._live()
         # base64-wrap: CTE GetBlob UTF-8-decodes, so store ascii-safe bytes.
         tag = self._cte.Tag(kind)
         tag.PutBlob(name, base64.b64encode(data), 0)
@@ -782,6 +760,7 @@ class CTEStore:
         # no-op. Wire tier->score only when a real file/HDD bdev is configured.
 
     def get(self, kind: str, name: str) -> Optional[bytes]:
+        self._live()
         tag = self._cte.Tag(kind)
         size = tag.GetBlobSize(name)  # 0 for a missing blob (does not raise)
         if size == 0:
@@ -789,9 +768,11 @@ class CTEStore:
         return base64.b64decode(tag.GetBlob(name, size, 0))
 
     def exists(self, kind: str, name: str) -> bool:
+        self._live()
         return self._cte.Tag(kind).GetBlobSize(name) > 0
 
     def scan(self, kind: str, prefix: str = "") -> Iterator[tuple[str, bytes]]:
+        self._live()
         tag = self._cte.Tag(kind)
         for blob_name in tag.GetContainedBlobs():
             if blob_name.endswith(_SEARCH_SUFFIX):
@@ -802,6 +783,7 @@ class CTEStore:
                     yield blob_name, value
 
     def delete(self, kind: str, name: str) -> None:
+        self._live()
         # Tag has no per-blob delete; go through the Client + TagId. DelBlob on a
         # missing blob returns False (no raise), satisfying the no-op contract.
         tag = self._cte.Tag(kind)
@@ -810,6 +792,7 @@ class CTEStore:
         self._client.DelBlob(tag_id, name + _SEARCH_SUFFIX)  # companion (no-op if absent)
 
     def clear(self) -> None:
+        self._live()
         for kind in ARC_KINDS:
             tag = self._cte.Tag(kind)
             tag_id = tag.GetTagId()
@@ -829,6 +812,7 @@ class CTEStore:
         stripped so callers get the real record names."""
         import re  # noqa: PLC0415
 
+        self._live()
         blob_re = f"{re.escape(name_prefix)}.*{re.escape(_SEARCH_SUFFIX)}"
         results = self._client.SemanticSearch(
             kind, blob_re, query_text, k, self._cte.PoolQuery.Dynamic()
@@ -865,8 +849,13 @@ def make_arc_store(
     from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
 
     choice = (
-        backend or conf.resolve("arc.store", env="CLIO_ARC_STORE", default="cte", cast=conf.as_str)
-    ).strip().lower()
+        (
+            backend
+            or conf.resolve("arc.store", env="CLIO_ARC_STORE", default="cte", cast=conf.as_str)
+        )
+        .strip()
+        .lower()
+    )
     if choice == "local":
         return LocalFSStore(data_dir)
     if choice == "cte":

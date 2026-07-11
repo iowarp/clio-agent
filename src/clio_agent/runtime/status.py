@@ -233,14 +233,14 @@ class RuntimeProbe:
         api_error: str | None = None,
     ) -> RuntimeReport:
         """Collect all currently supported integration statuses."""
-        from clio_agent.runtime.cte_health import probe_cte_ram_cap  # noqa: PLC0415
+        from clio_agent.runtime.cte_health import probe_cte_health  # noqa: PLC0415
         from clio_agent.runtime.mcp_launcher import probe_mcp_launchers  # noqa: PLC0415
 
         gateway_status = self.probe_gateway()
         integrations = [
             self.probe_lm_provider(),
             self.probe_arc(),
-            *probe_cte_ram_cap(env=self.env),
+            *probe_cte_health(env=self.env),
             self.probe_file_policy(),
             gateway_status,
             *self.probe_data_backends(set(gateway_status.capabilities)),

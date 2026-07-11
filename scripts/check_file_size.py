@@ -45,7 +45,7 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/agent.py": 2689,
     "src/clio_agent/arc/memory.py": 1394,
     "src/clio_agent/arc/segments.py": 1117,
-    "src/clio_agent/arc/storage.py": 892,
+    "src/clio_agent/arc/storage.py": 881,
     "src/clio_agent/gact/agent_blueprints.py": 1100,
     "src/clio_agent/gact/agents/builders.py": 2209,
     "src/clio_agent/gact/agents/resolution.py": 803,
