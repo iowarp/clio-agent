@@ -70,7 +70,7 @@ class ExperimentPlan:
     model: str
     transport: str
     blueprint: str
-    question: str
+    questions: tuple[str, ...]
     workspace_root: Path
     results_path: Path
     audit_path: Path
@@ -121,12 +121,36 @@ class _Client:
         self._base = base_url.rstrip("/")
         self._timeout = timeout
 
-    def call(self, method: str, path: str, body: dict | None = None) -> dict:
+    def call(
+        self,
+        method: str,
+        path: str,
+        body: dict | None = None,
+        *,
+        params: dict | None = None,
+        ok_statuses: tuple[int, ...] = (),
+    ) -> dict:
         resp = self._requests.request(
-            method, f"{self._base}{path}", json=body, timeout=self._timeout
+            method, f"{self._base}{path}", json=body, params=params, timeout=self._timeout
         )
-        resp.raise_for_status()
+        if resp.status_code not in ok_statuses:
+            resp.raise_for_status()
         return resp.json() if resp.content else {}
+
+
+def _wait_for_port(client: _Client, timeout_s: float) -> None:
+    """Wait until the server responds AT ALL (any status) — provider binding
+    happens before full health is achievable on the SDK transport."""
+    deadline = time.monotonic() + timeout_s
+    last_err: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            client.call("GET", "/v1/health", ok_statuses=(200, 503))
+            return
+        except Exception as exc:  # noqa: BLE001 - retry until deadline
+            last_err = exc
+            time.sleep(2.0)
+    raise TimeoutError(f"server never responded in {timeout_s}s: {last_err}")
 
 
 def _wait_for_health(client: _Client, timeout_s: float) -> None:
@@ -170,16 +194,30 @@ def _session_row(client: _Client, workspace_id: str, sid: str) -> dict:
 
 
 def _run_turn(client: _Client, plan: ExperimentPlan, workspace_id: str, sid: str) -> float:
-    """POST the question, poll until terminal, return wall-clock seconds."""
+    """POST each question in sequence, polling every turn to terminal.
+
+    Owner direction (2026-07-12): the acceptance probe is a SHORT real
+    multi-turn case, not the full LA showcase — each level's data point
+    should cost ~10 minutes, not 35-40.
+    """
     started = time.monotonic()
-    client.call("POST", f"/v1/sessions/{sid}/messages", {"text": plan.question})
-    deadline = started + plan.turn_timeout_s
-    while time.monotonic() < deadline:
-        row = _session_row(client, workspace_id, sid)
-        if row.get("status") in TERMINAL_STATUSES and int(row.get("message_count") or 0) >= 2:
-            return time.monotonic() - started
-        time.sleep(2.0)
-    raise TimeoutError(f"turn did not finish within {plan.turn_timeout_s}s")
+    expected_messages = 0
+    for question in plan.questions:
+        client.call("POST", f"/v1/sessions/{sid}/messages", {"text": question})
+        expected_messages += 2
+        turn_started = time.monotonic()
+        deadline = turn_started + plan.turn_timeout_s
+        while time.monotonic() < deadline:
+            row = _session_row(client, workspace_id, sid)
+            if (
+                row.get("status") in TERMINAL_STATUSES
+                and int(row.get("message_count") or 0) >= expected_messages
+            ):
+                break
+            time.sleep(2.0)
+        else:
+            raise TimeoutError(f"turn did not finish within {plan.turn_timeout_s}s")
+    return time.monotonic() - started
 
 
 def _run_waterfall(plan: ExperimentPlan, session_id: str) -> dict:
@@ -242,7 +280,7 @@ def build_plan(args: argparse.Namespace) -> ExperimentPlan:
         model=args.model,
         transport=args.transport,
         blueprint=args.blueprint,
-        question=args.question,
+        questions=tuple(args.question) if args.question else (DEFAULT_QUESTION,),
         workspace_root=workspace_root,
         results_path=Path(args.results).resolve(),
         audit_path=(out_dir / f"stream_audit_{args.level}.jsonl").resolve(),
@@ -275,7 +313,25 @@ def run(plan: ExperimentPlan) -> dict[str, Any]:
         )
     try:
         client = _Client(plan.base_url)
-        _wait_for_health(client, plan.boot_timeout_s)
+        # Bind the provider over the API instead of relying on the env-config
+        # path: the boot-time health probe treats ``claude-code://sdk`` as an
+        # HTTP endpoint and reports lm_provider unavailable forever (filed as a
+        # health-probe bug), whereas PUT /v1/providers/lm handles the SDK
+        # transport correctly. The thinking level still comes from the server
+        # process env (the LM factory resolves CLIO_LM_THINKING_LEVEL at build).
+        _wait_for_port(client, plan.boot_timeout_s)
+        client.call(
+            "PUT",
+            "/v1/providers/lm",
+            {"provider": plan.provider, "api_base": "", "model": plan.model},
+        )
+        client.call("GET", "/v1/providers/lm/wait", params={"timeout": 120})
+        # Health is ADVISORY after the provider bind: /v1/health's lm probe
+        # HTTP-probes claude-code://sdk and can report unavailable while turns
+        # run fine (filed as a health-probe bug). lm/wait state=ready is the
+        # real gate; log health's verdict without gating on it.
+        verdict = client.call("GET", "/v1/health", ok_statuses=(200, 503))
+        print(f"health (advisory): healthy={verdict.get('healthy')}", flush=True)
         # (2) Pre-allow permissions FIRST — before any session or turn.
         client.call("PUT", "/v1/policies", {"policies": _allow_all_policies()})
         workspace_id = _ensure_workspace(client, "thinking-experiment", plan.workspace_root)
@@ -321,7 +377,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--model", default="haiku")
     p.add_argument("--transport", default="sdk")
     p.add_argument("--blueprint", default="earthscope-gnss-region")
-    p.add_argument("--question", default=DEFAULT_QUESTION)
+    p.add_argument(
+        "--question",
+        action="append",
+        default=None,
+        help="Repeatable; each is one TURN in sequence. Default: the LA one-shot.",
+    )
     p.add_argument("--workspace-root", default="")
     p.add_argument("--out-dir", default=str(REPO_ROOT / "out" / "thinking_experiment"))
     p.add_argument(
