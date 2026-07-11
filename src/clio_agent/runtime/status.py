@@ -17,9 +17,7 @@ from typing import Any, Callable, Mapping
 
 import requests
 
-from clio_agent.config import (
-    _CLOUD_API_KEY_ENV as _CONFIG_CLOUD_API_KEY_ENV,
-)
+from clio_agent.config import _CLOUD_API_KEY_ENV as _CONFIG_CLOUD_API_KEY_ENV
 from clio_agent.config import PROVIDER_DEFAULTS, LMProviderConfig
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
 
@@ -234,16 +232,18 @@ class RuntimeProbe:
         api_error: str | None = None,
     ) -> RuntimeReport:
         """Collect all currently supported integration statuses."""
+        from clio_agent.runtime.mcp_launcher import probe_mcp_launchers  # noqa: PLC0415
+
         gateway_status = self.probe_gateway()
-        gateway_tools = set(gateway_status.capabilities)
         integrations = [
             self.probe_lm_provider(),
             self.probe_arc(),
             self.probe_file_policy(),
             gateway_status,
-            *self.probe_data_backends(gateway_tools),
+            *self.probe_data_backends(set(gateway_status.capabilities)),
             self.probe_api(api_state=api_state, api_error=api_error),
             self.probe_clio_core(),
+            *probe_mcp_launchers(env=self.env),
         ]
         return RuntimeReport(integrations=integrations)
 

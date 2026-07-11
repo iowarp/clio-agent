@@ -197,6 +197,59 @@ def test_transport_for_unresolved_command_fails_loud():
         transport_for(spec_from_declaration("geo", "definitely-not-a-real-binary-xyz123 run"))
 
 
+def test_transport_for_injects_dedicated_uv_cache_dir(tmp_path, monkeypatch):
+    """stdio spawns get a dedicated UV_CACHE_DIR under the canonical user cache.
+
+    Belt-and-braces for any pack still declaring a uvx/uv-run launcher: isolate its uv
+    cache from the ambient one so concurrent cold-cache spawns cannot race the shared
+    ephemeral-env archive and ``uv cache prune`` cannot delete envs under running
+    servers (astral-sh/uv#11694). Asserts on the REAL StdioTransport the code builds.
+    """
+    from clio_agent import paths
+
+    monkeypatch.setenv("CLIO_USER_DIR", str(tmp_path))
+    monkeypatch.delenv("UV_CACHE_DIR", raising=False)
+
+    stdio = transport_for(spec_from_declaration("ndp", "sh -c true"))
+
+    expected = paths.user_cache_dir() / "mcp-uv-cache"
+    assert stdio.env["UV_CACHE_DIR"] == str(expected)
+    # The injected value points UNDER the canonical per-user cache dir.
+    assert str(expected).startswith(str(paths.user_cache_dir()))
+    # Created lazily at spawn.
+    assert expected.is_dir()
+
+
+def test_transport_for_declaration_uv_cache_dir_wins(tmp_path, monkeypatch):
+    """A declaration-provided UV_CACHE_DIR is honored, never overridden by the default."""
+    monkeypatch.setenv("CLIO_USER_DIR", str(tmp_path))
+    declared = tmp_path / "pack-owned-cache"
+
+    spec = spec_from_declaration(
+        "ndp",
+        {"command": "sh", "args": ["-c", "true"], "env": {"UV_CACHE_DIR": str(declared)}},
+    )
+    stdio = transport_for(spec)
+
+    assert stdio.env["UV_CACHE_DIR"] == str(declared)
+
+
+def test_transport_for_injected_uv_cache_overrides_ambient(tmp_path, monkeypatch):
+    """The dedicated cache isolates from the developer's ambient UV_CACHE_DIR.
+
+    Only an explicit DECLARATION wins; a process-level (ambient) ``UV_CACHE_DIR`` is
+    deliberately overridden — the whole point of injection is isolation from it.
+    """
+    from clio_agent import paths
+
+    monkeypatch.setenv("CLIO_USER_DIR", str(tmp_path))
+    monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "ambient-dev-cache"))
+
+    stdio = transport_for(spec_from_declaration("ndp", "sh -c true"))
+
+    assert stdio.env["UV_CACHE_DIR"] == str(paths.user_cache_dir() / "mcp-uv-cache")
+
+
 def test_transport_for_no_cwd_env_keeps_path():
     """A spec with an explicit env but no cwd must still inherit os.environ (PATH).
 
