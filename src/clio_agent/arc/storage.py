@@ -43,6 +43,19 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Dict, Optional, Protocol, runtime_checkable
 
+# The clio-core CTE config generation + capacity policy lives in its own owner module
+# (iowarp/clio-agent#774/#890). Re-exported here so existing callers/tests that reach
+# ``storage._default_cte_dir`` / ``storage.default_cte_config_path`` / etc. keep working
+# while the capacity policy (the bounded ram hot-tier cap) has a single home.
+from clio_agent.arc.cte_config import (  # noqa: F401 - re-exported for callers/tests
+    _DEFAULT_CTE_CONFIG_TEMPLATE,
+    _cte_yaml_path,
+    _default_cte_dir,
+    _default_cte_file_capacity,
+    _default_cte_ram_capacity,
+    default_cte_config_path,
+)
+
 logger = logging.getLogger(__name__)
 
 # The logical record families ARC persists. Each maps to one physical
@@ -827,105 +840,6 @@ class CTEStore:
                 bn = bn[: -len(_SEARCH_SUFFIX)]
             out.append((bn, float(r.score)))
         return out
-
-
-# Default clio-core CTE config: a self-managed DRAM↔disk hierarchy on the OS data
-# dir. The DRAM tier (score 1.0) is the hot working set; the file tier (score 0.0)
-# is the cold spill target. ``restart``/``metadata_log_path``/``transaction_log_capacity``
-# are declared so the backend is ready for clio-core's cross-restart data recovery
-# when it lands upstream (today that recovery is WIP, so durability rides the file
-# trace + rebuild-on-reload — a permanent warm-up step, not a stopgap).
-_DEFAULT_CTE_CONFIG_TEMPLATE = """\
-runtime:
-  num_threads: 4
-  conf_dir: "{conf_dir}"
-compose:
-  - mod_name: clio_bdev
-    pool_name: "ram::chi_default_bdev"
-    pool_query: local
-    pool_id: "301.0"
-    bdev_type: ram
-    capacity: "0g"
-  - mod_name: clio_cte_core
-    pool_name: cte_main
-    pool_query: local
-    pool_id: "512.0"
-    restart: true
-    storage:
-      - path: "ram::cte_ram_tier"
-        bdev_type: "ram"
-        capacity_limit: "0g"
-        score: 1.0
-      - path: "{file_tier}"
-        bdev_type: "file"
-        capacity_limit: "{file_capacity}"
-        score: 0.0
-    dpe:
-      dpe_type: "max_bw"
-    performance:
-      metadata_log_path: "{metadata_log}"
-      transaction_log_capacity: "32MB"
-"""
-
-
-def _cte_yaml_path(path: Path) -> str:
-    """Return a clio-core YAML-safe path string."""
-    return path.as_posix()
-
-
-def _default_cte_dir() -> Path:
-    """Return the default clio-core CTE artifact directory."""
-    from clio_agent import conf, paths  # noqa: PLC0415 - avoid import cycle
-
-    configured = conf.resolve(
-        "arc.cte.dir",
-        env="CLIO_ARC_CTE_DIR",
-        default="",
-        cast=conf.as_str,
-    ).strip()
-    if configured:
-        return Path(configured).expanduser()
-
-    return paths.user_data_dir() / "cte"
-
-
-def _default_cte_file_capacity() -> str:
-    """Return the default clio-core CTE file-tier capacity."""
-    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle
-
-    return (
-        conf.resolve(
-            "arc.cte.file_capacity",
-            env="CLIO_ARC_CTE_FILE_CAPACITY",
-            default="50GB",
-            cast=conf.as_str,
-        ).strip()
-        or "50GB"
-    )
-
-
-def default_cte_config_path() -> str:
-    """Seed (if absent) and return the default clio-core CTE config path.
-
-    Lives under the OS data dir (:func:`clio_agent.paths.user_data_dir` ``/cte``) and
-    declares a DRAM hot tier + a file cold tier, so ARC's clio-core backend is a
-    self-managed memory↔disk hierarchy by default — no LocalFS, no manual config.
-    """
-    cte_dir = _default_cte_dir()
-    cte_dir.mkdir(parents=True, exist_ok=True)
-    cfg = cte_dir / "cte.yaml"
-    if not cfg.is_file():
-        capacity = _default_cte_file_capacity()
-        cfg.write_text(
-            _DEFAULT_CTE_CONFIG_TEMPLATE.format(
-                conf_dir=_cte_yaml_path(cte_dir / "conf"),
-                file_tier=_cte_yaml_path(cte_dir / "storage.bin"),
-                file_capacity=capacity,
-                metadata_log=_cte_yaml_path(cte_dir / "metadata.log"),
-            ),
-            encoding="utf-8",
-        )
-    return str(cfg)
 
 
 def make_arc_store(

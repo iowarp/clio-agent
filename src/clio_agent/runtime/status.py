@@ -19,6 +19,7 @@ import requests
 
 from clio_agent.config import _CLOUD_API_KEY_ENV as _CONFIG_CLOUD_API_KEY_ENV
 from clio_agent.config import PROVIDER_DEFAULTS, LMProviderConfig
+from clio_agent.runtime.humanize import format_bytes as _format_bytes
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
 
 
@@ -232,12 +233,14 @@ class RuntimeProbe:
         api_error: str | None = None,
     ) -> RuntimeReport:
         """Collect all currently supported integration statuses."""
+        from clio_agent.runtime.cte_health import probe_cte_ram_cap  # noqa: PLC0415
         from clio_agent.runtime.mcp_launcher import probe_mcp_launchers  # noqa: PLC0415
 
         gateway_status = self.probe_gateway()
         integrations = [
             self.probe_lm_provider(),
             self.probe_arc(),
+            *probe_cte_ram_cap(env=self.env),
             self.probe_file_policy(),
             gateway_status,
             *self.probe_data_backends(set(gateway_status.capabilities)),
@@ -1174,17 +1177,6 @@ def collect_runtime_status(
 
 def _module_available(module_name: str) -> bool:
     return importlib.util.find_spec(module_name) is not None
-
-
-def _format_bytes(size: int) -> str:
-    value = float(size)
-    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
-        if value < 1024 or unit == "TiB":
-            if unit == "B":
-                return f"{int(value)} {unit}"
-            return f"{value:.1f} {unit}"
-        value /= 1024
-    return f"{size} B"
 
 
 def _list_gateway_capabilities() -> list[dict[str, Any]]:

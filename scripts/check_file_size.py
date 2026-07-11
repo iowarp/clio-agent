@@ -45,7 +45,7 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/agent.py": 2689,
     "src/clio_agent/arc/memory.py": 1394,
     "src/clio_agent/arc/segments.py": 1117,
-    "src/clio_agent/arc/storage.py": 978,
+    "src/clio_agent/arc/storage.py": 892,
     "src/clio_agent/gact/agent_blueprints.py": 1100,
     "src/clio_agent/gact/agents/builders.py": 2209,
     "src/clio_agent/gact/agents/resolution.py": 803,
@@ -65,7 +65,7 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/gact/turn_finalize.py": 935,
     "src/clio_agent/gact/types.py": 1143,
     "src/clio_agent/providers/claude_code_litellm.py": 1168,
-    "src/clio_agent/runtime/status.py": 1222,
+    "src/clio_agent/runtime/status.py": 1214,
     "src/clio_agent/tools/execution.py": 1187,
     "src/clio_agent/ui/cli.py": 1156,
 }
