@@ -121,14 +121,6 @@ _SUPPORTED_LM_PROVIDERS = frozenset(PROVIDER_DEFAULTS.keys())
 _CLOUD_API_KEY_ENV = _CONFIG_CLOUD_API_KEY_ENV
 
 
-class ModelDiscoverySchemaError(ValueError):
-    """Raised when an OpenAI-compatible /models response is malformed."""
-
-    def __init__(self, message: str, *, code: str) -> None:
-        self.code = code
-        super().__init__(message)
-
-
 # Maps a gateway tool namespace (the prefix before the first underscore in a
 # mounted tool name) to the Python module its server depends on. This drives
 # backend verification for servers that are ACTUALLY mounted on the active
@@ -337,6 +329,21 @@ class RuntimeProbe:
         if config.provider == "argonne":
             return self._probe_argonne(config, source)
 
+        from clio_agent.runtime.lm_provider_probe import (  # noqa: PLC0415 - avoid import cycle
+            ModelDiscoverySchemaError,
+            extract_models,
+            is_http_transport,
+            probe_cli_transport,
+        )
+
+        # Transport-aware probe (#899): CLI/SDK pseudo-schemes (codex://exec,
+        # claude-code://sdk) have no HTTP /models endpoint — an HTTP GET yields
+        # "No connection adapters were found" and reports the provider UNAVAILABLE
+        # while turns run fine. Probe the local CLI the transport spawns instead of
+        # HTTP-GETting a pseudo-scheme.
+        if not is_http_transport(config.api_base):
+            return probe_cli_transport(config, source, auth_mode)
+
         models_url = config.api_base.rstrip("/") + "/models"
         try:
             response = self.http_get(models_url, timeout=self.lm_timeout)
@@ -380,7 +387,7 @@ class RuntimeProbe:
             )
 
         try:
-            models = self._extract_models(response)
+            models = extract_models(response)
         except ModelDiscoverySchemaError as exc:
             return IntegrationStatus(
                 name="lm_provider",
@@ -1123,44 +1130,6 @@ class RuntimeProbe:
             return int(value)
         except ValueError as exc:
             raise ValueError(f"{key} must be an integer, got {value!r}.") from exc
-
-    @staticmethod
-    def _extract_models(response: Any) -> list[str]:
-        try:
-            data = response.json()
-        except Exception as exc:
-            raise ModelDiscoverySchemaError(
-                f"invalid JSON from /models: {exc}",
-                code="invalid_json",
-            ) from exc
-        if not isinstance(data, dict):
-            raise ModelDiscoverySchemaError(
-                "/models response was not a JSON object.",
-                code="malformed_schema",
-            )
-        raw_models = data.get("data")
-        if not isinstance(raw_models, list):
-            raise ModelDiscoverySchemaError(
-                "/models response missing data[] array.",
-                code="malformed_schema",
-            )
-        models: list[str] = []
-        malformed_items = 0
-        for item in raw_models:
-            if isinstance(item, dict) and isinstance(item.get("id"), str):
-                model_id = item["id"].strip()
-                if model_id:
-                    models.append(model_id)
-                else:
-                    malformed_items += 1
-            else:
-                malformed_items += 1
-        if raw_models and not models:
-            raise ModelDiscoverySchemaError(
-                f"/models response had {malformed_items} model row(s) but no usable id fields.",
-                code="malformed_schema",
-            )
-        return models
 
 
 def collect_runtime_status(

@@ -834,28 +834,26 @@ def make_arc_store(
 ) -> "ARCStore":
     """Build the ARC persistence backend.
 
-    Selection (first match wins):
-        1. explicit ``backend`` arg ("cte" | "local")
-        2. env ``CLIO_ARC_STORE`` ("cte" | "local")
-        3. default ``"cte"`` (clio-core CTE, in-process; the gold-standard backend)
+    clio-core is clio-agent's data operator; its CTE (Convergent Tiered Environment) is
+    the tiering component that backs the canonical ARC store, not itself the product.
+    Selection (first match wins): explicit ``backend`` arg, then env ``CLIO_ARC_STORE``,
+    then the default ``"cte"`` (the clio-core CTE backend).
 
-    FAIL LOUD ([[deliberate-config-fail-loud]]): the backend is a deliberate choice,
-    not a silent default. When ``"cte"`` is selected (explicitly or by default) and the
-    binding is absent or the runtime fails to init, this RAISES — it does NOT silently
-    degrade to ``LocalFSStore`` (which would mask a misconfigured deploy and obscure
-    that ARC is no longer on clio-core). ``LocalFSStore`` is used ONLY when ``"local"``
-    is selected explicitly (``CLIO_ARC_STORE=local`` or ``backend="local"``).
+    LOUD DEGRADE (#897): clio-core is the default, but if it is not installed or fails to
+    init, the store degrades to ``LocalFSStore`` **loudly** — a typed reason
+    (:mod:`clio_agent.arc.init_degradation`), a WARNING log line, and a doctor DEGRADED
+    row — never silently, never by refusing to run. The default and an explicit
+    ``CLIO_ARC_STORE=cte`` both degrade this way; only an explicit ``=local`` (or
+    ``backend="local"``) selects LocalFS as a *choice* with no degrade row. INIT-time
+    only (a mid-life daemon loss stays the #892 quarantine); clio-core is retried afresh
+    on the next boot (no sticky state).
     """
     from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
 
-    choice = (
-        (
-            backend
-            or conf.resolve("arc.store", env="CLIO_ARC_STORE", default="cte", cast=conf.as_str)
-        )
-        .strip()
-        .lower()
+    resolved = backend or conf.resolve(
+        "arc.store", env="CLIO_ARC_STORE", default="cte", cast=conf.as_str
     )
+    choice = resolved.strip().lower()
     if choice == "local":
         return LocalFSStore(data_dir)
     if choice == "cte":
@@ -871,11 +869,11 @@ def make_arc_store(
             cfg = str(ws_cfg) if ws_cfg.is_file() else default_cte_config_path()
         try:
             return CTEStore(config_path=cfg)
-        except Exception as exc:  # noqa: BLE001 - re-raise as a loud, actionable error
-            raise RuntimeError(
-                "ARC is configured for the clio-core CTE backend but it failed to "
-                f"initialize ({exc}). This is a hard error, not a silent fallback: fix "
-                "the clio-core install/config, or set CLIO_ARC_STORE=local to "
-                "deliberately use the LocalFS backend."
-            ) from exc
+        except Exception as exc:  # noqa: BLE001 - LOUD degrade to LocalFS, recorded below
+            from clio_agent.arc.init_degradation import record_arc_init_degradation  # noqa: PLC0415
+
+            record_arc_init_degradation(
+                backend=backend, config_path=cfg, error=exc, data_dir=str(data_dir)
+            )
+            return LocalFSStore(data_dir)
     raise ValueError(f"unknown CLIO_ARC_STORE {choice!r}; expected 'cte' or 'local'")

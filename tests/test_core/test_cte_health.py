@@ -9,8 +9,46 @@ row. Assertions read real IntegrationStatus rows built from real on-disk config 
 from __future__ import annotations
 
 from clio_agent.arc import cte_config
-from clio_agent.runtime.cte_health import probe_cte_ram_cap
+from clio_agent.arc.init_degradation import ArcInitDegradation
+from clio_agent.runtime.cte_health import probe_cte_init_degradation, probe_cte_ram_cap
 from clio_agent.runtime.status import IntegrationState
+
+
+def _degrade_record(reason: str = "cte_binding_absent", was_explicit: bool = False):
+    return ArcInitDegradation(
+        reason=reason,
+        choice="cte",
+        was_explicit=was_explicit,
+        config_path="/tmp/cte.yaml",
+        error_type="ImportError",
+        error="clio_cte_core_ext not built",
+        data_dir="/tmp/arc",
+    )
+
+
+def test_init_degradation_row_names_cause_and_external_operator(tmp_path):
+    """A recorded init degrade surfaces a DEGRADED row naming the cause + external op (#897)."""
+    rows = probe_cte_init_degradation(record=_degrade_record())
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.name == "cte_init"
+    assert row.state is IntegrationState.DEGRADED
+    # SABOTAGE PIN: swallow/blank the typed reason and these assertions go red.
+    assert row.details["reason"] == "cte_binding_absent"
+    assert "external-operator" in row.summary
+    assert row.fallback == "local"
+
+
+def test_init_degradation_no_record_yields_no_row():
+    """No degrade recorded this process -> no row (a healthy/local boot is silent)."""
+    assert probe_cte_init_degradation(record=None) == []
+
+
+def test_init_degradation_sabotage_ready_would_go_red():
+    """SABOTAGE guard: if the probe reported a recorded degrade as anything but DEGRADED."""
+    row = probe_cte_init_degradation(record=_degrade_record("cte_daemon_spawn_failed"))[0]
+    assert row.state is IntegrationState.DEGRADED
+    assert row.details["reason"] == "cte_daemon_spawn_failed"
 
 
 def _write_cte_yaml(tmp_path, ram_cap: str):

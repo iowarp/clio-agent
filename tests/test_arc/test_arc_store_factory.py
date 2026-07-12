@@ -102,18 +102,49 @@ def test_factory_unknown_backend_raises():
         make_arc_store(backend="bogus")
 
 
-def test_factory_cte_raises_on_init_failure(tmp_path, monkeypatch):
-    """CTE binding/runtime unavailable -> RAISE (fail-loud), NEVER silently degrade to
-    LocalFS ([[deliberate-config-fail-loud]]). A silent fallback would mask a broken
-    clio-core deploy and obscure that ARC dropped off clio-core. LocalFS is opt-in only
-    (backend="local" / CLIO_ARC_STORE=local)."""
+def test_factory_cte_loud_degrades_to_localfs_on_init_failure(tmp_path, monkeypatch):
+    """CTE binding/runtime unavailable at INIT -> LOUD degrade to LocalFS (#897).
+
+    Owner ruling: clio-core is the default, but a missing/failed init degrades to
+    LocalFS *loudly* (typed reason + log + doctor row), not by raising. The typed
+    reason is the load-bearing pin: it must reach the process-local record so the
+    doctor can surface a DEGRADED row.
+    """
+    from clio_agent.arc.init_degradation import (
+        arc_init_degradation_snapshot,
+        reset_arc_init_degradation,
+    )
+
+    reset_arc_init_degradation()
 
     def boom(*a, **k):
         raise ImportError("clio_cte_core_ext not built")
 
     monkeypatch.setattr(storage, "CTEStore", boom)
-    with pytest.raises(RuntimeError, match="clio-core CTE backend"):
-        make_arc_store(backend="cte", data_dir=str(tmp_path))
+    store = make_arc_store(backend="cte", data_dir=str(tmp_path))
+
+    assert isinstance(store, LocalFSStore)
+    record = arc_init_degradation_snapshot()
+    assert record is not None
+    # SABOTAGE PIN: swallow/blank the typed reason and this assertion goes red.
+    assert record.reason == "cte_binding_absent"
+    assert record.was_explicit is True
+    assert record.error_type == "ImportError"
+    reset_arc_init_degradation()
+
+
+def test_factory_explicit_local_records_no_degradation(tmp_path, monkeypatch):
+    """An explicit ``CLIO_ARC_STORE=local`` is a CHOICE, not a degrade — no record."""
+    from clio_agent.arc.init_degradation import (
+        arc_init_degradation_snapshot,
+        reset_arc_init_degradation,
+    )
+
+    reset_arc_init_degradation()
+    monkeypatch.setenv("CLIO_ARC_STORE", "local")
+    store = make_arc_store(data_dir=str(tmp_path))
+    assert isinstance(store, LocalFSStore)
+    assert arc_init_degradation_snapshot() is None
 
 
 # ---- unit: shared clio-core runtime lifecycle (connect-or-spawn, binding-free) ----

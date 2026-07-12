@@ -45,7 +45,7 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/agent.py": 2689,
     "src/clio_agent/arc/memory.py": 1394,
     "src/clio_agent/arc/segments.py": 1117,
-    "src/clio_agent/arc/storage.py": 881,
+    "src/clio_agent/arc/storage.py": 879,
     "src/clio_agent/gact/agent_blueprints.py": 1100,
     "src/clio_agent/gact/agents/builders.py": 2209,
     "src/clio_agent/gact/agents/resolution.py": 803,
@@ -70,7 +70,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # file keeps only the LiteLLM handler + exec/stream plumbing. Ratchet back down
     # further with the #714/#767 decomposition.
     "src/clio_agent/providers/claude_code_litellm.py": 1025,
-    "src/clio_agent/runtime/status.py": 1214,
+    "src/clio_agent/runtime/status.py": 1183,
     "src/clio_agent/tools/execution.py": 1187,
     "src/clio_agent/ui/cli.py": 1156,
 }

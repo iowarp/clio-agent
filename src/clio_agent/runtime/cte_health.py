@@ -221,15 +221,71 @@ def probe_cte_liveness(*, snapshot: list[dict] | None = None) -> list[Integratio
     ]
 
 
-def probe_cte_health(*, env: Mapping[str, str] | None = None) -> list[IntegrationStatus]:
-    """Aggregate the CTE doctor rows: ram hot-tier cap (#890) + liveness gate (#892).
+def probe_cte_init_degradation(*, record: object | None = None) -> list[IntegrationStatus]:
+    """Surface an INIT-time degrade from the CTE backend to LocalFS as a row (#897).
 
-    A single collection seam so the doctor wires ONE call for both CTE sub-checks.
+    When ``make_arc_store`` cannot bring up the clio-core CTE backend it degrades to
+    :class:`~clio_agent.arc.storage.LocalFSStore` *loudly* and records a typed
+    :class:`~clio_agent.arc.init_degradation.ArcInitDegradation` in a process-local
+    slot. This reads that slot (mirroring the #892 gate registry: meaningful only IN
+    the process that built the store — a separate doctor CLI holds none and reports
+    nothing) and emits a DEGRADED row naming the cause and stating that the
+    external-operator (clio-core) pathway is unavailable (#737).
+
+    Args:
+        record: Optional injected :class:`ArcInitDegradation` (or ``None``) for
+            testing; defaults to the live process-local record.
+
+    Returns:
+        A single DEGRADED row when a degrade was recorded this process, else empty.
+    """
+    if record is None:
+        from clio_agent.arc.init_degradation import arc_init_degradation_snapshot  # noqa: PLC0415
+
+        record = arc_init_degradation_snapshot()
+    if record is None:
+        return []
+
+    details = record.to_details()  # type: ignore[attr-defined]
+    reason = details["reason"]
+    selection = "explicit CLIO_ARC_STORE=cte" if details["was_explicit"] else "the default"
+    return [
+        IntegrationStatus(
+            name="cte_init",
+            state=IntegrationState.DEGRADED,
+            summary=(
+                "ARC degraded to LocalFSStore at init: the clio-core CTE backend "
+                f"({selection}) is UNAVAILABLE — the external-operator (clio-core) "
+                f"pathway could not be brought up (reason={reason}: {details['error']}). "
+                "ARC is running on local files; the tiered CTE backend is not active."
+            ),
+            config_source="runtime:arc_init_degradation",
+            next_action=(
+                "Fix the clio-core install/config to restore the tiered backend (run "
+                "clio doctor), or set CLIO_ARC_STORE=local to choose LocalFS "
+                "deliberately (no degrade row). clio-core is retried on the next boot."
+            ),
+            endpoint=details["config_path"] or None,
+            fallback="local",
+            details=details,
+            required=True,
+        )
+    ]
+
+
+def probe_cte_health(*, env: Mapping[str, str] | None = None) -> list[IntegrationStatus]:
+    """Aggregate the CTE doctor rows: init degrade (#897) + ram cap (#890) + liveness (#892).
+
+    A single collection seam so the doctor wires ONE call for all CTE sub-checks.
 
     Args:
         env: Environment mapping forwarded to :func:`probe_cte_ram_cap`.
 
     Returns:
-        The concatenated ram-cap and liveness rows (each may be empty).
+        The concatenated init-degradation, ram-cap, and liveness rows (each may be empty).
     """
-    return [*probe_cte_ram_cap(env=env), *probe_cte_liveness()]
+    return [
+        *probe_cte_init_degradation(),
+        *probe_cte_ram_cap(env=env),
+        *probe_cte_liveness(),
+    ]
