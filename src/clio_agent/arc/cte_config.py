@@ -13,7 +13,7 @@ Why the RAM cap matters (#890): clio-core reads a tier ``capacity_limit`` of
 — a large, implicit slice of clio-agent's memory hunger, from one config line.
 
 We therefore ship a **bounded, configurable default** (:data:`_DEFAULT_CTE_RAM_CAPACITY`
-= ``"2GB"``) on the ram tier's ``capacity_limit`` (the field that actually triggers
+= ``"1GB"``) on the ram tier's ``capacity_limit`` (the field that actually triggers
 spill — see below). A small hot tier is functionally safe, not merely desirable:
 ``tests/test_arc/test_cte_offload_spill.py`` proves that writing past a 2 MB ram
 ``capacity_limit`` physically spills cold blobs to the disk backing file and reads
@@ -25,7 +25,7 @@ device ceiling, exactly matching the proven-safe offload topology.
 
 The cap is configurable via the ``conf`` file→env→default resolver
 (``arc.cte.ram_capacity`` / env ``CLIO_ARC_CTE_RAM_CAPACITY``), accepting values
-like ``"2GB"`` / ``"512MB"`` / ``"0g"``. The value is format-validated fail-loud
+like ``"1GB"`` / ``"512MB"`` / ``"0g"``. The value is format-validated fail-loud
 (:func:`parse_capacity_bytes`) so a typo can never silently degrade back to the
 ``0g`` = 80%-DRAM footgun.
 
@@ -91,12 +91,12 @@ compose:
       transaction_log_capacity: "32MB"
 """
 
-# The bounded default for the ram hot-tier ``capacity_limit`` (#890). 2GB is a small,
-# safe hot working set: the offload test proves spill-and-reload is byte-identical, so
-# once the working set exceeds this the cold blobs simply live on disk. Owner guidance
-# was 2–4GB; 2GB is picked as the least memory-hungry end of that range that still
+# The bounded default for the ram hot-tier ``capacity_limit`` (#890). Owner ruling
+# (2026-07-12): 1GB AT MOST by default, user-configurable. A small hot tier is safe
+# because capacity-forced offload to the clio-core file tier is proven byte-identical
+# (tests/test_arc/test_cte_offload_spill.py); 1GB still
 # comfortably holds a live context plane before spilling.
-_DEFAULT_CTE_RAM_CAPACITY = "2GB"
+_DEFAULT_CTE_RAM_CAPACITY = "1GB"
 
 # The path suffix identifying the ram hot tier inside a clio-core ``compose`` block.
 _RAM_TIER_PATH_SUFFIX = "cte_ram_tier"
@@ -124,7 +124,7 @@ _CAP_RE = re.compile(r"^\s*([0-9]+(?:\.[0-9]+)?)\s*([a-zA-Z]*)\s*$")
 
 
 def parse_capacity_bytes(value: str) -> int:
-    """Parse a clio-core capacity string (e.g. ``"2GB"``, ``"512MB"``, ``"0g"``) to bytes.
+    """Parse a clio-core capacity string (e.g. ``"1GB"``, ``"512MB"``, ``"0g"``) to bytes.
 
     Accepts an integer/float magnitude with an optional case-insensitive unit suffix
     (``b``/``k``/``kb``/``kib``/``m``/``mb``/``mib``/``g``/``gb``/``gib``/``t``/``tb``/

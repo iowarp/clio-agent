@@ -58,7 +58,7 @@ def _store(env: dict | None = None, file_yaml: str | None = None, tmp_path=None)
 
 def test_default_ram_capacity_is_bounded_2gb(monkeypatch, tmp_path):
     monkeypatch.setattr(conf, "_STORE", _store(env={}, tmp_path=tmp_path))
-    assert cte_config._default_cte_ram_capacity() == "2GB"
+    assert cte_config._default_cte_ram_capacity() == "1GB"
 
 
 def test_default_ram_capacity_env_override(monkeypatch, tmp_path):
@@ -106,7 +106,7 @@ def test_generator_writes_bounded_ram_cap(monkeypatch, tmp_path):
     text = (tmp_path / "cte" / "cte.yaml").read_text(encoding="utf-8")
     assert path == str(tmp_path / "cte" / "cte.yaml")
     # The regression this test guards: the ram tier is NEVER generated as "0g".
-    assert _ram_tier_cap(text) == "2GB"
+    assert _ram_tier_cap(text) == "1GB"
     assert '"0g"' not in text.split("cte_ram_tier")[1].split("score")[0]
 
 
