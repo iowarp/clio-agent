@@ -1,8 +1,8 @@
-"""clio-core CTE daemon liveness gate + quarantine (owner module, #892).
+"""clio-core daemon liveness gate + quarantine (owner module, #892).
 
 Why this module exists
 ----------------------
-clio-core's chimaera runtime is a host-global daemon; a CTE client attaches to it
+clio-core's chimaera runtime is a host-global daemon; a clio-core client attaches to it
 once and then issues native ``GetBlob``/``PutBlob``/``DelBlob`` calls. When that
 daemon **dies while a client still holds an initialized binding**, the next native
 op does not raise — it segfaults the *host* process with an access violation
@@ -14,14 +14,14 @@ tracked as iowarp/clio-core#722.
 
 The defense clio-agent ships now
 --------------------------------
-A cheap **liveness gate** wrapped around every CTE op (:class:`LivenessGate`):
+A cheap **liveness gate** wrapped around every clio-core op (:class:`LivenessGate`):
 
 * Before an op reaches the native binding, the gate confirms the daemon is
   accepting connections. The probe result is cached for a short TTL
   (:data:`_DEFAULT_LIVENESS_TTL_S`, configurable) so the per-op overhead is a
   single ``time.monotonic()`` comparison in the common case, not a socket connect.
 * On probe failure the store enters a **QUARANTINED** state and every op raises a
-  typed :class:`CTERuntimeLostError` *before* touching the binding. This shrinks the
+  typed :class:`ClioCoreRuntimeLostError` *before* touching the binding. This shrinks the
   AV window from "any time the daemon can die" to "the daemon dies within the TTL
   race" — a residual honestly owned here and closed upstream by #722.
 * On the next op after quarantine the gate makes **one** guarded reconnect attempt
@@ -36,7 +36,7 @@ This is a **fail-loud** surface, not a silent LocalFS fallback: backend selectio
 stays the deliberate choice documented in :func:`clio_agent.arc.storage.make_arc_store`.
 The quarantine turns an un-catchable process crash into a typed, attributable,
 trace-visible error, and — because gates register in a process-local registry —
-into a doctor row (:func:`clio_agent.runtime.cte_health.probe_cte_liveness`).
+into a doctor row (:func:`clio_agent.runtime.clio_core_health.probe_clio_core_liveness`).
 
 The daemon port-resolution + socket-liveness helpers (``_resolve_runtime_port`` /
 ``_runtime_alive`` / ``_read_yaml_port`` and the default port) live here — this is
@@ -66,7 +66,7 @@ _DEFAULT_RUNTIME_PORT = 9413
 # window is also the residual AV race (a daemon that dies mid-TTL is not yet seen).
 # Small enough that a dead daemon is caught within a couple of seconds, large enough
 # that a hot ReAct loop does not open a socket on every blob op. Configurable via
-# ``arc.cte.liveness_ttl_s`` / env ``CLIO_ARC_CTE_LIVENESS_TTL_S``.
+# ``arc.clio_core.liveness_ttl_s`` / env ``CLIO_ARC_CLIO_CORE_LIVENESS_TTL_S``.
 _DEFAULT_LIVENESS_TTL_S = 3.0
 
 
@@ -138,7 +138,7 @@ def _runtime_alive(port: int) -> bool:
 def _resolve_liveness_ttl_s() -> float:
     """Resolve the configured liveness-probe cache TTL (seconds), fail-safe to default.
 
-    Reads ``arc.cte.liveness_ttl_s`` / env ``CLIO_ARC_CTE_LIVENESS_TTL_S``; a negative
+    Reads ``arc.clio_core.liveness_ttl_s`` / env ``CLIO_ARC_CLIO_CORE_LIVENESS_TTL_S``; a negative
     or unparseable value falls back to :data:`_DEFAULT_LIVENESS_TTL_S` (a bad TTL must
     not silently disable the gate, which a 0/negative cache would encourage).
     """
@@ -146,8 +146,8 @@ def _resolve_liveness_ttl_s() -> float:
 
     try:
         ttl = conf.resolve(
-            "arc.cte.liveness_ttl_s",
-            env="CLIO_ARC_CTE_LIVENESS_TTL_S",
+            "arc.clio_core.liveness_ttl_s",
+            env="CLIO_ARC_CLIO_CORE_LIVENESS_TTL_S",
             default=_DEFAULT_LIVENESS_TTL_S,
             cast=conf.as_float,
         )
@@ -161,13 +161,13 @@ def _resolve_liveness_ttl_s() -> float:
 # --------------------------------------------------------------------------- #
 
 
-class CTERuntimeLostError(ClioError):
-    """The shared clio-core runtime is gone; the CTE store is quarantined.
+class ClioCoreRuntimeLostError(ClioError):
+    """The shared clio-core runtime is gone; the clio-core store is quarantined.
 
     A :class:`~clio_agent.errors.ClioError` so it serializes to a structured,
     attributable payload (``error_type='arc_runtime_lost'``) that reaches the trace
     instead of an un-catchable native access violation. Raised by the liveness gate
-    *before* any native CTE op when the daemon is not listening or a reconnect
+    *before* any native clio-core op when the daemon is not listening or a reconnect
     attempt failed — never a silent degradation and never a LocalFS fallback.
     """
 
@@ -175,7 +175,7 @@ class CTERuntimeLostError(ClioError):
         self,
         message: str,
         *,
-        reason: str = "cte_daemon_not_listening",
+        reason: str = "clio_core_daemon_not_listening",
         port: int | None = None,
         details: dict | None = None,
     ) -> None:
@@ -198,9 +198,9 @@ class CTERuntimeLostError(ClioError):
 class LivenessGate:
     """TTL-cached daemon-liveness gate with quarantine + one-shot guarded reconnect.
 
-    Wrap every native CTE op in :meth:`ensure_live`. It confirms the daemon is
+    Wrap every native clio-core op in :meth:`ensure_live`. It confirms the daemon is
     listening (cached for ``ttl_s``), quarantines the store and raises
-    :class:`CTERuntimeLostError` on loss, and — once quarantined — makes at most one
+    :class:`ClioCoreRuntimeLostError` on loss, and — once quarantined — makes at most one
     reconnect attempt per TTL through the caller-supplied ``reconnect`` seam. All
     state transitions are serialized by an :class:`threading.RLock` so concurrent
     turns cannot race the quarantine flag.
@@ -265,7 +265,7 @@ class LivenessGate:
                 (raises on failure). Invoked at most once per TTL while quarantined.
 
         Raises:
-            CTERuntimeLostError: When the daemon is not listening and cannot be
+            ClioCoreRuntimeLostError: When the daemon is not listening and cannot be
                 recovered — always *before* the native binding is touched.
         """
         with self._lock:
@@ -278,13 +278,13 @@ class LivenessGate:
             if self._probe(self._port):
                 self._last_ok_at = now
                 return
-            self._enter_quarantine("cte_daemon_not_listening")
-            raise CTERuntimeLostError(
-                "clio-core CTE runtime is not listening on "
+            self._enter_quarantine("clio_core_daemon_not_listening")
+            raise ClioCoreRuntimeLostError(
+                "clio-core runtime is not listening on "
                 f"127.0.0.1:{self._port}; the shared daemon appears to have died. "
                 "The store is quarantined to avoid a native access violation "
                 "(clio-core#722).",
-                reason="cte_daemon_not_listening",
+                reason="clio_core_daemon_not_listening",
                 port=self._port,
             )
 
@@ -293,10 +293,10 @@ class LivenessGate:
         now = time.monotonic()
         if self._last_recovery_at is not None and now - self._last_recovery_at < self._ttl_s:
             # Rate-limit: a hot loop must not spawn-storm the daemon while it is down.
-            raise CTERuntimeLostError(
-                f"clio-core CTE runtime still unavailable on 127.0.0.1:{self._port} "
+            raise ClioCoreRuntimeLostError(
+                f"clio-core runtime still unavailable on 127.0.0.1:{self._port} "
                 "(reconnect back-off); store remains quarantined.",
-                reason="cte_reconnect_backoff",
+                reason="clio_core_reconnect_backoff",
                 port=self._port,
             )
         self._last_recovery_at = now
@@ -304,23 +304,23 @@ class LivenessGate:
             reconnect()
         except Exception as exc:  # noqa: BLE001 - any reconnect failure -> stay quarantined
             logger.warning(
-                "cte liveness: reconnect attempt failed "
-                "(reason=cte_reconnect_failed port=%s error=%s: %s); store stays quarantined",
+                "clio-core liveness: reconnect attempt failed "
+                "(reason=clio_core_reconnect_failed port=%s error=%s: %s); store stays quarantined",
                 self._port,
                 type(exc).__name__,
                 exc,
             )
-            raise CTERuntimeLostError(
-                f"clio-core CTE reconnect to 127.0.0.1:{self._port} failed ({exc}); "
+            raise ClioCoreRuntimeLostError(
+                f"clio-core reconnect to 127.0.0.1:{self._port} failed ({exc}); "
                 "store remains quarantined.",
-                reason="cte_reconnect_failed",
+                reason="clio_core_reconnect_failed",
                 port=self._port,
             ) from exc
         self._leave_quarantine()
         self._last_ok_at = time.monotonic()
         logger.info(
-            "cte liveness: shared clio-core runtime recovered "
-            "(reason=cte_runtime_recovered port=%s); store left quarantine",
+            "clio-core liveness: shared clio-core runtime recovered "
+            "(reason=clio_core_runtime_recovered port=%s); store left quarantine",
             self._port,
         )
 
@@ -329,8 +329,8 @@ class LivenessGate:
         self._reason = reason
         self._last_ok_at = None
         logger.warning(
-            "cte liveness: quarantining CTE store "
-            "(reason=%s port=%s); ops raise CTERuntimeLostError until the daemon returns",
+            "clio-core liveness: quarantining clio-core store "
+            "(reason=%s port=%s); ops raise ClioCoreRuntimeLostError until the daemon returns",
             reason,
             self._port,
         )
@@ -344,7 +344,7 @@ class LivenessGate:
 # process-local gate registry (doctor visibility)
 # --------------------------------------------------------------------------- #
 #
-# Quarantine is per-process in-memory state living on the live CTEStore's gate; the
+# Quarantine is per-process in-memory state living on the live ClioCoreStore's gate; the
 # doctor cannot see it by probing a socket. Gates register here (weakly, so a GC'd
 # store drops out) so an IN-PROCESS health report -- e.g. the gact server's own
 # status route -- can surface a wedged store. A separate doctor CLI process holds no

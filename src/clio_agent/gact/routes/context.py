@@ -306,7 +306,7 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
         sid: str, q: str, scope_prefix: str = "", k: int = 10
     ) -> ContextSearchResponse:
         """Semantic discovery over a session's scopes — 'which expert/scope knows
-        about X'. BM25 on the clio-core CTE backend, naive word-overlap on LocalFS."""
+        about X'. BM25 on the clio-core backend, naive word-overlap on LocalFS."""
         if app.state.sessions.get(sid) is None:
             raise _session_not_found(sid)
         arc = app.state.arc

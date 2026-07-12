@@ -21,7 +21,7 @@ on a small hand-written sequence):
     order must not matter) and cross-scope event-stream isolation.
   * A live (CLIO_RUN_LIVE=1) end-to-end audit against real ALCF inference.
 
-These exercise the REAL SegmentStore / ARCMemory / CTEStore / _RetainingReAct — no
+These exercise the REAL SegmentStore / ARCMemory / ClioCoreStore / _RetainingReAct — no
 mocking of src code.
 """
 
@@ -672,30 +672,30 @@ def test_live_alcf_trace_reconstructs_arc(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 12. CTE-backed live plane: when the in-process CTE runtime is available, the
-#     SAME replay audit must hold over the CTE store (production backend).
+# 12. clio-core-backed live plane: when the in-process clio-core runtime is available, the
+#     SAME replay audit must hold over the clio-core store (production backend).
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
-def test_cte_backed_replay_audit():
+def test_clio_core_backed_replay_audit():
     try:
         store = make_arc_store(backend="cte")
     except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"CTE runtime unavailable: {exc}")
-    if type(store).__name__ != "CTEStore":
-        pytest.skip("CTE backend not active (fell back to local)")
+        pytest.skip(f"clio-core runtime unavailable: {exc}")
+    if type(store).__name__ != "ClioCoreStore":
+        pytest.skip("clio-core backend not active (fell back to local)")
 
     events: list[dict] = []
     ss = SegmentStore(store, op_logger=_make_capturing_logger(events))
-    sid, scope = "cte_audit_s1", "agentA/exp"
+    sid, scope = "clio_core_audit_s1", "agentA/exp"
     try:
         for step in range(3):
             ss.append(sid, scope, "thought", {"text": f"ct{step}"}, step=step)
             ss.append(sid, scope, "observation", {"text": f"co{step}"}, step=step)
         live_ids = [s.id for s in ss.render(sid, scope)]
         ss.delete(sid, scope, live_ids[:1])
-        ss.summarize(sid, scope, live_ids[2:4], {"text": "CTE_SUMM"})
+        ss.summarize(sid, scope, live_ids[2:4], {"text": "CLIO_CORE_SUMM"})
 
         live = ss.render(sid, scope)
         replayed = reconstruct_arc_segments(events, scope_filter=scope)

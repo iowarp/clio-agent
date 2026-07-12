@@ -25,7 +25,7 @@ def arc(request, tmp_path) -> Iterator[ARCMemory]:
     """A fresh ARCMemory, exercised on BOTH backends.
 
     The acceptance contract must hold identically whether ARC persists through the
-    fast LocalFS store or the production clio-core CTE runtime, so every test using
+    fast LocalFS store or the production clio-core runtime, so every test using
     this fixture runs once per backend. ``local`` is isolated by ``tmp_path``; ``cte``
     shares the process-global in-process runtime (the first param boots it, the rest
     connect), so it is cleared at setup + teardown for per-test isolation. The ``cte``

@@ -508,27 +508,27 @@ class TestArcStoreConfig:
     """``arc.store_config`` / ``CLIO_ARC_STORE_CONFIG`` — CTE config path."""
 
     @pytest.fixture()
-    def _stub_cte(self, monkeypatch):
+    def _stub_clio_core(self, monkeypatch):
         from clio_agent.arc import storage
 
         captured: dict[str, str] = {}
 
-        class _StubCTE:
+        class _StubClioCore:
             def __init__(self, config_path: str = "") -> None:
                 captured["config_path"] = config_path
 
-        monkeypatch.setattr(storage, "CTEStore", _StubCTE)
+        monkeypatch.setattr(storage, "ClioCoreStore", _StubClioCore)
         return captured
 
-    def test_env(self, monkeypatch, tmp_path, _stub_cte):
+    def test_env(self, monkeypatch, tmp_path, _stub_clio_core):
         from clio_agent.arc.storage import make_arc_store
 
         monkeypatch.setenv("CLIO_ARC_STORE", "cte")
         monkeypatch.setenv("CLIO_ARC_STORE_CONFIG", str(tmp_path / "env-cte.yaml"))
         make_arc_store(data_dir=tmp_path / "arc")
-        assert _stub_cte["config_path"] == str(tmp_path / "env-cte.yaml")
+        assert _stub_clio_core["config_path"] == str(tmp_path / "env-cte.yaml")
 
-    def test_file_wins(self, monkeypatch, tmp_path, _stub_cte):
+    def test_file_wins(self, monkeypatch, tmp_path, _stub_clio_core):
         from clio_agent.arc.storage import make_arc_store
 
         monkeypatch.setenv("CLIO_ARC_STORE", "cte")
@@ -536,7 +536,7 @@ class TestArcStoreConfig:
         file_cfg = (tmp_path / "file-cte.yaml").as_posix()
         _write_user_config(monkeypatch, tmp_path, f"arc:\n  store_config: {file_cfg}\n")
         make_arc_store(data_dir=tmp_path / "arc")
-        assert _stub_cte["config_path"] == file_cfg
+        assert _stub_clio_core["config_path"] == file_cfg
 
 
 class TestSessionsPath:

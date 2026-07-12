@@ -1,8 +1,8 @@
-"""CTE backend SCALE + robustness stress tests for the ARC live context plane.
+"""clio-core backend SCALE + robustness stress tests for the ARC live context plane.
 
-These are ``integration`` tests: they drive the REAL in-process clio-core CTE
-runtime (``make_arc_store(backend="cte")``) — no mocking of ``CTEStore``,
-``SegmentStore``, or ``ARCMemory``. They exist to buy FULL FAITH in the CTE
+These are ``integration`` tests: they drive the REAL in-process clio-core
+runtime (``make_arc_store(backend="cte")``) — no mocking of ``ClioCoreStore``,
+``SegmentStore``, or ``ARCMemory``. They exist to buy FULL FAITH in clio-core
 backend before a release by exercising it at a scale the unit lane never does:
 
     * hundreds of segments fanned across many ``(session, scope)`` pairs;
@@ -10,13 +10,13 @@ backend before a release by exercising it at a scale the unit lane never does:
     * a ``scan`` over a single big scope's record;
     * ``clear()`` wiping every kind across the whole store;
     * the base64 binary guard (non-UTF-8 msgpack bytes) at scale;
-    * repeated ``ARCMemory`` construction reusing the one-time-init CTE runtime.
+    * repeated ``ARCMemory`` construction reusing the one-time-init clio-core runtime.
 
 Correctness is asserted against the same in-memory truth the writer produced,
 and each phase is wall-clock-bounded so a pathological slowdown fails loudly
 instead of hanging.
 
-The CTE runtime is process-global and DRAM-backed: data put by one
+The clio-core runtime is process-global and DRAM-backed: data put by one
 ``make_arc_store(backend="cte")`` is visible to the next within the same
 process, and ``clear()`` wipes ALL kinds for ALL sessions. To stay hermetic
 under a shared pytest process, every test namespaces its records with a
@@ -25,7 +25,7 @@ setup/teardown so it never races another test's data.
 
 Run:
     cd <worktree> && CLIO_ALLOWED_ROOTS="/tmp:$PWD" \
-        uv run python -m pytest tests/test_arc/test_stress_cte_scale.py \
+        uv run python -m pytest tests/test_arc/test_stress_clio_core_scale.py \
         -o addopts="" -q -p no:cacheprovider -m integration
 """
 
@@ -52,8 +52,8 @@ pytestmark = pytest.mark.integration
 
 # ---- serial-only enforcement ----------------------------------------------
 #
-# The CTE runtime backing these tests is a machine-global shared daemon
-# (spawned once, DRAM-backed, attached by every process), and ``CTEStore.clear()``
+# The clio-core runtime backing these tests is a machine-global shared daemon
+# (spawned once, DRAM-backed, attached by every process), and ``ClioCoreStore.clear()``
 # is TOTAL across all kinds/sessions. Under pytest-xdist each worker is a
 # SEPARATE process attached to the SAME daemon, so the two destructive
 # ``clear()`` tests below would wipe records that sibling tests
@@ -68,35 +68,35 @@ pytestmark = pytest.mark.integration
 # across workers. A cross-process file lock enforces mutual exclusion
 # regardless of the dist mode: every test in this module holds the lock for its
 # full duration, so no two ever run concurrently across xdist workers.
-_CTE_GLOBAL_LOCK = filelock.FileLock(
-    str(Path(tempfile.gettempdir()) / "clio_cte_stress_scale.lock")
+_CLIO_CORE_GLOBAL_LOCK = filelock.FileLock(
+    str(Path(tempfile.gettempdir()) / "clio_clio_core_stress_scale.lock")
 )
 
 
 @pytest.fixture(autouse=True)
-def _serialize_cte_global_daemon():
+def _serialize_clio_core_global_daemon():
     """Serialize every test in this module across processes (xdist workers).
 
-    The tests share one machine-global CTE daemon and two of them call the
+    The tests share one machine-global clio-core daemon and two of them call the
     TOTAL ``clear()``; running any concurrently corrupts the others' data. The
     lock makes the module effectively serial no matter how the run is sharded.
     """
-    with _CTE_GLOBAL_LOCK:
+    with _CLIO_CORE_GLOBAL_LOCK:
         yield
 
 
 # ---- helpers --------------------------------------------------------------
 
 
-def _cte_store():
-    """Build a real CTE-backed ARCStore, skipping if the binding/runtime is
+def _clio_core_store():
+    """Build a real clio-core-backed ARCStore, skipping if the binding/runtime is
     genuinely unavailable (graceful-degradation falls back to LocalFSStore, which
-    would make these "CTE" tests silently test the wrong backend)."""
+    would make these "clio-core" tests silently test the wrong backend)."""
     store = make_arc_store(backend="cte")
-    if type(store).__name__ != "CTEStore":
+    if type(store).__name__ != "ClioCoreStore":
         pytest.skip(
-            "CTE backend unavailable (fell back to %s); "
-            "build iowarp-core to run the CTE scale lane" % type(store).__name__
+            "clio-core backend unavailable (fell back to %s); "
+            "build iowarp-core to run the clio-core scale lane" % type(store).__name__
         )
     return store
 
@@ -107,14 +107,14 @@ def _uid(tag: str) -> str:
     return f"{tag}-{uuid.uuid4().hex[:12]}"
 
 
-# ---- 1. raw CTEStore: hundreds of records across many (kind, name) keys ----
+# ---- 1. raw ClioCoreStore: hundreds of records across many (kind, name) keys ----
 
 
-def test_cte_many_records_roundtrip_and_scan():
+def test_clio_core_many_records_roundtrip_and_scan():
     """Put hundreds of distinct records, then read each back byte-identically and
     confirm a prefix scan returns exactly the right set. This is the core
     durability contract at fan-out scale."""
-    store = _cte_store()
+    store = _clio_core_store()
     pfx = _uid("manyrec")  # unique session-like prefix for this test's records
     # Fan-out scale: enough records across many scopes to exercise the durability
     # + prefix-scan contract, sized so the whole @integration file completes well
@@ -160,10 +160,10 @@ def test_cte_many_records_roundtrip_and_scan():
 # ---- 2. large payloads (10-100 KB) through the base64-wrap path -----------
 
 
-def test_cte_large_payloads_roundtrip():
+def test_clio_core_large_payloads_roundtrip():
     """The base64 wrap inflates payloads ~4/3x; verify 10-100 KB blobs (incl.
     non-UTF-8 bytes) survive byte-identically and within a sane time budget."""
-    store = _cte_store()
+    store = _clio_core_store()
     pfx = _uid("big")
     sizes = [10_000, 25_000, 50_000, 75_000, 100_000]
     payloads: dict[str, bytes] = {}
@@ -194,11 +194,11 @@ def test_cte_large_payloads_roundtrip():
 # ---- 3. base64 binary guard at scale --------------------------------------
 
 
-def test_cte_base64_binary_guard_at_scale():
+def test_clio_core_base64_binary_guard_at_scale():
     """Hammer the base64 guard: hundreds of payloads each crafted to contain the
     byte ranges that a naive UTF-8 GetBlob would choke on (0x00, 0x80-0xFF, lone
     continuation bytes, invalid start bytes). All must round-trip identically."""
-    store = _cte_store()
+    store = _clio_core_store()
     pfx = _uid("guard")
     # Bytes that are individually invalid or dangerous for UTF-8 decoding.
     hostile = bytes(range(256)) + b"\x80\x81\xff\xfe\xc0\xc1\xed\xa0\x80"
@@ -220,15 +220,15 @@ def test_cte_base64_binary_guard_at_scale():
         store.delete("segments", name)
 
 
-# ---- 4. SegmentStore on CTE: many segments in one big scope + scan ---------
+# ---- 4. SegmentStore on clio-core: many segments in one big scope + scan ---------
 
 
-def test_cte_segment_store_big_scope_render_and_scan():
-    """Drive the real SegmentStore over CTE: write a long ReAct-shaped trajectory
+def test_clio_core_segment_store_big_scope_render_and_scan():
+    """Drive the real SegmentStore over clio-core: write a long ReAct-shaped trajectory
     into one scope (so the whole scope batches into a single large CTE record),
     then verify the dspy render is correct, a cold reload reconstructs it
     identically, and scan_scopes finds the scope."""
-    store = _cte_store()
+    store = _clio_core_store()
     ss = SegmentStore(store)
     sid = _uid("bigscope")
     scope = "agentA/expertB"
@@ -251,7 +251,7 @@ def test_cte_segment_store_big_scope_render_and_scan():
     assert keys[f"observation_{iters - 1}"] == f"obs{iters - 1}"
     assert len(keys) == iters * 4  # thought+tool_name+tool_args+observation per iter
 
-    # Cold reload from the SAME CTE runtime reconstructs byte-identically.
+    # Cold reload from the SAME clio-core runtime reconstructs byte-identically.
     ss2 = SegmentStore(make_arc_store(backend="cte"))
     assert ss2.render_keys(sid, scope) == keys
     assert ss2.scan_scopes(sid) == [scope]
@@ -266,13 +266,13 @@ def test_cte_segment_store_big_scope_render_and_scan():
     store.delete("segments", SegmentStore._record_name(sid, scope))
 
 
-# ---- 5. SegmentStore on CTE: fan-out across many (session, scope) pairs ----
+# ---- 5. SegmentStore on clio-core: fan-out across many (session, scope) pairs ----
 
 
-def test_cte_segment_store_many_scopes_isolation():
+def test_clio_core_segment_store_many_scopes_isolation():
     """Many scopes across several sessions: each scope is an independent CTE
     record; render is correctly isolated and scan_scopes is session-scoped."""
-    store = _cte_store()
+    store = _clio_core_store()
     ss = SegmentStore(store)
     base = _uid("fanout")
     sessions = [f"{base}-s{i}" for i in range(5)]
@@ -300,16 +300,16 @@ def test_cte_segment_store_many_scopes_isolation():
             store.delete("segments", SegmentStore._record_name(sid, scope))
 
 
-# ---- 6. ARCMemory live plane on CTE: ops + replay equivalence at scale -----
+# ---- 6. ARCMemory live plane on clio-core: ops + replay equivalence at scale -----
 
 
-def test_cte_arcmemory_live_plane_ops_and_replay():
-    """End-to-end through ARCMemory on CTE: write a trajectory, capture op events
+def test_clio_core_arcmemory_live_plane_ops_and_replay():
+    """End-to-end through ARCMemory on clio-core: write a trajectory, capture op events
     via an injected op_logger, apply delete + summarize, and prove the durable
     Trace replay reconstructs the exact same live render (the replayability
     contract) — at multi-iteration scale, on the real backend."""
-    arc = ARCMemory(store=_cte_store())
-    sid = _uid("livecte")
+    arc = ARCMemory(store=_clio_core_store())
+    sid = _uid("liveclio_core")
     scope = "agentA"
 
     events: list[dict] = []
@@ -371,19 +371,19 @@ def test_cte_arcmemory_live_plane_ops_and_replay():
     arc._store.delete("segments", SegmentStore._record_name(sid, scope))
 
 
-# ---- 7. repeated ARCMemory construction reusing the one-time CTE runtime ----
+# ---- 7. repeated ARCMemory construction reusing the one-time clio-core runtime ----
 
 
-def test_cte_repeated_arcmemory_construction_shares_runtime(tmp_path):
-    """The CTE runtime inits exactly ONCE per process (``_initialized`` guard).
-    Construct ARCMemory many times over fresh CTE stores; each must boot fast
+def test_clio_core_repeated_arcmemory_construction_shares_runtime(tmp_path):
+    """The clio-core runtime inits exactly ONCE per process (``_initialized`` guard).
+    Construct ARCMemory many times over fresh clio-core stores; each must boot fast
     (no re-init), and a record written by an earlier instance must be visible to
     a later one (shared DRAM runtime)."""
     sid = _uid("reuse")
     scope = "agentA"
 
     # First instance writes a marker.
-    arc0 = ARCMemory(data_dir=str(tmp_path / "a0"), store=_cte_store())
+    arc0 = ARCMemory(data_dir=str(tmp_path / "a0"), store=_clio_core_store())
     arc0.append_segment(sid, scope, "thought", {"text": "MARKER_REUSE"}, step=0)
 
     # Many subsequent constructions must each be cheap (runtime already up).
@@ -407,16 +407,16 @@ def test_cte_repeated_arcmemory_construction_shares_runtime(tmp_path):
 # ---- 8. clear() wipes every kind across the whole store --------------------
 
 
-def test_cte_clear_wipes_all_kinds():
+def test_clio_core_clear_wipes_all_kinds():
     """``clear()`` deletes all blobs across every ARC_KIND. This test OWNS the
     store state for its window: it writes one record into EVERY kind, asserts
     they exist, clears, then asserts the whole store is empty across all kinds.
 
-    NOTE: clear() is global to the process-shared CTE runtime, so this test must
+    NOTE: clear() is global to the process-shared clio-core runtime, so this test must
     not run concurrently with another that relies on persisted CTE data. Under
     the default serial pytest run that holds.
     """
-    store = _cte_store()
+    store = _clio_core_store()
     marker = _uid("clearmark").encode()
 
     # Seed exactly one record in every kind.
@@ -433,14 +433,14 @@ def test_cte_clear_wipes_all_kinds():
         assert list(store.scan(kind)) == [], f"scan over {kind} not empty after clear"
 
 
-# ---- 9. ARCMemory.clear_all() drops the live plane on CTE ------------------
+# ---- 9. ARCMemory.clear_all() drops the live plane on clio-core ------------------
 
 
-def test_cte_arcmemory_clear_all_resets_live_plane():
-    """``ARCMemory.clear_all()`` must wipe the CTE-backed segment store AND drop
+def test_clio_core_arcmemory_clear_all_resets_live_plane():
+    """``ARCMemory.clear_all()`` must wipe the clio-core-backed segment store AND drop
     the in-memory plane, so a fresh render is empty. Owns store state (clear_all
     calls store.clear())."""
-    arc = ARCMemory(store=_cte_store())
+    arc = ARCMemory(store=_clio_core_store())
     sid = _uid("clearall")
     scope = "agentA"
     for i in range(20):
@@ -459,12 +459,12 @@ def test_cte_arcmemory_clear_all_resets_live_plane():
 # ---- 10. empty-payload guard (documents a real CTE edge) -------------------
 
 
-def test_cte_round_trips_minimal_segment_record():
+def test_clio_core_round_trips_minimal_segment_record():
     """The smallest real ARC payload is a 1-byte msgpack empty list (``encode_segments([])``
     = ``b"\\x90"``); confirm even a 1-byte blob round-trips. (CTE rejects a
     *zero*-length blob, but ARC never writes one — the minimal real record is 1
     byte.)"""
-    store = _cte_store()
+    store = _clio_core_store()
     name = f"{_uid('minimal')}__k"
     one_byte = encode_segments([])
     assert one_byte == b"\x90"

@@ -260,7 +260,7 @@ class CodexAppServerProcess:
         argv = [self._binary, "app-server", "--stdio"]
         creationflags = 0
         if os.name == "nt":
-            # Keep the console window hidden on Windows (parity with the CTE spawn
+            # Keep the console window hidden on Windows (parity with the clio-core spawn
             # fix #870); the child still inherits the server's Job Object (#900).
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         try:

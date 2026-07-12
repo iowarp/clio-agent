@@ -1,7 +1,7 @@
-"""Tests for the ARC store factory + the clio-core CTE backend (Thread B).
+"""Tests for the ARC store factory + the clio-core backend (Thread B).
 
 Unit tests (binding-free) cover factory selection and graceful degradation.
-The CTE round-trip tests are marked ``integration`` (connect-or-spawn the shared
+The clio-core round-trip tests are marked ``integration`` (connect-or-spawn the shared
 iowarp-core runtime) so the default unit lane (``-m "not integration"``) stays
 binding-free.
 """
@@ -21,7 +21,7 @@ from clio_agent.arc.storage import LocalFSStore, make_arc_store
 # ---- unit: factory selection + graceful degradation (no binding needed) ----
 
 
-def test_cte_yaml_path_uses_yaml_safe_separators():
+def test_clio_core_yaml_path_uses_yaml_safe_separators():
     path = storage._cte_yaml_path(
         storage.Path("C:/Users/jaime/AppData/Local/clio-agent/cte/storage.bin")
     )
@@ -29,7 +29,7 @@ def test_cte_yaml_path_uses_yaml_safe_separators():
     assert "\\" not in path
 
 
-def test_default_cte_dir_honors_explicit_override(monkeypatch):
+def test_default_clio_core_dir_honors_explicit_override(monkeypatch):
     from clio_agent import conf
 
     store = conf.ConfigStore(
@@ -41,7 +41,7 @@ def test_default_cte_dir_honors_explicit_override(monkeypatch):
     assert storage._default_cte_dir() == storage.Path("D:/custom-clio/cte")
 
 
-def test_default_cte_dir_file_config_wins_over_env(monkeypatch, tmp_path):
+def test_default_clio_core_dir_file_config_wins_over_env(monkeypatch, tmp_path):
     monkeypatch.delenv("CLIO_ARC_CTE_DIR", raising=False)
     monkeypatch.setenv("CLIO_ARC_CTE_DIR", "C:/env-clio/cte")
 
@@ -59,7 +59,7 @@ def test_default_cte_dir_file_config_wins_over_env(monkeypatch, tmp_path):
     assert storage._default_cte_dir() == storage.Path("D:/config-clio/cte")
 
 
-def test_default_cte_file_capacity_file_config_wins_over_env(monkeypatch, tmp_path):
+def test_default_clio_core_file_capacity_file_config_wins_over_env(monkeypatch, tmp_path):
     from clio_agent import conf
 
     store = conf.ConfigStore(
@@ -74,7 +74,7 @@ def test_default_cte_file_capacity_file_config_wins_over_env(monkeypatch, tmp_pa
     assert storage._default_cte_file_capacity() == "10GB"
 
 
-def test_default_cte_dir_falls_back_to_user_data(monkeypatch, tmp_path):
+def test_default_clio_core_dir_falls_back_to_user_data(monkeypatch, tmp_path):
     from clio_agent import conf
 
     store = conf.ConfigStore(home=tmp_path / "home", cwd=tmp_path / "cwd", env={})
@@ -102,8 +102,8 @@ def test_factory_unknown_backend_raises():
         make_arc_store(backend="bogus")
 
 
-def test_factory_cte_loud_degrades_to_localfs_on_init_failure(tmp_path, monkeypatch):
-    """CTE binding/runtime unavailable at INIT -> LOUD degrade to LocalFS (#897).
+def test_factory_clio_core_loud_degrades_to_localfs_on_init_failure(tmp_path, monkeypatch):
+    """clio-core binding/runtime unavailable at INIT -> LOUD degrade to LocalFS (#897).
 
     Owner ruling: clio-core is the default, but a missing/failed init degrades to
     LocalFS *loudly* (typed reason + log + doctor row), not by raising. The typed
@@ -120,14 +120,14 @@ def test_factory_cte_loud_degrades_to_localfs_on_init_failure(tmp_path, monkeypa
     def boom(*a, **k):
         raise ImportError("clio_cte_core_ext not built")
 
-    monkeypatch.setattr(storage, "CTEStore", boom)
+    monkeypatch.setattr(storage, "ClioCoreStore", boom)
     store = make_arc_store(backend="cte", data_dir=str(tmp_path))
 
     assert isinstance(store, LocalFSStore)
     record = arc_init_degradation_snapshot()
     assert record is not None
     # SABOTAGE PIN: swallow/blank the typed reason and this assertion goes red.
-    assert record.reason == "cte_binding_absent"
+    assert record.reason == "clio_core_binding_absent"
     assert record.was_explicit is True
     assert record.error_type == "ImportError"
     reset_arc_init_degradation()
@@ -310,65 +310,65 @@ def test_ensure_runtime_registers_atexit_release(monkeypatch, tmp_path):
 
     _isolate_clio_home(monkeypatch, tmp_path)
     fake_iowarp = _types.ModuleType("iowarp_core")
-    fake_cte = _types.ModuleType("clio_cte_core_ext")
-    fake_cte.ChimaeraMode = SimpleNamespace(kClient=object())
-    fake_cte.PoolQuery = SimpleNamespace(Dynamic=lambda: object())
-    fake_cte.chimaera_init = lambda *a, **k: None
-    fake_cte.initialize_cte = lambda *a, **k: None
+    fake_clio_core = _types.ModuleType("clio_cte_core_ext")
+    fake_clio_core.ChimaeraMode = SimpleNamespace(kClient=object())
+    fake_clio_core.PoolQuery = SimpleNamespace(Dynamic=lambda: object())
+    fake_clio_core.chimaera_init = lambda *a, **k: None
+    fake_clio_core.initialize_cte = lambda *a, **k: None
     monkeypatch.setitem(sys.modules, "iowarp_core", fake_iowarp)
-    monkeypatch.setitem(sys.modules, "clio_cte_core_ext", fake_cte)
+    monkeypatch.setitem(sys.modules, "clio_cte_core_ext", fake_clio_core)
     monkeypatch.setattr(storage, "_ensure_runtime_daemon", lambda *a, **k: None)
     monkeypatch.setattr(storage.time, "sleep", lambda *_a, **_k: None)
-    monkeypatch.setattr(storage.CTEStore, "_initialized", False)
+    monkeypatch.setattr(storage.ClioCoreStore, "_initialized", False)
 
     registered: list[tuple] = []
     monkeypatch.setattr(
         storage.atexit, "register", lambda fn, *a: registered.append((fn, a))
     )
 
-    storage.CTEStore._ensure_runtime("", "error", 0.0)
+    storage.ClioCoreStore._ensure_runtime("", "error", 0.0)
 
     assert (storage.release_runtime_client, ("", "error")) in registered
 
 
-# ---- integration: real shared clio-core CTE runtime (connect-or-spawn) ----
+# ---- integration: real shared clio-core runtime (connect-or-spawn) ----
 
 
 @pytest.mark.integration
-def test_cte_roundtrip_binary():
+def test_clio_core_roundtrip_binary():
     """The base64 regression guard: arbitrary msgpack bytes (incl. non-UTF-8) must
     round-trip byte-identically through CTE's UTF-8-decoding GetBlob."""
     store = make_arc_store(backend="cte")
-    assert type(store).__name__ == "CTEStore"
+    assert type(store).__name__ == "ClioCoreStore"
     payload = msgspec.msgpack.encode({"n": 1, "raw": b"\x00\x83\xff\x81", "s": "x"})
-    store.put("segments", "cte_rt__k1", payload)
-    assert store.get("segments", "cte_rt__k1") == payload  # identical bytes
-    assert store.exists("segments", "cte_rt__k1") is True
-    assert store.exists("segments", "cte_rt__missing") is False
-    assert store.get("segments", "cte_rt__missing") is None
-    store.delete("segments", "cte_rt__k1")
-    assert store.get("segments", "cte_rt__k1") is None
+    store.put("segments", "clio_core_rt__k1", payload)
+    assert store.get("segments", "clio_core_rt__k1") == payload  # identical bytes
+    assert store.exists("segments", "clio_core_rt__k1") is True
+    assert store.exists("segments", "clio_core_rt__missing") is False
+    assert store.get("segments", "clio_core_rt__missing") is None
+    store.delete("segments", "clio_core_rt__k1")
+    assert store.get("segments", "clio_core_rt__k1") is None
 
 
 @pytest.mark.integration
-def test_cte_scan_prefix():
+def test_clio_core_scan_prefix():
     store = make_arc_store(backend="cte")
-    store.put("segments", "cte_scan__a", b"AAA")
-    store.put("segments", "cte_scan__b", b"BBB")
-    store.put("segments", "cte_other__c", b"CCC")
-    names = sorted(n for n, _ in store.scan("segments", "cte_scan__"))
-    assert names == ["cte_scan__a", "cte_scan__b"]
+    store.put("segments", "clio_core_scan__a", b"AAA")
+    store.put("segments", "clio_core_scan__b", b"BBB")
+    store.put("segments", "clio_core_other__c", b"CCC")
+    names = sorted(n for n, _ in store.scan("segments", "clio_core_scan__"))
+    assert names == ["clio_core_scan__a", "clio_core_scan__b"]
 
 
 @pytest.mark.integration
-def test_cte_backs_the_live_segment_plane():
-    """The whole point: the live context plane (SegmentStore) runs on CTE."""
+def test_clio_core_backs_the_live_segment_plane():
+    """The whole point: the live context plane (SegmentStore) runs on clio-core."""
     arc = ARCMemory(store=make_arc_store(backend="cte"))
-    assert type(arc._store).__name__ == "CTEStore"
-    sid, scope = "cte_live_s1", "agentA"
+    assert type(arc._store).__name__ == "ClioCoreStore"
+    sid, scope = "clio_core_live_s1", "agentA"
     arc.append_segment(sid, scope, "thought", {"text": "on CTE"}, step=0)
-    arc.append_segment(sid, scope, "observation", {"text": "OBS_CTE"}, step=0)
-    assert "OBS_CTE" in str(arc.render_segments_keys(sid, scope))
+    arc.append_segment(sid, scope, "observation", {"text": "OBS_CLIO_CORE"}, step=0)
+    assert "OBS_CLIO_CORE" in str(arc.render_segments_keys(sid, scope))
     # a second ARCMemory over the same runtime sees the persisted segments
     arc2 = ARCMemory(store=make_arc_store(backend="cte"))
     assert len(arc2.render_segments(sid, scope)) == 2

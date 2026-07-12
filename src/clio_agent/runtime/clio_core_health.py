@@ -8,9 +8,9 @@ emits one :class:`~clio_agent.runtime.status.IntegrationStatus` row reporting th
 effective cap. A ``0g`` (= 80%-DRAM) ram tier — e.g. a stale config file generated
 before the bounded default landed — is surfaced as a warning with the exact
 remediation, rather than silently rewritten (see
-:func:`clio_agent.arc.cte_config.default_cte_config_path`).
+:func:`clio_agent.arc.clio_core_config.default_cte_config_path`).
 
-The row is emitted only when the ARC backend is the CTE backend (``CLIO_ARC_STORE`` is
+The row is emitted only when the ARC backend is the clio-core backend (``CLIO_ARC_STORE`` is
 ``cte`` or unset); for the explicit ``local`` backend the ram hot tier is irrelevant and
 no row is produced (mirrors :meth:`RuntimeProbe._arc_backend`).
 """
@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from clio_agent.arc.cte_config import RamTierCap, effective_ram_cap, parse_capacity_bytes
+from clio_agent.arc.clio_core_config import RamTierCap, effective_ram_cap, parse_capacity_bytes
 from clio_agent.runtime.humanize import format_bytes
 from clio_agent.runtime.status import IntegrationState, IntegrationStatus
 
@@ -27,7 +27,7 @@ _REMEDIATION = (
     "Set a bounded ram cap via arc.cte.ram_capacity (or env CLIO_ARC_CTE_RAM_CAPACITY), "
     "e.g. '2GB', then delete the stale cte.yaml so it regenerates — or edit the "
     "capacity_limit under storage[cte_ram_tier] in that file directly. Offload to the "
-    "disk tier is byte-identical (tests/test_arc/test_cte_offload_spill.py), so a small "
+    "disk tier is byte-identical (tests/test_arc/test_clio_core_offload_spill.py), so a small "
     "hot tier is safe."
 )
 
@@ -39,10 +39,10 @@ def _cap_source(cap: RamTierCap) -> str:
     return "generator-default:arc.cte.ram_capacity"
 
 
-def probe_cte_ram_cap(*, env: Mapping[str, str] | None = None) -> list[IntegrationStatus]:
+def probe_clio_core_ram_cap(*, env: Mapping[str, str] | None = None) -> list[IntegrationStatus]:
     """Report the effective clio-core CTE ram hot-tier cap as a doctor row.
 
-    Returns a single-row list when the ARC backend is CTE, and an empty list for the
+    Returns a single-row list when the ARC backend is clio-core, and an empty list for the
     explicit ``local`` backend (the ram tier does not apply). The row is:
 
     * MISCONFIGURED when the config file declares an unparseable cap (fail-loud) or no
@@ -78,7 +78,7 @@ def probe_cte_ram_cap(*, env: Mapping[str, str] | None = None) -> list[Integrati
     if cap.parse_error is not None:
         return [
             IntegrationStatus(
-                name="cte_ram_cap",
+                name="clio_core_ram_cap",
                 state=IntegrationState.MISCONFIGURED,
                 summary=(
                     f"clio-core CTE ram hot-tier cap {cap.cap!r} is not a valid capacity: "
@@ -95,7 +95,7 @@ def probe_cte_ram_cap(*, env: Mapping[str, str] | None = None) -> list[Integrati
     if cap.cap is None:
         return [
             IntegrationStatus(
-                name="cte_ram_cap",
+                name="clio_core_ram_cap",
                 state=IntegrationState.MISCONFIGURED,
                 summary=(
                     "clio-core CTE config declares no ram hot tier (no cte_ram_tier "
@@ -112,7 +112,7 @@ def probe_cte_ram_cap(*, env: Mapping[str, str] | None = None) -> list[Integrati
     if cap.unbounded:
         return [
             IntegrationStatus(
-                name="cte_ram_cap",
+                name="clio_core_ram_cap",
                 state=IntegrationState.DEGRADED,
                 summary=(
                     f"clio-core CTE ram hot-tier cap is {cap.cap!r}, which clio-core reads "
@@ -131,7 +131,7 @@ def probe_cte_ram_cap(*, env: Mapping[str, str] | None = None) -> list[Integrati
     human = format_bytes(parse_capacity_bytes(cap.cap))
     return [
         IntegrationStatus(
-            name="cte_ram_cap",
+            name="clio_core_ram_cap",
             state=IntegrationState.READY,
             summary=(
                 f"clio-core CTE ram hot tier is bounded at {cap.cap} (~{human}); cold blobs "
@@ -147,28 +147,28 @@ def probe_cte_ram_cap(*, env: Mapping[str, str] | None = None) -> list[Integrati
     ]
 
 
-def probe_cte_liveness(*, snapshot: list[dict] | None = None) -> list[IntegrationStatus]:
-    """Surface a quarantined (daemon-lost) CTE store as a doctor row (#892).
+def probe_clio_core_liveness(*, snapshot: list[dict] | None = None) -> list[IntegrationStatus]:
+    """Surface a quarantined (daemon-lost) clio-core store as a doctor row (#892).
 
-    Quarantine is per-process in-memory state on a live ``CTEStore``'s liveness gate,
+    Quarantine is per-process in-memory state on a live ``ClioCoreStore``'s liveness gate,
     not something a socket probe can observe — so this reads the process-local gate
-    registry (:func:`clio_agent.arc.cte_liveness.liveness_snapshot`). It is meaningful
+    registry (:func:`clio_agent.arc.clio_core_liveness.liveness_snapshot`). It is meaningful
     only when the report runs IN the process that holds the store (e.g. the gact
     server's own status route); a separate doctor CLI holds no gate and correctly
     reports nothing.
 
     Returns:
         A single DEGRADED row when any gate is quarantined (a store wedged after a
-        daemon loss, ops raising ``CTERuntimeLostError`` until the daemon returns); a
+        daemon loss, ops raising ``ClioCoreRuntimeLostError`` until the daemon returns); a
         single READY row when live gates exist and none is quarantined; and an empty
-        list when this process holds no CTE store (nothing to report).
+        list when this process holds no clio-core store (nothing to report).
 
     Args:
         snapshot: Optional injected gate snapshot (list of status dicts) for testing;
             defaults to the live process registry.
     """
     if snapshot is None:
-        from clio_agent.arc.cte_liveness import liveness_snapshot  # noqa: PLC0415
+        from clio_agent.arc.clio_core_liveness import liveness_snapshot  # noqa: PLC0415
 
         snapshot = liveness_snapshot()
     if not snapshot:
@@ -180,15 +180,15 @@ def probe_cte_liveness(*, snapshot: list[dict] | None = None) -> list[Integratio
         port = gate.get("port")
         return [
             IntegrationStatus(
-                name="cte_liveness",
+                name="clio_core_liveness",
                 state=IntegrationState.DEGRADED,
                 summary=(
-                    f"{len(quarantined)} of {len(snapshot)} clio-core CTE store(s) are "
+                    f"{len(quarantined)} of {len(snapshot)} clio-core store(s) are "
                     "QUARANTINED after a runtime-daemon loss; ARC ops raise "
-                    "CTERuntimeLostError until the daemon returns (guards against the "
+                    "ClioCoreRuntimeLostError until the daemon returns (guards against the "
                     "clio-core#722 host access violation)."
                 ),
-                config_source="runtime:cte_liveness_gate",
+                config_source="runtime:clio_core_liveness_gate",
                 next_action=(
                     "Restart the shared clio-core daemon (clio start / clio_run start); "
                     "the store reconnects on the next ARC op. Or set CLIO_ARC_STORE=local."
@@ -196,7 +196,7 @@ def probe_cte_liveness(*, snapshot: list[dict] | None = None) -> list[Integratio
                 endpoint=None if port is None else f"127.0.0.1:{port}",
                 fallback="none",
                 details={
-                    "reason": "cte_store_quarantined",
+                    "reason": "clio_core_store_quarantined",
                     "quarantined_gates": len(quarantined),
                     "total_gates": len(snapshot),
                     "gate_reason": gate.get("reason", ""),
@@ -206,25 +206,25 @@ def probe_cte_liveness(*, snapshot: list[dict] | None = None) -> list[Integratio
         ]
     return [
         IntegrationStatus(
-            name="cte_liveness",
+            name="clio_core_liveness",
             state=IntegrationState.READY,
             summary=(
-                f"{len(snapshot)} clio-core CTE store liveness gate(s) active and healthy; "
+                f"{len(snapshot)} clio-core store liveness gate(s) active and healthy; "
                 "ops are guarded against a runtime-daemon loss (#892)."
             ),
-            config_source="runtime:cte_liveness_gate",
+            config_source="runtime:clio_core_liveness_gate",
             next_action="No action required.",
             capabilities=["daemon-loss-guard"],
-            details={"reason": "cte_liveness_healthy", "total_gates": len(snapshot)},
+            details={"reason": "clio_core_liveness_healthy", "total_gates": len(snapshot)},
             required=True,
         )
     ]
 
 
-def probe_cte_init_degradation(*, record: object | None = None) -> list[IntegrationStatus]:
-    """Surface an INIT-time degrade from the CTE backend to LocalFS as a row (#897).
+def probe_clio_core_init_degradation(*, record: object | None = None) -> list[IntegrationStatus]:
+    """Surface an INIT-time degrade from the clio-core backend to LocalFS as a row (#897).
 
-    When ``make_arc_store`` cannot bring up the clio-core CTE backend it degrades to
+    When ``make_arc_store`` cannot bring up the clio-core backend it degrades to
     :class:`~clio_agent.arc.storage.LocalFSStore` *loudly* and records a typed
     :class:`~clio_agent.arc.init_degradation.ArcInitDegradation` in a process-local
     slot. This reads that slot (mirroring the #892 gate registry: meaningful only IN
@@ -251,13 +251,13 @@ def probe_cte_init_degradation(*, record: object | None = None) -> list[Integrat
     selection = "explicit CLIO_ARC_STORE=cte" if details["was_explicit"] else "the default"
     return [
         IntegrationStatus(
-            name="cte_init",
+            name="clio_core_init",
             state=IntegrationState.DEGRADED,
             summary=(
-                "ARC degraded to LocalFSStore at init: the clio-core CTE backend "
+                "ARC degraded to LocalFSStore at init: the clio-core backend "
                 f"({selection}) is UNAVAILABLE — the external-operator (clio-core) "
                 f"pathway could not be brought up (reason={reason}: {details['error']}). "
-                "ARC is running on local files; the tiered CTE backend is not active."
+                "ARC is running on local files; the tiered clio-core backend is not active."
             ),
             config_source="runtime:arc_init_degradation",
             next_action=(
@@ -273,19 +273,19 @@ def probe_cte_init_degradation(*, record: object | None = None) -> list[Integrat
     ]
 
 
-def probe_cte_health(*, env: Mapping[str, str] | None = None) -> list[IntegrationStatus]:
-    """Aggregate the CTE doctor rows: init degrade (#897) + ram cap (#890) + liveness (#892).
+def probe_clio_core_health(*, env: Mapping[str, str] | None = None) -> list[IntegrationStatus]:
+    """Aggregate the clio-core doctor rows: init degrade (#897) + ram cap (#890) + liveness (#892).
 
-    A single collection seam so the doctor wires ONE call for all CTE sub-checks.
+    A single collection seam so the doctor wires ONE call for all clio-core sub-checks.
 
     Args:
-        env: Environment mapping forwarded to :func:`probe_cte_ram_cap`.
+        env: Environment mapping forwarded to :func:`probe_clio_core_ram_cap`.
 
     Returns:
         The concatenated init-degradation, ram-cap, and liveness rows (each may be empty).
     """
     return [
-        *probe_cte_init_degradation(),
-        *probe_cte_ram_cap(env=env),
-        *probe_cte_liveness(),
+        *probe_clio_core_init_degradation(),
+        *probe_clio_core_ram_cap(env=env),
+        *probe_clio_core_liveness(),
     ]

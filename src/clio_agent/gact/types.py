@@ -324,7 +324,7 @@ class ContextSearchHit(BaseModel):
 class ContextSearchResponse(BaseModel):
     """GET /v1/sessions/{sid}/context/search — semantic discovery over scopes.
 
-    'which expert/scope knows about X'. ``semantic`` is True for real BM25 (the CTE
+    'which expert/scope knows about X'. ``semantic`` is True for real BM25 (the clio-core
     backend) and False for the naive word-overlap fallback (LocalFS).
     """
 

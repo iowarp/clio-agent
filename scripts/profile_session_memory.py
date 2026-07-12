@@ -19,7 +19,7 @@ For each requested session count ``N`` the harness:
 2. Boots the **real** gact server as a uvicorn subprocess pointed at that store
    via ``CLIO_SESSIONS_PATH`` (agent-less: no ``CLIO_LM_PROVIDER``, so RSS
    reflects the message-ledger residency, not an LM/ARC hydration). The server
-   runs with ``CLIO_ARC_STORE=local`` so the clio-core CTE daemon is never
+   runs with ``CLIO_ARC_STORE=local`` so the clio-core daemon is never
    involved.
 3. Waits for ``GET /v1/health`` to answer (boot-to-healthy time; the eager
    ``load_all`` runs inside ``build_app`` *before* the port binds, so a healthy
@@ -41,14 +41,14 @@ Backend mode (iowarp/clio-agent#893, owner completion requirement)
 The legacy sweep above boots agent-less, so the lazy per-process ``ARCMemory`` is
 never constructed and the measurement reflects the message ledger only. To measure
 the gact server's RSS *with a real ARC backend attached* — in particular the
-clio-core CTE backend, the shipped default — pass ``--backend {local,cte}``:
+clio-core backend, the shipped default — pass ``--backend {local,cte}``:
 
 * the server is booted through this script's own ``--serve-app`` submode (a
   self-exec, so all code stays in one file), which builds the real app, **forces**
   ``ARCMemory`` construction via ``_process_arc`` (attaching/​spawning the shared
   clio-core daemon and loading ``clio_cte_core_ext`` for ``cte``), and then
   **fail-loud asserts** that the store the server actually built is the one that was
-  requested — a CTE boot that silently degraded to ``LocalFSStore`` (#897) exits
+  requested — a clio-core boot that silently degraded to ``LocalFSStore`` (#897) exits
   non-zero *before* binding the port, so the harness never measures the wrong
   backend (the exact mistake #893's requirement exists to prevent).
 * ``--measure-daemon`` (cte only) additionally measures the shared clio-core daemon
@@ -63,9 +63,9 @@ Usage
         --template-session .clio/agent/messages/sess_c7fbe367da29.json \
         --counts 0,50,200,500 --port 18800 --out /tmp/893_profile.json
 
-    # #893: gact RSS with the clio-core CTE backend attached (fail-loud on degrade)
+    # #893: gact RSS with the clio-core backend attached (fail-loud on degrade)
     uv run python scripts/profile_session_memory.py --backend cte \
-        --counts 0,200 --measure-daemon --out /tmp/893_cte.json
+        --counts 0,200 --measure-daemon --out /tmp/893_clio_core.json
 """
 
 from __future__ import annotations
@@ -153,11 +153,11 @@ class DaemonMemory:
 # Backend selection + fail-loud assertion (#893)
 # ----------------------------------------------------------------------------- #
 
-# The store class name each backend must resolve to. A CTE boot that degraded to
+# The store class name each backend must resolve to. A clio-core boot that degraded to
 # LocalFS (#897) resolves to "LocalFSStore" here and the assertion below fires.
 _EXPECTED_STORE_CLASS: dict[str, str] = {
     "local": "LocalFSStore",
-    "cte": "CTEStore",
+    "cte": "ClioCoreStore",
 }
 
 
@@ -166,10 +166,10 @@ def assert_backend(arc: Any, requested: str) -> str:
 
     The #893 owner requirement: never let a measurement silently run on the wrong
     backend. ``ARCMemory`` holds its store on ``_store``; we read its concrete class
-    name and compare it to the class the requested backend must produce. A CTE boot
+    name and compare it to the class the requested backend must produce. A clio-core boot
     that degraded to :class:`~clio_agent.arc.storage.LocalFSStore` (#897) therefore
     raises here — *before* the server binds its port — instead of being measured as
-    if it were CTE.
+    if it were clio-core.
 
     Args:
         arc: The constructed ``ARCMemory`` (or any object exposing ``_store``).
@@ -190,7 +190,7 @@ def assert_backend(arc: Any, requested: str) -> str:
     if actual != expected:
         raise RuntimeError(
             f"ARC backend mismatch: requested={requested!r} expected store {expected!r} "
-            f"but the server built {actual!r}. A CTE request that resolves to LocalFSStore "
+            f"but the server built {actual!r}. A clio-core request that resolves to LocalFSStore "
             "means clio-core failed to init and degraded (#897); the measurement would be "
             "of the WRONG backend. Refusing to serve."
         )
@@ -202,7 +202,7 @@ def _serve_app(backend: str, port: int) -> None:
 
     Booting via this script (rather than ``uvicorn clio_agent.gact.app:app``) lets the
     ``--backend`` measurement construct the per-process ``ARCMemory`` eagerly — the
-    module-level app is agent-less, so ARC is otherwise never built and no CTE binding
+    module-level app is agent-less, so ARC is otherwise never built and no clio-core binding
     is loaded. We construct it via ``_process_arc`` (the same choke point the agent
     build uses), assert it is the requested backend (fail loud, exit non-zero before
     the port binds), then hand the app to uvicorn. The parent sets ``CLIO_ARC_STORE``
@@ -214,7 +214,7 @@ def _serve_app(backend: str, port: int) -> None:
     from clio_agent.gact.runtime.globals import _process_arc  # noqa: PLC0415
 
     app = build_app()
-    arc = _process_arc(app)  # forces make_arc_store(); CTE spawns/attaches the daemon
+    arc = _process_arc(app)  # forces make_arc_store(); clio-core spawns/attaches the daemon
     confirmed = assert_backend(arc, backend)  # raises -> non-zero exit before bind
     print(f"[profile-serve] ARC backend confirmed: {confirmed} (requested {backend})", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
@@ -385,7 +385,7 @@ def run_one(
 
     ``backend`` selects the ARC persistence backend the server boots with: ``"none"``
     (legacy, agent-less, no ARC), ``"local"`` (forced ``LocalFSStore``), or ``"cte"``
-    (forced clio-core CTE backend, fail-loud asserted — #893).
+    (forced clio-core backend, fail-loud asserted — #893).
     """
 
     store_root = tmp_root / f"store_{count}"
@@ -509,7 +509,7 @@ def measure_daemon(load_ops: int, load_blob_bytes: int, settle_s: float) -> list
     """Measure the shared clio-core daemon at idle and after an ARC write load.
 
     Owns the daemon lifecycle for the measurement (#893 discipline): constructs one
-    in-process ``CTEStore`` (this process becomes a client, spawning the shared daemon
+    in-process ``ClioCoreStore`` (this process becomes a client, spawning the shared daemon
     if none is up — FAIL LOUD if it never binds), snapshots the daemon **idle**, drives
     ``load_ops`` blob writes through the store (the ARC-exercising workload), snapshots
     it **under load**, clears the test blobs, and releases the client last-one-out so
@@ -523,9 +523,9 @@ def measure_daemon(load_ops: int, load_blob_bytes: int, settle_s: float) -> list
 
     snaps: list[DaemonMemory] = []
     store = make_arc_store(backend="cte", data_dir=".clio/agent/arc")
-    if type(store).__name__ != "CTEStore":  # fail loud: the daemon measurement needs CTE
+    if type(store).__name__ != "ClioCoreStore":  # fail loud: the daemon measurement needs clio-core
         raise RuntimeError(
-            f"measure-daemon requires the CTE backend but got {type(store).__name__}; "
+            f"measure-daemon requires the clio-core backend but got {type(store).__name__}; "
             "clio-core failed to init (#897). Cannot measure the daemon."
         )
     try:
@@ -577,7 +577,7 @@ def _print_daemon_table(snaps: list[DaemonMemory]) -> None:
         print(
             f"idle->load delta: RSS {load.rss_mb - idle.rss_mb:+.2f} MiB, "
             f"committed {load.committed_mb - idle.committed_mb:+.2f} MiB "
-            "(the 1 GiB main shm segment commits lazily on first CTE data op)"
+            "(the 1 GiB main shm segment commits lazily on first clio-core data op)"
         )
 
 
@@ -691,8 +691,8 @@ def main() -> None:
         help=(
             "ARC backend the measured server boots with (#893): 'none' = legacy "
             "agent-less (no ARC); 'local' = forced LocalFSStore; 'cte' = forced "
-            "clio-core CTE backend (fail-loud asserted). local/cte force ARCMemory "
-            "construction so the delta isolates the CTE binding overhead."
+            "clio-core backend (fail-loud asserted). local/cte force ARCMemory "
+            "construction so the delta isolates the clio-core binding overhead."
         ),
     )
     parser.add_argument(

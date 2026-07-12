@@ -137,16 +137,16 @@ _GACT_API_ENDPOINTS = ["/v1/health", "/v1/capabilities"]
 
 # How many trailing lines of ~/.clio/clio-runtime.log to surface when the
 # clio-core daemon is down.
-_CTE_LOG_TAIL_LINES = 20
+_CLIO_CORE_LOG_TAIL_LINES = 20
 
 
 @dataclass(frozen=True)
-class CTERuntimeHealth:
+class ClioCoreRuntimeHealth:
     """Observed state of the production clio-core runtime.
 
     The production deployment is the pip ``iowarp_core`` package plus the
     shared ``clio_run`` daemon (see :mod:`clio_agent.arc.storage`); this is the
-    single reality both :meth:`RuntimeProbe.probe_arc` (CTE backend) and
+    single reality both :meth:`RuntimeProbe.probe_arc` (clio-core backend) and
     :meth:`RuntimeProbe.probe_clio_core` gate on.
     """
 
@@ -216,7 +216,7 @@ class RuntimeProbe:
             if clio_runtime_dir is not None
             else Path.home() / ".clio"
         )
-        self._cte_runtime: CTERuntimeHealth | None = None
+        self._clio_core_runtime: ClioCoreRuntimeHealth | None = None
 
     def collect(
         self,
@@ -225,7 +225,7 @@ class RuntimeProbe:
         api_error: str | None = None,
     ) -> RuntimeReport:
         """Collect all currently supported integration statuses."""
-        from clio_agent.runtime.cte_health import probe_cte_health  # noqa: PLC0415
+        from clio_agent.runtime.clio_core_health import probe_clio_core_health  # noqa: PLC0415
         from clio_agent.runtime.mcp_launcher import probe_mcp_launchers  # noqa: PLC0415
         from clio_agent.runtime.process_tree import probe_process_tree  # noqa: PLC0415
 
@@ -233,7 +233,7 @@ class RuntimeProbe:
         integrations = [
             self.probe_lm_provider(),
             self.probe_arc(),
-            *probe_cte_health(env=self.env),
+            *probe_clio_core_health(env=self.env),
             self.probe_file_policy(),
             gateway_status,
             *self.probe_data_backends(set(gateway_status.capabilities)),
@@ -525,18 +525,18 @@ class RuntimeProbe:
         source = "env:CLIO_ARC_STORE" if "CLIO_ARC_STORE" in self.env else "default:cte"
         return backend, source
 
-    def _probe_cte_runtime(self) -> CTERuntimeHealth:
+    def _probe_clio_core_runtime(self) -> ClioCoreRuntimeHealth:
         """Probe the production clio-core runtime: pip package + shared daemon.
 
-        Shared by :meth:`probe_arc` (CTE backend) and :meth:`probe_clio_core`
+        Shared by :meth:`probe_arc` (clio-core backend) and :meth:`probe_clio_core`
         so both report on one reality. Uses the same helpers the runtime
         lifecycle in :mod:`clio_agent.arc.storage` uses: the resolved RPC port,
         a socket liveness check, the daemon pidfile, and — on failure — the
         tail of ``~/.clio/clio-runtime.log``. Memoized per probe instance so
         one ``collect()`` opens at most one socket.
         """
-        if self._cte_runtime is not None:
-            return self._cte_runtime
+        if self._clio_core_runtime is not None:
+            return self._clio_core_runtime
         from clio_agent.arc import storage as arc_storage  # noqa: PLC0415 - keep import light
 
         installed = self.module_checker("iowarp_core")
@@ -563,7 +563,7 @@ class RuntimeProbe:
         if not installed:
             reason: str | None = "iowarp_core_not_installed"
         elif not daemon_alive:
-            reason = "cte_daemon_not_listening"
+            reason = "clio_core_daemon_not_listening"
         else:
             reason = None
 
@@ -572,11 +572,11 @@ class RuntimeProbe:
         if reason is not None and log_path.is_file():
             try:
                 lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-                log_tail = lines[-_CTE_LOG_TAIL_LINES:]
+                log_tail = lines[-_CLIO_CORE_LOG_TAIL_LINES:]
             except OSError:
                 log_tail = []
 
-        self._cte_runtime = CTERuntimeHealth(
+        self._clio_core_runtime = ClioCoreRuntimeHealth(
             installed=installed,
             port=port,
             daemon_alive=daemon_alive,
@@ -586,13 +586,13 @@ class RuntimeProbe:
             log_tail=log_tail,
             reason=reason,
         )
-        return self._cte_runtime
+        return self._clio_core_runtime
 
     def probe_arc(self) -> IntegrationStatus:
         """Probe the ARC persistence backend that is actually selected.
 
-        CTE (the default backend) is probed for real: pip ``iowarp_core``
-        presence plus shared-daemon liveness — a broken CTE install goes red
+        clio-core (the default backend) is probed for real: pip ``iowarp_core``
+        presence plus shared-daemon liveness — a broken clio-core install goes red
         instead of green-on-a-hardcoded-'local' (#800). The explicit local
         backend keeps the directory writability check.
         """
@@ -600,7 +600,7 @@ class RuntimeProbe:
         if backend == "local":
             return self._probe_arc_local(source)
         if backend == "cte":
-            return self._probe_arc_cte(source)
+            return self._probe_arc_clio_core(source)
         return IntegrationStatus(
             name="arc",
             state=IntegrationState.MISCONFIGURED,
@@ -612,9 +612,9 @@ class RuntimeProbe:
             required=True,
         )
 
-    def _probe_arc_cte(self, source: str) -> IntegrationStatus:
-        """Probe the clio-core CTE backend (pip runtime + shared daemon)."""
-        runtime = self._probe_cte_runtime()
+    def _probe_arc_clio_core(self, source: str) -> IntegrationStatus:
+        """Probe the clio-core backend (pip runtime + shared daemon)."""
+        runtime = self._probe_clio_core_runtime()
         details = {"storage_mode": "cte", **runtime.to_details()}
         endpoint = f"127.0.0.1:{runtime.port}"
         if not runtime.installed:
@@ -622,7 +622,7 @@ class RuntimeProbe:
                 name="arc",
                 state=IntegrationState.UNAVAILABLE,
                 summary=(
-                    "ARC is configured for the clio-core CTE backend but the "
+                    "ARC is configured for the clio-core backend but the "
                     "iowarp_core pip package is not installed."
                 ),
                 config_source=source,
@@ -640,7 +640,7 @@ class RuntimeProbe:
                 name="arc",
                 state=IntegrationState.UNAVAILABLE,
                 summary=(
-                    "ARC is configured for the clio-core CTE backend but the shared "
+                    "ARC is configured for the clio-core backend but the shared "
                     f"clio-core daemon is not listening on port {runtime.port}."
                 ),
                 config_source=source,
@@ -657,7 +657,7 @@ class RuntimeProbe:
             name="arc",
             state=IntegrationState.READY,
             summary=(
-                "ARC CTE backend is live: iowarp_core is installed and the shared "
+                "ARC clio-core backend is live: iowarp_core is installed and the shared "
                 f"clio-core daemon is listening on port {runtime.port}."
             ),
             config_source=source,
@@ -989,12 +989,12 @@ class RuntimeProbe:
         longer exists, so it stayed green while the real runtime was broken.
         The production runtime is the pip ``iowarp_core`` package plus the
         shared ``clio_run`` daemon — the same reality :meth:`probe_arc` gates
-        on for the CTE backend (one shared helper, no duplication). The row is
+        on for the clio-core backend (one shared helper, no duplication). The row is
         required exactly when the ARC backend is ``cte``.
         """
         backend, backend_source = self._arc_backend()
         required = backend == "cte"
-        runtime = self._probe_cte_runtime()
+        runtime = self._probe_clio_core_runtime()
         source = f"pip:iowarp_core; {backend_source}"
         endpoint = f"127.0.0.1:{runtime.port}"
         details = {"arc_backend": backend, **runtime.to_details()}
