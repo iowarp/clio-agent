@@ -688,6 +688,10 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             ),
             is_reasoning=bool(cfg.get("is_reasoning") or False),
             native_tool_calling=bool(cfg.get("native_tool_calling") or False),
+            # Thinking control (#895): raw level + resolved per-provider effect,
+            # both from _effective_lm_config so the knob is never invisible.
+            thinking_level=cfg.get("thinking_level"),
+            thinking_effective=str(cfg.get("thinking_effective") or ""),
             thinking_budget=(
                 int(pending["thinking_budget"])
                 if pending.get("thinking_budget") is not None
@@ -897,6 +901,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 min_p=req.min_p,
                 presence_penalty=req.presence_penalty,
                 thinking_budget=req.thinking_budget,
+                thinking_level=req.thinking_level,  # provider-generic level (#895)
                 codex_transport=req.transport or "exec",
                 claude_code_transport=req.transport or "sdk",
             )
@@ -1070,6 +1075,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             "max_tokens": req.max_tokens,
             "context_length": req.context_length,
             "thinking_budget": req.thinking_budget,
+            "thinking_level": cfg.thinking_level,  # resolved level (shipped default) #895
             "turn_timeout_s": req.turn_timeout_s,
             "transport": transport,
         }
