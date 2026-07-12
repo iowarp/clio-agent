@@ -36,11 +36,36 @@ silent skips.
 Outputs a table (boot behavior, RSS vs N, boot time, post-read RSS) plus the
 fitted slopes, and writes the raw measurements to a JSON file.
 
+Backend mode (iowarp/clio-agent#893, owner completion requirement)
+------------------------------------------------------------------
+The legacy sweep above boots agent-less, so the lazy per-process ``ARCMemory`` is
+never constructed and the measurement reflects the message ledger only. To measure
+the gact server's RSS *with a real ARC backend attached* — in particular the
+clio-core CTE backend, the shipped default — pass ``--backend {local,cte}``:
+
+* the server is booted through this script's own ``--serve-app`` submode (a
+  self-exec, so all code stays in one file), which builds the real app, **forces**
+  ``ARCMemory`` construction via ``_process_arc`` (attaching/​spawning the shared
+  clio-core daemon and loading ``clio_cte_core_ext`` for ``cte``), and then
+  **fail-loud asserts** that the store the server actually built is the one that was
+  requested — a CTE boot that silently degraded to ``LocalFSStore`` (#897) exits
+  non-zero *before* binding the port, so the harness never measures the wrong
+  backend (the exact mistake #893's requirement exists to prevent).
+* ``--measure-daemon`` (cte only) additionally measures the shared clio-core daemon
+  process itself — RSS (working set) and committed memory (Windows private bytes /
+  commit charge via ``psutil.memory_full_info``) — at idle and after an
+  ARC-exercising write load, then stops the daemon (last-one-out), leaving no
+  orphaned listener.
+
 Usage
 -----
     uv run python scripts/profile_session_memory.py \
         --template-session .clio/agent/messages/sess_c7fbe367da29.json \
         --counts 0,50,200,500 --port 18800 --out /tmp/893_profile.json
+
+    # #893: gact RSS with the clio-core CTE backend attached (fail-loud on degrade)
+    uv run python scripts/profile_session_memory.py --backend cte \
+        --counts 0,200 --measure-daemon --out /tmp/893_cte.json
 """
 
 from __future__ import annotations
@@ -88,6 +113,111 @@ class RunResult:
     rss_after_read_mb: float
     sessions_listed: int
     messages_fetched: int
+    backend: str = "none"
+
+
+@dataclass
+class DaemonMemory:
+    """A memory snapshot of the shared clio-core (``clio_run``) daemon process.
+
+    Windows honesty (``psutil.memory_full_info``): ``rss_mb`` is the working set
+    (physically resident pages); ``committed_mb`` is the process private commit
+    charge (``pagefile``/``private`` — memory the OS has *committed* backing store
+    for, resident or not). The 1 GiB main shared-memory segment shows up in the
+    committed figure once it is committed, while ``rss_mb`` reflects only the pages
+    actually touched — so the two together tell committed-vs-resident honestly.
+
+    Attributes:
+        label: ``"idle"`` or ``"load"``.
+        pid: The daemon PID (from ``~/.clio/clio-runtime.pid``).
+        rss_mb: Working set / resident set size (MiB).
+        committed_mb: Private commit charge (MiB) — Windows ``pagefile``/``private``,
+            POSIX falls back to ``vms``/``uss`` (see :func:`_daemon_memory`).
+        vms_mb: Total virtual address space (MiB).
+        uss_mb: Unique set size (MiB) — memory private to this process.
+        num_threads: Daemon thread count (context; the runtime is multi-threaded).
+        method: A short description of how ``committed_mb`` was derived on this OS.
+    """
+
+    label: str
+    pid: int
+    rss_mb: float
+    committed_mb: float
+    vms_mb: float
+    uss_mb: float
+    num_threads: int
+    method: str
+
+
+# ----------------------------------------------------------------------------- #
+# Backend selection + fail-loud assertion (#893)
+# ----------------------------------------------------------------------------- #
+
+# The store class name each backend must resolve to. A CTE boot that degraded to
+# LocalFS (#897) resolves to "LocalFSStore" here and the assertion below fires.
+_EXPECTED_STORE_CLASS: dict[str, str] = {
+    "local": "LocalFSStore",
+    "cte": "CTEStore",
+}
+
+
+def assert_backend(arc: Any, requested: str) -> str:
+    """Fail loud unless ``arc``'s persistence store matches the ``requested`` backend.
+
+    The #893 owner requirement: never let a measurement silently run on the wrong
+    backend. ``ARCMemory`` holds its store on ``_store``; we read its concrete class
+    name and compare it to the class the requested backend must produce. A CTE boot
+    that degraded to :class:`~clio_agent.arc.storage.LocalFSStore` (#897) therefore
+    raises here — *before* the server binds its port — instead of being measured as
+    if it were CTE.
+
+    Args:
+        arc: The constructed ``ARCMemory`` (or any object exposing ``_store``).
+        requested: The backend that was asked for (``"local"`` or ``"cte"``).
+
+    Returns:
+        The confirmed store class name.
+
+    Raises:
+        RuntimeError: If the store class does not match the requested backend, or the
+            backend name is unknown / the store is missing.
+    """
+    expected = _EXPECTED_STORE_CLASS.get(requested)
+    if expected is None:
+        raise RuntimeError(f"unknown --backend {requested!r}; expected 'local' or 'cte'")
+    store = getattr(arc, "_store", None)
+    actual = type(store).__name__ if store is not None else "None"
+    if actual != expected:
+        raise RuntimeError(
+            f"ARC backend mismatch: requested={requested!r} expected store {expected!r} "
+            f"but the server built {actual!r}. A CTE request that resolves to LocalFSStore "
+            "means clio-core failed to init and degraded (#897); the measurement would be "
+            "of the WRONG backend. Refusing to serve."
+        )
+    return actual
+
+
+def _serve_app(backend: str, port: int) -> None:
+    """Self-exec submode: build the real gact app, force+assert ARC, then serve.
+
+    Booting via this script (rather than ``uvicorn clio_agent.gact.app:app``) lets the
+    ``--backend`` measurement construct the per-process ``ARCMemory`` eagerly — the
+    module-level app is agent-less, so ARC is otherwise never built and no CTE binding
+    is loaded. We construct it via ``_process_arc`` (the same choke point the agent
+    build uses), assert it is the requested backend (fail loud, exit non-zero before
+    the port binds), then hand the app to uvicorn. The parent sets ``CLIO_ARC_STORE``
+    and the store env; here we only build + assert + serve.
+    """
+    import uvicorn  # noqa: PLC0415
+
+    from clio_agent.gact.app import build_app  # noqa: PLC0415
+    from clio_agent.gact.runtime.globals import _process_arc  # noqa: PLC0415
+
+    app = build_app()
+    arc = _process_arc(app)  # forces make_arc_store(); CTE spawns/attaches the daemon
+    confirmed = assert_backend(arc, backend)  # raises -> non-zero exit before bind
+    print(f"[profile-serve] ARC backend confirmed: {confirmed} (requested {backend})", flush=True)
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
 
 
 # ----------------------------------------------------------------------------- #
@@ -209,32 +339,17 @@ def _process_rss_mb(pid: int) -> float:
 # ----------------------------------------------------------------------------- #
 
 
-def run_one(
-    count: int,
-    port: int,
-    template_msg_path: Path,
-    template_rec: dict[str, Any],
-    tmp_root: Path,
-    boot_deadline_s: float,
-    settle_s: float,
-) -> RunResult:
-    """Boot a server against ``count`` synthetic sessions and measure its RSS."""
+def _server_command(backend: str, port: int) -> list[str]:
+    """The subprocess argv that boots one measurement server on ``port``.
 
-    store_root = tmp_root / f"store_{count}"
-    if store_root.exists():
-        shutil.rmtree(store_root)
-    sessions_path = build_temp_store(store_root, count, template_msg_path, template_rec)
-
-    env = dict(os.environ)
-    env["CLIO_SESSIONS_PATH"] = str(sessions_path)
-    env["CLIO_ARC_STORE"] = "local"  # never involve the clio-core CTE daemon
-    env.pop("CLIO_LM_PROVIDER", None)  # agent-less: isolate message-ledger residency
-    # Allow the temp store + cwd so no file policy trips the boot.
-    env["CLIO_ALLOWED_ROOTS"] = os.pathsep.join([str(tmp_root), str(Path.cwd())])
-
-    base_url = f"http://127.0.0.1:{port}"
-    proc = subprocess.Popen(
-        [
+    ``backend == "none"`` keeps the legacy agent-less path
+    (``uvicorn clio_agent.gact.app:app``) that measures message-ledger residency with
+    no ARC attached. ``"local"``/``"cte"`` re-exec THIS script's ``--serve-app``
+    submode, which forces ``ARCMemory`` construction and fail-loud asserts the backend
+    (#893) before binding.
+    """
+    if backend == "none":
+        return [
             sys.executable,
             "-m",
             "uvicorn",
@@ -244,7 +359,52 @@ def run_one(
             "--port",
             str(port),
             "--no-access-log",
-        ],
+        ]
+    return [
+        sys.executable,
+        os.path.abspath(__file__),
+        "--serve-app",
+        "--backend",
+        backend,
+        "--port",
+        str(port),
+    ]
+
+
+def run_one(
+    count: int,
+    port: int,
+    template_msg_path: Path,
+    template_rec: dict[str, Any],
+    tmp_root: Path,
+    boot_deadline_s: float,
+    settle_s: float,
+    backend: str = "none",
+) -> RunResult:
+    """Boot a server against ``count`` synthetic sessions and measure its RSS.
+
+    ``backend`` selects the ARC persistence backend the server boots with: ``"none"``
+    (legacy, agent-less, no ARC), ``"local"`` (forced ``LocalFSStore``), or ``"cte"``
+    (forced clio-core CTE backend, fail-loud asserted — #893).
+    """
+
+    store_root = tmp_root / f"store_{count}"
+    if store_root.exists():
+        shutil.rmtree(store_root)
+    sessions_path = build_temp_store(store_root, count, template_msg_path, template_rec)
+
+    env = dict(os.environ)
+    env["CLIO_SESSIONS_PATH"] = str(sessions_path)
+    # Backend selection: legacy "none" keeps LocalFS with no ARC construction; the
+    # explicit modes set CLIO_ARC_STORE so make_arc_store builds the requested store.
+    env["CLIO_ARC_STORE"] = "local" if backend == "none" else backend
+    env.pop("CLIO_LM_PROVIDER", None)  # agent-less: isolate ARC/ledger residency (no LM)
+    # Allow the temp store + cwd so no file policy trips the boot.
+    env["CLIO_ALLOWED_ROOTS"] = os.pathsep.join([str(tmp_root), str(Path.cwd())])
+
+    base_url = f"http://127.0.0.1:{port}"
+    proc = subprocess.Popen(
+        _server_command(backend, port),
         env=env,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -274,6 +434,7 @@ def run_one(
             rss_after_read_mb=round(rss_after_read_mb, 2),
             sessions_listed=sessions_listed,
             messages_fetched=len(ids),
+            backend=backend,
         )
     finally:
         _terminate_server_tree(proc)
@@ -291,6 +452,133 @@ def _terminate_server_tree(proc: subprocess.Popen[bytes]) -> None:
     from clio_agent.serve import _terminate_tree  # noqa: PLC0415
 
     _terminate_tree(proc.pid, record_create_time=None, trusted=True)
+
+
+# ----------------------------------------------------------------------------- #
+# clio-core daemon (clio_run) memory measurement (#893, component 2)
+# ----------------------------------------------------------------------------- #
+
+
+def _daemon_pid() -> int | None:
+    """Return the shared clio-core daemon PID from ``~/.clio/clio-runtime.pid``."""
+    try:
+        parts = (Path.home() / ".clio" / "clio-runtime.pid").read_text("utf-8").split()
+    except OSError:
+        return None
+    return int(parts[0]) if parts else None
+
+
+def _daemon_memory(label: str, pid: int) -> DaemonMemory:
+    """Snapshot the daemon's resident + committed memory (OS-honest — see DaemonMemory).
+
+    On Windows ``memory_full_info`` exposes ``private``/``pagefile`` (the process's
+    committed private bytes) distinctly from ``wset``/``rss`` (working set); we report
+    ``committed_mb`` from the private commit charge so a committed-but-not-resident
+    shared-memory segment is not mistaken for freed memory. On POSIX (no ``private``
+    field) we fall back to ``uss`` for the committed figure and name the method so the
+    number is never silently apples-to-oranges.
+    """
+    proc = psutil.Process(pid)
+    mfi = proc.memory_full_info()
+    fields = set(mfi._fields)
+    rss = float(mfi.rss)
+    vms = float(mfi.vms)
+    uss = float(getattr(mfi, "uss", 0.0))
+    if "private" in fields:  # Windows: private commit charge
+        committed = float(mfi.private)
+        method = "win:memory_full_info.private (committed private bytes)"
+    elif "pagefile" in fields:
+        committed = float(mfi.pagefile)
+        method = "win:memory_full_info.pagefile (commit charge)"
+    else:  # POSIX
+        committed = uss or vms
+        method = "posix:memory_full_info.uss (unique set size)"
+    return DaemonMemory(
+        label=label,
+        pid=pid,
+        rss_mb=round(rss / (1024 * 1024), 2),
+        committed_mb=round(committed / (1024 * 1024), 2),
+        vms_mb=round(vms / (1024 * 1024), 2),
+        uss_mb=round(uss / (1024 * 1024), 2),
+        num_threads=proc.num_threads(),
+        method=method,
+    )
+
+
+def measure_daemon(load_ops: int, load_blob_bytes: int, settle_s: float) -> list[DaemonMemory]:
+    """Measure the shared clio-core daemon at idle and after an ARC write load.
+
+    Owns the daemon lifecycle for the measurement (#893 discipline): constructs one
+    in-process ``CTEStore`` (this process becomes a client, spawning the shared daemon
+    if none is up — FAIL LOUD if it never binds), snapshots the daemon **idle**, drives
+    ``load_ops`` blob writes through the store (the ARC-exercising workload), snapshots
+    it **under load**, clears the test blobs, and releases the client last-one-out so
+    the daemon is stopped and no orphaned listener remains.
+
+    Returns the ``[idle, load]`` snapshots (may be shorter if the daemon PID is
+    unreadable at a step — surfaced by the caller, never silently skipped).
+    """
+    from clio_agent.arc import storage as arc_storage  # noqa: PLC0415
+    from clio_agent.arc.storage import make_arc_store  # noqa: PLC0415
+
+    snaps: list[DaemonMemory] = []
+    store = make_arc_store(backend="cte", data_dir=".clio/agent/arc")
+    if type(store).__name__ != "CTEStore":  # fail loud: the daemon measurement needs CTE
+        raise RuntimeError(
+            f"measure-daemon requires the CTE backend but got {type(store).__name__}; "
+            "clio-core failed to init (#897). Cannot measure the daemon."
+        )
+    try:
+        time.sleep(settle_s)
+        pid = _daemon_pid()
+        if pid is None:
+            raise RuntimeError("clio-core daemon pidfile is empty/absent; cannot measure it.")
+        snaps.append(_daemon_memory("idle", pid))
+
+        blob = b"x" * load_blob_bytes
+        for i in range(load_ops):
+            store.put("segments", f"profile_daemon_load_{i:06d}", blob)
+        time.sleep(settle_s)
+        snaps.append(_daemon_memory("load", pid))
+
+        # Clean the test blobs we wrote (leave the store as we found it).
+        for i in range(load_ops):
+            store.delete("segments", f"profile_daemon_load_{i:06d}")
+    finally:
+        # Last-one-out stop: releases the daemon since this is the only live client.
+        arc_storage.release_runtime_client("", "error")
+        time.sleep(settle_s)
+        if arc_storage._runtime_alive(arc_storage._resolve_runtime_port("")):
+            # The clean stop did not free the port; force the pidfile kill (no orphan).
+            arc_storage._kill_daemon_pidfile()
+    return snaps
+
+
+def _print_daemon_table(snaps: list[DaemonMemory]) -> None:
+    """Print the daemon idle-vs-load memory table (#893 component 2)."""
+    if not snaps:
+        return
+    print()
+    print("clio-core daemon (clio_run) memory — component 2:")
+    header = (
+        f"{'phase':>6} {'pid':>7} {'RSS_MiB':>10} {'committed_MiB':>15} "
+        f"{'vms_MiB':>10} {'uss_MiB':>10} {'threads':>8}"
+    )
+    print(header)
+    print("-" * len(header))
+    for s in snaps:
+        print(
+            f"{s.label:>6} {s.pid:>7} {s.rss_mb:>10.2f} {s.committed_mb:>15.2f} "
+            f"{s.vms_mb:>10.2f} {s.uss_mb:>10.2f} {s.num_threads:>8}"
+        )
+    print(f"committed method: {snaps[0].method}")
+    if len(snaps) >= 2:
+        idle, load = snaps[0], snaps[1]
+        print(
+            f"idle->load delta: RSS {load.rss_mb - idle.rss_mb:+.2f} MiB, "
+            f"committed {load.committed_mb - idle.committed_mb:+.2f} MiB "
+            "(the 1 GiB main shm segment commits lazily on first CTE data op)"
+        )
 
 
 # ----------------------------------------------------------------------------- #
@@ -396,7 +684,40 @@ def main() -> None:
     )
     parser.add_argument("--boot-deadline", type=float, default=120.0)
     parser.add_argument("--settle", type=float, default=1.5)
+    parser.add_argument(
+        "--backend",
+        choices=["none", "local", "cte"],
+        default="none",
+        help=(
+            "ARC backend the measured server boots with (#893): 'none' = legacy "
+            "agent-less (no ARC); 'local' = forced LocalFSStore; 'cte' = forced "
+            "clio-core CTE backend (fail-loud asserted). local/cte force ARCMemory "
+            "construction so the delta isolates the CTE binding overhead."
+        ),
+    )
+    parser.add_argument(
+        "--serve-app",
+        action="store_true",
+        help="INTERNAL self-exec: build + assert + serve one backend on --port (not for direct use).",
+    )
+    parser.add_argument(
+        "--measure-daemon",
+        action="store_true",
+        help="Also measure the shared clio-core daemon (idle vs load) — cte backend only (#893).",
+    )
+    parser.add_argument("--daemon-load-ops", type=int, default=100, help="Daemon-load blob writes.")
+    parser.add_argument(
+        "--daemon-load-kb", type=int, default=1250, help="Per-blob size (KiB) for the daemon load."
+    )
     args = parser.parse_args()
+
+    # INTERNAL self-exec submode: this process IS one measured server (#893). Build the
+    # real app, force+assert the requested ARC backend, then serve until killed.
+    if args.serve_app:
+        if args.backend not in ("local", "cte"):
+            raise SystemExit("--serve-app requires --backend local|cte")
+        _serve_app(args.backend, args.port)
+        return
 
     template_msg_path = args.template_session.resolve()
     if not template_msg_path.exists():
@@ -412,12 +733,15 @@ def main() -> None:
     tmp_root = args.tmp_root or (args.out.resolve().parent / "_session_mem_stores")
     tmp_root.mkdir(parents=True, exist_ok=True)
 
+    if args.measure_daemon and args.backend != "cte":
+        raise SystemExit("--measure-daemon requires --backend cte")
+
     counts = [int(c) for c in args.counts.split(",") if c.strip()]
     results: list[RunResult] = []
     try:
         for i, count in enumerate(counts):
             port = args.port + i
-            print(f"[run] N={count} port={port} ...", flush=True)
+            print(f"[run] backend={args.backend} N={count} port={port} ...", flush=True)
             results.append(
                 run_one(
                     count=count,
@@ -427,6 +751,7 @@ def main() -> None:
                     tmp_root=tmp_root,
                     boot_deadline_s=args.boot_deadline,
                     settle_s=args.settle,
+                    backend=args.backend,
                 )
             )
     finally:
@@ -435,13 +760,25 @@ def main() -> None:
 
     _print_table(results, template_size, template_parts)
 
+    daemon_snaps: list[DaemonMemory] = []
+    if args.measure_daemon:
+        print("\n[daemon] measuring shared clio-core daemon (idle -> load) ...", flush=True)
+        daemon_snaps = measure_daemon(
+            load_ops=args.daemon_load_ops,
+            load_blob_bytes=args.daemon_load_kb * 1024,
+            settle_s=args.settle,
+        )
+        _print_daemon_table(daemon_snaps)
+
     payload = {
         "template": {
             "path": str(template_msg_path),
             "bytes": template_size,
             "parts": template_parts,
         },
+        "backend": args.backend,
         "runs": [asdict(r) for r in results],
+        "daemon": [asdict(s) for s in daemon_snaps],
     }
     args.out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     print(f"\nwrote {args.out}")
