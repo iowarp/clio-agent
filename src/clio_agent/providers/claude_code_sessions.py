@@ -79,6 +79,7 @@ __all__ = [
     "transient_transport_error_message",
     "transient_transport_error_types",
     "transport_failure_payload",
+    "_streaming_chunk",
     # blocking-path pool (re-exported from claude_code_sdk_pool for the seams)
     "_SdkSession",
     "_SdkSessionPool",
@@ -106,6 +107,35 @@ TRANSPORT_FAILURE_REASONS: dict[str, dict[str, Any]] = {
         ),
     },
 }
+
+
+def _streaming_chunk(
+    *,
+    text: str,
+    is_finished: bool,
+    finish_reason: str | None = None,
+    usage_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a LiteLLM-compatible streaming chunk (streaming-transport helper)."""
+    usage: dict[str, int] | None = None
+    if usage_payload is not None:
+        prompt_tokens = int(usage_payload.get("input_tokens", 0) or 0)
+        prompt_tokens += int(usage_payload.get("cache_creation_input_tokens", 0) or 0)
+        prompt_tokens += int(usage_payload.get("cache_read_input_tokens", 0) or 0)
+        completion_tokens = int(usage_payload.get("output_tokens", 0) or 0)
+        usage = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        }
+    return {
+        "text": text,
+        "is_finished": is_finished,
+        "finish_reason": finish_reason or ("stop" if is_finished else None),
+        "index": 0,
+        "tool_use": None,
+        "usage": usage,
+    }
 
 
 def transport_failure_payload(reason: str, message: str = "") -> dict[str, Any]:

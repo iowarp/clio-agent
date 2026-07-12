@@ -174,14 +174,23 @@ class _RetainingReActV2(dspy.ReActV2):  # type: ignore[misc, name-defined]
            never fabricates the outputs (see :meth:`_bounded_submit_repair`).
         """
         from clio_agent.gact import context as _ctx  # noqa: PLC0415
+        from clio_agent.providers.claude_code_stateful import stateful_scope  # noqa: PLC0415
 
         _ctx.install_trajectory_cell()
         pending = {
             name: input_args[name] for name in self.signature.input_fields if name in input_args
         }
-        pred = super().forward(**input_args)
-        self._publish_retained_history(pred, pending)
-        return self._bounded_submit_repair(pred, pending)
+        # Bind a fresh per-forward stateful scope token (#901 stateful-delta): every
+        # ``self.react`` LM call inside this loop shares ONE claude_code SDK session so
+        # consecutive append-only prompts ride a byte-stable prefix and send only their
+        # delta tail. A fresh token per forward means a new turn always restarts the
+        # session, and parallel experts never share one; the scope releases its session
+        # registry entries on exit (the #900 explicit-teardown seam). Inert unless the
+        # stateful_delta flag is ON and the provider is claude_code.
+        with stateful_scope():
+            pred = super().forward(**input_args)
+            self._publish_retained_history(pred, pending)
+            return self._bounded_submit_repair(pred, pending)
 
     def _publish_retained_history(self, pred: Any, pending: dict[str, Any]) -> None:
         """Publish the retained ``History`` + pending inputs to the active trajectory cell.

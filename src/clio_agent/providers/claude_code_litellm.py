@@ -43,9 +43,14 @@ from clio_agent.providers.claude_code_sessions import (
     _run_sdk,
     _SdkSession,
     _SdkSessionPool,
+    _streaming_chunk,
     session_reuse_enabled,
     transient_transport_error_message,
     transient_transport_error_types,
+)
+from clio_agent.providers.claude_code_stateful import (
+    StatefulSend,
+    resolve_stateful_send,
 )
 from clio_agent.providers.claude_code_thinking_split import (
     _split_provider_thinking_contract_delta,
@@ -269,35 +274,6 @@ def _sdk_stream_event_thinking(event: dict[str, Any]) -> str:
     return ""
 
 
-def _streaming_chunk(
-    *,
-    text: str,
-    is_finished: bool,
-    finish_reason: str | None = None,
-    usage_payload: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Build a LiteLLM-compatible streaming chunk."""
-    usage: dict[str, int] | None = None
-    if usage_payload is not None:
-        prompt_tokens = int(usage_payload.get("input_tokens", 0) or 0)
-        prompt_tokens += int(usage_payload.get("cache_creation_input_tokens", 0) or 0)
-        prompt_tokens += int(usage_payload.get("cache_read_input_tokens", 0) or 0)
-        completion_tokens = int(usage_payload.get("output_tokens", 0) or 0)
-        usage = {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": prompt_tokens + completion_tokens,
-        }
-    return {
-        "text": text,
-        "is_finished": is_finished,
-        "finish_reason": finish_reason or ("stop" if is_finished else None),
-        "index": 0,
-        "tool_use": None,
-        "usage": usage,
-    }
-
-
 async def _astream_sdk(
     *,
     prompt: str,
@@ -306,6 +282,7 @@ async def _astream_sdk(
     cwd: str | None = None,
     call_index: int = 0,
     thinking: dict[str, Any] | None = None,
+    send: StatefulSend | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Stream one Claude Code SDK call as LiteLLM-compatible chunks.
 
@@ -343,25 +320,31 @@ async def _astream_sdk(
         transport="sdk",
         prompt=prompt,  # ALWAYS the full prompt — the fingerprint tracks cache-prefix stability
     )
+    # Full-vs-delta send plan (#901). ``send`` carries the actual payload (delta tail
+    # or full prompt) + the session_id to send under (stable across a delta run, fresh
+    # on any reset). ``None`` / not-engaged ⇒ the full prompt under a fresh id — the
+    # byte-identical pre-#901 transport.
+    payload = send.payload if send is not None else prompt
+    session_id = send.session_id if send is not None else uuid.uuid4().hex
     if session_reuse_enabled():
         # Pooled connection (connect reused, hosted on the entry's own loop-thread so
-        # it survives the per-call asyncio.run() loops). Full prompt, fresh per-call
-        # session_id; the entry's query lock serialises the query→receive cycle.
+        # it survives the per-call asyncio.run() loops). The entry's query lock
+        # serialises the query→receive cycle.
         entry = _STREAM_CLIENT_POOL.entry_for(model=model, cwd=cwd, thinking=thinking)
         source = entry.stream(
-            payload=prompt,
-            session_id=uuid.uuid4().hex,
+            payload=payload,
+            session_id=session_id,
             timeout=timeout,
             on_construct=_STREAM_CLIENT_POOL.bump_construct,
         )
     else:
-        # Per-call path (kill switch off): a fresh client, a fresh session_id, the
-        # full prompt, and a disconnect after the call.
+        # Per-call path (kill switch off): a fresh client, the resolved payload, and a
+        # disconnect after the call.
         client = ClaudeSDKClient(
             options=build_sdk_options(model=model, cwd=cwd, stream=True, thinking=thinking)
         )
         source = _per_call_message_source(
-            client, prompt=prompt, session_id=uuid.uuid4().hex, timeout=timeout
+            client, prompt=payload, session_id=session_id, timeout=timeout
         )
     emitted_partial = False
     final_text = ""
@@ -593,6 +576,8 @@ async def _astream_sdk(
         async for chunk in _process():
             yield chunk
     except TimeoutError as exc:
+        if send is not None:
+            send.note_error()  # drop the poisoned session → next call resets (provider_error)
         raise ClaudeCodeExecError(
             f"claude agent sdk timed out after {timeout}s (model={model})"
         ) from exc
@@ -601,6 +586,8 @@ async def _astream_sdk(
         # The entry already dropped the poisoned client on the abnormal end, so
         # surface a TYPED, audited, transient error → the LM retry layer re-issues
         # on a fresh connection instead of failing the turn (#891 live-crash fix).
+        if send is not None:
+            send.note_error()  # drop the poisoned stateful session → bounded full resend
         raise ClaudeCodeExecError(
             transient_transport_error_message(model, exc, call_index=call_index)
         ) from exc
@@ -931,6 +918,18 @@ class ClaudeCodeLLM(CustomLLM):
         if transport == "sdk":
             chunk_count = 0
             text_chars = 0
+            # Full-vs-stateful-delta send plan (#901). Inert (fresh id, full prompt)
+            # unless the stateful flag is ON and a ReActV2 scope token is active; the
+            # classic path resolves to a byte-identical full send.
+            send = resolve_stateful_send(
+                messages=list(messages or []),
+                full_prompt=prompt,
+                model=clean_model,
+                cwd=cwd,
+                thinking=thinking,
+                serialize=_messages_to_claude_prompt,
+                call_index=call_index,
+            )
             try:
                 async for chunk in _astream_sdk(
                     prompt=prompt,
@@ -939,6 +938,7 @@ class ClaudeCodeLLM(CustomLLM):
                     cwd=cwd,
                     call_index=call_index,
                     thinking=thinking,
+                    send=send,
                 ):
                     chunk_count += 1
                     text_chars += len(str(chunk.get("text") or ""))
