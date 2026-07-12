@@ -63,7 +63,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import dspy
-from dspy.adapters.types.tool import ToolCallResults, ToolCalls
+from dspy.adapters.types.tool import Tool, ToolCallResults, ToolCalls
+from dspy.predict.react_v2 import _json_schema_for_annotation
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from clio_agent.arc.schema import Segment
@@ -83,6 +84,16 @@ REACT_SUBMIT_INVALID_OUTPUT = "react_submit_invalid_output"
 # The ARC materialized-plane read raised while folding the History prefix; the seam
 # fell back to ReActV2's own internal append-only history for this call.
 REACTV2_ARC_HISTORY_READ_FAILED = "reactv2_arc_history_read_failed"
+# S4 — the bounded submit-repair re-ask: the loop ended without every declared output
+# field, so the parent was RE-ASKED (a forced submit carrying a schema-derived hint).
+# Recorded per attempt so the re-ask is queryable; the model — not clio — produces the
+# outputs (no deterministic fabrication).
+REACT_SUBMIT_REPAIR_ATTEMPTED = "react_submit_repair_attempted"
+# The bounded submit-repair budget was spent and the declared outputs are STILL missing
+# — a degraded turn (the value did NOT flow). Never a fabricated value: the missing
+# fields stay absent (a declared Pydantic default is honored by ``_make_submit_tool``,
+# which is author intent, not fabrication).
+REACT_SUBMIT_REPAIR_EXHAUSTED = "react_submit_repair_exhausted"
 
 
 class _RetainingReActV2(dspy.ReActV2):  # type: ignore[misc, name-defined]
@@ -102,6 +113,172 @@ class _RetainingReActV2(dspy.ReActV2):  # type: ignore[misc, name-defined]
         """
         signature = super()._make_react_signature()
         return signature.with_updated_fields("next_thought", type_=str)
+
+    def _make_submit_tool(self) -> Tool:
+        """Build the internal ``submit`` tool, honoring declared Pydantic defaults (#901 S4).
+
+        Stock ``ReActV2._make_submit_tool`` requires EVERY declared output field: an
+        omitted arg raises ``ValueError`` and the turn is a recorded rejection (the S3
+        pinned limitation). This override resolves it the sanctioned dspy way — a field
+        the *pack author declared with a Pydantic default* (``dspy.OutputField(default=…)``
+        / ``default_factory=…``) is **droppable-with-that-default**: when the model omits
+        it, ``submit`` fills the declared default and the turn succeeds. A field WITHOUT a
+        declared default stays required (an omission is still the recorded
+        ``react_submit_invalid_output`` rejection). This is *format-only* correction
+        honoring a declared default — NOT clio fabricating a value the author never
+        specified (superseding principle #2 / #5). Field ``args``/``arg_types`` are
+        identical to stock so the wire schema is unchanged.
+        """
+        output_fields = self.signature.output_fields
+        output_names = list(output_fields)
+        droppable = {
+            name: default
+            for name, field in output_fields.items()
+            for has_default, default in [_field_declared_default(field)]
+            if has_default
+        }
+
+        def submit(**kwargs: Any) -> dict[str, Any]:
+            missing = [n for n in output_names if n not in kwargs and n not in droppable]
+            if missing:
+                raise ValueError(f"Missing required final output field(s): {', '.join(missing)}")
+            return {n: (kwargs[n] if n in kwargs else droppable[n]) for n in output_names}
+
+        args = {
+            name: _json_schema_for_annotation(field.annotation)
+            for name, field in output_fields.items()
+        }
+        arg_types = {name: field.annotation for name, field in output_fields.items()}
+        return Tool(
+            submit,
+            name="submit",
+            desc="Submit the final outputs for the task.",
+            args=args,
+            arg_types=arg_types,
+        )
+
+    def forward(self, **input_args: Any) -> Any:
+        """Run the V2 loop, retain the History, and bounded-repair a missing submit (#901 S4).
+
+        Thin wrapper over ``ReActV2.forward`` (the append-only loop is unchanged). It adds
+        the two S4 hooks that re-express the classic retention/repair path (design §7):
+
+        1. **Retention** — install a fresh trajectory cell and publish the retained
+           ``History`` + pending inputs (the V2 analog of the classic
+           ``publish_trajectory({trajectory, input_args})`` before ``extract``), so the
+           trace/failure-capture consumers and the repair entry can read exactly what the
+           loop produced.
+        2. **Bounded repair** — when the loop ends WITHOUT every declared output field
+           (a forced/failed submit), RE-ASK the parent: a forced submit carrying a
+           schema-derived hint, up to a bounded budget, and let the model decide. clio
+           never fabricates the outputs (see :meth:`_bounded_submit_repair`).
+        """
+        from clio_agent.gact import context as _ctx  # noqa: PLC0415
+
+        _ctx.install_trajectory_cell()
+        pending = {
+            name: input_args[name] for name in self.signature.input_fields if name in input_args
+        }
+        pred = super().forward(**input_args)
+        self._publish_retained_history(pred, pending)
+        return self._bounded_submit_repair(pred, pending)
+
+    def _publish_retained_history(self, pred: Any, pending: dict[str, Any]) -> None:
+        """Publish the retained ``History`` + pending inputs to the active trajectory cell.
+
+        The V2 analog of the classic ``_ctx.publish_trajectory({trajectory, input_args})``:
+        retains the append-only ``history.messages`` (what the loop actually produced) and
+        the signature inputs so :func:`reforce_submit_over_retained_history` (the repair
+        entry) and any failure-capture consumer can read them. No-op when no cell is
+        installed (mirrors the classic publish contract).
+        """
+        from clio_agent.gact import context as _ctx  # noqa: PLC0415
+
+        history = getattr(pred, "history", None)
+        messages = list(history.messages) if history is not None else []
+        _ctx.publish_trajectory(
+            {
+                "history": messages,
+                "input_args": dict(pending),
+                "termination_reason": str(getattr(pred, "termination_reason", "") or ""),
+            }
+        )
+
+    def _bounded_submit_repair(self, pred: Any, pending: dict[str, Any]) -> Any:
+        """Bounded RE-ASK when the loop ended without every declared output field (#901 S4).
+
+        The V2 analog of ``builders._reextract_over_retained_trajectory``'s repair. When
+        every declared output is already present (the normal submit), this is a zero-cost
+        pass-through. Otherwise it re-asks the parent up to :func:`_submit_repair_attempts`
+        times — each a forced submit over the retained History carrying a schema-derived
+        hint (:meth:`_submit_repair_hint`) that names the missing fields. **The model
+        decides**: the re-ask re-drives the react predict and the model re-emits ``submit``;
+        clio never fabricates the values. The loop is ALWAYS bounded (``range(bound)`` — the
+        sabotage tripwire). Every attempt records ``react_submit_repair_attempted``; a spent
+        budget with fields still missing records ``react_submit_repair_exhausted`` (a
+        recorded degraded turn — the missing fields stay absent, never fabricated).
+        """
+        if self._declared_outputs_present(pred):
+            return pred
+        agent_id = _active_react_scope_safe()
+        bound = _submit_repair_attempts()
+        for _attempt in range(bound):
+            hint = self._submit_repair_hint(pred)
+            _record_submit_audit(
+                REACT_SUBMIT_REPAIR_ATTEMPTED,
+                agent_id=agent_id,
+                field="submit",
+                text=hint,
+                suppressed=False,
+            )
+            repaired = reforce_submit_over_retained_history(self, hint)
+            if repaired is None:
+                break
+            if self._declared_outputs_present(repaired):
+                return repaired
+            pred = repaired
+        if not self._declared_outputs_present(pred):
+            _record_submit_audit(
+                REACT_SUBMIT_REPAIR_EXHAUSTED,
+                agent_id=agent_id,
+                field="submit",
+                text=", ".join(self._missing_declared_outputs(pred)),
+                suppressed=False,
+            )
+        return pred
+
+    def _missing_declared_outputs(self, pred: Any) -> list[str]:
+        """Declared user-signature output fields absent from ``pred`` (structured, no prose).
+
+        Reads the SCHEMA (``signature.output_fields``) against the prediction's produced
+        keys — a structured decision, never a keyword/prose heuristic on model text
+        (superseding principle #1).
+        """
+        present = set(pred.keys()) if hasattr(pred, "keys") else set()
+        return [name for name in self.signature.output_fields if name not in present]
+
+    def _declared_outputs_present(self, pred: Any) -> bool:
+        """Whether every declared user-signature output field is present on ``pred``."""
+        return not self._missing_declared_outputs(pred)
+
+    def _submit_repair_hint(self, pred: Any) -> str:
+        """Build the schema-derived RE-ASK hint naming the missing declared outputs (#901 S4).
+
+        Derived purely from the signature's declared outputs vs. the produced keys — a
+        structured instruction, NOT prose-keyword matching on the model's text. Fed back
+        via the ``question`` input on the forced-submit re-ask so the model can self-correct
+        (the clio "re-ask when something is missing" bounded repair; the model fills the
+        fields, clio does not).
+        """
+        missing = ", ".join(f"`{name}`" for name in self._missing_declared_outputs(pred))
+        declared = ", ".join(f"`{name}`" for name in self.signature.output_fields)
+        return (
+            "SUBMIT-REPAIR (your previous response ended WITHOUT a valid `submit` for "
+            f"required output field(s): {missing}). Call the `submit` tool now, providing "
+            f"EVERY declared output field ({declared}) with a correct, non-empty value "
+            "consistent with the evidence you already gathered. Do NOT add fields outside "
+            "the declared outputs, and do NOT drop any declared field."
+        )
 
     def _execute_tool_calls(
         self, tool_calls: ToolCalls
@@ -179,6 +356,99 @@ def retaining_reactv2_cls() -> type[Any]:
     ``dspy.ReAct``).
     """
     return _RetainingReActV2
+
+
+# ----------------------------------------------------------------------------- #
+# S4 — retention + bounded submit-repair (the V2 analog of the classic re-extract) #
+# ----------------------------------------------------------------------------- #
+
+
+def reforce_submit_over_retained_history(program: Any, hint: str) -> Any:
+    """Re-drive ONE forced ``submit`` over the RETAINED History, steered by ``hint`` (#901 S4).
+
+    The V2 analog of ``builders._reextract_over_retained_trajectory``. The classic path
+    re-runs only ``extract`` over the retained trajectory; V2 has no ``extract``, so the
+    analogous repair re-drives a forced ``submit`` over the retained ``History`` (design §7).
+    Reads the retained ``{"history", "input_args"}`` published by
+    :meth:`_RetainingReActV2._publish_retained_history` (via ``_ctx.active_trajectory()`` —
+    the exact cell the classic re-extract reads), appends the schema-derived repair ``hint``
+    to the ``question`` input so the model can self-correct, and calls the stock
+    ``_forced_submit`` (``tool_choice: submit``). The tool loop is NOT restarted — the
+    retained History is reused, only the final typed output is re-emitted.
+
+    **The model decides**: the forced submit re-asks the react predict and the model
+    re-emits ``submit`` with the outputs; clio fabricates nothing. Returns the resulting
+    ``Prediction`` (which may still lack outputs if the model omits them again — the caller
+    bounds the retries), or ``None`` when there is no retained History (the caller then
+    stops — no unbounded loop).
+
+    Args:
+        program: The active :class:`_RetainingReActV2` instance.
+        hint: The schema-derived repair instruction naming the missing declared outputs.
+
+    Returns:
+        A ``dspy.Prediction`` from the re-driven forced submit, or ``None``.
+    """
+    from clio_agent.gact import context as _ctx  # noqa: PLC0415
+
+    retained = _ctx.active_trajectory()
+    messages = retained.get("history") if isinstance(retained, dict) else None
+    if not messages:
+        return None
+    input_args = dict(retained.get("input_args") or {})
+    if input_args.get("question"):
+        input_args["question"] = f"{input_args['question']}\n\n{hint}"
+    # Re-drive over a FRESH History copy of the retained messages so each bounded re-ask is
+    # an independent sample from the same retained state (mirrors the classic re-extract,
+    # which re-runs over the same retained trajectory each attempt). ``_forced_submit``'s
+    # internal handling (AdapterParseError / ValueError / ContextWindowExceededError) means
+    # a genuine bug is the only thing that surfaces here — no blind swallow needed.
+    history = dspy.History(messages=list(messages))
+    return program._forced_submit(history, input_args, "submit_repair", len(messages))
+
+
+def _submit_repair_attempts() -> int:
+    """Bounded budget of forced-submit re-asks after a missing-output loop end (#901 S4).
+
+    Mirrors ``builders._extract_repair_attempts`` for the V2 path. Default 3; override
+    ``CLIO_SUBMIT_REPAIR_ATTEMPTS`` / ``limits.submit_repair_attempts``. Always clamped to
+    ``>= 0`` so :meth:`_RetainingReActV2._bounded_submit_repair` can never loop unbounded
+    (the S4 sabotage tripwire).
+    """
+    try:
+        from clio_agent import conf  # noqa: PLC0415
+
+        n = int(
+            conf.resolve(
+                "limits.submit_repair_attempts",
+                env="CLIO_SUBMIT_REPAIR_ATTEMPTS",
+                default=3.0,
+                cast=conf.as_float,
+            )
+        )
+    except Exception:  # noqa: BLE001 - never let config break a turn; mirror the classic default
+        return 3
+    return max(0, n)
+
+
+def _field_declared_default(field: Any) -> tuple[bool, Any]:
+    """Return ``(has_default, value)`` for a dspy output ``FieldInfo`` (#901 S4).
+
+    A dspy ``OutputField`` is a ``pydantic.fields.FieldInfo`` (superseding principle #5):
+    a declared default surfaces as a concrete ``field.default`` (not
+    ``PydanticUndefined``) or a ``field.default_factory``. Returns ``(True, <default>)``
+    for a field the author declared droppable-with-a-value, else ``(False, None)`` for a
+    genuinely required field.
+    """
+    from pydantic_core import PydanticUndefined  # noqa: PLC0415
+
+    default = getattr(field, "default", PydanticUndefined)
+    if default is not PydanticUndefined:
+        return True, default
+    factory = getattr(field, "default_factory", None)
+    if factory is not None:
+        return True, factory()
+    return False, None
 
 
 # ----------------------------------------------------------------------------- #
