@@ -33,6 +33,8 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_CLAUDE_CODE_STATEFUL_DELTA` | `providers.claude_code.stateful_delta` | bool | `false` | `src/clio_agent/providers/claude_code_stateful.py` |
 | `CLIO_CLAUDE_CODE_TRANSPORT` | `lm.claude_code_transport` | str | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_CODEX_APP_SERVER` | `providers.codex.app_server` | bool | `true` | `src/clio_agent/providers/codex_app_server.py` |
+| `CLIO_CODEX_STATEFUL_CAPACITY` | `providers.codex.stateful_capacity` | float | `128.0` | `src/clio_agent/providers/codex_stateful.py` |
+| `CLIO_CODEX_STATEFUL_DELTA` | `providers.codex.stateful_delta` | bool | `false` | `src/clio_agent/providers/codex_stateful.py` |
 | `CLIO_CODEX_TRANSPORT` | `lm.codex_transport` | str | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_CORE_PORT` | `arc.core_port` | str | _(unset)_ | `src/clio_agent/arc/clio_core_liveness.py` |
 | `CLIO_CTX_MAX_BYTES` | `limits.context_inline_bytes` | int | `32768` | `src/clio_agent/gact/runtime/constants.py` |

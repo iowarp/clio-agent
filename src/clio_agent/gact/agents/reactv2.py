@@ -199,21 +199,17 @@ class _RetainingReActV2(dspy.ReActV2):  # type: ignore[misc, name-defined]
     def _maybe_autocompact(self) -> None:
         """Proactive, scope-aware auto-compaction — the V2 trigger (#901 S6).
 
-        The threshold/trigger semantics are byte-identical to the classic
-        ``_RetainingReAct._maybe_autocompact``: when the last call's provider-exact
-        ``prompt_tokens / context_window`` crosses the configurable threshold, fold the
-        live working set into ONE ARC ``summarize`` op (V2's sole prefix-reset author —
-        it has no ``truncate_trajectory`` backstop). The two LM-touching helpers are
-        resolved through the :mod:`clio_agent.gact.agents.runtime` module namespace so a
-        test monkeypatch on ``runtime._last_prompt_tokens`` / ``runtime._summarize_segments_llm``
-        is honored identically to the classic path. No-op when ARC is disabled, the
-        window is unknown, or the summary LLM fails (the miss keeps the prior context —
-        the reactive backstop is gone under V2, so a failed summary must not wedge).
+        When ``prompt_tokens / context_window`` crosses the threshold, fold the live
+        working set into ONE ARC ``summarize`` op (V2's sole prefix-reset author; LM
+        helpers resolve via ``runtime`` for test-monkeypatch). No-op on ARC-off/no-summary.
         """
         from clio_agent.gact import context as _ctx  # noqa: PLC0415
         from clio_agent.gact.agents import runtime as _rt  # noqa: PLC0415
         from clio_agent.gact.agents.reactv2_events import _arc_scope  # noqa: PLC0415
         from clio_agent.gact.runtime.context_tokens import _autocompact_threshold  # noqa: PLC0415
+        from clio_agent.providers.stateful_common import (
+            note_prefix_reset_for_active_scope,  # noqa: PLC0415, E501
+        )
 
         arc, session, scope = _arc_scope()
         if arc is None:
@@ -231,6 +227,10 @@ class _RetainingReActV2(dspy.ReActV2):  # type: ignore[misc, name-defined]
         if not summary:
             return
         arc.summarize_segments(session, scope, [s.id for s in live], {"text": summary})
+        # The summarize op rewrote the History prefix: flag the active stateful scope so
+        # both legs' next send is a typed ``ops_reset`` (not a generic ``prefix_mismatch``);
+        # inert when the feature is off / no scope active (#891).
+        note_prefix_reset_for_active_scope("ops_reset")
 
     def _publish_retained_history(self, pred: Any, pending: dict[str, Any]) -> None:
         """Publish the retained ``History`` + pending inputs to the active trajectory cell.

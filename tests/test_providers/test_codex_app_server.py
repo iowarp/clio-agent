@@ -97,6 +97,7 @@ class FakeAppServer:
         self.stdin = _FakeStdin(self._on_line)
         self.stderr = _FakeStdout()
         self.turn_start_params: dict[str, Any] | None = None
+        self.thread_start_params: list[dict[str, Any]] = []
         self.interrupts: list[dict[str, Any]] = []
         self.terminated = False
         self._next_server_id = 1000
@@ -117,6 +118,7 @@ class FakeAppServer:
             pass
         elif method == "thread/start":
             self._turn_count += 1
+            self.thread_start_params.append(msg.get("params") or {})
             self._respond(mid, {"thread": {"id": f"{self.thread_id}-{self._turn_count}"}})
         elif method == "turn/interrupt":
             self.interrupts.append(msg.get("params") or {})
@@ -620,3 +622,85 @@ def test_async_bridge_over_fake() -> None:
     finally:
         proc.close()
     assert [e.text for e in events if e.kind == "text"] == ["The sky ", "is blue."]
+
+
+# --------------------------------------------------------------------------- #
+# Persistent-thread methods (the #891 stateful-delta transport surface).
+# --------------------------------------------------------------------------- #
+def test_start_thread_opens_persistent_thread_and_returns_id() -> None:
+    """start_thread issues one thread/start with ephemeral=False and returns the id."""
+    fake = FakeAppServer(turn_script=_default_script())
+    proc = _make_process(fake)
+    try:
+        tid = proc.start_thread(ephemeral=False, timeout=10.0)
+    finally:
+        proc.close()
+    assert tid == "thread-1-1"
+    assert len(fake.thread_start_params) == 1
+    # LOAD-BEARING: a persistent thread is ephemeral=False (retains state server-side).
+    assert fake.thread_start_params[0]["ephemeral"] is False
+
+
+def test_run_turn_on_thread_continues_without_a_fresh_thread_start() -> None:
+    """The delta path reuses an existing thread: no SECOND thread/start is issued,
+    the turn/start carries the given threadId, and effort still reaches turn/start."""
+    fake = FakeAppServer(turn_script=_default_script())
+    proc = _make_process(fake)
+    try:
+        tid = proc.start_thread(ephemeral=False, timeout=10.0)
+        events = list(
+            proc.run_turn_on_thread(thread_id=tid, prompt="delta body", effort="high", timeout=10.0)
+        )
+    finally:
+        proc.close()
+    # Exactly ONE thread/start total (the open) — the turn did NOT start a new thread.
+    assert len(fake.thread_start_params) == 1
+    assert fake.turn_start_params is not None
+    assert fake.turn_start_params["threadId"] == tid
+    assert fake.turn_start_params["effort"] == "high"
+    assert fake.turn_start_params["input"] == [
+        {"type": "text", "text": "delta body", "text_elements": []}
+    ]
+    assert [e.text for e in events if e.kind == "text"] == ["The sky ", "is blue."]
+
+
+def test_run_turn_on_thread_omits_effort_when_unset() -> None:
+    """No effort → no 'effort' key on the continued turn (codex default)."""
+    fake = FakeAppServer(turn_script=_default_script())
+    proc = _make_process(fake)
+    try:
+        tid = proc.start_thread(ephemeral=False, timeout=10.0)
+        list(proc.run_turn_on_thread(thread_id=tid, prompt="x", effort=None, timeout=10.0))
+    finally:
+        proc.close()
+    assert fake.turn_start_params is not None
+    assert "effort" not in fake.turn_start_params
+
+
+def test_run_turn_still_uses_ephemeral_thread_byte_identical() -> None:
+    """SABOTAGE twin: the flag-OFF run_turn path MUST still open ephemeral=True — the
+    refactor to share _run_turn_locked must not leak the persistent flag into it."""
+    fake = FakeAppServer(turn_script=_default_script())
+    proc = _make_process(fake)
+    try:
+        list(proc.run_turn(prompt="hi", effort=None, timeout=10.0))
+    finally:
+        proc.close()
+    assert len(fake.thread_start_params) == 1
+    assert fake.thread_start_params[0]["ephemeral"] is True
+
+
+def test_start_thread_on_dead_process_is_typed() -> None:
+    """Defensive: opening a thread on a dead process raises typed, not a broken pipe."""
+    proc = CodexAppServerProcess(binary="codex", model="m", cwd=None)
+    proc._mark_dead("stdout_closed")
+    with pytest.raises(CodexAppServerError, match="dead"):
+        proc.start_thread(ephemeral=False, timeout=5.0)
+
+
+def test_run_turn_on_thread_on_dead_process_is_typed() -> None:
+    """Defensive: continuing a thread on a dead process raises typed immediately."""
+    proc = CodexAppServerProcess(binary="codex", model="m", cwd=None)
+    proc._mark_dead("stdout_closed")
+    with pytest.raises(CodexAppServerError, match="dead"):
+        list(proc.run_turn_on_thread(thread_id="t", prompt="hi", effort=None, timeout=5.0))

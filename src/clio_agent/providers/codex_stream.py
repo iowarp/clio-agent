@@ -30,7 +30,7 @@ import queue
 import threading
 import uuid
 from collections.abc import AsyncIterator, Iterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from clio_agent.providers.codex_app_server import _APP_SERVER_POOL, CodexAppServerError
 from clio_agent.providers.codex_audit import (
@@ -39,6 +39,9 @@ from clio_agent.providers.codex_audit import (
     emit_normalized,
     emit_raw_event,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from clio_agent.providers.codex_stateful import CodexStatefulSend
 
 _CALL_COUNTER_LOCK = threading.Lock()
 _CALL_COUNTER = 0
@@ -81,9 +84,27 @@ def _stream_chunk(
 
 
 def _app_server_events(
-    *, prompt: str, model: str, cwd: str | None, effort: str | None, timeout: float
+    *,
+    prompt: str,
+    model: str,
+    cwd: str | None,
+    effort: str | None,
+    timeout: float,
+    send: CodexStatefulSend | None = None,
 ) -> Iterator[Any]:
-    """Yield ``TurnEvent``s for one app-server turn on the warm pool."""
+    """Yield ``TurnEvent``s for one app-server turn on the warm pool.
+
+    When ``send`` is engaged (#891 stateful delta), the turn CONTINUES the send's
+    persistent thread (:meth:`CodexAppServerProcess.run_turn_on_thread`) so codex
+    sees only the new content in ``prompt``. Otherwise (inert / flag OFF) a fresh
+    ``ephemeral`` thread is run per call (:meth:`CodexAppServerProcess.run_turn`) —
+    byte-identical to the pre-slice path.
+    """
+    if send is not None and send.engaged and send.process is not None:
+        yield from send.process.run_turn_on_thread(
+            thread_id=send.thread_id, prompt=prompt, effort=effort, timeout=timeout
+        )
+        return
     from clio_agent.providers.codex_litellm import _resolve_codex_binary  # noqa: PLC0415
 
     binary = _resolve_codex_binary()
@@ -99,12 +120,22 @@ def run_app_server(
     effort: str | None = None,
     timeout: float = 180.0,
     call_index: int = 0,
+    send: CodexStatefulSend | None = None,
 ) -> tuple[str, dict[str, int]]:
-    """Blocking app-server turn → ``(text, normalized_usage)`` (completion path)."""
+    """Blocking app-server turn → ``(text, normalized_usage)`` (completion path).
+
+    ``send`` (#891 stateful delta) carries the actual turn bytes (the delta tail or
+    the full prompt) + the persistent thread to continue + the call_id that joins the
+    ``provider.stateful`` audit row to this call's TTFT markers. ``None`` / not-engaged
+    ⇒ the full ``prompt`` on a fresh ephemeral thread (byte-identical pre-slice path).
+    ``emit_call_started`` always fingerprints the FULL ``prompt`` (cache-prefix
+    stability), while the turn runs ``send.prompt`` when engaged.
+    """
     from clio_agent.providers.codex_litellm import CodexExecError  # noqa: PLC0415
 
-    call_id = uuid.uuid4().hex
+    call_id = (send.call_id if send is not None else "") or uuid.uuid4().hex
     emit_call_started(call_id=call_id, call_index=call_index, model=model, prompt=prompt)
+    turn_prompt = send.prompt if (send is not None and send.engaged) else prompt
     final_text = ""
     usage: dict[str, int] = {}
     try:
@@ -112,7 +143,9 @@ def run_app_server(
         # deterministically (turn lock released, sink invalidated) even when this
         # loop exits early via an exception raised in the body.
         with contextlib.closing(
-            _app_server_events(prompt=prompt, model=model, cwd=cwd, effort=effort, timeout=timeout)
+            _app_server_events(
+                prompt=turn_prompt, model=model, cwd=cwd, effort=effort, timeout=timeout, send=send
+            )
         ) as events:
             for event in events:
                 if event.kind == "usage":
@@ -121,6 +154,8 @@ def run_app_server(
                     final_text = event.text
                     usage = event.usage or usage
     except CodexAppServerError as exc:
+        if send is not None:
+            send.note_error()  # drop the poisoned thread → next call resets (provider_error)
         raise CodexExecError(f"codex app-server turn failed (model={model}): {exc}") from exc
     finally:
         emit_call_usage(
@@ -143,6 +178,7 @@ async def astream_app_server(
     effort: str | None,
     timeout: float,
     call_index: int,
+    send: CodexStatefulSend | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Stream one app-server turn as LiteLLM chunks (the #896 streaming lane).
 
@@ -163,10 +199,17 @@ async def astream_app_server(
     """
     from clio_agent.providers.codex_litellm import CodexExecError  # noqa: PLC0415
 
-    call_id = uuid.uuid4().hex
+    # ``send`` (#891 stateful delta) carries the actual turn bytes + persistent thread
+    # + the call_id that joins the provider.stateful row to this call's TTFT markers.
+    # emit_call_started always fingerprints the FULL ``prompt`` (cache-prefix
+    # stability); the turn runs ``send.prompt`` when engaged.
+    call_id = (send.call_id if send is not None else "") or uuid.uuid4().hex
     emit_call_started(call_id=call_id, call_index=call_index, model=model, prompt=prompt)
+    turn_prompt = send.prompt if (send is not None and send.engaged) else prompt
     loop = asyncio.get_running_loop()
-    gen = _app_server_events(prompt=prompt, model=model, cwd=cwd, effort=effort, timeout=timeout)
+    gen = _app_server_events(
+        prompt=turn_prompt, model=model, cwd=cwd, effort=effort, timeout=timeout, send=send
+    )
     events_q: queue.SimpleQueue[tuple[str, Any]] = queue.SimpleQueue()
     abandoned = threading.Event()
 
@@ -198,6 +241,9 @@ async def astream_app_server(
                 break
             if kind == "exc":
                 if isinstance(payload, CodexAppServerError):
+                    if send is not None:
+                        # Drop the poisoned thread → next call resets (provider_error).
+                        send.note_error()
                     raise CodexExecError(
                         f"codex app-server stream failed (model={model}): {payload}"
                     ) from payload

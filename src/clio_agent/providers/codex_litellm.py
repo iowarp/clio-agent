@@ -65,6 +65,7 @@ from clio_agent.providers.codex_app_server import (
     app_server_enabled,
     transport_fallback_payload,
 )
+from clio_agent.providers.codex_stateful import resolve_codex_stateful_send
 from clio_agent.providers.codex_stream import (
     _next_call_index,
     astream_app_server,
@@ -355,6 +356,38 @@ def _resolve_effort(params: dict[str, Any]) -> str | None:
     return str(effort) if effort else None
 
 
+def _app_server_send(
+    messages: list,
+    clean_model: str,
+    params: dict[str, Any],
+    timeout: Any,
+) -> tuple[Any, str, int]:
+    """Resolve the stateful-delta send plan + full prompt + call index for a call (#891).
+
+    Returns ``(send, full_prompt, call_index)``. ``send`` is a ``CodexStatefulSend``
+    (inert unless the ``stateful_delta`` flag is ON + a ReActV2 scope is active — then
+    it opens/reuses a persistent thread and carries the delta bytes); ``full_prompt``
+    is the serialized full prompt the transport fingerprints for cache-prefix stability;
+    ``call_index`` is minted ONCE here and passed to BOTH the stateful audit row (inside
+    resolve) and the transport's ``emit_call_started`` so they share one index. Blocking
+    (the engaged path does a ``thread/start`` I/O on a full send), so async callers wrap
+    this in ``asyncio.to_thread``.
+    """
+    full_prompt = _messages_to_codex_prompt(messages)
+    call_index = _next_call_index()
+    send = resolve_codex_stateful_send(
+        messages=list(messages or []),
+        full_prompt=full_prompt,
+        model=clean_model,
+        cwd=params.get("codex_cwd", os.getcwd()),
+        effort=_resolve_effort(params),
+        serialize=_messages_to_codex_prompt,
+        start_timeout=float(timeout) if timeout else 180.0,
+        call_index=call_index,
+    )
+    return send, full_prompt, call_index
+
+
 class CodexLLM(CustomLLM):
     """LiteLLM custom handler that routes ``codex/<model>`` to ``codex exec``."""
 
@@ -473,13 +506,17 @@ class CodexLLM(CustomLLM):
         clean_model = model.removeprefix("codex/").removeprefix("cdx-")
         transport = self._resolve_transport(params)
         if transport == "app_server":
+            send, full_prompt, call_index = _app_server_send(
+                messages, clean_model, params, timeout
+            )
             text, usage = run_app_server(
-                prompt=_messages_to_codex_prompt(messages),
+                prompt=full_prompt,
                 model=clean_model,
                 cwd=params.get("codex_cwd", os.getcwd()),
                 effort=_resolve_effort(params),
                 timeout=float(timeout) if timeout else 180.0,
-                call_index=_next_call_index(),
+                call_index=call_index,
+                send=send,
             )
             return _build_model_response(text=text, model=clean_model, usage_payload=usage)
         text = self._complete_text(
@@ -514,14 +551,19 @@ class CodexLLM(CustomLLM):
         clean_model = model.removeprefix("codex/").removeprefix("cdx-")
         transport = self._resolve_transport(params)
         if transport == "app_server":
+            # Resolve off the loop too: the engaged path does a blocking thread/start.
+            send, full_prompt, call_index = await asyncio.to_thread(
+                _app_server_send, messages, clean_model, params, timeout
+            )
             text, usage = await asyncio.to_thread(
                 run_app_server,
-                prompt=_messages_to_codex_prompt(messages),
+                prompt=full_prompt,
                 model=clean_model,
                 cwd=params.get("codex_cwd", os.getcwd()),
                 effort=_resolve_effort(params),
                 timeout=float(timeout) if timeout else 180.0,
-                call_index=_next_call_index(),
+                call_index=call_index,
+                send=send,
             )
             return _build_model_response(text=text, model=clean_model, usage_payload=usage)
         # The exec/SDK transports are blocking; run off the event loop so we
@@ -564,13 +606,17 @@ class CodexLLM(CustomLLM):
         clean_model = model.removeprefix("codex/").removeprefix("cdx-")
         transport = self._resolve_transport(params)
         if transport == "app_server":
+            send, full_prompt, call_index = _app_server_send(
+                messages, clean_model, params, timeout
+            )
             text, usage = run_app_server(
-                prompt=_messages_to_codex_prompt(messages),
+                prompt=full_prompt,
                 model=clean_model,
                 cwd=params.get("codex_cwd", os.getcwd()),
                 effort=_resolve_effort(params),
                 timeout=float(timeout) if timeout else 180.0,
-                call_index=_next_call_index(),
+                call_index=call_index,
+                send=send,
             )
             yield GenericStreamingChunk(
                 text=text,
@@ -618,13 +664,18 @@ class CodexLLM(CustomLLM):
         clean_model = model.removeprefix("codex/").removeprefix("cdx-")
         transport = self._resolve_transport(params)
         if transport == "app_server":
+            # Resolve off the loop: the engaged path does a blocking thread/start.
+            send, full_prompt, call_index = await asyncio.to_thread(
+                _app_server_send, messages, clean_model, params, timeout
+            )
             async for chunk in astream_app_server(
-                prompt=_messages_to_codex_prompt(messages),
+                prompt=full_prompt,
                 model=clean_model,
                 cwd=params.get("codex_cwd", os.getcwd()),
                 effort=_resolve_effort(params),
                 timeout=float(timeout) if timeout else 180.0,
-                call_index=_next_call_index(),
+                call_index=call_index,
+                send=send,
             ):
                 yield chunk  # type: ignore[misc]  # dict satisfies litellm's runtime chunk contract
             return

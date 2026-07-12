@@ -28,15 +28,25 @@ streaming). Verified live against ``codex-cli 0.144.1``:
 **The warm-process shape (#891) — honest accounting.** One ``codex app-server``
 subprocess is kept alive per ``(model, cwd)`` key by :class:`CodexAppServerPool`;
 the spawn + ``initialize`` handshake is paid once, not per call — **that
-spawn-amortization is the measured win**. Each LM call runs a FRESH ephemeral
-thread (``thread/start`` ... ``ephemeral=True``, never ``thread/resume``) so there
-is no cross-call / cross-expert context bleed. OpenAI's automatic prefix cache
-contributes only ~10% on top (live probe: ``cachedInputTokens`` ≈ 1.9K of ≈ 20K
-input) because codex injects a ~20K prefix (base instructions + ``AGENTS.md`` +
-plugins) ahead of clio's prompt that limits the shared-prefix window;
-``CODEX_HOME`` isolation to strip that prefix is the follow-up, not this pass. A
-per-process turn lock serialises the thread/turn cycle (bounded wait, typed
-timeout) so concurrent experts sharing a process never interleave streams.
+spawn-amortization is the measured win**. In the flag-OFF (default) path each LM
+call runs a FRESH ephemeral thread (:meth:`CodexAppServerProcess.run_turn` —
+``thread/start`` ... ``ephemeral=True``) so there is no cross-call / cross-expert
+context bleed, but codex re-ingests the whole prompt every call (measured ~33%
+cache, all spawn-amortization) because the automatic prefix cache is limited by the
+~20K prefix codex injects (base instructions + ``AGENTS.md`` + plugins) ahead of
+clio's prompt.
+
+**The stateful-delta path (#891 codex slice).** When
+:mod:`clio_agent.providers.codex_stateful` engages (flag ON + a ReActV2 scope), a
+single PERSISTENT thread (:meth:`start_thread` ``ephemeral=False``) is kept per
+expert-forward scope and continued with :meth:`run_turn_on_thread`, whose ``prompt``
+is only the NEW appended content (the delta). The persistent thread RETAINS the
+conversation server-side, so codex never re-ingests the ~20K injected prefix OR the
+prior turns — sidestepping the shared-prefix ceiling entirely. ``effort`` is re-sent
+per turn (the schema documents it as "for this turn and subsequent turns"), so the
+#895 reasoning knob keeps applying. A per-process turn lock serialises the
+thread/turn cycle (bounded wait, typed timeout) so concurrent experts sharing a
+process never interleave streams.
 
 **No silent fallback (#775).** A kill-switch (:func:`app_server_enabled`, default
 ON) restores the ``codex exec`` path byte-for-byte — the downgrade emits the typed
@@ -438,16 +448,18 @@ class CodexAppServerProcess:
     ) -> Iterator[TurnEvent]:
         """Drive one fresh ephemeral thread + turn, yielding :class:`TurnEvent`.
 
-        Serialised by the per-process turn lock: concurrent same-key experts queue
-        behind each other, and the lock wait is BOUNDED by ``timeout`` — an
-        expired wait is a typed :class:`CodexAppServerError`, never an unbounded
-        untyped block. Yields ``text``/``reasoning``/``usage`` events as
-        notifications arrive, then a terminal ``final`` event. Raises
-        :class:`CodexAppServerError` on an ``error`` notification, a transport
-        death, or a timeout. If the caller abandons the generator mid-stream
-        (``close()``), a best-effort ``turn/interrupt`` is sent and the sink is
-        invalidated so late notifications are dropped typed, never leaked into
-        the next turn.
+        The flag-OFF (non-stateful) path: a fresh ``ephemeral=True`` thread is
+        started under the per-process turn lock and torn down with the turn, so
+        there is no cross-call context bleed. Serialised by the per-process turn
+        lock: concurrent same-key experts queue behind each other, and the lock
+        wait is BOUNDED by ``timeout`` — an expired wait is a typed
+        :class:`CodexAppServerError`, never an unbounded untyped block. Yields
+        ``text``/``reasoning``/``usage`` events as notifications arrive, then a
+        terminal ``final`` event. Raises :class:`CodexAppServerError` on an
+        ``error`` notification, a transport death, or a timeout. If the caller
+        abandons the generator mid-stream (``close()``), a best-effort
+        ``turn/interrupt`` is sent and the sink is invalidated so late
+        notifications are dropped typed, never leaked into the next turn.
         """
         deadline = time.monotonic() + timeout
         if not self._turn_lock.acquire(timeout=timeout):
@@ -462,46 +474,132 @@ class CodexAppServerProcess:
                     f"the pool evicts it on the next call"
                 )
             self._ensure_initialized(max(0.1, deadline - time.monotonic()))
-            sink: queue.SimpleQueue[dict[str, Any]] = queue.SimpleQueue()
-            self._sink = sink
-            thread_id = ""
-            turn_state: dict[str, Any] = {"turn_id": None}
-            try:
-                thread = self._request(
-                    "thread/start",
-                    {
-                        "model": self._model,
-                        "sandbox": DEFAULT_SANDBOX,
-                        "cwd": self._cwd,
-                        "ephemeral": True,
-                    },
-                    timeout=min(max(0.1, deadline - time.monotonic()), 30.0),
-                )
-                thread_id = ((thread.get("thread") or {}).get("id")) or thread.get("threadId")
-                if not thread_id:
-                    raise CodexAppServerError("codex app-server thread/start returned no thread id")
-                turn_params: dict[str, Any] = {
-                    "threadId": thread_id,
-                    "input": [{"type": "text", "text": prompt, "text_elements": []}],
-                    "summary": DEFAULT_SUMMARY,
-                }
-                if effort:
-                    turn_params["effort"] = effort
-                self._notify_turn_start(turn_params)
-                yield from self._drain(
-                    sink, deadline, thread_id=str(thread_id), turn_state=turn_state
-                )
-            except GeneratorExit:
-                # Caller abandoned mid-stream: stop the server-side generation
-                # (best-effort turn/interrupt — schema: {threadId, turnId}); the
-                # finally below invalidates the sink so anything still in flight
-                # is dropped typed by _dispatch, never fed to the next turn.
-                self._interrupt(str(thread_id), turn_state.get("turn_id"))
-                raise
-            finally:
-                self._sink = None
+            yield from self._run_turn_locked(
+                prompt=prompt, effort=effort, deadline=deadline, thread_id=None, ephemeral=True
+            )
         finally:
             self._turn_lock.release()
+
+    def run_turn_on_thread(
+        self,
+        *,
+        thread_id: str,
+        prompt: str,
+        effort: str | None,
+        timeout: float,
+    ) -> Iterator[TurnEvent]:
+        """Continue an EXISTING persistent thread with one turn (#891 stateful delta).
+
+        The flag-ON stateful path: the thread was opened once by :meth:`start_thread`
+        (``ephemeral=False``) and RETAINS its prior turns server-side, so ``prompt``
+        is only the NEW content (the append-only delta) — codex never re-ingests the
+        static prefix it already holds. Same turn-lock discipline, bounded wait, and
+        abandonment/interrupt semantics as :meth:`run_turn`; the only difference is
+        that no ``thread/start`` is issued here (the thread already exists). The
+        turn-pinned ``effort`` is re-sent on every ``turn/start`` so the #895
+        reasoning knob keeps applying per turn on the persistent thread.
+        """
+        deadline = time.monotonic() + timeout
+        if not self._turn_lock.acquire(timeout=timeout):
+            raise CodexAppServerError(
+                f"codex app-server turn-lock wait timed out after {timeout}s "
+                f"(a prior turn on this pooled process is still draining)"
+            )
+        try:
+            if self._dead_reason is not None:
+                raise CodexAppServerError(
+                    f"codex app-server process is dead ({self._dead_reason}); "
+                    f"the pool evicts it on the next call"
+                )
+            self._ensure_initialized(max(0.1, deadline - time.monotonic()))
+            yield from self._run_turn_locked(
+                prompt=prompt, effort=effort, deadline=deadline, thread_id=thread_id
+            )
+        finally:
+            self._turn_lock.release()
+
+    def start_thread(self, *, ephemeral: bool, timeout: float) -> str:
+        """Open a thread and return its server-assigned id (the stateful open-handle).
+
+        Used by the stateful-delta resolver to open ONE persistent
+        (``ephemeral=False``) thread per expert-forward scope; the subsequent turns
+        run on it via :meth:`run_turn_on_thread`. Does NOT take the per-process turn
+        lock (``thread/start`` is a request/response with no stream sink, so it never
+        interleaves with a concurrent turn's drain). Raises
+        :class:`CodexAppServerError` on a dead process, a spawn/handshake failure, or
+        a missing thread id — never a silent empty handle.
+        """
+        deadline = time.monotonic() + timeout
+        if self._dead_reason is not None:
+            raise CodexAppServerError(
+                f"codex app-server process is dead ({self._dead_reason}); "
+                f"the pool evicts it on the next call"
+            )
+        self._ensure_initialized(max(0.1, deadline - time.monotonic()))
+        return self._start_thread(ephemeral=ephemeral, deadline=deadline)
+
+    def _run_turn_locked(
+        self,
+        *,
+        prompt: str,
+        effort: str | None,
+        deadline: float,
+        thread_id: str | None,
+        ephemeral: bool = False,
+    ) -> Iterator[TurnEvent]:
+        """Set the sink, (optionally) start a thread, run one turn, and drain it.
+
+        The shared turn driver for both :meth:`run_turn` (``thread_id is None`` — a
+        fresh ``ephemeral`` thread is started here, under the already-held turn lock,
+        exactly as the pre-stateful path did) and :meth:`run_turn_on_thread`
+        (``thread_id`` given — the persistent thread is reused, no ``thread/start``).
+        The per-process turn lock MUST already be held. Abandonment fires a
+        best-effort ``turn/interrupt`` and the ``finally`` invalidates the sink so
+        late notifications are dropped typed.
+        """
+        sink: queue.SimpleQueue[dict[str, Any]] = queue.SimpleQueue()
+        self._sink = sink
+        resolved_thread_id = thread_id or ""
+        turn_state: dict[str, Any] = {"turn_id": None}
+        try:
+            if thread_id is None:
+                resolved_thread_id = self._start_thread(ephemeral=ephemeral, deadline=deadline)
+            turn_params: dict[str, Any] = {
+                "threadId": resolved_thread_id,
+                "input": [{"type": "text", "text": prompt, "text_elements": []}],
+                "summary": DEFAULT_SUMMARY,
+            }
+            if effort:
+                turn_params["effort"] = effort
+            self._notify_turn_start(turn_params)
+            yield from self._drain(
+                sink, deadline, thread_id=str(resolved_thread_id), turn_state=turn_state
+            )
+        except GeneratorExit:
+            # Caller abandoned mid-stream: best-effort turn/interrupt (schema:
+            # {threadId, turnId}); the finally invalidates the sink so late
+            # notifications are dropped typed by _dispatch, never fed to the next turn.
+            self._interrupt(str(resolved_thread_id), turn_state.get("turn_id"))
+            raise
+        finally:
+            self._sink = None
+
+    def _start_thread(self, *, ephemeral: bool, deadline: float) -> str:
+        """Issue ``thread/start`` and return the server-assigned thread id (or raise)."""
+        thread = self._request(
+            "thread/start",
+            {
+                "model": self._model,
+                "sandbox": DEFAULT_SANDBOX,
+                "cwd": self._cwd,
+                "ephemeral": ephemeral,
+            },
+            timeout=min(max(0.1, deadline - time.monotonic()), 30.0),
+        )
+        thread_id = ((thread.get("thread") or {}).get("id")) or thread.get("threadId")
+        if not thread_id:
+            raise CodexAppServerError("codex app-server thread/start returned no thread id")
+        return str(thread_id)
 
     def _interrupt(self, thread_id: str, turn_id: Any) -> None:
         """Best-effort ``turn/interrupt`` for an abandoned turn (never raises)."""
