@@ -110,8 +110,10 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
             int(cfg.get("thinking_budget") or 0),
         )
         cfg["thinking_effective"] = plan.display
-    except Exception:  # noqa: BLE001 - status must never fail on a display derivation
-        pass
+    except Exception as exc:  # noqa: BLE001 - status must never fail on a display derivation
+        # No-silent-fallback (#772): surface the degraded display with a typed
+        # reason instead of omitting the field silently.
+        cfg["thinking_effective"] = f"unavailable (reason=display_derivation_failed: {exc})"
     return cfg
 
 

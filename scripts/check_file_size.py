@@ -64,13 +64,12 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/gact/turn_delegation.py": 913,
     "src/clio_agent/gact/turn_finalize.py": 935,
     "src/clio_agent/gact/types.py": 1143,
-    # +12 (#895): thread the provider-generic thinking config through both SDK
-    # paths + the session-pool key. The mapping + ClaudeAgentOptions builder were
-    # extracted to sibling owner modules (providers/thinking.py,
-    # providers/claude_code_options.py); this residual is irreducible transport
-    # plumbing (per-path optional_params read + pool re-key). Ratchet back down
-    # with the #714/#767 decomposition of this file.
-    "src/clio_agent/providers/claude_code_litellm.py": 1180,
+    # -120 (#891): the SDK-session machinery moved out to sibling owner modules —
+    # the blocking-path pool to providers/claude_code_sdk_pool.py and the per-expert
+    # streaming session/delta transport to providers/claude_code_sessions.py; this
+    # file keeps only the LiteLLM handler + exec/stream plumbing. Ratchet back down
+    # further with the #714/#767 decomposition.
+    "src/clio_agent/providers/claude_code_litellm.py": 1025,
     "src/clio_agent/runtime/status.py": 1214,
     "src/clio_agent/tools/execution.py": 1187,
     "src/clio_agent/ui/cli.py": 1156,

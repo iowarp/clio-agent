@@ -29,10 +29,18 @@ from clio_agent.providers.claude_code_thinking_split import (
 
 @pytest.fixture(autouse=True)
 def reset_provider() -> None:
-    """Each test starts with a clean LiteLLM provider map."""
+    """Each test starts with a clean LiteLLM provider map AND a clean streaming
+    client pool — the pooled default (#891) would otherwise carry one test's fake
+    SDK client into the next test's differently-faked module."""
+    from clio_agent.providers.claude_code_sessions import (  # noqa: PLC0415
+        _reset_sessions_for_tests,
+    )
+
     claude_code_litellm._reset_for_tests()
+    _reset_sessions_for_tests()
     yield
     claude_code_litellm._reset_for_tests()
+    _reset_sessions_for_tests()
 
 
 def test_messages_to_claude_prompt_uses_role_metadata() -> None:

@@ -29,6 +29,17 @@ from clio_agent.providers.claude_code_audit import (
     emit_call_usage,
     prompt_prefix_fingerprint,
 )
+from clio_agent.providers.claude_code_sessions import _reset_sessions_for_tests
+
+
+@pytest.fixture(autouse=True)
+def _clean_stream_pool() -> Any:
+    """Each test gets a fresh streaming client pool — the pooled default (#891)
+    would otherwise carry one test's fake SDK client into the next test's
+    differently-faked module (isinstance mismatch -> empty stream)."""
+    _reset_sessions_for_tests()
+    yield
+    _reset_sessions_for_tests()
 
 
 def _read_rows(path: Path) -> list[dict[str, Any]]:
@@ -265,19 +276,27 @@ def _install_timed_fake_sdk(
 async def test_call_started_brackets_connect_and_usage_precedes_disconnect(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # #891 finding: the per-call SDK connect (cold-start) must be INSIDE the
-    # [call_started -> call_usage] window (else it is misfiled as inter_call_gap),
-    # and call_usage must be recorded BEFORE disconnect.
+    # #891 finding, pinned on the PER-CALL transport (kill-switch off — the pooled
+    # default never disconnects per call): the SDK connect (cold-start) must be
+    # INSIDE the [call_started -> call_usage] window (else it is misfiled as
+    # inter_call_gap), and call_usage must be recorded BEFORE disconnect.
+    from clio_agent import conf  # noqa: PLC0415
+
     audit = tmp_path / "audit.jsonl"
     monkeypatch.setenv("CLIO_STREAM_AUDIT_LOG", str(audit))
+    monkeypatch.setenv("CLIO_CLAUDE_CODE_SESSION_REUSE", "false")
+    conf.reload()
     events: list[tuple[str, float]] = []
     delay = 0.5
     _install_timed_fake_sdk(monkeypatch, connect_delay=delay, events=events)
 
-    async for _ in claude_code_litellm._astream_sdk(
-        prompt="hello", model="haiku", timeout=5.0, cwd="/tmp/clio", call_index=3
-    ):
-        pass
+    try:
+        async for _ in claude_code_litellm._astream_sdk(
+            prompt="hello", model="haiku", timeout=5.0, cwd="/tmp/clio", call_index=3
+        ):
+            pass
+    finally:
+        conf.reload()
 
     rows = _read_rows(audit)
     started = next(r for r in rows if r["stage"] == "provider.call_started")
