@@ -10,7 +10,7 @@ surfacing round it out.
 from __future__ import annotations
 
 import logging
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -19,6 +19,7 @@ from clio_agent.lm.factory import _thinking_kwargs
 from clio_agent.providers import claude_code_litellm
 from clio_agent.providers.claude_code_litellm import ClaudeCodeLLM, _SdkSessionPool
 from clio_agent.providers.claude_code_options import build_sdk_options, thinking_key
+from tests.env_isolation import isolated_environ
 
 
 # --------------------------------------------------------------------------- #
@@ -159,7 +160,7 @@ def test_thinking_level_and_budget_from_env() -> None:
         "CLIO_LM_THINKING_LEVEL": "low",
         "CLIO_LM_THINKING_BUDGET": "3000",
     }
-    with patch.dict("os.environ", env, clear=True):
+    with isolated_environ(env):
         config = load_config_from_env()
     assert config.thinking_level == "low"
     assert config.thinking_budget == 3000
