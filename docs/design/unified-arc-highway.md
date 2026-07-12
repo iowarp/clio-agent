@@ -1,6 +1,6 @@
 # The Unified ARC Highway — one operation-sourced log, thin projections
 
-**Status:** design (adversarial review BEFORE code) · **Owner umbrella:** [#893](https://github.com/iowarp/clio-agent/issues/893) step 5, executing [#737](https://github.com/iowarp/clio-agent/issues/737)
+**Status:** reviewed design; #901 slices S0–S5 LANDED 2026-07-12 (dspy 3.3.0b1 pin; `_RetainingReActV2` + ARC fold seam reading the MATERIALIZED live plane; #878 extract on submit; bounded model-decides repair; byte-equality parity references) — all dormant behind `agents.reactv2_enabled`/`CLIO_REACTV2` (default OFF). S6 live measurement: V2 passes the canonical LA one-shot at parity with the classic path (see #901). **The flip is an owner decision**; classic remains production. · **Owner umbrella:** [#893](https://github.com/iowarp/clio-agent/issues/893) step 5, executing [#737](https://github.com/iowarp/clio-agent/issues/737)
 **Scope:** internals refactor under a FROZEN external contract. No `src/` in this slice.
 **On the record (owner, 2026-07-11):** *"this unification has been attempted before and failed."* Consequently: design → adversarial review → projections proven **equivalent** (per-surface normalization spec, §4.1) against the live stores on real sessions → **one consumer migrated at a time** → **no big-bang cutover.**
 
