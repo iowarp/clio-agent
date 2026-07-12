@@ -160,7 +160,7 @@ def test_effective_ram_cap_reads_existing_file(tmp_path):
     )
     result = cte_config.effective_ram_cap(env={"CLIO_ARC_STORE_CONFIG": str(cfg)})
     assert result.file_exists is True
-    assert result.cap == "2GB"
+    assert result.cap == "1GB"
     assert result.unbounded is False
     assert result.parse_error is None
 
@@ -183,5 +183,5 @@ def test_effective_ram_cap_default_when_file_absent(monkeypatch, tmp_path):
     monkeypatch.setattr(cte_config, "_default_cte_dir", lambda: tmp_path / "cte")
     result = cte_config.effective_ram_cap(env={})
     assert result.file_exists is False
-    assert result.cap == "2GB"
+    assert result.cap == "1GB"
     assert result.source == "generator-default"
