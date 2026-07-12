@@ -61,11 +61,32 @@ def test_anthropic_uses_native_thinking_kwarg() -> None:
     assert resolve_thinking("anthropic", "high", 0).sdk_thinking is None
 
 
-@pytest.mark.parametrize("provider", ["openai", "codex", "lm_studio", "ollama", "argonne"])
+@pytest.mark.parametrize("provider", ["openai", "lm_studio", "ollama", "argonne"])
 def test_effort_providers_map_level_to_reasoning_effort(provider: str) -> None:
     assert resolve_thinking(provider, "medium", 0).litellm_kwargs == {"reasoning_effort": "medium"}
     assert resolve_thinking(provider, "off", 0).litellm_kwargs == {}
     assert resolve_thinking(provider, "low", 0).sdk_thinking is None
+
+
+def test_codex_maps_level_to_codex_reasoning_effort() -> None:
+    """Codex has a dedicated key + an explicit ``none`` for off (#896).
+
+    ``codex_reasoning_effort`` (not ``reasoning_effort``) so the codex CustomLLM
+    reads it and pins it on ``turn/start`` (LiteLLM drops ``reasoning_effort`` on
+    the CustomLLM path — the old silent no-op). ``off`` → ``"none"`` (disable), NOT
+    an omitted kwarg (which would inherit the ambient ``config.toml`` effort).
+    """
+    assert resolve_thinking("codex", "medium", 0).litellm_kwargs == {
+        "codex_reasoning_effort": "medium"
+    }
+    assert resolve_thinking("codex", "low", 0).litellm_kwargs == {"codex_reasoning_effort": "low"}
+    assert resolve_thinking("codex", "high", 0).litellm_kwargs == {"codex_reasoning_effort": "high"}
+    # off maps to codex's explicit disable, never omit-and-inherit-ambient.
+    assert resolve_thinking("codex", "off", 0).litellm_kwargs == {"codex_reasoning_effort": "none"}
+    # unset → nothing pinned (codex's own default governs).
+    assert resolve_thinking("codex", None, 0).litellm_kwargs == {}
+    assert resolve_thinking("codex", "high", 0).supported is True
+    assert resolve_thinking("codex", "high", 0).sdk_thinking is None
 
 
 def test_explicit_budget_override_wins_for_budget_providers() -> None:

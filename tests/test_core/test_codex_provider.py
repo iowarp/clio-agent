@@ -513,6 +513,235 @@ class TestSDKTransport:
             )
 
 
+class TestAppServerTransport:
+    """The default ``app_server`` transport: streaming deltas + live usage (#896)."""
+
+    @staticmethod
+    def _events():
+        from clio_agent.providers.codex_app_server import TurnEvent
+
+        usage = {
+            "input_tokens": 18360,
+            "cache_read_input_tokens": 1920,
+            "cache_creation_input_tokens": 0,
+            "output_tokens": 42,
+            "reasoning_output_tokens": 8,
+            "total_tokens": 18402,
+        }
+        return [
+            TurnEvent("text", text="The sky "),
+            TurnEvent("text", text="is blue."),
+            TurnEvent("reasoning", text="(considering scattering)"),
+            TurnEvent("usage", usage=usage),
+            TurnEvent("final", text="The sky is blue.", usage=usage, reason="completed"),
+        ]
+
+    def test_completion_app_server_populates_usage(self):
+        handler = CodexLLM()
+        with patch(
+            "clio_agent.providers.codex_stream._app_server_events",
+            side_effect=lambda **_kw: (e for e in self._events()),
+        ):
+            resp = handler.completion(
+                model="codex/cdx-gpt-5.5",
+                messages=[{"role": "user", "content": "why is the sky blue?"}],
+                api_base="",
+                custom_prompt_dict={},
+                model_response=None,  # type: ignore[arg-type]
+                print_verbose=lambda *_: None,
+                encoding=None,
+                api_key=None,
+                logging_obj=None,
+                optional_params={"codex_transport": "app_server"},
+            )
+        assert resp.choices[0].message.content == "The sky is blue."
+        # input_tokens (already includes cached) → prompt_tokens; NOT re-summed.
+        assert resp.usage.prompt_tokens == 18360
+        assert resp.usage.completion_tokens == 42
+        assert resp.usage.total_tokens == 18402
+
+    async def test_astreaming_app_server_streams_delta_chunks(self):
+        handler = CodexLLM()
+        with patch(
+            "clio_agent.providers.codex_stream._app_server_events",
+            side_effect=lambda **_kw: (e for e in self._events()),
+        ):
+            chunks = [
+                c
+                async for c in handler.astreaming(
+                    model="codex/cdx-gpt-5.5",
+                    messages=[{"role": "user", "content": "hi"}],
+                    api_base="",
+                    custom_prompt_dict={},
+                    model_response=None,  # type: ignore[arg-type]
+                    print_verbose=lambda *_: None,
+                    encoding=None,
+                    api_key=None,
+                    logging_obj=None,
+                    optional_params={"codex_transport": "app_server"},
+                )
+            ]
+        text_chunks = [c for c in chunks if c["text"]]
+        assert [c["text"] for c in text_chunks] == ["The sky ", "is blue."]
+        # A terminal chunk carries the finish + mapped usage.
+        assert chunks[-1]["is_finished"] is True
+        assert chunks[-1]["usage"]["prompt_tokens"] == 18360
+
+    def test_kill_switch_off_restores_exec(self, monkeypatch):
+        """CLIO_CODEX_APP_SERVER=0: an app_server request degrades to exec byte-identically."""
+        monkeypatch.setenv("CLIO_CODEX_APP_SERVER", "0")
+        handler = CodexLLM()
+        with patch(
+            "clio_agent.providers.codex_litellm._run_exec", return_value="exec answer"
+        ) as run_exec:
+            resp = handler.completion(
+                model="codex/cdx-gpt-5.5",
+                messages=[{"role": "user", "content": "hi"}],
+                api_base="",
+                custom_prompt_dict={},
+                model_response=None,  # type: ignore[arg-type]
+                print_verbose=lambda *_: None,
+                encoding=None,
+                api_key=None,
+                logging_obj=None,
+                optional_params={"codex_transport": "app_server"},
+            )
+        run_exec.assert_called_once()
+        assert resp.choices[0].message.content == "exec answer"
+
+    def test_kill_switch_downgrade_emits_typed_reason(self, monkeypatch, caplog):
+        """The app_server→exec downgrade is LOUD: a typed catalog reason reaches
+        the log and (when the audit is on) a provider.transport_fallback row —
+        never a silent re-route (#775)."""
+        import logging
+
+        monkeypatch.setenv("CLIO_CODEX_APP_SERVER", "0")
+        audited: list[dict] = []
+        monkeypatch.setattr("clio_agent.providers.codex_litellm.stream_audit_enabled", lambda: True)
+        monkeypatch.setattr(
+            "clio_agent.providers.codex_litellm.stream_audit",
+            lambda stage, **f: audited.append({"stage": stage, **f}),
+        )
+        handler = CodexLLM()
+        with (
+            patch("clio_agent.providers.codex_litellm._run_exec", return_value="ok"),
+            caplog.at_level(logging.WARNING, logger="clio_agent.providers.codex_litellm"),
+        ):
+            handler.completion(
+                model="codex/cdx-gpt-5.5",
+                messages=[{"role": "user", "content": "hi"}],
+                api_base="",
+                custom_prompt_dict={},
+                model_response=None,  # type: ignore[arg-type]
+                print_verbose=lambda *_: None,
+                encoding=None,
+                api_key=None,
+                logging_obj=None,
+                optional_params={"codex_transport": "app_server"},
+            )
+        assert any("app_server_kill_switch" in rec.message for rec in caplog.records)
+        rows = [a for a in audited if a["stage"] == "provider.transport_fallback"]
+        assert rows and rows[0]["reason"] == "app_server_kill_switch"
+        assert rows[0]["category"] == "transport_downgrade"
+
+    def test_unknown_fallback_reason_raises(self):
+        """Catalog discipline: a typo'd reason raises, never an empty payload."""
+        from clio_agent.providers.codex_app_server import transport_fallback_payload
+
+        with pytest.raises(ValueError, match="Unknown transport fallback reason"):
+            transport_fallback_payload("no_such_reason")
+
+    def test_effort_knob_inactive_on_exec_is_logged_typed(self, monkeypatch, caplog):
+        """When the kill-switch forces exec while a reasoning effort is pinned,
+        the inactive knob is logged with a typed reason (no silent knob-drop)."""
+        import logging
+
+        monkeypatch.setenv("CLIO_CODEX_APP_SERVER", "0")
+        handler = CodexLLM()
+        with (
+            patch("clio_agent.providers.codex_litellm._run_exec", return_value="ok"),
+            caplog.at_level(logging.WARNING, logger="clio_agent.providers.codex_litellm"),
+        ):
+            handler.completion(
+                model="codex/cdx-gpt-5.5",
+                messages=[{"role": "user", "content": "hi"}],
+                api_base="",
+                custom_prompt_dict={},
+                model_response=None,  # type: ignore[arg-type]
+                print_verbose=lambda *_: None,
+                encoding=None,
+                api_key=None,
+                logging_obj=None,
+                optional_params={
+                    "codex_transport": "app_server",
+                    "codex_reasoning_effort": "high",
+                },
+            )
+        assert any("effort_knob_inactive_on_batch_path" in rec.message for rec in caplog.records)
+
+    def test_kill_switch_on_does_not_route_to_exec(self, monkeypatch):
+        """SABOTAGE twin: with the switch ON, app_server must NOT hit the exec path."""
+        monkeypatch.setenv("CLIO_CODEX_APP_SERVER", "1")
+        handler = CodexLLM()
+        with (
+            patch(
+                "clio_agent.providers.codex_stream._app_server_events",
+                side_effect=lambda **_kw: (e for e in self._events()),
+            ),
+            patch("clio_agent.providers.codex_litellm._run_exec") as run_exec,
+        ):
+            handler.completion(
+                model="codex/cdx-gpt-5.5",
+                messages=[{"role": "user", "content": "hi"}],
+                api_base="",
+                custom_prompt_dict={},
+                model_response=None,  # type: ignore[arg-type]
+                print_verbose=lambda *_: None,
+                encoding=None,
+                api_key=None,
+                logging_obj=None,
+                optional_params={"codex_transport": "app_server"},
+            )
+        run_exec.assert_not_called()
+
+    def test_resolve_effort_reads_codex_reasoning_effort(self):
+        from clio_agent.providers.codex_litellm import _resolve_effort
+
+        assert _resolve_effort({"codex_reasoning_effort": "none"}) == "none"
+        assert _resolve_effort({"codex_reasoning_effort": "high"}) == "high"
+        assert _resolve_effort({}) is None
+
+    def test_app_server_error_maps_to_codex_error(self):
+        from clio_agent.providers.codex_app_server import CodexAppServerError
+
+        handler = CodexLLM()
+
+        def _boom(*_a, **_k):
+            raise CodexAppServerError("transport died")
+            yield  # pragma: no cover - generator marker
+
+        with (
+            patch("clio_agent.providers.codex_stream._app_server_events", side_effect=_boom),
+            pytest.raises(CodexExecError, match="app-server"),
+        ):
+            handler.completion(
+                model="codex/cdx-gpt-5.5",
+                messages=[{"role": "user", "content": "hi"}],
+                api_base="",
+                custom_prompt_dict={},
+                model_response=None,  # type: ignore[arg-type]
+                print_verbose=lambda *_: None,
+                encoding=None,
+                api_key=None,
+                logging_obj=None,
+                optional_params={"codex_transport": "app_server"},
+            )
+
+    def test_build_model_response_zero_usage_for_exec(self):
+        resp = _build_model_response(text="x", model="gpt-5.5")
+        assert resp.usage.total_tokens == 0
+
+
 class TestEnsureRegistered:
     def test_registers_once(self):
         import litellm

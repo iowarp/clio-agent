@@ -12,7 +12,13 @@ Claude-shaped (design constraint from #896):
   ``disabled`` *explicitly*; a zero ``thinking_budget`` alone cannot express it
   (0 = "unset / let the provider default govern"). That is exactly why the
   external level is a sibling knob to ``thinking_budget``.
-* **openai / codex / openai-compatible** (lm_studio, ollama, argonne):
+* **codex** (``codex app-server`` transport): ``model_reasoning_effort`` bucketed
+  to the level, carried under ``codex_reasoning_effort`` so the bridge pins it on
+  ``turn/start`` (LiteLLM ignores ``reasoning_effort`` on the CustomLLM, which is
+  why the old ``reasoning_effort`` mapping was a silent no-op there — #896). Codex
+  has an explicit ``none`` effort, so ``off`` maps to ``"none"`` (NOT omit — an
+  omitted effort would inherit the ambient ``config.toml`` value, not disable it).
+* **openai / openai-compatible** (lm_studio, ollama, argonne):
   ``reasoning_effort`` bucketed to the level.
 * **any other provider**: no mapping — a typed ``unsupported`` plan carrying a
   structured reason, surfaced by the caller. Never a silent no-op.
@@ -42,7 +48,12 @@ LEVEL_BUDGET: dict[str, int] = {"low": 2048, "medium": 8192, "high": 24576}
 # Providers whose transport expresses thinking as a token budget.
 _BUDGET_PROVIDERS: frozenset[str] = frozenset({"anthropic", "claude_code"})
 # Providers (OpenAI + OpenAI-compatible) that take a ``reasoning_effort`` string.
-_EFFORT_PROVIDERS: frozenset[str] = frozenset({"openai", "codex", "lm_studio", "ollama", "argonne"})
+_EFFORT_PROVIDERS: frozenset[str] = frozenset({"openai", "lm_studio", "ollama", "argonne"})
+
+#: Codex effort vocabulary. ``off`` → codex's explicit ``none`` (disable), not omit
+#: (omit would inherit the ambient ``config.toml`` effort — #896). low/medium/high
+#: pass through; all four are accepted by gpt-5.x via ``codex app-server``.
+_CODEX_EFFORT: dict[str, str] = {"off": "none", "low": "low", "medium": "medium", "high": "high"}
 
 
 @dataclass(frozen=True)
@@ -187,6 +198,35 @@ def resolve_thinking(provider: str, level: str | None, budget: int | None) -> Th
             supported=True,
             unsupported_reason=None,
             litellm_kwargs=litellm_kwargs,
+            sdk_thinking=None,
+        )
+
+    if provider == "codex":
+        mapped = _CODEX_EFFORT.get(effective)
+        if mapped is None:  # defensive — off/low/medium/high always map
+            return ThinkingPlan(
+                provider=provider,
+                requested_level=lvl,
+                effective_level="unsupported",
+                budget_tokens=budget_tokens,
+                supported=False,
+                unsupported_reason=(
+                    f"codex has no reasoning-effort mapping for level {effective!r}"
+                ),
+                litellm_kwargs={},
+                sdk_thinking=None,
+            )
+        # Carried under codex_reasoning_effort (not reasoning_effort): the codex
+        # CustomLLM reads it and pins it on turn/start; LiteLLM would otherwise
+        # drop reasoning_effort on the CustomLLM path (the old silent no-op, #896).
+        return ThinkingPlan(
+            provider=provider,
+            requested_level=lvl,
+            effective_level=effective,
+            budget_tokens=budget_tokens,
+            supported=True,
+            unsupported_reason=None,
+            litellm_kwargs={"codex_reasoning_effort": mapped},
             sdk_thinking=None,
         )
 

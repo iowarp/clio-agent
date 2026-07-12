@@ -78,7 +78,7 @@ def test_teardown_pooled_sdk_transports_closes_both_pools_and_logs(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Clean shutdown closes BOTH SDK pools and emits the typed reason (no silent path)."""
-    from clio_agent.providers import claude_code_sdk_pool, claude_code_sessions
+    from clio_agent.providers import claude_code_sdk_pool, claude_code_sessions, codex_app_server
 
     calls: list[str] = []
     monkeypatch.setattr(
@@ -91,12 +91,21 @@ def test_teardown_pooled_sdk_transports_closes_both_pools_and_logs(
         "close",
         lambda: calls.append("sdk"),
     )
+    monkeypatch.setattr(
+        codex_app_server._APP_SERVER_POOL,
+        "close_blocking",
+        lambda: calls.append("codex"),
+    )
 
     with caplog.at_level(logging.INFO, logger="clio_agent.runtime.process_tree"):
         outcome = pt.teardown_pooled_sdk_transports()
 
-    assert calls == ["stream", "sdk"]
-    assert outcome == {"stream_client_pool": "closed", "sdk_session_pool": "closed"}
+    assert calls == ["stream", "sdk", "codex"]
+    assert outcome == {
+        "stream_client_pool": "closed",
+        "sdk_session_pool": "closed",
+        "codex_app_server_pool": "closed",
+    }
     assert any("reason=sdk_pools_closed" in rec.message for rec in caplog.records)
 
 

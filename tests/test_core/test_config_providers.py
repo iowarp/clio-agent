@@ -132,9 +132,9 @@ class TestLMProviderConfig:
         assert config.environment == "dev"
 
     def test_default_codex_transport(self):
-        """Codex transport should default to exec."""
+        """Codex transport defaults to app_server (native JSON-RPC/stdio, #896)."""
         config = LMProviderConfig(provider="codex")
-        assert config.codex_transport == "exec"
+        assert config.codex_transport == "app_server"
 
     def test_invalid_codex_transport_rejected(self):
         """Invalid Codex transport should fail during config construction."""
@@ -513,7 +513,7 @@ class TestCreateLM:
         config = LMProviderConfig(provider="codex", model="gpt-5.5")
         lm = create_lm(config)
         assert lm.model == "codex/cdx-gpt-5.5"
-        assert lm.kwargs["codex_transport"] == "exec"
+        assert lm.kwargs["codex_transport"] == "app_server"
 
     def test_codex_model_marker_is_not_doubled(self):
         """Codex should accept already-prefixed config values idempotently."""
@@ -530,6 +530,24 @@ class TestCreateLM:
         )
         lm = create_lm(config)
         assert lm.kwargs["codex_transport"] == "sdk"
+
+    def test_codex_thinking_level_passes_codex_reasoning_effort_kwarg(self):
+        """SEAM (#896): the #895 thinking level survives the factory into the LM
+        kwargs as codex_reasoning_effort — the same optional_params lane
+        codex_transport already proves reaches the CustomLLM. off → codex's
+        explicit 'none' (never omit-and-inherit-ambient)."""
+        config = LMProviderConfig(provider="codex", model="gpt-5.5", thinking_level="high")
+        lm = create_lm(config)
+        assert lm.kwargs["codex_reasoning_effort"] == "high"
+
+        config_off = LMProviderConfig(provider="codex", model="gpt-5.5", thinking_level="off")
+        lm_off = create_lm(config_off)
+        assert lm_off.kwargs["codex_reasoning_effort"] == "none"
+
+        # Unset level → no effort kwarg at all (codex's own default governs).
+        config_default = LMProviderConfig(provider="codex", model="gpt-5.5")
+        lm_default = create_lm(config_default)
+        assert "codex_reasoning_effort" not in lm_default.kwargs
 
     def test_claude_code_uses_custom_provider_prefix(self):
         """Claude Code should keep user-facing model ids clean and mark internally."""

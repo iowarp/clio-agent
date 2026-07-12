@@ -14,24 +14,28 @@ Design notes
   final assistant message to a file via ``-o/--output-last-message``.
   Clio's planner does the real orchestration.
 
-- **Two transports.** Default is ``codex exec`` subprocess (~1-2 s
-  cold start; always works if the binary is on PATH). Opt-in
-  ``transport="sdk"`` uses the ``openai_codex`` Python SDK in-process
-  via JSON-RPC against the local app-server daemon — much faster after
-  the daemon warms, but requires ``pip install 'clio-agent[codex]'``.
+- **Three transports.** Default (production) is ``transport="app_server"``:
+  the native ``codex app-server`` JSON-RPC-over-stdio surface driven by
+  :mod:`clio_agent.providers.codex_app_server` — a warm subprocess per
+  ``(model, cwd)``, true ``item/agentMessage/delta`` token streaming, and live
+  ``thread/tokenUsage/updated`` usage. ``transport="exec"`` is the legacy
+  ``codex exec`` batch subprocess (the byte-identical kill-switch path, restored
+  by ``CLIO_CODEX_APP_SERVER=0``). ``transport="sdk"`` uses the ``openai_codex``
+  Python SDK (opt-in via ``pip install 'clio-agent[codex]'``). The bridge-level
+  ``DEFAULT_TRANSPORT`` fallback (when ``optional_params`` carries none) stays
+  ``exec`` so direct/unit calls keep the zero-dependency path.
 
 - **Auth lives in the CLI.** We never see the user's ChatGPT cookie
   / OpenAI key — ``codex login`` writes a token to ``~/.codex/`` and
   the CLI uses it. We just shell out.
 
-- **Streaming = one terminal chunk.** Codex ``exec`` produces the whole
-  answer at once, so there is nothing to stream incrementally — but clio /
-  DSPy issue streaming requests by default, so ``streaming()`` /
-  ``astreaming()`` MUST return a real (async) iterator. We run the
-  completion and yield it as a single final ``GenericStreamingChunk``.
-  (Returning a bare coroutine instead is what produced the
-  ``'coroutine' object is not an iterator`` mid-stream fallback crash in
-  iowarp/clio-agent#708, before any visible output.)
+- **Streaming.** ``app_server`` streams real ``item/agentMessage/delta`` chunks
+  into the same streamed-chunk pipeline claude_code uses (the wire/normalization
+  contract is FROZEN). ``exec``/``sdk`` produce the whole answer at once, so they
+  yield a single terminal ``GenericStreamingChunk`` — but ``streaming()`` /
+  ``astreaming()`` MUST return a real (async) iterator either way. (Returning a
+  bare coroutine is what produced the ``'coroutine' object is not an iterator``
+  mid-stream fallback crash in iowarp/clio-agent#708, before any output.)
 
 - **Registration is lazy + idempotent.** ``ensure_registered()`` is
   called from ``config.create_lm()`` / ``create_planner_lm()`` only when
@@ -42,6 +46,7 @@ Design notes
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import shutil
 import subprocess
@@ -56,6 +61,19 @@ from clio_agent.providers._cli_provider import (
     messages_to_prompt,
     register_custom_provider,
 )
+from clio_agent.providers.codex_app_server import (
+    app_server_enabled,
+    transport_fallback_payload,
+)
+from clio_agent.providers.codex_stream import (
+    _next_call_index,
+    astream_app_server,
+    run_app_server,
+    usage_chunk,
+)
+from clio_agent.runtime.stream_audit import stream_audit, stream_audit_enabled
+
+logger = logging.getLogger(__name__)
 
 try:
     from litellm import CustomLLM
@@ -81,7 +99,10 @@ DEFAULT_SANDBOX = "read-only"
 #: ``codex exec`` (always works if the binary is on PATH);
 #: ``"sdk"`` uses the in-process ``openai_codex`` SDK (opt-in via
 #: ``pip install 'clio-agent[codex]'``).
-Transport = str  # Literal["exec", "sdk"] — kept as str so callers can override freely.
+Transport = str  # Literal["app_server", "exec", "sdk"] — str so callers override freely.
+#: Bridge-level fallback when ``optional_params`` carries no ``codex_transport``
+#: (direct/unit calls). Production rides ``config.codex_transport`` (default
+#: ``app_server``); this stays ``exec`` so the zero-dependency path is the fallback.
 DEFAULT_TRANSPORT: Transport = "exec"
 
 
@@ -285,14 +306,23 @@ def _build_model_response(
     *,
     text: str,
     model: str,
+    usage_payload: dict[str, Any] | None = None,
     request_id: str | None = None,
 ) -> ModelResponse:
     """Wrap a Codex completion in a LiteLLM ``ModelResponse``.
 
-    Token counts are stubbed at zero — Codex's `exec` headless mode
-    doesn't surface usage in the output file. Cost-tracking callers
-    fall back to the price-table heuristic in `gact/app.py:_realised_cost`.
+    ``usage_payload`` is the normalized codex breakdown
+    (:func:`clio_agent.providers.codex_app_server.normalize_usage`) from the
+    ``app_server`` transport; ``None`` (the ``exec``/``sdk`` batch paths) stubs
+    zeros — those transports surface no usage on the output file, so cost-tracking
+    callers fall back to the price-table heuristic in ``gact/app.py``. Codex's
+    ``input_tokens`` already includes the cached subset and ``output_tokens``
+    already includes reasoning, so we do NOT re-sum them (that would double-count).
     """
+    usage_payload = usage_payload or {}
+    prompt_tokens = int(usage_payload.get("input_tokens", 0) or 0)
+    completion_tokens = int(usage_payload.get("output_tokens", 0) or 0)
+    total = int(usage_payload.get("total_tokens", 0) or 0) or (prompt_tokens + completion_tokens)
     return ModelResponse(
         id=request_id or f"codex-{uuid.uuid4().hex}",
         choices=[
@@ -305,12 +335,56 @@ def _build_model_response(
         created=int(time.time()),
         model=f"codex/{model}",
         object="chat.completion",
-        usage=Usage(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+        usage=Usage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total,
+        ),
     )
+
+
+def _resolve_effort(params: dict[str, Any]) -> str | None:
+    """Resolve the codex reasoning effort from the #895 thinking plan.
+
+    ``codex_reasoning_effort`` is set by ``providers.thinking.resolve_thinking``
+    (off→``none``, low/medium/high pass through). ``None`` means the knob was
+    unset — no effort is pinned and codex uses its own default. This is the fix
+    for the silent no-op: a requested level now reaches ``turn/start``.
+    """
+    effort = params.get("codex_reasoning_effort")
+    return str(effort) if effort else None
 
 
 class CodexLLM(CustomLLM):
     """LiteLLM custom handler that routes ``codex/<model>`` to ``codex exec``."""
+
+    @staticmethod
+    def _resolve_transport(params: dict) -> str:
+        """Resolve the effective transport, applying the app-server kill-switch.
+
+        Transport travels per-LM in ``optional_params`` (carried on the resolved
+        ``LMProviderConfig``, #818); no process-global env fallback so concurrent
+        experts each get their own transport. When the resolved transport is
+        ``app_server`` but the kill-switch (``CLIO_CODEX_APP_SERVER=0``) is off, it
+        degrades to ``exec`` — restoring the legacy batch path byte-for-byte, and
+        emitting the typed ``app_server_kill_switch`` downgrade reason (audit row
+        + log) so the re-route is queryable, never silent (#775).
+        """
+        transport = params.get("codex_transport") or DEFAULT_TRANSPORT
+        if transport == "app_server" and not app_server_enabled():
+            payload = transport_fallback_payload("app_server_kill_switch")
+            logger.warning(
+                "codex transport downgraded app_server->exec reason=%s", payload["reason"]
+            )
+            if stream_audit_enabled():
+                stream_audit(
+                    "provider.transport_fallback",
+                    provider="codex_app_server",
+                    transport="exec",
+                    **payload,
+                )
+            return "exec"
+        return transport
 
     def _complete_text(
         self,
@@ -319,33 +393,33 @@ class CodexLLM(CustomLLM):
         messages: list,
         optional_params: dict | None,
         timeout: Any = None,
+        transport: str | None = None,
     ) -> str:
-        """Run one Codex turn and return the assistant text.
+        """Run one blocking Codex turn (exec/sdk) and return the assistant text.
 
-        Shared by ``completion``/``acompletion`` and ``streaming``/
-        ``astreaming`` so every entry point dispatches the transport
-        identically (the only difference is how the result is wrapped).
+        The ``app_server`` transport is handled by ``completion`` / ``astreaming``
+        directly (it also carries usage); this covers the batch exec/sdk paths.
         """
-        # LiteLLM passes the model with the `codex/` prefix stripped
-        # already. We also strip the leading `cdx-` namespace marker
-        # so the actual model id flows clean to `codex exec`.
-        #
-        # Why `cdx-`: LiteLLM's dispatcher short-circuits to the OpenAI
-        # handler when the bare model name (after the `codex/` split)
-        # matches an entry in `litellm.open_ai_chat_completion_models`
-        # — and every gpt-5* / gpt-4.1* name is in that list. Wrapping
-        # the model id with a `cdx-` prefix in config._resolve_model_name
-        # keeps the bare name unrecognizable to LiteLLM's openai-detect
-        # path while keeping user-facing model ids clean.
+        # LiteLLM passes the model with the `codex/` prefix stripped already; we
+        # also strip the leading `cdx-` namespace marker (see config._resolve_model_name)
+        # so the actual model id flows clean to the transport.
         clean_model = model.removeprefix("codex/").removeprefix("cdx-")
         prompt = _messages_to_codex_prompt(messages)
         params = optional_params or {}
         sandbox = params.get("codex_sandbox", DEFAULT_SANDBOX)
         cwd = params.get("codex_cwd", os.getcwd())
-        # Transport travels per-LM in optional_params (carried on the resolved
-        # LMProviderConfig, #818); no process-global env fallback so concurrent
-        # experts each get their own transport, not a shared ambient one.
-        transport = params.get("codex_transport") or DEFAULT_TRANSPORT
+        transport = transport or self._resolve_transport(params)
+        if params.get("codex_reasoning_effort"):
+            # Only app_server pins effort on turn/start. On the batch paths
+            # (explicit exec/sdk config or the kill-switch downgrade) the #895
+            # knob is INACTIVE — say so typed, never drop it silently.
+            logger.warning(
+                "codex_reasoning_effort=%s is inactive on the %r transport "
+                "reason=effort_knob_inactive_on_batch_path (only app_server pins "
+                "reasoning effort on turn/start)",
+                params["codex_reasoning_effort"],
+                transport,
+            )
         timeout_s = float(timeout) if timeout else 120.0
         if transport == "sdk":
             return _run_sdk(
@@ -355,7 +429,9 @@ class CodexLLM(CustomLLM):
             return _run_exec(
                 prompt=prompt, model=clean_model, sandbox=sandbox, cwd=cwd, timeout=timeout_s
             )
-        raise CodexExecError(f"unknown codex transport {transport!r} (expected 'exec' or 'sdk')")
+        raise CodexExecError(
+            f"unknown codex transport {transport!r} (expected 'app_server', 'exec' or 'sdk')"
+        )
 
     @staticmethod
     def _final_stream_chunk(text: str) -> GenericStreamingChunk:
@@ -393,12 +469,27 @@ class CodexLLM(CustomLLM):
         timeout: Any = None,
         client: Any = None,
     ) -> ModelResponse:
+        params = optional_params or {}
+        clean_model = model.removeprefix("codex/").removeprefix("cdx-")
+        transport = self._resolve_transport(params)
+        if transport == "app_server":
+            text, usage = run_app_server(
+                prompt=_messages_to_codex_prompt(messages),
+                model=clean_model,
+                cwd=params.get("codex_cwd", os.getcwd()),
+                effort=_resolve_effort(params),
+                timeout=float(timeout) if timeout else 180.0,
+                call_index=_next_call_index(),
+            )
+            return _build_model_response(text=text, model=clean_model, usage_payload=usage)
         text = self._complete_text(
-            model=model, messages=messages, optional_params=optional_params, timeout=timeout
+            model=model,
+            messages=messages,
+            optional_params=params,
+            timeout=timeout,
+            transport=transport,
         )
-        return _build_model_response(
-            text=text, model=model.removeprefix("codex/").removeprefix("cdx-")
-        )
+        return _build_model_response(text=text, model=clean_model)
 
     async def acompletion(
         self,
@@ -419,18 +510,31 @@ class CodexLLM(CustomLLM):
         timeout: Any = None,
         client: Any = None,
     ) -> ModelResponse:
+        params = optional_params or {}
+        clean_model = model.removeprefix("codex/").removeprefix("cdx-")
+        transport = self._resolve_transport(params)
+        if transport == "app_server":
+            text, usage = await asyncio.to_thread(
+                run_app_server,
+                prompt=_messages_to_codex_prompt(messages),
+                model=clean_model,
+                cwd=params.get("codex_cwd", os.getcwd()),
+                effort=_resolve_effort(params),
+                timeout=float(timeout) if timeout else 180.0,
+                call_index=_next_call_index(),
+            )
+            return _build_model_response(text=text, model=clean_model, usage_payload=usage)
         # The exec/SDK transports are blocking; run off the event loop so we
         # don't stall the server while Codex thinks.
         text = await asyncio.to_thread(
             self._complete_text,
             model=model,
             messages=messages,
-            optional_params=optional_params,
+            optional_params=params,
             timeout=timeout,
+            transport=transport,
         )
-        return _build_model_response(
-            text=text, model=model.removeprefix("codex/").removeprefix("cdx-")
-        )
+        return _build_model_response(text=text, model=clean_model)
 
     def streaming(
         self,
@@ -451,11 +555,39 @@ class CodexLLM(CustomLLM):
         timeout: Any = None,
         client: Any = None,
     ) -> Iterator[GenericStreamingChunk]:
-        # #708: clio/DSPy request streaming by default. Codex has no
-        # incremental output, so emit the full answer as one terminal chunk
-        # from a real generator (NOT a coroutine).
+        # #708: clio/DSPy request streaming by default, so this MUST be a real
+        # generator (NOT a coroutine). The exec/sdk transports have no incremental
+        # output → one terminal chunk. app_server streams token deltas, but the
+        # SYNC path drains them and yields one terminal chunk (dspy drives turns
+        # through astreaming; sync streaming is the compatibility fallback).
+        params = optional_params or {}
+        clean_model = model.removeprefix("codex/").removeprefix("cdx-")
+        transport = self._resolve_transport(params)
+        if transport == "app_server":
+            text, usage = run_app_server(
+                prompt=_messages_to_codex_prompt(messages),
+                model=clean_model,
+                cwd=params.get("codex_cwd", os.getcwd()),
+                effort=_resolve_effort(params),
+                timeout=float(timeout) if timeout else 180.0,
+                call_index=_next_call_index(),
+            )
+            yield GenericStreamingChunk(
+                text=text,
+                tool_use=None,
+                is_finished=True,
+                finish_reason="stop",
+                usage=usage_chunk(usage)
+                or {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                index=0,
+            )
+            return
         text = self._complete_text(
-            model=model, messages=messages, optional_params=optional_params, timeout=timeout
+            model=model,
+            messages=messages,
+            optional_params=params,
+            timeout=timeout,
+            transport=transport,
         )
         yield self._final_stream_chunk(text)
 
@@ -478,16 +610,31 @@ class CodexLLM(CustomLLM):
         timeout: Any = None,
         client: Any = None,
     ) -> AsyncIterator[GenericStreamingChunk]:
-        # #708: must be an async GENERATOR (real async iterator), not a
-        # coroutine that returns one — the latter is exactly what produced
-        # "'coroutine' object is not an iterator" mid-stream. Run the
-        # blocking transport off the event loop, then yield one final chunk.
+        # #708: must be an async GENERATOR (real async iterator), not a coroutine
+        # that returns one. app_server streams real token deltas into the frozen
+        # chunk pipeline; exec/sdk run the blocking transport off the event loop
+        # and yield one final chunk.
+        params = optional_params or {}
+        clean_model = model.removeprefix("codex/").removeprefix("cdx-")
+        transport = self._resolve_transport(params)
+        if transport == "app_server":
+            async for chunk in astream_app_server(
+                prompt=_messages_to_codex_prompt(messages),
+                model=clean_model,
+                cwd=params.get("codex_cwd", os.getcwd()),
+                effort=_resolve_effort(params),
+                timeout=float(timeout) if timeout else 180.0,
+                call_index=_next_call_index(),
+            ):
+                yield chunk  # type: ignore[misc]  # dict satisfies litellm's runtime chunk contract
+            return
         text = await asyncio.to_thread(
             self._complete_text,
             model=model,
             messages=messages,
-            optional_params=optional_params,
+            optional_params=params,
             timeout=timeout,
+            transport=transport,
         )
         yield self._final_stream_chunk(text)
 
@@ -503,4 +650,6 @@ __all__ = [
     "CodexExecError",
     "CodexLLM",
     "ensure_registered",
+    "astream_app_server",
+    "run_app_server",
 ]

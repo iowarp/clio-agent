@@ -193,7 +193,7 @@ class LMProviderConfig:
         planner_temperature: Lower temperature for deterministic action planning
         planner_max_tokens: Maximum tokens for planner JSON generation
         environment: Deployment environment (dev/staging/production)
-        codex_transport: Codex transport mode, either "exec" or "sdk"
+        codex_transport: Codex transport: "app_server" (default), "exec", "sdk"
     """
 
     provider: Literal[
@@ -241,7 +241,7 @@ class LMProviderConfig:
     min_p: float | None = None
     presence_penalty: float | None = None
     environment: str = "dev"
-    codex_transport: Literal["exec", "sdk"] = "exec"
+    codex_transport: Literal["app_server", "exec", "sdk"] = "app_server"
     # "sdk" (DEFAULT — the best config): the in-process Claude Agent SDK with a
     #   persistent CLI session — no per-call spawn, streaming-capable, and
     #   setting_sources=[] keeps the user's ~/.claude/CLAUDE.md out of the prompt
@@ -317,9 +317,9 @@ class LMProviderConfig:
         # so re-reading on every config load is safe.
         self.strip_openai_prefix = bool(defaults.get("strip_openai_prefix", True))
         self.supports_vision = bool(defaults.get("supports_vision", False))
-        if self.codex_transport not in {"exec", "sdk"}:
+        if self.codex_transport not in {"app_server", "exec", "sdk"}:
             raise ValueError(
-                f"codex_transport must be 'exec' or 'sdk' (got {self.codex_transport!r})"
+                f"codex_transport must be 'app_server', 'exec' or 'sdk' (got {self.codex_transport!r})"
             )
         if self.claude_code_transport not in {"exec", "sdk"}:
             raise ValueError(

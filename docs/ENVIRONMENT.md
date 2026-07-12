@@ -30,6 +30,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_CAPTURE_REASONING` | `runtime.capture_reasoning` | bool | `true` | `src/clio_agent/gact/usage.py` |
 | `CLIO_CLAUDE_CODE_SESSION_REUSE` | `providers.claude_code.session_reuse` | bool | `true` | `src/clio_agent/providers/claude_code_sessions.py` |
 | `CLIO_CLAUDE_CODE_TRANSPORT` | `lm.claude_code_transport` | str | _(unset)_ | `src/clio_agent/config.py` |
+| `CLIO_CODEX_APP_SERVER` | `providers.codex.app_server` | bool | `true` | `src/clio_agent/providers/codex_app_server.py` |
 | `CLIO_CODEX_TRANSPORT` | `lm.codex_transport` | str | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_CORE_PORT` | `arc.core_port` | str | _(unset)_ | `src/clio_agent/arc/cte_liveness.py` |
 | `CLIO_CTX_MAX_BYTES` | `limits.context_inline_bytes` | int | `32768` | `src/clio_agent/gact/runtime/constants.py` |
