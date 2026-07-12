@@ -356,11 +356,20 @@ def run(plan: ExperimentPlan) -> dict[str, Any]:
         return row
     finally:
         if proc is not None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+            _terminate_server_tree(proc)
+
+
+def _terminate_server_tree(proc: subprocess.Popen) -> None:
+    """Tree-kill the spawned gact server and every descendant (#900 harness discipline).
+
+    The booted server (claude_code SDK transport) fans out into MCP stdio children +
+    pooled ``claude`` CLI process(es); a plain ``proc.terminate()`` on the parent orphans
+    them (Windows never reaps the tree by terminating the parent). Reuse the audited
+    :func:`clio_agent.serve._terminate_tree` (psutil-recursive + POSIX process-group).
+    """
+    from clio_agent.serve import _terminate_tree  # noqa: PLC0415
+
+    _terminate_tree(proc.pid, record_create_time=None, trusted=True)
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:

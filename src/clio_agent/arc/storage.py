@@ -306,11 +306,15 @@ def _detached_popen_kwargs() -> "dict[str, object]":
 
     POSIX: ``setsid``. Windows: ``CREATE_NO_WINDOW`` in a new process group, NOT
     ``DETACHED_PROCESS``: no console breaks the daemon's ZeroMQ Winsock init (#870).
+    ``CREATE_BREAKAWAY_FROM_JOB`` (#900) breaks the shared daemon OUT of the server's
+    ``KILL_ON_JOB_CLOSE`` Job Object so it survives a server hard-kill (the job sets
+    ``BREAKAWAY_OK``; the flag is ignored where no job is assigned).
     """
     if sys.platform.startswith("win"):
         flags = 0
         flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
         flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+        flags |= getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)
         return {"creationflags": flags, "close_fds": True}
     return {"start_new_session": True, "close_fds": True}
 

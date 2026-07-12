@@ -227,6 +227,7 @@ class RuntimeProbe:
         """Collect all currently supported integration statuses."""
         from clio_agent.runtime.cte_health import probe_cte_health  # noqa: PLC0415
         from clio_agent.runtime.mcp_launcher import probe_mcp_launchers  # noqa: PLC0415
+        from clio_agent.runtime.process_tree import probe_process_tree  # noqa: PLC0415
 
         gateway_status = self.probe_gateway()
         integrations = [
@@ -239,6 +240,7 @@ class RuntimeProbe:
             self.probe_api(api_state=api_state, api_error=api_error),
             self.probe_clio_core(),
             *probe_mcp_launchers(env=self.env),
+            *probe_process_tree(),
         ]
         return RuntimeReport(integrations=integrations)
 

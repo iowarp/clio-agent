@@ -941,6 +941,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """
 
     app.state.started_at = time.time()
+    # #900: bind CLIO's child tree (MCP stdio + pooled SDK CLI) to this server so a HARD
+    # kill reaps it (Windows Job Object / POSIX pdeathsig). Typed result → doctor probe.
+    from clio_agent.runtime.process_tree import install_child_reaper  # noqa: PLC0415
+
+    app.state.child_reaper = install_child_reaper()
+
     task: Optional[asyncio.Task] = None
     if getattr(app.state, "schedules", None) is not None:
         task = asyncio.create_task(_scheduler_tick(app))
@@ -980,6 +986,14 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             _trace_close()
         except Exception:  # pragma: no cover - defensive shutdown cleanup  # noqa: BLE001,S110 - defensive shutdown cleanup
             pass
+    # #900: explicit clean-shutdown teardown (promoted from atexit best-effort) — close
+    # the agent's MCP stdio executors + pooled SDK CLI transports now, with typed logging,
+    # off the event loop (thread joins). A HARD kill skips this; the Job Object / pdeathsig
+    # binding above is the backstop. The owner helper never raises.
+    from clio_agent.runtime.process_tree import shutdown_child_processes  # noqa: PLC0415
+
+    _agent = getattr(app.state, "agent", None)
+    await asyncio.get_running_loop().run_in_executor(None, lambda: shutdown_child_processes(_agent))
     # NOTE: the shared clio-core runtime client is released (last-one-out stop) via the
     # atexit hook registered in CTEStore — NOT here. uvicorn handles SIGTERM by exiting
     # the serve loop and returning normally, so the interpreter exits and atexit fires

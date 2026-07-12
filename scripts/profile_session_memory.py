@@ -276,12 +276,21 @@ def run_one(
             messages_fetched=len(ids),
         )
     finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=5)
+        _terminate_server_tree(proc)
+
+
+def _terminate_server_tree(proc: subprocess.Popen[bytes]) -> None:
+    """Tree-kill the spawned gact server and every descendant (#900 harness discipline).
+
+    The booted server fans out into MCP stdio children + a pooled SDK CLI process; a
+    plain ``proc.terminate()`` on the parent orphans them (on Windows terminating the
+    parent never reaps the tree). Reuse the audited
+    :func:`clio_agent.serve._terminate_tree` (psutil-recursive + POSIX process-group)
+    so the whole tree is reaped between runs.
+    """
+    from clio_agent.serve import _terminate_tree  # noqa: PLC0415
+
+    _terminate_tree(proc.pid, record_create_time=None, trusted=True)
 
 
 # ----------------------------------------------------------------------------- #

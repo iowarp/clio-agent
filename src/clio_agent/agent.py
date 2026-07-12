@@ -2683,7 +2683,11 @@ class ClioAgent(dspy.Module):
         return self.arc.get_conversation_history(session_id, limit=limit)
 
     def shutdown(self) -> None:
-        """Clean shutdown of ClioAgent resources."""
+        """Close the persistent MCP tool executors so their stdio children are reaped (#900)."""
+        from clio_agent.runtime.process_tree import close_tool_executors
+
         if self.verbose:
             print("[ClioAgent] Shutting down...")
-            print("[ClioAgent] Shutdown complete")
+        executors = [self.tool_executor, *self._workspace_tool_executors.values()]
+        self._workspace_tool_executors = {}
+        close_tool_executors(executors)
