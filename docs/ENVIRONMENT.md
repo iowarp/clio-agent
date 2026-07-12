@@ -16,10 +16,10 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ALLOWED_ROOTS` | `tools.file_policy.allowed_roots` | str | `_default_allowed_roots()` _(computed)_ | `src/clio_agent/tools/file_policy.py` |
 | `CLIO_ALLOW_SYMLINKS` | `tools.file_policy.allow_symlinks` | bool | `false` | `src/clio_agent/tools/file_policy.py` |
 | `CLIO_ARC_CACHE_CAPACITY` | `arc.cache_capacity` | int | `1000` | `src/clio_agent/arc/memory.py` |
-| `CLIO_ARC_CTE_DIR` | `arc.cte.dir` | str | _(unset)_ | `src/clio_agent/arc/cte_config.py` |
-| `CLIO_ARC_CTE_FILE_CAPACITY` | `arc.cte.file_capacity` | str | `50GB` | `src/clio_agent/arc/cte_config.py` |
-| `CLIO_ARC_CTE_LIVENESS_TTL_S` | `arc.cte.liveness_ttl_s` | float | `3.0` | `src/clio_agent/arc/cte_liveness.py` |
-| `CLIO_ARC_CTE_RAM_CAPACITY` | `arc.cte.ram_capacity` | str | `1GB` | `src/clio_agent/arc/cte_config.py` |
+| `CLIO_ARC_CLIO_CORE_LIVENESS_TTL_S` | `arc.clio_core.liveness_ttl_s` | float | `3.0` | `src/clio_agent/arc/clio_core_liveness.py` |
+| `CLIO_ARC_CTE_DIR` | `arc.cte.dir` | str | _(unset)_ | `src/clio_agent/arc/clio_core_config.py` |
+| `CLIO_ARC_CTE_FILE_CAPACITY` | `arc.cte.file_capacity` | str | `50GB` | `src/clio_agent/arc/clio_core_config.py` |
+| `CLIO_ARC_CTE_RAM_CAPACITY` | `arc.cte.ram_capacity` | str | `1GB` | `src/clio_agent/arc/clio_core_config.py` |
 | `CLIO_ARC_EVENTS_CHUNK_SEGMENTS` | `arc.events_chunk_segments` | int | `512` | `src/clio_agent/arc/memory.py` |
 | `CLIO_ARC_LSM_COMPACTION_THRESHOLD` | `arc.lsm_compaction_threshold` | int | `5` | `src/clio_agent/arc/memory.py` |
 | `CLIO_ARC_LSM_MEMTABLE_SIZE` | `arc.lsm_memtable_size` | int | `1000` | `src/clio_agent/arc/memory.py` |
@@ -34,7 +34,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_CLAUDE_CODE_TRANSPORT` | `lm.claude_code_transport` | str | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_CODEX_APP_SERVER` | `providers.codex.app_server` | bool | `true` | `src/clio_agent/providers/codex_app_server.py` |
 | `CLIO_CODEX_TRANSPORT` | `lm.codex_transport` | str | _(unset)_ | `src/clio_agent/config.py` |
-| `CLIO_CORE_PORT` | `arc.core_port` | str | _(unset)_ | `src/clio_agent/arc/cte_liveness.py` |
+| `CLIO_CORE_PORT` | `arc.core_port` | str | _(unset)_ | `src/clio_agent/arc/clio_core_liveness.py` |
 | `CLIO_CTX_MAX_BYTES` | `limits.context_inline_bytes` | int | `32768` | `src/clio_agent/gact/runtime/constants.py` |
 | `CLIO_DEBUG` | `debug.level` | str | `low` | `src/clio_agent/runtime/trace.py` |
 | `CLIO_DEBUG_MEMPROF` | `debug.memprof` | bool | `false` | `src/clio_agent/gact/diagnostics.py` |
@@ -87,7 +87,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_SEMANTIC_TRACE_CONFIG` | `trace.semantic_config` | str | _(unset)_ | `src/clio_agent/gact/semantic_events.py` |
 | `CLIO_SEMANTIC_TRACE_FACTORY` | `trace.semantic_factory` | str | _(unset)_ | `src/clio_agent/gact/semantic_events.py` |
 | `CLIO_SEMANTIC_TRACE_PATH` | `trace.path` | str | _(unset)_ | `src/clio_agent/gact/semantic_events.py` |
-| `CLIO_SERVER_CONF` | `arc.server_conf` | str | _(unset)_ | `src/clio_agent/arc/cte_liveness.py` |
+| `CLIO_SERVER_CONF` | `arc.server_conf` | str | _(unset)_ | `src/clio_agent/arc/clio_core_liveness.py` |
 | `CLIO_SESSIONS_PATH` | `paths.sessions` | str | _(unset)_ | `src/clio_agent/gact/sessions.py` |
 | `CLIO_SHELL_DEFAULT_OUTPUT_BYTES` | `limits.shell_default_output_bytes` | int | `16384` | `src/clio_agent/tools/servers/shell_server.py` |
 | `CLIO_SHELL_DEFAULT_TIMEOUT_S` | `limits.shell_default_timeout_s` | float | `5.0` | `src/clio_agent/tools/servers/shell_server.py` |

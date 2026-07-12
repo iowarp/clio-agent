@@ -4,7 +4,7 @@ Two clearly-delimited kinds of root:
 
 * **WORKSPACE** — ``<cwd>/.clio`` — per-project artifacts that belong to the workspace,
   split into ``agent/`` (clio-agent: ARC, sessions, traces, messages, context-files) and
-  ``core/`` (clio-core / the CTE runtime: config, any file-tier output).
+  ``core/`` (clio-core / the clio-core runtime: config, any file-tier output).
 * **USER** — per-user, shared across every workspace, resolved **OS-correctly via
   ``platformdirs``** (Linux ``~/.config/clio-agent`` honoring ``XDG_CONFIG_HOME``; macOS
   ``~/Library/Application Support/clio-agent``; Windows ``%APPDATA%\\clio-agent``):
@@ -88,7 +88,7 @@ def user_cache_dir() -> Path:
 def user_data_dir() -> Path:
     """OS-correct per-user DATA dir for clio-agent durable artifacts.
 
-    This is where backing-store data (the clio-core CTE file tier / config) lives —
+    This is where backing-store data (the clio-core file tier / config) lives —
     distinct from config (:func:`user_config_dir`) and regenerable cache
     (:func:`user_cache_dir`). Linux ``~/.local/share/clio-agent`` (honors
     ``XDG_DATA_HOME``), macOS ``~/Library/Application Support/clio-agent``, Windows

@@ -252,7 +252,7 @@ def test_dispatch_user_command_does_not_block_event_loop(
             "(command dispatch froze the event loop)"
         )
         # #800: /v1/health is the unified doctor — it honestly reports 503 when a
-        # required runtime (e.g. the CTE daemon) is down, which is the norm in a
+        # required runtime (e.g. the clio-core daemon) is down, which is the norm in a
         # bare test env. The point here is that the poll COMPLETED (did not block
         # on the running command), and returned a real doctor body.
         health_resp = health_result["resp"]

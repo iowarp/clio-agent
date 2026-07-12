@@ -294,8 +294,8 @@ def test_file_policy_probe_reports_invalid_policy_as_misconfigured():
 # ---------------------------------------------------------------------------
 
 
-def test_arc_cte_default_backend_red_when_daemon_down(tmp_path):
-    """Default backend is CTE: iowarp_core installed but no daemon MUST go red."""
+def test_arc_clio_core_default_backend_red_when_daemon_down(tmp_path):
+    """Default backend is clio-core: iowarp_core installed but no daemon MUST go red."""
     clio_home = tmp_path / "clio-home"
     clio_home.mkdir()
     (clio_home / "clio-runtime.log").write_text(
@@ -314,14 +314,14 @@ def test_arc_cte_default_backend_red_when_daemon_down(tmp_path):
     assert status.state == IntegrationState.UNAVAILABLE
     assert status.required is True
     assert status.details["storage_mode"] == "cte"
-    assert status.details["reason"] == "cte_daemon_not_listening"
+    assert status.details["reason"] == "clio_core_daemon_not_listening"
     assert isinstance(status.details["port"], int)
     assert any("FATAL" in line for line in status.details["log_tail"])
     assert "clio-runtime.log" in status.details["log_path"]
 
 
-def test_arc_cte_backend_red_when_iowarp_core_missing(tmp_path):
-    """CTE selected but the pip runtime is absent: a broken install goes red."""
+def test_arc_clio_core_backend_red_when_iowarp_core_missing(tmp_path):
+    """clio-core selected but the pip runtime is absent: a broken install goes red."""
     probe = RuntimeProbe(
         env={"CLIO_ARC_STORE": "cte"},
         module_checker=lambda name: False,
@@ -337,7 +337,7 @@ def test_arc_cte_backend_red_when_iowarp_core_missing(tmp_path):
     assert "iowarp" in status.summary.lower()
 
 
-def test_arc_cte_backend_ready_when_daemon_listening(tmp_path):
+def test_arc_clio_core_backend_ready_when_daemon_listening(tmp_path):
     """Installed pip runtime + listening daemon reports READY with cte mode."""
     clio_home = tmp_path / "clio-home"
     clio_home.mkdir()
@@ -400,8 +400,8 @@ def test_arc_unknown_backend_is_misconfigured(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_clio_core_red_when_cte_backend_and_daemon_down(tmp_path):
-    """With the default CTE backend a dead daemon turns the report red."""
+def test_clio_core_red_when_clio_core_backend_and_daemon_down(tmp_path):
+    """With the default clio-core backend a dead daemon turns the report red."""
     clio_home = tmp_path / "clio-home"
     clio_home.mkdir()
     (clio_home / "clio-runtime.log").write_text("FATAL: shm init failed\n", encoding="utf-8")
@@ -417,7 +417,7 @@ def test_clio_core_red_when_cte_backend_and_daemon_down(tmp_path):
 
     assert status.state == IntegrationState.UNAVAILABLE
     assert status.required is True
-    assert status.details["reason"] == "cte_daemon_not_listening"
+    assert status.details["reason"] == "clio_core_daemon_not_listening"
     assert any("FATAL" in line for line in status.details["log_tail"])
 
     report = probe.collect(api_state=IntegrationState.READY)
@@ -468,7 +468,7 @@ def test_clio_core_optional_when_local_backend_and_daemon_down(tmp_path):
 
     assert status.state == IntegrationState.UNAVAILABLE
     assert status.required is False
-    assert status.details["reason"] == "cte_daemon_not_listening"
+    assert status.details["reason"] == "clio_core_daemon_not_listening"
 
 
 # ---------------------------------------------------------------------------

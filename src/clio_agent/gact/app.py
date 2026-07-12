@@ -995,7 +995,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     _agent = getattr(app.state, "agent", None)
     await asyncio.get_running_loop().run_in_executor(None, lambda: shutdown_child_processes(_agent))
     # NOTE: the shared clio-core runtime client is released (last-one-out stop) via the
-    # atexit hook registered in CTEStore — NOT here. uvicorn handles SIGTERM by exiting
+    # atexit hook registered in ClioCoreStore — NOT here. uvicorn handles SIGTERM by exiting
     # the serve loop and returning normally, so the interpreter exits and atexit fires
     # ("I leave the TUI, everything gets released"). Doing it in this lifespan hook would
     # wrongly stop the SHARED daemon on any app teardown that is not a process exit

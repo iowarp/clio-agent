@@ -2,7 +2,7 @@
 
 The invariant under test: :class:`ARCMemory._lock` guards ONLY the hot in-memory
 structures (the invocation B-tree, the disk-read/write counters, cache-composite
-ops). It is NEVER held across ``_store`` I/O (CTE RPCs / LocalFS reads) or
+ops). It is NEVER held across ``_store`` I/O (clio-core RPCs / LocalFS reads) or
 ``_lsm`` writes. Two consequences are asserted here:
 
 1. Overlap: two threads writing to DIFFERENT sessions through a store whose

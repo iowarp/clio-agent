@@ -467,13 +467,13 @@ def probe_process_tree(
 ) -> list[IntegrationStatus]:
     """Report the child-tree reaper binding + a live child-process census (#900).
 
-    Two doctor rows (following the ``cte_health`` house style):
+    Two doctor rows (following the ``clio_core_health`` house style):
 
     * ``child_reaper`` — READY when a Windows Job Object is active (hard-kill reaps the
       tree), READY-informational when POSIX-delegated, DEGRADED when a Windows install
       failed (the hard-kill guarantee is lost — surfaced, never silent). Omitted entirely
       when no reaper was installed in this process (a standalone doctor CLI), mirroring
-      :func:`clio_agent.runtime.cte_health.probe_cte_liveness`.
+      :func:`clio_agent.runtime.clio_core_health.probe_clio_core_liveness`.
     * ``child_processes`` — a census of the live descendant processes (pid, name, age,
       kind) so an orphan pile-up is visible. Always emitted (READY), even at zero.
 

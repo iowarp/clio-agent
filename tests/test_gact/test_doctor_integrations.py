@@ -50,7 +50,7 @@ def _patch_engine(monkeypatch: pytest.MonkeyPatch, probe: RuntimeProbe) -> None:
     """Swap the route's probe engine for one built from injected fakes.
 
     The health handler calls ``collect_runtime_status(api_state=..., lm_timeout=...)``;
-    this replacement funnels that into a pre-wired ``RuntimeProbe`` so a down CTE
+    this replacement funnels that into a pre-wired ``RuntimeProbe`` so a down clio-core
     daemon / unreachable dependency is deterministic in-process.
     """
 
@@ -135,8 +135,8 @@ def test_widened_rows_carry_full_doctor_detail(
     assert arc["endpoint"]  # local arc dir surfaces as endpoint
 
 
-def test_down_cte_daemon_turns_health_503(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """CTE backend + installed pkg + daemon NOT listening -> arc red -> 503."""
+def test_down_clio_core_daemon_turns_health_503(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """clio-core backend + installed pkg + daemon NOT listening -> arc red -> 503."""
     clio_home = tmp_path / "clio-home"
     clio_home.mkdir()
     probe = _ready_probe(

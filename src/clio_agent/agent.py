@@ -240,8 +240,8 @@ class ClioAgent(dspy.Module):
 
         # ARC Memory: reuse the injected one (the gact server owns the single per-process
         # ARC and re-injects it on every bind) or mint one. The persistence backend comes
-        # from the factory: clio-core CTE by default (the gold-standard, in-process tiered
-        # store), LocalFSStore via CLIO_ARC_STORE=local. Falls back to LocalFS if the CTE
+        # from the factory: clio-core by default (the gold-standard, in-process tiered
+        # store), LocalFSStore via CLIO_ARC_STORE=local. Falls back to LocalFS if the clio-core
         # binding/runtime is unavailable.
         self.arc = (
             arc

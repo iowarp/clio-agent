@@ -1,6 +1,6 @@
 """clio-core CTE config generation + capacity resolution (owner module).
 
-This module owns the default clio-core CTE configuration that ARC's CTE backend
+This module owns the default clio-core CTE configuration that ARC's clio-core backend
 seeds under the OS data dir: a self-managed DRAM↔disk hierarchy (DRAM hot tier,
 score 1.0; file cold tier, score 0.0). It was split out of
 :mod:`clio_agent.arc.storage` so the capacity policy (how big the RAM hot tier is
@@ -15,7 +15,7 @@ Why the RAM cap matters (#890): clio-core reads a tier ``capacity_limit`` of
 We therefore ship a **bounded, configurable default** (:data:`_DEFAULT_CTE_RAM_CAPACITY`
 = ``"1GB"``) on the ram tier's ``capacity_limit`` (the field that actually triggers
 spill — see below). A small hot tier is functionally safe, not merely desirable:
-``tests/test_arc/test_cte_offload_spill.py`` proves that writing past a 2 MB ram
+``tests/test_arc/test_clio_core_offload_spill.py`` proves that writing past a 2 MB ram
 ``capacity_limit`` physically spills cold blobs to the disk backing file and reads
 them back byte-identically, and that test's own topology keeps the ram *bdev*
 ``capacity`` at ``"0g"`` while capping only the *tier* — so the tier
@@ -33,7 +33,7 @@ Regeneration semantics: :func:`default_cte_config_path` writes ``cte.yaml`` **on
 (only when absent) and never rewrites an existing file — an explicit user value is
 always respected. A stale on-disk ``cte.yaml`` that still carries ``0g`` is therefore
 *not* silently rewritten; instead the doctor probe
-(:func:`clio_agent.runtime.cte_health.probe_cte_ram_cap`) reads the real file and
+(:func:`clio_agent.runtime.clio_core_health.probe_clio_core_ram_cap`) reads the real file and
 flags a ``0g`` ram tier as a warning with the exact remediation. That is the
 least-surprising choice: no field of a user's config is ever mutated behind their
 back.
@@ -58,7 +58,7 @@ import yaml
 # The ram *tier* ``capacity_limit`` is ``{ram_capacity}`` (a bounded default, #890):
 # it is the field that triggers spill to the cold file tier. The ram *bdev*
 # ``capacity: "0g"`` stays as the device ceiling (max the ram bdev may grow to), which
-# matches the proven-safe topology of ``tests/test_arc/test_cte_offload_spill.py``.
+# matches the proven-safe topology of ``tests/test_arc/test_clio_core_offload_spill.py``.
 _DEFAULT_CTE_CONFIG_TEMPLATE = """\
 runtime:
   num_threads: 4
@@ -94,7 +94,7 @@ compose:
 # The bounded default for the ram hot-tier ``capacity_limit`` (#890). Owner ruling
 # (2026-07-12): 1GB AT MOST by default, user-configurable. A small hot tier is safe
 # because capacity-forced offload to the clio-core file tier is proven byte-identical
-# (tests/test_arc/test_cte_offload_spill.py); 1GB still
+# (tests/test_arc/test_clio_core_offload_spill.py); 1GB still
 # comfortably holds a live context plane before spilling.
 _DEFAULT_CTE_RAM_CAPACITY = "1GB"
 
@@ -227,7 +227,7 @@ def default_cte_config_path() -> str:
 
     Written **once** (only when absent): an existing ``cte.yaml`` is never rewritten, so
     a user's explicit values survive untouched. A stale file still carrying ``0g`` is
-    surfaced by the doctor (:func:`clio_agent.runtime.cte_health.probe_cte_ram_cap`)
+    surfaced by the doctor (:func:`clio_agent.runtime.clio_core_health.probe_clio_core_ram_cap`)
     rather than silently mutated (#890).
     """
     cte_dir = _default_cte_dir()
@@ -302,7 +302,7 @@ def _read_ram_cap_from_file(path: Path) -> str | None:
 
 
 def _resolve_config_path(env: Mapping[str, str]) -> Path:
-    """Resolve the ``cte.yaml`` the CTE backend would use, WITHOUT seeding it.
+    """Resolve the ``cte.yaml`` the clio-core backend would use, WITHOUT seeding it.
 
     Mirrors :func:`clio_agent.arc.storage.make_arc_store`'s selection order — explicit
     ``CLIO_ARC_STORE_CONFIG`` → per-workspace ``.clio/core/cte.yaml`` → the default CTE
