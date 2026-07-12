@@ -10,6 +10,7 @@ at the LM boundary.
 from __future__ import annotations
 
 import dspy
+import pytest
 from dspy.utils.dummies import DummyLM
 
 from clio_agent.arc.prompt_recorder import PromptRecorder
@@ -22,6 +23,16 @@ from .conftest import (
 )
 
 SESSION, SCOPE = "s1", "agentA"
+
+
+@pytest.fixture(autouse=True)
+def _pin_classic_reactv2(monkeypatch: pytest.MonkeyPatch) -> None:
+    """classic-path contract; V2 equivalent in tests/test_arc/test_reactv2_wire_byte_equality.py.
+
+    These tests pin the CLASSIC ``_format_trajectory`` single-string wire byte-shape
+    (#901 rule 4). The V2 append-only-History wire is proven separately; force the
+    classic loop so the frozen classic path stays tested."""
+    monkeypatch.setattr("clio_agent.gact.agents.runtime._reactv2_enabled", lambda: False)
 
 
 def _run_scripted_loop(agent, arc, recorder=None):

@@ -511,16 +511,23 @@ def _real_emit_logger(app, events_out: list[dict]):
     return logger
 
 
-def test_real_react_loop_trace_reconstructs_arc(tmp_path):
+def test_real_react_loop_trace_reconstructs_arc(tmp_path, monkeypatch):
     """Run the genuine _RetainingReAct loop (scripted DummyLM, deterministic) so the
     live plane is written by production code, then audit that the emitted arc.op
-    trace fully reconstructs it."""
+    trace fully reconstructs it.
+
+    classic-path contract; the V2 loop writes the SAME arc.op stream through
+    ``reactv2_events.instrumented_forward`` (proven in
+    tests/test_arc/test_reactv2_highway.py). This test scripts a classic-shaped DummyLM
+    (next_tool_name/next_tool_args + extract), so force the classic loop (#901 rule 1)."""
     import types
 
     import dspy
     from dspy.utils.dummies import DummyLM
 
     from .conftest import live_plane_context, make_react_agent
+
+    monkeypatch.setattr("clio_agent.gact.agents.runtime._reactv2_enabled", lambda: False)
 
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))
     events: list[dict] = []

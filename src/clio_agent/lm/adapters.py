@@ -210,8 +210,32 @@ def _lenient_chat_adapter_cls() -> Any:
                 override_history_inputs_from_arc,
             )
 
-            override_history_inputs_from_arc(inputs, history_field_name)
+            override_history_inputs_from_arc(
+                inputs, history_field_name, tuple(signature.input_fields)
+            )
             return super().format_conversation_history(signature, history_field_name, inputs)
+
+        def format_assistant_message_content(self, signature, message, missing_field_message=None):  # type: ignore[no-untyped-def]
+            """Render NO assistant turn for an output-less history event (#901 S2).
+
+            The #901 append-only wire folds the static task inputs into a HEAD history
+            event; on the loop's first call that head is SYNTHETIC — it carries the inputs
+            but no output fields yet. Stock ``format_conversation_history`` would render a
+            placeholder assistant turn ("Not supplied for this conversation history
+            message.") for it, which is a MOVING message that breaks the append-only
+            prefix (call 1's placeholder ≠ call 2's real assistant turn). Suppressing the
+            assistant turn for a message that carries none of the signature's OUTPUT fields
+            keeps call 1 = ``[system, {head}, {closing}]`` a clean prefix of call 2 — so
+            every non-first call is a stateful delta, not a boundary reset. Only fires for
+            a genuinely output-less message (the synthetic head); every real turn event has
+            ``next_thought`` / ``tool_calls`` and renders verbatim through the stock path,
+            so no visible-lane content is ever dropped.
+            """
+            if not any(name in message for name in signature.output_fields):
+                return ""
+            return super().format_assistant_message_content(
+                signature, message, missing_field_message
+            )
 
         def parse(self, signature: Any, completion: str) -> dict:
             try:

@@ -265,6 +265,43 @@ def is_strict_prefix(prior: list[dict[str, Any]], new: list[dict[str, Any]]) -> 
     return len(new) > len(prior) and prior == new[: len(prior)]
 
 
+def _delta_beneath_static_tail(
+    prior: list[dict[str, Any]], new: list[dict[str, Any]], tail_len: int
+) -> tuple[int, list[dict[str, Any]]] | None:
+    """Append-only delta of ``new`` over ``prior`` beneath a byte-identical static tail.
+
+    The extended structural contract (#901, the residual-tail case). ``tail_len == 0``
+    is the pure :func:`is_strict_prefix` case (delta = ``new[len(prior):]``). For
+    ``tail_len > 0`` the LAST ``tail_len`` messages of ``prior`` and ``new`` must be
+    byte-IDENTICAL (the STATIC tail — dspy's ChatAdapter always appends one such
+    trailing message, its ``main_request`` closing instruction, ``adapters/base.py``
+    ``format`` l.431-434; its bytes depend only on the output fields, so it never
+    changes across a loop, but it necessarily MOVES position as the history grows) and
+    the *bodies* (everything before that tail) must satisfy the same strict-prefix
+    relation. The delta is then exactly the newly-appended BODY messages — the static
+    tail is NOT re-sent (the provider already holds it from the prior send and the loop
+    continues the same conversation). This is still a deterministic, typed structural
+    comparison — never a fuzzy/heuristic match: it accepts ONLY a byte-identical tail
+    plus a byte-identical growing head.
+
+    Returns:
+        ``(prefix_len, delta_messages)`` for a valid delta, else ``None``.
+    """
+    if tail_len == 0:
+        if is_strict_prefix(prior, new):
+            return len(prior), list(new[len(prior) :])
+        return None
+    if len(prior) < tail_len or len(new) < tail_len:
+        return None
+    if prior[len(prior) - tail_len :] != new[len(new) - tail_len :]:
+        return None
+    prior_body = prior[: len(prior) - tail_len]
+    new_body = new[: len(new) - tail_len]
+    if len(new_body) > len(prior_body) and prior_body == new_body[: len(prior_body)]:
+        return len(prior_body), list(new_body[len(prior_body) :])
+    return None
+
+
 @dataclass(frozen=True)
 class DeltaPlan:
     """The pure classification of one call against the session's prior sent-list.
@@ -289,6 +326,7 @@ def classify_delta(
     new: list[dict[str, Any]],
     *,
     forced_reason: str | None = None,
+    static_tail_len: int = 1,
 ) -> DeltaPlan:
     """Classify one call into a delta or a typed full-send reset (PURE, no I/O).
 
@@ -299,14 +337,24 @@ def classify_delta(
        it forces a full send EVEN IF ``new`` would otherwise be a valid prefix-
        extension, so a delta is never sent over a reset prefix.
     2. No ``prior`` (no session yet) -> FULL send, ``first_call``.
-    3. ``prior`` is a strict prefix of ``new`` (:func:`is_strict_prefix`) -> DELTA
-       of ``new[len(prior):]``.
+    3. ``new`` is an append-only extension of ``prior`` -> DELTA. A two-rung
+       STRUCTURAL contract (:func:`_delta_beneath_static_tail`), tried in order:
+       (3a) a pure byte-identical strict prefix (:func:`is_strict_prefix`), delta =
+       ``new[len(prior):]``; else (3b) an append-only body beneath a byte-identical
+       STATIC trailing block of ``static_tail_len`` messages — the residual dspy
+       ChatAdapter ``main_request`` closing instruction, which never changes bytes but
+       necessarily moves position as the history grows (``adapters/base.py`` l.431-434).
+       Both rungs are deterministic and typed; (3b) accepts ONLY a byte-identical tail
+       plus a byte-identical growing head, never a fuzzy match.
     4. Otherwise -> FULL send, ``prefix_mismatch``.
 
     Args:
         prior: The session's previously-sent message list, or ``None`` if none.
         new: The message list about to be sent.
         forced_reason: A pre-flagged typed reset reason that overrides 2–4.
+        static_tail_len: The length of the byte-identical static trailing block to
+            tolerate at rung 3b (default 1 — the single ChatAdapter closing
+            instruction; 0 restricts the contract to a pure strict prefix).
 
     Returns:
         The :class:`DeltaPlan` describing what to send and why.
@@ -315,8 +363,11 @@ def classify_delta(
         return DeltaPlan("full", forced_reason, list(new), 0)
     if prior is None:
         return DeltaPlan("full", "first_call", list(new), 0)
-    if is_strict_prefix(prior, new):
-        return DeltaPlan("delta", None, list(new[len(prior) :]), len(prior))
+    for tail_len in (0, static_tail_len) if static_tail_len else (0,):
+        found = _delta_beneath_static_tail(prior, new, tail_len)
+        if found is not None:
+            prefix_len, delta_messages = found
+            return DeltaPlan("delta", None, delta_messages, prefix_len)
     return DeltaPlan("full", "prefix_mismatch", list(new), 0)
 
 
@@ -494,6 +545,11 @@ class StatefulSend:
         session_key: The registry key (for :meth:`note_error`), or ``None`` when not
             engaged.
         scope_token: The active scope token, or ``None`` when not engaged.
+        call_id: The per-LM-call correlation id the transport reuses for
+            ``emit_call_started`` so the ``provider.stateful`` audit row and the
+            ``provider.call_started`` / ``raw_event`` TTFT markers join on ONE id (the
+            waterfall attributes TTFT by ``stateful_mode``). Minted here so the mode
+            classification and the call marker cannot drift onto separate ids.
     """
 
     payload: str
@@ -504,6 +560,7 @@ class StatefulSend:
     engaged: bool
     session_key: tuple[Any, ...] | None = None
     scope_token: str | None = None
+    call_id: str = ""
 
     def note_error(self) -> None:
         """Drop the poisoned session on a mid-flight send failure (no-op if not engaged)."""
@@ -544,6 +601,10 @@ def resolve_stateful_send(
     Returns:
         The :class:`StatefulSend` the transport executes.
     """
+    # One correlation id per LM call, minted here and reused by the transport's
+    # ``emit_call_started`` so the ``provider.stateful`` row (which carries the mode)
+    # and the ``provider.call_started`` / ``raw_event`` TTFT markers join on ONE id.
+    call_id = uuid.uuid4().hex
     scope = active_stateful_scope()
     if scope is None or not stateful_delta_enabled():
         # Inert: byte-identical pre-#901 behaviour (fresh id, full prompt).
@@ -554,6 +615,7 @@ def resolve_stateful_send(
             reason=None,
             delta_chars=len(full_prompt),
             engaged=False,
+            call_id=call_id,
         )
 
     from clio_agent.providers.claude_code_options import thinking_key  # noqa: PLC0415
@@ -572,6 +634,7 @@ def resolve_stateful_send(
         engaged=True,
         session_key=session_key,
         scope_token=scope,
+        call_id=call_id,
     )
     _audit_stateful(send, model=model, call_index=call_index, prefix_len=plan.prefix_len, total=len(messages))
     return send
@@ -596,6 +659,7 @@ def _audit_stateful(
         "provider": "claude_code_sdk",
         "transport": "sdk",
         "model": f"claude_code/{model}",
+        "call_id": send.call_id,
         "call_index": call_index,
         "stateful_mode": send.mode,
         "delta_chars": send.delta_chars,

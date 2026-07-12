@@ -7,14 +7,20 @@ and stays byte-untouched — the classic path is frozen). Where the classic refe
 single-string formatter), the V2 reference is :func:`expected_history_messages` (the
 append-only ``dspy.History`` message list) + the stock ``ChatAdapter`` formatter over it.
 
-**The two documented S2 deviations are formalized here as the reference's expected shape,
-NOT silently absorbed:**
+**The reference's expected shape, formalized here (NOT silently absorbed):**
 
-* (a) the user question is NOT folded into the History prefix — the reference messages
-  carry NO ``question`` key (stock ``ReActV2`` embeds it in the first event; clio renders
-  it per-call via the adapter's current-input path, keeping the cached prefix free of the
-  duplicated question). ``test_deviation_a_question_not_in_prefix`` pins this against the
-  REAL stock ``dspy.ReActV2`` as the foil.
+* (a) — REVERSED in #901 (the append-only-wire fix). The static task inputs
+  (``question`` + ``tools``) ARE folded ONCE into the HEAD history event, matching stock
+  ``dspy.ReActV2`` (which embeds the input in the first event), and are NOT re-rendered
+  as a per-call trailing current-input block. This makes every ``self.react`` call's wire
+  a strict prefix-extension of the previous one beneath a single byte-static tail (the
+  ChatAdapter ``main_request`` closing instruction) — the invariant the Claude stateful
+  session-delta transport needs. Server-side content-prefix caching keeps working because
+  the head is still byte-stable; the reversal ADDITIONALLY unlocks the structural delta.
+  The earlier deviation kept the question OUT of the prefix and moved a ``question`` +
+  ``tools`` block to the tail each call, which shifted every tail and forced the delta
+  detector to (correctly) decline. ``test_deviation_a_inputs_folded_into_head`` pins the
+  reversal against the REAL stock ``dspy.ReActV2`` as the foil.
 * (b) a summary / orphan observation (no owning tool call) surfaces under ``next_thought``.
   ``test_deviation_b_summary_surfaces_as_next_thought`` pins it.
 
@@ -75,9 +81,20 @@ def _react_signature_and_tools() -> tuple[Any, list[Any]]:
 def stock_wire(
     messages: list[dict[str, Any]], signature: Any, tools: list[Any]
 ) -> list[dict[str, Any]]:
-    """The byte reference: the STOCK ``ChatAdapter`` formatting a pre-folded History (the
-    V2 analog of conftest.stock_format_trajectory). No ARC, no override — pure stock."""
-    inputs = {"question": "find alpha", "history": dspy.History(messages=messages), "tools": tools}
+    """The byte reference: the STOCK ``ChatAdapter`` formatting the #901 head-folded History
+    (the V2 analog of conftest.stock_format_trajectory). No ARC, no override — pure stock.
+
+    Independently reconstructs the append-only composition: ``question`` + ``tools`` are
+    folded ONCE into the HEAD event (``setdefault`` — never clobbering a folded value) and
+    are NOT passed as current inputs, so stock ``format`` renders them once at the front
+    and its trailing current-input block collapses to the byte-static closing instruction.
+    """
+    head = dict(messages[0]) if messages else {}
+    if messages:
+        head.setdefault("question", "find alpha")
+        head.setdefault("tools", tools)
+    folded = [head, *messages[1:]] if messages else []
+    inputs = {"history": dspy.History(messages=folded)}
     with dspy.context(adapter=dspy.ChatAdapter()):
         return dspy.ChatAdapter().format(signature, [], inputs)
 
@@ -162,9 +179,11 @@ def test_override_delegates_to_stock_formatter_over_same_fold(arc):
 # ---- the formalized deviations, pinned against the stock foil -----------------
 
 
-def test_deviation_a_question_not_in_prefix():
-    """Deviation (a): stock ``dspy.ReActV2`` embeds the user question in its FIRST history
-    event; clio's folded prefix carries NO ``question`` key. Pinned against REAL stock V2."""
+def test_deviation_a_inputs_folded_into_head(arc):
+    """Deviation (a) REVERSED (#901): the override wire embeds the ``question`` ONCE at the
+    HEAD (matching stock ``dspy.ReActV2``, which embeds the input in the first event) and
+    carries NO moving trailing ``question`` block — the append-only-wire fix. Pinned against
+    REAL stock V2 as the foil."""
     stock = dspy.ReActV2("question -> answer", tools=[dspy.Tool(lambda q: "R", name="search")])
     lm = DummyLM(
         [
@@ -180,10 +199,23 @@ def test_deviation_a_question_not_in_prefix():
     )
     with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
         pred = stock(question="find alpha")
-    # Stock embeds the input in the first event...
+    # Stock embeds the input in the FIRST history event...
     assert "question" in pred.history.messages[0]
-    # ...clio's fold reference never does (the current input rides the adapter per-call).
-    assert all("question" not in m for m in expected_history_messages(_STEPS))
+
+    # ...and so does clio's override wire now: the question rides the HEAD user message
+    # exactly once, and the ONLY trailing block is the byte-static closing instruction
+    # (no moving ``question`` tail), so consecutive wires are strict prefix extensions.
+    signature, tools = _react_signature_and_tools()
+    _populate(arc, _STEPS)
+    with live_plane_context(arc, session=SESSION, scope=SCOPE):
+        wire = override_wire(signature, tools)
+    head_content = str(wire[1].get("content") or "")
+    assert "[[ ## question ## ]]\nfind alpha" in head_content
+    # The question appears in exactly ONE wire message (the head), never re-rendered.
+    assert sum("find alpha" in str(m.get("content") or "") for m in wire) == 1
+    # The trailing block is the static closing instruction, not a moving input block.
+    assert "Respond with the corresponding output fields" in str(wire[-1].get("content") or "")
+    assert "[[ ## question ## ]]" not in str(wire[-1].get("content") or "")
 
 
 def test_deviation_b_summary_surfaces_as_next_thought(arc):

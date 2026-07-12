@@ -32,6 +32,7 @@ from dspy.utils.dummies import DummyLM
 from clio_agent.arc.prompt_recorder import PromptRecorder
 from clio_agent.gact.agents import runtime
 from clio_agent.gact.agents.reactv2 import _RetainingReActV2, retaining_reactv2_cls
+from clio_agent.providers.claude_code_stateful import classify_delta, is_strict_prefix
 
 
 def _search(q: str) -> str:
@@ -93,10 +94,14 @@ def test_history_messages_grow_append_only_across_steps() -> None:
 
 
 def test_wire_messages_share_a_growing_byte_prefix() -> None:
-    """The #891 fingerprint: the rendered wire messages of consecutive ``self.react``
-    calls share a byte-identical, append-only leading prefix (everything but the
-    trailing moved current-input block). The classic single-string trajectory fails
-    this; V2's append-only history passes it."""
+    """The #891 fingerprint, asserted on the FULL wire message list via the real delta
+    detector (#901): consecutive ``self.react`` calls are an append-only extension of
+    each other beneath a single byte-static trailing block (the ChatAdapter
+    ``main_request`` closing instruction / current-input block, which never changes bytes
+    but moves position). The classic single-string trajectory fails this; V2's
+    append-only history passes it — ``classify_delta`` returns a real ``delta`` (not a
+    ``prefix_mismatch``) over the whole list, which is exactly what engages the Claude
+    stateful session-delta transport."""
     agent = _build_agent()
     recorder = PromptRecorder()
     with dspy.context(lm=_two_step_lm(), adapter=dspy.ChatAdapter(), callbacks=[recorder]):
@@ -105,19 +110,21 @@ def test_wire_messages_share_a_growing_byte_prefix() -> None:
     calls = recorder.calls()
     assert len(calls) == 3  # two tool turns + the submit turn
 
-    # The committed prefix = all but the trailing current-input/tools block, which
-    # legitimately moves each turn. It must be byte-identical and strictly growing.
-    def committed_prefix(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return messages[:-1]
-
+    # The FULL message list of call N is a delta-extension of call N-1's FULL list under
+    # the two-rung structural contract (pure strict prefix, else strict prefix beneath a
+    # byte-identical static tail). No slicing off the tail by hand — the detector owns it.
     for earlier_call, later_call in zip(calls[1:], calls[2:], strict=False):
-        earlier = committed_prefix(earlier_call.messages)
-        later = committed_prefix(later_call.messages)
-        assert later[: len(earlier)] == earlier, "wire prefix is not byte-stable"
-        assert len(later) > len(earlier), "wire prefix did not grow append-only"
+        plan = classify_delta(earlier_call.messages, later_call.messages)
+        assert plan.mode == "delta", f"expected a delta, got {plan.mode}/{plan.reason}"
+        assert plan.reason is None
+        assert len(plan.messages) >= 1, "the delta must carry the newly-appended messages"
+        assert len(later_call.messages) > len(earlier_call.messages)
 
-    # Decisive: the whole prior-turn block is carried forward byte-for-byte.
-    assert calls[2].messages[: len(calls[1].messages) - 1] == calls[1].messages[:-1]
+    # The static trailing block is byte-identical across the delta calls (the tail the
+    # contract tolerates), so a plain strict prefix is NOT what holds here — the extended
+    # contract is load-bearing.
+    assert calls[1].messages[-1] == calls[2].messages[-1]
+    assert not is_strict_prefix(calls[1].messages, calls[2].messages)
 
 
 # --- 2. Reasoning-hijack defense (sabotage pin) --------------------------------
@@ -209,15 +216,16 @@ def test_kill_switch_on_selects_v2_class(monkeypatch: pytest.MonkeyPatch) -> Non
     assert issubclass(cls, dspy.ReActV2)
 
 
-def test_kill_switch_defaults_off_via_config(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The kill-switch resolves OFF by default and ON via ``CLIO_REACTV2`` — proving
-    the config wiring, not just the monkeypatched branch."""
+def test_kill_switch_defaults_on_via_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The switch resolves ON by default (#901 flip, 2026-07-12) and OFF via
+    ``CLIO_REACTV2=0`` — proving the config wiring, not just the monkeypatched
+    branch. The classic path stays reachable as the explicit fallback."""
     from clio_agent import conf
 
     monkeypatch.delenv("CLIO_REACTV2", raising=False)
     conf.reload()
-    assert runtime._reactv2_enabled() is False
-
-    monkeypatch.setenv("CLIO_REACTV2", "1")
-    conf.reload()
     assert runtime._reactv2_enabled() is True
+
+    monkeypatch.setenv("CLIO_REACTV2", "0")
+    conf.reload()
+    assert runtime._reactv2_enabled() is False

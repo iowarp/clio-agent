@@ -158,10 +158,13 @@ class _RetainingReActV2(dspy.ReActV2):  # type: ignore[misc, name-defined]
         )
 
     def forward(self, **input_args: Any) -> Any:
-        """Run the V2 loop, retain the History, and bounded-repair a missing submit (#901 S4).
+        """Run the V2 loop, retain the History, and bounded-repair a missing submit (#901 S4/S6).
 
-        Thin wrapper over ``ReActV2.forward`` (the append-only loop is unchanged). It adds
-        the two S4 hooks that re-express the classic retention/repair path (design §7):
+        Wraps the *instrumented* V2 loop
+        (:func:`clio_agent.gact.agents.reactv2_events.instrumented_forward` — the
+        append-only ``ReActV2.forward`` mirror that drives clio's ARC live-plane writes,
+        the semantic-event highway, and the proactive auto-compaction trigger) with the
+        two S4 hooks that re-express the classic retention/repair path (design §7):
 
         1. **Retention** — install a fresh trajectory cell and publish the retained
            ``History`` + pending inputs (the V2 analog of the classic
@@ -174,6 +177,7 @@ class _RetainingReActV2(dspy.ReActV2):  # type: ignore[misc, name-defined]
            never fabricates the outputs (see :meth:`_bounded_submit_repair`).
         """
         from clio_agent.gact import context as _ctx  # noqa: PLC0415
+        from clio_agent.gact.agents.reactv2_events import instrumented_forward  # noqa: PLC0415
         from clio_agent.providers.claude_code_stateful import stateful_scope  # noqa: PLC0415
 
         _ctx.install_trajectory_cell()
@@ -188,9 +192,45 @@ class _RetainingReActV2(dspy.ReActV2):  # type: ignore[misc, name-defined]
         # registry entries on exit (the #900 explicit-teardown seam). Inert unless the
         # stateful_delta flag is ON and the provider is claude_code.
         with stateful_scope():
-            pred = super().forward(**input_args)
+            pred = instrumented_forward(self, **input_args)
             self._publish_retained_history(pred, pending)
             return self._bounded_submit_repair(pred, pending)
+
+    def _maybe_autocompact(self) -> None:
+        """Proactive, scope-aware auto-compaction — the V2 trigger (#901 S6).
+
+        The threshold/trigger semantics are byte-identical to the classic
+        ``_RetainingReAct._maybe_autocompact``: when the last call's provider-exact
+        ``prompt_tokens / context_window`` crosses the configurable threshold, fold the
+        live working set into ONE ARC ``summarize`` op (V2's sole prefix-reset author —
+        it has no ``truncate_trajectory`` backstop). The two LM-touching helpers are
+        resolved through the :mod:`clio_agent.gact.agents.runtime` module namespace so a
+        test monkeypatch on ``runtime._last_prompt_tokens`` / ``runtime._summarize_segments_llm``
+        is honored identically to the classic path. No-op when ARC is disabled, the
+        window is unknown, or the summary LLM fails (the miss keeps the prior context —
+        the reactive backstop is gone under V2, so a failed summary must not wedge).
+        """
+        from clio_agent.gact import context as _ctx  # noqa: PLC0415
+        from clio_agent.gact.agents import runtime as _rt  # noqa: PLC0415
+        from clio_agent.gact.agents.reactv2_events import _arc_scope  # noqa: PLC0415
+        from clio_agent.gact.runtime.context_tokens import _autocompact_threshold  # noqa: PLC0415
+
+        arc, session, scope = _arc_scope()
+        if arc is None:
+            return
+        window = _ctx.active_react_context_window()
+        last = _rt._last_prompt_tokens()
+        if not window or not last:
+            return
+        if (last / window) < _autocompact_threshold():
+            return
+        live = arc.render_working_set(session, scope)
+        if len(live) <= 1:
+            return
+        summary = _rt._summarize_segments_llm(live)
+        if not summary:
+            return
+        arc.summarize_segments(session, scope, [s.id for s in live], {"text": summary})
 
     def _publish_retained_history(self, pred: Any, pending: dict[str, Any]) -> None:
         """Publish the retained ``History`` + pending inputs to the active trajectory cell.
@@ -488,11 +528,10 @@ def segments_to_messages(segments: list[Segment]) -> list[dict[str, Any]]:
 
     Pure and side-effect-free. Robust to malformed segment content: a missing text is
     ``""`` and a non-dict ``args`` is coerced to ``{}`` so a bad write can never raise
-    here (the "wrong-input" path). The current user input is intentionally NOT folded
-    into the history prefix — like the classic trajectory it is rendered separately by
-    the adapter's current-input path each call, keeping the cached prefix free of the
-    duplicated question (a documented deviation from stock V2, which embeds the input
-    in the first history event; the byte-equality reference is regenerated in S5).
+    here. This fold produces only the per-turn events; the static task inputs
+    (``question`` + ``tools``) are folded into the HEAD event LATER, at the adapter read
+    seam (:func:`override_history_inputs_from_arc`), matching stock ReActV2 so consecutive
+    wire renders are strict prefix extensions — the #901 append-only invariant.
 
     Args:
         segments: Ordered LIVE segments (``ARCMemory.render_segments`` output).
@@ -544,13 +583,14 @@ def arc_history_messages() -> list[dict[str, Any]] | None:
     re-derivation from the canonical semantic-event log) through
     :func:`segments_to_messages`.
 
-    Returns ``None`` — meaning "ARC is not the source for this call; use ReActV2's own
-    internal append-only history" — when ARC is disabled, no react scope is active, or
-    the materialized plane is empty (so a wired end-to-end V2 turn is never handed an
-    empty prefix that would wipe its in-flight history). Returns the folded message
-    list once the plane holds a working set, so an out-of-band ARC edit propagates to
-    the next prompt. A read failure is recorded as a typed reason and also returns
-    ``None`` (no silent fallback).
+    Returns ``None`` — "ARC is NOT the source; use ReActV2's own internal history" — when
+    ARC is disabled, no scope is active, or a read fails (typed reason recorded; no silent
+    fallback). Returns the folded list — possibly ``[]`` — when ARC IS the source: ``[]``
+    is an ARC-backed but empty plane (first call, before any turn is written), which the
+    read seam turns into a static-input HEAD; a non-empty list is the working set, so an
+    out-of-band ARC edit propagates. The ``[]``-vs-``None`` split is load-bearing: the
+    seam builds the append-only head only when safe (internal history also empty), never
+    blanking an in-flight loop's turns on a mid-loop plane wipe.
     """
     from clio_agent.gact import context as _ctx  # noqa: PLC0415
 
@@ -572,29 +612,43 @@ def arc_history_messages() -> list[dict[str, Any]] | None:
             suppressed=False,
         )
         return None
-    return messages or None
+    return messages
 
 
-def override_history_inputs_from_arc(inputs: dict[str, Any], history_field_name: str) -> bool:
+def override_history_inputs_from_arc(
+    inputs: dict[str, Any],
+    history_field_name: str,
+    input_field_names: tuple[str, ...] = (),
+) -> bool:
     """Point ReActV2's History input at the materialized ARC live plane (S2 read seam).
 
-    The adapter-side half of design B. Called from
-    :meth:`clio_agent.lm.adapters.LenientChatAdapter.format_conversation_history`
-    *before* it delegates to the stock formatter: when the active scope's ARC plane
-    holds a working set, this replaces ``inputs[history_field_name]`` in place with a
-    fresh ``dspy.History`` folded from it, so the stock formatter renders ARC's
-    materialized state byte-for-byte and ARC stays the single wire source. When ARC is
-    not the source (disabled / no scope / empty / read failure — see
-    :func:`arc_history_messages`) it is a no-op and the passed-in History is rendered
-    unchanged.
+    The adapter-side half of design B, called from
+    :meth:`clio_agent.lm.adapters.LenientChatAdapter.format_conversation_history` before
+    it delegates to the stock formatter: it replaces ``inputs[history_field_name]`` in
+    place with a fresh ``dspy.History`` folded from ARC, so ARC stays the single wire
+    source; a no-op (returns ``False``) when ARC is not the source (disabled / no scope /
+    read failure — see :func:`arc_history_messages`).
 
-    Only fires for a signature that actually carries a ``dspy.History`` input field —
-    in clio that is exclusively the ReActV2 react signature — so the classic
-    (History-less) wire path can never reach this branch and stays byte-identical.
+    **The append-only wire fix (#901 — deviation (a) reversed).** The static task inputs
+    (``question`` + ``tools``) are folded ONCE into the HEAD history event
+    (:func:`_gather_static_inputs` + :func:`_fold_static_inputs_into_head`) and DELETED
+    from ``inputs``, so they render once at the front (stock ReActV2 embeds the input in
+    the first event) and the adapter's trailing per-call current-input block collapses to
+    its byte-static ``main_request`` closing instruction. Every ``self.react`` wire is
+    then a strict prefix-extension of the previous beneath that single static tail — the
+    append-only invariant the Claude stateful session-delta transport needs
+    (:mod:`clio_agent.providers.claude_code_stateful`). The earlier deviation kept the
+    question OUT of the prefix as a MOVING trailing block, shifting every tail and forcing
+    the detector to (correctly) decline. Server-side content-prefix caching still works
+    (the head is byte-stable); the reversal ADDITIONALLY unlocks the structural delta.
+    Only fires for a ``dspy.History``-bearing signature (the ReActV2 react signature).
 
     Args:
         inputs: The adapter's mutable per-call inputs copy (mutated in place).
         history_field_name: The signature's ``dspy.History`` input field name.
+        input_field_names: The react signature's (history-removed) input field names —
+            the static inputs to embed at the head. When empty (a direct unit call) the
+            fallback embeds every non-history key present in ``inputs``.
 
     Returns:
         ``True`` when the History input was sourced from ARC, else ``False``.
@@ -604,8 +658,73 @@ def override_history_inputs_from_arc(inputs: dict[str, Any], history_field_name:
     messages = arc_history_messages()
     if messages is None:
         return False
+    internal = getattr(inputs.get(history_field_name), "messages", None) or []
+    if not messages and internal:
+        # Empty ARC plane WITH a populated internal history = a mid-loop plane wipe (a full
+        # delete op): fall back to ReActV2's own append-only history rather than blank the
+        # in-flight turns off the wire. On the first call the internal history is ALSO
+        # empty, so this does not fire and the static-input HEAD is synthesized below.
+        return False
+    static = _gather_static_inputs(inputs, internal, history_field_name, input_field_names)
+    messages = _fold_static_inputs_into_head(messages, static)
+    for name in static:  # suppress the per-call current-input block for the folded inputs
+        inputs.pop(name, None)
     inputs[history_field_name] = dspy.History(messages=messages)
     return True
+
+
+def _gather_static_inputs(
+    inputs: dict[str, Any],
+    internal: list[dict[str, Any]],
+    history_field_name: str,
+    input_field_names: tuple[str, ...],
+) -> dict[str, Any]:
+    """Resolve the static task inputs to embed ONCE at the append-only head (#901).
+
+    The static inputs (``question``, ``tools``) must render byte-identically at the head
+    of EVERY ``self.react`` call. But the stock loop only passes them as current inputs on
+    the FIRST call; from call 2 on ``pending_inputs`` is emptied, so ``question`` is no
+    longer in ``inputs`` — it lives in the internal ReActV2 history's first event (where
+    stock ``_history_event`` folded it). This resolves each declared input field from the
+    live ``inputs`` first (``tools`` every call, ``question`` on call 1), else from the
+    internal head event 0 (``question`` on call 2+). Same static set on every call ⇒
+    byte-stable head ⇒ no first→second boundary reset. ``input_field_names`` empty ⇒ fall
+    back to every non-history key in ``inputs`` (a direct unit call).
+    """
+    names: tuple[str, ...] = input_field_names or tuple(
+        n for n in inputs if n != history_field_name
+    )
+    head0 = internal[0] if internal else {}
+    static: dict[str, Any] = {}
+    for name in names:
+        if name == history_field_name:
+            continue
+        if name in inputs:
+            static[name] = inputs[name]
+        elif name in head0:
+            static[name] = head0[name]
+    return static
+
+
+def _fold_static_inputs_into_head(
+    messages: list[dict[str, Any]], static: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Fold the resolved static inputs into the HEAD history event (#901 append-only).
+
+    Each static input is copied into the first event (``setdefault`` — never clobbering a
+    real folded value); the caller then DELETES those keys from ``inputs`` so ``format``
+    stops emitting a per-call current-input block for them (``adapters/base.py`` l.431-434
+    appends the trailing user block only for the inputs that remain; with the static
+    inputs gone it collapses to the byte-static closing instruction). When ``messages`` is
+    EMPTY (the loop's first call) the head is a SYNTHETIC input-only event, rendered as a
+    lone ``user`` message by the read seam's ``format_assistant_message_content``
+    suppression — so call 1 is ``[system, {head}, {closing}]`` and call 2 extends it
+    append-only. Pure (returns a new list; neither argument is mutated).
+    """
+    head = dict(messages[0]) if messages else {}
+    for name, value in static.items():
+        head.setdefault(name, value)
+    return [head, *messages[1:]]
 
 
 # ---- small helpers ---------------------------------------------------------- #

@@ -137,6 +137,67 @@ def test_classify_arc_compaction_simulation_declines_delta() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# 2b. The static-tail contract (#901): an append-only body beneath a byte-identical
+#     trailing block (the dspy ChatAdapter closing instruction, which never changes
+#     bytes but MOVES position as the history grows).
+# --------------------------------------------------------------------------- #
+def test_delta_beneath_static_tail_engages_over_a_moving_tail() -> None:
+    # The real V2 wire: a growing head [system, head, turns...] plus ONE byte-static
+    # trailing block T that moves each call. A plain strict-prefix declines (T moved);
+    # the extended contract extracts the append-only BODY delta and leaves T unshipped.
+    prior = _m("sys", "head", "turn0", "TAIL")
+    new = _m("sys", "head", "turn0", "turn1", "TAIL")
+    # Plain strict prefix fails (TAIL is at a different index).
+    assert st.is_strict_prefix(prior, new) is False
+    plan = st.classify_delta(prior, new)  # default static_tail_len=1
+    assert plan.mode == "delta"
+    assert plan.reason is None
+    assert plan.messages == _m("turn1")  # ONLY the new body; the static tail is not re-sent
+    assert plan.prefix_len == 3  # sys, head, turn0 reused as a byte-stable body prefix
+
+
+def test_static_tail_delta_requires_a_byte_identical_tail() -> None:
+    # SABOTAGE / safety: if the trailing block is NOT byte-identical (a genuinely moved
+    # or mutated tail), the static-tail rung MUST decline -> full prefix_mismatch. This
+    # is the "reintroduce a moving tail" sabotage: change T and the delta collapses.
+    prior = _m("sys", "head", "turn0", "TAIL")
+    new = _m("sys", "head", "turn0", "turn1", "TAIL_CHANGED")
+    plan = st.classify_delta(prior, new)
+    assert plan.mode == "full"
+    assert plan.reason == "prefix_mismatch"
+
+
+def test_static_tail_contract_can_be_disabled() -> None:
+    # With static_tail_len=0 the contract narrows to a PURE strict prefix, so the same
+    # moving-tail wire declines — proving the tolerance is the (typed) reason it engages.
+    prior = _m("sys", "head", "turn0", "TAIL")
+    new = _m("sys", "head", "turn0", "turn1", "TAIL")
+    plan = st.classify_delta(prior, new, static_tail_len=0)
+    assert plan.mode == "full"
+    assert plan.reason == "prefix_mismatch"
+
+
+def test_static_tail_delta_still_requires_a_growing_body() -> None:
+    # A resample (same body, same tail) is NOT a delta even under the static-tail rung —
+    # there is no appended body to send.
+    prior = _m("sys", "head", "turn0", "TAIL")
+    plan = st.classify_delta(prior, _m("sys", "head", "turn0", "TAIL"))
+    assert plan.mode == "full"
+    assert plan.reason == "prefix_mismatch"
+
+
+def test_delta_beneath_static_tail_helper_matrix() -> None:
+    # Direct unit-proof of the pure helper.
+    prior = _m("a", "b", "T")
+    new = _m("a", "b", "c", "T")
+    assert st._delta_beneath_static_tail(prior, new, 1) == (2, _m("c"))
+    # tail_len 0 falls back to the pure strict-prefix (which fails here — T moved).
+    assert st._delta_beneath_static_tail(prior, new, 0) is None
+    # A diverged head body fails even with an identical tail.
+    assert st._delta_beneath_static_tail(_m("a", "X", "T"), new, 1) is None
+
+
+# --------------------------------------------------------------------------- #
 # 3. Reason-catalog discipline (#775 no-silent-fallback).
 # --------------------------------------------------------------------------- #
 def test_reset_payload_is_typed_and_rejects_unknown_reasons() -> None:
@@ -292,6 +353,24 @@ def test_note_prefix_reset_for_active_scope_hook() -> None:
 # --------------------------------------------------------------------------- #
 # 6. resolve_stateful_send — the transport seam (inert vs engaged).
 # --------------------------------------------------------------------------- #
+def test_resolve_stamps_a_call_id_for_the_ttft_join(monkeypatch: pytest.MonkeyPatch) -> None:
+    # #901 join hygiene: every resolved send carries a call_id (engaged AND inert) so the
+    # provider.stateful row and the emit_call_started TTFT marker join on ONE id. The
+    # transport reuses send.call_id for emit_call_started (proven in _astream_sdk).
+    monkeypatch.setattr(st, "stateful_delta_enabled", lambda: True)
+    with st.stateful_scope("s"):
+        engaged = st.resolve_stateful_send(
+            messages=_m("a", "b"), full_prompt="FULL", model="haiku", cwd="/w",
+            thinking=None, serialize=_serialize,
+        )
+    inert = st.resolve_stateful_send(
+        messages=_m("a", "b"), full_prompt="FULL", model="haiku", cwd="/w",
+        thinking=None, serialize=_serialize,
+    )
+    assert engaged.call_id and inert.call_id
+    assert engaged.call_id != inert.call_id  # one fresh id per LM call
+
+
 def test_resolve_is_inert_when_flag_off(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(st, "stateful_delta_enabled", lambda: False)
     with st.stateful_scope("s"):

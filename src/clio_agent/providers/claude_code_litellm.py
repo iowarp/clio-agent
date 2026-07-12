@@ -312,7 +312,7 @@ async def _astream_sdk(
             "(install the 'claude-code' extra)."
         ) from exc
 
-    call_id = uuid.uuid4().hex
+    call_id = (send.call_id if send is not None else "") or uuid.uuid4().hex  # #901: join stateful↔TTFT on ONE id
     emit_call_started(  # BEFORE connect: SDK spawn cold-start counts in the call, not the gap (#891)
         call_id=call_id,
         call_index=call_index,

@@ -91,12 +91,15 @@ _RETAINING_REACT_CLS_CACHE: dict[Any, Any] = {}
 
 
 def _reactv2_enabled() -> bool:
-    """Kill-switch selecting the dspy ReActV2-based expert loop (#901 S1).
+    """Kill-switch selecting the dspy ReActV2-based expert loop (#901).
 
-    Default **OFF**: the classic ``_RetainingReAct`` stays the production path.
-    When ON, :func:`_retaining_react_cls` returns clio's ``_RetainingReActV2``
-    (:mod:`clio_agent.gact.agents.reactv2`) — dormant infrastructure whose wire
-    behaviour is proven at parity in later slices (S2–S6) before the switch flips.
+    Default **ON** (flipped 2026-07-12 after the S5 byte-equality proof and the
+    live clio-core-backed confirmation runs — see #901): ``_RetainingReActV2``
+    (:mod:`clio_agent.gact.agents.reactv2`) is the production expert loop; its
+    append-only History keeps the provider prompt prefix byte-stable across
+    iterations (#891) and ARC ops remain the sole prefix-reset authors. Set the
+    switch OFF (``CLIO_REACTV2=0``) to fall back to the classic
+    ``_RetainingReAct``.
 
     Resolved through the shared ``file → env → default`` config store so it is
     sharable (``agents.reactv2_enabled`` in ``config.yaml``) or set ad hoc via the
@@ -107,7 +110,7 @@ def _reactv2_enabled() -> bool:
     return conf.resolve(
         "agents.reactv2_enabled",
         env="CLIO_REACTV2",
-        default=False,
+        default=True,
         cast=conf.as_bool,
     )
 

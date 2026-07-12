@@ -159,8 +159,9 @@ def test_read_seam_folds_the_materialized_expert_scope(arc) -> None:
 def test_read_seam_is_empty_when_only_the_event_log_is_populated(arc) -> None:
     """SABOTAGE PIN (materialized-read): folding the expert scope reads the live
     working set, NOT the canonical ``_events`` semantic-event log. With ONLY the
-    event log populated (no expert-scope working set), the fold is empty (-> None).
-    A read seam that re-derived from the log would return non-empty here."""
+    event log populated (no expert-scope working set), the fold is EMPTY (``[]`` — the
+    ARC-backed-but-empty signal, distinct from ``None`` = ARC-not-the-source). A read
+    seam that re-derived from the log would return a non-empty working set here."""
 
     class _Event:
         session_id = SESSION
@@ -180,7 +181,9 @@ def test_read_seam_is_empty_when_only_the_event_log_is_populated(arc) -> None:
     gen = _scope_ctx(arc)
     next(gen)
     try:
-        assert arc_history_messages() is None
+        # ARC-backed but empty materialized plane -> [] (NOT re-derived from the log),
+        # distinct from the None returned when ARC is not the source at all.
+        assert arc_history_messages() == []
     finally:
         next(gen, None)
 
@@ -188,6 +191,74 @@ def test_read_seam_is_empty_when_only_the_event_log_is_populated(arc) -> None:
 def test_read_seam_none_without_scope(arc) -> None:
     """No active react scope -> ARC is not the source (use V2's own history)."""
     assert arc_history_messages() is None
+
+
+def test_override_synthesizes_static_input_head_on_first_call(arc) -> None:
+    """#901 append-only: on the loop's FIRST call (ARC-backed but empty plane AND empty
+    internal history) the override folds the static inputs (question + tools) into a
+    SYNTHETIC head and DELETES them from ``inputs`` — so the trailing current-input block
+    collapses to the closing instruction and call 1 is a clean prefix of call 2 (no
+    first->second boundary reset)."""
+    gen = _scope_ctx(arc)
+    next(gen)
+    try:
+        inputs: dict[str, Any] = {
+            "question": "find alpha",
+            "history": dspy.History(messages=[]),
+            "tools": ["T"],
+        }
+        sourced = override_history_inputs_from_arc(inputs, "history")
+        assert sourced is True
+        # A synthetic head made of the static inputs, and those inputs removed from the
+        # per-call inputs so no moving current-input block is rendered.
+        assert inputs["history"].messages == [{"question": "find alpha", "tools": ["T"]}]
+        assert "question" not in inputs and "tools" not in inputs
+    finally:
+        next(gen, None)
+
+
+def test_override_sources_static_inputs_from_internal_history_on_later_calls(arc) -> None:
+    """#901 head stability: from call 2 on the stock loop empties ``pending_inputs``, so
+    ``question`` is no longer in ``inputs`` — it lives in the internal ReActV2 history's
+    first event. The override recovers it from there (keyed by the signature's input
+    fields) and folds it into the ARC head, so the head carries ``question`` on EVERY
+    call and consecutive wires stay a strict prefix-extension."""
+    arc.append_segment(SESSION, SCOPE, "thought", {"text": "T0"}, step=0)
+    arc.append_segment(SESSION, SCOPE, "tool_call", {"name": "s", "args": {}}, step=0)
+    arc.append_segment(SESSION, SCOPE, "observation", {"text": "O0"}, step=0)
+    gen = _scope_ctx(arc)
+    next(gen)
+    try:
+        # call 2: NO ``question`` in inputs (pending emptied); it lives in internal event 0.
+        internal = dspy.History(messages=[{"question": "find alpha", "next_thought": "T0"}])
+        inputs: dict[str, Any] = {"history": internal, "tools": ["T"]}
+        sourced = override_history_inputs_from_arc(inputs, "history", ("question", "tools"))
+        assert sourced is True
+        head = inputs["history"].messages[0]
+        assert head["question"] == "find alpha"  # recovered from the internal history
+        assert head["tools"] == ["T"]  # taken from the live inputs
+        assert "question" not in inputs and "tools" not in inputs  # current-input suppressed
+    finally:
+        next(gen, None)
+
+
+def test_override_wipe_guard_keeps_internal_history_on_empty_mid_loop(arc) -> None:
+    """#901 wipe-guard: an ARC-backed but empty plane with a NON-empty internal history
+    (a mid-loop full-delete op) must FALL BACK to ReActV2's own append-only history,
+    never blank the in-flight turns off the wire. The override returns False and leaves
+    the passed-in History untouched."""
+    gen = _scope_ctx(arc)
+    next(gen)
+    try:
+        internal = dspy.History(messages=[{"next_thought": "kept", "tool_calls": None}])
+        inputs: dict[str, Any] = {"question": "q", "history": internal, "tools": ["T"]}
+        sourced = override_history_inputs_from_arc(inputs, "history")
+        assert sourced is False
+        # The internal history is preserved; the static inputs are NOT stripped.
+        assert inputs["history"] is internal
+        assert inputs["question"] == "q" and inputs["tools"] == ["T"]
+    finally:
+        next(gen, None)
 
 
 def test_read_seam_append_only_prefix(arc) -> None:
