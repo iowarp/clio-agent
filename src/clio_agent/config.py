@@ -261,7 +261,12 @@ class LMProviderConfig:
     # Distinct from thinking_budget because 'off' (actively disable) is NOT the
     # same state as 'default' (let the provider/CLI default govern) — the
     # claude_code SDK/CLI default for haiku is thinking-ON, so 'off' must be
-    # expressible without a positive budget. None keeps today's behavior exactly.
+    # expressible without a positive budget. None = defer to the shipped
+    # per-model default below (resolved in __post_init__), NOT the raw SDK
+    # default: the #895 acceptance experiment shipped 'low' for haiku via
+    # claude_code — verified passing the 2-turn EarthScope probe at 2.9x less
+    # wall-clock / 3.2x fewer output tokens than the SDK default (the
+    # 'lowest level that passes' owner rule). Explicit values always win.
     thinking_level: str | None = None
     # Per-provider capability flags. init=False so callers don't need
     # to know they exist; __post_init__ populates them from
@@ -287,6 +292,17 @@ class LMProviderConfig:
             self.planner_temperature = self.router_temperature
         self.router_temperature = self.planner_temperature
         defaults = PROVIDER_DEFAULTS.get(self.provider, PROVIDER_DEFAULTS["lm_studio"])
+        # #895 shipped default: haiku on claude_code runs thinking_level='low'
+        # (lowest level passing the acceptance probe; 2.9x faster, 3.2x fewer
+        # output tokens than the SDK default). Only when the user set nothing —
+        # an explicit thinking_level or thinking_budget always wins.
+        if (
+            self.thinking_level is None
+            and not self.thinking_budget
+            and self.provider == "claude_code"
+            and "haiku" in (self.model or "").lower()
+        ):
+            self.thinking_level = "low"
         if not self.api_base:
             self.api_base = defaults["api_base"]
         if not self.model:

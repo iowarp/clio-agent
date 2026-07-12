@@ -133,3 +133,21 @@ def test_plan_is_frozen() -> None:
     assert isinstance(plan, ThinkingPlan)
     with pytest.raises(AttributeError):
         plan.budget_tokens = 1  # type: ignore[misc]
+
+
+def test_haiku_claude_code_ships_thinking_level_low_by_default() -> None:
+    """#895 acceptance outcome: haiku via claude_code defaults to level 'low'
+    (lowest level passing the 2-turn EarthScope probe). Explicit settings win."""
+    from clio_agent.config import LMProviderConfig
+
+    cfg = LMProviderConfig(provider="claude_code", model="haiku")
+    assert cfg.thinking_level == "low"
+    # explicit level wins
+    cfg2 = LMProviderConfig(provider="claude_code", model="haiku", thinking_level="high")
+    assert cfg2.thinking_level == "high"
+    # explicit budget suppresses the shipped default (budget path governs)
+    cfg3 = LMProviderConfig(provider="claude_code", model="haiku", thinking_budget=9000)
+    assert cfg3.thinking_level is None
+    # other models/providers keep None (SDK/provider default governs)
+    cfg4 = LMProviderConfig(provider="claude_code", model="sonnet")
+    assert cfg4.thinking_level is None

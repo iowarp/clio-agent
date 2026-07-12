@@ -36,9 +36,12 @@ def test_factory_maps_claude_code_level_to_optional_params() -> None:
     )
     assert low == {"claude_code_thinking": {"type": "enabled", "budget_tokens": 2048}}
 
-    # Unset → nothing (byte-for-byte pre-#895 behavior), never reasoning_effort.
-    default = _thinking_kwargs(LMProviderConfig(provider="claude_code", model="haiku"))
-    assert default == {}
+    # Unset on HAIKU → the shipped default 'low' (#895 acceptance outcome);
+    # unset on other models → nothing (pre-#895 behavior), never reasoning_effort.
+    default_haiku = _thinking_kwargs(LMProviderConfig(provider="claude_code", model="haiku"))
+    assert default_haiku == {"claude_code_thinking": {"type": "enabled", "budget_tokens": 2048}}
+    default_sonnet = _thinking_kwargs(LMProviderConfig(provider="claude_code", model="sonnet"))
+    assert default_sonnet == {}
 
 
 def test_factory_maps_anthropic_and_effort_providers() -> None:
