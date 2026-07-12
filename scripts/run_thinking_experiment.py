@@ -44,18 +44,28 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# The LA one-shot: a data-grounded EarthScope/NDP question with a vivid, checkable
-# output (the acceptance case). Override with --question for other cases.
+# The LA one-shot: the canonical full-study Los Angeles acceptance prompt (the
+# demo benchmark's LA mutation case) — full pipeline, staged CSV, PNG artifact.
+# Override with --question for other cases. NOTE: an earlier default here asked a
+# US-wide metadata-aggregation question that was never part of the blueprint's
+# verified capability surface (no routing row computes tabular metadata stats) —
+# it was mislabeled as the LA one-shot and never passed; see #893 campaign log.
 DEFAULT_QUESTION = (
-    "Using the EarthScope GNSS station metadata in this workspace, identify which US "
-    "state hosts the most stations and report the count, then name the single "
-    "northernmost station with its latitude. Answer concretely from the data; do not "
-    "fabricate station names or coordinates."
+    "Explore recent seismic or geodetic activity around the Los Angeles basin. "
+    "Resolve the geography without using any San Diego-specific hints, find public "
+    "EarthScope/NDP GNSS station or station time-series evidence for that region, "
+    "stage a concrete CSV resource if available, analyze the station time series "
+    "and uncertainty columns, produce a PNG artifact, and explain data freshness, "
+    "coverage, and provenance limitations. Do not use SAC waveform files unless "
+    "live catalog evidence makes waveform data necessary; do not force "
+    "earthquake/event-catalog analysis unless the user explicitly asks for "
+    "events, magnitudes, depths, or epicenters."
 )
 
 TERMINAL_STATUSES = {"idle", "finished", "error", "cancelled"}
@@ -114,7 +124,12 @@ def _allow_all_policies() -> list[dict[str, Any]]:
 class _Client:
     """Tiny JSON HTTP client (requests) with a shared base URL + timeout."""
 
-    def __init__(self, base_url: str, timeout: float = 30.0) -> None:
+    def __init__(self, base_url: str, timeout: float = 180.0) -> None:
+        # 180s, not 30s: the timeout must cover the longest legitimately-held
+        # call — the synchronous PUT provider bind cold-starts the MCP tool
+        # servers (>30s on a loaded machine), and /v1/providers/lm/wait is
+        # server-held up to its own 120s param. Turn SSE reads use the
+        # per-turn timeout, not this one.
         import requests  # noqa: PLC0415 - optional dep, only needed for a live run
 
         self._requests = requests
@@ -271,8 +286,14 @@ def append_result(plan: ExperimentPlan, row: dict[str, Any]) -> None:
 
 def build_plan(args: argparse.Namespace) -> ExperimentPlan:
     out_dir = Path(args.out_dir).resolve()
+    # Fresh per-run workspace by default: a shared root lets one run's staged
+    # artifacts poison the next (observed 2026-07-12: stale/BOM-damaged catalog
+    # CSVs from a failed run drove a later run to a false zero-station result).
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     workspace_root = (
-        Path(args.workspace_root).resolve() if args.workspace_root else out_dir / "workspace"
+        Path(args.workspace_root).resolve()
+        if args.workspace_root
+        else out_dir / "workspace" / stamp
     )
     return ExperimentPlan(
         level=args.level,
@@ -334,7 +355,12 @@ def run(plan: ExperimentPlan) -> dict[str, Any]:
         print(f"health (advisory): healthy={verdict.get('healthy')}", flush=True)
         # (2) Pre-allow permissions FIRST — before any session or turn.
         client.call("PUT", "/v1/policies", {"policies": _allow_all_policies()})
-        workspace_id = _ensure_workspace(client, "thinking-experiment", plan.workspace_root)
+        # Name derived from the (per-run) root: _ensure_workspace matches by
+        # name, so a fixed name would silently reuse the FIRST run's persisted
+        # workspace root and defeat the fresh-workspace isolation above.
+        workspace_id = _ensure_workspace(
+            client, f"thinking-experiment-{plan.workspace_root.name}", plan.workspace_root
+        )
         sid = _create_session(client, workspace_id, plan.blueprint)
         wall_s = _run_turn(client, plan, workspace_id, sid)
         waterfall = _run_waterfall(plan, sid)
