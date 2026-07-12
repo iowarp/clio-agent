@@ -90,6 +90,28 @@ def _summarize_segments_llm(segments: list[Any]) -> str:
 _RETAINING_REACT_CLS_CACHE: dict[Any, Any] = {}
 
 
+def _reactv2_enabled() -> bool:
+    """Kill-switch selecting the dspy ReActV2-based expert loop (#901 S1).
+
+    Default **OFF**: the classic ``_RetainingReAct`` stays the production path.
+    When ON, :func:`_retaining_react_cls` returns clio's ``_RetainingReActV2``
+    (:mod:`clio_agent.gact.agents.reactv2`) — dormant infrastructure whose wire
+    behaviour is proven at parity in later slices (S2–S6) before the switch flips.
+
+    Resolved through the shared ``file → env → default`` config store so it is
+    sharable (``agents.reactv2_enabled`` in ``config.yaml``) or set ad hoc via the
+    ``CLIO_REACTV2`` environment variable.
+    """
+    from clio_agent import conf  # noqa: PLC0415
+
+    return conf.resolve(
+        "agents.reactv2_enabled",
+        env="CLIO_REACTV2",
+        default=False,
+        cast=conf.as_bool,
+    )
+
+
 def _retaining_react_cls() -> Any:
     """Build a dspy.ReAct subclass that retains its trajectory.
 
@@ -103,7 +125,18 @@ def _retaining_react_cls() -> Any:
     NOTE: ``forward`` mirrors ``dspy.predict.react.ReAct.forward`` for the dspy
     pinned in this venv; a unit test guards the Prediction shape. Keep in sync
     if dspy is upgraded.
+
+    When the :func:`_reactv2_enabled` kill-switch is ON (default OFF), the
+    ReActV2-based clio subclass is returned instead — see
+    :mod:`clio_agent.gact.agents.reactv2`. The two classes share the same
+    constructor shape (``Cls(signature, tools=..., max_iters=...)``) so the switch
+    is a drop-in at every call site (``builders.py``).
     """
+
+    if _reactv2_enabled():
+        from clio_agent.gact.agents.reactv2 import retaining_reactv2_cls  # noqa: PLC0415
+
+        return retaining_reactv2_cls()
 
     import dspy  # noqa: PLC0415
 
