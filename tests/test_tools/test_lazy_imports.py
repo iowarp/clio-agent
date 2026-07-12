@@ -5,6 +5,14 @@ from __future__ import annotations
 import subprocess
 import sys
 
+# Cold Python interpreter start plus the probed import can take several seconds on
+# its own; when the full suite runs in parallel (pytest-xdist / a loaded CI box) the
+# spawned child contends for CPU and disk and a 10s ceiling was hit spuriously (#902).
+# This bound is generous enough to absorb that contention yet still fails loud if an
+# import genuinely hangs (e.g. platform._wmi_query on Windows) rather than merely
+# being slow. It is a subprocess-cold-start margin, not a correctness threshold.
+_IMPORT_PROBE_TIMEOUT_S = 60
+
 
 def _run_import_probe(code: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -12,7 +20,7 @@ def _run_import_probe(code: str) -> subprocess.CompletedProcess[str]:
         check=True,
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=_IMPORT_PROBE_TIMEOUT_S,
     )
 
 
