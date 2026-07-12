@@ -59,7 +59,11 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/gact/routes/blueprints.py": 859,
     "src/clio_agent/gact/routes/catalog.py": 880,
     "src/clio_agent/gact/routes/mcp.py": 939,
-    "src/clio_agent/gact/routes/providers.py": 1314,
+    # #895: +6 for threading the provider-generic thinking_level onto the LM bind
+    # (LMProviderConfig arg + app.state.lm_config + the GET's thinking_level /
+    # thinking_effective fields). The mapping logic itself lives in the owner
+    # module providers/thinking.py, not here.
+    "src/clio_agent/gact/routes/providers.py": 1320,
     "src/clio_agent/gact/routes/sessions.py": 1478,
     "src/clio_agent/gact/runtime/globals.py": 923,
     "src/clio_agent/gact/streaming.py": 1027,

@@ -1329,3 +1329,139 @@ def test_single_provider_bind_reports_ready_from_store_default(tmp_path: Path, m
     # And no env was stamped by the demoted bind.
     for key in _REMOVED_BIND_ENV_KEYS:
         assert key not in os.environ, key
+
+
+# ---- thinking-level wire (#895) -------------------------------------------
+
+
+def test_put_lm_provider_accepts_thinking_level(tmp_path: Path, monkeypatch) -> None:
+    """A valid thinking_level binds onto the config and round-trips on the GET (#895).
+
+    The provider-generic level is threaded into the built ``LMProviderConfig`` and
+    echoed on both the PUT result and a subsequent GET, alongside the resolved
+    ``thinking_effective`` (per-provider effect) so the picker can display it.
+    """
+
+    captured: dict[str, Any] = {}
+
+    class _StubAgent(_RebindLMStub):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.arc = type(
+                "ARC",
+                (),
+                {"get_cache_stats": lambda self: {"hits": 0, "misses": 0, "hit_rate": 0.0}},
+            )()
+
+        def forward(self, *args: Any, **kwargs: Any) -> Any:
+            return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
+
+    monkeypatch.setattr("clio_agent.agent.ClioAgent", _StubAgent)
+
+    def _stub_create_lm(cfg: Any) -> Any:
+        captured["cfg"] = cfg
+        return type("FakeLM", (), {"history": []})()
+
+    monkeypatch.setattr("clio_agent.config.create_lm", _stub_create_lm)
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        resp = c.put(
+            "/v1/providers/lm",
+            json={
+                "provider": "openai",
+                "api_base": "http://127.0.0.1:3456/v1",
+                "model": "gpt-5.5",
+                "api_key": "x",
+                "thinking_level": "medium",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        get_body = c.get("/v1/providers/lm").json()
+
+    # PUT result echoes the level + the resolved effort effect.
+    assert body["thinking_level"] == "medium"
+    assert "medium" in body["thinking_effective"]
+    # GET reports the same (never invisible).
+    assert get_body["thinking_level"] == "medium"
+    assert "medium" in get_body["thinking_effective"]
+    # The built config carried the level, and it was bound onto lm_config.
+    assert captured["cfg"].thinking_level == "medium"
+    assert app.state.lm_config["thinking_level"] == "medium"
+
+
+def test_put_lm_provider_rejects_invalid_thinking_level(tmp_path: Path) -> None:
+    """A junk thinking_level is a structured 422 at the boundary — never ignored (#895).
+
+    The ``Literal["off","low","medium","high"]`` on ``LMProviderRequest`` makes
+    FastAPI reject an out-of-vocabulary level before the handler runs, so an
+    unsupported value can never be silently dropped or bound.
+    """
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        resp = c.put(
+            "/v1/providers/lm",
+            json={
+                "provider": "openai",
+                "api_base": "http://127.0.0.1:3456/v1",
+                "model": "gpt-5.5",
+                "api_key": "x",
+                "thinking_level": "ultra",
+            },
+        )
+
+    assert resp.status_code == 422, resp.text
+    # The app wraps validation errors in a structured ErrorEnvelope; it must name
+    # the offending field and the allowed vocabulary — never a silent drop.
+    body = resp.json()
+    assert body["error"]["error"] == "validation_error"
+    errors = body["error"]["details"]["errors"]
+    assert any("thinking_level" in str(item.get("loc")) for item in errors)
+
+
+def test_effective_lm_config_surfaces_supported_thinking_effective() -> None:
+    """A budget provider reports the raw level and the resolved budget effect (#895)."""
+
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            lm_config={},
+            agent=SimpleNamespace(
+                _provider_config=SimpleNamespace(
+                    provider="anthropic", thinking_level="high", thinking_budget=0
+                )
+            ),
+        )
+    )
+
+    cfg = _effective_lm_config(app)  # type: ignore[arg-type]
+
+    assert cfg["thinking_level"] == "high"
+    # anthropic maps 'high' → budget_tokens 24576 (providers.thinking.LEVEL_BUDGET).
+    assert cfg["thinking_effective"] == "high (budget 24576)"
+
+
+def test_effective_lm_config_surfaces_unsupported_thinking() -> None:
+    """A provider with no mapping surfaces a typed ``unsupported`` — no silent drop (#895).
+
+    This is the GET-report side of the no-silent-fallback rule: a requested level
+    on a provider ``providers.thinking`` cannot map still reaches the API as a
+    structured ``unsupported (...)`` display instead of vanishing.
+    """
+
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            lm_config={},
+            agent=SimpleNamespace(
+                _provider_config=SimpleNamespace(
+                    provider="mystery-transport", thinking_level="high", thinking_budget=0
+                )
+            ),
+        )
+    )
+
+    cfg = _effective_lm_config(app)  # type: ignore[arg-type]
+
+    assert cfg["thinking_level"] == "high"
+    assert cfg["thinking_effective"].startswith("unsupported")
+    assert "mystery-transport" in cfg["thinking_effective"]
