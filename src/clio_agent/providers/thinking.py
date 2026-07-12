@@ -246,3 +246,18 @@ __all__ = [
     "log_unsupported_thinking",
     "resolve_thinking",
 ]
+
+
+def shipped_default_level(provider: str, model: str, level: str | None, budget: int) -> str | None:
+    """Resolve the shipped per-model default thinking level (#895).
+
+    The owner's acceptance rule: ship the lowest level that passes verification.
+    haiku via claude_code ships ``low`` — verified on the 2-turn EarthScope
+    probe at 2.9x less wall-clock / 3.2x fewer output tokens than the SDK
+    default, WITH the marketplace follow-up fix. Applies only when the user set
+    neither a level nor a budget; explicit settings always win; other
+    models/providers keep ``None`` (the provider/SDK default governs).
+    """
+    if level is None and not budget and provider == "claude_code" and "haiku" in model.lower():
+        return "low"
+    return level
