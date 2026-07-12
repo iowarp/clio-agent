@@ -190,6 +190,29 @@ def _lenient_chat_adapter_cls() -> Any:
         Python constructor-repr (``Model(field=...)``) instead of JSON. The happy
         path is unchanged; recovery only runs when the strict parse fails."""
 
+        def format_conversation_history(self, signature, history_field_name, inputs):  # type: ignore[no-untyped-def]
+            """Source the ReActV2 History prefix from the materialized ARC live plane.
+
+            The V2 read seam (#901 S2, design B): before the stock formatter runs,
+            point the ``dspy.History`` input at ARC's materialized render (see
+            ``clio_agent.gact.agents.reactv2.override_history_inputs_from_arc``), so
+            ARC is the single wire source and out-of-band ARC edits change the next
+            prompt. A no-op for any signature without a ``dspy.History`` field — in
+            clio that is exclusively the ReActV2 react signature — so the classic
+            (History-less) wire path is byte-identical and unaffected. When ARC is not
+            the source (disabled / no scope / empty / read failure) the passed-in
+            History renders unchanged, so a standalone V2 loop still works.
+            ``override_history_inputs_from_arc`` is fully guarded internally (a read
+            failure records a typed reason and no-ops), so no blind swallow is needed
+            here — an unexpected raise is a real bug that must surface, not hide.
+            """
+            from clio_agent.gact.agents.reactv2 import (  # noqa: PLC0415
+                override_history_inputs_from_arc,
+            )
+
+            override_history_inputs_from_arc(inputs, history_field_name)
+            return super().format_conversation_history(signature, history_field_name, inputs)
+
         def parse(self, signature: Any, completion: str) -> dict:
             try:
                 return super().parse(signature, completion)
