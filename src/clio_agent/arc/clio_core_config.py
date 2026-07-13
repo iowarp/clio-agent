@@ -12,22 +12,17 @@ Why the RAM cap matters (#890): clio-core reads a tier ``capacity_limit`` of
 ``0g`` the context plane's working set was allowed to consume most of the machine
 — a large, implicit slice of clio-agent's memory hunger, from one config line.
 
-We therefore ship a **bounded, configurable default** (:data:`_DEFAULT_CTE_RAM_CAPACITY`
-= ``"1GB"``) on the ram tier's ``capacity_limit`` (the field that actually triggers
-spill — see below). A small hot tier is functionally safe, not merely desirable:
-``tests/test_arc/test_clio_core_offload_spill.py`` proves that writing past a 2 MB ram
-``capacity_limit`` physically spills cold blobs to the disk backing file and reads
-them back byte-identically, and that test's own topology keeps the ram *bdev*
-``capacity`` at ``"0g"`` while capping only the *tier* — so the tier
-``capacity_limit`` is the real spill trigger and the safe place to bound resident
-memory. We change only that field; the bdev ``capacity: "0g"`` is left as the
-device ceiling, exactly matching the proven-safe offload topology.
-
-The cap is configurable via the ``conf`` file→env→default resolver
-(``arc.cte.ram_capacity`` / env ``CLIO_ARC_CTE_RAM_CAPACITY``), accepting values
-like ``"1GB"`` / ``"512MB"`` / ``"0g"``. The value is format-validated fail-loud
-(:func:`parse_capacity_bytes`) so a typo can never silently degrade back to the
-``0g`` = 80%-DRAM footgun.
+We therefore ship a **hard MEMORY BUDGET** (:data:`_DEFAULT_CTE_RAM_CAPACITY`
+= ``"1GB"``, #906 release gate — owner: "use 1GB of ram, and whatever you want
+of <disk>"): ONE knob (``arc.cte.ram_capacity`` / ``CLIO_ARC_CTE_RAM_CAPACITY``)
+derives the whole memory shape via :func:`derive_ram_shape` — the ram *bdev*
+``capacity`` = the budget (the HARD allocation ceiling; clio-core's own default
+of ``0g`` = up to 80% of DRAM is an HPC-compute-node default a desktop must
+override), and the ram *tier* ``capacity_limit`` = budget/2 (the spill trigger,
+leaving 2x eviction headroom inside the arena — the bounded-ceiling probe
+proved spill works at 2x headroom and deadlocks rc=13 at ceiling == tier).
+Values are format-validated fail-loud (:func:`parse_capacity_bytes`) so a typo
+can never silently degrade back to the 80%-DRAM footgun.
 
 Regeneration semantics: :func:`default_cte_config_path` writes ``cte.yaml`` **once**
 (only when absent) and never rewrites an existing file — an explicit user value is
@@ -533,6 +528,7 @@ def boot_check_ram_cap(config_path: str | Path, *, env: Mapping[str, str]) -> Ra
     elif (
         _is_bounded(cap.bdev_capacity)
         and tier_ok
+        and cap.cap is not None
         and parse_capacity_bytes(cap.bdev_capacity or "0") < 2 * parse_capacity_bytes(cap.cap)
     ):
         topology.append(
@@ -542,6 +538,7 @@ def boot_check_ram_cap(config_path: str | Path, *, env: Mapping[str, str]) -> Ra
     if (
         _is_bounded(cap.final_tier_capacity)
         and tier_ok
+        and cap.cap is not None
         and parse_capacity_bytes(cap.final_tier_capacity or "0")
         <= parse_capacity_bytes(cap.cap)
     ):
