@@ -46,8 +46,9 @@ from clio_agent.arc.schema import (
     encode_invocation,
     encode_variant_record,
 )
-from clio_agent.arc.segments import OpLogger, SegmentStore
+from clio_agent.arc.segments import OpLogger
 from clio_agent.arc.storage import ARCStore, make_arc_store
+from clio_agent.arc.working_set_fold import make_segment_store
 from clio_agent.runtime import trace
 
 # ``EVENTS_SCOPE`` (the reserved scope holding ARC's ONE persisted semantic-event log)
@@ -123,6 +124,7 @@ class ARCMemory:
         data_dir: str = ".clio/agent/arc",
         cache_capacity: Optional[int] = None,
         store: "ARCStore | None" = None,
+        working_set_fold: Optional[bool] = None,
     ):
         """Initialize ARC memory system.
 
@@ -152,12 +154,10 @@ class ARCMemory:
         # persisted semantic-event log (the reserved ``_events`` scope). The op_logger
         # that mirrors each op into the durable Trace is injected later by the gact app
         # via set_segment_op_logger (keeps arc/ free of any gact/ import). The
-        # ``search_indexed`` predicate keeps the reserved ``_events`` chunk family out of
-        # the plain-text search companion so the semantic-event log can never pollute
-        # scope search (gact ``/context/search``).
-        self._segments = SegmentStore(
-            self._store, search_indexed=lambda scope: not is_events_scope(scope)
-        )
+        # ``search_indexed`` keeps the reserved ``_events`` family out of the plain-text
+        # search companion so the log never pollutes scope search. Under the #737 S2 fold
+        # the store is a ``FoldingSegmentStore`` (working set = a fold of ``_events``).
+        self._segments = make_segment_store(self._store, working_set_fold=working_set_fold)
 
         # Per-session writer cursor for the ``_events`` chunk family:
         # ``session_id -> (chunk_index, segments_in_chunk)``. The append path rolls to
