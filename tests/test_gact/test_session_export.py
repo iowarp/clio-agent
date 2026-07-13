@@ -23,9 +23,7 @@ class _Agent:
 
 
 def _client(tmp_path: Path) -> TestClient:
-    return TestClient(
-        build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
-    )
+    return TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
 
 
 def test_export_unknown_session_404s(tmp_path: Path) -> None:
@@ -59,11 +57,35 @@ def test_export_then_import_round_trip(tmp_path: Path) -> None:
     assert len(rows) == 4
     # Original user prompts preserved.
     user_texts = {
-        p["text"] for m in rows
-        for p in m["parts"]
-        if m["role"] == "user" and p["type"] == "text"
+        p["text"] for m in rows for p in m["parts"] if m["role"] == "user" and p["type"] == "text"
     }
     assert {"first", "second"} == user_texts
+
+
+def test_export_import_preserves_context_files(tmp_path: Path) -> None:
+    c = _client(tmp_path)
+    sid = c.post("/v1/sessions", json={"title": "src"}).json()["id"]
+    target = tmp_path / "notes.md"
+    target.write_text("portable context\n", encoding="utf-8")
+    c.post(
+        f"/v1/sessions/{sid}/context/files",
+        json={
+            "path": str(target),
+            "mode": "read",
+            "language": "markdown",
+            "size": target.stat().st_size,
+        },
+    )
+
+    blob = c.get(f"/v1/sessions/{sid}/export").json()
+    assert blob["context_files"][0]["path"] == str(target)
+    assert blob["context_files"][0]["mode"] == "read"
+    assert blob["context_files"][0]["language"] == "markdown"
+
+    new_sess = c.post("/v1/sessions/import", json=blob).json()
+    files = c.get(f"/v1/sessions/{new_sess['id']}/context/files").json()["files"]
+
+    assert files == blob["context_files"]
 
 
 def test_capabilities_advertises_session_export(tmp_path: Path) -> None:

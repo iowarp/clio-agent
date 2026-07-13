@@ -1,0 +1,1 @@
+[{"id": "gpt-oss-120b", "object": "model", "cluster": "metis", "framework": "api"}, {"id": "Llama-4-Maverick-17B-128E-Instruct", "object": "model", "cluster": "metis", "framework": "api"}]

@@ -3,6 +3,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/iowarp/clio-agent/releases"><img src="https://img.shields.io/badge/status-beta-ea7b2a.svg" alt="Beta"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.12+-blue.svg" alt="Python 3.12+"></a>
   <a href="https://github.com/astral-sh/uv"><img src="https://img.shields.io/badge/UV-enabled-orange.svg" alt="UV"></a>
   <a href="https://github.com/jlowin/fastmcp"><img src="https://img.shields.io/badge/FastMCP-enabled-purple.svg" alt="FastMCP"></a>
@@ -10,6 +11,9 @@
 </p>
 
 ---
+
+> ⚠️ **Beta.** CLIO is under active development — interfaces, blueprints, and on-disk
+> formats may change between releases. Pin a version for reproducibility.
 
 ## What is CLIO Agent?
 
@@ -22,13 +26,15 @@ The agent runs in three tiers: a main orchestrator (planner loop over registered
 - ARC memory with O(log N) context retrieval
 - Optimizer layer for offline tuning + online learning
 - Runtime doctor for LM / gateway / file-policy health
-- Works with LM Studio, Ollama, OpenAI, Anthropic, and the Argonne ALCF inference gateway
+- Works with LM Studio, Ollama, OpenAI, Anthropic, OpenRouter, OpenAI
+  Codex subscriptions, and the Argonne ALCF inference gateway
 
 ---
 
 ## Quick Start
 
-One line installs `clio-agent` + the `gact` TUI, builds them, and drops a `clio` command on your PATH.
+One line installs `clio-agent` from PyPI, downloads the matching CLIO-branded
+TUI binary for your platform, and drops a `clio` command on your PATH.
 
 **Linux / macOS**
 ```sh
@@ -44,7 +50,20 @@ clio
 
 `clio` boots the server (if it isn't already up) and attaches the TUI. On first connect, pick an LM provider in the modal and you're chatting.
 
-Prerequisites: `git`, [`uv`](https://astral.sh/uv), and `go` 1.26+ — the installer tells you if any are missing.
+Prerequisites for the default release install: [`uv`](https://astral.sh/uv)
+or Python 3.12+ with `pip`. `git` and Go are only needed when you opt into
+source-build mode with `CLIO_REF` or `GACT_REF`.
+
+### More ways to get CLIO
+
+The install script above is one of several download options:
+
+- 🌐 **[CLIO website →](https://iowarp.github.io/clio-agent/)** — guided downloads and a tour of the product.
+- 📦 **[GitHub Releases →](https://github.com/iowarp/clio-agent/releases/latest)** — **desktop apps** (`.msi` / `.exe` for Windows, `.dmg` for macOS, `.deb` / `.AppImage` / `.rpm` for Linux), standalone `clio-tui-<os>-<arch>` binaries, and the web bundle.
+- 🐳 **Docker (no install)** — `docker run -it --rm ghcr.io/iowarp/clio-tui:latest`, or `docker compose up clio-web` for the browser UI.
+- 🖥️ **Browser UI** — `clio --web` serves the web app locally.
+
+Full matrix (script · docker · web · desktop · compose · source) with copy-paste commands: **[docs/INSTALL.md](docs/INSTALL.md)**.
 
 ---
 
@@ -79,20 +98,15 @@ For the design rationale (three-tier hierarchy, ARC memory, optimizer layer, IOW
 
 ## Documentation
 
-| Doc | What's in it |
-|---|---|
-| [docs/CLIO_AGENT_ARCHITECTURE.md](docs/CLIO_AGENT_ARCHITECTURE.md) | Three-tier design, ARC memory, optimizer layer |
-| [docs/SYSTEM_IDENTITY.md](docs/SYSTEM_IDENTITY.md) | What the agent is, design principles |
-| [docs/SETUP.md](docs/SETUP.md) | From-scratch install + smoke test (manual path) |
-| [docs/CONTRIBUTOR_QUICKSTART.md](docs/CONTRIBUTOR_QUICKSTART.md) | Dev environment, quality checks, where to put code |
-| [docs/MCP_TOOL_INTEGRATION.md](docs/MCP_TOOL_INTEGRATION.md) | Adding tools via FastMCP |
-| [docs/EXPERT_SYSTEM_DESIGN.md](docs/EXPERT_SYSTEM_DESIGN.md) | Adding new experts |
-| [docs/ARC_MEMORY_LAYER.md](docs/ARC_MEMORY_LAYER.md) | Memory model and storage |
-| [docs/SELF_IMPROVEMENT.md](docs/SELF_IMPROVEMENT.md) | Optimizer layer |
-| [docs/PERMISSIONS.md](docs/PERMISSIONS.md) | Tool permission system |
-| [docs/providers/](docs/providers/) | LM provider configuration |
-| [docs/CAPABILITIES_MATRIX.md](docs/CAPABILITIES_MATRIX.md) | Feature matrix |
-| [PLAN.md](PLAN.md) | Roadmap |
+The full, organized index is in **[docs/README.md](docs/README.md)**. Common
+starting points:
+
+- **[Setup & install](docs/SETUP.md)** — release install, source build, smoke test
+- **[Architecture](docs/CLIO_AGENT_ARCHITECTURE.md)** — the three-tier design, ARC memory, and tool gateway
+- **[Contributing](docs/CONTRIBUTOR_QUICKSTART.md)** — dev environment, quality checks, and where code goes
+- **[Adding tools](docs/MCP_TOOL_INTEGRATION.md)** / **[experts](docs/DSPY_BLUEPRINT_EXPERT_RUNTIME.md)** — extend the agent
+- **[Providers](docs/providers/)** — configure an LM backend
+- **[Roadmap](docs/design/roadmap.md)** — what's next
 
 ---
 

@@ -2,13 +2,10 @@
 ClioAgent planner and chat signatures.
 
 Defines the input/output interfaces for:
-- AgentActionSignature: planner loop action selection over registered tools/experts
+- AgentActionSignature: planner loop action selection over registered tools
 - AgentAnswerSignature: final answer synthesis from loop observations
-- RouterSignature: legacy Literal router contract retained for compatibility tests
 - ChatAgentSignature: conversational responses for non-data queries
 """
-
-from typing import Literal
 
 import dspy
 
@@ -16,34 +13,52 @@ import dspy
 class AgentActionSignature(dspy.Signature):
     """You are CLIO's agent planner.
 
-    You control a tool-using scientific data agent. Select the next best action
-    from the capabilities listed in the prompt. Use observations from previous
-    steps as ground truth.
+    Select the next best action from the capabilities listed in the prompt.
+    Tools are grouped under the scientific experts that own them. Use
+    observations from previous steps as ground truth.
 
     Return exactly one JSON object and no prose. The JSON object must have one
     of these forms:
 
     {"action":"tool","tool":"<listed tool name>","args":{...},"reason":"..."}
-    {"action":"expert","expert":"data|analysis|visualization","question":"...","reason":"..."}
     {"action":"answer","answer":"...","reason":"..."}
     {"action":"none","answer":"...","reason":"..."}
 
     Rules:
-    - Choose only tools and experts present in capabilities.
+    - The response must be valid single-line JSON. Escape any newline as \\n.
+    - Keep planner "answer" and "none" text to one concise sentence with no
+      markdown lists; full prose belongs to chat or answer synthesis.
+    - Choose only tool names listed in capabilities. CLIO attributes each tool
+      call to the expert section it is listed under.
     - Call tools when local file facts, schema, datasets, statistics, or chart
-      artifacts are needed.
-    - Delegate to an expert when the user asks for a higher-level task that
-      matches an expert's listed tools.
-    - Do not choose an expert whose listed tools/file formats cannot inspect
-      the current file context.
+      artifacts are needed. Use "answer" for general capability, workflow, or
+      safety questions.
+    - For multi-phase work, call the tool that resolves the next unresolved
+      prerequisite, not the final deliverable. Dataset discovery, download, and
+      staging are data phases; quantitative inspection is an analysis phase;
+      artifact generation is a visualization phase.
+    - Do not choose a tool whose listed formats cannot inspect the current
+      file context.
+    - Treat every tool result as an observation. After an observation, decide
+      the next action from the current state and listed capabilities; do not
+      assume CLIO will run another tool automatically.
+    - If an observation includes local_paths, treat those paths as newly
+      available local data. Do not repeat the same discovery/staging tool
+      unless the user still lacks a usable local path; move to the next
+      unresolved phase and preserve any provenance caveat in the final answer.
     - Answer directly only for conversation, capability questions, or after
-      observations are sufficient.
+      observations are sufficient to satisfy the user's request.
+    - Do not repeat unrelated previous answers from session_context.
     - Never invent file-specific facts. Use only observations for file facts.
-    - If a tool failed, answer with the failure and the next concrete action
-      instead of pretending the file was inspected.
+    - If a tool failed, answer with the compact failure evidence and the next
+      concrete action instead of pretending the file was inspected. Do not
+      repeat the same failed tool call unless you change the search/resource.
     """
 
     question: str = dspy.InputField(desc="User's current message")
+    images: list[dspy.Image] = dspy.InputField(
+        desc="User-provided image attachments for this turn, if any"
+    )
     session_context: str = dspy.InputField(desc="Relevant conversation history")
     file_context: str = dspy.InputField(desc="Current file context, if any")
     capabilities: str = dspy.InputField(desc="Registered experts and callable tools")
@@ -58,27 +73,18 @@ class AgentAnswerSignature(dspy.Signature):
     schemas, datasets, statistics, or artifact paths that are not in the
     observations. If the observations contain an error, explain the error and
     the next useful action.
+
+    Return a concise final answer in the answer field. Do not leave the answer
+    empty when observations contain successful tool results.
     """
 
     question: str = dspy.InputField(desc="User's current message")
-    session_context: str = dspy.InputField(desc="Relevant conversation history")
-    observations: str = dspy.InputField(desc="Tool/expert observations from this request")
-    answer: str = dspy.OutputField(desc="Final user-facing answer")
-
-
-class RouterSignature(dspy.Signature):
-    """Legacy typed route contract retained for compatibility.
-
-    Production CLIO uses AgentActionSignature for the tool/expert loop. This
-    older signature remains importable for integrations that still expect a
-    Literal selected_expert output covering chat, data, analysis, visualization,
-    and none.
-    """
-
-    question: str = dspy.InputField(desc="User's question or message")
-    selected_expert: Literal["chat", "data", "analysis", "visualization", "none"] = dspy.OutputField(
-        desc="Legacy route id: chat, data, analysis, visualization, or none"
+    images: list[dspy.Image] = dspy.InputField(
+        desc="User-provided image attachments for this turn, if any"
     )
+    session_context: str = dspy.InputField(desc="Relevant conversation history")
+    observations: str = dspy.InputField(desc="Tool observations from this request")
+    answer: str = dspy.OutputField(desc="Final user-facing answer")
 
 
 class ChatAgentSignature(dspy.Signature):
@@ -90,9 +96,17 @@ class ChatAgentSignature(dspy.Signature):
     statistical profiling, and data visualization.
 
     For identity questions: Introduce yourself as CLIO and describe your capabilities.
-    For general questions: Be helpful, precise, and suggest how your data expertise
-    could help if relevant. Mention available experts: DataExpert for HDF5 analysis,
-    AnalysisExpert for Parquet/statistical profiling, VisualizationExpert for charts.
+    For general factual or conversational questions: answer normally and concisely.
+    Do not refuse public facts, math, writing, or ordinary conversation merely
+    because they are outside scientific data management. Mention available experts
+    only when the user asks about CLIO's capabilities or when the data expertise is
+    relevant: domain behavior is provided by registry-loaded Agent Blueprints and
+    scoped tools. Chat can execute only explicitly provided chat-utility tools;
+    scientific data/file work must be routed through the owning blueprint/tool
+    boundary.
+    For provider/configuration failures: surface the failure and suggest retrying,
+    reconfiguring the provider/model, or exiting; do not tell the user the issue is
+    fixed or redirect to generic support.
 
     Do not invent file-specific facts from conversation history. If the user asks
     for details about a local file, dataset, schema, columns, statistics, or plots,
@@ -101,7 +115,8 @@ class ChatAgentSignature(dspy.Signature):
     Keep responses concise but informative. Be confident and direct."""
 
     question: str = dspy.InputField(desc="User's question or message")
-    session_context: str = dspy.InputField(
-        desc="Relevant context from conversation history"
+    images: list[dspy.Image] = dspy.InputField(
+        desc="User-provided image attachments for this turn, if any"
     )
+    session_context: str = dspy.InputField(desc="Relevant context from conversation history")
     answer: str = dspy.OutputField(desc="CLIO's conversational response")

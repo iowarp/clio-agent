@@ -5,10 +5,12 @@
 ## Test surface at a glance
 
 - **test_core/** — agent loop, routing, errors, config, instrumentation, runner, API
-- **test_experts/** — DataExpert, AnalysisExpert, VisualizationExpert (tool wiring + signature shape)
+- **test_gact/test_agent_blueprints.py** — registry bootstrap, Agent Blueprint parsing,
+  DSPy module compilation, child expert tools, and native-expert removal guards
 - **test_tools/** — FastMCP gateway + HDF5 / Parquet servers end-to-end
 - **test_arc/** — memory coverage, context compiler, retrieval, storage tiers
-- **test_integration/** — full `ClioAgent` wiring + multi-expert dispatch
+- **integration-contract / benchmark evidence** — real provider and marketplace
+  deployment checks; unit coverage is not sufficient for release readiness
 
 Fixtures (`conftest.py:1-102`) create real files (HDF5 / Parquet) with deterministic seeds — CLIO uses **real file I/O** in its tests, no mocked backends. Only LM calls get mocked (or skipped with `@skipif(not lm_studio_available())`).
 
@@ -28,14 +30,12 @@ agent = ClioAgent(data_dir=str(tmp / "clio_test"), verbose=True)
 Shape after init:
 
 ```python
-agent.router                          # DSPy ChainOfThought on RouterSignature
+agent.action_planner                  # DSPy ChainOfThought on AgentActionSignature
 agent.chat_agent                      # DSPy Predict on ChatAgentSignature
-agent.data_expert                     # DataExpert (DSPy ReAct)
-agent.analysis_expert                 # AnalysisExpert
-agent.visualization_expert            # VisualizationExpert
+agent.registry                        # core runtime registry
+# GACT loads Agent Blueprint experts from the registry/marketplace store
+# and compiles them by module.kind at session runtime.
 agent.arc                             # ARCMemory
-agent.lsm                             # LSM tree for metrics
-agent.registry.get_agent_count() == 3 # data / analysis / visualization
 ```
 
 ### Single turn (happy path)
@@ -52,7 +52,6 @@ Returns `dspy.Prediction` with:
 - `session_id: str`
 - `duration_ms: float`
 - `arc_stats: dict` (cache hits/misses)
-- `lsm_stats: dict`
 - `error_info: dict | None`
 
 `agent.arc.get_conversation(session_id).messages` has `len == 2 * turn_count` (user + assistant).
@@ -70,26 +69,52 @@ Returns `dspy.Prediction` with:
 
 ### Cancellation
 
-**Not supported today.** The `forward()` loop has no cancel hooks; ReAct iterates up to 5 times unconditionally. For the TUI's integration this means:
+Cancellation is supported at the GACT boundary as **best effort** through
+`POST /v1/sessions/{sid}/cancel`.
 
-- Gracefully handle `Ctrl+C` at the HTTP boundary (kill the request, CLIO keeps churning until the current expert finishes).
-- Set reasonable request timeouts (60 s default per tool, 30 s per MCP call, plus LM latency).
-- Future v0.4 will add task-level cancellation (`PLAN.md:149-150, 339-350`).
+- Idle sessions move to `status="cancelled"` and emit `session.cancelled`.
+- If a cancel lands before the turn produces output, the assistant message
+  settles with `error_info.error="cancelled"` and no text body.
+- If a cancel lands while the turn is running in an executor thread, the
+  GACT envelope still settles as cancelled and includes
+  `details.execution_cancellation="best_effort"`.
+- Provider or tool work that is already running may continue after the
+  envelope settles. The status event exposes
+  `executor_work_may_continue=true` for this case.
+
+Tests: `tests/test_gact/test_cancellation.py`.
 
 ### Streaming
 
-**Tokens do not stream from the agent core.** SSE events in `/query` (stream mode) are synthesised from the final answer in the FastAPI layer (`test_api.py:238-271`). Real token streaming is Phase 4+.
+`clio-agent serve` streams GACT events over `GET /v1/sessions/{sid}/events`. A user turn is accepted with `POST /v1/sessions/{sid}/messages`, then the SSE channel emits `message.created`, `message.part.added`, `message.part.delta`, `message.part.completed`, and `message.completed`.
 
-What the TUI *can* stream today: **routing + expert-selection progress** (emitted before the expert runs), then the full answer once done.
+Text streaming has explicit provenance:
+
+- `stream_source="live"` means the delta arrived through the live `dspy.streamify` path.
+- `stream_source="batch"` means the backend already had the final answer before live provider-token deltas could be emitted.
+
+Batch fallback payloads include a structured `stream_fallback`
+object with `reason`, `category`, `description`, `recovery_actions`,
+legacy `synthetic_posthoc=true`, and `live_streaming=false`. The audited
+reason catalog is advertised in `/v1/capabilities`; unknown reasons are
+rejected instead of becoming unclassified fallback metadata.
+
+Current limitation: the chat `answer` path can stream live when the upstream DSPy/LiteLLM path emits chunks. Expert outputs and paths that do not emit an `answer` stream are marked as `batch` and delivered as completed text parts, not fake deltas. Live stream execution failures surface as structured `provider_error` messages, not as hidden sync reruns; `details.partial_output` tells clients whether any live text was already emitted.
+
+Tests: `tests/test_gact/test_streaming.py`.
+
+The legacy `clio-agent-api` `/query` endpoint has been **removed** (its
+console script is now a deprecation shim). Use native GACT events
+(`/v1/sessions/{sid}/events`) for best-effort live streaming.
 
 ## Error semantics
 
-`errors.py:26-164` defines the hierarchy:
+`errors.py:26-126` defines the hierarchy:
 
 ```
 ClioError (base)
  ├── ProviderError   — LM unavailable / timeout
- ├── RoutingError    — router classification failed
+ ├── RoutingError    — planner could not select or validate a safe action
  ├── ExpertError     — expert ReAct loop blew up
  ├── ToolError       — MCP tool call failed
  └── ConfigError     — env / config invalid
@@ -117,23 +142,35 @@ else: return {"error": "internal_error",
 
 Use this on the TUI side: `error_info["error"]` is the machine tag; `error_info["message"]` the user-facing line; `details` optional context.
 
-### Graceful degradation
+## Permission Semantics
 
-```python
-result = with_degradation(
-    primary=lambda: risky_llm_call(),
-    fallback=lambda: safe_default(),
-    error_cls=ProviderError,
-)
-```
+`permissions=true` means CLIO exposes the GACT permission surface and
+uses it before destructive mutations, not only after the fact.
 
-Returns primary on success, fallback on `ProviderError`, re-raises anything else. CLIO uses this for:
+- Destructive MCP tool calls create `permission.requested` rows unless a
+  stored policy allows or denies first.
+- Session `mode="plan"` and `mode="architect"` auto-deny destructive
+  tool calls.
+- `/diffs/apply` records an auto-approved permission audit row because
+  the user explicitly clicked apply.
+- Direct destructive GACT DELETE endpoints (`sessions`, `messages`,
+  context file attachments, tasks, schedules, agents, workspaces, hooks,
+  and external MCP server registrations) consult permission policies
+  before mutation and record resolved audit rows.
 
-- Router failure → chat fallback (not a fatal).
-- Cloud LM failure → local LM via `_direct_chat_completion`.
-- Tool failure → return `{"error": {...}}` dict, not raise (see `05-tools.md`).
+### Failure surfacing
 
-(`test_errors.py:1-183`, `agent.py:273-352`)
+CLIO does not use fallback value substitution for planner or provider failures.
+Failed routes and failed LM calls surface as structured `error_info` with retry,
+reconfigure-provider, and exit recovery actions.
+
+- Planner route failure → structured `routing_error`, not a canned answer.
+- Provider/LM failure → structured `provider_error`; CLIO must not hide
+  an upstream/provider failure behind repeated, canned, or locally synthesized
+  assistant text.
+- Tool failure → return `{"error": {...}}` dict, not raise (see [`../MCP_TOOL_INTEGRATION.md`](../MCP_TOOL_INTEGRATION.md)).
+
+(`test_errors.py`, `test_agent_dispatch.py`, `agent.py`)
 
 ## Storage & persistence semantics
 
@@ -185,17 +222,20 @@ arc.get_metrics("data")         # latest
 
 ## Routing semantics
 
-- `RouterSignature.selected_expert` is `Literal["chat","data","analysis","visualization","none"]` — five targets, no typos, validated at DSPy level (`test_routing.py:22-37`).
-- `chat` is **not registered** with the registry (built-in fallback), so `registry.get_agent_count() == 3`.
-- Heuristic triggers (`agent.py:386-402`) check keywords BEFORE invoking the LM router — saves ~200–500 ms when the intent is obvious.
-- Registry lookup by keyword: `registry.find_agents_by_keyword("hdf5") → ["data"]`.
+- `AgentActionSignature` returns a constrained JSON action. Valid action kinds are `tool`, `expert`, `answer`, and `none` for core CLIO planning.
+- GACT session agents may select registry-loaded Agent Blueprint experts instead of a native domain expert path. The active default blueprint currently exposes `main`, `data`, `analysis`, and `visualization` from `data-semantics`.
+- `answer` is the conversational/chat path. It produces normal assistant text without tool execution.
+- `none` means no valid action is available. A missing planner explanation surfaces as `routing_error`; CLIO must not replace it with a canned assistant response.
+- Session `routing_mode` overrides constrain the planner path: `chat` forces the conversational path, `experts` rejects direct `answer`/`none` routes, and `reasoning_only` asks the planner to prefer tool/expert reasoning over deterministic shortcuts.
+- Registry lookup by keyword remains available for discovery. Default/baseline agent provenance should identify the installed blueprint and registry commit.
 
 ## Expert semantics
 
-- `DataExpert._tools` populated from `MCPToolBridge(gateway).to_dspy_tools()` at construction — at least 4 tools expected (`test_data_expert.py:79-93`).
-- Each expert's Signature has a ≥ 500-word docstring that drives LM behaviour (`CLAUDE.md` Rule 4). Don't display this in the TUI.
-- Experts accept a `tool_executor` parameter for testability (`FakeExecutor` with `.to_dspy_tools()`) — useful if the TUI wants to mock out tools for dry-runs.
-- Experts close their executor on `shutdown()` (`test_data_expert.py:142-144`).
+- Agent Blueprint experts compile by declared `module.kind`, not by tool list.
+- Empty blueprint signatures default to `system_prompt`, `question`, and `answer`; structured outputs add evidence/artifacts/errors/delegation/handoff fields.
+- ReAct blueprint experts receive only their declared tools plus generated child-expert tools for declared children.
+- Parent/child delegation emits semantic events and returns compact child evidence to the parent.
+- Native Python domain expert modules are not runtime-importable and must not be used as a fallback.
 
 ## Tool semantics
 
@@ -227,7 +267,7 @@ result = runner.run(
 
 `test_significance()` runs a proportion z-test on before/after success rates; only stat-sig variants get deployed. Variants are versioned in ARC; the TUI (or admin) can roll them back.
 
-(`test_runner.py:56-218`, `SELF_IMPROVEMENT.md`)
+(`test_runner.py:56-218`)
 
 ## Copy-paste minimal end-to-end
 
@@ -249,8 +289,8 @@ agent.shutdown()                                 # flush ARC + close LSM
 For a server-mode equivalent:
 
 ```bash
-$ clio-agent-api --host 127.0.0.1 --port 8000 &
-$ curl -s -X POST http://127.0.0.1:8000/query \
+$ clio-agent serve --host 127.0.0.1 --port 8100 &
+$ curl -s -X POST http://127.0.0.1:8100/v1/sessions/abc/messages \
     -H 'Content-Type: application/json' \
     -d '{"question":"Hi","session_id":"abc"}'
 # → {"answer":"...","selected_expert":"chat","session_id":"abc","duration_ms":...,"error_info":null}
@@ -264,9 +304,9 @@ $ curl -s -X POST http://127.0.0.1:8000/query \
 | Per-message call | `test_agent_dispatch.py:26-44` — `forward(question, session_id?) → Prediction(...)` |
 | Conversation | `test_end_to_end.py:59-71` — `arc.get_conversation(sid).messages` |
 | Streaming | `test_api.py:238-271` — SSE composed in FastAPI, not token-native |
-| Errors | `test_errors.py:1-183` — structured `to_dict()`, no traceback leak |
+| Errors | `test_errors.py` — structured `to_dict()`, no traceback leak |
 | ARC memory | `test_memory_coverage.py:35-150` — Invocation + Metrics schemas pinned |
 | Context window | `test_context_compiler.py:24-109` — 2K (T1) / 4K (T2) budgets |
 | Tools | `test_hdf5_server.py:37-120` — file_policy validation BEFORE open, error dict on failure |
-| Registry | `test_routing.py:167-210` — 3 experts, 5 router targets |
+| Registry | `test_registry.py` — 3 registry-backed experts plus planner-selected chat/none outcomes |
 | Variants | `test_runner.py:141-218` — SIMBA + stat-sig gating + VariantRecord in ARC |

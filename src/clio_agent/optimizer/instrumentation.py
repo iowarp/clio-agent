@@ -1,5 +1,13 @@
 """Expert call instrumentation for optimization data collection.
 
+Research-pending (#801; tracked in
+https://github.com/iowarp/clio-agent/issues/633): this is the live half of
+the optimizer vertical — per-turn invocation records are written by
+``ClioAgent._store_expert_invocation`` (which reuses ``_extract_output``
+here) and ``MetricsAggregator`` feeds ``/metrics`` today. The
+``instrumented_forward`` decorator itself has no callers in the current
+blueprint runtime.
+
 Provides a decorator to wrap expert forward() calls, logging Invocation
 records to ARC memory with input, output, status, duration, and agent_id.
 Also provides MetricsAggregator for computing per-expert performance metrics.
@@ -9,11 +17,14 @@ The instrumented data becomes the training set for SIMBA optimization.
 
 import functools
 import json
+import logging
 import time
 import uuid
 from typing import Any, Callable, Dict
 
 from clio_agent.arc.schema import Invocation
+
+logger = logging.getLogger(__name__)
 
 
 def instrumented_forward(arc_memory: Any, agent_id: str) -> Callable:
@@ -35,10 +46,12 @@ def instrumented_forward(arc_memory: Any, agent_id: str) -> Callable:
         ... def forward(self, question, file_context=""):
         ...     return dspy.Prediction(analysis="...", recommendations="...")
     """
+
     def decorator(forward_fn: Callable) -> Callable:
         @functools.wraps(forward_fn)
         def wrapper(*args, **kwargs):
             start = time.time()
+            start_ns = time.perf_counter_ns()
             trace_id = str(uuid.uuid4())
 
             # Extract input fields from args/kwargs
@@ -59,7 +72,11 @@ def instrumented_forward(arc_memory: Any, agent_id: str) -> Callable:
                 output_data = {"error": str(e)[:500]}
                 raise
             finally:
-                duration_ms = (time.time() - start) * 1000
+                completed_at = time.time()
+                duration_ms = max(
+                    (time.perf_counter_ns() - start_ns) / 1_000_000,
+                    0.001,
+                )
                 invocation = Invocation(
                     trace_id=trace_id,
                     session_id=session_id,
@@ -68,7 +85,7 @@ def instrumented_forward(arc_memory: Any, agent_id: str) -> Callable:
                     tier=2,
                     source="native",
                     started_at=start,
-                    completed_at=time.time(),
+                    completed_at=completed_at,
                     duration_ms=duration_ms,
                     status=status,
                     input=input_data,
@@ -81,6 +98,7 @@ def instrumented_forward(arc_memory: Any, agent_id: str) -> Callable:
                 arc_memory.store_invocation(invocation)
 
         return wrapper
+
     return decorator
 
 
@@ -138,11 +156,22 @@ def _extract_output(result: Any) -> Dict[str, Any]:
                 val = getattr(result, key, "")
                 if val is not None:
                     output_data[key] = _to_safe_text(val)[:500]
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - instrumentation must not fail the call
+            logger.warning(
+                "prediction fields not captured; invocation record will be incomplete "
+                "reason=prediction_output_capture_failed result_type=%s error=%s",
+                type(result).__name__,
+                exc,
+            )
     else:
         # Fallback: try common expert output fields
-        for field in ("analysis", "recommendations", "visualization_description", "file_path", "answer"):
+        for field in (
+            "analysis",
+            "recommendations",
+            "visualization_description",
+            "file_path",
+            "answer",
+        ):
             val = getattr(result, field, None)
             if val is not None:
                 output_data[field] = _to_safe_text(val)[:500]
@@ -161,14 +190,14 @@ def _to_safe_text(value: Any) -> str:
     if isinstance(value, (list, dict)):
         try:
             return json.dumps(value, ensure_ascii=False)
-        except Exception:
+        except Exception:  # noqa: BLE001 - value->JSON coercion falls back to str()
             return str(value)
 
     if hasattr(value, "model_dump"):
         try:
             dumped = value.model_dump(mode="json", warnings="none")
             return json.dumps(dumped, ensure_ascii=False)
-        except Exception:
+        except Exception:  # noqa: BLE001,S110 - value coercion cascade; falls through
             pass
 
     content = getattr(value, "content", None)

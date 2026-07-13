@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Contributing to CLIO</title>
+  <meta name="description" content="How to build CLIO from source and contribute." />
+  <link rel="icon" href="assets/logo.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- ===== Beta ribbon ===== -->
+  <a class="beta-ribbon" href="https://github.com/iowarp/clio-agent/releases" target="_blank" rel="noopener" aria-label="CLIO is in beta">BETA</a>
+
+  <!-- ===== Nav ===== -->
+  <header class="nav">
+    <div class="wrap nav-inner">
+      <a class="brand" href="index.html">
+        <img src="assets/logo.svg" alt="CLIO logo" />
+        <span class="wordmark">CLIO</span>
+        <span class="beta-tag">Beta</span>
+      </a>
+      <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation">☰</button>
+      <nav class="nav-links" id="navLinks">
+        <a href="index.html#install">Install</a>
+        <a href="index.html#desktop">Desktop</a>
+        <a href="index.html#docker">Docker</a>
+        <a href="docs.html">Docs</a>
+        <a href="contributing.html">Contributing</a>
+        <a href="uninstall.html">Uninstall</a>
+        <a class="ghbtn" href="https://github.com/iowarp/clio-agent" target="_blank" rel="noopener">GitHub ↗</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap doc">
+    <p class="eyebrow">Open source · BSD-3-Clause</p>
+    <h1>Contributing to CLIO</h1>
+    <p class="lead">Welcome! CLIO is built in the open and we'd love your help: whether that's a bug report, a docs fix, a new tool, or a deep dive into the agent core.</p>
+
+    <h2>Clone &amp; run from source</h2>
+    <p>CLIO uses <a href="https://astral.sh/uv" target="_blank" rel="noopener">uv</a> for dependency management and execution. Git submodules carry the bundled tool servers, so clone recursively.</p>
+    <div class="code" data-copy="git clone --recurse-submodules https://github.com/iowarp/clio-agent
+cd clio-agent
+uv sync --extra optimizers --extra argonne
+uv run src/clio_agent/ui/cli.py">
+      <pre><span class="prompt">$ </span>git clone --recurse-submodules https://github.com/iowarp/clio-agent
+<span class="prompt">$ </span>cd clio-agent
+<span class="prompt">$ </span>uv sync --extra optimizers --extra argonne
+<span class="prompt">$ </span>uv run src/clio_agent/ui/cli.py</pre>
+      <button class="copy-btn" type="button" aria-label="Copy command" title="Copy command"></button>
+    </div>
+
+    <h2>Build the front-ends from source</h2>
+    <p>The terminal, web, and desktop front-ends live in the <a href="https://github.com/iowarp/gact-tui" target="_blank" rel="noopener">gact-tui</a> repo, vendored here as the <code>external/gact-tui</code> submodule: so clone with <code>--recurse-submodules</code> (the command above already does). The front-ends all talk to the same backend server.</p>
+
+    <h3>Backend (server)</h3>
+    <p>Start the server the front-ends connect to:</p>
+    <div class="code" data-copy="uv run clio-agent-gact">
+      <pre><span class="prompt">$ </span>uv run clio-agent-gact</pre>
+      <button class="copy-btn" type="button" aria-label="Copy command" title="Copy command"></button>
+    </div>
+
+    <h3>Terminal UI</h3>
+    <p>Build the TUI binary, then run it: it connects to the running server. The script bakes in <code>GACT_BRAND=clio</code>.</p>
+    <div class="code" data-copy="GACT_TUI_ROOT=external/gact-tui ./scripts/build_clio_tui.sh dist/clio-tui
+dist/clio-tui">
+      <pre><span class="prompt">$ </span>GACT_TUI_ROOT=external/gact-tui ./scripts/build_clio_tui.sh dist/clio-tui
+<span class="prompt">$ </span>dist/clio-tui</pre>
+      <button class="copy-btn" type="button" aria-label="Copy command" title="Copy command"></button>
+    </div>
+
+    <h3>Web</h3>
+    <p>Build the web bundle. The server serves it when pointed at the dist via <code>CLIO_WEB_DIR</code>: or just use <code>docker compose up clio-web</code>.</p>
+    <div class="code" data-copy="cd external/gact-tui/apps
+GACT_BRAND=clio GACT_BRAND_ROOT=&quot;$PWD/../../branding&quot; pnpm --filter @clio/web build">
+      <pre><span class="prompt">$ </span>cd external/gact-tui/apps
+<span class="prompt">$ </span>GACT_BRAND=clio GACT_BRAND_ROOT="$PWD/../../branding" pnpm --filter @clio/web build</pre>
+      <button class="copy-btn" type="button" aria-label="Copy command" title="Copy command"></button>
+    </div>
+
+    <h3>Desktop</h3>
+    <p>The desktop app is built with <a href="https://tauri.app" target="_blank" rel="noopener">Tauri</a> from <code>external/gact-tui/apps/desktop</code>, using the CLIO branding overlay at <code>branding/clio/tauri.clio.conf.json</code>. The CI bundles workflow is the reference build: see <a href="https://github.com/iowarp/gact-tui/tree/main/.github/workflows" target="_blank" rel="noopener">the gact-tui workflows</a>.</p>
+
+    <h2>Project layout</h2>
+    <ul>
+      <li><code>src/clio_agent/</code>: the agent: planner loop, experts, registry, ARC memory, optimizer, runtime, tools, and the CLI / REST UIs.</li>
+      <li><code>tests/</code>: unit and integration tests (<code>pytest</code>).</li>
+      <li><code>install/</code>: the install scripts and the <code>clio</code> launcher.</li>
+      <li><code>docs/</code>: architecture notes and reference material.</li>
+    </ul>
+
+    <h2>Dev workflow</h2>
+    <p>We follow <strong>gitflow</strong>:</p>
+    <ul>
+      <li>Branch off <code>develop</code> for your work.</li>
+      <li>Open a pull request <strong>into <code>develop</code></strong>.</li>
+      <li>Releases merge <code>develop</code> → <code>main</code> and tag <code>vX.Y.Z</code>.</li>
+    </ul>
+    <p>Before you push: make sure the tests pass and lint is clean.</p>
+    <div class="code" data-copy="uv run pytest tests/
+uv run ruff check --fix src/ &amp;&amp; uv run ruff format src/">
+      <pre><span class="prompt">$ </span>uv run pytest tests/
+<span class="prompt">$ </span>uv run ruff check --fix src/ &amp;&amp; uv run ruff format src/</pre>
+      <button class="copy-btn" type="button" aria-label="Copy command" title="Copy command"></button>
+    </div>
+
+    <div class="doc-links">
+      <a class="btn btn-primary" href="https://github.com/iowarp/clio-agent/issues" target="_blank" rel="noopener">Open an issue</a>
+      <a class="btn" href="https://github.com/iowarp/clio-agent/pulls" target="_blank" rel="noopener">Pull requests</a>
+      <a class="btn" href="index.html">← Back to home</a>
+    </div>
+  </main>
+
+  <!-- ===== Footer ===== -->
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <div class="footer-links">
+        <a href="https://github.com/iowarp/clio-agent" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://pypi.org/project/clio-agent/" target="_blank" rel="noopener">PyPI</a>
+        <a href="docs.html">Docs</a>
+        <a href="contributing.html">Contributing</a>
+        <a href="uninstall.html">Uninstall</a>
+        <a href="https://github.com/iowarp/clio-agent/blob/main/LICENSE" target="_blank" rel="noopener">License · BSD-3-Clause</a>
+      </div>
+      <div class="credit">
+        <span class="accent">Gnosis Research Center</span> · Illinois Tech
+      </div>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

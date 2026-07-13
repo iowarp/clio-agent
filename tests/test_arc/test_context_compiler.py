@@ -11,9 +11,7 @@ from clio_agent.arc.context_compiler import ContextCompiler
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.schema import (
     Conversation,
-    DatasetProfile,
     Message,
-    ProceduralMemory,
     RoutingDecision,
 )
 
@@ -63,49 +61,30 @@ class TestFilter:
         assert raw["conversation"][0]["role"] == "user"
         assert raw["conversation"][0]["content"] == "What is HDF5?"
 
-    def test_filter_returns_dataset_profiles(self, tmp_path):
-        """Filter should find dataset profiles for the session."""
+    def test_filter_preserves_message_metadata(self, tmp_path):
+        """Filter should keep message metadata needed by compaction-aware rendering."""
         arc = ARCMemory(data_dir=str(tmp_path / "arc"))
-        session_id = "filter_profiles"
+        session_id = "filter_metadata"
 
-        profile = DatasetProfile(
+        conv = Conversation(
             session_id=session_id,
-            filepath="/data/test.parquet",
-            file_format="parquet",
-            created_by="data",
+            user_id="test",
             created_at=time.time(),
-            schema_info={"columns": ["temp", "pressure"], "rows": 100},
-            statistics={"temp": {"mean": 24.5}},
+            messages=[
+                Message(
+                    role="assistant",
+                    content="[compact summary]\nHDF5, Parquet, CSV, and BP5 evidence.",
+                    timestamp=time.time(),
+                    metadata={"synthetic": "compact_summary"},
+                ),
+            ],
         )
-        arc.store_dataset_profile(profile)
+        arc.store_conversation(conv)
 
         compiler = ContextCompiler(arc)
-        raw = compiler._filter("analyze data", session_id)
-        assert len(raw["profiles"]) == 1
-        assert raw["profiles"][0]["filepath"] == "/data/test.parquet"
-        assert raw["profiles"][0]["format"] == "parquet"
+        raw = compiler._filter("next question", session_id)
 
-    def test_filter_returns_procedural_memories(self, tmp_path):
-        """Filter should find procedural memories for the session."""
-        arc = ARCMemory(data_dir=str(tmp_path / "arc"))
-        session_id = "filter_proc"
-
-        mem = ProceduralMemory(
-            session_id=session_id,
-            expert_id="data",
-            pattern_type="success",
-            description="gzip-6 worked well",
-            context={"file": "test.h5"},
-            outcome="3x compression",
-            learned_at=time.time(),
-        )
-        arc.store_procedural_memory(mem)
-
-        compiler = ContextCompiler(arc)
-        raw = compiler._filter("optimize compression", session_id)
-        assert len(raw["procedural"]) == 1
-        assert raw["procedural"][0]["type"] == "success"
-        assert raw["procedural"][0]["description"] == "gzip-6 worked well"
+        assert raw["conversation"][0]["metadata"]["synthetic"] == "compact_summary"
 
     def test_filter_returns_routing_history(self, tmp_path):
         """Filter should extract recent routing decisions."""
@@ -140,8 +119,6 @@ class TestFilter:
         compiler = ContextCompiler(arc)
         raw = compiler._filter("test query", "nonexistent")
         assert raw["conversation"] == []
-        assert raw["profiles"] == []
-        assert raw["procedural"] == []
         assert raw["routing"] == []
 
 
@@ -155,19 +132,15 @@ class TestCompact:
 
         # Create artificially large context
         raw = {
-            "conversation": [
-                {"role": "user", "content": "word " * 500}
-            ],
-            "profiles": [],
-            "procedural": [],
+            "conversation": [{"role": "user", "content": "word " * 5000}],
             "routing": [],
         }
 
         compacted = compiler._compact(raw, budget_tokens=2000)
         conversation_text = compacted["conversation"]
         word_count = len(conversation_text.split())
-        # 40% of 2000 tokens = 800 tokens * 0.75 words/token = 600 words max
-        assert word_count <= 650  # Allow small margin for "user: " prefix
+        # 80% of 2000 tokens = 1600 tokens * 0.75 words/token = 1200 words max
+        assert word_count <= 1250  # Allow small margin for "user: " prefix
 
     def test_compact_respects_tier2_budget(self, tmp_path):
         """Tier 2 budget (4K tokens) should allow more content."""
@@ -175,46 +148,106 @@ class TestCompact:
         compiler = ContextCompiler(arc)
 
         raw = {
-            "conversation": [
-                {"role": "user", "content": "word " * 2000}
-            ],
-            "profiles": [],
-            "procedural": [],
+            "conversation": [{"role": "user", "content": "word " * 4000}],
             "routing": [],
         }
 
         compacted = compiler._compact(raw, budget_tokens=4000)
         conversation_text = compacted["conversation"]
         word_count = len(conversation_text.split())
-        # 40% of 4000 tokens = 1600 tokens * 0.75 words/token = 1200 words max
-        assert word_count <= 1250
+        # 80% of 4000 tokens = 3200 tokens * 0.75 words/token = 2400 words max
+        assert word_count <= 2450
 
     def test_compact_proportional_allocation(self, tmp_path):
-        """Conversation should get ~40% of budget, profiles ~30%."""
+        """Conversation should get ~80% of budget, routing ~20%.
+
+        Both sections are made to overflow their proportional caps (many
+        conversation turns, many routing decisions) so the compacted word
+        counts reflect the budget split rather than the raw input sizes.
+        """
         arc = ARCMemory(data_dir=str(tmp_path / "arc"))
         compiler = ContextCompiler(arc)
 
         raw = {
+            # 100 turns, each long enough to survive per-message truncation, so
+            # the joined section overflows the 80% conversation budget.
             "conversation": [
-                {"role": "user", "content": "conversation " * 1000}
+                {"role": "user", "content": "alpha " * 60} for _ in range(100)
             ],
-            "profiles": [
-                {"filepath": "/data/test.parquet", "format": "parquet",
-                 "schema": {"columns": ["a"] * 100, "rows": 1000},
-                 "stats": {f"a_{i}": {"mean": 1.0} for i in range(50)},
-                 "created_by": "data"}
-            ],
-            "procedural": [],
-            "routing": [],
+            # 300 routing lines overflow the 20% routing budget.
+            "routing": [{"query": "q", "selected": "data"} for _ in range(300)],
         }
 
         compacted = compiler._compact(raw, budget_tokens=2000)
         conv_words = len(compacted["conversation"].split()) if compacted["conversation"] else 0
-        prof_words = len(compacted["profiles"].split()) if compacted["profiles"] else 0
+        route_words = len(compacted["routing"].split()) if compacted["routing"] else 0
 
-        # Conversation should have more words than profiles (40% vs 30%)
-        if conv_words > 0 and prof_words > 0:
-            assert conv_words > prof_words
+        # Conversation should get a larger slice than routing (80% vs 20%).
+        assert conv_words > route_words
+
+    def test_compact_summary_messages_keep_retained_evidence(self, tmp_path):
+        """Compact summaries should not be clipped like ordinary chat turns."""
+        arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+        compiler = ContextCompiler(arc)
+        retained = (
+            "[compact summary]\n"
+            "HDF5 partial compression and electron_temperature evidence. "
+            + ("filler " * 80)
+            + "Parquet anomaly_score statistics, CSV event schema, and BP5 ADIOS2 caveat."
+        )
+
+        text = compiler._section_to_text(
+            "conversation",
+            [
+                {
+                    "role": "assistant",
+                    "content": retained,
+                    "metadata": {"synthetic": "compact_summary"},
+                }
+            ],
+        )
+
+        assert "electron_temperature" in text
+        assert "anomaly_score" in text
+        assert "CSV event schema" in text
+        assert "BP5 ADIOS2 caveat" in text
+
+    def test_compact_summary_truncation_preserves_exact_evidence_index(self, tmp_path):
+        """Long compact summaries should keep the exact retained evidence tail."""
+        arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+        compiler = ContextCompiler(arc)
+        retained = (
+            "[compact summary]\n"
+            "HDF5 head evidence with fusion_run.h5. "
+            + ("middle filler " * 400)
+            + "\n[exact retained evidence index]\n"
+            "Paths:\n"
+            "- D:\\data\\fusion_run.h5\n"
+            "- D:\\data\\facility_measurements.parquet\n"
+            "- D:\\data\\sensor_events.csv\n"
+            "- D:\\data\\gray_scott.bp5\n"
+            "Identifiers:\n"
+            "- /plasma/electron_temperature\n"
+            "- anomaly_score\n"
+            "- operator_note\n"
+        )
+
+        text = compiler._section_to_text(
+            "conversation",
+            [
+                {
+                    "role": "assistant",
+                    "content": retained,
+                    "metadata": {"synthetic": "compact_summary"},
+                }
+            ],
+        )
+
+        assert "fusion_run.h5" in text
+        assert "[exact retained evidence index]" in text
+        assert "/plasma/electron_temperature" in text
+        assert "anomaly_score" in text
+        assert "operator_note" in text
 
 
 class TestEnrich:
@@ -225,19 +258,44 @@ class TestEnrich:
         arc = ARCMemory(data_dir=str(tmp_path / "arc"))
         compiler = ContextCompiler(arc)
 
-        compacted = {"conversation": "", "profiles": "", "procedural": "", "routing": ""}
+        compacted = {"conversation": "", "routing": ""}
         enriched = compiler._enrich(compacted, "analyze HDF5 file")
 
         assert "tools" in enriched
-        # Should contain tool names from gateway
-        assert "hdf5" in enriched["tools"].lower() or enriched["tools"] == ""
+        # Enrich summarises the BUNDLED gateway tools (fs + shell). Domain servers
+        # like hdf5 are declared MCPs, not bundled in core, so they are not part of
+        # the default capability summary — assert against a stable built-in instead.
+        tools_text = enriched["tools"].lower()
+        assert tools_text == "" or "shell_bash" in tools_text or "fs_read_file" in tools_text
+
+    def test_enrich_filters_tools_by_scope(self, tmp_path):
+        """Scoped context should only include tools visible to that agent."""
+        arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+        compiler = ContextCompiler(arc)
+
+        compacted = {"conversation": "", "routing": ""}
+        enriched = compiler._enrich(compacted, "what day is it?", tool_scope="chat")
+
+        assert "shell_bash" in enriched["tools"]
+        assert "hdf5_analyze_file" not in enriched["tools"]
+        assert "parquet_analyze_schema" not in enriched["tools"]
+
+    def test_enrich_can_suppress_tool_context(self, tmp_path):
+        """Callers can request no ARC tool summary when capabilities are separate."""
+        arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+        compiler = ContextCompiler(arc)
+
+        compacted = {"conversation": "", "routing": ""}
+        enriched = compiler._enrich(compacted, "hello", tool_scope="none")
+
+        assert enriched["tools"] == ""
 
     def test_enrich_adds_keywords(self, tmp_path):
         """Enrich should extract keywords from query."""
         arc = ARCMemory(data_dir=str(tmp_path / "arc"))
         compiler = ContextCompiler(arc)
 
-        compacted = {"conversation": "", "profiles": "", "procedural": "", "routing": ""}
+        compacted = {"conversation": "", "routing": ""}
         enriched = compiler._enrich(compacted, "analyze HDF5 compression statistics")
 
         assert "keywords" in enriched
@@ -256,8 +314,6 @@ class TestAssemble:
 
         enriched = {
             "conversation": "user: Hello",
-            "profiles": "/data/test.parquet",
-            "procedural": "",
             "routing": "",
             "tools": "hdf5_analyze_file: Analyze HDF5 file.",
             "keywords": "hello",
@@ -265,7 +321,6 @@ class TestAssemble:
 
         assembled = compiler._assemble(enriched)
         assert "[Session Context]" in assembled
-        assert "[Available Data]" in assembled
         assert "[Available Tools]" in assembled
 
     def test_assemble_empty_sections_omitted(self, tmp_path):
@@ -275,8 +330,6 @@ class TestAssemble:
 
         enriched = {
             "conversation": "",
-            "profiles": "",
-            "procedural": "",
             "routing": "",
             "tools": "",
             "keywords": "",
@@ -292,8 +345,6 @@ class TestAssemble:
 
         enriched = {
             "conversation": "user: test query",
-            "profiles": "",
-            "procedural": "",
             "routing": "",
             "tools": "",
             "keywords": "",
@@ -318,22 +369,15 @@ class TestCompileEndToEnd:
             user_id="test",
             created_at=time.time(),
             messages=[
-                Message(role="user", content="What datasets are in my file?", timestamp=time.time()),
-                Message(role="assistant", content="Found 3 datasets in test.h5", timestamp=time.time()),
+                Message(
+                    role="user", content="What datasets are in my file?", timestamp=time.time()
+                ),
+                Message(
+                    role="assistant", content="Found 3 datasets in test.h5", timestamp=time.time()
+                ),
             ],
         )
         arc.store_conversation(conv)
-
-        # Store profile
-        profile = DatasetProfile(
-            session_id=session_id,
-            filepath="/data/test.h5",
-            file_format="hdf5",
-            created_by="data",
-            created_at=time.time(),
-            schema_info={"columns": ["temperature"], "rows": 100},
-        )
-        arc.store_dataset_profile(profile)
 
         # Compile
         compiler = ContextCompiler(arc)
@@ -341,7 +385,6 @@ class TestCompileEndToEnd:
 
         # Verify structured output
         assert "[Session Context]" in result
-        assert "[Available Data]" in result
         assert "test.h5" in result
         assert isinstance(result, str)
         assert len(result) > 0
@@ -356,3 +399,71 @@ class TestCompileEndToEnd:
         assert isinstance(result, str)
         # Either has tools or "No prior context"
         assert len(result) > 0
+
+
+class TestIncludeConversationFlag:
+    """`include_conversation=False` drops the conversation/routing channel (#771).
+
+    gact owns the conversation history via its transcript prepend; the compiled
+    context must stop echoing the same turns or every turn is paid for twice.
+    """
+
+    @staticmethod
+    def _live_turns(monkeypatch, arc):
+        """Force a non-empty live view with a distinctive answer string."""
+        marker = "SENTINEL prior turn answer about electron_temperature"
+        monkeypatch.setattr(
+            arc,
+            "get_live_context",
+            lambda _sid, **_kw: {
+                "turns": [
+                    {
+                        "question": "what is in run.h5?",
+                        "answer": marker,
+                        "selected_expert": "data",
+                    }
+                ]
+            },
+        )
+        return marker
+
+    def test_include_true_emits_session_context(self, tmp_path, monkeypatch):
+        """The default path still surfaces live turns as [Session Context]."""
+        arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+        marker = self._live_turns(monkeypatch, arc)
+        compiler = ContextCompiler(arc)
+
+        result = compiler.compile("follow up", "sess", tier=2, include_conversation=True)
+
+        assert "[Session Context]" in result
+        assert marker in result
+        assert "[Routing History]" in result
+
+    def test_include_false_drops_conversation_and_routing(self, tmp_path, monkeypatch):
+        """With the flag off, no live turns leak into the compiled context."""
+        arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+        marker = self._live_turns(monkeypatch, arc)
+        compiler = ContextCompiler(arc)
+
+        result = compiler.compile("follow up", "sess", tier=2, include_conversation=False)
+
+        assert "[Session Context]" not in result
+        assert "[Routing History]" not in result
+        assert marker not in result
+
+    def test_include_false_never_calls_get_live_context(self, tmp_path, monkeypatch):
+        """The flag skips the branch entirely — no get_live_context call is made."""
+        arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+
+        calls: list[str] = []
+
+        def _tripwire(_sid, **_kw):
+            calls.append(_sid)
+            return {"turns": [{"question": "q", "answer": "a", "selected_expert": "data"}]}
+
+        monkeypatch.setattr(arc, "get_live_context", _tripwire)
+        compiler = ContextCompiler(arc)
+
+        compiler.compile("follow up", "sess", tier=2, include_conversation=False)
+
+        assert calls == []

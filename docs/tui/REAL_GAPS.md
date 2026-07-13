@@ -1,92 +1,82 @@
 # Real-readiness gap log
 
 Honest list of what's wire-shape-only vs end-to-end-working when CLIO
-runs against a real LM (Meridian + Claude Haiku, OpenRouter + a free
-model). Drives what to fix before declaring v0.2 ready.
+runs against a real configured LM provider, including direct cloud
+providers and local OpenAI-compatible providers such as LM Studio.
+Drives what to fix before declaring v0.2 ready.
 
 Updated as gaps land or close.
 
-## Hard blockers — must fix before "ready"
+## Hard blockers - must fix before "ready"
 
-### 1. Tool execution hangs
+None currently tracked in this file.
 
-DataExpert's `MCPToolBridge` doesn't return through the executor
-path. A `data` route times out client-side; server stays stuck
-mid-`forward()`. Symptoms include
-`coroutine 'list_capabilities.<locals>._list' was never awaited`
-warnings, no SSE deltas after the user message, no eventual
-`message.completed`.
+## Fixed / no longer hard blockers
 
-Repro: HDF5 fixture in /tmp/clio-demo, `gact agent deploy clio`,
-ask "Analyze /tmp/clio-demo/clio_demo.h5". Hangs.
+These used to be hard blockers in this file, but the current GACT
+surface has runtime support and tests. Keep watching real-provider
+regressions, but don't treat these as unresolved release blockers:
 
-Fix scope: investigate MCPToolBridge thread/loop interaction with
-FastAPI's executor + the running uvicorn loop; surface tool errors
-as `tool.call.completed{ok:false}` events instead of swallowing.
+| Area | Current status | Evidence |
+|---|---|---|
+| Streaming provenance | Chat answers and provider-backed expert synthesis attempt live `message.part.delta` events when DSPy/LiteLLM streams. Deterministic or fallback text can still be marked `stream_source="batch"` because no provider tokens were available to stream, but it is delivered as a completed part with a structured fallback reason rather than synthetic deltas. | `tests/test_gact/test_streaming.py`, real LM Studio/Qwopus data-expert smoke with `stream_completed_without_chunks` provenance |
+| LM provider config | `GET / PUT /v1/providers/lm` lets the TUI configure or hot-swap provider/model without redeploying the GACT process. | `tests/test_gact/test_lm_provider.py` |
+| Tokens + cost | Per-turn tokens/cost populate assistant messages, completion events, session rollups, and `/v1/metrics`; GACT also extracts DSPy history/usage and estimates known-model cost when upstream omits cost. | `tests/test_gact/test_cost_tracking.py`, `tests/test_gact/test_cost_estimate.py` |
+| Registry blueprint tool execution | Registry-loaded Agent Blueprint turns must complete with scoped tool traces, blueprint provenance, and structured `tools_called` metadata. Native `DataExpert` execution is no longer a release path. | `tests/test_gact/test_agent_blueprints.py`, `tests/test_gact/test_tools_called.py`, real ALCF/marketplace benchmark evidence |
+| Tool telemetry events | Real tool execution boundaries emit `tool.call.started/completed` with `telemetry_source="live_observer"`. Post-turn `tools_called` traces remain metadata summaries and are not reconstructed into fake lifecycle events. | `tests/test_gact/test_tool_telemetry.py`, `tests/test_integration_contract/test_real_capabilities.py::test_real_tool_call_events_fire_during_turn` |
+| Diff file edits | Real planner `fs_propose_edit` calls produce `file_diff` Parts with `new_content`; `/diffs/apply` writes accepted edits through the shared file-policy path. | `tests/test_core/test_agent_planner.py::test_forward_promotes_propose_edit_observation_to_file_diffs`, `tests/test_gact/test_plan_edit_modes.py::test_real_agent_propose_edit_trace_becomes_applicable_diff` |
+| Permissions | Destructive MCP executor calls, direct third-party MCP calls, `/diffs/apply`, and direct destructive GACT DELETE endpoints enforce stored permission policies before mutation and record resolved audit rows. | `tests/test_gact/test_permission_gate.py`, `tests/test_gact/test_plan_edit_modes.py`, `tests/test_gact/test_message_delete.py` |
+| Prompt-only custom agents | Sessions selecting registered user or skill agents with no declared tools execute through DSPy/LiteLLM using the stored prompt and optional provider/model fields. | `tests/test_gact/test_post_messages.py::test_post_message_prompt_user_agent_executes_registered_agent` |
+| Tool-declaring custom agents | Sessions selecting registered user/skill/extracted agents with declared tools execute through DSPy ReAct with the tool list restricted to the agent definition; unavailable declared tools surface as structured errors. | `tests/test_gact/test_post_messages.py::test_post_message_tool_user_agent_executes_registered_agent`, `tests/test_gact/test_post_messages.py::test_post_message_tool_user_agent_missing_declared_tool_sets_error_turn` |
+| Child experts / nanoagents | Blueprint-declared child expert calls and nanoagent spawns are materialized as child sessions/events, returned as compact evidence, and retained in durable traces. | `tests/test_gact/test_agent_blueprints.py`, `tests/test_gact/test_expert_packs.py`, `tests/test_gact/test_nanoagents.py`, real marketplace benchmark evidence |
 
-### 2. LM provider config is deploy-time only
+## Streaming provenance
 
-`gact agent deploy clio my-clio` requires `CLIO_LM_*` to be set in
-the parent shell. There's no in-TUI way to configure or change
-provider/model. The frictionless deploy story breaks: a fresh user
-gets a 503 on every POST until they read docs and re-deploy.
+`message.part.delta` events can come from two different sources:
 
-Fix scope:
+- `stream_source="live"`: text arrived through the live
+  `dspy.streamify` path.
+- `stream_source="batch"`: the backend already had the
+  final assistant text before it could emit live provider-token deltas.
 
-- Server: GET / PUT `/v1/providers/lm` accepting
-  `{provider, api_base, model, api_key}`. PUT triggers a soft
-  rebuild of the LM + dependent experts (no process restart).
-- TUI: on connect, if `/v1/health.integrations.agent.status ==
-  "unavailable"` (or a new `lm_unconfigured` flag), open a modal
-  asking for the four fields. Persist last value in
-  `~/.config/gact/clio.json` so we don't ask twice.
-- Provider picker offers both Meridian (Claude Max) and OpenRouter
-  presets out of the box plus a custom slot.
+Batch fallback text part events and assistant completion metadata also carry
+`stream_fallback.reason`, `category`, `description`, `recovery_actions`,
+legacy `synthetic_posthoc=true`, and `live_streaming=false`. Render that reason
+when useful; do not present batch fallback text as evidence that the
+provider streamed live tokens. The complete audited reason catalog is
+available from `/v1/capabilities.capabilities.x_clio_stream_fallback_reasons`;
+unknown reasons are rejected so new downgrade paths cannot appear as
+unclassified fallback metadata.
+Known reasons include `agent_not_streamable` for non-DSPy test/runtime
+agents, `stream_setup_failed` for DSPy listener setup failures, and
+`stream_completed_without_chunks` when DSPy streaming produced a final
+prediction but no user-visible token chunks.
+Registered user/skill agents, including tool-declaring agents backed by
+DSPy ReAct, attempt the live `dspy.streamify` path first and only label
+completed text as `batch` when streaming cannot start.
+If streaming starts executing the agent and fails before or after visible
+output, GACT surfaces a structured `provider_error` turn instead of
+rerunning the sync path and returning fabricated answer text.
 
-### 3. Tokens + cost stay zero with real Claude
+The TUI should render both sources, but only `live` is evidence of real
+token arrival. Treat batch text as truthful fallback
+delivery, not as proof that the upstream provider streamed.
 
-`Prediction.tokens` and `.cost_usd` aren't populated by DSPy. We
-need to read `dspy.LM.history` or the per-call `usage` after each
-forward and feed the numbers to the GACT layer. Otherwise the
-sidebar/footer chips and `/v1/metrics` claim zero usage every turn,
-which matters because the user is paying-by-quota through Meridian.
+## Wire-shape-only or partial runtime gaps
 
-Fix scope: add a `_extract_usage(pred, lm)` helper that pulls from
-DSPy's history, plumb through `app.state.agent.last_usage()` or
-similar.
-
-### 4. Streaming is fake
-
-`message.part.delta` events fire after the whole assistant text is
-in hand — chunked at 64 chars synthetically. Real per-token
-streaming via `dspy.streamify()` isn't wired. The TUI rendering
-looks identical, but turn latency is bursty (whole answer arrives
-~5-15s after Enter rather than streaming token-by-token), and the
-user can't see a slow turn slowing down — it just hangs.
-
-Fix scope: switch the agent invocation path to async streaming;
-pump `streamed_chunk.text` into the EventBus as it arrives.
-
-## Wire-shape-only — work but no real driver
-
-These have correct wire shape + capability flags + endpoint
-behaviour but the real ClioAgent doesn't drive them. They produce
-zero events / no Parts / no rows during a real conversation; only
-the smoke server's fake agent triggers them. Documenting honestly
-so the tests prove what they prove.
+These have correct wire shape + capability flags + endpoint behaviour,
+but the real `ClioAgent` either does not drive them yet or only drives
+part of the runtime surface. Documenting honestly so the tests prove
+what they prove.
 
 | Capability | Endpoint works | Real agent emits | Notes |
 |---|---|---|---|
-| `subagents` | yes | no | ClioAgent has no Tier-3 spawn primitive yet |
-| `diffs` | yes | no | No edit_file tool that produces diffs |
-| `permissions` | yes | no | MCPToolBridge doesn't gate destructive ops |
-| `cancellation` (cooperative) | yes | partial | Server flips state + emits event; agent ignores the cancel flag mid-forward |
-| `tool_telemetry` events | yes | partial | Synthesised from `tools_called` post-hoc; not live |
+| `cancellation` (best-effort) | yes | partial | Server settles the GACT envelope as cancelled; compatible agents and the sync MCP bridge observe cooperative cancellation between execution boundaries. Late tool completions after cancellation are marked as cancellation/error telemetry and are not carried into later turn metadata. Already-running provider/tool work may still continue and is flagged with `execution_cancellation="best_effort"`. |
 
-## What does work end-to-end against real Claude
+## What does work end-to-end against real LM providers
 
-- POST messages → routing decision (real router) → out-of-scope
-  fallback or chat path → text answer → `message.completed`
+- POST messages → planner decision → explicit no-action explanation
+  or chat path → text answer → `message.completed`
 - `/v1/health.integrations[]` reflects real ClioAgent + ARC state
 - Sessions CRUD, fork (in-memory copy), search (in-memory match)
 - `/v1/memory/stats` from the real ARCMemory (cache hit rate updates)
@@ -97,11 +87,13 @@ Each iowarp/clio-agent issue (#2-#11) maps to one v0.2 capability.
 We DO NOT close an issue until:
 
 1. The capability flag is `true`.
-2. An integration test in `tests/test_integration_v0_2/` drives the
-   capability through `clio-agent-gact` against a real LM.
-3. The test passes against Claude Haiku via Meridian AND a sanity
-   check passes against an OpenRouter free model (proves no
-   Claude-specific assumption sneaked in).
+2. An integration test in `tests/test_integration_contract/` drives the
+   capability through `clio-agent serve` against a real LM.
+3. The test passes against at least one explicitly configured real LM
+   provider. Cross-provider sanity should be run when credentials or a
+   local provider are available, but the tests must not embed provider
+   credentials.
 
-Status today: zero issues actually closeable. Wire shapes correct,
-real-driver coverage partial.
+Status today: the hard blockers listed above are clearable only when
+their endpoint behavior, real-agent driver, and provenance evidence all
+match this document and `docs/archive/CAPABILITIES_MATRIX.md`.

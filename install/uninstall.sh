@@ -2,12 +2,13 @@
 # CLIO uninstaller (Linux / macOS).
 #
 # Undoes install.sh: stops the server, removes the launcher, and
-# deletes the install prefix. Pass --purge to also remove the gact
-# config + agent registry under ~/.config/gact.
+# deletes the install prefix. Pass --purge to also remove CLIO's user
+# state + config (~/.config/clio-agent and ~/.config/gact).
 #
 #   Flags:
 #     --yes     skip the confirmation prompt (non-interactive)
-#     --purge   also remove ~/.config/gact (config, themes, agents.json)
+#     --purge   also remove ~/.config/clio-agent (sessions, workspaces,
+#               blueprints, ARC) AND ~/.config/gact (TUI config/themes)
 #
 #   Environment overrides (must match the install):
 #     CLIO_PREFIX   install root      (default: $HOME/.local/share/clio)
@@ -19,6 +20,7 @@ CLIO_PREFIX="${CLIO_PREFIX:-$HOME/.local/share/clio}"
 CLIO_PORT="${CLIO_PORT:-17800}"
 CLIO_BIN_DIR="${CLIO_BIN_DIR:-$HOME/.local/bin}"
 PIDFILE="$CLIO_PREFIX/clio-server.pid"
+CLIO_CONFIG="$HOME/.config/clio-agent"
 GACT_CONFIG="$HOME/.config/gact"
 LAUNCHER="$CLIO_BIN_DIR/clio"
 
@@ -41,8 +43,10 @@ echo "CLIO uninstall — the following will be removed:"
 echo "  install prefix:  $CLIO_PREFIX"
 echo "  launcher:        $LAUNCHER"
 if [[ "$PURGE" -eq 1 ]]; then
+  echo "  clio config:     $CLIO_CONFIG  (--purge)"
   echo "  gact config:     $GACT_CONFIG  (--purge)"
 else
+  echo "  clio config:     $CLIO_CONFIG  (KEPT — pass --purge to remove)"
   echo "  gact config:     $GACT_CONFIG  (KEPT — pass --purge to remove)"
 fi
 echo ""
@@ -73,9 +77,11 @@ else
   say "No running CLIO server found"
 fi
 
-# Sweep leftover server processes started from this prefix.
+# Sweep leftover server processes started from this prefix. Match both the
+# current entrypoint (clio-agent serve) and the retired pre-upgrade one
+# (clio-agent-gact) so an old server left running is still cleaned up.
 if command -v pkill >/dev/null 2>&1; then
-  pkill -f "$CLIO_PREFIX/clio-agent/.venv/bin/clio-agent-gact" 2>/dev/null || true
+  pkill -f "$CLIO_PREFIX/clio-agent/.venv/bin/clio-agent(-gact)?" 2>/dev/null || true
 fi
 
 # ---- remove files ----------------------------------------------------
@@ -87,12 +93,12 @@ if [[ -d "$CLIO_PREFIX" ]]; then
   say "Removing $CLIO_PREFIX"
   rm -rf "$CLIO_PREFIX"
 fi
-if [[ "$PURGE" -eq 1 && -d "$GACT_CONFIG" ]]; then
-  say "Removing $GACT_CONFIG"
-  rm -rf "$GACT_CONFIG"
+if [[ "$PURGE" -eq 1 ]]; then
+  [[ -d "$CLIO_CONFIG" ]] && { say "Removing $CLIO_CONFIG"; rm -rf "$CLIO_CONFIG"; }
+  [[ -d "$GACT_CONFIG" ]] && { say "Removing $GACT_CONFIG"; rm -rf "$GACT_CONFIG"; }
 fi
 
 say "CLIO uninstalled."
-if [[ "$PURGE" -ne 1 && -d "$GACT_CONFIG" ]]; then
-  echo "  gact config kept at $GACT_CONFIG (re-run with --purge to remove)"
+if [[ "$PURGE" -ne 1 ]] && { [[ -d "$CLIO_CONFIG" ]] || [[ -d "$GACT_CONFIG" ]]; }; then
+  echo "  config kept ($CLIO_CONFIG, $GACT_CONFIG) — re-run with --purge to remove"
 fi

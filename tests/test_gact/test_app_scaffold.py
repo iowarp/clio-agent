@@ -1,11 +1,11 @@
-"""CLIO-BBBBBBBBBB6: smoke tests for the GACT v0.2 scaffold.
+"""smoke tests for the GACT v0.2 scaffold.
 
 Verifies the FastAPI app builds, its baseline routes (/v1/health +
 /v1/capabilities) respond with the v0.2 shape, and every route we
 stubbed returns a v0.2-shaped 501 error envelope.
 
 Full endpoint behaviour gets tested as each route is wired in
-follow-on iterations (CLIO-BBBBBBBBBB7+).
+follow-on iterations.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ def test_module_exports_build_app_and_main() -> None:
 
 def test_health_returns_v0_2_shape(client: TestClient) -> None:
     resp = client.get("/v1/health")
-    assert resp.status_code == 200
+    assert resp.status_code in {200, 503}
     body = resp.json()
     # The default build_app() has no agent + no ARC wired, so the
     # integrations table flags both as unavailable/degraded and the
@@ -63,6 +63,23 @@ def test_capabilities_advertises_v0_2(client: TestClient) -> None:
     assert caps["integration_health"] is True, (
         "/v1/health returns integrations[], so this must be True"
     )
+    assert caps["x_clio_cancellation"] == "best_effort"
+    assert caps["x_clio_executor_cancellation"] is False
+    assert caps["x_clio_text_streaming"] == "best_effort_live"
+    assert caps["x_clio_synthetic_posthoc_streaming"] is False
+    fallback_reasons = caps["x_clio_stream_fallback_reasons"]
+    assert fallback_reasons["stream_completed_without_chunks"]["live_streaming"] is False
+    assert fallback_reasons["stream_setup_failed"]["recovery_actions"]
+    assert caps["x_clio_direct_delete_permissions"] is True
+    gaps = caps["x_clio_capability_gaps"]
+    assert gaps["voice"]["advertised"] is False
+    assert gaps["voice"]["client_behavior"] == "render_disabled"
+    assert gaps["lsp"]["status"] == "unsupported"
+    assert gaps["optimizer_command"]["status"] == "unavailable"
+    assert gaps["optimizer_command"]["related_commands"] == ["/optimize"]
+    # #801: the gap row carries the shared reason code + #633 pointer.
+    assert gaps["optimizer_command"]["reason"] == "optimizer_not_implemented"
+    assert gaps["optimizer_command"]["tracking_issue"].endswith("/issues/633")
     # Landed capabilities.
     for flag in (
         "sessions",
@@ -78,9 +95,84 @@ def test_capabilities_advertises_v0_2(client: TestClient) -> None:
         "subagents",
         "tool_telemetry",
     ):
-        assert caps[flag] is True, (
-            f"{flag} implemented — must advertise True"
-        )
+        assert caps[flag] is True, f"{flag} implemented — must advertise True"
+
+
+def test_capabilities_do_not_advertise_unwired_flags(client: TestClient) -> None:
+    """#760: session_summary/attachments_upload have no routes behind
+    them — advertising them lies to the TUI (gact/types.py contract)."""
+
+    caps = client.get("/v1/capabilities").json()["capabilities"]
+    assert caps["session_summary"] is False, (
+        "no POST /v1/sessions/{sid}/summarize route is registered — must not advertise"
+    )
+    assert caps["attachments_upload"] is False, (
+        "no POST /v1/sessions/{sid}/attachments route is registered — must not advertise"
+    )
+
+
+def test_advertised_capabilities_are_backed_by_registered_routes() -> None:
+    """#760 conformance guard: every advertised flag that maps 1:1 to a
+    route must have that route registered on the app."""
+
+    # Only flags with an unambiguous single-route contract.
+    flag_to_route: dict[str, tuple[str, str]] = {
+        "session_branching": ("POST", "/v1/sessions/{sid}/fork"),
+        "search_messages": ("GET", "/v1/sessions/{sid}/messages/search"),
+        "session_export": ("GET", "/v1/sessions/{sid}/export"),
+        "session_summary": ("POST", "/v1/sessions/{sid}/summarize"),
+        "attachments_upload": ("POST", "/v1/sessions/{sid}/attachments"),
+    }
+    app = build_app()
+    registered = {
+        (method, route.path)
+        for route in app.routes
+        for method in (getattr(route, "methods", None) or ())
+    }
+    caps = TestClient(app).get("/v1/capabilities").json()["capabilities"]
+    for flag, (method, path) in flag_to_route.items():
+        if caps[flag] is True:
+            assert (method, path) in registered, (
+                f"capability {flag}=True advertised but {method} {path} is not registered"
+            )
+
+
+def test_capability_gaps_endpoint_returns_disabled_future_capabilities(
+    client: TestClient,
+) -> None:
+    resp = client.get("/v1/capability-gaps")
+    assert resp.status_code == 200
+    body = resp.json()
+    gaps = body["capability_gaps"]
+
+    assert set(gaps) >= {"voice", "lsp", "optimizer_command"}
+    voice = gaps["voice"]
+    assert voice["status"] == "unsupported"
+    assert voice["advertised"] is False
+    assert voice["client_behavior"] == "render_disabled"
+    assert "/v1/sessions/{sid}/voice/transcribe" in voice["related_endpoints"]
+
+    lsp = gaps["lsp"]
+    assert lsp["status"] == "unsupported"
+    assert lsp["recovery_actions"] == [
+        "use_files_and_diffs",
+        "hide_or_disable_lsp_controls",
+    ]
+
+    optimize = gaps["optimizer_command"]
+    assert optimize["status"] == "unavailable"
+    assert optimize["advertised"] is True
+    assert optimize["category"] == "deferred_command"
+    assert optimize["client_behavior"] == "render_disabled"
+    assert optimize["related_commands"] == ["/optimize"]
+    assert optimize["recovery_actions"] == [
+        "render_optimize_disabled",
+        "retry_after_optimizer_support_lands",
+    ]
+    # #801: uniform structured not-implemented — shared reason code + #633 pointer.
+    assert optimize["reason"] == "optimizer_not_implemented"
+    assert optimize["tracking_issue"].endswith("/issues/633")
+    assert "633" in optimize["description"]
 
 
 def test_stubbed_routes_return_501_with_v0_2_envelope() -> None:
@@ -130,3 +222,44 @@ def test_stubbed_routes_return_501_with_v0_2_envelope() -> None:
     body = resp.json()
     assert body["error"]["error"] == "config_error"
     assert "capability not yet implemented" in body["error"]["message"]
+
+
+def test_unknown_route_uses_structured_error_envelope(client: TestClient) -> None:
+    resp = client.get("/v1/does-not-exist")
+
+    assert resp.status_code == 404
+    body = resp.json()
+    assert "detail" not in body
+    assert body["error"]["error"] == "not_found"
+    assert body["error"]["message"] == "Not Found"
+
+
+def test_request_validation_uses_structured_error_envelope(
+    client: TestClient,
+) -> None:
+    resp = client.get("/v1/workspaces/ws_default/files/read")
+
+    assert resp.status_code == 422
+    body = resp.json()
+    assert "detail" not in body
+    assert body["error"]["error"] == "validation_error"
+    assert body["error"]["message"] == "Request validation failed."
+    assert body["error"]["details"]["errors"][0]["loc"] == ["query", "path"]
+
+
+def test_unhandled_exception_uses_structured_error_envelope() -> None:
+    app = build_app()
+
+    @app.get("/v1/_boom")
+    def _boom() -> None:
+        raise RuntimeError("boom probe")
+
+    resp = TestClient(app, raise_server_exceptions=False).get("/v1/_boom")
+
+    assert resp.status_code == 500
+    assert resp.headers["content-type"].startswith("application/json")
+    body = resp.json()
+    assert "detail" not in body
+    assert body["error"]["error"] == "internal_error"
+    assert body["error"]["message"] == "Unhandled server error."
+    assert body["error"]["details"]["original_error"] == "RuntimeError"

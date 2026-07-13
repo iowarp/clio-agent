@@ -13,6 +13,7 @@ ourselves (minute hour day-of-month month day-of-week, each
 
 from __future__ import annotations
 
+import logging
 import threading
 import uuid
 from collections.abc import Iterable
@@ -20,6 +21,8 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -98,12 +101,24 @@ class ScheduleStore:
             import json
 
             data = json.loads(self._path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - corrupt store restarts empty, but say so
+            logger.warning(
+                "schedule store: unreadable persistence restarted empty "
+                "reason=schedule_store_corrupt path=%s error=%s",
+                self._path,
+                exc,
+            )
             return
         for row in data.get("schedules", []):
             try:
                 self._schedules[row["id"]] = Schedule(**row)
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 - drop only the bad row, but say so
+                logger.warning(
+                    "schedule store: dropping malformed row "
+                    "reason=schedule_row_invalid schedule_id=%s error=%s",
+                    row.get("id") if isinstance(row, dict) else None,
+                    exc,
+                )
                 continue
 
     def _flush(self) -> None:
@@ -120,9 +135,7 @@ class ScheduleStore:
         )
         tmp.replace(self._path)
 
-    def add(
-        self, *, session_id: str, cron: str, question: str
-    ) -> Schedule:
+    def add(self, *, session_id: str, cron: str, question: str) -> Schedule:
         sid = "sched_" + uuid.uuid4().hex[:12]
         sch = Schedule(
             id=sid,
@@ -140,9 +153,7 @@ class ScheduleStore:
         with self._lock:
             return self._schedules.get(sid)
 
-    def list(
-        self, *, session_id: Optional[str] = None
-    ) -> list[Schedule]:
+    def list(self, *, session_id: Optional[str] = None) -> list[Schedule]:
         with self._lock:
             rows = list(self._schedules.values())
         if session_id is not None:
@@ -174,9 +185,7 @@ class ScheduleStore:
         for sch in rows:
             if not sch.enabled:
                 continue
-            if sch.last_fired_at and sch.last_fired_at.startswith(
-                when_minute
-            ):
+            if sch.last_fired_at and sch.last_fired_at.startswith(when_minute):
                 continue
             if cron_matches(sch.cron, when):
                 yield sch

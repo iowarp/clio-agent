@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CLIO: Documentation</title>
+  <meta name="description" content="What CLIO is, who it's for, and how it works: an autonomous AI agent for scientific data that runs locally, on your models and your data." />
+  <link rel="icon" href="assets/logo.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- ===== Beta ribbon ===== -->
+  <a class="beta-ribbon" href="https://github.com/iowarp/clio-agent/releases" target="_blank" rel="noopener" aria-label="CLIO is in beta">BETA</a>
+
+  <!-- ===== Nav ===== -->
+  <header class="nav">
+    <div class="wrap nav-inner">
+      <a class="brand" href="index.html">
+        <img src="assets/logo.svg" alt="CLIO logo" />
+        <span class="wordmark">CLIO</span>
+        <span class="beta-tag">Beta</span>
+      </a>
+      <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation">☰</button>
+      <nav class="nav-links" id="navLinks">
+        <a href="index.html#install">Install</a>
+        <a href="index.html#desktop">Desktop</a>
+        <a href="index.html#docker">Docker</a>
+        <a href="docs.html">Docs</a>
+        <a href="contributing.html">Contributing</a>
+        <a href="uninstall.html">Uninstall</a>
+        <a class="ghbtn" href="https://github.com/iowarp/clio-agent" target="_blank" rel="noopener">GitHub ↗</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap doc">
+    <p class="eyebrow">Documentation</p>
+    <h1>Understanding CLIO</h1>
+    <p class="lead">A plain-language guide to what CLIO is, who it's for, and how it works: so you can tell whether it fits your science before you install a thing.</p>
+
+    <h2>What CLIO is</h2>
+    <p>CLIO is an autonomous AI agent for scientific data. It runs locally: on your own models and your own data: so there's no cloud lock-in and nothing leaves your machine unless you decide it should. You point it at a question and your datasets, and it plans the work, picks the right tools, and carries it through.</p>
+    <p>CLIO is the intelligence layer of the IOWarp platform: the part that reasons about your data, while the rest of IOWarp handles moving and managing it.</p>
+
+    <h2>Who it's for</h2>
+    <p>CLIO is built for scientists, researchers, and data engineers who want an agent that actually operates on their datasets: HDF5, Parquet, CSV, and domain-specific formats: rather than just chatting about them.</p>
+    <p>You choose the model. Run a local model through LM Studio or Ollama to keep everything on your hardware, or connect a hosted model if that's what you prefer. CLIO works the same either way.</p>
+
+    <h2>How it works</h2>
+    <p>CLIO uses a three-tier design, each tier with a clear job:</p>
+    <ul>
+      <li><strong>A main orchestrator</strong> reads your request, plans the approach, and routes work to the right place. It doesn't do the detailed work itself: it decides what should happen next.</li>
+      <li><strong>Domain experts</strong> each own one focused job: data acquisition, analysis, visualization, and so on: and each carries a small, curated set of tools suited to that job. Keeping each expert's toolset tight is what keeps its decisions sharp.</li>
+      <li><strong>Nanoagents</strong> are ephemeral helpers that fan out parallel sub-tasks when a step splits into many similar pieces, then disappear once they're done.</li>
+    </ul>
+    <p>State lives in a local-first memory layer called <strong>ARC</strong> that every tier can read and write, so results and context flow between steps instead of getting lost. Tools reach the agent through an <strong>MCP tool gateway</strong> (built on FastMCP): HDF5 and Parquet inspection plus domain-specific servers.</p>
+    <p>One thing worth calling out: routing is <strong>agent-driven</strong>. The model itself decides the next step and hands off through a structured contract: the path isn't hardcoded into CLIO. That's what lets CLIO adapt to new questions and new domains instead of only handling the ones someone wired up in advance.</p>
+
+    <div class="callout">
+      <p>CLIO doesn't make routing or "we're done" decisions for the model with keyword tricks. The model decides; CLIO carries the results back and runs what the model asks for next.</p>
+    </div>
+
+    <h2>Blueprints</h2>
+    <p>Blueprints are the heart of CLIO. A <strong>blueprint</strong> is a shareable agent package: a root orchestrator, the child experts under it, and the curated MCP tools and servers those experts need: all declaring how to solve a whole <em>class</em> of tasks, not just one.</p>
+    <p>You install blueprints from the marketplace and switch between them per session. Want to work on a different kind of problem? Load a different blueprint. Built something useful? Package it up and share it the same way.</p>
+
+    <h2>A blueprint in action: EarthScope GNSS</h2>
+    <p>Here's what a blueprint feels like to use. Suppose you ask, in plain language, about GNSS stations near a particular place. CLIO:</p>
+    <ul>
+      <li>geocodes the location you named into coordinates,</li>
+      <li>discovers the relevant EarthScope / NDP datasets for that area,</li>
+      <li>stages the station time-series data as CSV,</li>
+      <li>profiles it to understand what's actually there, and</li>
+      <li>plots the east, north, and up displacement.</li>
+    </ul>
+    <p>Each step is grounded in real data, with the orchestrator delegating to whichever expert owns that step. And it's a conversation, not a one-shot: you can refine the plot, switch to a different region, or build on results from earlier in the session, and CLIO carries that context forward across follow-ups.</p>
+
+    <h2>The interfaces</h2>
+    <p>It's the same backend behind three front-ends, so you can pick whatever suits the moment:</p>
+    <ul>
+      <li>the terminal <strong>TUI</strong>, with <code>clio</code>,</li>
+      <li>the <strong>web</strong> UI, with <code>clio --web</code> or the Docker image, and</li>
+      <li>the native <strong>desktop</strong> app.</li>
+    </ul>
+    <p>There's also a headless API for automation and scale-out, when you'd rather drive CLIO from a script or a larger pipeline than sit in front of it.</p>
+
+    <h2>Status &amp; links</h2>
+    <p>CLIO is <strong>beta</strong> software: interfaces, blueprints, and on-disk formats may still change between releases. It's open source under BSD-3-Clause, and contributions are welcome.</p>
+    <div class="doc-links">
+      <a class="btn btn-primary" href="https://github.com/iowarp/clio-agent" target="_blank" rel="noopener">GitHub</a>
+      <a class="btn" href="https://github.com/iowarp/clio-agent-marketplace" target="_blank" rel="noopener">Marketplace</a>
+      <a class="btn" href="contributing.html">Contributing</a>
+      <a class="btn" href="index.html">← Back to home</a>
+    </div>
+  </main>
+
+  <!-- ===== Footer ===== -->
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <div class="footer-links">
+        <a href="https://github.com/iowarp/clio-agent" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://pypi.org/project/clio-agent/" target="_blank" rel="noopener">PyPI</a>
+        <a href="docs.html">Docs</a>
+        <a href="contributing.html">Contributing</a>
+        <a href="uninstall.html">Uninstall</a>
+        <a href="https://github.com/iowarp/clio-agent/blob/main/LICENSE" target="_blank" rel="noopener">License · BSD-3-Clause</a>
+      </div>
+      <div class="footer-family">
+        <span class="footer-family-label">IOWarp family</span>
+        <a href="https://iowarp.org" target="_blank" rel="noopener">IOWarp</a>
+        <a href="https://github.com/iowarp/gact-tui" target="_blank" rel="noopener">gact-tui</a>
+        <a href="https://github.com/iowarp/clio-agent-marketplace" target="_blank" rel="noopener">Marketplace</a>
+        <a href="https://github.com/iowarp/clio-core" target="_blank" rel="noopener">clio-core</a>
+      </div>
+      <div class="credit">
+        <span class="accent">Gnosis Research Center</span> · Illinois Tech
+      </div>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

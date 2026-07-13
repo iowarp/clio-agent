@@ -1,10 +1,9 @@
 """GACT v0.2 contract surface for CLIO.
 
 This module implements the GACT v0.2 REST + SSE contract as a
-FastAPI app that wraps ``ClioAgent``. It's a peer of
-``clio_agent.ui.api`` (the v0.1-ish native CLIO API), not a
-replacement — they can run side-by-side while the TUI integration
-matures.
+FastAPI app that wraps ``ClioAgent``. It is CLIO's single HTTP front
+door; the legacy ``clio_agent.ui.api`` REST server has been removed and
+its ``clio-agent-api`` console script is now a deprecation shim.
 
 Exposed via the ``clio-agent-gact`` console script. See
 ``docs/tui/`` in this repo for the authoritative integration spec.

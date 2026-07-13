@@ -1,0 +1,387 @@
+name: CLIO bundles
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  PNPM_VERSION: "9.15.9"
+  NODE_VERSION: "20.x"
+
+jobs:
+  installers:
+    name: installer scripts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            install/install.sh
+            install/install.ps1
+            install/clio
+            install/clio.cmd
+            install/clio.ps1
+            install/uninstall.sh
+            install/uninstall.ps1
+
+  tui:
+    name: tui · ${{ matrix.goos }}-${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64, ext: "" }
+          - { goos: linux, goarch: arm64, ext: "" }
+          - { goos: darwin, goarch: amd64, ext: "" }
+          - { goos: darwin, goarch: arm64, ext: "" }
+          - { goos: windows, goarch: amd64, ext: ".exe" }
+          - { goos: windows, goarch: arm64, ext: ".exe" }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+      - name: Build CLIO TUI
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          out="clio-tui-${GOOS}-${GOARCH}${{ matrix.ext }}"
+          ./scripts/build_clio_tui.sh "$out"
+          sha256sum "$out" > "$out.sha256"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            clio-tui-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
+            clio-tui-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}.sha256
+
+  web:
+    name: web bundle
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: external/gact-tui/apps/pnpm-lock.yaml
+      - name: Install
+        working-directory: external/gact-tui/apps
+        run: pnpm install --frozen-lockfile=false
+      - name: Select CLIO brand (gact-tui config-file mechanism)
+        shell: bash
+        run: |
+          root="${GITHUB_WORKSPACE//\\//}/branding"
+          printf '{ "profile": "clio", "brandingRoot": "%s" }\n' "$root" \
+            > external/gact-tui/apps/brand.config.local.json
+      - name: Build CLIO web
+        working-directory: external/gact-tui/apps
+        run: pnpm --filter @clio/web build
+      - name: Package
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          stage="$RUNNER_TEMP/clio-web-stage"
+          mkdir -p "$stage"
+          cp -r external/gact-tui/apps/web/dist "$stage/clio-web-$version"
+          (cd "$stage" && zip -r "clio-web-$version.zip" "clio-web-$version")
+          sha256sum "$stage/clio-web-$version.zip" > "$stage/SHA256SUMS.web.txt"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ runner.temp }}/clio-web-stage/clio-web-*.zip
+            ${{ runner.temp }}/clio-web-stage/SHA256SUMS.web.txt
+
+  desktop:
+    name: desktop · ${{ matrix.variant }} · ${{ matrix.os }} / ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [lite, bundled]
+        target:
+          - x86_64-pc-windows-msvc
+          - aarch64-pc-windows-msvc
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+        include:
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            bundle-args: "--bundles msi,nsis"
+          # Windows on ARM: native build on GitHub's hosted windows-11-arm
+          # runner (no x64 emulation). The bundled embedded Python runtime is
+          # built on this arm64 runner, so it is the correct arch.
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
+            # The hosted Windows ARM runner's Tauri bundler cannot fetch WiX or
+            # NSIS over HTTPS because cargo-tauri reports no TLS backend there.
+            # Build the native app and publish the raw executable instead.
+            bundle-args: "--no-bundle"
+          - target: aarch64-apple-darwin
+            os: macos-14
+            bundle-args: "--bundles dmg --target aarch64-apple-darwin"
+          # Intel macOS: GitHub is retiring the x86 `macos-13` runners, so
+          # cross-compile the x86_64 target ON an Apple-Silicon `macos-14` runner
+          # (the rust toolchain step installs the x86_64-apple-darwin target).
+          - target: x86_64-apple-darwin
+            os: macos-14
+            bundle-args: "--bundles dmg --target x86_64-apple-darwin"
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            bundle-args: "--bundles deb,appimage,rpm"
+          - target: x86_64-unknown-linux-gnu
+            variant: bundled
+            bundle-args: "--bundles deb,rpm"
+          # Linux on ARM: native build on GitHub's hosted ubuntu-22.04-arm
+          # runner. Fills the real gap — Linux has no built-in x64 emulation,
+          # so an x86 .deb/.AppImage will not run on arm64 Linux.
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+            bundle-args: "--bundles deb,appimage,rpm"
+          - target: aarch64-unknown-linux-gnu
+            variant: bundled
+            bundle-args: "--bundles deb,rpm"
+        exclude:
+          # The bundled variant embeds a host-built Python runtime, which installs
+          # clio-agent + its core dep clio-core (iowarp-core). clio-core ships
+          # platform wheels (no sdist), and upstream has NO wheel for Intel macOS
+          # (x86_64-apple-darwin) nor Windows on ARM (aarch64-pc-windows-msvc), so
+          # `uv pip install clio-agent` cannot resolve a runtime on those hosts and
+          # the bundled build would fail. Ship both as the LITE variant only until
+          # clio-core publishes wheels for them; the bundles can be regenerated then.
+          # (Tracked in the packaging-parity issue.)
+          - variant: bundled
+            target: x86_64-apple-darwin
+          - variant: bundled
+            target: aarch64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: external/gact-tui/apps/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+      - uses: astral-sh/setup-uv@v5
+        if: matrix.variant == 'bundled'
+      - name: Linux deps
+        if: runner.os == 'Linux'
+        working-directory: external/gact-tui/apps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev librsvg2-dev libayatana-appindicator3-dev libdbus-1-dev pkg-config patchelf rpm
+      - name: Install
+        working-directory: external/gact-tui/apps
+        run: pnpm install --frozen-lockfile=false
+      - name: Build sidecar launcher
+        shell: bash
+        run: bash external/gact-tui/apps/desktop/scripts/fetch-sidecar.sh ${{ matrix.target }}
+      - name: Build embedded clio-agent runtime
+        if: matrix.variant == 'bundled' && runner.os != 'Windows'
+        shell: bash
+        run: bash external/gact-tui/apps/desktop/scripts/build-clio-runtime.sh
+        env:
+          CLIO_REF: ${{ github.ref_name }}
+      - name: Build embedded clio-agent runtime (Windows)
+        if: matrix.variant == 'bundled' && runner.os == 'Windows'
+        shell: pwsh
+        working-directory: external/gact-tui/apps/desktop
+        run: ./scripts/build-clio-runtime.ps1 -Ref $env:CLIO_REF
+        env:
+          CLIO_REF: ${{ github.ref_name }}
+      - name: Select CLIO brand (gact-tui config-file mechanism)
+        shell: bash
+        run: |
+          root="${GITHUB_WORKSPACE//\\//}/branding"
+          printf '{ "profile": "clio", "brandingRoot": "%s" }\n' "$root" \
+            > external/gact-tui/apps/brand.config.local.json
+      - name: Build web
+        working-directory: external/gact-tui/apps
+        run: pnpm --filter @clio/web build
+      - name: Generate brand backend descriptor
+        working-directory: external/gact-tui/apps
+        run: pnpm --filter @clio/desktop run gen-brand-backend
+      - name: Assert CLIO brand compiled
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The desktop bundle must compile the CLIO brand, not the neutral
+          # connect-mode default that shipped before #841. Two independent
+          # signals: the generated backend descriptor is managed-mode, and the
+          # web dist carries a CLIO-distinctive marker string.
+          gen="external/gact-tui/apps/desktop/src-tauri/gen/brand-backend.json"
+          jq -e '.mode == "managed" and .sidecarName == "clio-agent"' "$gen" >/dev/null \
+            || { echo "::error::brand assert: $gen is not managed/clio-agent (neutral connect-mode build)"; exit 1; }
+          dist="external/gact-tui/apps/web/dist"
+          if ! grep -rqI 'Gnosis Research Center' "$dist"; then
+            echo "::error::brand assert: CLIO marker absent from $dist (neutral web build)"
+            exit 1
+          fi
+      - name: Apply CLIO icons
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Copy the CLIO icon family over the neutral gact-tui icons so the
+          # overlay's relative "icons/..." paths resolve to branded art. A
+          # copy-over is more robust than "../../../.." paths in the overlay.
+          src="${{ github.workspace }}/branding/clio/icons"
+          dst="external/gact-tui/apps/desktop/src-tauri/icons"
+          cp -f "$src"/* "$dst"/
+      - name: Tauri release build
+        working-directory: external/gact-tui/apps
+        shell: bash
+        run: |
+          set -euo pipefail
+          brand="${{ github.workspace }}/branding/clio/tauri.clio.conf.json"
+          cfg="$RUNNER_TEMP/tauri.release.conf.json"
+          # The tauri CLI rejects multiple --config flags, so for the bundled
+          # variant we deep-merge the bundled config + the CLIO branding overlay
+          # into a single config (branding wins on conflicts) and pass it once.
+          node - "${{ matrix.variant }}" "$brand" "$cfg" <<'NODE'
+          const fs = require("node:fs");
+          const [variant, brandPath, outputPath] = process.argv.slice(2);
+
+          const isObject = (value) =>
+            value !== null && typeof value === "object" && !Array.isArray(value);
+          const merge = (base, overlay) => {
+            if (!isObject(base) || !isObject(overlay)) {
+              return overlay;
+            }
+            const out = { ...base };
+            for (const [key, value] of Object.entries(overlay)) {
+              out[key] = key in out ? merge(out[key], value) : value;
+            }
+            return out;
+          };
+
+          const brand = JSON.parse(fs.readFileSync(brandPath, "utf8"));
+          const config =
+            variant === "bundled"
+              ? merge(
+                  JSON.parse(
+                    fs.readFileSync("desktop/src-tauri/tauri.bundled.conf.json", "utf8"),
+                  ),
+                  brand,
+                )
+              : brand;
+          config.bundle ??= {};
+          config.bundle.createUpdaterArtifacts = false;
+          if (config.plugins?.updater) {
+            delete config.plugins.updater.pubkey;
+          }
+          fs.writeFileSync(outputPath, `${JSON.stringify(config, null, 2)}\n`);
+          NODE
+          pnpm --filter @clio/desktop tauri build --config "$cfg" ${{ matrix.bundle-args }}
+      - name: Stage artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/clio-desktop-stage"
+          mkdir -p "$stage"
+          root="external/gact-tui/apps/desktop/src-tauri/target/release/bundle"
+          if [ -d "external/gact-tui/apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle" ]; then
+            root="external/gact-tui/apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle"
+          fi
+          if [ -d "$root" ]; then
+            find "$root" -type f \( -iname '*.exe' -o -iname '*.msi' -o -iname '*.dmg' -o -iname '*.deb' -o -iname '*.AppImage' -o -iname '*.rpm' \) -print0 |
+              while IFS= read -r -d '' f; do
+                base="$(basename "$f")"
+                if [ "${{ matrix.variant }}" = "bundled" ]; then
+                  ext="${base##*.}"
+                  stem="${base%.*}"
+                  base="${stem}-bundled.${ext}"
+                fi
+                cp "$f" "$stage/$base"
+              done
+          else
+            root="external/gact-tui/apps/desktop/src-tauri/target/release"
+            find "$root" -maxdepth 1 -type f -iname '*.exe' -print0 |
+              while IFS= read -r -d '' f; do
+                base="$(basename "$f")"
+                stem="${base%.*}"
+                cp "$f" "$stage/${stem}-${{ matrix.target }}.${base##*.}"
+              done
+          fi
+          # Payload floor: a bundled installer embeds the clio-agent Python
+          # runtime, so it is much larger than the ~10-20 MB lite Tauri bundle.
+          # A bundled artifact under the floor means the runtime never got
+          # embedded (the connect-mode regression behind #841) -- fail loudly.
+          if [ "${{ matrix.variant }}" = "bundled" ]; then
+            floor_mb="${BUNDLED_PAYLOAD_FLOOR_MB:-60}"
+            floor=$((floor_mb * 1024 * 1024))
+            staged=0
+            while IFS= read -r -d '' f; do
+              staged=$((staged + 1))
+              size=$(wc -c < "$f")
+              if [ "$size" -lt "$floor" ]; then
+                echo "::error::payload assert: $(basename "$f") is ${size}B, under the ${floor_mb} MB bundled floor (runtime not embedded)"
+                exit 1
+              fi
+            done < <(find "$stage" -type f -name '*-bundled.*' -print0)
+            if [ "$staged" -eq 0 ]; then
+              echo "::error::payload assert: bundled variant staged no *-bundled.* artifact"
+              exit 1
+            fi
+          fi
+          # Cross-platform checksum: Linux has both, macOS has only `shasum`,
+          # Windows git-bash has only `sha256sum`. Prefer sha256sum, else shasum.
+          if command -v sha256sum >/dev/null 2>&1; then SUM="sha256sum"; else SUM="shasum -a 256"; fi
+          (cd "$stage" && $SUM * > "SHA256SUMS.${{ matrix.target }}.${{ matrix.variant }}.txt")
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ runner.temp }}/clio-desktop-stage/*
+
+  release-check:
+    name: release completeness
+    needs: [desktop, web, tui, installers]
+    # Run even when a matrix leg failed: a silently-dropped bundle (the v0.5.17
+    # aarch64 bundled .dmg, #841 F-15) is exactly the case this must catch.
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Assert release asset completeness
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release view "$GITHUB_REF_NAME" --json assets -q '.assets[].name' \
+            | python3 scripts/check_release_completeness.py

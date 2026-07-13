@@ -1,29 +1,32 @@
-"""LSM Tree for write-heavy metrics collection (v0.3.0)
+"""LSM Tree for write-heavy metrics collection.
 
-This module implements a Log-Structured Merge (LSM) tree optimized for
-high-throughput metrics collection with background compaction.
+This module implements a Log-Structured Merge (LSM) tree for the write-heavy
+invocation-metrics path, where appends dominate and reads are range scans.
 
 Architecture:
     - MemTable: In-memory SortedDict for recent writes (O(log N) inserts)
     - SSTables: Immutable on-disk sorted tables (msgpack format)
-    - Background Compaction: Async thread merges SSTables to reduce read amplification
+    - Background Compaction: Async thread merges SSTables to reduce read
+      amplification; the MemTable is double-buffered so a flush does not block
+      concurrent writers.
 
-Performance Targets:
-    - Write throughput > 1000 ops/sec
-    - Read latency < 10ms (MemTable + SSTable scan)
-    - Background compaction to manage disk usage
-
-See PLAN.md v0.3.0 Task 3 for implementation requirements.
+Reads merge the live MemTable with the on-disk SSTables. The single caller is
+``ARCMemory.store_invocation`` (memory.py); metrics live under
+``.clio/agent/arc/lsm/sst_*.msgpack``.
 """
 
+import logging
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import msgspec
 from sortedcontainers import SortedDict
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -38,7 +41,7 @@ class SSTable:
 
     Example:
         >>> sst = SSTable(
-        ...     file_path=Path(".clio_agent/arc/lsm/sst_1234567890.msgpack"),
+        ...     file_path=Path(".clio/agent/arc/lsm/sst_1234567890.msgpack"),
         ...     min_key=1704800000.0,
         ...     max_key=1704900000.0,
         ...     record_count=1000
@@ -59,7 +62,7 @@ class LSMTree:
     SSTables on disk, and periodically compacts SSTables.
 
     Args:
-        data_dir: Directory for SSTables (default: ".clio_agent/arc/lsm")
+        data_dir: Directory for SSTables (default: ".clio/agent/arc/lsm")
         memtable_size: Max entries in MemTable before flush (default: 1000)
         compaction_threshold: Trigger compaction after N SSTables (default: 5)
 
@@ -74,7 +77,7 @@ class LSMTree:
 
     def __init__(
         self,
-        data_dir: str = ".clio_agent/arc/lsm",
+        data_dir: str = ".clio/agent/arc/lsm",
         memtable_size: int = 1000,
         compaction_threshold: int = 5,
     ):
@@ -115,6 +118,17 @@ class LSMTree:
             target=self._compact_background, daemon=True, name="LSMCompaction"
         )
         self._compaction_thread.start()
+
+    def _new_sstable_path(self, prefix: str = "sst") -> Path:
+        """Return a collision-resistant SSTable path.
+
+        Windows clocks can return identical ``time_ns`` values for
+        rapid back-to-back flushes. A random suffix prevents a later
+        flush from overwriting an older table before compaction reads
+        it.
+        """
+
+        return self.data_dir / f"{prefix}_{time.time_ns()}_{uuid.uuid4().hex[:8]}.msgpack"
 
     def write(self, timestamp: float, metric: Dict[str, Any]) -> None:
         """Write metric to LSM tree (O(log N) due to SortedDict).
@@ -169,16 +183,17 @@ class LSMTree:
             if timestamp in self._memtable:
                 return dict(self._memtable[timestamp])
 
-        # Slow path: check SSTables (newest first)
-        for sstable in self._sstables:
-            # Skip if timestamp not in range
-            if timestamp < sstable.min_key or timestamp > sstable.max_key:
-                continue
+            # Slow path: check SSTables (newest first). Keep the
+            # compaction lock while reading table files so a concurrent
+            # compaction cannot delete a file between selecting and
+            # scanning it.
+            for sstable in self._sstables:
+                if timestamp < sstable.min_key or timestamp > sstable.max_key:
+                    continue
 
-            # Scan SSTable
-            metric = self._read_from_sstable(sstable, timestamp)
-            if metric is not None:
-                return metric
+                metric = self._read_from_sstable(sstable, timestamp)
+                if metric is not None:
+                    return metric
 
         return None
 
@@ -210,18 +225,18 @@ class LSMTree:
             for ts in self._memtable.irange(start_ts, end_ts):
                 results[ts] = self._memtable[ts]
 
-        # Scan SSTables
-        for sstable in self._sstables:
-            # Skip if range doesn't overlap
-            if end_ts < sstable.min_key or start_ts > sstable.max_key:
-                continue
+            # Scan SSTables under the same lock compaction uses, so
+            # range scans cannot race with compaction deleting old
+            # table files.
+            for sstable in self._sstables:
+                if end_ts < sstable.min_key or start_ts > sstable.max_key:
+                    continue
 
-            # Read relevant entries from SSTable
-            sstable_results = self._range_scan_sstable(sstable, start_ts, end_ts)
-            for ts, metric in sstable_results.items():
-                # MemTable has priority (newer data)
-                if ts not in results:
-                    results[ts] = metric
+                sstable_results = self._range_scan_sstable(sstable, start_ts, end_ts)
+                for ts, metric in sstable_results.items():
+                    # MemTable has priority (newer data)
+                    if ts not in results:
+                        results[ts] = metric
 
         # Return sorted by timestamp
         return [results[ts] for ts in sorted(results.keys())]
@@ -239,8 +254,7 @@ class LSMTree:
             return
 
         # Generate SSTable filename with timestamp
-        timestamp_ns = time.time_ns()
-        sstable_path = self.data_dir / f"sst_{timestamp_ns}.msgpack"
+        sstable_path = self._new_sstable_path()
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
         # Serialize MemTable to msgpack
@@ -280,8 +294,7 @@ class LSMTree:
             return
 
         # Generate SSTable filename with timestamp
-        timestamp_ns = time.time_ns()
-        sstable_path = self.data_dir / f"sst_{timestamp_ns}.msgpack"
+        sstable_path = self._new_sstable_path()
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
         # Serialize MemTable to msgpack
@@ -326,10 +339,13 @@ class LSMTree:
                 if len(self._sstables) >= self._compaction_threshold:
                     try:
                         self._compact_sstables()
-                    except Exception as e:
-                        # Log error but don't crash thread
-                        # In production, would use proper logging
-                        print(f"LSM compaction error: {e}")
+                    except Exception as exc:  # noqa: BLE001 - keep the compaction thread alive
+                        logger.warning(
+                            "LSM compaction skipped this cycle "
+                            "reason=lsm_compaction_failed sstables=%d error=%s",
+                            len(self._sstables),
+                            exc,
+                        )
 
     def _compact_sstables(self) -> None:
         """Merge SSTables to reduce read amplification.
@@ -352,8 +368,7 @@ class LSMTree:
                 merged_data[ts] = metric
 
         # Write merged data to new SSTable
-        timestamp_ns = time.time_ns()
-        compacted_path = self.data_dir / f"sst_compacted_{timestamp_ns}.msgpack"
+        compacted_path = self._new_sstable_path("sst_compacted")
 
         sorted_entries = [(ts, merged_data[ts]) for ts in sorted(merged_data.keys())]
         if not sorted_entries:
@@ -380,8 +395,13 @@ class LSMTree:
             for sstable in self._sstables:
                 try:
                     sstable.file_path.unlink()
-                except Exception:
-                    pass  # Best effort deletion
+                except Exception as exc:  # noqa: BLE001 - best-effort deletion, but say so
+                    logger.warning(
+                        "LSM compaction left a stale SSTable on disk "
+                        "reason=lsm_sstable_cleanup_failed path=%s error=%s",
+                        sstable.file_path,
+                        exc,
+                    )
 
             # Replace with compacted SSTable
             self._sstables = [compacted_sstable]
@@ -471,8 +491,14 @@ class LSMTree:
 
                 self._sstables.append(sstable)
 
-            except Exception:
-                # Skip corrupted SSTables
+            except Exception as exc:  # noqa: BLE001 - reason=sstable_corrupt_skipped logged below
+                # Skip corrupted SSTables, but surface a structured reason so a
+                # silently-dropped SSTable is observable in the trace.
+                logger.warning(
+                    "arc lsm degraded: reason=sstable_corrupt_skipped path=%s error=%r",
+                    sstable_path,
+                    exc,
+                )
                 continue
 
     def get_stats(self) -> Dict[str, Any]:
@@ -507,6 +533,21 @@ class LSMTree:
                 "sstable_count": len(self._sstables),
                 "total_records": total_records,
             }
+
+    def flush(self) -> None:
+        """Flush the in-memory MemTable to an on-disk SSTable.
+
+        Frees the MemTable's heap without tearing down the tree, so the LSM
+        keeps accepting writes afterwards. Used by ARC's session-release /
+        flush-and-release lifecycle to return an idle server to baseline.
+
+        Examples:
+            >>> lsm = LSMTree()
+            >>> lsm.write(time.time(), {"latency_ms": 1500})
+            >>> lsm.flush()
+        """
+        with self._lock:
+            self._flush_memtable()
 
     def close(self) -> None:
         """Stop background compaction and close LSM tree.

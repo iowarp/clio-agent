@@ -28,9 +28,7 @@ class _Agent:
 
 
 def _client(tmp_path: Path, pred) -> TestClient:
-    return TestClient(
-        build_app(sessions_path=tmp_path / "s.json", agent=_Agent(pred))
-    )
+    return TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent(pred)))
 
 
 def test_chain_of_thought_reasoning_becomes_thinking_part(
@@ -51,12 +49,14 @@ def test_chain_of_thought_reasoning_becomes_thinking_part(
 def test_react_trajectory_dict_becomes_thinking_part(tmp_path: Path) -> None:
     from .conftest import complete_turn
 
-    pred = _Pred(trajectory={
-        "step_0_thought": "first probe the schema",
-        "step_0_tool_name": "hdf5_list_datasets",
-        "step_1_thought": "now read /sim/temperature",
-        "step_1_tool_name": "hdf5_analyze_dataset",
-    })
+    pred = _Pred(
+        trajectory={
+            "step_0_thought": "first probe the schema",
+            "step_0_tool_name": "hdf5_list_datasets",
+            "step_1_thought": "now read /sim/temperature",
+            "step_1_tool_name": "hdf5_analyze_dataset",
+        }
+    )
     c = _client(tmp_path, pred)
     sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
     a = complete_turn(c, sid, "analyze")

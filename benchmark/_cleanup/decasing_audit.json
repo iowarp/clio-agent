@@ -1,0 +1,1557 @@
+{
+  "audits": [
+    {
+      "dimension": "EarthScope / GNSS / station / seismic / SAC",
+      "findings": [
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:3714",
+          "identifier": "_EARTHSCOPE_METADATA_RESOURCE_NAMES",
+          "classification": "case-specific",
+          "what": "Hardcoded EarthScope metadata filename: {'earthscope_converted_data.csv'}. Domain-specific resource naming embedded in core state inference.",
+          "case": "EarthScope GNSS",
+          "should_go": "clio-kit MCP or marketplace pack configuration",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:3724-3860",
+          "identifier": "_infer_ndp_workflow_state_from_tool_evidence",
+          "classification": "case-specific",
+          "what": "240+ line function inferring NDP/EarthScope-specific acquisition state: metadata_only vs staged distinction, hardcoded 'earthscope_converted_data.csv' defaults, GNSS-specific required_columns=['time','east','north','up'], domain-specific blocker messages.",
+          "case": "EarthScope GNSS dataset acquisition",
+          "should_go": "delete from core; move domain-specific state model to clio-kit MCP",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:3729",
+          "identifier": "ndp/earthscope detection gate",
+          "classification": "case-specific",
+          "what": "Early return gate: 'if \"ndp\" not in lowered and \"earthscope\" not in lowered: return {}'. Explicit domain namespace check deciding state inference.",
+          "case": "EarthScope/NDP case filtering",
+          "should_go": "generic refactor: parameterize domain token detection",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:3755-3800",
+          "identifier": "metadata vs staged CSV branching logic",
+          "classification": "case-specific",
+          "what": "Hardcoded decision tree: if resource_key in _EARTHSCOPE_METADATA_RESOURCE_NAMES -> metadata_only status with blocker='staged resource is station metadata, not a GNSS time-series CSV'.",
+          "case": "EarthScope GNSS CSV type discrimination",
+          "should_go": "clio-kit MCP: generic resource-type classification delegate",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:4347-4440",
+          "identifier": "_infer_ndp_station_catalog_state_from_tool_evidence",
+          "classification": "case-specific",
+          "what": "90+ lines extracting station-specific CSV state: 'filter_earthscope_station_catalog' presence check, regex for 'stations', 'distance_km', 'candidate_count' field names, hardcoded station ID extraction patterns.",
+          "case": "EarthScope station catalog filtering",
+          "should_go": "delete from core; move to clio-kit MCP station catalog parser",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:4504-4570",
+          "identifier": "_infer_ndp_profile_state_from_tool_evidence + _infer_ndp_plot_state_from_tool_evidence",
+          "classification": "case-specific",
+          "what": "Artifact state inference with 'gnss_timeseries_plot' kind and profile state using 'plot_csv_timeseries' tool name detection. Domain-specific artifact typing.",
+          "case": "GNSS timeseries artifacts",
+          "should_go": "generic refactor: parameterize artifact kind + tool-name mapping",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:4558",
+          "identifier": "'gnss_timeseries_plot' artifact kind",
+          "classification": "case-specific",
+          "what": "Hardcoded plot artifact kind specific to GNSS domain in generic state inference function.",
+          "case": "EarthScope GNSS visualization",
+          "should_go": "parameterize artifact kind in MCP response metadata",
+          "difficulty": "low"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:5055-5110",
+          "identifier": "_station_catalog_match_for_candidate + _requires_station_geographic_provenance",
+          "classification": "case-specific",
+          "what": "Station-specific catalog matching logic: extracts 'station' or 'id' field, matches station_id, checks 'geospatial' or 'region' keys for geographic provenance. Domain-specific geography requirements.",
+          "case": "EarthScope regional GNSS station selection",
+          "should_go": "clio-kit MCP: station matching + geography validation delegate",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:5306-5317",
+          "identifier": "_ndp_workflow_state_score",
+          "classification": "case-specific",
+          "what": "Scoring function hardcoding NDP acquisition state progression: score 3=staged, 2=metadata_only, 1=blocked/missing. Domain-specific state value model.",
+          "case": "NDP state progression ranking",
+          "should_go": "parameterized scoring config in clio-kit MCP",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:5615-5800",
+          "identifier": "_infer_ndp_workflow_state_from_trajectory",
+          "classification": "case-specific",
+          "what": "180+ line trajectory recovery logic for NDP workflows: extracts 'geospatial' block, ranks station candidates via score, hardcodes search exhaustion logic for 'ndp_search_datasets'.",
+          "case": "NDP search/stage workflow recovery",
+          "should_go": "delete from core; move to NDP-specialized expert/MCP",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/ndp_server.py:438-484",
+          "identifier": "_earthscope_station_resource_code",
+          "classification": "case-specific",
+          "what": "Hardcoded EarthScope station code extraction: 3-5 char regex [A-Z0-9]{3,5}, excluded list {'CSV','GNSS','GPS','PBO'}, domain-specific station naming convention.",
+          "case": "EarthScope station naming",
+          "should_go": "parameterized station code pattern in clio-kit MCP",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/ndp_server.py:486-511",
+          "identifier": "_dataset_is_earthscope_station_resource",
+          "classification": "case-specific",
+          "what": "EarthScope station resource detection via hardcoded regex: [A-Z0-9]{3,5}[._-][A-Z0-9]{2}[._-]LY_?[._-][A-Z0-9]{2}. Domain-specific file naming pattern.",
+          "case": "EarthScope GNSS station resource identification",
+          "should_go": "clio-kit MCP: generalized station resource detector",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/ndp_server.py:513-577",
+          "identifier": "_filter_earthscope_station_resource_results",
+          "classification": "case-specific",
+          "what": "80+ lines filtering search results by EarthScope station: station_code extraction, dataset matching, status codes {'broad_station_resources_suppressed','applied'}, domain-specific search coverage logic.",
+          "case": "EarthScope station resource filtering",
+          "should_go": "clio-kit MCP: generalized search result filtering",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/ndp_server.py:579-618",
+          "identifier": "_earthscope_search_coverage",
+          "classification": "case-specific",
+          "what": "Search coverage evaluation hardcoding EarthScope+GNSS/GPS+CSV/raw_csv token combinations, domain='earthscope_gnss', next_action=domain-specific guidance.",
+          "case": "EarthScope search validation",
+          "should_go": "parameterized search coverage config per domain",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/ndp_server.py:1204-1260",
+          "identifier": "_earthscope_station_rows",
+          "classification": "case-specific",
+          "what": "EarthScope CSV parser: expects Site, Latitude, Longitude columns, distance calculation, hardcoded 'EarthScope GNSS CSV' label generation.",
+          "case": "EarthScope station CSV parsing",
+          "should_go": "parameterized CSV column mapping in clio-kit MCP",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/ndp_server.py:2015-2111",
+          "identifier": "filter_earthscope_station_catalog tool",
+          "classification": "case-specific",
+          "what": "Tool function hard-wired to EarthScope GNSS: path validation, _earthscope_station_rows parser, distance filtering, hardcoded error code 'station_catalog_*', metadata path tracking.",
+          "case": "EarthScope station catalog filtering",
+          "should_go": "move to clio-kit EarthScope MCP or marketplace pack tool",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/sac_server.py:30-34",
+          "identifier": "_EARTHSCOPE_TIMESERIES_URL + _EARTHSCOPE_STATION_URL + _USER_AGENT",
+          "classification": "case-specific",
+          "what": "Hardcoded EarthScope service URLs (irisws/timeseries, fdsnws/station) and user-agent string 'clio-agent/ndp-demo-earthscope' indicating domain-specific service binding.",
+          "case": "EarthScope waveform discovery",
+          "should_go": "clio-kit EarthScope MCP: parameterize service URLs and provider identification",
+          "difficulty": "low"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/sac_server.py:93",
+          "identifier": "StationChannel docstring",
+          "classification": "borderline",
+          "what": "Class docstring 'EarthScope channel candidate suitable for SAC waveform fetch' is domain-specific naming but class itself is generic.",
+          "case": "EarthScope vocabulary",
+          "should_go": "generic refactor: rename to 'SeismicChannel' or remove EarthScope reference",
+          "difficulty": "low"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/sac_server.py:186",
+          "identifier": "_format_earthscope_time",
+          "classification": "case-specific",
+          "what": "Service-specific time formatting function name exposes EarthScope binding. Generic time formatting implementation but EarthScope-specific naming.",
+          "case": "EarthScope API time format",
+          "should_go": "generic refactor: rename to _format_iso_time or similar",
+          "difficulty": "low"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/sac_server.py:357",
+          "identifier": "discover_earthscope_vertical_channels docstring",
+          "classification": "case-specific",
+          "what": "Function documentation explicitly states 'Find nearby EarthScope vertical channels'. Domain-specific purpose baked into core waveform discovery tool.",
+          "case": "EarthScope waveform discovery",
+          "should_go": "clio-kit MCP: move to EarthScope-specific server, genericize core tool",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/sac_server.py:578-665",
+          "identifier": "fetch_earthscope_waveform tool",
+          "classification": "case-specific",
+          "what": "Tool hard-wired to EarthScope: _EARTHSCOPE_TIMESERIES_URL binding, 'earthscope_irisws_timeseries' source hardcoding, error codes 'earthscope_waveform_*', service-specific retry logic.",
+          "case": "EarthScope waveform fetching",
+          "should_go": "move to clio-kit EarthScope MCP server",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/sac_server.py:669-835",
+          "identifier": "discover_earthscope_region_waveform tool",
+          "classification": "case-specific",
+          "what": "Tool orchestration: uses USGS earthquake events, EarthScope station discovery, hardcoded region radius 150 km, 'earthscope_region_discovery' source, service-specific error codes.",
+          "case": "EarthScope regional waveform discovery",
+          "should_go": "move to clio-kit EarthScope MCP; parameterize region radius and earthquake source",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/agent.py:1036",
+          "identifier": "SAC tool recommendation in AgentActionSignature",
+          "classification": "case-specific",
+          "what": "Prompt hardcodes 'sac_fetch_earthscope_waveform' as recovery tool recommendation in planner signature. Domain-specific tool binding in core agent signature.",
+          "case": "EarthScope waveform recovery",
+          "should_go": "parameterize recovery tool recommendations in planner signature",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/agent.py:1049-1119",
+          "identifier": "SAC recovery path scope validation",
+          "classification": "case-specific",
+          "what": "Functions _recovery_tool_path_scope_error and _recovery_expert_path_scope_error hard-wire to SAC tools 'sac_compute_trace_statistics', 'sac_plot_traces' and NDP blockers. Domain-specific recovery validation.",
+          "case": "EarthScope SAC waveform recovery",
+          "should_go": "parameterized recovery tool list per case/domain",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/catalog.py:110-137",
+          "identifier": "EarthScope+SAC tool entries",
+          "classification": "case-specific",
+          "what": "Tool catalog entries for 'ndp_filter_earthscope_station_catalog', 'sac_fetch_earthscope_waveform', 'sac_discover_earthscope_region_waveform' with 'earthscope', 'gnss', 'seismic', 'sac' tags hardcoded.",
+          "case": "Tool metadata tagging",
+          "should_go": "keep (metadata layer) but migrate tools to clio-kit MCPs",
+          "difficulty": "low"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/execution.py:225-227",
+          "identifier": "DEFAULT_TOOL_TIMEOUTS for NDP/SAC",
+          "classification": "case-specific",
+          "what": "Hardcoded 75s timeout for 'ndp_filter_earthscope_station_catalog' and 'ndp_plot_gnss_timeseries'. Case-specific tool timeout defaults.",
+          "case": "EarthScope/GNSS tool performance",
+          "should_go": "move to clio-kit MCP tool definitions; keep generic fallback in core",
+          "difficulty": "low"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:2668-2776",
+          "identifier": "_SCAN_LIMITED_EVIDENCE_TOKENS + _SCAN_LIMITED_UNSUPPORTED_RECORD_PATTERNS",
+          "classification": "case-specific",
+          "what": "10+ regex patterns detecting GNSS/EarthScope unsupported record claims: 'GNSS \\d+ Hz', 'two-week record', 'high-rate 3D position', etc. Domain-specific unsupported data detection.",
+          "case": "EarthScope GNSS data limitations",
+          "should_go": "clio-kit EarthScope MCP: domain-specific pattern matcher",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:3320-3395",
+          "identifier": "ndp_answer_brief functions",
+          "classification": "case-specific",
+          "what": "Multiple functions formatting NDP/EarthScope-specific briefs: _ndp_answer_brief_from_state, _ndp_answer_brief_from_acquisition, referencing 'station_catalog', 'Staged EarthScope station metadata', GNSS-specific messaging.",
+          "case": "EarthScope answer formatting",
+          "should_go": "clio-kit EarthScope MCP: domain-specific answer formatter",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:4005-4190",
+          "identifier": "_validate_search_staged_acquisition_readiness",
+          "classification": "case-specific",
+          "what": "200+ line validation function hard-wired to NDP/station search logic: checks for domain='earthscope_gnss', ranks stations by score, validates search exhaustion, hardcodes 'ndp_search_datasets' tool behavior.",
+          "case": "NDP search validation",
+          "should_go": "delete from core; move to NDP-specialized expert/MCP",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:4239-4243",
+          "identifier": "_station_catalog_state_from_mapping detection logic",
+          "classification": "case-specific",
+          "what": "Detects 'filter_earthscope_station_catalog' tool in metadata to route station catalog state parsing. Tool name as routing decision.",
+          "case": "EarthScope tool routing",
+          "should_go": "parameterize tool-name routing keys",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:5011-5050",
+          "identifier": "_station_id_from_staged_state",
+          "classification": "case-specific",
+          "what": "Extracts station ID from staged CSV by matching filename to _EARTHSCOPE_METADATA_RESOURCE_NAMES and parsing station code from CSV. Domain-specific station ID extraction.",
+          "case": "EarthScope station ID extraction",
+          "should_go": "clio-kit MCP: parameterized station ID parser",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:14160-14320",
+          "identifier": "_BUILTIN_EXPERT_CAPABILITIES (NDP + SAC definitions)",
+          "classification": "case-specific",
+          "what": "Hardcoded expert blueprint definitions: 'ndp_catalog' with keywords=['ndp','earthscope',...], 'sac_format' with keywords=['sac','seismic',...], tier assignments, delegate-to lists mentioning domain experts.",
+          "case": "Expert blueprint definitions",
+          "should_go": "move to clio-kit expert pack YAML; parameterize in config",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:14190-14224",
+          "identifier": "_BUILTIN_TOOL_ASSIGNMENTS (NDP + SAC tools)",
+          "classification": "case-specific",
+          "what": "Hardcoded tool allocations to experts: 'ndp_format' -> ['ndp_search_datasets', 'ndp_stage_resource', 'ndp_plot_gnss_timeseries'], 'sac_format' -> ['sac_fetch_earthscope_waveform', ...].",
+          "case": "Expert-tool bindings",
+          "should_go": "move to clio-kit expert pack manifests",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:7195-7350",
+          "identifier": "NDP-specific workflow recovery in _plan_next_action_for_request",
+          "classification": "case-specific",
+          "what": "Large conditional blocks hard-wiring NDP state tracking: checks 'ndp_stage_resource', 'ndp_search_datasets', extracts station IDs, validates search coverage via domain='earthscope_gnss'.",
+          "case": "NDP workflow orchestration",
+          "should_go": "delete from core planner; move to NDP-specialized expert",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:12551-12650",
+          "identifier": "NDP state tracking in _update_workflow_state",
+          "classification": "case-specific",
+          "what": "100+ lines of NDP-specific state mutation: tracks 'ndp_stage_resource', 'ndp_search_datasets', extracts station IDs from CSV, updates station catalog, validates acquisition readiness.",
+          "case": "NDP state management",
+          "should_go": "move to NDP-specialized expert state manager",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:6551-6577",
+          "identifier": "_local_sac_paths_from_text + _append_sac_path_instruction",
+          "classification": "case-specific",
+          "what": "SAC-specific path recovery and prompt injection: searches for SAC paths in evidence, injects runtime-selected SAC path into prompts. Domain-specific prompt manipulation.",
+          "case": "SAC path handling",
+          "should_go": "parameterized path type detection per domain",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:2668-2770",
+          "identifier": "GNSS claims and unsupported patterns",
+          "classification": "case-specific",
+          "what": "Multiple regex patterns validating GNSS data quality claims ('meets format criteria', 'excellent candidate for displacement', 'covers >X% of GNSS stations'). Domain-specific claim validation.",
+          "case": "GNSS data quality claims",
+          "should_go": "clio-kit EarthScope MCP: claim validator",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/expert_packs.py:12",
+          "identifier": "Expert pack discover listing 'earthscope'",
+          "classification": "borderline",
+          "what": "Comment listing 'earthscope' as example expert. Generic pack discovery code, example is domain-specific.",
+          "case": "Documentation example",
+          "should_go": "update example to generic domain",
+          "difficulty": "low"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/signatures/main_agent_sig.py:76",
+          "identifier": "SAC recovery guidance in AgentActionSignature",
+          "classification": "case-specific",
+          "what": "Planner signature prompt hardcodes 'sac_fetch_earthscope_waveform' as recovery tool example. Case-specific guidance in core signature.",
+          "case": "EarthScope recovery documentation",
+          "should_go": "generic refactor: parameterized recovery examples per domain",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:2884-2895",
+          "identifier": "Claim validation regexes for USGS/UNAVCO/EarthScope",
+          "classification": "case-specific",
+          "what": "Regex patterns searching for specific providers (USGS, UNAVCO, EarthScope, SCEC, PBO GNSS) in provenance claims. Provider-specific claim validation.",
+          "case": "Data provenance validation",
+          "should_go": "parameterized provider list per case/domain",
+          "difficulty": "medium"
+        }
+      ],
+      "case_specific_count": 46,
+      "summary": "AUDIT COMPLETE: The clio-agent core contains 46 case-specific contamination points across the EarthScope/GNSS/station/seismic/SAC dimension. Major contamination zones: (1) State inference layer (app.py lines 3714-5800): Multiple _infer_* functions hard-code NDP/EarthScope domain state models (_EARTHSCOPE_METADATA_RESOURCE_NAMES, metadata_only status, station_catalog extraction, 'gnss_timeseries_plot' artifacts, score=3/2/1 progression). (2) Tool implementation layer (ndp_server.py, sac_server.py): Tools hard-wired to EarthScope service URLs, station naming patterns [A-Z0-9]{3,5}[._-][A-Z0-9]{2}[._-]LY, CSV column expectations (Site, Latitude, Longitude, time/east/north/up), error code namespacing. (3) Agent loop orchestration (app.py lines 7195-12650): Large conditional blocks in planner and state updater routing to NDP workflows, tracking station search coverage, validating acquisition readiness against domain-specific state models. (4) Expert blueprints (app.py lines 14160-14224): Hardcoded 'ndp_catalog', 'sac_format' expert definitions with domain keywords and tool allocations. (5) Planner signature (agent.py, signatures/main_agent_sig.py): Recovery guidance explicitly naming 'sac_fetch_earthscope_waveform'. All detected contamination must be extracted: tools to clio-kit MCPs (earthscope, sac, ndp MCPs), state models to specialized expert/MCP, workflow orchestration to case-specific expert packs, expert blueprints to YAML-based discovery. Core agent must retain only universal framework + tool call/result normalization."
+    },
+    {
+      "dimension": "Wildfire/smoke/fire + other science domain contamination in clio-agent core",
+      "findings": [
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/geospatial_server.py:143-147",
+          "identifier": "render_feature_map docstring & agent story",
+          "what": "Hardcoded fire/smoke domain semantics: mentions 'fire perimeters, hazard polygons, monitoring stations' as explicit example use case",
+          "case": "wildfire-smoke",
+          "classification": "case-specific",
+          "should_go": "clio-kit geo MCP (move to domain-specific example docs)",
+          "difficulty": "low"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/geospatial_server.py:277-279",
+          "identifier": "points_in_polygons docstring & agent story",
+          "what": "Hardcoded wildfire domain example: 'which AirNow monitor points lie inside the smoke-forecast polygons'",
+          "case": "wildfire-smoke-AirNow",
+          "classification": "case-specific",
+          "should_go": "clio-kit geo MCP or marketplace wildfire pack",
+          "difficulty": "low"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/geospatial_server.py:206-245",
+          "identifier": "_resolve_layer_geojson keyword resolution",
+          "what": "Hardcoded keyword-to-filename mapping logic: 'fire_perimeter vs active_fire_perimeter' naming drift handling. Comments explicitly mention fire/smoke service naming patterns (fire -> perimeters, smoke -> smokeforecast, air -> air)",
+          "case": "wildfire-smoke-naming-conventions",
+          "classification": "case-specific",
+          "should_go": "clio-kit geo MCP with generic keyword resolution",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/ndp_server.py:1842-1843",
+          "identifier": "ndp_query_arcgis_features auto-naming logic",
+          "what": "Explicit hardcoded comment about case-specific naming convention: 'Name it from the service so keyword resolution finds it (fire -> ...perimeters, smoke -> ...smokeforecast, air -> ...air...)'",
+          "case": "wildfire-smoke-arcgis",
+          "classification": "case-specific",
+          "should_go": "delete this logic or move to clio-kit marketplace pack",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:2883-2898",
+          "identifier": "_UNVERIFIED_GEOSPATIAL_PROSE_PATTERN, _UNVERIFIED_GEOSPATIAL_PROVENANCE_LINE_PATTERN, _UNVERIFIED_GEOSPATIAL_JSON_PROVENANCE_PATTERN, _UNVERIFIED_GEOSPATIAL_CONFIDENCE_PATTERN regex constants",
+          "what": "Four case-specific regex patterns hardcoded for geospatial domain: references 'USGS|UNAVCO|EarthScope|SCEC' as provenance validators. Domain-specific sanitization of model evidence.",
+          "case": "geospatial-seismic-earthscope",
+          "classification": "case-specific",
+          "should_go": "move to EarthScope/seismic marketplace pack",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:2904-2925",
+          "identifier": "_sanitize_unverified_geospatial_model_evidence function",
+          "what": "Case-specific sanitization logic for EarthScope/geospatial provenance. Removes named-source geospatial claims from model-only summaries.",
+          "case": "geospatial-earthscope-seismic",
+          "classification": "case-specific",
+          "should_go": "clio-kit or marketplace pack",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:3714",
+          "identifier": "_EARTHSCOPE_METADATA_RESOURCE_NAMES = {'earthscope_converted_data.csv'}",
+          "what": "Hardcoded EarthScope-specific filename constant. Used in 8 locations to identify metadata-only resources.",
+          "case": "earthscope-seismic",
+          "classification": "case-specific",
+          "should_go": "delete or move to EarthScope marketplace pack",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:3724-3900",
+          "identifier": "_infer_ndp_workflow_state_from_tool_evidence function",
+          "what": "Massive EarthScope-specific workflow state inference. Hardcoded checks for 'earthscope', 'gnss', station metadata patterns, CSV format assumptions (time/east/north/up columns), resource naming conventions. ~180 lines of NDP/EarthScope domain logic.",
+          "case": "earthscope-gnss-seismic",
+          "classification": "case-specific",
+          "should_go": "clio-kit NDP or EarthScope marketplace pack",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:3756-3800",
+          "identifier": "EarthScope station CSV format detection and state generation",
+          "what": "Hardcoded checks for 'earthscope_converted_data.csv' metadata resource and station time-series CSV columns ['time', 'east', 'north', 'up']. Domain-specific acquisition state construction.",
+          "case": "earthscope-gnss-waveform",
+          "classification": "case-specific",
+          "should_go": "EarthScope marketplace pack",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:3956-4200",
+          "identifier": "_infer_ndp_search_state_from_tool_evidence, _infer_ndp_station_catalog_state_from_tool_evidence, _infer_ndp_profile_state_from_tool_evidence, _infer_ndp_plot_state_from_tool_evidence functions",
+          "what": "Four separate functions (250+ lines total) for NDP workflow state inference. Station catalog filtering, resource discovery state, CSV profiling, time-series plotting state. All encode EarthScope/NDP-specific semantics.",
+          "case": "earthscope-ndp-seismic",
+          "classification": "case-specific",
+          "should_go": "clio-kit NDP or marketplace pack",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:4347-4600",
+          "identifier": "_infer_ndp_station_catalog_state_from_tool_evidence function",
+          "what": "Station catalog state inference with candidate count, radius_km, center coordinates. EarthScope GNSS station matching logic with distance calculations.",
+          "case": "earthscope-gnss-station",
+          "classification": "case-specific",
+          "should_go": "EarthScope marketplace pack",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:4758-4780",
+          "identifier": "_UNVERIFIED_GEOSPATIAL_PROVENANCE_TOKENS tuple & _sanitize_geospatial_workflow_state function",
+          "what": "Case-specific geospatial workflow state sanitization. Hardcoded tokens for USGS|UNAVCO|EarthScope|SCEC|PBO provenance filtering.",
+          "case": "geospatial-earthscope-seismic",
+          "classification": "case-specific",
+          "should_go": "marketplace pack",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:5007-5070",
+          "identifier": "_station_id_from_station_csv_state, _station_catalog_match_for_candidate functions",
+          "what": "EarthScope station ID extraction from CSV filenames using regex 'r\"(?P<station>[A-Za-z0-9]{3,5})\\.[A-Za-z0-9]{2}\\.\"'. Hardcoded station catalog matching logic.",
+          "case": "earthscope-gnss-seismic",
+          "classification": "case-specific",
+          "should_go": "EarthScope marketplace pack",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:3401-3530",
+          "identifier": "_positive_ndp_workflow_state_user_summary function",
+          "what": "EarthScope GNSS-specific user summary generation. Hardcoded prose like 'EarthScope GNSS acquisition, profiling, and visualization completed.' with station-specific evidence synthesis.",
+          "case": "earthscope-gnss",
+          "classification": "case-specific",
+          "should_go": "EarthScope marketplace pack",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/agent.py:111-122",
+          "identifier": "_mass_spec_qc_sentence function",
+          "what": "Mass spectrometry domain-specific function. Extracts and formats mzML-specific QC metrics (ms_levels, total_ion_current). Encodes domain semantics (MS level distribution, TIC evidence).",
+          "case": "mass-spectrometry-mzml",
+          "classification": "case-specific",
+          "should_go": "mass-spec marketplace pack or delete if unused",
+          "difficulty": "low"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/agent.py:1936-1980",
+          "identifier": "_ndp_dataset_names class method and NDP-specific result observation generation",
+          "what": "Hardcoded NDP result shape parsing. Checks for 'datasets' dict with 'items' list. Formats observation text with 'National Data Platform datasets:' prefix.",
+          "case": "ndp-earthscope",
+          "classification": "case-specific",
+          "should_go": "generic refactor or move to NDP pack",
+          "difficulty": "low"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/agent.py:993-1040",
+          "identifier": "_observations_have_recoverable_ndp_blocker, _recovery_tool_path_scope_error, _recovery_expert_path_scope_error",
+          "what": "Hardcoded SAC waveform recovery logic tied to NDP blockers. Checks for specific tool names 'sac_compute_trace_statistics', 'sac_plot_traces', 'sac_fetch_earthscope_waveform'. Only used for EarthScope recovery workflows.",
+          "case": "earthscope-sac-waveform-recovery",
+          "classification": "case-specific",
+          "should_go": "delete or move to EarthScope marketplace pack",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/agent.py:86-107",
+          "identifier": "SCIENTIFIC_FILE_SUFFIXES set includes case-specific formats",
+          "what": "Hardcoded file suffix set includes domain-specific formats: '.sac' (seismic), '.fa/.fasta' (genomics), '.vcf' (genomics), '.cif' (materials), '.mzml' (mass-spec), '.geojson' (geospatial).",
+          "case": "multi-domain",
+          "classification": "generic-ok",
+          "should_go": "keep (generic file detection)",
+          "difficulty": "low"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/catalog.py:41-261",
+          "identifier": "TOOL_CATALOG hardcoded expert owners and case-specific tool registration",
+          "what": "Tool catalog embeds case-specific expert ownership: 'ndp_catalog' (NDP/EarthScope), 'sac_format' (seismic), 'geospatial', 'genomics', 'materials', 'imaging', 'mass_spec', 'terrain_derivation', 'hpc'. Each expert scope encodes domain-specific tool curation.",
+          "case": "multi-domain-experts",
+          "classification": "case-specific",
+          "should_go": "refactor to dynamic registry or move to marketplace packs",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/catalog.py:187",
+          "identifier": "geospatial_points_in_polygons visible_to={'analysis', 'downwind_impact'}",
+          "what": "Explicit case-specific expert scope 'downwind_impact' hardcoded into tool visibility. This appears to be a wildfire-specific expert scope not documented elsewhere.",
+          "case": "wildfire-downwind-impact",
+          "classification": "case-specific",
+          "should_go": "delete or move to wildfire marketplace pack",
+          "difficulty": "low"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:2622-2700",
+          "identifier": "Hardcoded workflow state keywords and patterns for GNSS/station/seismic data",
+          "what": "Multiple regex patterns and keyword matches for EarthScope workflow: 'station', 'GNSS', 'earthscope', patterns for 'Hz time-series', 'PBO station coverage', seismic 'Hz' detection, waveform quality markers.",
+          "case": "earthscope-gnss-seismic",
+          "classification": "case-specific",
+          "should_go": "marketplace pack or clio-kit",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:2690-2770",
+          "identifier": "GNSS and seismic-specific patterns: _NDP_SEARCH_RESULT_PATTERN, seismic quality markers",
+          "what": "Regex patterns for GNSS time-series detection and seismic quality assessment. Hardcoded markers like 'GNSS', 'Hz frequency', 'excellent candidate for displacement/velocity analysis'.",
+          "case": "earthscope-gnss-seismic",
+          "classification": "case-specific",
+          "should_go": "marketplace pack",
+          "difficulty": "medium"
+        }
+      ],
+      "case_specific_count": 21,
+      "summary": "ADVERSARIAL AUDIT SUMMARY: The clio-agent core exhibits SUBSTANTIAL case-specific contamination across WILDFIRE/SMOKE (3 findings) and EARTHSCOPE/GNSS/SEISMIC (14 findings), plus mass-spec (1), and multi-domain issues (3). CRITICAL ISSUES: (1) Hardcoded 'earthscope_converted_data.csv' filename constant appears in 8 locations; (2) NDP workflow state inference functions (~500+ lines total in app.py) encode deep EarthScope semantics (station catalog filtering, GNSS time-series CSV columns, station ID regex patterns); (3) SAC waveform recovery logic in agent.py hardcoded to EarthScope-specific tools; (4) Geospatial/fire workflow state sanitization with USGS|UNAVCO|EarthScope|SCEC provenance patterns; (5) Explicit 'downwind_impact' expert scope in tool catalog (appears to be wildfire-specific); (6) Wildfire domain examples in geospatial tool docstrings (fire perimeters, smoke-forecast polygons, AirNow monitor logic); (7) Geospatial layer resolution logic with hardcoded fire/smoke naming conventions. STATIC TOOL CATALOG: All domain expert ownership (ndp_catalog, sac_format, geospatial, genomics, materials, imaging, mass_spec, terrain_derivation, hpc) is hardcoded. CLEANUP PATH: Move all _infer_ndp_* and _sanitize_geospatial_* functions to marketplace packs or clio-kit MCPs. Refactor tool catalog to dynamic registry. Delete or genericize domain-specific filename patterns, recovery logic, and provenance validators."
+    },
+    {
+      "dimension": "Tool layer hardcoding (servers/gateway/catalog/bridge)",
+      "case_specific_count": 33,
+      "summary": "SEVERE contamination of clio-agent core framework with domain/case-specific semantics at the tool layer. The tool gateway couples 10+ domain-specific FastMCP servers (ndp, sac, genomics, imaging, mass_spec, materials, hpc, terrain, geospatial) directly into the core codebase via hardcoded mounts and routing prefixes. The TOOL_CATALOG encodes expert ownership with case-specific IDs (ndp_catalog, sac_format) and visibility scopes (downwind_impact, geography). App.py contains 1000+ lines of EarthScope/station/seismic domain logic for workflow state inference, validation, and sanitization. NDP_server and sac_server implement complete domain-specific tool implementations (station filtering, waveform discovery, trace statistics) rather than simple atomic operations. Gateway _infer_tool_server uses 14+ hardcoded if/elif branches for prefix matching. All of this must migrate to clio-kit MCP packs to achieve a clean universal framework.",
+      "findings": [
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/catalog.py:110-114",
+          "identifier": "ndp_filter_earthscope_station_catalog",
+          "what": "Tool catalog entry for EarthScope-specific station filtering with domain-specific tags (earthscope, gnss, station)",
+          "case": "earthscope",
+          "classification": "case-specific",
+          "should_go": "clio-kit MCP earthscope-pack",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/catalog.py:128-139",
+          "identifier": "sac_fetch_earthscope_waveform + sac_discover_earthscope_region_waveform",
+          "what": "Tool catalog entries hardcoded for EarthScope waveform discovery and fetching with seismic/sac/earthscope tags",
+          "case": "earthscope",
+          "classification": "case-specific",
+          "should_go": "clio-kit MCP earthscope-pack",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/gateway.py:54-71",
+          "identifier": "_mount_with_namespace gateway mounts (lines 56-70)",
+          "what": "Hardcoded in-process domain tool servers mounted at gateway level: ndp_server, sac_server, geospatial_server, terrain_server, genomics_server, etc. Case-specific tool servers bundled into core gateway",
+          "case": "earthscope,genomics,materials,imaging,mass_spec",
+          "classification": "case-specific",
+          "should_go": "clio-kit MCP domain packs (separate from core gateway)",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/gateway.py:134-167",
+          "identifier": "_infer_tool_server function",
+          "what": "Hardcoded prefix-to-server mapping for domain-specific tool servers. Every case expert creates a new if/elif branch here",
+          "case": "ndp,sac,geospatial,hpc,genomics,imaging,mass_spec,materials,terrain",
+          "classification": "case-specific",
+          "should_go": "Dynamic registry lookup; remove hardcoded prefix map",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/catalog.py:41-261",
+          "identifier": "TOOL_CATALOG dict",
+          "what": "Static TOOL_CATALOG with visible_to and owner assignments encoding expert routing logic. Expert IDs (ndp_catalog, sac_format) are hardcoded as owners",
+          "case": "earthscope,genomics,materials",
+          "classification": "case-specific",
+          "should_go": "Dynamic tool discovery from mounted MCP servers; move expert ownership to agent blueprint metadata",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/catalog.py:187",
+          "identifier": "geospatial_points_in_polygons visible_to downwind_impact",
+          "what": "Tool visibility hardcoded to case-specific scope 'downwind_impact' - encodes smoke/fire impact analysis workflow",
+          "case": "downwind_impact",
+          "classification": "case-specific",
+          "should_go": "Delete hardcoded scope; move to case-specific agent blueprint",
+          "difficulty": "low"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/catalog.py:193",
+          "identifier": "geospatial_bounding_box visible_to geography",
+          "what": "Tool visibility hardcoded to case-specific scope 'geography' - couples tool routing to domain semantics",
+          "case": "geography",
+          "classification": "case-specific",
+          "should_go": "Delete hardcoded scope; refactor to generic routing",
+          "difficulty": "low"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/ndp_server.py:438-483",
+          "identifier": "_earthscope_station_resource_code function",
+          "what": "Hardcoded EarthScope station code extraction from search args. Recognizes GNSS/GPS/EarthScope/CSV patterns and extracts 3-5 letter station codes",
+          "case": "earthscope",
+          "classification": "case-specific",
+          "should_go": "clio-kit MCP earthscope-pack / ndp pack",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/ndp_server.py:486-510",
+          "identifier": "_dataset_is_earthscope_station_resource function",
+          "what": "Hardcoded regex pattern for EarthScope GNSS station resource detection: [A-Z0-9]{3,5}[._-][A-Z0-9]{2}[._-]LY_?[._-][A-Z0-9]{2}",
+          "case": "earthscope",
+          "classification": "case-specific",
+          "should_go": "clio-kit MCP earthscope-pack",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/ndp_server.py:513-576",
+          "identifier": "_dataset_matches_earthscope_station_resource + _filter_earthscope_station_resource_results",
+          "what": "Domain-specific station filtering logic filtering EarthScope search results by station code pattern matching",
+          "case": "earthscope",
+          "classification": "case-specific",
+          "should_go": "clio-kit MCP earthscope-pack",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/ndp_server.py:579-621",
+          "identifier": "_earthscope_search_coverage + _annotate_search_coverage",
+          "what": "Hardcoded EarthScope domain logic: checks for earthscope/gnss/gps keywords, tracks station_resource_search and broad_catalog_searched flags specific to GNSS case",
+          "case": "earthscope",
+          "classification": "case-specific",
+          "should_go": "clio-kit MCP earthscope-pack",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/ndp_server.py:1204-1267",
+          "identifier": "_earthscope_station_rows + _station_resource_queries",
+          "what": "Hardcoded EarthScope station catalog loading and query generation for region-based station selection",
+          "case": "earthscope",
+          "classification": "case-specific",
+          "should_go": "clio-kit MCP earthscope-pack",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/ndp_server.py:2015-2111",
+          "identifier": "filter_earthscope_station_catalog tool implementation",
+          "what": "Complete tool for EarthScope station filtering by region/bounds. Encodes domain semantics of station-code validation and filtering",
+          "case": "earthscope",
+          "classification": "case-specific",
+          "should_go": "clio-kit MCP earthscope-pack",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/sac_server.py:30-50",
+          "identifier": "Hardcoded EarthScope URLs and US location hints",
+          "what": "Hardcoded URLs for EarthScope timeseries/station queries, USGS earthquake API, Census geocoder. US-specific location hints dictionary",
+          "case": "earthscope,seismic",
+          "classification": "case-specific",
+          "should_go": "clio-kit MCP earthscope-pack and sac-seismic-pack",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:3714",
+          "identifier": "_EARTHSCOPE_METADATA_RESOURCE_NAMES constant",
+          "what": "Hardcoded set with single EarthScope-specific filename: earthscope_converted_data.csv. Encodes case-specific resource naming convention",
+          "case": "earthscope",
+          "classification": "case-specific",
+          "should_go": "clio-kit MCP earthscope-pack configuration",
+          "difficulty": "low"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:3724-3900",
+          "identifier": "_infer_ndp_workflow_state_from_tool_evidence function",
+          "what": "Hardcoded EarthScope-specific workflow state inference from tool output. Detects earthscope/ndp keywords, station CSV patterns, metadata resource names",
+          "case": "earthscope",
+          "classification": "case-specific",
+          "should_go": "Delete or move to case-specific expert blueprint",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:5032-5052",
+          "identifier": "_state_is_station_timeseries_acquisition function",
+          "what": "Hardcoded station timeseries detection via regex pattern r\"[a-z0-9]{3,5}\\.[a-z0-9]{2}\\.\" + EarthScope metadata resource name checking",
+          "case": "earthscope",
+          "classification": "case-specific",
+          "should_go": "Delete or move to case-specific blueprint state compiler",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:5055-5070",
+          "identifier": "_station_catalog_match_for_candidate function",
+          "what": "Hardcoded station catalog matching logic for EarthScope station/id field lookups",
+          "case": "earthscope",
+          "classification": "case-specific",
+          "should_go": "Delete or move to case-specific blueprint",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:5073-5109",
+          "identifier": "_requires_station_geographic_provenance function",
+          "what": "Case-specific validation that regional EarthScope work must prove station geography. Checks for geospatial/geography/region keys, station_catalog, station timeseries acquisition patterns",
+          "case": "earthscope",
+          "classification": "case-specific",
+          "should_go": "Delete or move to case-specific blueprint validator",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:4769-4824",
+          "identifier": "_sanitize_geospatial_workflow_state + _sanitize_event_context_workflow_state functions",
+          "what": "Case-specific workflow state sanitization. Removes named-source geospatial provenance when no tool evidence; checks for model-derived geography",
+          "case": "earthscope,downwind_impact",
+          "classification": "case-specific",
+          "should_go": "Delete or move to case-specific blueprint",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:14164-14171",
+          "identifier": "_EXPERT_SPECIALIZATION dict",
+          "what": "Hardcoded expert-to-UI-specialization mapping with case-specific experts: ndp_catalog (knowledge_retrieval), sac_format (data_analysis)",
+          "case": "earthscope,seismic",
+          "classification": "case-specific",
+          "should_go": "Move to agent blueprint metadata; remove from core",
+          "difficulty": "low"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:14180-14223",
+          "identifier": "_EXPERT_TOOLS dict",
+          "what": "Hardcoded expert-id-to-tool-list mapping with case-specific experts. Encodes per-expert tool curation (ndp_catalog with 7 tools, sac_format with 5 tools)",
+          "case": "earthscope,seismic",
+          "classification": "case-specific",
+          "should_go": "Dynamic tool discovery from agent blueprints + MCP servers; delete hardcoded mapping",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:14257-14278",
+          "identifier": "_EXPERT_CAPABILITIES[ndp_catalog]",
+          "what": "Hardcoded expert capability definition for 'NDP Catalog Expert' with EarthScope-specific description and keywords. Encodes tier-3-catalog-expert route type",
+          "case": "earthscope",
+          "classification": "case-specific",
+          "should_go": "Move to agent blueprint AGENT.md; delete from core",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:14306-14318",
+          "identifier": "_EXPERT_CAPABILITIES[sac_format]",
+          "what": "Hardcoded expert capability definition for 'SAC Format Expert' with seismic-specific description and keywords. Encodes tier-3-format-expert route type",
+          "case": "seismic",
+          "classification": "case-specific",
+          "should_go": "Move to agent blueprint AGENT.md; delete from core",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/ndp_server.py:1-50",
+          "identifier": "ndp_server module constants and imports",
+          "what": "In-process FastMCP server for National Data Platform with clio-kit transport setup. Entire server couples CLIO core to domain-specific NDP semantics",
+          "case": "earthscope",
+          "classification": "case-specific",
+          "should_go": "clio-kit MCP pack (remove from tools/servers/)",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/sac_server.py:1-100",
+          "identifier": "sac_server module",
+          "what": "In-process FastMCP server for SAC seismic waveforms. Couples CLIO core to domain-specific seismic analysis (station detection, waveform fetch, trace statistics)",
+          "case": "seismic",
+          "classification": "case-specific",
+          "should_go": "clio-kit MCP pack (remove from tools/servers/)",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/geospatial_server.py",
+          "identifier": "geospatial_server module",
+          "what": "In-process FastMCP server for geospatial operations. Used by both generic and case-specific workflows. Borderline but deeply integrated with EarthScope station discovery",
+          "case": "earthscope,generic",
+          "classification": "borderline",
+          "should_go": "Keep in core as generic utility; but review integration with case-specific workflows",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/terrain_server.py",
+          "identifier": "terrain_server module",
+          "what": "In-process FastMCP server for terrain/DEM analysis. Borderline generic utility but not used in current baseline workflows",
+          "case": "generic",
+          "classification": "borderline",
+          "should_go": "Keep in core as generic utility; review frequency of use",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/genomics_server.py",
+          "identifier": "genomics_server module",
+          "what": "In-process FastMCP server for genomics operations (FASTA, VCF, cohort QC). Purely case-specific domain expert server",
+          "case": "genomics",
+          "classification": "case-specific",
+          "should_go": "clio-kit MCP genomics-pack (remove from tools/servers/)",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/imaging_server.py",
+          "identifier": "imaging_server module",
+          "what": "In-process FastMCP server for microscopy/PNG imaging. Purely case-specific domain expert server",
+          "case": "imaging",
+          "classification": "case-specific",
+          "should_go": "clio-kit MCP imaging-pack (remove from tools/servers/)",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/mass_spec_server.py",
+          "identifier": "mass_spec_server module",
+          "what": "In-process FastMCP server for mass spectrometry (mzML, proteomics, LFQ). Purely case-specific domain expert server",
+          "case": "mass_spec",
+          "classification": "case-specific",
+          "should_go": "clio-kit MCP mass-spec-pack (remove from tools/servers/)",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/materials_server.py",
+          "identifier": "materials_server module",
+          "what": "In-process FastMCP server for materials science (CIF crystallography). Purely case-specific domain expert server",
+          "case": "materials",
+          "classification": "case-specific",
+          "should_go": "clio-kit MCP materials-pack (remove from tools/servers/)",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/hpc_server.py",
+          "identifier": "hpc_server module",
+          "what": "In-process FastMCP server for HPC tools (Darshan tracing/analysis). Case-specific for supercomputing workflows",
+          "case": "hpc",
+          "classification": "case-specific",
+          "should_go": "clio-kit MCP hpc-pack (remove from tools/servers/)",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:14254",
+          "identifier": "routes_to ndp_catalog hardcoding in _EXPERT_CAPABILITIES[data]",
+          "what": "Hardcoded routing from data expert to ndp_catalog expert. Encodes domain orchestration in core framework",
+          "case": "earthscope",
+          "classification": "case-specific",
+          "should_go": "Move to blueprint delegation logic; delete from core",
+          "difficulty": "medium"
+        }
+      ]
+    },
+    {
+      "dimension": "DSPy anti-patterns / decisions-in-code (heuristics, regex state inference, string-match routing, hardcoded domain logic)",
+      "findings": [
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:3714",
+          "identifier": "_EARTHSCOPE_METADATA_RESOURCE_NAMES",
+          "what": "Hardcoded set of EarthScope-specific filenames {'earthscope_converted_data.csv'} used throughout app.py as decision anchor",
+          "case": "earthscope_gnss",
+          "classification": "case-specific",
+          "should_go": "clio-kit EarthScope MCP pack or domain-specific marketplace",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:3724-3840",
+          "identifier": "_infer_ndp_workflow_state_from_tool_evidence",
+          "what": "56-line function with 7 regex patterns (CSV filenames, staged status, blocker patterns) to infer GNSS/EarthScope acquisition state. Regex backfill for what should be typed tool outputs",
+          "case": "earthscope_gnss",
+          "classification": "case-specific",
+          "should_go": "delete or move to EarthScope marketplace pack; replace with typed OutputField in tool signatures",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:3956-3990",
+          "identifier": "_infer_ndp_search_state_from_tool_evidence",
+          "what": "Domain-specific state inference from ndp_search_datasets output; tests for 'search_datasets' and 'search_coverage' string markers",
+          "case": "earthscope_catalog",
+          "classification": "case-specific",
+          "should_go": "clio-kit NDP catalog MCP; replace with tool-returned typed state",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:4004-4019",
+          "identifier": "_station_ids_from_workflow_state",
+          "what": "Extraction of hardcoded 'station' field from GNSS workflow state; assumes specific catalog schema",
+          "case": "earthscope_gnss",
+          "classification": "case-specific",
+          "should_go": "clio-kit geospatial/GNSS MCP; use typed data structures",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:4068",
+          "identifier": "domain == 'earthscope_gnss' string match",
+          "what": "Hard-coded domain check: if domain == 'earthscope_gnss' and isinstance(search_terms, list) \u2014 decision gate for GNSS-specific logic",
+          "case": "earthscope_gnss",
+          "classification": "case-specific",
+          "should_go": "replace with capability-based routing; move logic to EarthScope pack",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:4239-4350",
+          "identifier": "_station_catalog_state_from_mapping + _infer_ndp_station_catalog_state_from_tool_evidence",
+          "what": "Two chained domain functions (175 lines total) to parse station catalog from tool output via regex. Hardcoded station/latitude/longitude/distance_km field names and 20-item limit",
+          "case": "earthscope_gnss",
+          "classification": "case-specific",
+          "should_go": "move to EarthScope MCP server; return typed StationCatalog from tool, not prose",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:4462-4600",
+          "identifier": "_profile_state_from_mapping + _infer_ndp_profile_state_from_tool_evidence + _infer_ndp_plot_state_from_tool_evidence",
+          "what": "Domain-specific CSV profile/plot state inference; tests for 'ndp_profile_csv_resource', 'ndp_plot_csv_timeseries' tool names as decision anchors",
+          "case": "earthscope_csv_analysis",
+          "classification": "case-specific",
+          "should_go": "move tool-specific state to tool servers (ndp_server); return typed ProfileResult/PlotResult, not parsed prose",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:2668-2710",
+          "identifier": "_SCAN_LIMITED_EVIDENCE_TOKENS + _SCAN_LIMITED_UNSUPPORTED_RECORD_PATTERNS",
+          "what": "Hardcoded tuples for GNSS 'scan-limited' detection: ('earthscope', 'gnss', 'rows_scanned', 'scan_limited', etc.) and 7 regex patterns for Hz/sampling/cadence inference",
+          "case": "earthscope_gnss_scan_limited",
+          "classification": "case-specific",
+          "should_go": "move to EarthScope capability pack; GNSS tool should return 'scan_limited' flag in typed output, not prose inference",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:4758-4790",
+          "identifier": "_UNVERIFIED_GEOSPATIAL_PROVENANCE_TOKENS + geospatial provenance regex patterns",
+          "what": "Domain-specific text patterns for detecting unverified geospatial data; tests prose for domain-specific qualifiers",
+          "case": "geospatial_discovery",
+          "classification": "case-specific",
+          "should_go": "move confidence/provenance flags into typed tool outputs; let geospatial MCP return Quality/Provenance enums",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:3611-3626",
+          "identifier": "_CONTRADICTORY_MISSING_INPUT_TERMS",
+          "what": "Hardcoded tuple of 11 missing-input phrases ('no cif file', 'no vcf file', 'no mzml file') \u2014 domain-specific file format detection in prose",
+          "case": "bioinformatics_file_formats",
+          "classification": "case-specific",
+          "should_go": "move to specialized domain packs; tool errors should return structured error codes, not depend on prose matching",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:5527-5612",
+          "identifier": "_infer_workflow_state_from_tool_call_row",
+          "what": "Decision gate: if name == 'ndp_filter_earthscope_station_catalog' or if name in {'ndp_profile_csv_resource', 'ndp_plot_csv_timeseries'} \u2014 hardcoded tool name routing + inference",
+          "case": "earthscope_gnss",
+          "classification": "case-specific",
+          "should_go": "tools should return machine-readable state directly; replace string-match routing with typed OutputField in tool signatures",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:5268-5291",
+          "identifier": "_infer_workflow_state_from_tool_evidence",
+          "what": "Dispatcher calling 5 domain-specific inference functions in sequence (_infer_ndp_search_state, _infer_ndp_workflow_state, _infer_ndp_station_catalog_state, _infer_ndp_profile_state, _infer_ndp_plot_state)",
+          "case": "earthscope_multi_domain",
+          "classification": "case-specific",
+          "should_go": "delete function; replace with typed tool outputs; agent should consume structured results, not prose backfill",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:6378-6385",
+          "identifier": "_BLUEPRINT_WORKFLOW_STATE_AUTHORITIES",
+          "what": "Hardcoded mapping of agent IDs to state 'authorities' \u2014 domain decision logic embedded in dictionary",
+          "case": "agent_choreography",
+          "classification": "case-specific",
+          "should_go": "move to blueprint definitions; use metadata/permissions system, not hardcoded authority mappings",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:14180-14223",
+          "identifier": "_EXPERT_TOOLS hardcoded mapping",
+          "what": "Hardcoded dict of expert IDs to tool lists; domain choreography baked into app.py (sac_format owns sac_fetch_earthscope_waveform, ndp_catalog owns ndp_filter_earthscope_station_catalog, etc.)",
+          "case": "expert_composition",
+          "classification": "case-specific",
+          "should_go": "move to expert pack manifest definitions (clio-pack.yaml); load dynamically from registry",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:14225-14330",
+          "identifier": "_EXPERT_CAPABILITIES hardcoded definitions",
+          "what": "Hardcoded expert capability descriptions including EarthScope/GNSS/SAC keywords and tool/format lists embedded in Python code",
+          "case": "expert_metadata",
+          "classification": "case-specific",
+          "should_go": "move to clio-pack.yaml manifest files; load from ExpertPackDefinition system",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/agent.py:953-959",
+          "identifier": "_question_looks_ndp_waveform_blocker",
+          "what": "Regex heuristic: if 'plot'/'artifact'/'visual' in query AND 'seismic'/'waveform'/'sac'/'miniseed' in query \u2014 hardcoded term list for NDP blocker detection",
+          "case": "seismic_analysis",
+          "classification": "case-specific",
+          "should_go": "move to seismic/SAC MCP; use tool-returned success/failure codes, not query keyword inference",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/agent.py:1030-1040",
+          "identifier": "available_recovery_tools hardcoded list",
+          "what": "Hardcoded SAC recovery tool list in recovery error response: ['sac_fetch_earthscope_waveform', 'sac_compute_trace_statistics', 'sac_plot_traces']",
+          "case": "seismic_recovery",
+          "classification": "case-specific",
+          "should_go": "move to seismic expert blueprint; discovery via registry",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/catalog.py:110-150",
+          "identifier": "TOOL_CATALOG EarthScope/SAC entries",
+          "what": "Hardcoded tool catalog entries for domain-specific tools: ndp_filter_earthscope_station_catalog, sac_fetch_earthscope_waveform, sac_discover_earthscope_region_waveform, sac_compute_trace_statistics, sac_plot_traces",
+          "case": "earthscope_seismic_tools",
+          "classification": "case-specific",
+          "should_go": "move to marketplace pack manifests; load tools from MCP servers dynamically, not hardcoded catalog",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/ndp_server.py:2015-2120",
+          "identifier": "filter_earthscope_station_catalog function",
+          "what": "Domain-specific tool: 80+ lines hardcoded for EarthScope GNSS station filtering by radius, parsing station metadata CSV with hardcoded column assumptions",
+          "case": "earthscope_gnss",
+          "classification": "case-specific",
+          "should_go": "move to EarthScope MCP server in clio-kit; keep in marketplace pack",
+          "difficulty": "low"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:3717",
+          "identifier": "_first_regex_group helper + 6 regex calls in _infer_ndp_workflow_state_from_tool_evidence",
+          "what": "6 regex patterns to extract CSV filenames, paths, URLs, dataset IDs from prose \u2014 DSPy anti-pattern: regex state backfill instead of typed outputs",
+          "case": "earthscope_csv_extraction",
+          "classification": "case-specific",
+          "should_go": "delete; tools should return JSON with path/url/resource_name fields, not prose to parse",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:4021-4045",
+          "identifier": "_search_call_station_id function",
+          "what": "Inference logic: extracts station ID from search result using hardcoded key list ('resource_name', 'station', 'station_id') \u2014 assumes specific schema",
+          "case": "earthscope_gnss",
+          "classification": "case-specific",
+          "should_go": "move to EarthScope MCP; tools return station_id field directly in structured response",
+          "difficulty": "medium"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:5615-5695",
+          "identifier": "_infer_ndp_workflow_state_from_trajectory",
+          "what": "80-line domain-specific state inference from ReAct trajectory; scores GNSS acquisition states and selects best via comparison logic",
+          "case": "earthscope_gnss",
+          "classification": "case-specific",
+          "should_go": "move to agent blueprint or marketplace pack; tools should return terminal state directly",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/execution.py:225",
+          "identifier": "ndp_filter_earthscope_station_catalog timeout constant",
+          "what": "Hardcoded 75.0 second timeout for EarthScope station filtering tool",
+          "case": "earthscope_gnss",
+          "classification": "case-specific",
+          "should_go": "move to EarthScope MCP server config; not core framework",
+          "difficulty": "low"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/sac_server.py:30-31",
+          "identifier": "_EARTHSCOPE_TIMESERIES_URL + _EARTHSCOPE_STATION_URL constants",
+          "what": "Hardcoded EarthScope service URLs embedded in SAC server",
+          "case": "earthscope_seismic",
+          "classification": "case-specific",
+          "should_go": "move to config file or EarthScope MCP; parameterize service endpoints",
+          "difficulty": "low"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:1033",
+          "identifier": "if name == 'ndp_filter_earthscope_station_catalog' routing",
+          "what": "String-match tool name routing decision in recovery logic \u2014 violates 'decisions in agent, code only runs tools' principle",
+          "case": "earthscope_gnss",
+          "classification": "case-specific",
+          "should_go": "replace with capability-based routing; tool should declare its return schema",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:5533",
+          "identifier": "if name == 'ndp_filter_earthscope_station_catalog' state inference routing",
+          "what": "Another string-match routing gate for station catalog state inference \u2014 hardcoded tool name decision",
+          "case": "earthscope_gnss",
+          "classification": "case-specific",
+          "should_go": "tools declare schema; agent consumes typed output",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:7256",
+          "identifier": "broad_station_resource_search_after_station_catalog string constant",
+          "what": "Hardcoded state reason string for GNSS station search workflow choreography",
+          "case": "earthscope_gnss",
+          "classification": "case-specific",
+          "should_go": "move to EarthScope pack; use typed WorkflowReason enum",
+          "difficulty": "low"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/expert_packs.py:1-30",
+          "identifier": "Expert pack loader with hardcoded 'ndp_catalog', 'earthscope', 'gnss' keywords in docstring",
+          "what": "Example frontmatter shows expert pack metadata with domain-specific hardcoding (keywords, parent_id relationships)",
+          "case": "expert_pack_metadata",
+          "classification": "case-specific",
+          "should_go": "framework is OK; but examples should be generic; domain packs go to marketplace",
+          "difficulty": "low"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:5900-6000",
+          "identifier": "_append_inferred_workflow_state_from_trajectory + _append_accumulated_workflow_state_context",
+          "what": "Two functions that inject inferred domain state into prompts \u2014 state inference results become context input to agent",
+          "case": "earthscope_multi",
+          "classification": "case-specific",
+          "should_go": "delete inferred state injection; tools return typed output; agent processes structured data",
+          "difficulty": "high"
+        },
+        {
+          "location": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/geospatial_server.py:140-310",
+          "identifier": "Geospatial server docstring and region-based logic",
+          "what": "Domain-specific geospatial analysis server with hardcoded references to fire/smoke/hazard/station workflows",
+          "case": "geospatial_wildfire_monitoring",
+          "classification": "case-specific",
+          "should_go": "move geospatial-specific tools to marketplace pack; keep generic region/geometry tools in core",
+          "difficulty": "medium"
+        }
+      ],
+      "case_specific_count": 32,
+      "summary": "CRITICAL CONTAMINATION INVENTORY: The clio-agent core framework is severely contaminated with case-specific (EarthScope GNSS, seismic SAC, geospatial wildfire) domain logic. 32 distinct case-specific findings across 12 key files. PRIMARY VIOLATIONS: (1) Regex state inference throughout app.py (56-175 lines per function) replacing what should be typed tool outputs \u2014 _infer_ndp_workflow_state_from_tool_evidence, _infer_ndp_station_catalog_state_from_tool_evidence, _infer_ndp_search_state_from_tool_evidence, _infer_ndp_profile_state_from_tool_evidence, _infer_ndp_plot_state_from_tool_evidence. (2) Hardcoded domain constants: _EARTHSCOPE_METADATA_RESOURCE_NAMES, _SCAN_LIMITED_EVIDENCE_TOKENS, _UNVERIFIED_GEOSPATIAL_TOKENS, _CONTRADICTORY_MISSING_INPUT_TERMS used as decision gates. (3) String-match routing: if domain == 'earthscope_gnss', if name == 'ndp_filter_earthscope_station_catalog', hardcoded tool name checks throughout app.py:5527, app.py:5533. (4) Hardcoded expert/tool mappings: _EXPERT_TOOLS, _EXPERT_CAPABILITIES (145+ lines) baking domain choreography into Python code instead of pack manifests. (5) Domain-specific tool implementations embedded in core servers (ndp_server.py filter_earthscope_station_catalog, sac_server.py with hardcoded EarthScope URLs). DECISION PRINCIPLE VIOLATION: Throughout app.py, decisions about state, workflow, and routing are embedded in Python conditionals and regex patterns instead of living in the agent/planner. Code runs inference and state-picking (via scoring logic, regex backfill, string matching) instead of running tools and recording data. NON-NEGOTIABLE CLEANUP: All 32 findings must be eliminated before extraction. Decisions must move to agent prompts/signatures. Tools must return typed OutputField results. Domain semantics (EarthScope, GNSS, SAC, geospatial, seismic) belong in clio-kit MCPs and marketplace packs, NOT in /src/clio_agent/ core."
+    }
+  ],
+  "critic": {
+    "total_case_specific": 58,
+    "core_decasing_verdict": "CLIO Agent core is SEVERELY contaminated with case-specific domain semantics: 58 distinct extraction items must be removed across 13 files. CRITICAL VIOLATION: App.py contains 27+ case-specific functions (prefixed with _infer_ndp_*, _sanitize_geospatial_*, _station_*), 145+ lines of hardcoded expert blueprints (_EXPERT_SPECIALIZATION, _EXPERT_TOOLS, _EXPERT_CAPABILITIES), and 10+ string-match routing decisions hardcoded throughout workflow state inference and planner logic. The 10 in-process domain servers (ndp, sac, genomics, imaging, mass_spec, materials, hpc, and others) are directly coupled to core via gateway mount() calls and hardcoded prefix routing in _infer_tool_server(). The tool catalog (catalog.py) embeds domain-expert ownership (ndp_catalog, sac_format) and case-specific visibility scopes (downwind_impact, geography). Agent.py contains 3 domain-specific blockers and recovery functions hardcoded for SAC/NDP waveform workflows, plus _mass_spec_qc_sentence and _ndp_dataset_names extraction functions. All detected contamination MUST be extracted to function: core agent must become a pure universal framework for orchestration + tool call/result normalization. Decisions about routing, state, workflow progression must move to agent/planner signatures or case-specific expert blueprints in clio-kit MCPs and marketplace packs.",
+    "authoritative_checklist": [
+      {
+        "item": "App.py: _EARTHSCOPE_METADATA_RESOURCE_NAMES constant (hardcoded CSV filename 'earthscope_converted_data.csv')",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:3714",
+        "destination": "clio-kit-mcp",
+        "priority": "P1",
+        "difficulty": "low"
+      },
+      {
+        "item": "App.py: _infer_ndp_workflow_state_from_tool_evidence function (240+ lines, hardcoded EarthScope metadata detection, GNSS column assumptions, state progression model)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:3724-3860",
+        "destination": "delete",
+        "priority": "P1",
+        "difficulty": "high"
+      },
+      {
+        "item": "App.py: _infer_ndp_search_state_from_tool_evidence function (detects ndp_search_datasets output, parses coverage state)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:3956-3990",
+        "destination": "delete",
+        "priority": "P1",
+        "difficulty": "high"
+      },
+      {
+        "item": "App.py: _infer_ndp_station_catalog_state_from_tool_evidence function (90+ lines, station catalog CSV parsing, distance filtering, hardcoded field names)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:4347-4440",
+        "destination": "delete",
+        "priority": "P1",
+        "difficulty": "high"
+      },
+      {
+        "item": "App.py: _infer_ndp_profile_state_from_tool_evidence + _infer_ndp_plot_state_from_tool_evidence functions (artifact state inference for GNSS timeseries)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:4504-4600",
+        "destination": "delete",
+        "priority": "P1",
+        "difficulty": "high"
+      },
+      {
+        "item": "App.py: String-match routing if domain == 'earthscope_gnss' for station resource search validation",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:4068",
+        "destination": "generic-refactor",
+        "priority": "P1",
+        "difficulty": "high"
+      },
+      {
+        "item": "App.py: String-match routing if name == 'ndp_filter_earthscope_station_catalog' in workflow state inference",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:5533",
+        "destination": "generic-refactor",
+        "priority": "P1",
+        "difficulty": "high"
+      },
+      {
+        "item": "App.py: _infer_ndp_workflow_state_from_trajectory function (180+ lines, scores GNSS states, extracts station candidates)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:5615-5695",
+        "destination": "delete",
+        "priority": "P1",
+        "difficulty": "high"
+      },
+      {
+        "item": "App.py: NDP-specific workflow recovery in _plan_next_action_for_request (large conditional blocks checking ndp_stage_resource, ndp_search_datasets)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:7195-7350",
+        "destination": "delete",
+        "priority": "P1",
+        "difficulty": "high"
+      },
+      {
+        "item": "App.py: NDP state tracking in _update_workflow_state (100+ lines, station ID extraction, catalog updates)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:12551-12650",
+        "destination": "delete",
+        "priority": "P1",
+        "difficulty": "high"
+      },
+      {
+        "item": "App.py: _EXPERT_SPECIALIZATION dictionary (hardcoded expert -> UI specialization mapping including ndp_catalog, sac_format)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:14164-14171",
+        "destination": "delete",
+        "priority": "P1",
+        "difficulty": "medium"
+      },
+      {
+        "item": "App.py: _EXPERT_TOOLS dictionary (hardcoded expert-to-tool-list mapping with case-specific tool curation)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:14180-14223",
+        "destination": "delete",
+        "priority": "P1",
+        "difficulty": "high"
+      },
+      {
+        "item": "App.py: _EXPERT_CAPABILITIES dictionary (145+ lines, hardcoded expert blueprints for ndp_catalog, sac_format with domain keywords and routing logic)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:14225-14330",
+        "destination": "delete",
+        "priority": "P1",
+        "difficulty": "high"
+      },
+      {
+        "item": "App.py: _SCAN_LIMITED_EVIDENCE_TOKENS + related regex patterns for GNSS data limitation detection",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:2668-2710",
+        "destination": "pack",
+        "priority": "P2",
+        "difficulty": "medium"
+      },
+      {
+        "item": "App.py: _UNVERIFIED_GEOSPATIAL_PROVENANCE_TOKENS + geospatial sanitization functions",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:4758-4824",
+        "destination": "pack",
+        "priority": "P2",
+        "difficulty": "high"
+      },
+      {
+        "item": "App.py: _station_id_from_station_csv_state, _state_is_station_timeseries_acquisition, _station_catalog_match_for_candidate functions",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:5007-5070",
+        "destination": "delete",
+        "priority": "P1",
+        "difficulty": "medium"
+      },
+      {
+        "item": "App.py: _requires_station_geographic_provenance validation function (EarthScope-specific geography requirements)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:5073-5109",
+        "destination": "delete",
+        "priority": "P2",
+        "difficulty": "high"
+      },
+      {
+        "item": "App.py: _ndp_workflow_state_score function (hardcoded state scoring for NDP acquisition progression)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:5306-5317",
+        "destination": "delete",
+        "priority": "P2",
+        "difficulty": "medium"
+      },
+      {
+        "item": "App.py: _positive_ndp_workflow_state_user_summary + _ndp_answer_brief functions (EarthScope-specific answer formatting)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:3400-3530",
+        "destination": "delete",
+        "priority": "P2",
+        "difficulty": "medium"
+      },
+      {
+        "item": "App.py: _validate_search_staged_acquisition_readiness function (200+ lines, NDP domain-specific validation logic)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:4005-4190",
+        "destination": "delete",
+        "priority": "P1",
+        "difficulty": "high"
+      },
+      {
+        "item": "App.py: _local_sac_paths_from_text + _append_sac_path_instruction (SAC-specific path recovery and prompt injection)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:6551-6577",
+        "destination": "delete",
+        "priority": "P2",
+        "difficulty": "medium"
+      },
+      {
+        "item": "App.py: _BLUEPRINT_WORKFLOW_STATE_AUTHORITIES dictionary (hardcoded geospatial + seismic_event_catalog authority mappings)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/gact/app.py:6378-6381",
+        "destination": "delete",
+        "priority": "P2",
+        "difficulty": "low"
+      },
+      {
+        "item": "NDPServer module: Complete in-process FastMCP server implementation (84KB, domain-specific NDP catalog operations)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/ndp_server.py:1-end",
+        "destination": "clio-kit-mcp",
+        "priority": "P1",
+        "difficulty": "high"
+      },
+      {
+        "item": "NDPServer: _earthscope_station_resource_code function (regex pattern for GNSS station code extraction)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/ndp_server.py:438-483",
+        "destination": "clio-kit-mcp",
+        "priority": "P1",
+        "difficulty": "medium"
+      },
+      {
+        "item": "NDPServer: _dataset_is_earthscope_station_resource + _filter_earthscope_station_resource_results functions",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/ndp_server.py:486-576",
+        "destination": "clio-kit-mcp",
+        "priority": "P1",
+        "difficulty": "high"
+      },
+      {
+        "item": "NDPServer: _earthscope_search_coverage function (domain-specific search validation for GNSS/CSV combinations)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/ndp_server.py:579-621",
+        "destination": "clio-kit-mcp",
+        "priority": "P2",
+        "difficulty": "medium"
+      },
+      {
+        "item": "NDPServer: _earthscope_station_rows + station catalog loading (domain-specific CSV parser with hardcoded columns)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/ndp_server.py:1204-1267",
+        "destination": "clio-kit-mcp",
+        "priority": "P1",
+        "difficulty": "high"
+      },
+      {
+        "item": "NDPServer: filter_earthscope_station_catalog tool (complete domain tool hard-wired to EarthScope GNSS)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/ndp_server.py:2015-2111",
+        "destination": "clio-kit-mcp",
+        "priority": "P1",
+        "difficulty": "high"
+      },
+      {
+        "item": "SACServer module: Complete in-process FastMCP server (37KB, seismic waveform discovery and fetching)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/sac_server.py:1-end",
+        "destination": "clio-kit-mcp",
+        "priority": "P1",
+        "difficulty": "high"
+      },
+      {
+        "item": "SACServer: Hardcoded EarthScope service URLs + user-agent string (_EARTHSCOPE_TIMESERIES_URL, _EARTHSCOPE_STATION_URL)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/sac_server.py:30-50",
+        "destination": "clio-kit-mcp",
+        "priority": "P1",
+        "difficulty": "low"
+      },
+      {
+        "item": "SACServer: discover_earthscope_vertical_channels docstring (EarthScope-specific waveform discovery purpose)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/sac_server.py:357",
+        "destination": "generic-refactor",
+        "priority": "P3",
+        "difficulty": "low"
+      },
+      {
+        "item": "SACServer: fetch_earthscope_waveform tool (domain-specific EarthScope service bindings)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/sac_server.py:578-665",
+        "destination": "clio-kit-mcp",
+        "priority": "P1",
+        "difficulty": "high"
+      },
+      {
+        "item": "SACServer: discover_earthscope_region_waveform tool (domain-specific orchestration with hardcoded 150km radius)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/sac_server.py:669-835",
+        "destination": "clio-kit-mcp",
+        "priority": "P1",
+        "difficulty": "high"
+      },
+      {
+        "item": "Agent.py: _mass_spec_qc_sentence function (domain-specific mzML QC metric extraction)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/agent.py:111-122",
+        "destination": "pack",
+        "priority": "P2",
+        "difficulty": "low"
+      },
+      {
+        "item": "Agent.py: _observations_have_recoverable_ndp_blocker function (hardcoded SAC waveform recovery detection)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/agent.py:993-1040",
+        "destination": "delete",
+        "priority": "P1",
+        "difficulty": "high"
+      },
+      {
+        "item": "Agent.py: _recovery_tool_path_scope_error + _recovery_expert_path_scope_error (SAC-specific error handling for NDP blockers)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/agent.py:1049-1119",
+        "destination": "delete",
+        "priority": "P1",
+        "difficulty": "high"
+      },
+      {
+        "item": "Agent.py: _ndp_dataset_names function (hardcoded NDP result shape parsing for dataset extraction)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/agent.py:2058-2075",
+        "destination": "delete",
+        "priority": "P2",
+        "difficulty": "low"
+      },
+      {
+        "item": "Agent.py: SAC recovery tool recommendation in AgentActionSignature (hardcoded sac_fetch_earthscope_waveform as recovery tool)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/agent.py:1036",
+        "destination": "generic-refactor",
+        "priority": "P1",
+        "difficulty": "medium"
+      },
+      {
+        "item": "Catalog.py: ndp_filter_earthscope_station_catalog tool entry (domain-specific EarthScope tag registration)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/tools/catalog.py:110-115",
+        "destination": "keep",
+        "priority": "P3",
+        "difficulty": "low"
+      },
+      {
+        "item": "Catalog.py: sac_fetch_earthscope_waveform + sac_discover_earthscope_region_waveform tool entries (domain-specific tags)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/tools/catalog.py:128-139",
+        "destination": "keep",
+        "priority": "P3",
+        "difficulty": "low"
+      },
+      {
+        "item": "Catalog.py: geospatial_points_in_polygons visible_to downwind_impact scope (wildfire-specific tool visibility)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/tools/catalog.py:187",
+        "destination": "generic-refactor",
+        "priority": "P2",
+        "difficulty": "low"
+      },
+      {
+        "item": "Catalog.py: geospatial_bounding_box visible_to geography scope (domain-specific tool scope coupling)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/tools/catalog.py:193",
+        "destination": "generic-refactor",
+        "priority": "P2",
+        "difficulty": "low"
+      },
+      {
+        "item": "Execution.py: DEFAULT_TOOL_TIMEOUTS for ndp_filter_earthscope_station_catalog (hardcoded 75s timeout)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/tools/execution.py:225-227",
+        "destination": "clio-kit-mcp",
+        "priority": "P3",
+        "difficulty": "low"
+      },
+      {
+        "item": "Gateway.py: _infer_tool_server function (14+ hardcoded if/elif branches for domain server prefix routing)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/tools/gateway.py:134-167",
+        "destination": "generic-refactor",
+        "priority": "P1",
+        "difficulty": "high"
+      },
+      {
+        "item": "Gateway.py: _mount_with_namespace gateway mounts (hardcoded in-process domain servers: ndp, sac, geospatial, etc.)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/tools/gateway.py:54-71",
+        "destination": "clio-kit-mcp",
+        "priority": "P1",
+        "difficulty": "high"
+      },
+      {
+        "item": "MainAgentSig.py: SAC recovery guidance hardcoded in planner signature",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/signatures/main_agent_sig.py:76",
+        "destination": "generic-refactor",
+        "priority": "P2",
+        "difficulty": "medium"
+      },
+      {
+        "item": "GeospatialServer: render_feature_map + points_in_polygons docstrings with fire/smoke domain examples",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/geospatial_server.py:143-279",
+        "destination": "pack",
+        "priority": "P3",
+        "difficulty": "low"
+      },
+      {
+        "item": "GeospatialServer: _resolve_layer_geojson keyword resolution with hardcoded fire/smoke naming conventions",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/geospatial_server.py:206-245",
+        "destination": "pack",
+        "priority": "P2",
+        "difficulty": "medium"
+      },
+      {
+        "item": "NDPServer: ndp_query_arcgis_features auto-naming comment about fire/smoke/air keyword conventions",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/ndp_server.py:1842-1843",
+        "destination": "pack",
+        "priority": "P2",
+        "difficulty": "high"
+      },
+      {
+        "item": "ExpertPackDiscovery: Example docstring listing 'earthscope' as case-specific expert pack example",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/gact/expert_packs.py:12",
+        "destination": "generic-refactor",
+        "priority": "P3",
+        "difficulty": "low"
+      },
+      {
+        "item": "GenomicsServer module: Complete in-process server (16KB, domain-specific genomics tools)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/genomics_server.py",
+        "destination": "clio-kit-mcp",
+        "priority": "P1",
+        "difficulty": "medium"
+      },
+      {
+        "item": "ImagingServer module: In-process server for PNG imaging (3.9KB, domain-specific microscopy)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/imaging_server.py",
+        "destination": "clio-kit-mcp",
+        "priority": "P1",
+        "difficulty": "medium"
+      },
+      {
+        "item": "MassSpecServer module: Complete in-process server (19KB, domain-specific mzML/proteomics tools)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/mass_spec_server.py",
+        "destination": "clio-kit-mcp",
+        "priority": "P1",
+        "difficulty": "medium"
+      },
+      {
+        "item": "MaterialsServer module: In-process server for crystallography (7.3KB, domain-specific CIF tools)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/materials_server.py",
+        "destination": "clio-kit-mcp",
+        "priority": "P1",
+        "difficulty": "medium"
+      },
+      {
+        "item": "HPCServer module: In-process server for HPC/Darshan (12KB, domain-specific performance analysis)",
+        "files": "/home/jcernuda/clio-agent/src/clio_agent/tools/servers/hpc_server.py",
+        "destination": "clio-kit-mcp",
+        "priority": "P1",
+        "difficulty": "medium"
+      }
+    ]
+  }
+}

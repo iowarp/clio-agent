@@ -4,11 +4,35 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
 DEFAULT_MAX_FILE_SIZE_BYTES = 1 << 30
+_SIZE_PATTERN = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([kmgt]?i?b?)?\s*$", re.IGNORECASE)
+_SIZE_MULTIPLIERS = {
+    "": 1,
+    "b": 1,
+    "k": 1000,
+    "kb": 1000,
+    "m": 1000**2,
+    "mb": 1000**2,
+    "g": 1000**3,
+    "gb": 1000**3,
+    "t": 1000**4,
+    "tb": 1000**4,
+    "ki": 1024,
+    "kib": 1024,
+    "mi": 1024**2,
+    "mib": 1024**2,
+    "gi": 1024**3,
+    "gib": 1024**3,
+    "ti": 1024**4,
+    "tib": 1024**4,
+}
 
 
 def _default_allowed_roots() -> tuple[Path, ...]:
@@ -19,9 +43,41 @@ def _default_allowed_roots() -> tuple[Path, ...]:
     long before the agent process settles into its real working dir.
     Result: writes to the agent's actual cwd were rejected as 'outside
     allowed roots'. Defer evaluation so each FileAccessPolicy instance
-    sees the current cwd at the moment it's constructed.
+    sees the current cwd at the moment it's constructed. The temp root is
+    the platform temp dir (a literal ``/tmp`` resolved to ``<drive>:\\tmp``
+    on Windows — issue #765).
     """
-    return (Path.cwd(), Path("/tmp"))
+    return (Path.cwd(), Path(tempfile.gettempdir()))
+
+
+def _active_workspace_root() -> Path | None:
+    """The active session's workspace root, when a tool is executing within one.
+
+    A session must ALWAYS be able to read/write/shell inside its OWN workspace,
+    even when ``CLIO_ALLOWED_ROOTS`` (default: process cwd + temp dir) does not
+    name it — otherwise the agent is locked out of the very workspace it was
+    launched to work in and is forced to route shell through ``/tmp`` with
+    absolute paths. Bound by ``tools.execution.tool_workspace_context`` during
+    tool runs; ``None`` off-turn. Lazy import avoids the execution↔file_policy
+    import cycle, and any failure degrades to ``None`` (never breaks the policy).
+    """
+    try:
+        from clio_agent.tools.execution import (  # noqa: PLC0415
+            get_active_tool_workspace_root,
+        )
+
+        raw = (get_active_tool_workspace_root() or "").strip()
+        return _resolve_root(Path(raw)) if raw else None
+    except Exception:  # noqa: BLE001 - policy must never fail to build
+        return None
+
+
+def _with_active_workspace(resolved: list[Path]) -> tuple[Path, ...]:
+    """Prepend the active workspace root to ``resolved`` (deduped) when bound."""
+    workspace = _active_workspace_root()
+    if workspace is not None and workspace not in resolved:
+        return (workspace, *resolved)
+    return tuple(resolved)
 
 
 class FilePolicyError(ValueError):
@@ -74,43 +130,61 @@ class FileAccessPolicy:
 
     @classmethod
     def from_env(cls) -> "FileAccessPolicy":
-        """Build policy from CLIO_* environment variables."""
-        return cls.from_mapping(os.environ)
+        """Build policy from config file, then CLIO_* environment variables."""
+        from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+        roots = conf.resolve(
+            "tools.file_policy.allowed_roots",
+            env="CLIO_ALLOWED_ROOTS",
+            default=_default_allowed_roots(),
+            cast=_coerce_roots,
+        )
+        max_size = conf.resolve(
+            "tools.file_policy.max_file_size_bytes",
+            env="CLIO_MAX_FILE_SIZE_BYTES",
+            default=DEFAULT_MAX_FILE_SIZE_BYTES,
+            cast=_coerce_size_bytes("CLIO_MAX_FILE_SIZE_BYTES"),
+        )
+        allow_symlinks = conf.resolve(
+            "tools.file_policy.allow_symlinks",
+            env="CLIO_ALLOW_SYMLINKS",
+            default=False,
+            cast=conf.as_bool,
+        )
+        return cls(
+            allowed_roots=_with_active_workspace([_resolve_root(root) for root in roots]),
+            max_file_size_bytes=max_size,
+            allow_symlinks=allow_symlinks,
+        )
 
     @classmethod
     def from_mapping(cls, env: Mapping[str, str]) -> "FileAccessPolicy":
-        """Build policy from an environment-like mapping."""
+        """Build policy from an explicitly-injected environment-like mapping.
+
+        This is the injected-mapping path (used by tests and callers that pass an
+        explicit ``env``); it deliberately does NOT consult the config file layer.
+        The process-default path is :meth:`from_env`, which resolves through
+        ``clio_agent.conf`` (file → env → default). The truthy coercion still
+        routes through ``conf.as_bool`` so there is one truthy rule everywhere.
+        """
+        from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
         roots_raw = env.get("CLIO_ALLOWED_ROOTS", "")
-        if roots_raw.strip():
-            roots = tuple(Path(item).expanduser() for item in roots_raw.split(os.pathsep) if item)
-        else:
-            roots = _default_allowed_roots()
+        roots = _coerce_roots(roots_raw) if roots_raw.strip() else _default_allowed_roots()
 
         max_size_raw = env.get("CLIO_MAX_FILE_SIZE_BYTES", "")
-        try:
-            max_size = int(max_size_raw) if max_size_raw else DEFAULT_MAX_FILE_SIZE_BYTES
-        except ValueError as exc:
-            raise FilePolicyError(
-                code="invalid_policy",
-                message=f"CLIO_MAX_FILE_SIZE_BYTES must be an integer, got {max_size_raw!r}.",
-                field="CLIO_MAX_FILE_SIZE_BYTES",
-                next_action="Set CLIO_MAX_FILE_SIZE_BYTES to a positive integer.",
-            ) from exc
-        if max_size <= 0:
-            raise FilePolicyError(
-                code="invalid_policy",
-                message="CLIO_MAX_FILE_SIZE_BYTES must be positive.",
-                field="CLIO_MAX_FILE_SIZE_BYTES",
-                next_action="Set CLIO_MAX_FILE_SIZE_BYTES to a positive integer.",
-            )
+        max_size = (
+            _coerce_size_bytes("CLIO_MAX_FILE_SIZE_BYTES")(max_size_raw)
+            if max_size_raw
+            else DEFAULT_MAX_FILE_SIZE_BYTES
+        )
 
-        allow_symlinks = env.get("CLIO_ALLOW_SYMLINKS", "false").lower() in {
-            "1",
-            "true",
-            "yes",
-        }
+        try:
+            allow_symlinks = conf.as_bool(env.get("CLIO_ALLOW_SYMLINKS", "false"))
+        except ValueError:
+            allow_symlinks = False
         return cls(
-            allowed_roots=tuple(_resolve_root(root) for root in roots),
+            allowed_roots=_with_active_workspace([_resolve_root(root) for root in roots]),
             max_file_size_bytes=max_size,
             allow_symlinks=allow_symlinks,
         )
@@ -172,7 +246,13 @@ class FileAccessPolicy:
             )
         return resolved
 
-    def validate_write(self, filepath: str, *, field: str = "output_path") -> Path:
+    def validate_write(
+        self,
+        filepath: str,
+        *,
+        field: str = "output_path",
+        create_parent: bool = False,
+    ) -> Path:
         """Validate an explicit output path and return its resolved path."""
         raw_path = _coerce_path(filepath, field=field)
         parent = raw_path.parent
@@ -187,6 +267,12 @@ class FileAccessPolicy:
         try:
             resolved_parent = parent.resolve(strict=True)
         except FileNotFoundError as exc:
+            if create_parent:
+                resolved_parent = parent.resolve(strict=False)
+                self._ensure_allowed(resolved_parent, field=field)
+                parent.mkdir(parents=True, exist_ok=True)
+                resolved_parent = parent.resolve(strict=True)
+                return resolved_parent / raw_path.name
             raise self._error(
                 code="parent_not_found",
                 message=f"Output directory does not exist: {parent}",
@@ -234,9 +320,18 @@ def validate_read_path(filepath: str, *, field: str = "filepath") -> Path:
     return FileAccessPolicy.from_env().validate_read(filepath, field=field)
 
 
-def validate_write_path(filepath: str, *, field: str = "output_path") -> Path:
+def validate_write_path(
+    filepath: str,
+    *,
+    field: str = "output_path",
+    create_parent: bool = False,
+) -> Path:
     """Validate a write path with policy loaded from the environment."""
-    return FileAccessPolicy.from_env().validate_write(filepath, field=field)
+    return FileAccessPolicy.from_env().validate_write(
+        filepath,
+        field=field,
+        create_parent=create_parent,
+    )
 
 
 def validate_choice(value: str, allowed: set[str], *, field: str) -> None:
@@ -305,6 +400,57 @@ def _resolve_root(root: Path) -> Path:
         return root.resolve(strict=False)
     except RuntimeError:
         return root.absolute()
+
+
+def _coerce_roots(value: Any) -> tuple[Path, ...]:
+    """Coerce YAML/env allowed-root declarations to non-empty paths."""
+    if isinstance(value, (list, tuple)):
+        roots = [Path(str(item)).expanduser() for item in value if str(item).strip()]
+    else:
+        raw = str(value).strip()
+        sep = os.pathsep if os.pathsep in raw else ","
+        roots = [Path(item.strip()).expanduser() for item in raw.split(sep) if item.strip()]
+    if not roots:
+        return _default_allowed_roots()
+    return tuple(roots)
+
+
+def _coerce_size_bytes(field: str) -> Callable[[Any], int]:
+    """Return a cast function for byte sizes with optional K/M/G/T suffixes."""
+
+    def cast(value: Any) -> int:
+        if isinstance(value, bool):
+            raise FilePolicyError(
+                code="invalid_policy",
+                message=f"{field} must be a byte size, got {value!r}.",
+                field=field,
+                next_action=f"Set {field} to a positive byte size.",
+            )
+        if isinstance(value, int):
+            number = value
+        elif isinstance(value, float):
+            number = int(value)
+        else:
+            match = _SIZE_PATTERN.match(str(value))
+            if match is None:
+                raise FilePolicyError(
+                    code="invalid_policy",
+                    message=f"{field} must be a byte size, got {value!r}.",
+                    field=field,
+                    next_action=f"Set {field} to a positive byte size.",
+                )
+            multiplier = _SIZE_MULTIPLIERS[(match.group(2) or "").lower()]
+            number = int(float(match.group(1)) * multiplier)
+        if number <= 0:
+            raise FilePolicyError(
+                code="invalid_policy",
+                message=f"{field} must be positive.",
+                field=field,
+                next_action=f"Set {field} to a positive byte size.",
+            )
+        return number
+
+    return cast
 
 
 def _has_symlink(path: Path) -> bool:

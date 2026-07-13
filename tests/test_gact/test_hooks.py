@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
-from clio_agent.runtime.hooks import HookRegistry, install_global_registry
+from clio_agent.runtime.hooks import HookRegistry, build_hook_registry, install_global_registry
 
 
 @dataclass
@@ -42,11 +42,14 @@ def _hook_dir(tmp_path: Path, **events: str) -> Path:
 def test_pre_tool_hook_can_block(tmp_path: Path) -> None:
     """A pre_tool hook that raises PermissionError vetoes the call."""
 
-    d = _hook_dir(tmp_path, pre_tool="""
+    d = _hook_dir(
+        tmp_path,
+        pre_tool="""
 def pre_tool(name, args):
     if name.startswith("hdf5_"):
         raise PermissionError("no hdf5 today")
-""")
+""",
+    )
     reg = HookRegistry(hooks_dir=d)
     with pytest.raises(PermissionError, match="no hdf5"):
         reg.fire("pre_tool", "hdf5_list_datasets", {"path": "/tmp/x"})
@@ -58,10 +61,13 @@ def test_post_tool_hook_swallows_exceptions(tmp_path: Path) -> None:
     """post_* hooks must NEVER crash a turn; exceptions are
     swallowed + logged."""
 
-    d = _hook_dir(tmp_path, post_tool="""
+    d = _hook_dir(
+        tmp_path,
+        post_tool="""
 def post_tool(name, args, result=None, error=None):
     raise RuntimeError("boom")
-""")
+""",
+    )
     reg = HookRegistry(hooks_dir=d)
     # Should not raise.
     reg.fire("post_tool", "fs_read_file", {"x": 1}, result="ok")
@@ -72,16 +78,17 @@ def test_pre_message_hook_blocks_via_app(tmp_path: Path) -> None:
     end-to-end through GACT — the assistant message comes back
     with error_info.error == permission_error."""
 
-    d = _hook_dir(tmp_path, pre_message="""
+    d = _hook_dir(
+        tmp_path,
+        pre_message="""
 def pre_message(session_id, text):
     if "secret" in text.lower():
         raise PermissionError("blocked by policy")
-""")
+""",
+    )
     install_global_registry(HookRegistry(hooks_dir=d))
     try:
-        app = build_app(
-            sessions_path=tmp_path / "s.json", agent=_Agent()
-        )
+        app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
         with TestClient(app) as c:
             sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
             ack = c.post(
@@ -91,6 +98,7 @@ def pre_message(session_id, text):
             assert ack.status_code == 200
             # Wait for the background turn to settle into error.
             import time as _t
+
             for _ in range(30):
                 sess = c.get(f"/v1/sessions/{sid}").json()
                 if sess["status"] == "error":
@@ -106,15 +114,16 @@ def test_post_message_hook_runs_after_settle(tmp_path: Path) -> None:
     (write a marker file here)."""
 
     marker = tmp_path / "post_message_fired.txt"
-    d = _hook_dir(tmp_path, post_message=f"""
+    d = _hook_dir(
+        tmp_path,
+        post_message=f"""
 def post_message(session_id, assistant):
     open({str(marker)!r}, "w").write(assistant['id'])
-""")
+""",
+    )
     install_global_registry(HookRegistry(hooks_dir=d))
     try:
-        app = build_app(
-            sessions_path=tmp_path / "s.json", agent=_Agent()
-        )
+        app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
         with TestClient(app) as c:
             from .conftest import complete_turn
 
@@ -134,8 +143,171 @@ def test_no_hooks_dir_is_no_op(tmp_path: Path) -> None:
     assert reg.fire("pre_tool", "x", {}) == []
 
 
+def test_hook_registry_factory_uses_configured_local_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker = tmp_path / "configured_hook.txt"
+    hooks_dir = _hook_dir(
+        tmp_path,
+        post_tool=f"""
+def post_tool(name, args, result=None, error=None):
+    open({str(marker)!r}, "w", encoding="utf-8").write(name)
+""",
+    )
+    monkeypatch.setenv("CLIO_HOOKS_BACKEND", "local_python")
+    monkeypatch.setenv("CLIO_HOOKS_DIR", str(hooks_dir))
+
+    reg = build_hook_registry()
+    reg.fire("post_tool", "fs_read_file", {}, result={"ok": True})
+
+    assert marker.read_text(encoding="utf-8") == "fs_read_file"
+    assert reg.metadata()["backend"] == "local_python"
+    assert reg.metadata()["handler_counts"]["post_tool"] == 1
+
+
+def test_hook_registry_factory_can_disable_hooks(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLIO_HOOKS_BACKEND", "none")
+
+    reg = build_hook_registry()
+
+    assert reg.fire("pre_tool", "fs_read_file", {}) == []
+    assert reg.metadata()["backend"] == "none"
+    assert reg.metadata()["enabled"] is False
+
+
+def test_scoped_hooks_only_fire_for_matching_scope(tmp_path: Path) -> None:
+    marker = tmp_path / "workspace_hook.txt"
+    scoped = tmp_path / "hooks" / "workspaces" / "ws_science"
+    scoped.mkdir(parents=True)
+    (scoped / "pre_message.py").write_text(
+        f"""
+def pre_message(session_id, text):
+    open({str(marker)!r}, "w", encoding="utf-8").write(session_id + ":" + text)
+""",
+        encoding="utf-8",
+    )
+    reg = HookRegistry(hooks_dir=tmp_path / "hooks")
+
+    reg.fire(
+        "pre_message",
+        "sess_other",
+        "ignored",
+        hook_scope={"workspace_id": "ws_other", "session_id": "sess_other"},
+    )
+    assert not marker.exists()
+
+    reg.fire(
+        "pre_message",
+        "sess_science",
+        "accepted",
+        hook_scope={"workspace_id": "ws_science", "session_id": "sess_science"},
+    )
+    assert marker.read_text(encoding="utf-8") == "sess_science:accepted"
+    assert reg.metadata()["scoped_handler_counts"]["workspace_id:ws_science"] == 1
+
+
+def test_pre_hook_timeout_fails_closed(tmp_path: Path) -> None:
+    hooks_dir = _hook_dir(
+        tmp_path,
+        pre_tool="""
+import time
+
+def pre_tool(name, args):
+    time.sleep(0.2)
+""",
+    )
+    reg = HookRegistry(hooks_dir=hooks_dir, timeout_s=0.01)
+
+    with pytest.raises(PermissionError, match="exceeded timeout"):
+        reg.fire("pre_tool", "fs_read_file", {})
+
+
+def test_hook_timeout_per_invocation_thread_not_starved_by_pool(tmp_path: Path) -> None:
+    """A wedged hook must not pin a shared pool: saturating with sleep-forever
+    hooks must still let a new hook time out cleanly (with a structured
+    ``hook_timeout_abandoned`` reason) and must not starve a fast hook."""
+
+    import threading
+    import time as _t
+
+    from clio_agent.runtime.hooks import hook_fallback_reasons
+
+    hooks_dir = _hook_dir(
+        tmp_path,
+        pre_tool="""
+import time
+
+def pre_tool(name, args):
+    time.sleep(60)
+""",
+        pre_message="""
+def pre_message(session_id, text):
+    return "fast-ok"
+""",
+    )
+    reg = HookRegistry(hooks_dir=hooks_dir, timeout_s=0.1)
+
+    # Saturate: fire 5 sleep-forever pre_tool hooks concurrently. Each must
+    # raise a permission-style timeout; on the old shared 4-worker pool the
+    # wedged workers are pinned (future.cancel() is a no-op once running).
+    errors: list[BaseException] = []
+
+    def _fire() -> None:
+        try:
+            reg.fire("pre_tool", "fs_read_file", {})
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_fire) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+    assert len(errors) == 5
+    assert all(isinstance(exc, PermissionError) for exc in errors)
+
+    # A 6th hook still times out cleanly and promptly (not queued behind a
+    # saturated pool), emitting a structured reason.
+    start = _t.monotonic()
+    with pytest.raises(PermissionError, match="exceeded timeout"):
+        reg.fire("pre_tool", "fs_read_file", {})
+    assert _t.monotonic() - start < 5.0
+
+    reasons = [r for r in hook_fallback_reasons() if r.get("reason") == "hook_timeout_abandoned"]
+    assert reasons, "expected a hook_timeout_abandoned structured reason"
+    mine = [r for r in reasons if str(hooks_dir) in str(r.get("hook_path", ""))]
+    assert mine, "structured reason must carry the offending hook path"
+    assert all(r.get("event") == "pre_tool" for r in mine)
+
+    # A fast hook on another event must NOT be starved by the wedged hooks.
+    assert reg.fire("pre_message", "sess", "hi") == ["fast-ok"]
+
+
 def test_capability_advertised(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
         body = c.get("/v1/capabilities").json()
         assert body["capabilities"]["hooks"] is True
+
+
+def test_capability_reports_runtime_hook_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hooks_dir = _hook_dir(
+        tmp_path,
+        pre_tool="""
+def pre_tool(name, args):
+    return None
+""",
+    )
+    monkeypatch.setenv("CLIO_HOOKS_BACKEND", "local_python")
+    monkeypatch.setenv("CLIO_HOOKS_DIR", str(hooks_dir))
+    install_global_registry(None)
+    try:
+        app = build_app(sessions_path=tmp_path / "s.json")
+        with TestClient(app) as c:
+            body = c.get("/v1/capabilities").json()
+            assert body["capabilities"]["x_clio_hook_backend"] == "local_python"
+            assert body["capabilities"]["x_clio_hook_events"]["pre_tool"] == 1
+    finally:
+        install_global_registry(None)

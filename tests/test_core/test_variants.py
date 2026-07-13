@@ -65,9 +65,7 @@ class TestSaveVariant:
 
     def test_save_creates_file_on_disk(self, vm, mock_module, tmp_path):
         """save_variant creates a JSON file on disk."""
-        vm.save_variant(
-            mock_module, "data", 0.6, 0.85, 50, 0.003, True
-        )
+        vm.save_variant(mock_module, "data", 0.6, 0.85, 50, 0.003, True)
 
         variant_path = tmp_path / "variants" / "data_v1.json"
         assert variant_path.exists()
@@ -75,9 +73,7 @@ class TestSaveVariant:
 
     def test_save_stores_variant_record_in_arc(self, vm, arc, mock_module):
         """save_variant stores VariantRecord in ARC memory."""
-        vm.save_variant(
-            mock_module, "data", 0.6, 0.85, 50, 0.003, True
-        )
+        vm.save_variant(mock_module, "data", 0.6, 0.85, 50, 0.003, True)
 
         stored = arc.get_variant_records("data")
         assert len(stored) == 1
@@ -92,9 +88,7 @@ class TestSaveVariant:
 
     def test_save_returns_variant_record(self, vm, mock_module):
         """save_variant returns a VariantRecord with correct metadata."""
-        record = vm.save_variant(
-            mock_module, "data", 0.6, 0.85, 50, 0.003, True
-        )
+        record = vm.save_variant(mock_module, "data", 0.6, 0.85, 50, 0.003, True)
 
         assert isinstance(record, VariantRecord)
         assert record.variant_id == "data_v1"

@@ -12,7 +12,7 @@
 ClioAgent Configuration Module
 
 Multi-provider LM configuration with environment-based settings.
-Supports LM Studio, Ollama, OpenAI, and Anthropic providers.
+Supports local, cloud, OpenAI-compatible, Codex, and ALCF providers.
 
 Usage:
     >>> from clio_agent.config import setup_dspy
@@ -26,14 +26,15 @@ Usage:
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from ipaddress import ip_address
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, List, Literal, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Literal, Mapping, Optional
 from urllib.parse import urlparse
 
-import requests
+logger = logging.getLogger(__name__)
 
 # dspy lives behind a lazy import — top-level ``import dspy`` costs
 # ~4 s on Aurora's frameworks Python (litellm + transitive deps), and
@@ -65,82 +66,44 @@ def _dspy():
         _dspy_cache = dspy
     return _dspy_cache
 
+
 # ============================================================================
-# PROVIDER DEFAULTS
+# PROVIDER DEFAULTS — derived from clio_agent.providers.catalog
 # ============================================================================
 
 #
-# Per-provider capability flags (in addition to api_base/model/api_key
-# overrides). New traits go here, and LMProviderConfig.__post_init__
-# materializes them onto the config so the agent code reads
-# `cfg.strip_openai_prefix` instead of branching on `cfg.provider ==
-# "argonne"`. Adding a new provider with a new wire-protocol quirk =
-# one entry here, no new branches in agent.py.
+# These two dicts are derived views over the canonical provider list at
+# ``src/clio_agent/providers/catalog.py``. Add a new provider by adding
+# a ``Provider(...)`` entry there — the wire defaults flow through here,
+# the catalog rows flow into ``GET /v1/providers/lm``, and the static
+# model fallback flows into ``GET /v1/providers/{id}/models``.
 #
-# Currently tracked traits:
+# Per-provider capability flags currently tracked:
 #   strip_openai_prefix : strip leading "openai/"/"anthropic/" from the
 #                         configured model id before sending. Defaults
-#                         to True (matches Meridian and most generic
-#                         openai-compat proxies). False for backends
-#                         that use HuggingFace-style ids verbatim
-#                         (Argonne / ALCF — `openai/gpt-oss-120b` IS
-#                         the gateway's model id; stripping it makes
-#                         the request resolve to a non-existent
-#                         endpoint).
-PROVIDER_DEFAULTS: dict[str, dict[str, Any]] = {
-    "lm_studio": {
-        "api_base": "http://127.0.0.1:1234/v1",
-        "model": "ibm/granite-4-h-tiny",
-        "api_key": "lm-studio",
-    },
-    "ollama": {
-        "api_base": "http://127.0.0.1:11434/v1",
-        "model": "granite3.1-dense:8b",
-        "api_key": "ollama",
-    },
-    "openai": {
-        "api_base": "https://api.openai.com/v1",
-        "model": "gpt-4o-mini",
-        "api_key": "",  # Must come from OPENAI_API_KEY env
-    },
-    "anthropic": {
-        "api_base": "https://api.anthropic.com/v1",
-        "model": "claude-sonnet-4-20250514",
-        "api_key": "",  # Must come from ANTHROPIC_API_KEY env
-    },
-    # Argonne / ALCF inference endpoints. The gateway is OpenAI-compatible
-    # vLLM behind a Globus Auth bearer. ``api_key`` is intentionally empty:
-    # ``__post_init__`` calls ``providers.argonne_auth.get_access_token``
-    # to fetch (or refresh) a real token only when the user actually
-    # selects this provider, so installs without ``globus-sdk`` keep
-    # importing cleanly.
-    #
-    # ``max_tokens`` is overridden to 4096 because Sophia's default
-    # Llama 3.1-8B has a 32 768-token context window. The shared
-    # LMProviderConfig default of 32 000 leaves only ~768 tokens for
-    # input + system prompt, which the gateway 400s on as soon as the
-    # router/expert prompts run (they alone are >2 k tokens). 4 k is a
-    # comfortable answer length while leaving 28 k for the prompt;
-    # users can override with CLIO_LM_MAX_TOKENS for larger-context
-    # models like Llama-405B or Mistral-Large.
-    "argonne": {
-        "api_base": "https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",
-        "model": "meta-llama/Meta-Llama-3.1-8B-Instruct",
-        "api_key": "",  # Lazy: minted via Globus Auth on demand.
-        "max_tokens": 4096,
-        # ALCF gateway uses HF-style ids verbatim — `openai/gpt-oss-120b`
-        # IS the model id. Stripping the org prefix turns it into
-        # `gpt-oss-120b`, which the gateway maps to backend endpoint
-        # `sophia-vllm-gpt-oss-120b` that doesn't exist (400).
-        "strip_openai_prefix": False,
-    },
-}
+#                         to True for most generic openai-compat proxies.
+#                         False for backends that use HuggingFace-style
+#                         ids verbatim (Argonne / ALCF — `openai/gpt-oss
+#                         -120b` IS the gateway's model id; stripping
+#                         turns it into `gpt-oss-120b`, which the
+#                         gateway maps to a non-existent backend).
+#   max_tokens (override): 4 096 for ALCF gateway defaults. Live ALCF
+#                         model context windows vary by running job, and
+#                         some gateway paths reject the shared 32 000
+#                         default. Users can override with
+#                         CLIO_LM_MAX_TOKENS for larger-context models.
+from clio_agent.providers import credentials as _credentials
+from clio_agent.providers.catalog import (
+    as_cloud_api_key_env as _registry_cloud_api_key_env,
+)
+from clio_agent.providers.catalog import (
+    as_provider_defaults_dict as _registry_provider_defaults,
+)
 
-# Environment variable names for cloud provider API keys
-_CLOUD_API_KEY_ENV: dict[str, str] = {
-    "openai": "OPENAI_API_KEY",
-    "anthropic": "ANTHROPIC_API_KEY",
-}
+PROVIDER_DEFAULTS: dict[str, dict[str, Any]] = _registry_provider_defaults()
+
+# Environment variable names for cloud provider API keys.
+_CLOUD_API_KEY_ENV: dict[str, str] = _registry_cloud_api_key_env()
 
 ENV_FILE_LOADED_KEY = "CLIO_ENV_FILE_LOADED"
 
@@ -203,11 +166,7 @@ def _parse_env_line(line: str) -> tuple[str, str] | None:
         return None
 
     value = value.strip()
-    if (
-        len(value) >= 2
-        and value[0] == value[-1]
-        and value[0] in {"'", '"'}
-    ):
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
         value = value[1:-1]
     return key, value
 
@@ -231,21 +190,66 @@ class LMProviderConfig:
         api_key: API key
         temperature: Sampling temperature
         max_tokens: Maximum tokens per response
-        router_temperature: Lower temperature for deterministic routing
+        planner_temperature: Lower temperature for deterministic action planning
+        planner_max_tokens: Maximum tokens for planner JSON generation
         environment: Deployment environment (dev/staging/production)
+        codex_transport: Codex transport mode, either "exec" or "sdk"
     """
 
-    provider: Literal["lm_studio", "ollama", "openai", "anthropic", "argonne"] = "lm_studio"
+    provider: Literal[
+        "lm_studio",
+        "ollama",
+        "openai",
+        "anthropic",
+        "argonne",
+        "codex",
+        "claude_code",
+    ] = "lm_studio"
     api_base: str = ""
     model: str = ""
     api_key: str = ""
-    temperature: float = 1.0
+    # Default to greedy/deterministic decoding for the agentic LM path.
+    # CLIO drives the LM almost exclusively for STRUCTURED output —
+    # ReAct tool calls, typed routing decisions, JSON workflow_state,
+    # field-formatted DSPy adapter responses. At temperature 1.0 the
+    # sampler injects entropy into exactly those structured fields,
+    # which is how small/cheap models (and the occasional large one)
+    # drift: hallucinated plot columns, fabricated CSV/PNG paths,
+    # parse-time field-format breakage. Per DSPy norms, structured/
+    # tool-calling predictors want deterministic decoding (temp 0.0)
+    # for reproducible, parseable outputs; creativity isn't the job
+    # here. Overridable via CLIO_LM_TEMPERATURE / the PUT body / the
+    # config field for callers who want sampling.
+    temperature: float = 0.0
     # 0 is a sentinel "use the provider's max_tokens override (see
     # PROVIDER_DEFAULTS) if it has one, else 32000". Callers who
     # explicitly pass any non-zero value win.
     max_tokens: int = 0
-    router_temperature: float = 0.3
+    planner_temperature: float = 0.3
+    planner_max_tokens: int = 0
+    router_temperature: float | None = None
+    # Sampling surface (None = omit -> the provider/model's own default applies).
+    # Greedy decoding (temperature 0) makes Qwen-family REASONING models (qwopus,
+    # nemotron) degenerate into endless verbatim repetition loops -- Qwen's own docs
+    # say DO NOT use greedy decoding and recommend temp 0.6 / top_p 0.95 / top_k 20
+    # for thinking mode. These expose that full sampling surface so a reasoning model
+    # can be driven at its recommended settings instead of the temp-0 default (which
+    # only suits short non-reasoning structured routing). top_p/presence_penalty are
+    # OpenAI-standard; top_k/min_p are forwarded via extra_body (llama.cpp/LM Studio).
+    top_p: float | None = None
+    top_k: int | None = None
+    min_p: float | None = None
+    presence_penalty: float | None = None
     environment: str = "dev"
+    codex_transport: Literal["exec", "sdk"] = "exec"
+    # "sdk" (DEFAULT — the best config): the in-process Claude Agent SDK with a
+    #   persistent CLI session — no per-call spawn, streaming-capable, and
+    #   setting_sources=[] keeps the user's ~/.claude/CLAUDE.md out of the prompt
+    #   (faster + cleaner than exec). Needs the claude-agent-sdk package (the
+    #   `claude-code` extra).
+    # "exec": one `claude -p` subprocess per LM call — needs only the `claude` CLI on
+    #   PATH, but pays ~10-15s cold start every call (#715). Explicit opt-out.
+    claude_code_transport: Literal["exec", "sdk"] = "sdk"
     # Reasoning/thinking budget. Mapped per-provider in create_lm:
     #   anthropic → thinking={"type":"enabled","budget_tokens":N}
     #   openai/openai-compat → reasoning_effort bucketed from N
@@ -256,125 +260,253 @@ class LMProviderConfig:
     # PROVIDER_DEFAULTS so adding a new wire-protocol quirk = one
     # entry in the defaults dict, no agent.py branches.
     strip_openai_prefix: bool = field(init=False, default=True)
+    supports_vision: bool = field(init=False, default=False)
+    # Handshake-discovered model config. init=False + default empty so callers
+    # never set them; ``apply_handshake`` populates them at bind time (the only
+    # place that networks). ``__post_init__`` stays network-free for /health.
+    # ``chosen_context`` is the active context limit clio operates against
+    # (queryable; for LM Studio it reflects the loaded/load-sized window).
+    context_window: int | None = field(init=False, default=None)
+    chosen_context: int | None = field(init=False, default=None)
+    is_reasoning: bool = field(init=False, default=False)
+    reasoning_param: str | None = field(init=False, default=None)
+    native_tool_calling: bool = field(init=False, default=False)
+    tool_call_parser: str | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
         """Fill empty fields + capability flags from provider defaults."""
+        if self.router_temperature is not None:
+            self.planner_temperature = self.router_temperature
+        self.router_temperature = self.planner_temperature
         defaults = PROVIDER_DEFAULTS.get(self.provider, PROVIDER_DEFAULTS["lm_studio"])
         if not self.api_base:
             self.api_base = defaults["api_base"]
         if not self.model:
             self.model = defaults["model"]
         if not self.api_key:
-            # Cloud providers source from a well-known env var. Argonne /
-            # ALCF mints a fresh Globus bearer token on demand — kept lazy
-            # so installs without globus-sdk don't need the dep.
-            env_var = _CLOUD_API_KEY_ENV.get(self.provider)
-            if env_var:
-                self.api_key = os.environ.get(env_var, "")
-            elif self.provider == "argonne":
-                self.api_key = _resolve_argonne_api_key()
-            else:
-                self.api_key = defaults["api_key"]
+            # Credential resolution (cloud well-known env var / Argonne Globus
+            # token) is owned by ``providers.credentials``: read-only, keyed,
+            # returned-not-stamped. Delegate for the default ref so the
+            # per-expert path and this boot/default path share one resolver.
+            # ``or defaults["api_key"]`` preserves the local-provider
+            # placeholder (e.g. "lm-studio") — a provider default, not a
+            # credential — so behaviour stays byte-identical.
+            self.api_key = _credentials.resolve(self.provider, "") or defaults["api_key"]
         # max_tokens=0 is the sentinel "pick a sensible default for
-        # this provider" — argonne's Sophia gateway 400s on the
-        # global default of 32000 because Llama 3.1-8B has only a
-        # 32 768-token context window.
+        # this provider" — Argonne/ALCF model availability and context
+        # windows vary by running gateway job, and some paths reject
+        # the global 32000 default.
         if self.max_tokens == 0:
             self.max_tokens = int(defaults.get("max_tokens", 32000))
+        self._apply_model_profile_defaults()
+        if self.planner_max_tokens == 0:
+            self.planner_max_tokens = self.max_tokens
         # Capability flags. defaults dict wins — these aren't user-set
         # via env vars (they're wire-protocol facts about the provider),
         # so re-reading on every config load is safe.
         self.strip_openai_prefix = bool(defaults.get("strip_openai_prefix", True))
+        self.supports_vision = bool(defaults.get("supports_vision", False))
+        if self.codex_transport not in {"exec", "sdk"}:
+            raise ValueError(
+                f"codex_transport must be 'exec' or 'sdk' (got {self.codex_transport!r})"
+            )
+        if self.claude_code_transport not in {"exec", "sdk"}:
+            raise ValueError(
+                f"claude_code_transport must be 'exec' or 'sdk' "
+                f"(got {self.claude_code_transport!r})"
+            )
+
+    def _apply_model_profile_defaults(self) -> None:
+        """Apply safe defaults for known model families."""
+        if not _uses_local_reasoning_model_profile(self.provider, self.model):
+            return
+
+        if self.planner_temperature == 0.3:
+            self.planner_temperature = 0.0
+            self.router_temperature = self.planner_temperature
+        if self.planner_max_tokens == 0:
+            self.planner_max_tokens = max(self.max_tokens, 4096)
+        elif self.planner_max_tokens < 4096:
+            self.planner_max_tokens = 4096
+
+    def apply_handshake(self, report: Any, *, user_set_max_tokens: bool = False) -> None:
+        """Fold a provider handshake report into this config (call at bind time).
+
+        Sets the discovered per-model fields (context window, reasoning/tool
+        capabilities) and, unless the caller explicitly set ``max_tokens``,
+        recomputes a context-aware ``max_tokens`` — replacing the static
+        provider default (e.g. the ALCF 4096 cap on 256K-context models).
+        ``user_set_max_tokens`` must be True when the user/env supplied an
+        explicit value so their choice always wins. No-op when the report has no
+        usable profile (handshake failed / model not found), preserving today's
+        static behaviour.
+        """
+        profile = None
+        models = getattr(report, "models", None) or ()
+        if models:
+            if hasattr(report, "model"):
+                profile = report.model(self.model)
+            if profile is None:
+                # tolerate vendor-prefix differences (e.g. "gpt-oss-120b" vs
+                # "openai/gpt-oss-120b") by matching on the basename.
+                want = self.model.rsplit("/", 1)[-1].lower()
+                profile = next((m for m in models if m.id.rsplit("/", 1)[-1].lower() == want), None)
+            if profile is None and len(models) == 1:
+                profile = models[0]
+        if profile is None:
+            return
+        self.context_window = profile.context_window
+        self.is_reasoning = bool(profile.is_reasoning)
+        self.reasoning_param = profile.reasoning_param
+        self.native_tool_calling = bool(profile.native_tool_calling)
+        self.tool_call_parser = profile.tool_call_parser
+        window = profile.effective_context_window
+        self.chosen_context = window
+        if not user_set_max_tokens:
+            self.max_tokens = resolve_effective_max_tokens(
+                user_max_tokens=0,
+                provider_default=self.max_tokens,
+                output_limit=profile.output_limit,
+                context_window=window,
+            )
+            self.planner_max_tokens = self.max_tokens
+
+
+def resolve_effective_max_tokens(
+    *,
+    user_max_tokens: int,
+    provider_default: int,
+    output_limit: int | None = None,
+    context_window: int | None = None,
+) -> int:
+    """Choose the per-reply output ``max_tokens`` — a real discovered number, no magic.
+
+    Precedence: an explicit ``user_max_tokens`` (>0) wins; otherwise the model's
+    discovered maximum output (``output_limit``, e.g. models.dev ``limit.output``)
+    when known; otherwise the static ``provider_default`` (unchanged pre-handshake).
+    The result is capped to ``context_window`` when known so one reply can never
+    exceed the budget. There is deliberately **no** "context minus a prompt reserve"
+    arithmetic — that was opaque and overflow-prone. ``max_tokens`` is the output
+    cap; the total budget is ``chosen_context``.
+    """
+    if user_max_tokens and user_max_tokens > 0:
+        chosen = int(user_max_tokens)
+    elif output_limit and output_limit > 0:
+        chosen = int(output_limit)
+    else:
+        chosen = int(provider_default)
+    if context_window and context_window > 0:
+        chosen = min(chosen, int(context_window))
+    return max(1, chosen)
+
+
+def _uses_local_reasoning_model_profile(provider: str, model: str) -> bool:
+    """Return whether a local model needs reasoning-friendly planner defaults."""
+    if provider not in {"lm_studio", "ollama"}:
+        return False
+    normalized = model.lower().replace("_", "-")
+    reasoning_markers = (
+        "qwopus",
+        "qwen3",
+        "qwen-3",
+        "qwen35",
+        "qwen-3.5",
+    )
+    return any(marker in normalized for marker in reasoning_markers)
 
 
 def _resolve_argonne_api_key() -> str:
     """Return a Globus bearer token for the ALCF inference gateway.
 
-    Two escape hatches before we touch globus-sdk:
-
-    1. ``CLIO_ARGONNE_TOKEN`` — explicit override. Set by automation
-       that already has a token (e.g. a parent agent that ran
-       ``argonne_auth.get_access_token`` and exports the result).
-    2. ``CLIO_LM_API_KEY`` — already handled in ``load_config_from_env``;
-       only see ``__post_init__`` if the user really left it blank.
-
-    Otherwise we go through ``providers.argonne_auth``. The import is
-    deferred so ``globus-sdk`` is only required when this provider is
-    actually selected. We swallow ``GlobusUnavailable`` and return ""
-    so ``__post_init__`` doesn't crash on machines without the dep —
-    the LM call itself will surface the missing-dep error with
-    actionable text once the user issues a query.
+    The implementation now lives in :func:`clio_agent.providers.credentials.
+    resolve_argonne_token`. This thin wrapper is retained as the stable seam
+    that ``gact.providers.auth`` (runtime token refresh) and tests monkeypatch;
+    ``providers.credentials.resolve`` routes the argonne ref back through this
+    name so a patch here is observed everywhere.
     """
-    # Accept either CLIO's own override OR the env var ALCF's own
-    # ecosystem (alcf-agentics-workflow, list_active_models.sh) uses,
-    # since users often already have one of those exported. CLIO_*
-    # wins when both are set so deliberate overrides don't surprise.
-    override = (
-        os.environ.get("CLIO_ARGONNE_TOKEN", "").strip()
-        or os.environ.get("ALCF_INFERENCE_TOKEN", "").strip()
-        or os.environ.get("access_token", "").strip()
-    )
-    if override:
-        return override
-
-    try:
-        from clio_agent.providers.argonne_auth import (  # noqa: PLC0415
-            GlobusUnavailable,
-            get_access_token,
-            tokens_exist,
-        )
-    except Exception:  # pragma: no cover - import-time error
-        return ""
-
-    # Don't trigger an interactive OAuth flow from inside the config
-    # constructor — that path runs from /health, /doctor, and TUI
-    # introspection where blocking on a browser would be hostile.
-    # If there's no stored token, surface "" and let the upstream
-    # validator emit the actionable "run authenticate" message.
-    if not tokens_exist():
-        return ""
-
-    try:
-        return get_access_token()
-    except GlobusUnavailable:
-        # Logged elsewhere; let downstream error message guide the user.
-        return ""
-    except Exception:
-        # OAuth could not complete (network, refresh expired, etc).
-        # Returning "" lets the LM call fail with a clean 401 rather
-        # than masking it behind config-load tracebacks.
-        return ""
+    return _credentials.resolve_argonne_token()
 
 
 def load_config_from_env() -> LMProviderConfig:
-    """Load LM configuration from environment variables.
+    """Load LM boot configuration via ``conf`` (file → env → default).
 
-    Reads CLIO_* environment variables with fallback to provider defaults.
+    Every knob resolves with the project precedence: a shared config file
+    (``.clio/config.yaml`` / user ``config.yaml``) wins over the matching
+    ``CLIO_LM_*`` environment variable, which wins over the in-code provider
+    default. See :mod:`clio_agent.conf` for the precedence rationale.
 
-    Environment variables:
-        CLIO_LM_PROVIDER: Provider name (lm_studio, ollama, openai, anthropic)
-        CLIO_LM_API_BASE: Override API base URL
-        CLIO_LM_MODEL: Override model identifier
-        CLIO_LM_API_KEY: Override API key
-        CLIO_LM_TEMPERATURE: Override temperature
-        CLIO_LM_MAX_TOKENS: Override max tokens
-        CLIO_ENVIRONMENT: Deployment environment (dev/staging/production)
+    Config keys → environment variables:
+        ``lm.provider`` / CLIO_LM_PROVIDER: Provider name (lm_studio, ollama,
+            openai, anthropic, argonne, codex, claude_code)
+        ``lm.api_base`` / CLIO_LM_API_BASE: Override API base URL
+        ``lm.model`` / CLIO_LM_MODEL: Override model identifier
+        ``lm.temperature`` / CLIO_LM_TEMPERATURE: Override reasoner/chat temperature
+        ``lm.planner_temperature`` / CLIO_LM_PLANNER_TEMPERATURE: planner temperature
+            (legacy CLIO_LM_ROUTER_TEMPERATURE is honored env-tier only)
+        ``lm.planner_max_tokens`` / CLIO_LM_PLANNER_MAX_TOKENS: planner token cap
+        ``lm.max_tokens`` / CLIO_LM_MAX_TOKENS: Override max tokens
+        ``lm.top_p`` / ``lm.top_k`` / ``lm.min_p`` / ``lm.presence_penalty``: sampling
+        ``lm.codex_transport`` / CLIO_CODEX_TRANSPORT: Codex transport (exec or sdk)
+        ``lm.claude_code_transport`` / CLIO_CLAUDE_CODE_TRANSPORT: Claude Code transport
+        ``runtime.environment`` / CLIO_ENVIRONMENT: Deployment environment
+
+    ``CLIO_LM_API_KEY`` is deliberately **NOT** routed through ``conf``: it is a
+    secret and stays env-only (a shared config file must never carry a key). See
+    the secret-tier note in :mod:`clio_agent.conf`.
 
     Returns:
-        LMProviderConfig with env-based settings
+        LMProviderConfig with resolved settings
 
     Raises:
         ValueError: If cloud provider is selected without API key
     """
-    provider = os.environ.get("CLIO_LM_PROVIDER", "lm_studio")
-    api_base = os.environ.get("CLIO_LM_API_BASE", "")
-    model = os.environ.get("CLIO_LM_MODEL", "")
-    api_key = os.environ.get("CLIO_LM_API_KEY", "")
-    environment = os.environ.get("CLIO_ENVIRONMENT", "dev")
+    from clio_agent import conf  # noqa: PLC0415 - keep config.py a leaf; lazy per-call
 
-    # Parse numeric env vars
-    temperature_str = os.environ.get("CLIO_LM_TEMPERATURE", "")
-    max_tokens_str = os.environ.get("CLIO_LM_MAX_TOKENS", "")
+    provider = conf.resolve(
+        "lm.provider", env="CLIO_LM_PROVIDER", default="lm_studio", cast=conf.as_str
+    )
+    api_base = conf.resolve("lm.api_base", env="CLIO_LM_API_BASE", default="", cast=conf.as_str)
+    model = conf.resolve("lm.model", env="CLIO_LM_MODEL", default="", cast=conf.as_str)
+    # Secret tier: API key stays env-only, never file-resolved (see conf docstring).
+    api_key = os.environ.get("CLIO_LM_API_KEY", "")
+    environment = conf.resolve(
+        "runtime.environment", env="CLIO_ENVIRONMENT", default="dev", cast=conf.as_str
+    )
+    codex_transport = conf.resolve(
+        "lm.codex_transport", env="CLIO_CODEX_TRANSPORT", default="", cast=conf.as_str
+    ).strip().lower()
+    claude_code_transport = conf.resolve(
+        "lm.claude_code_transport", env="CLIO_CLAUDE_CODE_TRANSPORT", default="", cast=conf.as_str
+    ).strip().lower()
+
+    # Numeric knobs: default ``None`` means "unset" → the LMProviderConfig
+    # provider default applies. cast is applied only to a real file/env value.
+    temperature = conf.resolve(
+        "lm.temperature", env="CLIO_LM_TEMPERATURE", default=None, cast=conf.as_float
+    )
+    planner_temperature = conf.resolve(
+        "lm.planner_temperature",
+        env="CLIO_LM_PLANNER_TEMPERATURE",
+        default=None,
+        cast=conf.as_float,
+    )
+    if planner_temperature is None:
+        # Legacy alias, env-tier only (below file + CLIO_LM_PLANNER_TEMPERATURE).
+        router_temperature = os.environ.get("CLIO_LM_ROUTER_TEMPERATURE", "")
+        if router_temperature.strip():
+            planner_temperature = conf.as_float(router_temperature)
+    planner_max_tokens = conf.resolve(
+        "lm.planner_max_tokens", env="CLIO_LM_PLANNER_MAX_TOKENS", default=None, cast=conf.as_int
+    )
+    max_tokens = conf.resolve(
+        "lm.max_tokens", env="CLIO_LM_MAX_TOKENS", default=None, cast=conf.as_int
+    )
+    top_p = conf.resolve("lm.top_p", env="CLIO_LM_TOP_P", default=None, cast=conf.as_float)
+    top_k = conf.resolve("lm.top_k", env="CLIO_LM_TOP_K", default=None, cast=conf.as_int)
+    min_p = conf.resolve("lm.min_p", env="CLIO_LM_MIN_P", default=None, cast=conf.as_float)
+    presence_penalty = conf.resolve(
+        "lm.presence_penalty", env="CLIO_LM_PRESENCE_PENALTY", default=None, cast=conf.as_float
+    )
 
     kwargs: dict = {
         "provider": provider,
@@ -386,10 +518,26 @@ def load_config_from_env() -> LMProviderConfig:
         kwargs["model"] = model
     if api_key:
         kwargs["api_key"] = api_key
-    if temperature_str:
-        kwargs["temperature"] = float(temperature_str)
-    if max_tokens_str:
-        kwargs["max_tokens"] = int(max_tokens_str)
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+    if planner_temperature is not None:
+        kwargs["planner_temperature"] = planner_temperature
+    if planner_max_tokens is not None:
+        kwargs["planner_max_tokens"] = planner_max_tokens
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+    if top_p is not None:
+        kwargs["top_p"] = top_p
+    if top_k is not None:
+        kwargs["top_k"] = top_k
+    if min_p is not None:
+        kwargs["min_p"] = min_p
+    if presence_penalty is not None:
+        kwargs["presence_penalty"] = presence_penalty
+    if codex_transport:
+        kwargs["codex_transport"] = codex_transport
+    if claude_code_transport:
+        kwargs["claude_code_transport"] = claude_code_transport
 
     config = LMProviderConfig(**kwargs)
 
@@ -418,357 +566,78 @@ def load_config_from_env() -> LMProviderConfig:
 
 
 def has_explicit_model_override(env: Mapping[str, str] | None = None) -> bool:
-    """Return whether CLIO_LM_MODEL was explicitly set."""
-    current_env = env or os.environ
+    """Return whether the LM model was explicitly pinned (file OR env).
+
+    True when either the config-file layer sets a non-empty ``lm.model`` or the
+    ``CLIO_LM_MODEL`` environment variable is set. The injected ``env`` mapping
+    (used by tests) overrides the process environment for the env-tier check but
+    does not affect the file layer.
+    """
+    from clio_agent import conf  # noqa: PLC0415 - keep config.py a leaf; lazy per-call
+
+    file_model = conf.store().file_value("lm.model")
+    if isinstance(file_model, str) and file_model.strip():
+        return True
+    current_env = env if env is not None else os.environ
     return bool(current_env.get("CLIO_LM_MODEL", "").strip())
 
 
-def create_lm(config: LMProviderConfig) -> dspy.LM:
-    """Create a dspy.LM instance from provider config.
-
-    For openai/anthropic, uses the provider prefix (e.g., 'openai/gpt-4o-mini').
-    For lm_studio/ollama, uses 'openai/{model}' with custom api_base.
-
-    Args:
-        config: LM provider configuration
-
-    Returns:
-        Configured dspy.LM instance
-    """
-    dspy = _dspy()
-    model_name = _resolve_model_name(config)
-
-    extras = _thinking_kwargs(config)
-    return dspy.LM(
-        model=model_name,
-        api_base=config.api_base,
-        api_key=config.api_key,
-        temperature=config.temperature,
-        max_tokens=config.max_tokens,
-        model_type="chat",
-        # iowarp/clio-agent#8: disable DSPy LM cache so token usage
-        # always lands in dspy.settings.usage_tracker (cache_hits
-        # short-circuit before add_usage fires). Real serving means
-        # identical prompts should still bill — accounting matters
-        # more than the small spend saved on duplicate questions.
-        cache=False,
-        **extras,
-    )
-
-
-def _resolve_model_name(config: LMProviderConfig) -> str:
-    """Prefix the configured model id for litellm.
-
-    - ``openai`` / ``anthropic``: native litellm prefix.
-    - everything else (lm_studio, ollama, argonne, …): treated as
-      OpenAI-compatible by litellm, so we prefix with ``openai/``.
-
-    The only id we rewrite is ``openai/<rest>`` — strip the leading
-    ``openai/`` to avoid the ``openai/openai/claude-haiku-4-5`` shape
-    DSPy/litellm rejects (commit a2bac1a). HuggingFace-style ids like
-    ``ibm/granite-4-h-tiny`` or ``meta-llama/Meta-Llama-3.1-8B-Instruct``
-    pass through intact — the earlier "split at first slash" was too
-    eager and silently mangled them.
-    """
-    if config.provider in ("openai", "anthropic"):
-        return f"{config.provider}/{config.model}"
-    bare = config.model
-    if bare.startswith("openai/"):
-        bare = bare[len("openai/"):]
-    return f"openai/{bare}"
-
-
-def _thinking_kwargs(config: LMProviderConfig) -> dict:
-    """Translate thinking_budget to provider-specific litellm kwargs.
-
-    Anthropic: extended-thinking is configured via the ``thinking``
-    parameter (budget_tokens controls how much reasoning the model
-    spends). DSPy/litellm pass it through as a kwarg.
-
-    OpenAI / openai-compatible: rough mapping of token budget to
-    `reasoning_effort` ('low' | 'medium' | 'high'). Most openai-compat
-    proxies ignore unknown kwargs gracefully.
-
-    All other providers: returns {} so we don't trip on unsupported
-    parameters.
-    """
-    n = int(getattr(config, "thinking_budget", 0) or 0)
-    if n <= 0:
-        return {}
-    if config.provider == "anthropic":
-        return {"thinking": {"type": "enabled", "budget_tokens": n}}
-    if config.provider in ("openai", "lm_studio", "ollama", "argonne"):
-        if n < 2000:
-            effort = "low"
-        elif n < 8000:
-            effort = "medium"
-        else:
-            effort = "high"
-        return {"reasoning_effort": effort}
-    return {}
-
-
-def create_router_lm(config: LMProviderConfig) -> dspy.LM:
-    """Create a lower-temperature LM for deterministic routing.
-
-    Uses config.router_temperature instead of config.temperature.
-
-    Args:
-        config: LM provider configuration
-
-    Returns:
-        Configured dspy.LM instance with lower temperature
-    """
-    dspy = _dspy()
-    model_name = _resolve_model_name(config)
-
-    return dspy.LM(
-        model=model_name,
-        api_base=config.api_base,
-        api_key=config.api_key,
-        temperature=config.router_temperature,
-        max_tokens=config.max_tokens,
-        model_type="chat",
-        cache=False,  # see create_lm — same rationale
-        **_thinking_kwargs(config),
-    )
-
-
 # ============================================================================
-# LM STUDIO MODEL FETCHING
+# RE-EXPORTS — runtime LM behavior extracted to clio_agent.lm.* (#769)
 # ============================================================================
-
-
-def fetch_lm_studio_models(
-    base_url: str = "http://127.0.0.1:1234", max_retries: int = 10, retry_delay: float = 2.0
-) -> List[str]:
-    """Fetch available models from LM Studio API with retry logic.
-
-    Args:
-        base_url: LM Studio base URL
-        max_retries: Maximum connection attempts
-        retry_delay: Delay between retries in seconds
-
-    Returns:
-        List of model IDs
-    """
-    import time
-
-    models_url = _lm_studio_models_url(base_url)
-
-    for attempt in range(max_retries):
-        try:
-            response = requests.get(models_url, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            models = [model["id"] for model in data["data"]]
-            if models:
-                return models
-            else:
-                print(
-                    f"Waiting for models to load in LM Studio... (attempt {attempt + 1}/{max_retries})"
-                )
-                time.sleep(retry_delay)
-        except requests.exceptions.ConnectionError:
-            if attempt == 0:
-                print(f"Connecting to LM Studio at {base_url}...")
-            print(f"   Retry {attempt + 1}/{max_retries}... (waiting {retry_delay}s)")
-            time.sleep(retry_delay)
-        except Exception as e:
-            print(f"Error fetching models: {e}")
-            return []
-
-    print(f"Could not connect to LM Studio after {max_retries} attempts")
-    print(f"   Please ensure LM Studio is running at {base_url}")
-    print("   and a model is loaded")
-    return []
-
-
-def _lm_studio_models_url(base_url: str) -> str:
-    """Return the normalized LM Studio model-list endpoint."""
-    normalized = base_url.rstrip("/")
-    if normalized.endswith("/v1"):
-        return f"{normalized}/models"
-    return f"{normalized}/v1/models"
-
-
-def _openai_compatible_api_base(base_url: str) -> str:
-    """Return an OpenAI-compatible API base with exactly one /v1 suffix."""
-    normalized = base_url.rstrip("/")
-    if normalized.endswith("/v1"):
-        return normalized
-    return f"{normalized}/v1"
-
-
-def select_models_for_agents(models: List[str]) -> tuple[str, str]:
-    """Select main and expert models from available models.
-
-    Prioritizes instruction-tuned/chat models and avoids embedding models.
-
-    Args:
-        models: List of available model IDs
-
-    Returns:
-        Tuple of (main_model, expert_model)
-    """
-    main_model = None
-    expert_model = None
-
-    # Filter out embedding models
-    chat_models = [m for m in models if "embedding" not in m.lower()]
-
-    if not chat_models:
-        print("No chat/instruct models found. Using available models as fallback.")
-        chat_models = models
-
-    # Strategy 1: Look for granite chat models
-    granite_models = [m for m in chat_models if "granite" in m.lower()]
-
-    if granite_models:
-        main_model = granite_models[0]
-        # Try to find a different granite model for expert, or use the same one
-        if len(granite_models) > 1:
-            expert_model = granite_models[1]
-        else:
-            expert_model = main_model
-
-    # Strategy 2: If no granite models, take any available chat model
-    if main_model is None and chat_models:
-        main_model = chat_models[0]
-
-    if expert_model is None:
-        # Try to pick a different model if possible
-        remaining_models = [m for m in chat_models if m != main_model]
-        if remaining_models:
-            expert_model = remaining_models[0]
-        else:
-            expert_model = main_model
-
-    # Fallback default if absolutely nothing found (shouldn't happen if models list is not empty)
-    if main_model is None:
-        main_model = "ibm/granite-4-h-tiny"
-    if expert_model is None:
-        expert_model = "ibm/granite-4-h-tiny"
-
-    print("Selected models:")
-    print(f"  Main/Router: {main_model}")
-    print(f"  Expert/Reasoner: {expert_model}")
-
-    return main_model, expert_model
-
-
-# ============================================================================
-# BACKWARD-COMPATIBLE CONFIGURATION CLASSES
-# ============================================================================
-
-
-@dataclass
-class LMStudioConfig:
-    """Configuration for LM Studio provider.
-
-    Default: IBM Granite model at http://127.0.0.1:1234
-    """
-
-    base_url: str = "http://127.0.0.1:1234"
-    model: str = "ibm/granite-4-h-tiny"
-    temperature: float = 1.0
-    max_tokens: int = 32000
-    api_key: str = "lm-studio"
-
-
-@dataclass
-class RouterLMConfig:
-    """Configuration for router LM (deterministic for accurate routing)."""
-
-    base_url: str = "http://127.0.0.1:1234"
-    model: str = "ibm/granite-4-h-tiny"
-    temperature: float = 0.3
-    max_tokens: int = 32000
-    api_key: str = "lm-studio"
-
-
-@dataclass
-class ReasonerLMConfig:
-    """Configuration for reasoner/expert LM."""
-
-    base_url: str = "http://127.0.0.1:1234"
-    model: str = "ibm/granite-4-h-tiny"
-    temperature: float = 1.0
-    max_tokens: int = 32000
-    api_key: str = "lm-studio"
-
-
-# ============================================================================
-# BACKWARD-COMPATIBLE DSPY SETUP FUNCTIONS
-# ============================================================================
-
-
-def configure_dspy_lm_studio(config: Optional[LMStudioConfig] = None) -> dspy.LM:
-    """Configure DSPy to use LM Studio for main agent.
-
-    Args:
-        config: LMStudioConfig instance. If None, uses defaults.
-
-    Returns:
-        Configured DSPy LM instance
-
-    Example:
-        >>> lm = configure_dspy_lm_studio()
-        >>> # Or with custom config
-        >>> custom_config = LMStudioConfig(base_url="http://100.127.255.172:1234")
-        >>> lm = configure_dspy_lm_studio(custom_config)
-    """
-    dspy = _dspy()
-    cfg = config or LMStudioConfig()
-
-    # Use openai/ prefix - LM Studio is OpenAI-compatible
-    model_name = f"openai/{cfg.model}"
-
-    lm = dspy.LM(
-        model=model_name,
-        api_base=_openai_compatible_api_base(cfg.base_url),
-        api_key=cfg.api_key,
-        temperature=cfg.temperature,
-        max_tokens=cfg.max_tokens,
-        model_type="chat",
-        cache=False,
-    )
-
-    return lm
-
-
-def configure_dspy_router_lm_studio(config: Optional[RouterLMConfig] = None) -> dspy.LM:
-    """Configure DSPy to use LM Studio for router (deterministic)."""
-    dspy = _dspy()
-    cfg = config or RouterLMConfig()
-    model_name = f"openai/{cfg.model}"
-
-    return dspy.LM(
-        model=model_name,
-        api_base=_openai_compatible_api_base(cfg.base_url),
-        api_key=cfg.api_key,
-        temperature=cfg.temperature,
-        max_tokens=cfg.max_tokens,
-        model_type="chat",
-        cache=False,
-    )
-
-
-def configure_dspy_reasoner_lm_studio(config: Optional[ReasonerLMConfig] = None) -> dspy.LM:
-    """Configure DSPy to use LM Studio for reasoner (creative)."""
-    dspy = _dspy()
-    cfg = config or ReasonerLMConfig()
-    model_name = f"openai/{cfg.model}"
-
-    return dspy.LM(
-        model=model_name,
-        api_base=_openai_compatible_api_base(cfg.base_url),
-        api_key=cfg.api_key,
-        temperature=cfg.temperature,
-        max_tokens=cfg.max_tokens,
-        model_type="chat",
-        cache=False,
-    )
+# config.py owns dotenv, LMProviderConfig (+ resolve_effective_max_tokens),
+# load_config_from_env / has_explicit_model_override, setup_dspy +
+# is_local_openai_compatible_backend, and the _resolve_argonne_api_key
+# monkeypatch seam. Everything else that used to live here now lives in the
+# clio_agent.lm.* package and clio_agent.providers.lmstudio_discovery; these
+# re-exports keep the historical ``from clio_agent.config import X`` seams (and
+# their monkeypatch points) working. New code should import from the owning
+# module directly.
+# Each line is a plain re-export whose name is imported for side-effect (so
+# ``config.<name>`` and the monkeypatch seams keep resolving); ``# noqa: E402,
+# F401`` marks the intentional after-code, imported-but-unused re-export.
+from clio_agent.lm.adapters import (
+    _coerce_constructor_repr_to_jsonable,  # noqa: E402, F401
+    _dump_unparseable_completion,  # noqa: E402, F401
+    _fix_guided_schema,  # noqa: E402, F401
+    _guided_output_enabled,  # noqa: E402, F401
+    _lenient_chat_adapter_cls,  # noqa: E402, F401
+    _live_streaming_enabled,  # noqa: E402, F401
+    _parse_retry_attempts,  # noqa: E402, F401
+    _reasoning_model_capability,  # noqa: E402, F401
+    _recover_malformed_structured_value,  # noqa: E402, F401
+    _signature_strict_response_format,  # noqa: E402, F401
+    _strict_guided_json_adapter_cls,  # noqa: E402, F401
+    _unwrap_self_named_envelope,  # noqa: E402, F401
+    create_chat_adapter,  # noqa: E402, F401
+)
+from clio_agent.lm.factory import (
+    _construct_lm,  # noqa: E402, F401
+    _ensure_provider_registered,  # noqa: E402, F401
+    _is_argonne_sophia,  # noqa: E402, F401
+    _provider_lm_kwargs,  # noqa: E402, F401
+    _resolve_lm_studio_model_if_needed,  # noqa: E402, F401
+    _resolve_model_name,  # noqa: E402, F401
+    _thinking_disabled,  # noqa: E402, F401
+    _thinking_kwargs,  # noqa: E402, F401
+    create_lm,  # noqa: E402, F401
+    create_planner_lm,  # noqa: E402, F401
+)
+from clio_agent.lm.io_logging import (
+    _TRANSIENT_PROVIDER_MARKERS,  # noqa: E402, F401
+    _io_logging_lm_cls,  # noqa: E402, F401
+    _is_transient_provider_error,  # noqa: E402, F401
+    _lm_transient_backoff_s,  # noqa: E402, F401
+    _lm_transient_retries,  # noqa: E402, F401
+    _StreamingPlumbingError,  # noqa: E402, F401
+    _token_liveness_enabled,  # noqa: E402, F401
+)
+from clio_agent.providers.lmstudio_discovery import (
+    LMStudioDiscoveryError,  # noqa: E402, F401
+    _openai_compatible_api_base,  # noqa: E402, F401
+    list_lm_studio_models,  # noqa: E402, F401
+    select_models_for_agents,  # noqa: E402, F401
+)
 
 
 def setup_dspy(model: Optional[str] = None, verbose: bool = True) -> dspy.LM:
@@ -815,15 +684,19 @@ def setup_dspy(model: Optional[str] = None, verbose: bool = True) -> dspy.LM:
         print("  - Check CLIO_LM_* environment variables")
         raise
 
-    # Local OpenAI-compatible servers often reject LiteLLM's JSON mode fallback
-    # (`response_format={"type": "json_object"}`). Keep them on text chat
-    # formatting; cloud providers can still use DSPy's JSON fallback.
-    use_json_fallback = not is_local_openai_compatible_backend(config)
     dspy = _dspy()
-    dspy.configure(
-        lm=lm,
-        adapter=dspy.ChatAdapter(use_json_adapter_fallback=use_json_fallback),
-    )
+    # Register the LM-activity callback so the GACT no-progress watchdog can tell
+    # an actively-generating (e.g. deep-reasoning) model from a wedged one. A
+    # reasoning model can stream tens of thousands of reasoning_content tokens
+    # with no answer-content tokens; without this signal the watchdog kills it
+    # mid-think. See clio_agent.runtime.lm_activity.
+    from clio_agent.runtime.lm_activity import build_dspy_callback  # noqa: PLC0415
+
+    _configure_kwargs: dict[str, Any] = {"lm": lm, "adapter": create_chat_adapter(config)}
+    _lm_activity_cb = build_dspy_callback()
+    if _lm_activity_cb is not None:
+        _configure_kwargs["callbacks"] = [_lm_activity_cb]
+    dspy.configure(**_configure_kwargs)
 
     return lm
 
@@ -876,7 +749,7 @@ if __name__ == "__main__":
 
         print("\nConfiguration working!")
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - CLI self-test prints the error to the user
         print(f"\nError: {e}")
         print("\nTroubleshooting:")
         print("- Ensure LM provider is running")

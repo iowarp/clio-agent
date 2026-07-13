@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB15: tests for GET /v1/metrics.
+"""tests for GET /v1/metrics.
 
 The endpoint summarises runtime state — sessions by status + the
 in-memory message counts — into the SPEC §6.16 wire envelope.
@@ -32,9 +32,7 @@ class _FakeAgent:
 
 @pytest.fixture()
 def client(tmp_path: Path) -> TestClient:
-    return TestClient(
-        build_app(sessions_path=tmp_path / "sessions.json", agent=_FakeAgent())
-    )
+    return TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=_FakeAgent()))
 
 
 def test_metrics_empty_state(client: TestClient) -> None:
@@ -72,3 +70,40 @@ def test_metrics_reflects_session_and_message_counts(client: TestClient) -> None
     assert body["messages"]["by_role"].get("assistant") == 1
     # After the turn settles the session should be 'idle'.
     assert body["sessions"]["by_status"].get("idle", 0) >= 1
+
+
+def test_metrics_latencies_aggregate_tool_call_durations(client: TestClient) -> None:
+    # iowarp/clio-agent#655: /v1/metrics.latencies must report real recorded
+    # tool-call durations (per tool + an overall tool_call bucket), not {}.
+    from clio_agent.gact.app import _append_session_message
+    from clio_agent.gact.types import Message
+
+    app = client.app
+    sid = "sess_metrics"
+    # #770 C3: write through the real session_store seam (production never
+    # mutates app.state.messages directly), so the running metrics_counters
+    # aggregate that /v1/metrics reads is kept in lock-step.
+    _append_session_message(
+        app,
+        sid,
+        Message(
+            id="m1",
+            session_id=sid,
+            role="assistant",
+            created_at="t",
+            updated_at="t",
+            metadata={
+                "tools_called": [
+                    {"name": "fs_read_file", "ok": True, "duration_ms": 10.0},
+                    {"name": "fs_read_file", "ok": True, "duration_ms": 30.0},
+                    {"name": "hdf5.analyze", "ok": True, "duration_ms": 100.0},
+                    {"name": "noisy", "ok": True, "duration_ms": 0},  # dropped (<=0)
+                ]
+            },
+        ),
+    )
+    lat = client.get("/v1/metrics").json()["latencies"]
+    assert lat["tool_call"]["count"] == 3
+    assert lat["tool_call"]["max_ms"] == 100.0
+    assert lat["tool:fs_read_file"]["count"] == 2
+    assert "tool:noisy" not in lat  # zero/invalid durations excluded

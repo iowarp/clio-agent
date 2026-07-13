@@ -1,5 +1,7 @@
 """Tests for file access policy validation."""
 
+from clio_agent import conf
+from clio_agent.tools import file_policy
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
 
 
@@ -48,11 +50,17 @@ def test_validate_read_rejects_large_file(tmp_path):
     assert result["error"]["details"]["size_bytes"] == 10
 
 
-def test_validate_read_rejects_symlink_by_default(tmp_path):
+def test_validate_read_rejects_symlink_by_default(tmp_path, monkeypatch):
     real_file = tmp_path / "real.h5"
     real_file.write_bytes(b"content")
     link = tmp_path / "link.h5"
-    link.symlink_to(real_file)
+    try:
+        link.symlink_to(real_file)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            monkeypatch.setattr(file_policy, "_has_symlink", lambda _path: True)
+        else:
+            raise
     policy = FileAccessPolicy(allowed_roots=(tmp_path,))
 
     try:
@@ -81,3 +89,53 @@ def test_policy_from_mapping_reports_effective_settings(tmp_path):
     assert result["allow_symlinks"] is True
     assert "read_mode" in result
     assert "write_mode" in result
+
+
+def test_policy_from_env_prefers_workspace_config(tmp_path, monkeypatch):
+    config_root = tmp_path / "from-config"
+    env_root = tmp_path / "from-env"
+    config_root.mkdir()
+    env_root.mkdir()
+    config_dir = tmp_path / ".clio"
+    config_dir.mkdir()
+    (config_dir / "config.yaml").write_text(
+        "\n".join(
+            [
+                "tools:",
+                "  file_policy:",
+                "    allowed_roots:",
+                f"      - {config_root.as_posix()}",
+                "    max_file_size_bytes: 10GB",
+                "    allow_symlinks: true",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(env_root))
+    monkeypatch.setenv("CLIO_MAX_FILE_SIZE_BYTES", "1024")
+    monkeypatch.setenv("CLIO_ALLOW_SYMLINKS", "false")
+    conf.reload()
+    try:
+        policy = FileAccessPolicy.from_env()
+    finally:
+        conf.reload()
+
+    assert policy.allowed_roots == (config_root.resolve(),)
+    assert policy.max_file_size_bytes == 10_000_000_000
+    assert policy.allow_symlinks is True
+
+
+def test_default_allowed_roots_use_platform_tempdir(monkeypatch):
+    """Default roots must use tempfile.gettempdir(), not a POSIX /tmp literal (#765)."""
+    import tempfile
+    from pathlib import Path
+
+    monkeypatch.delenv("CLIO_ALLOWED_ROOTS", raising=False)
+
+    roots = file_policy._default_allowed_roots()
+
+    assert Path(tempfile.gettempdir()) in roots
+    for root in roots:
+        assert root in (Path.cwd(), Path(tempfile.gettempdir()))

@@ -1,12 +1,13 @@
 # CLIO uninstaller (Windows / PowerShell).
 #
 # Undoes install.ps1: stops the server, removes the launcher, and
-# deletes the install prefix. Pass -Purge to also remove the gact
-# config + agent registry under ~\.config\gact.
+# deletes the install prefix. Pass -Purge to also remove CLIO's user
+# state + config (~\.config\clio-agent and ~\.config\gact).
 #
 #   Flags:
 #     -Yes     skip the confirmation prompt (non-interactive)
-#     -Purge   also remove ~\.config\gact (config, themes, agents.json)
+#     -Purge   also remove ~\.config\clio-agent (sessions, workspaces,
+#              blueprints, ARC) AND ~\.config\gact (TUI config/themes)
 #
 #   Environment overrides (must match the install):
 #     CLIO_PREFIX   install root      (default: $HOME\AppData\Local\clio)
@@ -29,6 +30,7 @@ if ($env:CLIO_PORT)    { $Port   = [int]$env:CLIO_PORT } else { $Port = 17800 }
 if ($env:CLIO_BIN_DIR) { $BinDir = $env:CLIO_BIN_DIR } else { $BinDir = Join-Path $HOME 'AppData\Local\Microsoft\WindowsApps' }
 
 $PidFile     = Join-Path $Prefix 'clio-server.pid'
+$ClioConfig  = Join-Path $HOME '.config\clio-agent'
 $GactConfig  = Join-Path $HOME '.config\gact'
 $LauncherCmd = Join-Path $BinDir 'clio.cmd'
 $LauncherPs1 = Join-Path $BinDir 'clio.ps1'
@@ -55,8 +57,13 @@ Write-Host "CLIO uninstall - the following will be removed:"
 Write-Host "  install prefix:  $Prefix"
 Write-Host "  launcher:        $LauncherCmd"
 Write-Host "  launcher:        $LauncherPs1"
-if ($Purge) { Write-Host "  gact config:     $GactConfig  (will be removed)" }
-else        { Write-Host "  gact config:     $GactConfig  (kept; pass -Purge to remove)" }
+if ($Purge) {
+    Write-Host "  clio config:     $ClioConfig  (will be removed)"
+    Write-Host "  gact config:     $GactConfig  (will be removed)"
+} else {
+    Write-Host "  clio config:     $ClioConfig  (kept; pass -Purge to remove)"
+    Write-Host "  gact config:     $GactConfig  (kept; pass -Purge to remove)"
+}
 Write-Host ""
 
 if (-not $Yes) {
@@ -89,7 +96,7 @@ if ($serverPid) {
 # that never registered a pidfile - exactly the state install.ps1 hit).
 $escaped = [regex]::Escape($Prefix)
 Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-    Where-Object { $_.CommandLine -and $_.CommandLine -match 'clio-agent-gact' -and $_.CommandLine -match $escaped } |
+    Where-Object { $_.CommandLine -and $_.CommandLine -match 'clio-agent(-gact)?' -and $_.CommandLine -match $escaped } |
     ForEach-Object {
         Say "Killing leftover process (pid $($_.ProcessId))"
         & taskkill /PID $_.ProcessId /T /F | Out-Null
@@ -106,13 +113,13 @@ if (Test-Path $Prefix) {
         Warn "could not fully remove $Prefix - a file may still be locked; retry after closing CLIO/gact."
     }
 }
-if ($Purge -and (Test-Path $GactConfig)) {
-    Say "Removing $GactConfig"
-    Remove-Item $GactConfig -Recurse -Force -ErrorAction SilentlyContinue
+if ($Purge) {
+    if (Test-Path $ClioConfig) { Say "Removing $ClioConfig"; Remove-Item $ClioConfig -Recurse -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $GactConfig) { Say "Removing $GactConfig"; Remove-Item $GactConfig -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
 Say "CLIO uninstalled."
-if (-not $Purge -and (Test-Path $GactConfig)) {
-    Write-Host "  gact config kept at $GactConfig (re-run with -Purge to remove)"
+if (-not $Purge -and ((Test-Path $ClioConfig) -or (Test-Path $GactConfig))) {
+    Write-Host "  config kept ($ClioConfig, $GactConfig) - re-run with -Purge to remove"
 }
 exit 0

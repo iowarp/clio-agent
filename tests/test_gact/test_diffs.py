@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB21: two-phase edits."""
+"""two-phase edits."""
 
 from __future__ import annotations
 
@@ -27,13 +27,12 @@ class _Agent:
 
 
 def _client(tmp_path: Path, diffs) -> TestClient:
-    return TestClient(
-        build_app(sessions_path=tmp_path / "s.json", agent=_Agent(diffs))
-    )
+    return TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent(diffs)))
 
 
 def _turn(client: TestClient, sid: str) -> dict:
     from .conftest import complete_turn
+
     return complete_turn(client, sid, "propose an edit")
 
 
@@ -47,9 +46,12 @@ SAMPLE_DIFF = """--- a/main.go
 
 
 def test_assistant_emits_file_diff_part(tmp_path: Path) -> None:
-    client = _client(tmp_path, diffs=[
-        {"path": "main.go", "unified_diff": SAMPLE_DIFF},
-    ])
+    client = _client(
+        tmp_path,
+        diffs=[
+            {"path": "main.go", "unified_diff": SAMPLE_DIFF},
+        ],
+    )
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
     a = _turn(client, sid)
     parts = a["parts"]
@@ -61,16 +63,17 @@ def test_assistant_emits_file_diff_part(tmp_path: Path) -> None:
 
 
 def test_apply_flips_status_and_returns_paths(tmp_path: Path) -> None:
-    client = _client(tmp_path, diffs=[
-        {"path": "a.py", "unified_diff": SAMPLE_DIFF},
-        {"path": "b.py", "unified_diff": SAMPLE_DIFF},
-    ])
+    client = _client(
+        tmp_path,
+        diffs=[
+            {"path": "a.py", "unified_diff": SAMPLE_DIFF},
+            {"path": "b.py", "unified_diff": SAMPLE_DIFF},
+        ],
+    )
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
     _turn(client, sid)
 
-    resp = client.post(
-        f"/v1/sessions/{sid}/diffs/apply", json={"paths": ["a.py"]}
-    ).json()
+    resp = client.post(f"/v1/sessions/{sid}/diffs/apply", json={"paths": ["a.py"]}).json()
     assert resp["applied"] == ["a.py"]
 
     # b.py still pending — apply-all picks it up.
@@ -83,9 +86,12 @@ def test_apply_flips_status_and_returns_paths(tmp_path: Path) -> None:
 
 
 def test_reject_flips_status(tmp_path: Path) -> None:
-    client = _client(tmp_path, diffs=[
-        {"path": "a.py", "unified_diff": SAMPLE_DIFF},
-    ])
+    client = _client(
+        tmp_path,
+        diffs=[
+            {"path": "a.py", "unified_diff": SAMPLE_DIFF},
+        ],
+    )
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
     _turn(client, sid)
     resp = client.post(f"/v1/sessions/{sid}/diffs/reject", json={}).json()

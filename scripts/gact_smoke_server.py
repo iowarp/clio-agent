@@ -1,10 +1,10 @@
 """Dev-only GACT server with a scripted fake agent.
 
 Used by gact-tui's ``screenshot_clio_e2e.tape`` VHS recording +
-CLIO-BBBBBBBBBB14 end-to-end smoke. It binds the same ``build_app``
+end-to-end smoke. It binds the same ``build_app``
 the production ``clio-agent-gact`` console script builds, but with
 ``agent=FakeClioAgent()`` so the POST message path returns without
-needing an LM, DSPy config, API keys, or Meridian.
+needing an LM, DSPy config, or API keys.
 
 Not an alternate production path — it lives under ``scripts/`` and
 its entry point is spelled differently (``clio-agent-gact-smoke``)
@@ -77,7 +77,7 @@ class FakeClioAgent:
 
     def forward(self, question: str, session_id: str):
         q = question.lower()
-        # CLIO-BBBBBBBBBB29: scripted side-effects for a richer TUI
+        # Scripted side-effects for a richer TUI
         # demo. Keywords -> extras that drive specific TUI surfaces:
         #   "propose"/"edit"   -> file_diff Part + pending diffs pane
         #   "delete"/"destroy" -> permission.requested prompt

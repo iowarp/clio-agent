@@ -11,14 +11,64 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
       - run: uv sync --extra dev --extra optimizers
-      - run: uv run ruff check src/ tests/ scripts/create_demo_data.py
+      - run: uv run ruff check src/ tests/ scripts/create_demo_data.py scripts/validate_marketplace_blueprints.py
+      # Anti-re-accretion guardrails (iowarp/clio-agent#714, #774). BLOCKING:
+      # now that the #767 gact decomposition has landed, these enforce per-file
+      # ratchet baselines -- a new god-file or a baselined file that regrows
+      # past its recorded count fails the build. The baselines may only ratchet
+      # DOWN (see the scripts' RATCHET_BASELINE docstrings).
+      - name: "guard: file-size ratchet (#714, #774)"
+        run: uv run python scripts/check_file_size.py
+      - name: "guard: no class-in-function ratchet (#714, #774)"
+        run: uv run python scripts/check_no_class_in_function.py
+      - name: "warn: ruff complexity (C901, PLR0915) (#714)"
+        run: uv run ruff check --select C901,PLR0915 src/
+        continue-on-error: true
+      # Silent-fallback ratchet (iowarp/clio-agent#772). BLOCKING: reports
+      # BLE001/S110/E722 counts and fails when the total EXCEEDS the baseline
+      # recorded in the script (which may only ratchet down as sites are
+      # burned down).
+      - name: "check: silent-fallback ratchet (BLE001, S110, E722) (#772)"
+        run: uv run python scripts/check_silent_fallbacks.py
       - run: bash -n scripts/homelab-env.sh
       - run: uv run mypy src/
       # Coverage floor lowered to 70 as the v0.5 merge brought in
       # large under-tested gact code; tracked in iowarp/clio-agent#31
       # to ratchet back up to 80% as the new code gets tests.
-      - run: uv run pytest tests/ -m "not integration" --cov-fail-under=70
+      # Coverage flags are explicit here on purpose: pyproject addopts is
+      # empty so local pytest runs stay lean (iowarp/clio-agent#773).
+      # --cov-branch measures branch coverage (not just line): the floor is
+      # anchored one point below the measured combined line+branch total
+      # (measured 79% on develop @ 2026-07-07; floor 78) so a genuine
+      # regression fails CI while normal noise does not. Ratchet intent:
+      # raise this toward the 80% target as gact code gains tests (#31/#773).
+      - run: uv run pytest tests/ -m "not integration" --cov=clio_agent --cov-branch --cov-report=term-missing --cov-fail-under=78
+
+  flake-hunt:
+    # Concurrency / shared-state tests (marked ``@pytest.mark.concurrency``) run
+    # under xdist load repeated x3. This surfaces GENUINELY-THREADED races that a
+    # single serial run masks: EventBus cross-thread publish (#758) and ARC
+    # concurrent segment writes, whose failure is timing-dependent and only shows
+    # up over repeated interleavings. NOTE: ``--dist loadfile`` isolates each file
+    # to its OWN worker PROCESS, so it does NOT reproduce #735 (a single-process
+    # multi-app module-global clobber) — that class is guarded DETERMINISTICALLY
+    # by test_sync_mcp_tool_executor_prefers_per_turn_observer_over_clobbered_global
+    # and the two-app telemetry test in the serial ``check`` job. Kept separate
+    # from ``check`` so its parallel/repeat flags never touch the coverage-gated
+    # main run.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+      - run: uv sync --extra dev --extra optimizers
+      - run: uv run pytest -m concurrency -n 4 --dist loadfile --count 3 -p no:cacheprovider

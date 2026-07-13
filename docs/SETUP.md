@@ -7,7 +7,7 @@ UI at CLIO and start asking scientific-data questions.
 ## What you're installing
 
 - **clio-agent** (Python) — the agent itself, plus a FastAPI server
-  (`clio-agent-gact`) that speaks the GACT v0.2 contract.
+  (`clio-agent serve`) that speaks the GACT v0.2 contract.
 - **gact** (Go binary) — the TUI front-end. Connects to any
   GACT-compliant backend via REST + SSE.
 
@@ -17,17 +17,14 @@ client. This guide covers the common case: both together.
 
 ## Prerequisites
 
-- Python 3.12+ and [`uv`](https://github.com/astral-sh/uv) — `pip
-  install uv` works in a pinch but the lab usually has it.
-- Go 1.26.2+ for the TUI binary (or grab a release artefact when we
-  ship them).
+- Release install: [`uv`](https://github.com/astral-sh/uv) or Python
+  3.12+ with `pip`.
+- Source-build install: `git`, `uv`, and Go 1.26+ when you set
+  `CLIO_REF` or `GACT_REF`.
 - An LM endpoint. Any of these:
   - **OpenAI / ChatGPT** — needs `OPENAI_API_KEY` (most lab
     members; same key Codex CLI uses).
   - **Anthropic Claude direct** — needs `ANTHROPIC_API_KEY`.
-  - **Claude Max via Meridian** — Meridian proxies your Claude Max
-    OAuth as an OpenAI-compatible API. Cheapest if you have a Max
-    subscription. See [Meridian](https://github.com/rynfar/meridian).
   - **OpenRouter** — single key, many providers (incl. free
     tier models for testing).
   - **Local: LM Studio / Ollama** — fully on-device.
@@ -42,16 +39,18 @@ curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/inst
 irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex
 ```
 
-Installs both repos under `~/.local/share/clio` (or `%LOCALAPPDATA%\clio`),
-builds the TUI, and drops a `clio` launcher into `~/.local/bin`. The
-launcher boots the server on `:17800` if it isn't already running and
+Installs `clio-agent` from PyPI under `~/.local/share/clio` (or
+`%LOCALAPPDATA%\clio`), downloads the matching prebuilt `gact` release
+binary for your OS/arch, and drops a `clio` launcher into `~/.local/bin`.
+The launcher boots the server on `:17800` if it isn't already running and
 attaches the TUI. Run `clio` and you're chatting.
 
-Pin a specific tag: `CLIO_REF=v0.3.1 GACT_REF=v0.2.1 curl … | sh`. See
-[install/README.md](../install/README.md) for the full env-override
-table.
+Pin a specific release: `CLIO_VERSION=0.5.1 GACT_VERSION=v0.3.0 curl ... | bash`.
+Use `CLIO_REF` or `GACT_REF` only when you intentionally want the
+source-build path. See [install/README.md](../install/README.md) for the
+full env-override table.
 
-## Install — manual (if you want to control where everything lives)
+## Install — source build (if you want unreleased work)
 
 ```bash
 # Pull both repos somewhere convenient.
@@ -70,10 +69,10 @@ go build -o gact .
 ## Configure providers from inside the TUI (no env vars needed)
 
 The first time you run the TUI against an unconfigured backend, the
-**LM Provider** modal pops automatically — pick a preset (Meridian /
-Claude Max via Meridian / Anthropic API / OpenAI / OpenRouter / LM
-Studio / Ollama), paste an API key if needed, save. CLIO is wired
-in-place; the next message uses the new provider.
+**LM Provider** modal pops automatically — pick a preset (OpenAI /
+Anthropic API / OpenRouter / LM Studio / Ollama / ALCF Sophia /
+Metis), paste an API key if needed, save. CLIO is wired in-place;
+the next message uses the new provider.
 
 To swap mid-session: **Ctrl+S** → Settings → Model → **Change provider…**
 The same modal opens, you re-pick, save, and the next turn uses the new
@@ -83,7 +82,7 @@ provider. No restart, no env-var dance.
 
 ```bash
 cd clio-agent
-uv run clio-agent-gact --port 17800
+uv run clio-agent serve --port 17800
 ```
 
 The server boots without an LM wired — the TUI will pop a config
@@ -94,7 +93,7 @@ export CLIO_LM_PROVIDER=openai
 export CLIO_LM_API_BASE=https://api.openai.com/v1
 export CLIO_LM_MODEL=gpt-4o-mini
 export CLIO_LM_API_KEY=sk-...
-uv run clio-agent-gact --port 17800
+uv run clio-agent serve --port 17800
 ```
 
 ## Connect the TUI
@@ -102,6 +101,10 @@ uv run clio-agent-gact --port 17800
 ```bash
 GACT_BACKEND=http://127.0.0.1:17800 ./gact
 ```
+
+Native local clients do not need browser CORS. Browser/WebView clients must
+explicitly opt in trusted origins with `CLIO_GACT_CORS_ORIGINS`; see
+`docs/GACT_BROWSER_ORIGIN_SECURITY.md`.
 
 If CLIO has no LM, the modal pops automatically:
 1. **Pick a preset** with `←/→` (OpenAI is at the top of the list).
@@ -127,15 +130,6 @@ Cost shows in the TUI footer per turn (e.g. `$0.0021  150 in / 800 out`).
 The cost-meter price table tracks `gpt-4o-mini` ($0.15/$0.60 per M)
 and `gpt-4o` ($2.5/$10 per M); other OpenAI models fall through to
 zero — file an issue if you need a model added to the table.
-
-### Meridian (Claude Max)
-
-If you have a Claude Max subscription, install Meridian once
-(`npm install -g @rynfar/meridian` then `meridian start`) and use:
-- `provider: openai-compatible`
-- `api_base: http://127.0.0.1:3456/v1`
-- `model: claude-haiku-4-5-20251001` (or sonnet/opus)
-- `api_key: anything` (Meridian doesn't validate)
 
 ### OpenRouter
 
@@ -166,7 +160,7 @@ new model's prices.
 ```bash
 # Boot server.
 cd clio-agent
-uv run clio-agent-gact --port 17800 &
+uv run clio-agent serve --port 17800 &
 
 # Configure the LM.
 curl -X PUT http://127.0.0.1:17800/v1/providers/lm \
@@ -197,7 +191,7 @@ You should see the assistant's reply with a populated `tokens` and
 Each prompt below exercises a different code path. Run them through
 the TUI (or via curl) once you have the LM configured. Each should
 produce the documented behaviour — see
-[`docs/CAPABILITIES_MATRIX.md`](CAPABILITIES_MATRIX.md) for the full
+[`docs/archive/CAPABILITIES_MATRIX.md`](archive/CAPABILITIES_MATRIX.md) for the full
 end-to-end verification matrix.
 
 | Prompt | What it exercises |
@@ -236,8 +230,9 @@ curl -s http://127.0.0.1:17800/v1/mcp/servers | python3 -m json.tool
 The TUI's `/mcp` slash command shows bundled (fs/hdf5/parquet) AND
 any installed third-party server in one list. Tools called through
 the TUI's interactive chat OR via the `/v1/mcp/servers/{id}/call`
-endpoint both register in `tools_called` metadata + emit
-`tool.call.started/completed` SSE events.
+endpoint both register in `tools_called` metadata. Real execution
+boundaries also emit live `tool.call.started/completed` SSE events;
+post-turn summaries are not reconstructed into lifecycle events.
 
 ## Troubleshooting
 

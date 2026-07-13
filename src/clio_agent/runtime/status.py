@@ -6,9 +6,9 @@ booting a full agent or requiring live IOWarp/clio-core services.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import os
-import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -17,6 +17,9 @@ from typing import Any, Callable, Mapping
 
 import requests
 
+from clio_agent.config import (
+    _CLOUD_API_KEY_ENV as _CONFIG_CLOUD_API_KEY_ENV,
+)
 from clio_agent.config import PROVIDER_DEFAULTS, LMProviderConfig
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
 
@@ -111,50 +114,80 @@ class RuntimeReport:
 GatewayLister = Callable[[], list[dict[str, Any]]]
 HttpGet = Callable[..., Any]
 ModuleChecker = Callable[[str], bool]
+PortChecker = Callable[[int], bool]
 
-_SUPPORTED_LM_PROVIDERS = {"lm_studio", "ollama", "openai", "anthropic", "argonne"}
-_CLOUD_API_KEY_ENV = {
-    "openai": "OPENAI_API_KEY",
-    "anthropic": "ANTHROPIC_API_KEY",
+# Derived from the provider registry: the wire kinds with entries in
+# PROVIDER_DEFAULTS, including the Codex CustomLLM entry.
+_SUPPORTED_LM_PROVIDERS = frozenset(PROVIDER_DEFAULTS.keys())
+_CLOUD_API_KEY_ENV = _CONFIG_CLOUD_API_KEY_ENV
+
+
+class ModelDiscoverySchemaError(ValueError):
+    """Raised when an OpenAI-compatible /models response is malformed."""
+
+    def __init__(self, message: str, *, code: str) -> None:
+        self.code = code
+        super().__init__(message)
+
+
+# Maps a gateway tool namespace (the prefix before the first underscore in a
+# mounted tool name) to the Python module its server depends on. This drives
+# backend verification for servers that are ACTUALLY mounted on the active
+# gateway — it does not declare any server as universally required. Namespaces
+# absent from the gateway produce no status at all.
+_DATA_BACKEND_MODULES = {
+    "hdf5": "h5py",
+    "parquet": "pyarrow.parquet",
 }
-_HDF5_TOOLS = {
-    "hdf5_list_datasets",
-    "hdf5_analyze_dataset",
-    "hdf5_check_compression",
-    "hdf5_optimize_chunking",
-    "hdf5_analyze_file",
-}
-_PARQUET_TOOLS = {
-    "parquet_analyze_schema",
-    "parquet_query_data",
-    "parquet_compute_statistics",
-}
-_DEFAULT_CLIO_CORE_PATH = Path("/home/akougkas/iowarp/clio-core")
-_CLIO_CORE_ENV_VARS = [
-    "CHI_SERVER_CONF",
-    "WRP_RUNTIME_CONF",
-    "CHI_REPO_PATH",
-    "LD_LIBRARY_PATH",
-]
-_CLIO_CORE_CONFIG_CANDIDATES = [
-    "docker/quickstart/chimaera.yaml",
-    "context-runtime/config/chimaera_default.yaml",
-    "docker/wrp_cte_bench/cte_config.yaml",
-    "context-assimilation-engine/config/wrp_config_example.yaml",
-    "context-transfer-engine/config/cae_example.yaml",
-]
-_CLIO_CORE_REPO_CONFIG_CANDIDATES = [
-    "context-runtime/modules/chimaera_repo.yaml",
-    "context-assimilation-engine/chimaera_repo.yaml",
-    "context-transfer-engine/chimaera_repo.yaml",
-]
-_CLIO_CORE_BINARY_CANDIDATES = [
-    "build/bin/{name}",
-    "build/dev/bin/{name}",
-    "build/local/bin/{name}",
-    "install/bin/{name}",
-    "installers/pip/iowarp_core/bin/{name}",
-]
+
+# The gact /v1 surface the doctor probes (#800). The legacy /health /query
+# /experts API is not what production serves.
+_GACT_API_ENDPOINTS = ["/v1/health", "/v1/capabilities"]
+
+# How many trailing lines of ~/.clio/clio-runtime.log to surface when the
+# clio-core daemon is down.
+_CTE_LOG_TAIL_LINES = 20
+
+
+@dataclass(frozen=True)
+class CTERuntimeHealth:
+    """Observed state of the production clio-core runtime.
+
+    The production deployment is the pip ``iowarp_core`` package plus the
+    shared ``clio_run`` daemon (see :mod:`clio_agent.arc.storage`); this is the
+    single reality both :meth:`RuntimeProbe.probe_arc` (CTE backend) and
+    :meth:`RuntimeProbe.probe_clio_core` gate on.
+    """
+
+    installed: bool
+    port: int
+    daemon_alive: bool
+    daemon_pid: int | None
+    daemon_pid_alive: bool | None
+    log_path: str
+    log_tail: list[str]
+    reason: str | None
+
+    @property
+    def healthy(self) -> bool:
+        """Whether the pip runtime is present and the daemon is listening."""
+        return self.installed and self.daemon_alive
+
+    def to_details(self) -> dict[str, Any]:
+        """Shared structured detail payload for doctor statuses."""
+        details: dict[str, Any] = {
+            "iowarp_core_installed": self.installed,
+            "port": self.port,
+            "daemon_alive": self.daemon_alive,
+        }
+        if self.daemon_pid is not None:
+            details["daemon_pid"] = self.daemon_pid
+            details["daemon_pid_alive"] = self.daemon_pid_alive
+        if self.reason is not None:
+            details["reason"] = self.reason
+            details["log_path"] = self.log_path
+            details["log_tail"] = self.log_tail
+        return details
 
 
 class RuntimeProbe:
@@ -173,7 +206,8 @@ class RuntimeProbe:
         module_checker: ModuleChecker | None = None,
         lm_timeout: float = 1.0,
         api_timeout: float = 1.0,
-        default_clio_core_path: str | Path | None = _DEFAULT_CLIO_CORE_PATH,
+        port_checker: PortChecker | None = None,
+        clio_runtime_dir: str | Path | None = None,
     ) -> None:
         self.env = env if env is not None else os.environ
         self.http_get = http_get or requests.get
@@ -181,11 +215,17 @@ class RuntimeProbe:
         self.module_checker = module_checker or _module_available
         self.lm_timeout = lm_timeout
         self.api_timeout = api_timeout
-        self.default_clio_core_path = (
-            Path(default_clio_core_path).expanduser()
-            if default_clio_core_path is not None
-            else None
+        # Default resolved lazily to arc.storage._runtime_alive so unit tests
+        # never open real sockets and module import stays light.
+        self._port_checker = port_checker
+        # Where the shared clio-core daemon keeps its pidfile and log; matches
+        # arc.storage._daemon_pidfile() / _spawn_runtime_daemon() (~/.clio).
+        self.clio_runtime_dir = (
+            Path(clio_runtime_dir).expanduser()
+            if clio_runtime_dir is not None
+            else Path.home() / ".clio"
         )
+        self._cte_runtime: CTERuntimeHealth | None = None
 
     def collect(
         self,
@@ -201,8 +241,7 @@ class RuntimeProbe:
             self.probe_arc(),
             self.probe_file_policy(),
             gateway_status,
-            self.probe_hdf5(gateway_tools),
-            self.probe_parquet(gateway_tools),
+            *self.probe_data_backends(gateway_tools),
             self.probe_api(api_state=api_state, api_error=api_error),
             self.probe_clio_core(),
         ]
@@ -298,7 +337,7 @@ class RuntimeProbe:
         models_url = config.api_base.rstrip("/") + "/models"
         try:
             response = self.http_get(models_url, timeout=self.lm_timeout)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - surfaced in IntegrationStatus (degraded doctor row)
             return IntegrationStatus(
                 name="lm_provider",
                 state=IntegrationState.UNAVAILABLE,
@@ -337,7 +376,25 @@ class RuntimeProbe:
                 required=True,
             )
 
-        models = self._extract_models(response)
+        try:
+            models = self._extract_models(response)
+        except ModelDiscoverySchemaError as exc:
+            return IntegrationStatus(
+                name="lm_provider",
+                state=IntegrationState.DEGRADED,
+                summary=f"{config.provider} returned a malformed model listing: {exc}",
+                config_source=source,
+                next_action="Verify the provider exposes an OpenAI-compatible /models response.",
+                endpoint=config.api_base,
+                auth_mode=auth_mode,
+                capabilities=["models"],
+                details={
+                    "provider": config.provider,
+                    "configured_model": config.model,
+                    "model_discovery_error": exc.code,
+                },
+                required=True,
+            )
         if not models:
             return IntegrationStatus(
                 name="lm_provider",
@@ -390,7 +447,7 @@ class RuntimeProbe:
         details = {"provider": "argonne", "model": config.model}
         try:
             from clio_agent.providers import argonne_auth  # noqa: PLC0415
-        except Exception as exc:  # pragma: no cover - import bug
+        except Exception as exc:  # pragma: no cover - import bug  # noqa: BLE001 - surfaced in IntegrationStatus (degraded doctor row)
             return IntegrationStatus(
                 name="lm_provider",
                 state=IntegrationState.UNAVAILABLE,
@@ -422,10 +479,7 @@ class RuntimeProbe:
                 state=IntegrationState.MISCONFIGURED,
                 summary="ALCF provider selected but no Globus tokens are stored.",
                 config_source=source,
-                next_action=(
-                    "Run once: python -m clio_agent.providers.argonne_auth "
-                    "authenticate"
-                ),
+                next_action=("Run once: python -m clio_agent.providers.argonne_auth authenticate"),
                 endpoint=config.api_base,
                 auth_mode="globus_token",
                 details=details,
@@ -448,17 +502,179 @@ class RuntimeProbe:
             required=True,
         )
 
+    def _arc_backend(self) -> tuple[str, str]:
+        """Return the selected ARC backend and its config source.
+
+        Mirrors :func:`clio_agent.arc.storage.make_arc_store` (env
+        ``CLIO_ARC_STORE``, default ``cte``) so the doctor reports the backend
+        the runtime will actually construct, not a hardcoded assumption (#800).
+        """
+        backend = self.env.get("CLIO_ARC_STORE", "cte").strip().lower()
+        source = "env:CLIO_ARC_STORE" if "CLIO_ARC_STORE" in self.env else "default:cte"
+        return backend, source
+
+    def _probe_cte_runtime(self) -> CTERuntimeHealth:
+        """Probe the production clio-core runtime: pip package + shared daemon.
+
+        Shared by :meth:`probe_arc` (CTE backend) and :meth:`probe_clio_core`
+        so both report on one reality. Uses the same helpers the runtime
+        lifecycle in :mod:`clio_agent.arc.storage` uses: the resolved RPC port,
+        a socket liveness check, the daemon pidfile, and — on failure — the
+        tail of ``~/.clio/clio-runtime.log``. Memoized per probe instance so
+        one ``collect()`` opens at most one socket.
+        """
+        if self._cte_runtime is not None:
+            return self._cte_runtime
+        from clio_agent.arc import storage as arc_storage  # noqa: PLC0415 - keep import light
+
+        installed = self.module_checker("iowarp_core")
+        port = arc_storage._resolve_runtime_port(self.env.get("CLIO_ARC_STORE_CONFIG", ""))
+        port_checker = self._port_checker or arc_storage._runtime_alive
+        daemon_alive = bool(port_checker(port))
+
+        daemon_pid: int | None = None
+        daemon_pid_alive: bool | None = None
+        try:
+            parts = (self.clio_runtime_dir / "clio-runtime.pid").read_text("utf-8").split()
+        except OSError:
+            parts = []
+        if parts:
+            with contextlib.suppress(ValueError):
+                daemon_pid = int(parts[0])
+        if daemon_pid is not None:
+            recorded: float | None = None
+            if len(parts) > 1:
+                with contextlib.suppress(ValueError):
+                    recorded = float(parts[1])
+            daemon_pid_alive = arc_storage._pid_alive(daemon_pid, recorded)
+
+        if not installed:
+            reason: str | None = "iowarp_core_not_installed"
+        elif not daemon_alive:
+            reason = "cte_daemon_not_listening"
+        else:
+            reason = None
+
+        log_path = self.clio_runtime_dir / "clio-runtime.log"
+        log_tail: list[str] = []
+        if reason is not None and log_path.is_file():
+            try:
+                lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                log_tail = lines[-_CTE_LOG_TAIL_LINES:]
+            except OSError:
+                log_tail = []
+
+        self._cte_runtime = CTERuntimeHealth(
+            installed=installed,
+            port=port,
+            daemon_alive=daemon_alive,
+            daemon_pid=daemon_pid,
+            daemon_pid_alive=daemon_pid_alive,
+            log_path=str(log_path),
+            log_tail=log_tail,
+            reason=reason,
+        )
+        return self._cte_runtime
+
     def probe_arc(self) -> IntegrationStatus:
-        """Probe local ARC persistence path readiness."""
-        base_dir = Path(self.env.get("CLIO_DATA_DIR", ".clio_agent"))
+        """Probe the ARC persistence backend that is actually selected.
+
+        CTE (the default backend) is probed for real: pip ``iowarp_core``
+        presence plus shared-daemon liveness — a broken CTE install goes red
+        instead of green-on-a-hardcoded-'local' (#800). The explicit local
+        backend keeps the directory writability check.
+        """
+        backend, source = self._arc_backend()
+        if backend == "local":
+            return self._probe_arc_local(source)
+        if backend == "cte":
+            return self._probe_arc_cte(source)
+        return IntegrationStatus(
+            name="arc",
+            state=IntegrationState.MISCONFIGURED,
+            summary=f"Unknown CLIO_ARC_STORE {backend!r}; expected 'cte' or 'local'.",
+            config_source=source,
+            next_action="Set CLIO_ARC_STORE to 'cte' or 'local'.",
+            fallback="none",
+            details={"reason": "unknown_arc_backend", "configured_backend": backend},
+            required=True,
+        )
+
+    def _probe_arc_cte(self, source: str) -> IntegrationStatus:
+        """Probe the clio-core CTE backend (pip runtime + shared daemon)."""
+        runtime = self._probe_cte_runtime()
+        details = {"storage_mode": "cte", **runtime.to_details()}
+        endpoint = f"127.0.0.1:{runtime.port}"
+        if not runtime.installed:
+            return IntegrationStatus(
+                name="arc",
+                state=IntegrationState.UNAVAILABLE,
+                summary=(
+                    "ARC is configured for the clio-core CTE backend but the "
+                    "iowarp_core pip package is not installed."
+                ),
+                config_source=source,
+                next_action=(
+                    "Install the iowarp-core pip package, or set CLIO_ARC_STORE=local "
+                    "to deliberately use the LocalFS backend."
+                ),
+                endpoint=endpoint,
+                fallback="none",
+                details=details,
+                required=True,
+            )
+        if not runtime.daemon_alive:
+            return IntegrationStatus(
+                name="arc",
+                state=IntegrationState.UNAVAILABLE,
+                summary=(
+                    "ARC is configured for the clio-core CTE backend but the shared "
+                    f"clio-core daemon is not listening on port {runtime.port}."
+                ),
+                config_source=source,
+                next_action=(
+                    "Start the shared clio-core daemon (clio start / clio_run start) "
+                    f"or set CLIO_ARC_STORE=local; see {runtime.log_path}."
+                ),
+                endpoint=endpoint,
+                fallback="none",
+                details=details,
+                required=True,
+            )
+        return IntegrationStatus(
+            name="arc",
+            state=IntegrationState.READY,
+            summary=(
+                "ARC CTE backend is live: iowarp_core is installed and the shared "
+                f"clio-core daemon is listening on port {runtime.port}."
+            ),
+            config_source=source,
+            next_action="No action required.",
+            endpoint=endpoint,
+            fallback="none",
+            capabilities=[
+                "conversations",
+                "invocations",
+                "metrics",
+                "variants",
+                "semantic-search",
+            ],
+            details=details,
+            required=True,
+        )
+
+    def _probe_arc_local(self, backend_source: str) -> IntegrationStatus:
+        """Probe local ARC persistence path readiness (explicit local backend)."""
+        base_dir = Path(self.env.get("CLIO_DATA_DIR", ".clio/agent"))
         arc_dir = base_dir / "arc"
-        source = "env:CLIO_DATA_DIR" if "CLIO_DATA_DIR" in self.env else "default:.clio_agent"
+        dir_source = "env:CLIO_DATA_DIR" if "CLIO_DATA_DIR" in self.env else "default:.clio/agent"
+        source = f"{backend_source}; {dir_source}"
         try:
             arc_dir.mkdir(parents=True, exist_ok=True)
             probe_file = arc_dir / ".doctor_probe"
             probe_file.write_text("ok", encoding="utf-8")
             probe_file.unlink(missing_ok=True)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - surfaced in IntegrationStatus (degraded doctor row)
             return IntegrationStatus(
                 name="arc",
                 state=IntegrationState.UNAVAILABLE,
@@ -468,6 +684,11 @@ class RuntimeProbe:
                 endpoint=str(arc_dir),
                 fallback="none",
                 capabilities=["local-persistence"],
+                details={
+                    "storage_mode": "local",
+                    "reason": "arc_dir_not_writable",
+                    "error": str(exc),
+                },
                 required=True,
             )
 
@@ -476,10 +697,10 @@ class RuntimeProbe:
             state=IntegrationState.READY,
             summary="ARC local persistence is writable.",
             config_source=source,
-            next_action="No action required for local mode; configure CTE when that adapter is enabled.",
+            next_action="No action required for local mode; set CLIO_ARC_STORE=cte for clio-core.",
             endpoint=str(arc_dir),
             fallback="local",
-            capabilities=["conversations", "invocations", "metrics", "profiles", "variants"],
+            capabilities=["conversations", "invocations", "metrics", "variants"],
             details={"storage_mode": "local"},
             required=True,
         )
@@ -488,7 +709,7 @@ class RuntimeProbe:
         """Probe FastMCP gateway tool discovery."""
         try:
             capabilities = self.gateway_lister()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - surfaced in IntegrationStatus (degraded doctor row)
             return IntegrationStatus(
                 name="gateway",
                 state=IntegrationState.UNAVAILABLE,
@@ -502,100 +723,80 @@ class RuntimeProbe:
         tool_names = sorted(
             item["name"] for item in capabilities if isinstance(item.get("name"), str)
         )
-        expected = _HDF5_TOOLS | _PARQUET_TOOLS
-        missing = sorted(expected - set(tool_names))
-        state = IntegrationState.READY if not missing else IntegrationState.DEGRADED
-        summary = (
-            f"Gateway exposes {len(tool_names)} expected tool(s)."
-            if not missing
-            else f"Gateway is missing expected tool(s): {', '.join(missing)}."
-        )
-        next_action = (
-            "No action required."
-            if not missing
-            else "Verify HDF5 and Parquet servers are mounted with stable namespaces."
-        )
+        # The healthy "expected" set is whatever the active gateway actually
+        # mounts — there is no universal tool requirement. A gateway that
+        # exposes at least one tool is READY; an empty gateway is genuinely
+        # broken (no servers mounted) and is DEGRADED.
+        namespaces = sorted({name.split("_", 1)[0] for name in tool_names if "_" in name})
+        if tool_names:
+            return IntegrationStatus(
+                name="gateway",
+                state=IntegrationState.READY,
+                summary=(
+                    f"Gateway exposes {len(tool_names)} tool(s) across {len(namespaces)} server(s)."
+                ),
+                config_source="in-process:clio_agent.tools.gateway",
+                next_action="No action required.",
+                capabilities=tool_names,
+                details={"servers": namespaces},
+                required=True,
+            )
         return IntegrationStatus(
             name="gateway",
-            state=state,
-            summary=summary,
+            state=IntegrationState.DEGRADED,
+            summary="Gateway is reachable but exposes no tools.",
             config_source="in-process:clio_agent.tools.gateway",
-            next_action=next_action,
+            next_action="Mount at least one MCP server on the gateway.",
             capabilities=tool_names,
-            details={"missing_tools": missing},
+            details={"servers": namespaces},
             required=True,
         )
 
-    def probe_hdf5(self, gateway_tools: set[str]) -> IntegrationStatus:
-        """Probe HDF5 backend imports and gateway exposure."""
-        if not self.module_checker("h5py"):
-            return IntegrationStatus(
-                name="hdf5",
-                state=IntegrationState.UNAVAILABLE,
-                summary="h5py is not importable.",
-                config_source="python import:h5py",
-                next_action="Install the HDF5 runtime dependency with the project extras.",
-                capabilities=[],
-                required=True,
-            )
-        missing = sorted(_HDF5_TOOLS - gateway_tools)
-        if missing:
-            return IntegrationStatus(
-                name="hdf5",
-                state=IntegrationState.DEGRADED,
-                summary=f"h5py is available but gateway tools are missing: {', '.join(missing)}.",
-                config_source="python import:h5py; in-process gateway",
-                next_action="Fix the HDF5 FastMCP server mount before relying on HDF5 tools.",
-                capabilities=sorted(_HDF5_TOOLS & gateway_tools),
-                details={"missing_tools": missing},
-                required=True,
-            )
-        return IntegrationStatus(
-            name="hdf5",
-            state=IntegrationState.READY,
-            summary="HDF5 backend and gateway tools are available.",
-            config_source="python import:h5py; in-process gateway",
-            next_action="No action required.",
-            capabilities=sorted(_HDF5_TOOLS),
-            required=True,
-        )
+    def probe_data_backends(self, gateway_tools: set[str]) -> list[IntegrationStatus]:
+        """Verify the Python backend of each data server actually mounted.
 
-    def probe_parquet(self, gateway_tools: set[str]) -> IntegrationStatus:
-        """Probe Parquet backend imports and gateway exposure."""
-        if not self.module_checker("pyarrow.parquet"):
-            return IntegrationStatus(
-                name="parquet",
-                state=IntegrationState.UNAVAILABLE,
-                summary="pyarrow.parquet is not importable.",
-                config_source="python import:pyarrow.parquet",
-                next_action="Install the Parquet runtime dependency with the project extras.",
-                capabilities=[],
-                required=True,
+        This is structural grounding, not a universal requirement: we only
+        report on a backend when the active gateway exposes tools in its
+        namespace. A backend whose tools are not mounted is simply not part
+        of this deployment and produces no status. When a server *is* mounted
+        but its Python dependency cannot be imported, that mount is broken and
+        is surfaced as UNAVAILABLE.
+        """
+        namespaces = {name.split("_", 1)[0] for name in gateway_tools if "_" in name}
+        statuses: list[IntegrationStatus] = []
+        for namespace, module_name in sorted(_DATA_BACKEND_MODULES.items()):
+            if namespace not in namespaces:
+                continue
+            tools = sorted(tool for tool in gateway_tools if tool.split("_", 1)[0] == namespace)
+            if not self.module_checker(module_name):
+                statuses.append(
+                    IntegrationStatus(
+                        name=namespace,
+                        state=IntegrationState.UNAVAILABLE,
+                        summary=(
+                            f"{namespace} tools are mounted but {module_name} is not importable."
+                        ),
+                        config_source=f"python import:{module_name}; in-process gateway",
+                        next_action=(
+                            f"Install the {namespace} runtime dependency with the project extras."
+                        ),
+                        capabilities=tools,
+                        required=True,
+                    )
+                )
+                continue
+            statuses.append(
+                IntegrationStatus(
+                    name=namespace,
+                    state=IntegrationState.READY,
+                    summary=f"{namespace} backend and gateway tools are available.",
+                    config_source=f"python import:{module_name}; in-process gateway",
+                    next_action="No action required.",
+                    capabilities=tools,
+                    required=True,
+                )
             )
-        missing = sorted(_PARQUET_TOOLS - gateway_tools)
-        if missing:
-            return IntegrationStatus(
-                name="parquet",
-                state=IntegrationState.DEGRADED,
-                summary=(
-                    "pyarrow.parquet is available but gateway tools are missing: "
-                    f"{', '.join(missing)}."
-                ),
-                config_source="python import:pyarrow.parquet; in-process gateway",
-                next_action="Fix the Parquet FastMCP server mount before relying on Parquet tools.",
-                capabilities=sorted(_PARQUET_TOOLS & gateway_tools),
-                details={"missing_tools": missing},
-                required=True,
-            )
-        return IntegrationStatus(
-            name="parquet",
-            state=IntegrationState.READY,
-            summary="Parquet backend and gateway tools are available.",
-            config_source="python import:pyarrow.parquet; in-process gateway",
-            next_action="No action required.",
-            capabilities=sorted(_PARQUET_TOOLS),
-            required=True,
-        )
+        return statuses
 
     def probe_api(
         self,
@@ -603,10 +804,18 @@ class RuntimeProbe:
         api_state: IntegrationState | str | None = None,
         api_error: str | None = None,
     ) -> IntegrationStatus:
-        """Probe API status from current app state or an optional configured endpoint."""
-        capabilities = ["/health", "/query", "/experts", "/metrics"]
+        """Probe the gact ``/v1`` API surface (or report in-process app state).
+
+        Live probing hits ``/v1/health`` and ``/v1/capabilities`` — the surface
+        production actually serves — instead of the legacy ``/health /query
+        /experts`` endpoints (#800), and reports the capability summary.
+        """
         if api_state is not None:
             state = IntegrationState(api_state)
+            details: dict[str, Any] = {}
+            if state != IntegrationState.READY:
+                details["reason"] = "api_startup_error"
+                details["error"] = api_error or "unknown startup error"
             return IntegrationStatus(
                 name="api",
                 state=state,
@@ -622,8 +831,8 @@ class RuntimeProbe:
                     else "Fix the API startup error, then restart the service."
                 ),
                 endpoint="in-process",
-                capabilities=capabilities,
-                details={"error": api_error} if api_error else {},
+                capabilities=list(_GACT_API_ENDPOINTS),
+                details=details,
                 required=True,
             )
 
@@ -634,271 +843,213 @@ class RuntimeProbe:
                 state=IntegrationState.SKIPPED,
                 summary="No API endpoint configured for live probing.",
                 config_source="default:no CLIO_API_BASE",
-                next_action="Start the API or set CLIO_API_BASE for live API health checks.",
-                capabilities=capabilities,
+                next_action=(
+                    "Start the gact server (clio start) or set CLIO_API_BASE to its "
+                    "base URL for live /v1 health checks."
+                ),
+                capabilities=list(_GACT_API_ENDPOINTS),
                 required=True,
             )
 
-        health_url = endpoint.rstrip("/") + "/health"
+        health_url = endpoint.rstrip("/") + "/v1/health"
         try:
             response = self.http_get(health_url, timeout=self.api_timeout)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - surfaced in IntegrationStatus (degraded doctor row)
             return IntegrationStatus(
                 name="api",
                 state=IntegrationState.UNAVAILABLE,
-                summary=f"API endpoint is not reachable: {exc}",
+                summary=f"gact API is not reachable at {health_url}: {exc}",
                 config_source="env:CLIO_API_BASE",
-                next_action="Start the API service or correct CLIO_API_BASE.",
+                next_action="Start the gact server (clio start) or correct CLIO_API_BASE.",
                 endpoint=endpoint,
-                capabilities=capabilities,
+                capabilities=list(_GACT_API_ENDPOINTS),
+                details={"reason": "gact_unreachable", "error": str(exc)},
                 required=True,
             )
 
         status_code = getattr(response, "status_code", 200)
-        api_body_status = ""
+        overall_status = ""
+        unhealthy: list[str] = []
         try:
             body = response.json()
-            if isinstance(body, dict):
-                api_body_status = str(body.get("status", ""))
-        except Exception:
-            api_body_status = ""
+        except Exception:  # noqa: BLE001 - unparseable body treated as None; reflected in status
+            body = None
+        if isinstance(body, dict):
+            overall_status = str(body.get("overall_status", ""))
+            rows = body.get("integrations")
+            if isinstance(rows, list):
+                unhealthy = [
+                    str(row.get("name", "?"))
+                    for row in rows
+                    if isinstance(row, dict) and row.get("status") != "ready"
+                ]
 
-        if status_code >= 500 or api_body_status == "degraded":
+        if status_code >= 500 or overall_status in {"degraded", "unavailable"}:
+            state = (
+                IntegrationState.UNAVAILABLE
+                if status_code >= 500 or overall_status == "unavailable"
+                else IntegrationState.DEGRADED
+            )
             return IntegrationStatus(
                 name="api",
-                state=IntegrationState.DEGRADED,
-                summary=f"API health returned HTTP {status_code} status={api_body_status or '?'}",
+                state=state,
+                summary=(f"gact /v1/health reports {overall_status or '?'} (HTTP {status_code})."),
                 config_source="env:CLIO_API_BASE",
-                next_action="Inspect API logs and startup health detail.",
+                next_action="Inspect the failing gact integrations and server logs.",
                 endpoint=endpoint,
-                capabilities=capabilities,
-                details={"http_status": status_code, "health_status": api_body_status},
+                capabilities=list(_GACT_API_ENDPOINTS),
+                details={
+                    "reason": "gact_unhealthy",
+                    "http_status": status_code,
+                    "health_status": overall_status,
+                    "unhealthy_integrations": unhealthy,
+                },
                 required=True,
             )
 
+        capabilities_url = endpoint.rstrip("/") + "/v1/capabilities"
+        caps_body: Any = None
+        caps_error = ""
+        try:
+            caps_response = self.http_get(capabilities_url, timeout=self.api_timeout)
+            caps_status = getattr(caps_response, "status_code", 200)
+            if caps_status >= 400:
+                caps_error = f"HTTP {caps_status}"
+            else:
+                caps_body = caps_response.json()
+        except Exception as exc:  # noqa: BLE001 - probe error captured in caps_error and surfaced
+            caps_error = str(exc)
+        if caps_error or not isinstance(caps_body, dict):
+            return IntegrationStatus(
+                name="api",
+                state=IntegrationState.DEGRADED,
+                summary=(
+                    "gact /v1/health is ready but /v1/capabilities failed: "
+                    f"{caps_error or 'malformed response'}."
+                ),
+                config_source="env:CLIO_API_BASE",
+                next_action="Inspect the gact server logs; the capability catalog should be static.",
+                endpoint=endpoint,
+                capabilities=list(_GACT_API_ENDPOINTS),
+                details={
+                    "reason": "gact_capabilities_unavailable",
+                    "http_status": status_code,
+                    "health_status": overall_status,
+                    "error": caps_error or "malformed response",
+                },
+                required=True,
+            )
+
+        flags = caps_body.get("capabilities")
+        enabled = (
+            sorted(name for name, value in flags.items() if value is True)
+            if isinstance(flags, dict)
+            else []
+        )
+        contract_version = str(caps_body.get("contract_version", ""))
+        backend_info = caps_body.get("backend")
         return IntegrationStatus(
             name="api",
             state=IntegrationState.READY,
-            summary="API health endpoint is reachable.",
+            summary=(
+                f"gact /v1 API is ready: contract {contract_version or '?'}, "
+                f"{len(enabled)} capabilities enabled."
+            ),
             config_source="env:CLIO_API_BASE",
             next_action="No action required.",
             endpoint=endpoint,
-            capabilities=capabilities,
-            details={"http_status": status_code, "health_status": api_body_status},
+            capabilities=enabled,
+            details={
+                "http_status": status_code,
+                "health_status": overall_status or "ready",
+                "contract_version": contract_version,
+                "backend": backend_info if isinstance(backend_info, dict) else {},
+                "capabilities_enabled": enabled,
+            },
             required=True,
         )
 
     def probe_clio_core(self) -> IntegrationStatus:
-        """Report optional clio-core configuration without starting services."""
-        core_path, source, explicit = self._resolve_clio_core_path()
-        if core_path is None:
+        """Probe the production clio-core runtime: pip package + shared daemon.
+
+        #800 retired the source-repo layout discovery (build/bin chimaera
+        binaries, docker/quickstart YAML): it probed a deployment shape that no
+        longer exists, so it stayed green while the real runtime was broken.
+        The production runtime is the pip ``iowarp_core`` package plus the
+        shared ``clio_run`` daemon — the same reality :meth:`probe_arc` gates
+        on for the CTE backend (one shared helper, no duplication). The row is
+        required exactly when the ARC backend is ``cte``.
+        """
+        backend, backend_source = self._arc_backend()
+        required = backend == "cte"
+        runtime = self._probe_cte_runtime()
+        source = f"pip:iowarp_core; {backend_source}"
+        endpoint = f"127.0.0.1:{runtime.port}"
+        details = {"arc_backend": backend, **runtime.to_details()}
+
+        if not runtime.installed:
+            if not required:
+                return IntegrationStatus(
+                    name="clio_core",
+                    state=IntegrationState.SKIPPED,
+                    summary=(
+                        "clio-core runtime (pip iowarp_core) is not installed; the ARC "
+                        f"backend is {backend!r} so it is not required."
+                    ),
+                    config_source=source,
+                    next_action=(
+                        "Install the iowarp-core pip package and set CLIO_ARC_STORE=cte "
+                        "to enable the clio-core runtime."
+                    ),
+                    details=details,
+                    required=False,
+                )
             return IntegrationStatus(
                 name="clio_core",
-                state=IntegrationState.SKIPPED,
-                summary="Optional clio-core runtime probe is not configured.",
-                config_source=source,
-                next_action=(
-                    "Set CLIO_CORE_PATH or CHI_REPO_PATH when enabling clio-core probing."
-                ),
-                capabilities=[],
-                details={"suggested_env": _CLIO_CORE_ENV_VARS},
-                required=False,
-            )
-
-        if not core_path.exists():
-            return IntegrationStatus(
-                name="clio_core",
-                state=IntegrationState.MISCONFIGURED,
-                summary=f"Configured clio-core path does not exist: {core_path}",
-                config_source=source,
-                next_action="Fix CLIO_CORE_PATH or CHI_REPO_PATH.",
-                endpoint=str(core_path),
-                details={"suggested_env": _CLIO_CORE_ENV_VARS},
-                required=False,
-            )
-        if not core_path.is_dir():
-            return IntegrationStatus(
-                name="clio_core",
-                state=IntegrationState.MISCONFIGURED,
-                summary=f"Configured clio-core path is not a directory: {core_path}",
-                config_source=source,
-                next_action="Set CLIO_CORE_PATH or CHI_REPO_PATH to the clio-core repository root.",
-                endpoint=str(core_path),
-                details={"suggested_env": _CLIO_CORE_ENV_VARS},
-                required=False,
-            )
-
-        env_paths = self._clio_core_env_details()
-        missing_env_paths = [
-            item for item in env_paths if item["configured"] and item.get("exists") is False
-        ]
-        if missing_env_paths:
-            missing_env_summary = ", ".join(
-                f"{item['name']}={item['value']}" for item in missing_env_paths
-            )
-            return IntegrationStatus(
-                name="clio_core",
-                state=IntegrationState.MISCONFIGURED,
-                summary=f"Configured clio-core env path(s) do not exist: {missing_env_summary}",
-                config_source=source,
-                next_action="Fix or unset the missing clio-core environment path(s).",
-                endpoint=str(core_path),
-                details={
-                    "suggested_env": _CLIO_CORE_ENV_VARS,
-                    "env": env_paths,
-                    "non_destructive": True,
-                },
-                required=False,
-            )
-
-        chimaera_bins = self._find_binary_candidates(core_path, "chimaera", "CLIO_CHIMAERA_BIN")
-        cae_bins = self._find_binary_candidates(core_path, "wrp_cae_omni", "CLIO_WRP_CAE_OMNI_BIN")
-        config_candidates = self._find_existing_relative(core_path, _CLIO_CORE_CONFIG_CANDIDATES)
-        repo_configs = self._find_existing_relative(core_path, _CLIO_CORE_REPO_CONFIG_CANDIDATES)
-        visualizer = self._probe_visualizer(core_path)
-
-        capabilities = ["path-detected"]
-        if chimaera_bins:
-            capabilities.append("chimaera-cli")
-        if cae_bins:
-            capabilities.append("wrp_cae_omni")
-        if config_candidates:
-            capabilities.append("yaml-config")
-        if repo_configs:
-            capabilities.append("chimaera-repo-config")
-        if visualizer.get("source_detected"):
-            capabilities.append("visualizer-source")
-        if visualizer.get("state") == "ready":
-            capabilities.append("visualizer-status")
-
-        missing_capabilities: list[str] = []
-        if not chimaera_bins:
-            missing_capabilities.append("chimaera binary")
-        if not config_candidates and not any(
-            item["name"] in {"CHI_SERVER_CONF", "WRP_RUNTIME_CONF"} and item["configured"]
-            for item in env_paths
-        ):
-            missing_capabilities.append("runtime YAML config")
-        if visualizer.get("state") == "unavailable":
-            missing_capabilities.append("visualizer status endpoint")
-
-        details = {
-            "suggested_env": _CLIO_CORE_ENV_VARS,
-            "env": env_paths,
-            "chimaera_binaries": chimaera_bins,
-            "wrp_cae_omni_binaries": cae_bins,
-            "config_candidates": config_candidates,
-            "repo_configs": repo_configs,
-            "visualizer": visualizer,
-            "non_destructive": True,
-            "explicit_path": explicit,
-        }
-
-        if missing_capabilities:
-            return IntegrationStatus(
-                name="clio_core",
-                state=IntegrationState.DEGRADED,
+                state=IntegrationState.UNAVAILABLE,
                 summary=(
-                    "clio-core path exists but discovery is incomplete: "
-                    f"{', '.join(missing_capabilities)}."
+                    "clio-core runtime is required (ARC backend 'cte') but the "
+                    "iowarp_core pip package is not installed."
+                ),
+                config_source=source,
+                next_action=("Install the iowarp-core pip package, or set CLIO_ARC_STORE=local."),
+                endpoint=endpoint,
+                details=details,
+                required=True,
+            )
+
+        if not runtime.daemon_alive:
+            return IntegrationStatus(
+                name="clio_core",
+                state=IntegrationState.UNAVAILABLE,
+                summary=(
+                    "iowarp_core is installed but the shared clio-core daemon is not "
+                    f"listening on port {runtime.port}."
                 ),
                 config_source=source,
                 next_action=(
-                    "Build/install clio-core or set CLIO_CHIMAERA_BIN, CHI_SERVER_CONF, "
-                    "WRP_RUNTIME_CONF, CHI_REPO_PATH, and LD_LIBRARY_PATH as needed."
+                    "Start the shared clio-core daemon (clio start / clio_run start); "
+                    f"see {runtime.log_path}."
                 ),
-                endpoint=str(core_path),
-                capabilities=capabilities,
+                endpoint=endpoint,
                 details=details,
-                required=False,
+                required=required,
             )
 
         return IntegrationStatus(
             name="clio_core",
             state=IntegrationState.READY,
-            summary="clio-core discovery found a repository path, chimaera binary, and config.",
+            summary=(
+                "clio-core runtime is live: iowarp_core is installed and the shared "
+                f"daemon is listening on port {runtime.port}."
+            ),
             config_source=source,
-            next_action="No action required for discovery; start clio-core services explicitly when needed.",
-            endpoint=str(core_path),
-            capabilities=capabilities,
+            next_action="No action required.",
+            endpoint=endpoint,
+            capabilities=["pip-runtime", "shared-daemon"],
             details=details,
-            required=False,
+            required=required,
         )
-
-    def _resolve_clio_core_path(self) -> tuple[Path | None, str, bool]:
-        configured_path = self.env.get("CLIO_CORE_PATH") or self.env.get("CHI_REPO_PATH")
-        if configured_path:
-            return Path(configured_path).expanduser(), "env:CLIO_CORE_PATH/CHI_REPO_PATH", True
-        if self.default_clio_core_path and self.default_clio_core_path.exists():
-            return self.default_clio_core_path, f"default:{self.default_clio_core_path}", False
-        return None, "default:not configured", False
-
-    def _clio_core_env_details(self) -> list[dict[str, Any]]:
-        details: list[dict[str, Any]] = []
-        for name in _CLIO_CORE_ENV_VARS:
-            value = self.env.get(name, "")
-            item: dict[str, Any] = {"name": name, "configured": bool(value)}
-            if value:
-                item["value"] = value
-                if name == "LD_LIBRARY_PATH":
-                    paths = [Path(part).expanduser() for part in value.split(os.pathsep) if part]
-                    item["paths"] = [str(path) for path in paths]
-                    item["exists"] = all(path.exists() for path in paths) if paths else False
-                else:
-                    path = Path(value).expanduser()
-                    item["value"] = str(path)
-                    item["exists"] = path.exists()
-            details.append(item)
-        return details
-
-    def _find_binary_candidates(self, core_path: Path, name: str, env_key: str) -> list[str]:
-        candidates: list[Path] = []
-        env_value = self.env.get(env_key)
-        if env_value:
-            candidates.append(Path(env_value).expanduser())
-        path_candidate = shutil.which(name, path=self.env.get("PATH"))
-        if path_candidate:
-            candidates.append(Path(path_candidate))
-        for pattern in _CLIO_CORE_BINARY_CANDIDATES:
-            candidates.append(core_path / pattern.format(name=name))
-        return _existing_unique_paths(candidates, executable=True)
-
-    @staticmethod
-    def _find_existing_relative(core_path: Path, relative_paths: list[str]) -> list[str]:
-        return _existing_unique_paths([core_path / item for item in relative_paths])
-
-    def _probe_visualizer(self, core_path: Path) -> dict[str, Any]:
-        source_detected = any(
-            (core_path / item).exists()
-            for item in (
-                "context-visualizer/pyproject.toml",
-                "context-visualizer/context_visualizer/chimaera_client.py",
-            )
-        )
-        visualizer_url = self.env.get("CLIO_CORE_VISUALIZER_URL") or self.env.get(
-            "CLIO_VISUALIZER_URL"
-        )
-        result: dict[str, Any] = {
-            "source_detected": source_detected,
-            "configured_url": visualizer_url or "",
-            "state": "skipped",
-        }
-        if not visualizer_url:
-            return result
-
-        status_url = visualizer_url.rstrip("/") + "/status"
-        result["status_url"] = status_url
-        try:
-            response = self.http_get(status_url, timeout=self.api_timeout)
-        except Exception as exc:
-            result["state"] = "unavailable"
-            result["error"] = str(exc)
-            return result
-
-        status_code = getattr(response, "status_code", 200)
-        result["http_status"] = status_code
-        result["state"] = "ready" if status_code < 400 else "unavailable"
-        return result
 
     def _load_lm_config(self) -> tuple[LMProviderConfig, str]:
         provider = self.env.get("CLIO_LM_PROVIDER", "lm_studio")
@@ -940,7 +1091,7 @@ class RuntimeProbe:
             api_base=api_base,
             model=model,
             api_key=api_key,
-            temperature=self._float_env("CLIO_LM_TEMPERATURE", 1.0),
+            temperature=self._float_env("CLIO_LM_TEMPERATURE", 0.0),
             max_tokens=self._int_env("CLIO_LM_MAX_TOKENS", 32000),
             environment=self.env.get("CLIO_ENVIRONMENT", "dev"),
         )
@@ -974,17 +1125,38 @@ class RuntimeProbe:
     def _extract_models(response: Any) -> list[str]:
         try:
             data = response.json()
-        except Exception:
-            return []
+        except Exception as exc:
+            raise ModelDiscoverySchemaError(
+                f"invalid JSON from /models: {exc}",
+                code="invalid_json",
+            ) from exc
         if not isinstance(data, dict):
-            return []
-        raw_models = data.get("data", [])
+            raise ModelDiscoverySchemaError(
+                "/models response was not a JSON object.",
+                code="malformed_schema",
+            )
+        raw_models = data.get("data")
         if not isinstance(raw_models, list):
-            return []
+            raise ModelDiscoverySchemaError(
+                "/models response missing data[] array.",
+                code="malformed_schema",
+            )
         models: list[str] = []
+        malformed_items = 0
         for item in raw_models:
             if isinstance(item, dict) and isinstance(item.get("id"), str):
-                models.append(item["id"])
+                model_id = item["id"].strip()
+                if model_id:
+                    models.append(model_id)
+                else:
+                    malformed_items += 1
+            else:
+                malformed_items += 1
+        if raw_models and not models:
+            raise ModelDiscoverySchemaError(
+                f"/models response had {malformed_items} model row(s) but no usable id fields.",
+                code="malformed_schema",
+            )
         return models
 
 
@@ -1002,21 +1174,6 @@ def collect_runtime_status(
 
 def _module_available(module_name: str) -> bool:
     return importlib.util.find_spec(module_name) is not None
-
-
-def _existing_unique_paths(paths: list[Path], *, executable: bool = False) -> list[str]:
-    seen: set[str] = set()
-    results: list[str] = []
-    for path in paths:
-        if not path.exists() or not path.is_file():
-            continue
-        if executable and not os.access(path, os.X_OK):
-            continue
-        resolved = str(path.resolve())
-        if resolved not in seen:
-            seen.add(resolved)
-            results.append(resolved)
-    return results
 
 
 def _format_bytes(size: int) -> str:
@@ -1054,12 +1211,7 @@ def _list_gateway_capabilities() -> list[dict[str, Any]]:
     for tool in sorted(tools, key=lambda item: item.name):
         description = tool.description or ""
         first_sentence = description.split(".")[0].strip() + "." if description else ""
-        if tool.name.startswith("hdf5_"):
-            server = "hdf5"
-        elif tool.name.startswith("parquet_"):
-            server = "parquet"
-        else:
-            server = "unknown"
+        server = tool.name.split("_", 1)[0] if "_" in tool.name else tool.name
         capabilities.append(
             {
                 "name": tool.name,

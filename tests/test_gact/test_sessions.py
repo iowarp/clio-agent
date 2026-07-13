@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB7: session registry tests.
+"""session registry tests.
 
 Covers Create/Get/List/Delete/Update, disk persistence roundtrip,
 and resilience to corrupted on-disk state.
@@ -38,6 +38,23 @@ def test_create_returns_session_with_id_and_timestamps(mem_store: SessionStore) 
     assert sess.updated_at == sess.created_at  # matches on creation
     assert sess.message_count == 0
     assert sess.metadata == {}
+    assert sess.agent == {"id": "main"}
+    assert sess.model == {}
+
+
+def test_create_persists_agent_and_model_refs(mem_store: SessionStore) -> None:
+    sess = mem_store.create(
+        workspace_id="ws_default",
+        title="with refs",
+        agent={"id": "code_reviewer", "mode": "review"},
+        model={"provider_id": "lm_studio", "model_id": "qwopus3.5-9b-v3"},
+    )
+
+    assert sess.agent == {"id": "code_reviewer", "mode": "review"}
+    assert sess.model == {
+        "provider_id": "lm_studio",
+        "model_id": "qwopus3.5-9b-v3",
+    }
 
 
 def test_create_default_title_uses_id_suffix(mem_store: SessionStore) -> None:
@@ -85,12 +102,19 @@ def test_update_patches_fields_and_bumps_updated_at(
     original_updated = sess.updated_at
 
     patched = mem_store.update(
-        sess.id, title="new", status="running", metadata_patch={"k": "v"}
+        sess.id,
+        title="new",
+        status="running",
+        metadata_patch={"k": "v"},
+        agent={"id": "data"},
+        model={"provider_id": "openai", "model_id": "gpt-4o-mini"},
     )
     assert patched is not None
     assert patched.title == "new"
     assert patched.status == "running"
     assert patched.metadata == {"k": "v"}
+    assert patched.agent == {"id": "data"}
+    assert patched.model == {"provider_id": "openai", "model_id": "gpt-4o-mini"}
     # updated_at at least not earlier than creation (clock could be
     # equal if called in the same second — allow equality).
     assert patched.updated_at >= original_updated
@@ -159,3 +183,30 @@ def test_count_tracks_create_delete(mem_store: SessionStore) -> None:
     assert mem_store.count() == 2
     mem_store.delete(s1.id)
     assert mem_store.count() == 1
+
+
+def test_flush_fsyncs_before_rename(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#771 truth pass: the docstring's durability claim is now real.
+
+    ``_flush`` must ``os.fsync`` the temp file's descriptor before the atomic
+    rename publishes it, so a crash can't leave a half-written blob on disk.
+    """
+
+    import os as _os
+
+    fsynced: list[int] = []
+    real_fsync = _os.fsync
+
+    def _spy_fsync(fd: int) -> None:
+        fsynced.append(fd)
+        real_fsync(fd)
+
+    monkeypatch.setattr("clio_agent.gact.sessions.os.fsync", _spy_fsync)
+
+    store = SessionStore(path=tmp_path / "sessions.json")
+    store.create(workspace_id="ws", title="durable")
+
+    assert fsynced, "os.fsync was never called on the persisted session file"
+    # And the record actually landed on disk.
+    reloaded = SessionStore(path=tmp_path / "sessions.json")
+    assert reloaded.count() == 1

@@ -8,26 +8,42 @@ import time
 import uuid
 from collections.abc import Mapping as MappingABC
 from collections.abc import Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
 from clio_agent.arc.schema import ToolCall
+from clio_agent.scientific_suffixes import scientific_suffix_alternation
 
-RouteTarget = Literal["chat", "data", "analysis", "visualization", "none"]
-RouteSource = Literal["deterministic", "dspy", "guard"]
-ExpertSource = Literal["deterministic", "dspy", "fallback"]
+RouteTarget = str
+RouteSource = Literal["dspy"]
+
+# Generic path-detection regex: suffixes recognized when extracting candidate
+# file paths from free text. Structural grounding only (is a file referenced),
+# NOT keyword->format inference — no branch depends on which alternative matched.
+# Derived from the shared vocabulary (single source of truth — issue #765).
+SCIENTIFIC_PATH_SUFFIX_PATTERN = scientific_suffix_alternation()
 
 FILE_PATH_RE = re.compile(
-    r"(?P<path>(?:~|/|\.{1,2}/)?[^\s'\"`]+?\.(?:h5|hdf5|parquet|csv))",
+    rf"(?P<path>(?:~|/|\.{{1,2}}/)?[^\s'\"`]+?\.{SCIENTIFIC_PATH_SUFFIX_PATTERN})",
+    re.IGNORECASE,
+)
+QUOTED_FILE_PATH_RE = re.compile(
+    rf"(?P<quote>['\"`])(?P<path>.+?\.{SCIENTIFIC_PATH_SUFFIX_PATTERN})(?P=quote)",
+    re.IGNORECASE,
+)
+WINDOWS_FILE_PATH_RE = re.compile(
+    rf"(?<![A-Za-z])(?P<path>[A-Za-z]:[^\r\n'\"`]*?\.{SCIENTIFIC_PATH_SUFFIX_PATTERN})",
+    re.IGNORECASE,
+)
+ROOTED_FILE_PATH_RE = re.compile(
+    rf"(?<![A-Za-z0-9_.-])(?P<path>(?:~|/|\.{{1,2}}/)[^\r\n'\"`]*?\.{SCIENTIFIC_PATH_SUFFIX_PATTERN})",
     re.IGNORECASE,
 )
 
-ROUTE_TARGETS: tuple[RouteTarget, ...] = (
+SPECIAL_ROUTE_TARGETS: tuple[RouteTarget, ...] = (
     "chat",
-    "data",
-    "analysis",
-    "visualization",
     "none",
 )
 
@@ -41,24 +57,6 @@ class RouteDecision:
     reason: str
     confidence: float
     capabilities: tuple[str, ...] = ()
-
-    @classmethod
-    def from_dspy(cls, raw_target: Any) -> "RouteDecision":
-        """Normalize and validate a DSPy router output."""
-        target = str(raw_target or "").strip().lower()
-        if target in ROUTE_TARGETS:
-            return cls(
-                target=target,  # type: ignore[arg-type]
-                source="dspy",
-                reason="DSPy router selected a valid CLIO route.",
-                confidence=0.7,
-            )
-        return cls(
-            target="chat",
-            source="guard",
-            reason=f"Router produced invalid target {target!r}; kept control in chat.",
-            confidence=0.0,
-        )
 
 
 @dataclass
@@ -83,38 +81,37 @@ class ToolObservation:
 
 
 @dataclass(frozen=True)
-class ExpertRequest:
-    """Typed expert input contract used by native CLIO expert modules."""
+class ExpertHandoff:
+    """A concrete expert or child-expert invocation observed during one CLIO run."""
 
-    question: str
-    file_context: str = ""
-    route: RouteDecision | None = None
-    trace_id: str | None = None
-
-
-@dataclass(frozen=True)
-class ExpertResult:
-    """Typed expert output contract with explicit tool provenance."""
-
-    analysis: str
-    recommendations: str
-    source: ExpertSource
-    tools: tuple[ToolObservation, ...] = ()
+    agent_id: str
+    parent_id: str | None
+    dispatch_target: str
+    stage: str
+    status: Literal["success", "failure"]
+    input_summary: str
+    output_summary: str = ""
+    duration_ms: float = 0.0
+    error: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
-
-@dataclass(frozen=True)
-class ValidatedToolResult:
-    """Validated native tool payload or a normalized contract error."""
-
-    tool: str
-    data: dict[str, Any] | None = None
-    error: dict[str, Any] | None = None
-
-    @property
-    def ok(self) -> bool:
-        """Return whether validation succeeded."""
-        return self.error is None and self.data is not None
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-safe benchmark/API representation."""
+        row: dict[str, Any] = {
+            "agent_id": self.agent_id,
+            "dispatch_target": self.dispatch_target,
+            "stage": self.stage,
+            "status": self.status,
+            "input_summary": self.input_summary,
+            "output_summary": self.output_summary,
+            "duration_ms": self.duration_ms,
+            "metadata": _json_safe(self.metadata),
+        }
+        if self.parent_id:
+            row["parent_id"] = self.parent_id
+        if self.error:
+            row["error"] = self.error
+        return row
 
 
 @dataclass
@@ -125,6 +122,7 @@ class RunTrace:
     trace_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     started_at: float = field(default_factory=time.time)
     tools: list[ToolObservation] = field(default_factory=list)
+    expert_handoffs: list[ExpertHandoff] = field(default_factory=list)
 
     def record_tool(
         self,
@@ -146,6 +144,36 @@ class RunTrace:
             )
         )
 
+    def record_expert_handoff(
+        self,
+        *,
+        agent_id: str,
+        parent_id: str | None,
+        dispatch_target: str,
+        stage: str,
+        status: Literal["success", "failure"],
+        input_summary: str,
+        output_summary: str = "",
+        duration_ms: float = 0.0,
+        error: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Append an expert handoff observation to this run."""
+        self.expert_handoffs.append(
+            ExpertHandoff(
+                agent_id=agent_id,
+                parent_id=parent_id,
+                dispatch_target=dispatch_target,
+                stage=stage,
+                status=status,
+                input_summary=input_summary,
+                output_summary=output_summary,
+                duration_ms=duration_ms,
+                error=error,
+                metadata=dict(metadata or {}),
+            )
+        )
+
     @property
     def duration_ms(self) -> float:
         """Elapsed wall-clock duration for this trace."""
@@ -161,7 +189,9 @@ def tool_result_ok(result: Any) -> bool:
     return True
 
 
-def extract_file_paths(question: str, file_context: str, suffixes: set[str]) -> list[Path]:
+def extract_file_paths(
+    question: str, file_context: str, suffixes: AbstractSet[str]
+) -> list[Path]:
     """Extract file paths with one of the requested suffixes.
 
     Paths explicitly provided in the user question are kept even if they do not
@@ -171,36 +201,41 @@ def extract_file_paths(question: str, file_context: str, suffixes: set[str]) -> 
     paths: list[Path] = []
     seen: set[str] = set()
 
+    def add_path(raw_path: str, *, include_missing: bool) -> None:
+        raw_path = raw_path.rstrip(".,;:)]}")
+        path = Path(raw_path).expanduser()
+        if path.suffix.lower() not in suffixes:
+            return
+        if not path.is_absolute():
+            path = path.resolve()
+        if not include_missing and not path.exists():
+            return
+        key = str(path)
+        if key not in seen:
+            paths.append(path)
+            seen.add(key)
+
     def add_matches(text: str, *, include_missing: bool) -> None:
+        candidates: list[tuple[int, int, int, str]] = []
+        for match in QUOTED_FILE_PATH_RE.finditer(text):
+            candidates.append((match.start(), match.end(), 0, match.group("path")))
+        for match in ROOTED_FILE_PATH_RE.finditer(text):
+            candidates.append((match.start(), match.end(), 1, match.group("path")))
+        for match in WINDOWS_FILE_PATH_RE.finditer(text):
+            candidates.append((match.start(), match.end(), 2, match.group("path")))
         for match in FILE_PATH_RE.finditer(text):
-            raw = match.group("path").rstrip(".,;:)]}")
-            path = Path(raw).expanduser()
-            if path.suffix.lower() not in suffixes:
+            candidates.append((match.start(), match.end(), 3, match.group("path")))
+
+        handled_spans: list[tuple[int, int]] = []
+        for start, end, _priority, raw_path in sorted(candidates):
+            if any(span_start <= start < span_end for span_start, span_end in handled_spans):
                 continue
-            if not path.is_absolute():
-                path = path.resolve()
-            if not include_missing and not path.exists():
-                continue
-            key = str(path)
-            if key not in seen:
-                paths.append(path)
-                seen.add(key)
+            handled_spans.append((start, end))
+            add_path(raw_path, include_missing=include_missing)
 
     add_matches(question, include_missing=True)
     add_matches(file_context, include_missing=False)
     return paths
-
-
-def format_bytes(size: int) -> str:
-    """Format byte counts for compact terminal/API answers."""
-    value = float(size)
-    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
-        if value < 1024 or unit == "TiB":
-            if unit == "B":
-                return f"{int(value)} {unit}"
-            return f"{value:.1f} {unit}"
-        value /= 1024
-    return f"{value:.1f} TiB"
 
 
 def normalize_tool_error(
@@ -244,6 +279,10 @@ def normalize_tool_error(
             value = error.get(key)
             if value is not None:
                 normalized[key] = str(value)
+        if error.get("handled") is not None:
+            normalized["handled"] = bool(error.get("handled"))
+        if error.get("handled_reason") is not None:
+            normalized["handled_reason"] = str(error.get("handled_reason"))
         if error.get("details") is not None:
             normalized["details"] = _json_safe(error["details"])
     else:
@@ -281,59 +320,6 @@ def normalize_tool_result(result: Any, *, tool: str | None = None) -> Any:
     return result
 
 
-def validate_tool_result(
-    tool: str,
-    result: Any,
-    required_fields: Mapping[str, type | tuple[type, ...]],
-) -> ValidatedToolResult:
-    """Validate a native tool result mapping before answer construction."""
-    normalized = normalize_tool_result(result, tool=tool)
-    if isinstance(normalized, MappingABC) and "error" in normalized:
-        return ValidatedToolResult(tool=tool, error=normalized["error"])
-    if not isinstance(normalized, dict):
-        return _validation_failure(
-            tool,
-            "invalid_result_type",
-            f"{tool} returned {type(normalized).__name__}, expected object.",
-            {"received_type": type(normalized).__name__},
-        )
-
-    field_error = _validate_fields(tool, normalized, required_fields)
-    if field_error:
-        return ValidatedToolResult(tool=tool, error=field_error)
-    return ValidatedToolResult(tool=tool, data=normalized)
-
-
-def validate_tool_items(
-    tool: str,
-    result: Mapping[str, Any],
-    field: str,
-    required_fields: Mapping[str, type | tuple[type, ...]],
-) -> ValidatedToolResult:
-    """Validate a list field containing typed object items."""
-    items = result.get(field)
-    if not isinstance(items, list):
-        return _validation_failure(
-            tool,
-            "invalid_result_field",
-            f"{tool} returned invalid {field!r}; expected list.",
-            {"field": field, "received_type": type(items).__name__},
-        )
-
-    for index, item in enumerate(items):
-        if not isinstance(item, dict):
-            return _validation_failure(
-                tool,
-                "invalid_result_item",
-                f"{tool} returned invalid {field}[{index}]; expected object.",
-                {"field": field, "index": index, "received_type": type(item).__name__},
-            )
-        field_error = _validate_fields(tool, item, required_fields, context=f"{field}[{index}]")
-        if field_error:
-            return ValidatedToolResult(tool=tool, error=field_error)
-    return ValidatedToolResult(tool=tool, data=dict(result))
-
-
 def compact_tool_result(
     result: Any,
     *,
@@ -353,95 +339,6 @@ def compact_tool_result(
             compacted.setdefault("ok", bool(ok))
         return compacted
     return {"ok": bool(ok) if ok is not None else tool_result_ok(normalized), "value": compacted}
-
-
-def format_tool_error(error: Any) -> str:
-    """Format structured tool errors for user-facing expert answers."""
-    normalized = normalize_tool_error(error)
-    message = normalized.get("message") or str(error)
-    next_action = normalized.get("next_action")
-    if next_action:
-        return f"{message} Next action: {next_action}"
-    return str(message)
-
-
-def _validation_failure(
-    tool: str,
-    code: str,
-    message: str,
-    details: Mapping[str, Any],
-) -> ValidatedToolResult:
-    return ValidatedToolResult(
-        tool=tool,
-        error=normalize_tool_error(
-            {"type": "tool_contract", "code": code, "message": message},
-            tool=tool,
-            code=code,
-            next_action="Fix the tool contract or inspect the tool backend before retrying.",
-            details=details,
-        ),
-    )
-
-
-def _validate_fields(
-    tool: str,
-    data: Mapping[str, Any],
-    required_fields: Mapping[str, type | tuple[type, ...]],
-    *,
-    context: str = "result",
-) -> dict[str, Any] | None:
-    missing: list[str] = []
-    invalid: list[dict[str, str]] = []
-    for field_name, expected_type in required_fields.items():
-        if field_name not in data:
-            missing.append(field_name)
-            continue
-        value = data[field_name]
-        if not _matches_type(value, expected_type):
-            invalid.append(
-                {
-                    "field": field_name,
-                    "expected": _type_label(expected_type),
-                    "received": type(value).__name__,
-                }
-            )
-
-    if not missing and not invalid:
-        return None
-
-    details: dict[str, Any] = {"context": context}
-    if missing:
-        details["missing"] = missing
-    if invalid:
-        details["invalid"] = invalid
-    return normalize_tool_error(
-        {
-            "type": "tool_contract",
-            "code": "invalid_result_shape",
-            "message": f"{tool} returned an invalid {context} shape.",
-        },
-        tool=tool,
-        code="invalid_result_shape",
-        next_action="Fix the tool contract or inspect the tool backend before retrying.",
-        details=details,
-    )
-
-
-def _matches_type(value: Any, expected_type: type | tuple[type, ...]) -> bool:
-    expected = expected_type if isinstance(expected_type, tuple) else (expected_type,)
-    for item in expected:
-        if item is int and isinstance(value, bool):
-            continue
-        if item is float and isinstance(value, (int, float)) and not isinstance(value, bool):
-            return True
-        if isinstance(value, item):
-            return True
-    return False
-
-
-def _type_label(expected_type: type | tuple[type, ...]) -> str:
-    expected = expected_type if isinstance(expected_type, tuple) else (expected_type,)
-    return " | ".join(item.__name__ for item in expected)
 
 
 def _compact_value(value: Any, *, max_items: int, max_text: int, depth: int) -> Any:

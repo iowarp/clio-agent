@@ -36,12 +36,14 @@ class BTreeIndex:
         """Initialize empty B-tree index."""
         self._index: SortedDict = SortedDict()
 
-    def insert(self, key: Tuple[str, float], value: Any) -> None:
+    def insert(self, key: Tuple[str, float] | Tuple[str, float, str], value: Any) -> None:
         """
         Insert key-value pair into index.
 
         Args:
-            key: Composite key (session_id, timestamp)
+            key: Composite key ``(session_id, timestamp)``, optionally with a
+                trailing tie-breaker (e.g. ``(session_id, timestamp, trace_id)``)
+                so entries that share a timestamp do not collide.
             value: Associated data (Conversation, Invocation, Metric, etc.)
 
         Time Complexity: O(log N)
@@ -71,10 +73,7 @@ class BTreeIndex:
         return self._index.get(key)
 
     def range_query(
-        self,
-        start_key: Tuple[str, float],
-        end_key: Tuple[str, float],
-        inclusive: bool = True
+        self, start_key: Tuple[str, float], end_key: Tuple[str, float], inclusive: bool = True
     ) -> List[Any]:
         """
         Retrieve all values within key range [start_key, end_key].
@@ -103,13 +102,13 @@ class BTreeIndex:
             ... )
         """
         # irange returns keys, so we need to extract values
-        return [self._index[k] for k in self._index.irange(start_key, end_key, inclusive=(True, inclusive))]
+        return [
+            self._index[k]
+            for k in self._index.irange(start_key, end_key, inclusive=(True, inclusive))
+        ]
 
     def range_query_keys(
-        self,
-        start_key: Tuple[str, float],
-        end_key: Tuple[str, float],
-        inclusive: bool = True
+        self, start_key: Tuple[str, float], end_key: Tuple[str, float], inclusive: bool = True
     ) -> List[Tuple[str, float]]:
         """
         Retrieve all keys within range [start_key, end_key].
@@ -135,10 +134,7 @@ class BTreeIndex:
         return list(self._index.irange(start_key, end_key, inclusive=(True, inclusive)))
 
     def range_query_items(
-        self,
-        start_key: Tuple[str, float],
-        end_key: Tuple[str, float],
-        inclusive: bool = True
+        self, start_key: Tuple[str, float], end_key: Tuple[str, float], inclusive: bool = True
     ) -> List[Tuple[Tuple[str, float], Any]]:
         """
         Retrieve all (key, value) pairs within range.
@@ -162,7 +158,10 @@ class BTreeIndex:
             ...     print(f"{key}: {value}")
         """
         # Return (key, value) tuples for all keys in range
-        return [(k, self._index[k]) for k in self._index.irange(start_key, end_key, inclusive=(True, inclusive))]
+        return [
+            (k, self._index[k])
+            for k in self._index.irange(start_key, end_key, inclusive=(True, inclusive))
+        ]
 
     def delete(self, key: Tuple[str, float]) -> bool:
         """
@@ -231,6 +230,28 @@ class BTreeIndex:
         """
         self._index.clear()
 
+    def delete_session(self, session_id: str) -> int:
+        """
+        Delete all entries belonging to a session.
+
+        Composite keys are ``(session_id, timestamp)``; this removes every
+        entry whose first component matches, used to release a closed session's
+        index footprint.
+
+        Args:
+            session_id: Session whose entries to remove.
+
+        Returns:
+            Number of entries deleted.
+
+        Examples:
+            >>> removed = index.delete_session("session_1")
+        """
+        matching = [key for key in list(self._index.keys()) if key[0] == session_id]
+        for key in matching:
+            del self._index[key]
+        return len(matching)
+
     def get_session_range(self, session_id: str) -> List[Any]:
         """
         Retrieve all values for a given session_id.
@@ -249,10 +270,7 @@ class BTreeIndex:
         Examples:
             >>> conversations = index.get_session_range("session_1")
         """
-        return self.range_query(
-            (session_id, 0.0),
-            (session_id, float('inf'))
-        )
+        return self.range_query((session_id, 0.0), (session_id, float("inf")))
 
     def get_latest_in_session(self, session_id: str, n: int = 1) -> List[Any]:
         """
@@ -279,11 +297,9 @@ class BTreeIndex:
             >>> recent = index.get_latest_in_session("session_1", n=5)
         """
         # Get keys in reverse order (most recent first)
-        all_keys = list(self._index.irange(
-            (session_id, 0.0),
-            (session_id, float('inf')),
-            reverse=True
-        ))
+        all_keys = list(
+            self._index.irange((session_id, 0.0), (session_id, float("inf")), reverse=True)
+        )
         # Take first n keys (the n most recent)
         latest_keys = all_keys[:n]
         # Return values in chronological order (oldest to newest)

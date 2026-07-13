@@ -1,8 +1,8 @@
 """GACT v0.2 FastAPI application for CLIO.
 
 Exposes the GACT v0.2 contract surface. Most routes are 501 stubs
-today (CLIO-BBBBBBBBBB6); they get wired one at a time in
-follow-on iterations (BBB7–BBB12) against the spec at
+today; they get wired one at a time in
+follow-on iterations against the spec at
 ``gact-tui/contract/SPEC.md`` and the docs in ``docs/tui/``.
 
 Run via::
@@ -13,1963 +13,896 @@ Or::
 
     uvicorn clio_agent.gact.app:app --host 127.0.0.1 --port 8100
 
-This is a peer of ``clio_agent.ui.api`` (the native CLIO REST API),
-not a replacement — both can run side-by-side. The TUI integration
-target is the GACT app; existing CLI + direct-Python callers keep
-using the native API unchanged.
+This is CLIO's single HTTP front door. The legacy ``clio_agent.ui.api``
+REST server has been removed; the ``clio-agent-api`` console script is now
+a deprecation shim that points here. The CLI (``clio-agent``) is a client
+of this same GACT surface.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import importlib.util
-import json
+import logging
 import os
-import threading
+import sys
 import time
-import uuid
-from collections.abc import Mapping
+
+# Process diagnostics (SIGUSR1 wedge/heap dump) extracted to gact/diagnostics.py
+# (#714 decomposition). Imported + re-exported here; ``_install_sigusr1_diagnostic``
+# is invoked at app import below so the handler is wired exactly as before, while
+# the single source of truth (and the side-effect-free module) lives in
+# diagnostics.py. ``_memprof_dump`` / ``_MEMPROF_STATE`` are re-exported so existing
+# ``from clio_agent.gact.app import <name>`` callers keep resolving.
+from clio_agent.gact.diagnostics import (  # noqa: E402,F401
+    _MEMPROF_STATE,
+    _install_sigusr1_diagnostic,
+    _memprof_dump,
+)
+
+_install_sigusr1_diagnostic()
+
+from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Optional
+from typing import Any, AsyncIterator, Optional, cast
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from clio_agent import conf
+from clio_agent.gact import context as _ctx
+from clio_agent.gact.semantic_events import (
+    DEFAULT_DETAIL_LEVEL,
+    SemanticEventSink,
+    build_trace_backend,
+)
+from clio_agent.prompts import PromptRegistry, PromptSource
+from clio_agent.runtime import trace
 
-def _format_sse(event: "Event") -> bytes:
-    """Render an Event as the SSE wire format (SPEC §7.2)::
+logger = logging.getLogger(__name__)
 
-        event: <type>
-        id: <numeric monotonic id>
-        data: <json envelope>
-        <blank line>
-    """
+# --------------------------------------------------------------------------- #
+# Runtime base re-export shim (#714 decomposition, step 1)                       #
+#                                                                               #
+# The shared runtime foundation (the ARC singleton + accessors, the semantic-   #
+# event funnel, the internal exceptions, the id/timestamp + SSE helpers, and    #
+# the ``_ctx`` boundary shims/caches) was carved out into                       #
+# ``clio_agent.gact.runtime.globals`` -- the single source every other          #
+# extracted module imports FROM (so nothing imports this 24k-line module; the   #
+# graph stays acyclic). They are re-exported here so                            #
+# ``from clio_agent.gact.app import <name>`` (and ``test_import_seams``) keep    #
+# working unchanged. ``runtime.globals`` is the OWNER of ``_PROCESS_ARC`` -- it  #
+# is re-exported as a name here, but all LIVE reads/writes happen inside         #
+# ``runtime.globals`` (test patch/reset sites target it there).                 #
+# --------------------------------------------------------------------------- #
+from clio_agent.gact.runtime.globals import (  # noqa: E402, F401
+    _ACTIVE_BLUEPRINT_TOOL_ROWS,
+    _ACTIVE_GACT_APP,
+    _ACTIVE_GACT_SESSION_ID,
+    _ACTIVE_GACT_TRACE_ID,
+    _ACTIVE_GACT_TURN_ID,
+    _PROCESS_ARC,
+    ARC_OP_EVENT_TYPE,
+    _active_lm_last_reasoning,
+    _active_semantic_trace_id,
+    _active_semantic_turn_id,
+    _BlueprintTerminalWorkflowState,
+    _build_semantic_event,
+    _cancelled_error_info,
+    _coerce_error_info,
+    _CompatVar,
+    _ContextFileAccessError,
+    _emit_arc_op,
+    _emit_expert_lifecycle_event,
+    _emit_react_step_event,
+    _emit_semantic_event,
+    _format_sse,
+    _gact_app_context,
+    _iso_from_epoch,
+    _jsonish,
+    _llm_provider_payload,
+    _new_attempt_id,
+    _new_cancellation_attempt_id,
+    _new_context_frame_id,
+    _new_memory_event_id,
+    _new_message_id,
+    _new_part_id,
+    _new_question_id,
+    _not_implemented,
+    _process_arc,
+    _resolve_tool_session,
+    _semantic_trace_id,
+    _session_agent_id,
+    _set_app_arc,
+    _tool_session_context,
+    _TurnCancelled,
+    _TurnTimedOut,
+    _UnsupportedSessionAgent,
+    _wire_arc_op_logger,
+)
 
-    payload = json.dumps(event.envelope())
-    lines = (
-        f"event: {event.type}\n"
-        f"id: {event.id}\n"
-        f"data: {payload}\n\n"
-    )
-    return lines.encode("utf-8")
-
-# ---- ID + timestamp helpers used by the message endpoint ---------
-# Kept at module level (not inside build_app) so they're trivially
-# importable by future streaming code + easy to mock in tests.
-
-
-def _new_message_id(role_prefix: str) -> str:
-    """Generate a message id. Role prefix ('user' / 'asst' / 'tool')
-    makes log scraping + human triage cheaper."""
-
-    return f"msg_{role_prefix}_{uuid.uuid4().hex[:12]}"
-
-
-def _new_part_id() -> str:
-    return f"part_{uuid.uuid4().hex[:12]}"
-
-
-def _iso_from_epoch(ts: float) -> str:
-    """ISO-8601 UTC with microsecond precision to match the session
-    registry's created_at format."""
-
-    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
-
-
-async def _run_turn_in_background(
-    app: "FastAPI",
-    sid: str,
-    user_text: str,
-    user_msg: "Message",
-) -> None:
-    """Drive an agent turn off the request thread.
-
-    The POST handler returns immediately after staging the user
-    message; this coroutine handles the rest: invoking forward() in
-    an executor, slicing the result into Parts, publishing every
-    SSE event the TUI consumes, persisting the assistant message,
-    and settling the session back to idle (or error).
-
-    Errors here are *consumed* — they emit a message.completed with
-    error_info and a session.status_changed → error so the TUI sees
-    the failure live. We never re-raise; the request that started us
-    is long gone.
-    """
-
-    bus: EventBus = app.state.bus
-    sess = app.state.sessions.get(sid)
-    if sess is None:
-        # Session evaporated between POST + background start; can't
-        # do anything useful. Don't raise — the publishing path
-        # would crash and pollute logs with no client to notify.
-        return
-
-    error_info: Optional[ErrorInfo] = None
-    answer_text = ""
-    selected_agent = ""
-    rationale = ""
-    tools_called: list[dict[str, Any]] = []
-    proposed_diffs: list[Any] = []
-    nanoagents: list[Any] = []
-    thinking_text = ""
-    turn_tokens: dict[str, int] = {
-        "input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
-    }
-    turn_cost = 0.0
-
-    # iowarp/clio-agent#5: prepend any attached context files to the
-    # user's text so the agent's forward() sees them as primed input.
-    # Plain text concat — keeps the agent.py interface untouched and
-    # works regardless of which expert handles the turn.
-    enriched_text = _enrich_with_context_files(
-        app, sid, user_text
-    )
-    # iowarp/clio-agent#20: pre_message hook can transform the
-    # input or veto the turn. PermissionError → cancelled-style
-    # error_info; the caller sees the hook's reason.
-    try:
-        from clio_agent.runtime.hooks import fire as _fire_hook
-
-        _fire_hook("pre_message", sid, enriched_text)
-    except PermissionError as exc:
-        bus.publish(Event(
-            type="message.completed",
-            session_id=sid,
-            payload={
-                "message_id": user_msg.id,
-                "stop_reason": "blocked",
-                "error_info": {
-                    "error": "permission_error",
-                    "message": str(exc),
-                    "recoverable": True,
-                },
-            },
-        ))
-        app.state.sessions.update(sid, status="error")
-        bus.publish(Event(
-            type="session.status_changed",
-            session_id=sid,
-            payload={
-                "session_id": sid,
-                "status": "error",
-                "prev_status": "running",
-                "reason": "pre_message hook blocked turn",
-            },
-        ))
-        return
-
-    # iowarp/clio-agent#6: try real per-token streaming via
-    # dspy.streamify when the LM supports it; fall back to the
-    # synchronous executor path otherwise. Streaming produces
-    # message.part.delta events as chunks arrive — without it the
-    # text part lands as one big delta after forward returns.
-    streamed_assistant_part_id: Optional[str] = None
-    streamed_assistant_buffer: list[str] = []
-    streamed_assistant_msg_id: Optional[str] = None
-
-    async def _emit_chunk(text: str) -> None:
-        nonlocal streamed_assistant_part_id, streamed_assistant_msg_id
-        if streamed_assistant_msg_id is None:
-            # Lazily invent ids the moment the first chunk arrives;
-            # the final assistant message will reuse them.
-            streamed_assistant_msg_id = _new_message_id("asst")
-            streamed_assistant_part_id = _new_part_id()
-            bus.publish(Event(
-                type="message.created",
-                session_id=sid,
-                payload=Message(
-                    id=streamed_assistant_msg_id,
-                    session_id=sid,
-                    role="assistant",
-                    created_at=_iso_from_epoch(time.time()),
-                    updated_at=_iso_from_epoch(time.time()),
-                    parts=[],
-                ).model_dump(exclude_none=True),
-            ))
-            bus.publish(Event(
-                type="message.part.added",
-                session_id=sid,
-                payload={
-                    "message_id": streamed_assistant_msg_id,
-                    "part": Part(
-                        id=streamed_assistant_part_id,
-                        type="text",
-                        text="",
-                    ).model_dump(exclude_none=True),
-                },
-            ))
-        streamed_assistant_buffer.append(text)
-        bus.publish(Event(
-            type="message.part.delta",
-            session_id=sid,
-            payload={
-                "message_id": streamed_assistant_msg_id,
-                "part_id": streamed_assistant_part_id,
-                "delta": {"text_append": text},
-            },
-        ))
-
-    # iowarp/clio-agent#8: snapshot LM history before the turn so we
-    # can sum every call this turn made. ContextVars don't propagate
-    # to asyncio executor threads (so dspy.settings.usage_tracker is
-    # unreliable from worker threads), but ``lm.history`` IS shared
-    # across threads — list.append under the GIL gives us a clean,
-    # thread-safe ledger. We diff history[start:end] post-turn.
-    history_start = _snapshot_lm_history_index(app)
-
-    try:
-        # Honour the session's routing override. routing_mode "chat"
-        # forces the chat path (no /chat prefix needed); "experts"
-        # rejects chat/none classifications. We mutate the agent's
-        # ProviderConfig.routing_mode for the duration of the call so
-        # ClioAgent.forward can see it without changing its public
-        # signature.
-        routing_override = getattr(sess, "routing_mode", "auto") or "auto"
-        agent_obj = app.state.agent
-        prev_routing = getattr(agent_obj, "_routing_mode_override", "auto")
-        try:
-            agent_obj._routing_mode_override = routing_override  # type: ignore[attr-defined]
-        except Exception:  # noqa: BLE001
-            pass
-
-        pred = await _try_streamed_forward(
-            app, enriched_text, sid, _emit_chunk,
-            session_mode=getattr(sess, "mode", "chat"),
-            session_edit_mode=getattr(sess, "edit_mode", "diff"),
-        )
-        if pred is None:
-            loop = asyncio.get_running_loop()
-            pred = await loop.run_in_executor(
-                None,
-                lambda: _agent_forward_compat(
-                    app.state.agent,
-                    enriched_text,
-                    sid,
-                    getattr(sess, "mode", "chat"),
-                    getattr(sess, "edit_mode", "diff"),
-                ),
-            )
-        try:
-            agent_obj._routing_mode_override = prev_routing  # type: ignore[attr-defined]
-        except Exception:  # noqa: BLE001
-            pass
-        answer_text = getattr(pred, "answer", "")
-        selected_agent = getattr(pred, "selected_expert", "") or ""
-        rationale = getattr(pred, "routing_rationale", "")
-        # iowarp/clio-agent#25: data branch reports which execution
-        # path it took ("fast" or "expert_loop"). Empty when not
-        # populated by ClioAgent.forward (older code paths, non-data
-        # branches not yet migrated).
-        execution_path = getattr(pred, "execution_path", "") or ""
-        tools_called = _extract_tools_called(pred)
-        # Drain the per-session observer ledger so direct-tool short-
-        # circuits (HDF5/Parquet/fs experts that bypass ReAct) still
-        # report tools_called on the assistant message metadata.
-        ledger = getattr(app.state, "tool_call_ledger", None)
-        if ledger is not None:
-            observed = ledger.pop(sid, [])
-            if observed and not tools_called:
-                tools_called = observed
-            elif observed:
-                # Both populated — the expert's own list takes
-                # precedence (richer payload), but append any
-                # observed-only calls the expert didn't enumerate.
-                seen = {(t.get("name"), str(t.get("args"))) for t in tools_called}
-                for o in observed:
-                    if (o.get("name"), str(o.get("args"))) not in seen:
-                        tools_called.append(o)
-        # iowarp/clio-agent#17 — surface DSPy reasoning as a
-        # `thinking` Part. ChainOfThought predictions expose
-        # ``.reasoning`` (single string); ReAct exposes
-        # ``.trajectory`` (step-by-step trace). Fall back to the
-        # generic `_trace` Prediction wraps either of them in.
-        thinking_text = (
-            getattr(pred, "reasoning", "")
-            or _format_react_trajectory(getattr(pred, "trajectory", None))
-            or ""
-        )
-        # CLIO-BBBBBBBBBB24: cost + token rollup. Real DSPy
-        # predictions don't always populate .tokens / .cost_usd
-        # directly — pull from the per-turn UsageTracker first
-        # (works across threads + streaming), then LM history.
-        raw_tokens = getattr(pred, "tokens", None)
-        if raw_tokens is not None:
-            for key in turn_tokens:
-                if isinstance(raw_tokens, dict):
-                    v = raw_tokens.get(key, 0)
-                else:
-                    v = getattr(raw_tokens, key, 0)
-                turn_tokens[key] = int(v or 0)
-        else:
-            # Diff the LM history slice for this turn first — captures
-            # router + expert + chat calls cleanly. Falls back to
-            # ``last entry only`` for older code paths, then to a
-            # character-based estimate when the upstream proxy
-            # reports zero (Meridian quirk on some chunked replies).
-            history_end = _snapshot_lm_history_index(app)
-            history_made_calls = any(
-                history_end.get(k, 0) > history_start.get(k, 0)
-                for k in {*history_start.keys(), *history_end.keys()}
-            )
-            usage = _usage_from_history_slice(history_start, app)
-            if not usage.get("output"):
-                usage = _usage_from_dspy_history()
-            for key in turn_tokens:
-                turn_tokens[key] = int(usage.get(key, 0) or 0)
-            turn_cost = float(usage.get("cost_usd", 0.0) or 0.0)
-            # Char-based fallback only when the LM actually fired
-            # this turn (history grew) but the upstream proxy
-            # reported zero usage. Don't synthesize numbers when
-            # there was no real call (e.g. unit tests with a fake
-            # agent that bypasses dspy.LM entirely).
-            if history_made_calls:
-                if turn_tokens["output"] == 0 and answer_text:
-                    turn_tokens["output"] = max(1, len(answer_text) // 4)
-                if turn_tokens["input"] == 0 and enriched_text:
-                    turn_tokens["input"] = max(1, len(enriched_text) // 4)
-                if turn_cost == 0.0:
-                    turn_cost = _estimate_cost_usd(
-                        _current_lm_model_id(),
-                        turn_tokens["input"], turn_tokens["output"],
-                    )
-        if not turn_cost:
-            turn_cost = float(getattr(pred, "cost_usd", 0.0) or 0.0)
-        proposed_diffs = list(getattr(pred, "file_diffs", None) or [])
-        nanoagents = list(getattr(pred, "nanoagents_spawned", None) or [])
-        for req in (getattr(pred, "permissions_requested", None) or []):
-            src = req if isinstance(req, dict) else {
-                "tool_call": getattr(req, "tool_call", {}),
-                "summary": getattr(req, "summary", ""),
-                "id": getattr(req, "id", ""),
-            }
-            pid = src.get("id") or f"perm_{uuid.uuid4().hex[:12]}"
-            row = {
-                "id": pid,
-                "session_id": sid,
-                "tool_call": src.get("tool_call") or {},
-                "summary": src.get("summary", ""),
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "status": "pending",
-            }
-            app.state.permissions[pid] = row
-            bus.publish(Event(
-                type="permission.requested",
-                session_id=sid,
-                payload=row,
-            ))
-        if sid in app.state.cancel_flags:
-            app.state.cancel_flags.discard(sid)
-            error_info = ErrorInfo(
-                error="cancelled",
-                message="turn cancelled by client",
-                details={"session_id": sid},
-                recoverable=True,
-            )
-            answer_text = ""
-            tools_called = []
-    except asyncio.CancelledError:
-        error_info = ErrorInfo(
-            error="cancelled",
-            message="turn cancelled by client",
-            details={"session_id": sid},
-            recoverable=True,
-        )
-        answer_text = ""
-        tools_called = []
-    except Exception as exc:  # noqa: BLE001
-        error_info = ErrorInfo(
-            error="agent_error",
-            message=f"agent.forward raised: {exc}",
-            details={"original_error": type(exc).__name__},
-            recoverable=True,
-        )
-
-    # Build assistant parts — routing_decision (v0.2) first when we
-    # got a selected_agent, then optional thinking trace, then the
-    # text answer, then any file_diffs.
-    assistant_parts: list[Part] = []
-    if selected_agent:
-        assistant_parts.append(Part(
-            id=_new_part_id(),
-            type="routing_decision",
-            selected_agent=selected_agent,
-            rationale=rationale,
-            confidence=0.0,
-            heuristic=False,
-            execution_path=execution_path,
-        ))
-    if thinking_text:
-        # iowarp/clio-agent#17: surface DSPy reasoning as a
-        # thinking Part so the TUI can collapse + render it
-        # gated on capabilities.thinking_blocks.
-        assistant_parts.append(
-            Part(id=_new_part_id(), type="thinking", text=thinking_text)
-        )
-    if answer_text:
-        assistant_parts.append(
-            Part(id=_new_part_id(), type="text", text=answer_text)
-        )
-    for row in proposed_diffs:
-        if isinstance(row, dict):
-            getf = row.get
-        else:
-            def getf(k, default=None, _r=row):
-                return getattr(_r, k, default)
-        path = getf("path", "") or ""
-        udiff = getf("unified_diff", "") or ""
-        new_content = getf("new_content", "") or ""
-        edit_mode = getf("edit_mode", "") or ""
-        lines_added = int(getf("lines_added", 0) or 0)
-        lines_removed = int(getf("lines_removed", 0) or 0)
-        if not path:
-            continue
-        # In "whole" mode the unified_diff may be empty by design;
-        # the new_content carries the full replacement. Accept either
-        # so the Part lands instead of being dropped.
-        if not udiff and not new_content:
-            continue
-        assistant_parts.append(Part(
-            id=_new_part_id(),
-            type="file_diff",
-            path=path,
-            unified_diff=udiff,
-            new_content=new_content,
-            status="pending",
-            edit_mode=edit_mode,
-            lines_added=lines_added,
-            lines_removed=lines_removed,
-        ))
-
-    assistant_metadata: dict[str, Any] = {}
-    if tools_called:
-        assistant_metadata["tools_called"] = tools_called
-    # iowarp/clio-agent#6: when streaming actually emitted chunks,
-    # reuse its message_id + part_id so the deltas + final
-    # message line up. Otherwise mint a fresh id (existing path).
-    asst_id = streamed_assistant_msg_id or _new_message_id("asst")
-    if streamed_assistant_part_id is not None and answer_text:
-        # Replace the routing/text/diff parts list's text part
-        # with a stub carrying the streamed part_id, so the final
-        # message references the same id the deltas used.
-        for i, p in enumerate(assistant_parts):
-            if p.type == "text":
-                assistant_parts[i] = Part(
-                    id=streamed_assistant_part_id,
-                    type="text",
-                    text=answer_text,
-                )
-                break
-    assistant_msg = Message(
-        id=asst_id,
-        session_id=sid,
-        role="assistant",
-        created_at=_iso_from_epoch(time.time()),
-        updated_at=_iso_from_epoch(time.time()),
-        parts=assistant_parts,
-        tokens=Tokens(**turn_tokens),
-        cost_usd=turn_cost,
-        stop_reason="error" if error_info else "end_turn",
-        error_info=error_info,
-        metadata=assistant_metadata,
-    )
-
-    # Index file_diff parts so /diffs/apply + /diffs/reject find them.
-    bucket = app.state.pending_diffs.setdefault(sid, [])
-    for p in assistant_parts:
-        if p.type != "file_diff":
-            continue
-        bucket.append({
-            "path": p.path,
-            "unified_diff": p.unified_diff,
-            "new_content": p.new_content,
-            "status": "pending",
-            "part_id": p.id,
-            "message_id": assistant_msg.id,
-        })
-
-    # Materialise nanoagent spawns + publish their lifecycle events.
-    for spawn in nanoagents:
-        get = spawn.get if isinstance(spawn, dict) else (
-            lambda k, default=None, _s=spawn: getattr(_s, k, default)
-        )
-        agent_id = get("agent_id") or get("agent") or "nanoagent"
-        spawn_input = get("input") or {}
-        answer = get("answer") or ""
-        subsess = app.state.sessions.create(
-            workspace_id=sess.workspace_id,
-            title=f"{agent_id} subagent",
-            parent_session_id=sid,
-        )
-        sub_now = time.time()
-        sub_user = Message(
-            id=_new_message_id("user"),
-            session_id=subsess.id,
-            role="user",
-            created_at=_iso_from_epoch(sub_now),
-            updated_at=_iso_from_epoch(sub_now),
-            parts=[Part(
-                id=_new_part_id(), type="text", text=str(spawn_input),
-            )],
-        )
-        sub_asst = Message(
-            id=_new_message_id("asst"),
-            session_id=subsess.id,
-            role="assistant",
-            created_at=_iso_from_epoch(sub_now),
-            updated_at=_iso_from_epoch(sub_now),
-            parts=[Part(id=_new_part_id(), type="text", text=answer)] if answer else [],
-            stop_reason="end_turn",
-        )
-        app.state.messages.setdefault(subsess.id, []).extend(
-            [sub_user, sub_asst]
-        )
-        app.state.sessions.update(
-            subsess.id, message_count=2, status="idle"
-        )
-        bus.publish(Event(
-            type="subagent.started",
-            session_id=sid,
-            payload={
-                "parent_session_id": sid,
-                "child_session_id": subsess.id,
-                "agent_id": agent_id,
-                "spawned_by_message_id": assistant_msg.id,
-            },
-        ))
-        bus.publish(Event(
-            type="subagent.completed",
-            session_id=sid,
-            payload={
-                "parent_session_id": sid,
-                "child_session_id": subsess.id,
-                "agent_id": agent_id,
-                "duration_ms": float(get("duration_ms", 0.0) or 0.0),
-                "tokens": get("tokens") or {},
-                "cost_usd": float(get("cost_usd", 0.0) or 0.0),
-            },
-        ))
-
-    # message.created for the assistant message (empty body — parts
-    # arrive via subsequent message.part.added/delta events).
-    # When real streaming already fired the message.created +
-    # message.part.added + N deltas (#6), skip re-issuing them so we
-    # don't duplicate.
-    if streamed_assistant_msg_id is None:
-        bus.publish(Event(
-            type="message.created", session_id=sid,
-            payload=Message(
-                id=assistant_msg.id,
-                session_id=sid,
-                role="assistant",
-                created_at=assistant_msg.created_at,
-                updated_at=assistant_msg.updated_at,
-                parts=[],
-            ).model_dump(exclude_none=True),
-        ))
-    # Stream text parts via message.part.added (empty) + N
-    # message.part.delta + message.part.completed. When real
-    # streaming already drained the chunks, just close out with
-    # message.part.completed for the streamed text part.
-    _CHUNK = 64
-    for part in assistant_parts:
-        if part.type == "text" and part.text:
-            if part.id == streamed_assistant_part_id:
-                # Real streaming already pumped deltas — but those
-                # carry raw LM output that includes ChatAdapter format
-                # markers ([[ ## answer ## ]] etc). The final ``part.text``
-                # is the parsed clean answer; ship it on the completed
-                # event so the TUI can replace the buffered text.
-                bus.publish(Event(
-                    type="message.part.completed",
-                    session_id=sid,
-                    payload={
-                        "message_id": assistant_msg.id,
-                        "part_id": part.id,
-                        "final_text": part.text,
-                    },
-                ))
-                continue
-            stub = part.model_copy(deep=True)
-            stub.text = ""
-            bus.publish(Event(
-                type="message.part.added",
-                session_id=sid,
-                payload={
-                    "message_id": assistant_msg.id,
-                    "part": stub.model_dump(exclude_none=True),
-                },
-            ))
-            full = part.text
-            for i in range(0, len(full), _CHUNK):
-                bus.publish(Event(
-                    type="message.part.delta",
-                    session_id=sid,
-                    payload={
-                        "message_id": assistant_msg.id,
-                        "part_id": part.id,
-                        "delta": {"text_append": full[i:i + _CHUNK]},
-                    },
-                ))
-            bus.publish(Event(
-                type="message.part.completed",
-                session_id=sid,
-                payload={
-                    "message_id": assistant_msg.id,
-                    "part_id": part.id,
-                },
-            ))
-        else:
-            bus.publish(Event(
-                type="message.part.added",
-                session_id=sid,
-                payload={
-                    "message_id": assistant_msg.id,
-                    "part": part.model_dump(exclude_none=True),
-                },
-            ))
-    # Per-tool telemetry events synthesised from the prediction's
-    # tool_called trace. A real ReAct agent that instruments
-    # MCPToolBridge.call_tool publishes the same wire shape live;
-    # the TUI's renderer doesn't care which flavour it is.
-    for idx, call in enumerate(tools_called):
-        call_id = f"call_{assistant_msg.id}_{idx}"
-        bus.publish(Event(
-            type="tool.call.started",
-            session_id=sid,
-            payload={
-                "message_id": assistant_msg.id,
-                "call_id": call_id,
-                "tool": call.get("name", ""),
-                "args": call.get("args", {}),
-            },
-        ))
-        bus.publish(Event(
-            type="tool.call.completed",
-            session_id=sid,
-            payload={
-                "message_id": assistant_msg.id,
-                "call_id": call_id,
-                "tool": call.get("name", ""),
-                "ok": call.get("ok", True),
-                "duration_ms": call.get("duration_ms", 0.0),
-                "cached": call.get("cached", False),
-            },
-        ))
-    completed_payload: dict[str, Any] = {
-        "message_id": assistant_msg.id,
-        "stop_reason": "error" if error_info else "end_turn",
-        "tokens": dict(turn_tokens),
-        "cost_usd": turn_cost,
-    }
-    if tools_called:
-        completed_payload["metadata"] = {"tools_called": tools_called}
-    bus.publish(Event(
-        type="message.completed",
-        session_id=sid,
-        payload=completed_payload,
-    ))
-
-    # Persist + settle.
-    app.state.messages.setdefault(sid, []).append(assistant_msg)
-    app.state.sessions.update(
-        sid,
-        status="idle" if error_info is None else "error",
-        message_count=sess.message_count + 2,
-        add_tokens_input=turn_tokens["input"],
-        add_tokens_output=turn_tokens["output"],
-        add_cost_usd=turn_cost,
-    )
-    bus.publish(Event(
-        type="session.status_changed",
-        session_id=sid,
-        payload={
-            "session_id": sid,
-            "status": "error" if error_info else "idle",
-            "prev_status": "running",
-        },
-    ))
-    # iowarp/clio-agent#20: post_message hook runs AFTER persistence
-    # so user audit code sees the settled assistant + can ship to
-    # external systems. Errors are swallowed (post_* contract).
-    try:
-        from clio_agent.runtime.hooks import fire as _fire_hook
-
-        _fire_hook(
-            "post_message", sid,
-            assistant_msg.model_dump(exclude_none=True),
-        )
-    except Exception:  # noqa: BLE001
-        pass
-
-
-def _current_lm_model_id() -> str:
-    """Best-effort: which model is dspy.settings.lm bound to."""
-    try:
-        import dspy  # noqa: PLC0415
-    except Exception:  # pragma: no cover
-        return ""
-    lm = getattr(dspy.settings, "lm", None) if hasattr(dspy, "settings") else None
-    return getattr(lm, "model", "") if lm else ""
-
-
-def _all_known_lms(app: "FastAPI") -> list[Any]:
-    """Return every LM instance the running agent might call —
-    ``dspy.settings.lm`` plus the agent's ``_router_lm`` and any
-    expert-bound LMs. Lets the turn handler diff history across
-    all of them so router + expert + chat token counts roll up."""
-
-    lms: list[Any] = []
-    try:
-        import dspy  # noqa: PLC0415
-        main = getattr(dspy.settings, "lm", None) if hasattr(dspy, "settings") else None
-        if main is not None:
-            lms.append(main)
-    except Exception:  # pragma: no cover
-        pass
-    agent = getattr(getattr(app, "state", None), "agent", None)
-    for attr in ("_router_lm", "router_lm", "_expert_lm"):
-        side = getattr(agent, attr, None) if agent is not None else None
-        if side is not None and side not in lms:
-            lms.append(side)
-    return lms
-
-
-def _snapshot_lm_history_index(app: Optional["FastAPI"] = None) -> dict[int, int]:
-    """Return current ``len(lm.history)`` for every known LM,
-    keyed by ``id(lm)`` so the diff side can find them again
-    even if the agent rebinds attributes mid-turn."""
-
-    if app is None:
-        try:
-            import dspy  # noqa: PLC0415
-        except Exception:  # pragma: no cover
-            return {}
-        lm = getattr(dspy.settings, "lm", None) if hasattr(dspy, "settings") else None
-        return {id(lm): len(getattr(lm, "history", None) or [])} if lm else {}
-    snapshot: dict[int, int] = {}
-    for lm in _all_known_lms(app):
-        history = getattr(lm, "history", None) or []
-        snapshot[id(lm)] = len(history)
-    return snapshot
-
-
-def _usage_from_history_slice(start: Any, app: Optional["FastAPI"] = None) -> dict[str, Any]:
-    """Sum usage from each known LM's ``history[start:]`` — every
-    call this turn made across router + experts + chat. Accepts
-    either a ``dict[id(lm) -> int]`` snapshot (preferred) or a
-    legacy single int for backwards compat with single-LM callers.
-    """
-
-    try:
-        import dspy  # noqa: PLC0415
-    except Exception:  # pragma: no cover
-        return {}
-    if app is not None:
-        lms = _all_known_lms(app)
-    else:
-        lm = getattr(dspy.settings, "lm", None) if hasattr(dspy, "settings") else None
-        lms = [lm] if lm else []
-    if not lms:
-        return {}
-    if isinstance(start, int):
-        # Legacy single-int callers — apply to main LM only.
-        snap = {id(lms[0]): start}
-    else:
-        snap = start
-    input_tok = output_tok = cache_read = cache_write = 0
-    raw_cost = 0.0
-    last_model = ""
-    for lm in lms:
-        start_idx = snap.get(id(lm), 0)
-        history = getattr(lm, "history", None) or []
-        for entry in history[start_idx:]:
-            if not isinstance(entry, dict):
-                continue
-            usage = entry.get("usage") or {}
-            if not isinstance(usage, dict):
-                continue
-            input_tok += int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
-            output_tok += int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
-            cache_read += int(usage.get("cache_read_input_tokens") or 0)
-            cache_write += int(usage.get("cache_creation_input_tokens") or 0)
-            raw_cost += float(usage.get("cost_usd") or usage.get("total_cost") or 0.0)
-            last_model = entry.get("model") or last_model
-    if raw_cost == 0.0:
-        raw_cost = _estimate_cost_usd(last_model, input_tok, output_tok)
-    return {
-        "input": input_tok,
-        "output": output_tok,
-        "cache_read": cache_read,
-        "cache_write": cache_write,
-        "cost_usd": raw_cost,
-    }
-
-
-def _usage_from_history_slice_legacy(start: int) -> dict[str, Any]:
-    """Single-LM history diff retained for tests that don't pass
-    an app. Walks dspy.settings.lm only."""
-
-    try:
-        import dspy  # noqa: PLC0415
-    except Exception:  # pragma: no cover
-        return {}
-    lm = getattr(dspy.settings, "lm", None) if hasattr(dspy, "settings") else None
-    if lm is None:
-        return {}
-    history = getattr(lm, "history", None) or []
-    if start >= len(history):
-        return {}
-    input_tok = 0
-    output_tok = 0
-    cache_read = 0
-    cache_write = 0
-    raw_cost = 0.0
-    last_model = ""
-    for entry in history[start:]:
-        if not isinstance(entry, dict):
-            continue
-        usage = entry.get("usage") or {}
-        if not isinstance(usage, dict):
-            continue
-        input_tok += int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
-        output_tok += int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
-        cache_read += int(usage.get("cache_read_input_tokens") or 0)
-        cache_write += int(usage.get("cache_creation_input_tokens") or 0)
-        raw_cost += float(usage.get("cost_usd") or usage.get("total_cost") or 0.0)
-        last_model = entry.get("model") or last_model
-    if raw_cost == 0.0:
-        raw_cost = _estimate_cost_usd(last_model, input_tok, output_tok)
-    return {
-        "input": input_tok,
-        "output": output_tok,
-        "cache_read": cache_read,
-        "cache_write": cache_write,
-        "cost_usd": raw_cost,
-    }
-
-
-def _usage_from_tracker(tracker: Any) -> dict[str, Any]:
-    """Sum usage from a per-turn ``UsageTracker`` (preferred path).
-
-    The tracker collects per-call usage as litellm/dspy hits the LM,
-    surviving the executor-thread + streaming hops that strand
-    ``dspy.LM.history``. Returns ``{}`` when the tracker is absent
-    or empty so the caller falls back to history scraping.
-    """
-
-    if tracker is None:
-        return {}
-    try:
-        totals = tracker.get_total_tokens()
-    except Exception:  # noqa: BLE001
-        return {}
-    if not totals:
-        return {}
-    input_tok = 0
-    output_tok = 0
-    cache_read = 0
-    cache_write = 0
-    raw_cost = 0.0
-    last_model = ""
-    for model, entry in totals.items():
-        last_model = model
-        input_tok += int(entry.get("prompt_tokens") or entry.get("input_tokens") or 0)
-        output_tok += int(entry.get("completion_tokens") or entry.get("output_tokens") or 0)
-        cache_read += int(entry.get("cache_read_input_tokens") or 0)
-        cache_write += int(entry.get("cache_creation_input_tokens") or 0)
-        raw_cost += float(entry.get("cost_usd") or entry.get("total_cost") or 0.0)
-    if raw_cost == 0.0:
-        raw_cost = _estimate_cost_usd(last_model, input_tok, output_tok)
-    return {
-        "input": input_tok,
-        "output": output_tok,
-        "cache_read": cache_read,
-        "cache_write": cache_write,
-        "cost_usd": raw_cost,
-    }
-
-
-def _usage_from_dspy_history() -> dict[str, Any]:
-    """Reach into DSPy's currently-configured LM and pull the most
-    recent call's usage block. Returns ``{}`` whenever DSPy isn't
-    importable, no LM is configured, or the history is empty —
-    callers default to zeros.
-
-    Best-effort. DSPy's history shape changes between minor versions;
-    we accept any dict-shaped record under ``lm.history[-1]`` whose
-    ``usage`` (or ``response.usage``) carries the OpenAI-style keys
-    we already use on the wire.
-    """
-
-    try:
-        import dspy  # noqa: PLC0415
-    except Exception:  # pragma: no cover - dspy not present
-        return {}
-
-    lm = getattr(dspy.settings, "lm", None) if hasattr(dspy, "settings") else None
-    if lm is None:
-        return {}
-    history = getattr(lm, "history", None)
-    if not history:
-        return {}
-    last = history[-1]
-    usage = (
-        last.get("usage")
-        if isinstance(last, dict)
-        else getattr(last, "usage", None)
-    )
-    if usage is None and isinstance(last, dict):
-        resp = last.get("response", {}) or {}
-        usage = resp.get("usage", {}) if isinstance(resp, dict) else None
-    if not isinstance(usage, dict):
-        return {}
-    input_tok = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
-    output_tok = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
-    cache_read = int(usage.get("cache_read_input_tokens") or 0)
-    cache_write = int(usage.get("cache_creation_input_tokens") or 0)
-    raw_cost = float(usage.get("cost_usd") or usage.get("total_cost") or 0.0)
-    # iowarp/clio-agent#8: Meridian (and some other proxies) don't
-    # pass cost_usd through the OpenAI-compatible response shape, so
-    # the upstream usage dict reports zero. Fall back to a per-token
-    # price table keyed by the LM's model id when raw_cost == 0.
-    if raw_cost == 0.0:
-        model = ""
-        if isinstance(last, dict):
-            model = (
-                last.get("model")
-                or last.get("response", {}).get("model", "")
-                or ""
-            )
-        else:
-            model = getattr(last, "model", "") or ""
-        raw_cost = _estimate_cost_usd(model, input_tok, output_tok)
-    return {
-        "input": input_tok,
-        "output": output_tok,
-        "cache_read": cache_read,
-        "cache_write": cache_write,
-        "cost_usd": raw_cost,
-    }
-
-
-# iowarp/clio-agent#8: per-million-token prices (USD) for models we
-# expect to see through our presets. Best-effort — the LM provider
-# is the source of truth when it actually reports cost; this kicks
-# in only when the upstream usage dict has zero. Keys match the
-# substrings we look for in the reported model id (case-insensitive).
-_PRICE_TABLE_PER_M: dict[str, tuple[float, float]] = {
-    # (input $/M tokens, output $/M tokens) as of model-card pricing.
-    "claude-haiku-4-5": (1.0, 5.0),
-    "claude-sonnet-4": (3.0, 15.0),
-    "claude-sonnet-4-6": (3.0, 15.0),
-    "claude-opus-4": (15.0, 75.0),
-    "claude-opus-4-6": (15.0, 75.0),
-    "claude-3-5-haiku": (0.8, 4.0),
-    "claude-3-5-sonnet": (3.0, 15.0),
-    "claude-3-opus": (15.0, 75.0),
-    # OpenRouter free tier — by definition $0.
-    ":free": (0.0, 0.0),
-    # OpenAI defaults if someone wires direct.
-    "gpt-4o-mini": (0.15, 0.6),
-    "gpt-4o": (2.5, 10.0),
+_EXECUTABLE_SESSION_AGENT_IDS = {
+    "",
+    "main",
+    "default",
 }
 
 
-def _estimate_cost_usd(
-    model_id: str, input_tokens: int, output_tokens: int
-) -> float:
-    """Best-effort cost estimate when the LM doesn't report one.
+def _gact_cors_origins() -> list[str]:
+    """Return trusted browser origins for the GACT API.
 
-    Substring-matches the model id against ``_PRICE_TABLE_PER_M``;
-    returns 0.0 when nothing matches (no false-precision number).
+    The config file is the primary surface; the environment variable remains a
+    compatibility fallback for older launch scripts.
     """
 
-    if not model_id:
-        return 0.0
-    needle = model_id.lower()
-    match: Optional[tuple[float, float]] = None
-    for key, prices in _PRICE_TABLE_PER_M.items():
-        if key in needle:
-            match = prices
-            break
-    if match is None:
-        return 0.0
-    input_price, output_price = match
-    return (input_tokens * input_price + output_tokens * output_price) / 1_000_000
+    default_origins = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:4173",
+        "http://127.0.0.1:4173",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
+    try:
+        raw_value: Any = conf.resolve(
+            "gact.cors.origins",
+            env="CLIO_GACT_CORS_ORIGINS",
+            default=None,
+        )
+    except (TypeError, ValueError):
+        return default_origins
+    if raw_value in (None, "", []):
+        return default_origins
+    try:
+        raw = cast(Callable[[Any], list[str]], conf.as_csv)(raw_value)
+    except (TypeError, ValueError):
+        return default_origins
+    if raw == ["*"]:
+        return ["*"]
+    return [origin for origin in raw if origin]
 
 
-# iowarp/clio-agent#7: tools the gate treats as destructive. Anything
-# matching one of these substrings triggers a permission_requested
-# event + blocks the bridge thread until the user resolves it.
-_DESTRUCTIVE_TOOL_SUBSTRINGS: tuple[str, ...] = (
-    "delete",
-    "remove",
-    "rm_",
-    "drop",
-    "destroy",
-    "exec",
-    "shell",
-    "write",
+def _web_dir() -> str:
+    """Directory of the built web-UI bundle (``paths.web_dir`` / ``CLIO_WEB_DIR``).
+
+    Empty string (the default) means web mode is disabled and the server stays
+    headless/TUI-only. Resolved file → env → default like every other knob.
+    """
+
+    return conf.resolve("paths.web_dir", env="CLIO_WEB_DIR", default="", cast=conf.as_str).strip()
+
+
+def _agent_not_available_error(app: "FastAPI", sid: str) -> "ErrorEnvelope":
+    """Return a typed error when no executable CLIO agent is ready for a turn."""
+
+    task = getattr(app.state, "agent_construction_task", None)
+    task_done = bool(getattr(task, "done", lambda: True)())
+    init_error = str(getattr(app.state, "agent_init_error", "") or "")
+    want_agent = bool(getattr(app.state, "want_agent", False))
+
+    if want_agent and not task_done:
+        status = "starting"
+        message = "CLIO is still starting its agent; no agent is ready to accept messages yet."
+        recoverable = True
+        recovery_actions = ["wait_for_agent_startup", "retry", "check_health"]
+    elif init_error:
+        status = "failed"
+        message = "CLIO agent startup failed; no agent is available to accept messages."
+        recoverable = True
+        recovery_actions = ["check_server_logs", "fix_lm_configuration", "restart_agent"]
+    else:
+        status = "not_configured"
+        message = (
+            "No executable CLIO agent is configured for this backend. Launch `clio-agent-gact` "
+            "with an LM provider configured before sending messages."
+        )
+        recoverable = False
+        recovery_actions = ["configure_lm_provider", "restart_agent"]
+
+    details: dict[str, Any] = {
+        "session_id": sid,
+        "agent_status": status,
+        "want_agent": want_agent,
+        "recovery_actions": recovery_actions,
+    }
+    if init_error:
+        details["agent_init_error"] = init_error
+
+    return ErrorEnvelope(
+        error=ErrorInfo(
+            error="agent_not_available",
+            message=message,
+            details=details,
+            recoverable=recoverable,
+        )
+    )
+
+
+# Session message-ledger + context-file helpers now live in
+# clio_agent.gact.session_store (#714 decomposition). Re-exported here so
+# `from clio_agent.gact.app import ...` and test_import_seams stay green.
+# Per-turn context enrichment + context-frame provenance now live in
+# clio_agent.gact.enrichment (#714 decomposition): context-file injection +
+# its structured access error and binary-inspector hook, explicit memory-search
+# enrichment, context-frame record/finalize + their token-accounting leaves,
+# the approved diffs/apply disk write, and the turn provenance projection.
+# Re-exported here so existing ``from clio_agent.gact.app import <name>`` callers
+# (the turn engine, tests) + test_import_seams stay green; GactDeps passes
+# _apply_edit_to_disk through from this module.
+from clio_agent.gact.enrichment import (  # noqa: E402,F401
+    _BINARY_CONTEXT_INSPECTORS,
+    _apply_edit_to_disk,
+    _context_file_access_error,
+    _context_file_turn_provenance,
+    _enrich_with_context_files,
+    _enrich_with_requested_memory_search,
+    _estimate_context_tokens,
+    _finalize_context_frame,
+    _memory_search_request_from_message,
+    _message_text_for_frame,
+    _record_context_frame,
+)
+from clio_agent.gact.metrics_counters import MetricsCounters  # noqa: E402
+from clio_agent.gact.runtime.retention import init_retention_state  # noqa: E402
+from clio_agent.gact.session_store import (  # noqa: E402,F401
+    _append_session_message,
+    _compile_session_conversation_history,
+    _delete_session_context_files,
+    _delete_session_messages,
+    _extend_session_messages,
+    _flush_context_files,
+    _load_context_files,
+    _release_session_arc,
+    _replace_session_messages,
 )
 
 
-def _is_destructive(tool_name: str) -> bool:
-    n = tool_name.lower()
-    return any(needle in n for needle in _DESTRUCTIVE_TOOL_SUBSTRINGS)
+def _cancellation_attempt_summary(attempt: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not attempt:
+        return {}
+    return {
+        key: attempt[key]
+        for key in (
+            "id",
+            "session_id",
+            "requested_at",
+            "in_flight",
+            "cooperative_signal_sent",
+            "asyncio_task_cancel_scheduled",
+            "asyncio_task_cancel_sent",
+            "hard_abort_supported",
+            "upstream_abort",
+            "executor_work_may_continue",
+        )
+        if key in attempt
+    }
 
 
-def _make_permission_gate(app: "FastAPI"):
-    """Build a callable suitable for MCPToolBridge.permission_gate.
+def _enrich_cancellation_error_info(
+    app: "FastAPI",
+    sid: str,
+    error_info: "ErrorInfo | None",
+) -> "ErrorInfo | None":
+    """Attach durable cancellation-attempt evidence to cancelled turns."""
 
-    Non-destructive tools fast-allow. Destructive tools register a
-    permission row, publish permission.requested into the EventBus,
-    block on a threading.Event with a generous timeout, and return
-    "allow" / "deny" based on the user's resolution. Timeouts default
-    to deny — fail-safe.
-    """
-
-    DEFAULT_TIMEOUT_S = 120.0
-
-    def gate(name: str, args: Mapping[str, Any]) -> str:
-        # iowarp/clio-agent#20: user-defined pre_tool hook can veto
-        # the call by raising PermissionError. Returns ignored;
-        # only the raise/no-raise distinction matters.
-        try:
-            from clio_agent.runtime.hooks import fire as _fire_hook
-
-            _fire_hook("pre_tool", name, dict(args))
-        except PermissionError:
-            return "deny"
-        if not _is_destructive(name):
-            return "allow"
-        # Find an active session to attach the permission to.
-        # Bridge calls don't carry session context today, so fall
-        # back to the most-recently-active session.
-        sid = ""
-        sessions_by_recency = app.state.sessions.list()
-        if sessions_by_recency:
-            sid = sessions_by_recency[0].id
-            current = sessions_by_recency[0]
-            # iowarp/clio-agent — plan_mode + architect mode reject
-            # destructive tool calls without prompting. Read-only
-            # contract is hard, not advisory.
-            if current.mode in {"plan", "architect"}:
-                row = {
-                    "id": f"perm_{uuid.uuid4().hex[:12]}",
-                    "session_id": sid,
-                    "tool_call": {
-                        "tool_name": name,
-                        "input": dict(args),
-                    },
-                    "summary": (
-                        f"destructive tool {name!r} blocked by "
-                        f"session.mode={current.mode!r}"
-                    ),
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                    "status": "auto_denied",
-                    "action": "deny",
-                    "resolved_at": datetime.now(timezone.utc).isoformat(),
-                }
-                app.state.permissions[row["id"]] = row
-                app.state.bus.publish(Event(
-                    type="permission.resolved",
-                    session_id=sid,
-                    payload={
-                        "permission_id": row["id"],
-                        "action": "deny",
-                        "session_id": sid,
-                        "reason": "session_mode_readonly",
-                    },
-                ))
-                return "deny"
-        pid = f"perm_{uuid.uuid4().hex[:12]}"
-        evt = threading.Event()
-        row = {
-            "id": pid,
-            "session_id": sid,
-            "tool_call": {
-                "tool_name": name,
-                "input": dict(args),
-            },
-            "summary": f"destructive tool call: {name}",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "status": "pending",
-        }
-        app.state.permissions[pid] = row
-        app.state.permission_events[pid] = evt
-        app.state.bus.publish(Event(
-            type="permission.requested",
-            session_id=sid,
-            payload=row,
-        ))
-        # Block the bridge thread until POST /v1/permissions/{pid}
-        # sets the event (or we time out).
-        if not evt.wait(timeout=DEFAULT_TIMEOUT_S):
-            row["status"] = "timeout"
-            return "deny"
-        action = row.get("action", "deny")
-        if action in {"allow", "allow_session", "allow_workspace"}:
-            return "allow"
-        return "deny"
-
-    return gate
+    if error_info is None or error_info.error != "cancelled":
+        return error_info
+    attempts = getattr(app.state, "cancel_attempts", None)
+    attempt = attempts.get(sid) if isinstance(attempts, Mapping) else None
+    if not attempt:
+        return error_info
+    details = error_info.details
+    details.setdefault("cancellation_attempt_id", attempt.get("id", ""))
+    details.setdefault("cancellation_attempt", _cancellation_attempt_summary(attempt))
+    details.setdefault("hard_abort_supported", attempt.get("hard_abort_supported", False))
+    details.setdefault("upstream_abort", attempt.get("upstream_abort", "not_supported"))
+    return error_info
 
 
-def _make_tool_observer(app: "FastAPI"):
-    """Build a callable suitable for MCPToolBridge.tool_observer.
+# --------------------------------------------------------------------------- #
+# Agent resolution + prompt composition re-export shims (#714 step 5/A).         #
+#                                                                               #
+# The stateless agent/blueprint/expert-pack RESOLUTION queries and the prompt   #
+# COMPOSITION / dynamic-context renderers were carved out into                   #
+# ``clio_agent.gact.agents.resolution`` and ``clio_agent.gact.agents.composition``#
+# (each takes ``app`` explicitly; both import only the shared runtime base +     #
+# gact leaves, never this module). They are re-exported here so                  #
+# ``from clio_agent.gact.app import <name>`` keeps working unchanged. The owner  #
+# modules are the single source of truth; tests that patch these must target the #
+# owner (``...agents.resolution`` / ``...agents.composition``), not this shim.   #
+# --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# Extracted-module re-export shims (#714 decomposition)                         #
+#                                                                               #
+# The cohesive helper clusters below were carved OUT of this module into        #
+# sibling modules (the single source of truth for each). They are re-imported   #
+# here so existing ``from clio_agent.gact.app import <name>`` callers (tests,   #
+# gact/turn.py, routes/deps.py, agents/builders.py) + the ``test_import_seams`` #
+# guardrail keep resolving them through this stable shim. None of these sibling #
+# modules import this 24k-line module, so the graph stays acyclic. The imports  #
+# are isort-sorted; each per-module comment annotates the run it heads.         #
+# (behavior-preserving extraction)                                              #
+# --------------------------------------------------------------------------- #
+# gact/_params.py -- user-agent generation-parameter parsing.
+from clio_agent.gact._params import (  # noqa: E402,F401
+    _gact_turn_timeout_s,
+    _user_agent_bool_param,
+    _user_agent_float_param,
+    _user_agent_int_param,
+    _user_agent_param,
+)
+from clio_agent.gact.agents import resolution as _resolution  # noqa: E402, F401
 
-    Publishes tool.call.started / tool.call.completed events into
-    the EventBus, attaching to the most-recently-active session
-    (bridge calls don't carry session context). Also appends each
-    completed call into ``app.state.tool_call_ledger[sid]`` so the
-    turn handler can attach a per-turn ``tools_called`` list to the
-    assistant message metadata even when the underlying expert
-    didn't populate ``pred.tools_called`` itself (e.g. the
-    deterministic short-circuit paths).
-    """
+# gact/agents/builders.py + agents/runtime.py -- expert/blueprint runtime engine;
+# the kept turn-handler dispatch wrappers below reach the builders through these.
+from clio_agent.gact.agents.builders import (  # noqa: E402,F401
+    _active_base_agent_tool_executor,
+    _adapter_tool_intent_from_exception,
+    _blueprint_fanout_config,
+    _blueprint_runtime_signature,
+    _build_blueprint_dspy_module,
+    _build_child_expert_tool,
+    _build_fanout_tool,
+    _build_prompt_user_agent_module,
+    _build_tool_user_agent_module,
+    _call_enabled_external_mcp_tool,
+    _call_recovered_dspy_tool,
+    _coerce_fanout_child_ids,
+    _dynamic_agent_lm_config,
+    _dynamic_agent_tools,
+    _dynamic_child_expert_tools,
+    _emit_blueprint_llm_failure,
+    _emit_invalid_tool_selection_event,
+    _enabled_external_mcp_dspy_tools,
+    _extract_repair_attempts,
+    _invalid_tool_selection_from_exception,
+    _is_repairable_typed_output_error,
+    _prompt_user_agent_signature,
+    _recording_blueprint_tool,
+    _recover_blueprint_react_tool_intent,
+    _reextract_over_retained_trajectory,
+    _repair_temperature,
+    _run_external_mcp_tool_sync,
+    _tool_names,
+    _tool_user_agent_max_iters,
+    _tool_user_agent_signature,
+    _typed_output_repair_hint,
+)
+from clio_agent.gact.agents.composition import (  # noqa: E402, F401
+    _agent_prompt_request,
+    _agent_rows_prompt_render_context,
+    _apply_prompt_registry_to_agent,
+    _prompt_render_context,
+    _prompt_resolution_metadata,
+    _runtime_active_workspace_context,
+    _runtime_dynamic_agent_children_context,
+)
+from clio_agent.gact.agents.resolution import (  # noqa: E402, F401
+    _agent_definition_is_agent_blueprint,
+    _agent_definition_uses_blueprint_runtime,
+    _agent_overlay_patchable_fields,
+    _agent_with_capability_refs,
+    _legacy_native_expert_runtime_enabled,
+    _merge_agent_def_rows,
+    _resolve_dynamic_agent,
+    _resolve_runtime_dynamic_agent,
+    _runtime_active_agent_blueprint_agent_ids,
+    _runtime_active_agent_blueprint_id,
+    _runtime_active_agent_blueprint_path,
+    _runtime_active_agent_blueprint_root_id,
+    _runtime_active_agent_blueprint_rows,
+    _runtime_active_session_expert_pack_id,
+    _runtime_active_session_expert_pack_path,
+    _runtime_apply_session_agent_overlay,
+    _runtime_child_agent_rows,
+    _runtime_declared_child_ids,
+    _runtime_session_agent_overlay,
+    _runtime_workspace_catalog_cwd,
+)
+from clio_agent.gact.agents.runtime import (  # noqa: E402,F401
+    _prediction_structured_metadata,
+    _retaining_react_cls,
+    _summarize_segments_llm,
+)
 
-    def observe(
-        name: str,
-        args: Mapping[str, Any],
-        phase: Optional[str],
-        error: Optional[str],
-    ) -> None:
-        sessions_by_recency = app.state.sessions.list()
-        if not sessions_by_recency:
-            return
-        sid = sessions_by_recency[0].id
-        if phase == "started":
-            call_id = f"call_{uuid.uuid4().hex[:12]}"
-            # Stash the per-thread call_id so the completion event
-            # uses the same id. Threading-locals works for
-            # MCPToolBridge's worker thread.
-            _OBSERVER_CALL_IDS.value = call_id
-            # Stamp the start time so completion can compute duration.
-            _OBSERVER_CALL_T0.value = time.time()
-            app.state.bus.publish(Event(
-                type="tool.call.started",
-                session_id=sid,
-                payload={
-                    "call_id": call_id,
-                    "tool": name,
-                    "args": dict(args),
-                },
-            ))
-        elif phase == "completed":
-            call_id = getattr(_OBSERVER_CALL_IDS, "value", "") or ""
-            t0 = getattr(_OBSERVER_CALL_T0, "value", None)
-            duration_ms = (time.time() - t0) * 1000 if t0 else 0.0
-            ok = error is None
-            payload = {
-                "call_id": call_id,
-                "tool": name,
-                "ok": ok,
-                "duration_ms": duration_ms,
-                "cached": False,
-                **({"error": error} if error else {}),
-            }
-            app.state.bus.publish(Event(
-                type="tool.call.completed",
-                session_id=sid,
-                payload=payload,
-            ))
-            # Append to the per-session ledger so the turn handler
-            # finds it post-forward and attaches to the assistant
-            # message metadata.
-            ledger = getattr(app.state, "tool_call_ledger", None)
-            if ledger is not None:
-                ledger.setdefault(sid, []).append({
-                    "name": name,
-                    "args": dict(args),
-                    "ok": ok,
-                    "duration_ms": duration_ms,
-                    "cached": False,
-                    **({"error": error} if error else {}),
-                })
+# gact/delegation.py -- delegation + workflow-state derivation cluster.
+from clio_agent.gact.delegation import (  # noqa: E402,F401
+    _append_accumulated_workflow_state_context,
+    _append_session_workflow_state_context,
+    _bubbled_child_evidence_output_summary,
+    _clean_public_transcript_text,
+    _coerce_expert_handoff_rows,
+    _compact_exact_evidence_index,
+    _delegated_expert_agent_id,
+    _delegated_expert_prompt,
+    _delegated_expert_public_prompt,
+    _dynamic_parent_resume_prompt,
+    _expert_handoff_fields,
+    _expert_handoff_summary,
+    _failed_child_delegation_output_summary,
+    _failed_child_delegation_workflow_state,
+    _fallback_answer_from_delegation,
+    _iter_delegation_return_rows,
+    _json_objects_from_text,
+    _latest_completed_child_output_summary,
+    _latest_delegation_output_summary,
+    _latest_final_child_output_summary,
+    _latest_parent_resumed_output_summary,
+    _merge_workflow_state_from_value,
+    _prediction_workflow_state,
+    _should_execute_delegated_handoff,
+    _workflow_state_from_handoff_rows,
+    _workflow_state_from_outputs,
+    _workflow_state_payload,
+)
 
-    return observe
+# gact/evidence.py -- evidence-grounding + tool-result / trajectory-evidence.
+from clio_agent.gact.evidence import (  # noqa: E402,F401
+    _bounded_tool_call_result,
+    _dynamic_agent_runtime_provenance,
+    _extract_tools_called_from_trajectory,
+    _ground_fabricated_local_artifact_paths,
+    _is_bounded_tool_result,
+    _is_empty_dynamic_agent_answer_error,
+    _is_remote_artifact_ref,
+    _propose_edit_diffs_from_pred,
+    _tool_agent_empty_answer_fallback,
+    _tool_result_is_error,
+    _tool_result_preview,
+    _verified_local_artifact_paths_by_ext,
+)
+
+# gact/messaging.py -- message / multimodal + ask-user + trace-summary helpers.
+from clio_agent.gact.messaging import (  # noqa: E402,F401
+    _agent_accepts_images,
+    _ask_user_options_from_action,
+    _ask_user_resume_text,
+    _coerce_ask_user_action,
+    _dspy_images_from_parts,
+    _format_subagent_input,
+    _image_part_summaries,
+    _prediction_summary,
+    _user_message_parts,
+)
+
+# Provider / LM-bind helpers moved to gact/providers/ (#714 decomposition step 6).
+# Re-exported here so existing ``from clio_agent.gact.app import <name>`` callers +
+# the import-seam guardrail (``_refresh_argonne_lm_token`` pinned) stay green; the
+# write-side ``PUT /v1/providers/lm`` bind closures still live in the provider route
+# handler below and move with the route extraction (step 7).
+from clio_agent.gact.providers.auth import (  # noqa: E402,F401
+    _is_placeholder_api_key,
+    _refresh_argonne_lm_token,
+    _resolve_argonne_runtime_api_key,
+)
+from clio_agent.gact.providers.config import (  # noqa: E402,F401
+    _active_lm_model_ref,
+    _active_lm_supports_vision,
+    _current_lm_model_id,
+    _effective_lm_config,
+    _image_part_error,
+    _model_ref_dict,
+    _model_ref_is_empty,
+    _model_ref_matches_active,
+    _provider_runtime_kind,
+    _unsupported_model_ref_error,
+)
+from clio_agent.gact.providers.lmstudio import (  # noqa: E402,F401
+    _lm_studio_api_root,
+    _lm_studio_headers,
+    _release_owned_lm_studio_instance,
+)
+from clio_agent.gact.routes.agents import (  # noqa: E402
+    register_agents_routes,
+)
+from clio_agent.gact.routes.blueprints import (  # noqa: E402
+    register_blueprints_routes,
+)
+from clio_agent.gact.routes.catalog import (  # noqa: E402
+    register_catalog_routes,
+)
+from clio_agent.gact.routes.context import (  # noqa: E402
+    register_context_routes,
+)
+from clio_agent.gact.routes.deps import GactDeps  # noqa: E402
+from clio_agent.gact.routes.diffs import (  # noqa: E402
+    register_diffs_routes,
+)
+from clio_agent.gact.routes.expert_packs import (  # noqa: E402
+    register_expert_packs_routes,
+)
+from clio_agent.gact.routes.hooks import (  # noqa: E402
+    register_hooks_routes,
+)
+from clio_agent.gact.routes.mcp import (  # noqa: E402
+    register_mcp_routes,
+)
+from clio_agent.gact.routes.memory import (  # noqa: E402
+    register_memory_routes,
+)
+from clio_agent.gact.routes.messages import (  # noqa: E402
+    register_messages_routes,
+)
+from clio_agent.gact.routes.misc import (  # noqa: E402
+    register_misc_routes,
+)
+from clio_agent.gact.routes.permissions import (  # noqa: E402
+    register_permissions_routes,
+)
+from clio_agent.gact.routes.prompts import (  # noqa: E402
+    register_prompts_routes,
+)
+from clio_agent.gact.routes.providers import (  # noqa: E402
+    register_providers_routes,
+)
+from clio_agent.gact.routes.schedules import (  # noqa: E402
+    register_schedules_routes,
+)
+from clio_agent.gact.routes.sessions import (  # noqa: E402
+    register_sessions_routes,
+)
+from clio_agent.gact.routes.system import (  # noqa: E402
+    register_system_routes,
+)
+from clio_agent.gact.routes.workspaces import (  # noqa: E402
+    register_workspaces_routes,
+)
+
+# Capability + metrics catalogs (the stream-fallback reason catalog, the
+# capability-gap rows, and the latency-stat percentile helper) moved to
+# gact/runtime/capabilities.py (#714 decomposition) so the read-only system
+# routes (routes/system.py) and the message-turn streaming path here share one
+# source. The turn path reads ``_STREAM_FALLBACK_REASON_DEFINITIONS`` via
+# ``_stream_fallback_payload`` below; re-exported so existing
+# ``from clio_agent.gact.app import <name>`` callers stay green.
+from clio_agent.gact.runtime.capabilities import (  # noqa: E402,F401
+    _CAPABILITY_GAP_DEFINITIONS,
+    _STREAM_FALLBACK_REASON_DEFINITIONS,
+    _capability_gap_metadata,
+    _latency_stat,
+    _stream_fallback_reason_capabilities,
+)
+
+# Slash-command table assembly moved to gact/runtime/commands.py (#714
+# decomposition) so routes/catalog.py and the prompt-render-context closure here
+# share one source. Imported under the legacy underscore names the render-context
+# closure already used.
+from clio_agent.gact.runtime.commands import (  # noqa: E402
+    command_cwd_for_request as _command_cwd_for_request,
+)
+from clio_agent.gact.runtime.commands import (  # noqa: E402
+    planner_command_rows as _planner_command_rows,
+)
+
+# Server-wide wire + limit constants (contract/backend version, inline-context
+# byte cap) moved to gact/runtime/constants.py (#714 decomposition) so the route
+# modules read them without importing back into app.py. Re-exported so existing
+# ``from clio_agent.gact.app import <name>`` callers stay green.
+from clio_agent.gact.runtime.constants import (  # noqa: E402,F401
+    _CTX_MAX_BYTES,
+    CONTRACT_VERSION,
+    GACT_BACKEND_VERSION,
+)
+
+# Token / context-window leaf machinery moved to gact/runtime/context_tokens.py
+# (#714 decomposition step 2). Re-exported here so existing
+# ``from clio_agent.gact.app import <name>`` callers + the import-seam guardrail
+# stay green; the expert forward (step 4) imports these from the new module.
+from clio_agent.gact.runtime.context_tokens import (  # noqa: E402,F401
+    _CONTEXT_CATEGORY,
+    _arc_obs_value,
+    _autocompact_threshold,
+    _bucket_context_categories,
+    _estimate_text_tokens,
+    _last_prompt_tokens,
+    _resolve_expert_context_window,
+)
+
+# Transcript-memory search primitives (query normalization, excerpting, the
+# scope-controlled ranked search) + the shared message-excerpt projection moved
+# to gact/runtime/memory_search.py (#714 decomposition) so the agent-run path
+# (_enrich_with_requested_memory_search / _compile_session_conversation_history)
+# and the memory routes (routes/memory.py) share one implementation. Re-exported
+# here so existing ``from clio_agent.gact.app import <name>`` callers stay green.
+from clio_agent.gact.runtime.memory_search import (  # noqa: E402,F401
+    _memory_search_excerpt,
+    _memory_search_response,
+    _memory_search_terms,
+    _message_text_excerpt,
+)
+
+# Permission-policy data machinery (validation, load/flush, resolution-derived
+# policy + the constants) moved to gact/runtime/permission_policies.py (#714
+# decomposition step 7) so the permissions route module + this startup path share
+# one implementation. Re-exported here so existing
+# ``from clio_agent.gact.app import <name>`` callers stay green; the in-app gate
+# enforcement (_policy_action_for_tool / _guard_direct_destructive_action) and
+# build_app startup import these from the new module.
+from clio_agent.gact.runtime.permission_policies import (  # noqa: E402,F401
+    _PERMISSION_POLICY_ACTIONS,
+    _PERMISSION_POLICY_SCOPES,
+    _append_permission_policy_from_resolution,
+    _flush_permission_policies,
+    _load_permission_policies,
+    _permission_path_from_args,
+    _validate_permission_policies,
+)
+from clio_agent.gact.runtime.type_parsing import (  # noqa: E402,F401
+    _SCALAR_FIELD_TYPES,
+    _blueprint_module_kind,
+    _is_optional_annotation,
+    _parse_field_annotation,
+    _sanitize_model_name,
+)
+
+# gact/workflow_state/merge.py -- pure workflow_state merge/normalize helpers.
+from clio_agent.gact.workflow_state.merge import (  # noqa: E402,F401
+    _TRAJECTORY_TOOL_ARGS_KEYS,
+    _TRAJECTORY_TOOL_NAME_KEYS,
+    _TRAJECTORY_TOOL_RESULT_KEYS,
+    _UNICODE_PATH_HYPHENS,
+    _merge_inferred_workflow_state,
+    _merge_non_empty_mapping,
+    _merge_workflow_state_mapping,
+    _normalize_pathlike_text,
+    _normalize_workflow_state_scalar,
+    _trajectory_key_index,
+    _value_has_semantic_content,
+)
 
 
-_OBSERVER_CALL_T0 = threading.local()
-
-
-def _agent_forward_compat(
-    agent: Any,
+def _run_blueprint_dspy_agent(
+    base_agent: Any,
+    agent_def: "AgentDef",
     question: str,
     session_id: str,
-    session_mode: str,
-    session_edit_mode: str,
+    cancel_requested: Any | None = None,
 ) -> Any:
-    """Call agent.forward, threading session_mode + session_edit_mode
-    when the agent accepts them, falling back to the legacy
-    ``(question, session_id)`` signature for fakes / older builds.
-
-    Lets us add new optional kwargs to the contract without breaking
-    every test fixture that hand-rolled a minimal forward signature.
-    """
-
+    token = _ctx.set_session_id(session_id)
     try:
-        return agent.forward(
-            question,
+        module = _build_blueprint_dspy_module(base_agent, agent_def)
+        return module(
+            question=question,
             session_id=session_id,
-            session_mode=session_mode,
-            session_edit_mode=session_edit_mode,
+            cancel_requested=cancel_requested,
         )
-    except TypeError:
-        return agent.forward(question, session_id=session_id)
+    finally:
+        _ctx.reset(token)
 
 
-_OBSERVER_CALL_IDS = threading.local()
+def _blueprint_runner_for_agent(agent_def: "AgentDef") -> Any:
+    if _agent_definition_uses_blueprint_runtime(agent_def):
+        return _run_blueprint_dspy_agent
+    return _run_tool_user_agent if agent_def.tools else _run_prompt_user_agent
 
 
-async def _try_streamed_forward(
-    app: "FastAPI",
-    enriched_text: str,
-    sid: str,
-    emit_chunk,
-    session_mode: str = "chat",
-    session_edit_mode: str = "diff",
-) -> Optional[Any]:
-    """Run the agent's forward via dspy.streamify, pumping every
-    text chunk through ``emit_chunk(text)`` as it arrives. Returns
-    the final dspy.Prediction on success, or None if streaming is
-    unavailable / fails — caller falls back to the synchronous path.
-
-    Falls through silently when the agent isn't a DSPy module, when
-    streamify import fails, or when the wrapped call doesn't yield
-    parsable text chunks. The fallback synchronous path produces
-    the same wire shape (just no live deltas).
-    """
-
+def _run_prompt_user_agent(
+    base_agent: Any,
+    agent_def: "AgentDef",
+    question: str,
+    session_id: str,
+    cancel_requested: Any | None = None,
+) -> Any:
+    """Execute a prompt-only user/skill agent through DSPy/LiteLLM."""
+    token = _ctx.set_session_id(session_id)
     try:
-        import dspy  # noqa: PLC0415
-        from dspy.streaming.streamify import streamify
-        from dspy.streaming.streaming_listener import StreamListener  # noqa: PLC0415
-        from litellm.types.utils import ModelResponseStream  # noqa: F401
-    except Exception:
-        return None
-
-    agent = app.state.agent
-    if agent is None or not isinstance(agent, dspy.Module):
-        return None
-
-    # iowarp/clio-agent#6 + ChatAdapter polish: streamify wraps the
-    # whole agent, so without listeners the stream pumps every LM
-    # call's RAW chunks (ChatAdapter delimiters: ``[[ ## answer ## ]]``,
-    # ``[[ ## reasoning ## ]]``, etc.) into the user-visible part.
-    # StreamListener filters to a single signature output field —
-    # we listen on ``answer`` (the chat agent's output field) so the
-    # router's reasoning stream gets dropped and only the chat
-    # agent's clean answer streams live. When the agent never
-    # produces an ``answer`` field (e.g. expert paths return
-    # ``analysis`` / ``recommendations``), the listener simply
-    # stays silent and the synchronous fallback handles emit.
-    # Single listener on the chat agent's "answer" field. Adding
-    # listeners for other expert outputs (analysis/recommendations)
-    # broke streaming entirely because find_predictor_for_stream_listeners
-    # walks the program tree looking for matching Predicts and gets
-    # confused by ClioAgent's complex dispatch — net result was zero
-    # deltas. With one listener bound to "answer", the chat path
-    # streams cleanly; expert paths fall back to the post-hoc
-    # chunked emission already in the GACT layer.
-    listeners = []
-    try:
-        listeners = [StreamListener(signature_field_name="answer")]
-    except Exception:  # noqa: BLE001
-        listeners = []
-    # is_async_program=True keeps the agent call in the running
-    # asyncio task so dspy's send_stream ContextVar propagates.
-    # Without this, streamify wraps sync forward() in asyncify ->
-    # runs in an executor thread -> ContextVar lost -> zero live
-    # chunks. Requires the agent expose acall.
-    has_acall = hasattr(agent, "acall") and callable(agent.acall)
-    streamed = streamify(
-        agent,
-        async_streaming=True,
-        stream_listeners=listeners,
-        is_async_program=has_acall,
-    )
-
-    final_pred = None
-    try:
-        # StreamListener emits ``StreamResponse`` instances that
-        # carry the cleaned chunk in ``.chunk``. Keep the legacy
-        # ``ModelResponseStream`` / dict / str fallback for backends
-        # that don't surface a typed listener payload.
-        from dspy.streaming.messages import StreamResponse  # noqa: PLC0415
-        # Pass session_mode + session_edit_mode if the agent's
-        # forward signature accepts them (newer ClioAgent does;
-        # older / fake agents fall back via TypeError catch).
-        try:
-            stream_iter = streamed(
-                question=enriched_text,
-                session_id=sid,
-                session_mode=session_mode,
-                session_edit_mode=session_edit_mode,
-            )
-        except TypeError:
-            stream_iter = streamed(question=enriched_text, session_id=sid)
-        async for piece in stream_iter:
-            if isinstance(piece, dspy.Prediction):
-                final_pred = piece
-                continue
-            if isinstance(piece, StreamResponse):
-                if piece.chunk:
-                    await emit_chunk(piece.chunk)
-                continue
-            text_chunk = _chunk_text(piece)
-            if text_chunk:
-                await emit_chunk(text_chunk)
-    except Exception:
-        # Streaming blew up partway through — bail to the sync
-        # fallback so the user still gets an answer.
-        return None
-    return final_pred
-
-
-def _chunk_text(piece: Any) -> str:
-    """Pull a string out of whatever streamify yielded.
-
-    Handles litellm ModelResponseStream + plain str + dict shapes.
-    Returns "" when nothing's there (status-message-only chunks
-    don't pollute the part body).
-    """
-
-    if isinstance(piece, str):
-        return piece
-    # litellm stream chunks: choices[0].delta.content
-    try:
-        choices = piece.choices  # type: ignore[attr-defined]
-        if choices:
-            delta = getattr(choices[0], "delta", None)
-            if delta is not None:
-                content = getattr(delta, "content", None)
-                if content:
-                    return str(content)
-    except Exception:
-        pass
-    if isinstance(piece, dict):
-        # OpenAI-style dict.
-        try:
-            return piece["choices"][0]["delta"].get("content", "") or ""
-        except (KeyError, IndexError, TypeError):
-            return ""
-    return ""
-
-
-def _apply_edit_to_disk(
-    *,
-    path: str,
-    new_content: str,
-    session: Any,
-    app: "FastAPI",
-) -> None:
-    """Write ``new_content`` to ``path`` after enforcing the
-    workspace + file_policy boundary.
-
-    The agent's propose_edit tool put the diff together; this is
-    the GACT-side commit step the user explicitly approved via
-    /v1/sessions/{sid}/diffs/apply. We don't ASK for permission
-    (the user already clicked apply) but we DO record an
-    auto-approved permission row so /v1/permissions has a
-    complete audit trail of every destructive operation.
-    """
-
-    # Audit row for the apply (auto-approved by the user's explicit
-    # POST to /diffs/apply). Every destructive call lands in
-    # /v1/permissions for compliance / replay.
-    pid = f"perm_{uuid.uuid4().hex[:12]}"
-    now_iso = datetime.now(timezone.utc).isoformat()
-    audit_row = {
-        "id": pid,
-        "session_id": session.id,
-        "tool_call": {
-            "tool_name": "fs_apply_edit_write",
-            "input": {"filepath": path, "new_content_bytes": len(new_content)},
-        },
-        "summary": (
-            f"diffs/apply: write {len(new_content)} bytes to {path}"
-        ),
-        "created_at": now_iso,
-        "status": "auto_approved",
-        "action": "allow",
-        "resolved_at": now_iso,
-        "reason": "user clicked /diffs/apply",
-    }
-    if hasattr(app.state, "permissions"):
-        app.state.permissions[pid] = audit_row
-    if hasattr(app.state, "bus"):
-        app.state.bus.publish(Event(
-            type="permission.resolved",
-            session_id=session.id,
-            payload={
-                "permission_id": pid,
-                "action": "allow",
-                "session_id": session.id,
-                "reason": "user_clicked_apply",
-            },
-        ))
-
-    target = Path(path).resolve()
-    # Workspace root scope.
-    ws = app.state.workspaces.get(session.workspace_id)
-    if ws is not None and ws.root_path:
-        try:
-            target.relative_to(Path(ws.root_path).resolve())
-        except ValueError as exc:
-            raise PermissionError(
-                f"refused to write {target} outside workspace root "
-                f"{ws.root_path}"
-            ) from exc
-    # Mode gate — plan + architect can't apply.
-    if session.mode in {"plan", "architect"}:
-        raise PermissionError(
-            f"refused to write under session.mode={session.mode!r}"
+        module = _build_prompt_user_agent_module(base_agent, agent_def)
+        return module.forward(
+            question=question,
+            session_id=session_id,
+            cancel_requested=cancel_requested,
         )
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(new_content, encoding="utf-8")
+    finally:
+        _ctx.reset(token)
 
 
-def _enrich_with_context_files(
-    app: "FastAPI", sid: str, user_text: str
-) -> str:
-    """Prepend a "Context:" section to the user's text for every
-    file attached to the session via /v1/sessions/{sid}/context/files.
-
-    Behaviour by mode:
-      - read / pin: read up to ``_CTX_MAX_BYTES`` from disk + inline.
-      - edit: include path + size hint only (the agent fetches via
-        a tool when it needs the body).
-
-    Files outside the workspace's ``root_path`` are skipped silently
-    (file_policy invariant). Files larger than the cap are inlined
-    truncated with a marker.
-
-    Returns the original ``user_text`` unchanged when no files are
-    attached or all are filtered out — caller stays interface-clean.
-    """
-
-    files = (app.state.context_files.get(sid, {}) or {}).values()
-    if not files:
-        return user_text
-
-    blocks: list[str] = []
-    for row in files:
-        path_str = row.get("path") or ""
-        if not path_str:
-            continue
-        mode = row.get("mode") or "read"
-        try:
-            p = Path(path_str).resolve()
-        except (OSError, ValueError):
-            continue
-        # iowarp/clio-agent#5: do NOT silently skip files outside the
-        # workspace root — the user explicitly attached this file via
-        # POST /v1/sessions/{sid}/context/files, so they know what
-        # they're doing. The destructive-write gates (workspace root
-        # in _apply_edit_to_disk, plus mode=plan/architect) still
-        # protect against unintended writes.
-        if not p.exists() or not p.is_file():
-            continue
-        size = p.stat().st_size
-        header = f"### Context file: {path_str} (mode={mode}, {size} bytes)"
-        if mode == "edit":
-            blocks.append(header)
-            continue
-        # Scientific binary files (parquet/hdf5) don't decode as
-        # useful text — dumping raw bytes leaves the LM blind. Run
-        # the bundled inspection tool and inline the structured
-        # summary instead. Generic mechanism: an extension → fn map.
-        suffix = p.suffix.lower()
-        binary_inspector = _BINARY_CONTEXT_INSPECTORS.get(suffix)
-        if binary_inspector is not None:
-            try:
-                summary = binary_inspector(str(p))
-                blocks.append(
-                    header + "\n```\n" + summary + "\n```"
-                )
-                continue
-            except Exception as exc:  # noqa: BLE001
-                blocks.append(
-                    header + f"\n(inspector failed: {exc!r})"
-                )
-                continue
-        try:
-            data = p.read_bytes()
-        except OSError:
-            continue
-        if len(data) > _CTX_MAX_BYTES:
-            blocks.append(
-                header + "\n```\n" +
-                data[:_CTX_MAX_BYTES].decode(
-                    "utf-8", errors="replace"
-                ) +
-                f"\n... ({len(data) - _CTX_MAX_BYTES} more bytes truncated)\n```"
-            )
-        else:
-            blocks.append(
-                header + "\n```\n" +
-                data.decode("utf-8", errors="replace") +
-                "\n```"
-            )
-
-    if not blocks:
-        return user_text
-    return (
-        "## Attached files (auto-prepended from session context)\n\n"
-        + "\n\n".join(blocks)
-        + "\n\n## User question\n\n"
-        + user_text
-    )
-
-
-_CTX_MAX_BYTES = 32 * 1024  # 32 KB cap per attached file
-
-
-def _inspect_parquet_for_context(path: str) -> str:
-    """Run analyze_schema on a Parquet file + return a one-paragraph
-    summary the LM can quote when answering 'what's in this file'."""
-
-    from clio_agent.tools.servers.parquet_server import analyze_schema
-    fn = getattr(analyze_schema, "fn", analyze_schema)
-    schema = fn(path)
-    if "error" in schema:
-        return f"Could not inspect Parquet file: {schema['error']}"
-    cols = schema.get("columns", []) or []
-    col_lines = [
-        f"  - {c.get('name')}: {c.get('type')}, nullable={c.get('nullable')}"
-        for c in cols[:24]
-    ]
-    body = (
-        f"Parquet file with {schema.get('num_rows', '?')} rows, "
-        f"{schema.get('num_columns', '?')} columns, "
-        f"{schema.get('num_row_groups', '?')} row groups.\n"
-        "Schema:\n" + "\n".join(col_lines)
-    )
-    if len(cols) > 24:
-        body += f"\n  - ... {len(cols) - 24} more columns"
-    return body
-
-
-def _inspect_hdf5_for_context(path: str) -> str:
-    """Run analyze_file + list_datasets on an HDF5 file + return a
-    one-paragraph summary."""
-
-    from clio_agent.tools.servers.hdf5_server import (
-        analyze_file,
-        list_datasets,
-    )
-    af = getattr(analyze_file, "fn", analyze_file)
-    ld = getattr(list_datasets, "fn", list_datasets)
-    overview = af(path)
-    datasets = ld(path)
-    if "error" in overview:
-        return f"Could not inspect HDF5 file: {overview['error']}"
-    rows = (datasets.get("datasets", []) if isinstance(datasets, dict) else []) or []
-    ds_lines = [
-        f"  - {d.get('path')}: shape={d.get('shape')} dtype={d.get('dtype')}"
-        for d in rows[:24]
-    ]
-    body = (
-        f"HDF5 file with {overview.get('total_datasets', len(rows))} datasets "
-        f"in {overview.get('total_groups', 0)} groups.\n"
-        "Datasets:\n" + "\n".join(ds_lines)
-    )
-    if len(rows) > 24:
-        body += f"\n  - ... {len(rows) - 24} more datasets"
-    return body
-
-
-_BINARY_CONTEXT_INSPECTORS = {
-    ".parquet": _inspect_parquet_for_context,
-    ".pq": _inspect_parquet_for_context,
-    ".h5": _inspect_hdf5_for_context,
-    ".hdf5": _inspect_hdf5_for_context,
-}
-
-
-def _format_react_trajectory(traj: Any) -> str:
-    """Render a DSPy ReAct trajectory (a list/dict of steps) as a
-    human-readable trace. Returns "" when the input doesn't look
-    like a trajectory.
-    """
-
-    if not traj:
-        return ""
-    rows: list[str] = []
-    if isinstance(traj, dict):
-        # ReAct stores as {step_n_thought, step_n_action, ...}
-        idx = 0
-        while True:
-            thought = traj.get(f"step_{idx}_thought") or traj.get(
-                f"thought_{idx}"
-            )
-            action = traj.get(f"step_{idx}_tool_name") or traj.get(
-                f"action_{idx}"
-            )
-            if thought is None and action is None:
-                break
-            row = []
-            if thought:
-                row.append(f"thought: {thought}")
-            if action:
-                row.append(f"action: {action}")
-            rows.append("  ".join(row))
-            idx += 1
-    elif isinstance(traj, list):
-        for i, step in enumerate(traj):
-            if isinstance(step, dict):
-                rows.append(f"step {i}: {step}")
-            else:
-                rows.append(f"step {i}: {step!r}")
-    return "\n".join(rows)
-
-
-def _extract_tools_called(pred: Any) -> list[dict[str, Any]]:
-    """Pull an agent prediction's tool-call trace into a wire-shaped
-    list.
-
-    The tier-2 experts expose their tool calls on
-    ``pred.tools_called`` when the ReAct loop tracks them. Each
-    entry is either a ``clio_agent.arc.schema.ToolCall`` (msgspec
-    struct), a plain dict, or an object with attribute access —
-    handle all three. Fields copied onto the wire when present:
-    name, args, ok, duration_ms, cached. All optional.
-    """
-
-    raw = getattr(pred, "tools_called", None)
-    if not raw:
-        return []
-
-    out: list[dict[str, Any]] = []
-    for call in raw:
-        row: dict[str, Any] = {}
-        if isinstance(call, dict):
-            def get(key: str, default: Any = None, _src: Any = call) -> Any:
-                return _src.get(key, default)
-        else:
-            # msgspec structs + DSPy trace records — attribute access.
-            def get(key: str, default: Any = None, _src: Any = call) -> Any:
-                return getattr(_src, key, default)
-
-        name = get("name") or get("tool") or ""
-        if name:
-            row["name"] = str(name)
-
-        args = get("args")
-        if args is None:
-            args = get("arguments")
-        if args is not None:
-            row["args"] = args
-
-        status = get("status")
-        if status is not None:
-            row["ok"] = status not in {"failure", "error", "timeout"}
-        elif get("ok") is not None:
-            row["ok"] = bool(get("ok"))
-
-        duration_ms = get("duration_ms")
-        if duration_ms is not None:
-            row["duration_ms"] = float(duration_ms)
-
-        cached = get("cached")
-        if cached is not None:
-            row["cached"] = bool(cached)
-
-        if row:
-            out.append(row)
-    return out
-
-
-# CLIO-BBBBBBBBBB10: mapping from CLIO expert id to its GACT v0.2
-# specialization tag. Free-form (UI palette hint); picked to match
-# the emulator's generic "code_editing / data_analysis /
-# knowledge_retrieval / visualization" vocab the TUI already
-# colour-codes.
-_EXPERT_SPECIALIZATION: dict[str, str] = {
-    "data": "data_analysis",
-    "analysis": "data_analysis",
-    "visualization": "data_visualization",
-}
-
-# CLIO-BBBBBBBBBB10: per-expert curated tool list. CLIO's Expert
-# classes attach their tools at construction time (via
-# MCPToolBridge.to_dspy_tools()), but we don't want to import DSPy +
-# spin up tool servers just to list a catalog. The tool sets are
-# stable so hardcoding the mapping here is cheap + honest; if an
-# expert's tool set drifts, the test_agents_catalog test fails and
-# we update both sides at once.
-_EXPERT_TOOLS: dict[str, list[str]] = {
-    "data": [
-        "hdf5_list_datasets",
-        "hdf5_analyze_dataset",
-        "hdf5_check_compression",
-        "hdf5_optimize_chunking",
-        "hdf5_analyze_file",
-    ],
-    "analysis": [
-        "parquet_analyze_schema",
-        "parquet_query_data",
-        "parquet_compute_statistics",
-    ],
-    "visualization": [
-        "plot_histogram",
-        "plot_bar_chart",
-        "plot_scatter",
-        "plot_summary",
-    ],
-}
-
-
-def _builtin_agents() -> list[AgentDef]:
-    """Return CLIO's built-in tier-2 experts as AgentDef rows.
-
-    Imports are lazy inside the function because importing
-    clio_agent.experts at module load time pulls in DSPy + the
-    tool bridges — heavy, and we don't want it to explode scaffold
-    tests if DSPy isn't available. Each expert exposes
-    ``get_capabilities()`` returning ``{name, description, keywords,
-    tools}``; we map those onto the GACT AgentDef shape.
-
-    A tier-1 orchestrator row ('main') is synthesised so the TUI
-    can see the full hierarchy; its tools list is empty (the
-    orchestrator dispatches rather than acting itself).
-    """
-
-    from clio_agent.experts import get_expert_capabilities
-
-    rows: list[AgentDef] = [
-        AgentDef(
-            id="main",
-            source="builtin",
-            title="Main Agent",
-            description=(
-                "Tier-1 orchestrator. Routes user queries to tier-2 "
-                "specialists based on keyword heuristics + LM classifier."
-            ),
-            tier=1,
-            specialization="orchestrator",
-        ),
-    ]
-
-    for expert_id, caps in get_expert_capabilities().items():
-        name = caps.get("name", expert_id.replace("_", " ").title())
-        description = caps.get("description", "")
-        keywords = list(caps.get("keywords", []))
-        tools = list(_EXPERT_TOOLS.get(expert_id, []))
-        rows.append(
-            AgentDef(
-                id=expert_id,
-                source="builtin",
-                title=name,
-                description=description,
-                tools=tools,
-                tier=2,
-                specialization=_EXPERT_SPECIALIZATION.get(
-                    expert_id, expert_id
-                ),
-                keywords=keywords,
-            )
+def _run_tool_user_agent(
+    base_agent: Any,
+    agent_def: "AgentDef",
+    question: str,
+    session_id: str,
+    cancel_requested: Any | None = None,
+) -> Any:
+    """Execute a tool-declaring user/skill agent through DSPy ReAct."""
+    token = _ctx.set_session_id(session_id)
+    try:
+        module = _build_tool_user_agent_module(base_agent, agent_def)
+        return module.forward(
+            question=question,
+            session_id=session_id,
+            cancel_requested=cancel_requested,
         )
+    finally:
+        _ctx.reset(token)
 
-    return rows
 
+def _clear_session_model_refs(app: "FastAPI") -> None:
+    """Clear per-session model refs after a global LM provider swap.
 
-def _load_skills_from_disk() -> list[AgentDef]:
-    """Scan the Claude Code skills directories for SKILL.md files and
-    register each as an AgentDef row with source="skill".
-
-    Discovery follows Claude Code's semantics:
-    - User-global:   $HOME/.claude/skills/*.md
-    - Project-local: $CWD/.claude/skills/*.md
-    Project entries override user-global on duplicate id.
-
-    Each SKILL.md may carry YAML frontmatter delimited by ``---``:
-
-        ---
-        name: my-skill
-        description: short summary
-        model: optional model hint
-        allowed-tools: comma,or,yaml-list
-        ---
-        <system prompt body>
-
-    Bodies without frontmatter are still loaded; the file stem becomes
-    the id and the first line becomes the description.
-
-    Errors are tolerated — a malformed file logs and is skipped so a
-    bad skill doesn't take down the whole catalog.
+    CLIO executes every turn through the active global LM. Existing
+    sessions may still carry stale GACT ModelRefs from older TUI
+    versions or emulator-compatible defaults; leaving those refs in
+    place makes the next send fail with a per-session override error
+    even though the user just changed the global provider correctly.
     """
-    import os
-    from pathlib import Path
 
-    skill_dirs = [
-        Path.home() / ".claude" / "skills",
-        Path(os.getcwd()) / ".claude" / "skills",
-    ]
-
-    rows: dict[str, AgentDef] = {}
-    for sdir in skill_dirs:
-        if not sdir.exists() or not sdir.is_dir():
-            continue
-        for md in sorted(sdir.glob("*.md")):
-            try:
-                text = md.read_text(encoding="utf-8")
-            except Exception:
-                continue
-            meta, body = _parse_skill_frontmatter(text)
-            sid = (meta.get("name") or md.stem).strip()
-            if not sid:
-                continue
-            description = (meta.get("description") or "").strip()
-            if not description and body:
-                # Fall back to the first non-blank line of the body.
-                for line in body.splitlines():
-                    line = line.strip()
-                    if line:
-                        description = line[:240]
-                        break
-
-            tools_field = meta.get("allowed-tools") or meta.get("allowed_tools")
-            tools: list[str] = []
-            if isinstance(tools_field, list):
-                tools = [str(t).strip() for t in tools_field if str(t).strip()]
-            elif isinstance(tools_field, str):
-                tools = [t.strip() for t in tools_field.split(",") if t.strip()]
-
-            metadata = {
-                "skill_path": str(md),
-                "skill_dir": str(sdir),
-            }
-            if meta.get("model"):
-                metadata["model"] = str(meta["model"]).strip()
-            if body:
-                # Stash the system-prompt body so future /v1/agents/{id}
-                # can return the full prompt without re-reading the file.
-                metadata["system_prompt"] = body
-
-            rows[sid] = AgentDef(
-                id=sid,
-                source="skill",
-                title=sid,
-                description=description,
-                tools=tools,
-                tier=2,
-                specialization="skill",
-                keywords=[],
-                metadata=metadata,
-            )
-    return list(rows.values())
+    sessions = getattr(app.state, "sessions", None)
+    if sessions is None:
+        return
+    for sess in sessions.list():
+        if not _model_ref_is_empty(sess.model):
+            sessions.update(sess.id, model={})
 
 
-def _parse_skill_frontmatter(text: str) -> tuple[dict[str, Any], str]:
-    """Return (frontmatter_dict, body) for a SKILL.md.
+# --------------------------------------------------------------------------- #
+# Turn-orchestration engine extracted to gact/turn.py (#714 decomposition).      #
+#                                                                               #
+# ``_run_turn_in_background`` (the off-thread turn loop, with its nested         #
+# ``_settle_dynamic_agent_delegations`` / ``_execute_delegated_experts``         #
+# delegation settlers) and ``_start_background_user_turn`` (the staging          #
+# entrypoint) were carved out verbatim into ``clio_agent.gact.turn`` so the      #
+# route factories + the scheduler tick can share the entrypoint without          #
+# importing back into this module. They are re-exported here so existing         #
+# ``from clio_agent.gact.app import <name>`` callers + the import-seam guardrail  #
+# stay green; ``_start_background_user_turn`` is the explicit-``app`` engine the  #
+# thin ``build_app`` closure wrapper (and ``GactDeps``) delegate to.             #
+# --------------------------------------------------------------------------- #
+from clio_agent.gact.turn import (  # noqa: E402,F401
+    _run_turn_in_background,
+    _start_background_user_turn,
+)
 
-    Recognises the standard ``---``-delimited block at the head of the
-    file. Falls back to ({}, text) when no frontmatter is present.
-    Uses a tiny line-by-line parser instead of pulling PyYAML in as a
-    dep — frontmatter shapes we care about are flat key:value plus
-    optional ``- item`` lists, well within hand-rolling distance.
-    """
-    lines = text.splitlines()
-    if not lines or lines[0].strip() != "---":
-        return {}, text
-    end = -1
-    for i in range(1, len(lines)):
-        if lines[i].strip() == "---":
-            end = i
-            break
-    if end < 0:
-        return {}, text
-    meta: dict[str, Any] = {}
-    cur_key: Optional[str] = None
-    for raw in lines[1:end]:
-        if raw.startswith("- "):
-            if cur_key and isinstance(meta.get(cur_key), list):
-                meta[cur_key].append(raw[2:].strip())
-            continue
-        if ":" not in raw:
-            continue
-        key, _, value = raw.partition(":")
-        key = key.strip()
-        value = value.strip()
-        if not key:
-            continue
-        if not value:
-            meta[key] = []
-            cur_key = key
-        else:
-            meta[key] = value.strip("\"'")
-            cur_key = None
-    body = "\n".join(lines[end + 1:]).strip()
-    return meta, body
+# Alias kept so the thin ``build_app`` closure wrapper (which shadows the
+# ``_start_background_user_turn`` name locally) can still reach the explicit-``app``
+# engine; the unaliased name above is the module-level re-export the import-seam
+# guardrail + ``from clio_agent.gact.app import _start_background_user_turn`` use.
+_turn_start_background_user_turn = _start_background_user_turn
 
 
-def _builtin_tools() -> list[Tool]:
-    """Flatten the experts' curated tool lists into a single GACT
-    Tool catalog. Stable ids (same strings the experts reference),
-    backend flag `builtin`. The names MAY duplicate across experts
-    (e.g. read_file) — we dedupe by id so GET /v1/catalog/tools has
-    one row per distinct tool."""
-
-    seen: dict[str, Tool] = {}
-    for agent in _builtin_agents():
-        if agent.tier != 2:
-            continue
-        for tool_name in agent.tools:
-            if tool_name in seen:
-                continue
-            seen[tool_name] = Tool(
-                id=tool_name,
-                source="builtin",
-                name=tool_name,
-                title=tool_name.replace("_", " ").title(),
-            )
-    return list(seen.values())
-
+# gact/usage.py -- usage/cost metering: per-LM history-diff + UsageTracker
+# rollups, reasoning-record extraction, and the best-effort price table.
+# Tool permission gating + cancellation moved to gact/permission_gate.py
+# (#714 decomposition): destructive-tool classification, the bounded
+# shell-diagnostic fast-allow analysis, permission-policy enforcement +
+# resolved-permission audit rows, the direct-destructive-action guard, the
+# interactive permission gate, and the cancellation checker. Re-exported here
+# so existing ``from clio_agent.gact.app import <name>`` callers + test seams
+# stay green; build_app's app.state.make_permission_gate seam and GactDeps
+# (_guard_direct_destructive_action) import these from the new module.
+# --- re-export shim (#714): skills/commands/catalog loading moved to catalog.py ---
 from typing import Protocol
 
-from clio_agent.gact.events import Event, EventBus, heartbeat_payload
+from clio_agent.gact.agent_blueprints import (
+    discover_agent_blueprints,
+    load_agent_blueprint_path,
+    load_agent_blueprints,
+    read_install_metadata,
+)
+from clio_agent.gact.catalog import (  # noqa: E402, F401
+    _builtin_agents,
+    _builtin_tools,
+    _command_search_roots,
+    _default_skill_id,
+    _fallback_skill_keywords,
+    _load_command_files_from_disk,
+    _load_skills_from_disk,
+    _normalize_file_command_id,
+    _parse_skill_frontmatter,
+    _skill_list_field,
+    _skill_markdown_files,
+    _skill_search_roots,
+    _tool_owner_for_catalog,
+    _tool_tags_for_catalog,
+    _tool_visible_to_for_catalog,
+    _truthy_command_field,
+)
+from clio_agent.gact.events import EventBus
+from clio_agent.gact.expert_packs import (
+    discover_expert_packs,
+    load_expert_pack_path,
+    load_expert_packs,
+    validate_expert_hierarchy,
+)
+from clio_agent.gact.messages import MessageStore
+from clio_agent.gact.permission_gate import (  # noqa: E402,F401
+    _DESTRUCTIVE_TOOL_SUBSTRINGS,
+    _SAFE_READONLY_UTILS,
+    _SAFE_RESHAPE_UTILS,
+    _UNSAFE_SHELL_TOKENS,
+    _direct_permission_denied,
+    _guard_direct_destructive_action,
+    _is_destructive,
+    _is_safe_readonly_diagnostic,
+    _is_safe_shell_diagnostic,
+    _is_safe_text_reshape_command,
+    _make_cancellation_checker,
+    _make_permission_gate,
+    _policy_action_for_tool,
+    _record_resolved_permission,
+)
 from clio_agent.gact.sessions import SessionStore, _default_store_path
+
+# Live-streaming + prediction-rendering cluster (#714 decomposition) moved to
+# gact/streaming.py: signature-compatible agent invocation, the DSPy streamify
+# pump + structured fallback ledger, stream-listener binding + streamability
+# gating, chunk/text extraction, and prediction rendering (trajectory / tools /
+# signature docstring). Re-exported here so existing
+# ``from clio_agent.gact.app import <name>`` callers + test seams stay green; in
+# particular the turn path + agents/builders import these via this module, and
+# ``_try_streamed_forward_compat`` resolves ``_try_streamed_forward`` back
+# through this re-export so the ``monkeypatch.setattr(
+# "clio_agent.gact.app._try_streamed_forward", ...)`` test seam keeps working.
+from clio_agent.gact.streaming import (  # noqa: E402,F401
+    _REASONING_HEARTBEAT_S,
+    _agent_forward_compat,
+    _agent_streaming_unsupported_reason,
+    _append_stream_listener,
+    _build_stream_listeners,
+    _chunk_reasoning_text,
+    _chunk_text,
+    _config_is_reasoning_model,
+    _describe_stream_exc,
+    _extract_tools_called,
+    _format_react_trajectory,
+    _pop_stream_fallback,
+    _record_stream_fallback,
+    _run_dynamic_agent_compat,
+    _signature_prompt,
+    _stream_fallback_payload,
+    _stream_fallback_reasons,
+    _stream_response_prefix,
+    _StreamingOutputError,
+    _try_streamed_forward,
+    _try_streamed_forward_compat,
+)
+
+# gact/tool_observer.py -- tool-observer + live-assistant transcript cluster.
+# Re-exported here so existing ``from clio_agent.gact.app import <name>`` callers
+# + test seams stay green; build_app's app.state.make_tool_observer seam and the
+# GactDeps(install_tool_runtime_hooks) seam import these from the new module so
+# the seams keep working post-decomposition (#714).
+from clio_agent.gact.tool_observer import (  # noqa: E402,F401
+    _OBSERVER_CALL_IDS,
+    _OBSERVER_CALL_T0,
+    _agent_tool_owner,
+    _append_live_assistant_part,
+    _append_live_assistant_part_once,
+    _emit_live_tool_route_context,
+    _ensure_live_assistant_message,
+    _install_tool_runtime_hooks,
+    _make_tool_observer,
+    _merge_tool_call_rows,
+    _normalize_tool_call_row,
+    _tool_call_event_key,
+    _tool_call_has_result_evidence,
+    _tool_call_name_args_key,
+    _tool_calls_from_handoff_rows,
+)
+from clio_agent.gact.transcript import TurnTranscriptRegistry
 from clio_agent.gact.types import (
     AgentDef,
-    AuthInfo,
-    BackendInfo,
-    CacheStats,
-    Capabilities,
-    CapabilityFlags,
-    CreateSessionRequest,
-    CreateWorkspaceRequest,
     ErrorEnvelope,
     ErrorInfo,
-    GlobalMemoryStats,
-    HealthResponse,
-    Integration,
-    ListAgentsResponse,
-    ListSessionsResponse,
-    ListToolsResponse,
-    ListWorkspacesResponse,
-    LMProviderInfo,
-    LMProviderPreset,
-    LMProviderRequest,
-    MemoryStats,
     Message,
-    Metrics,
-    MetricsMessages,
-    MetricsSessions,
     Part,
-    PostMessageRequest,
-    PostMessageResponse,
     Session,
-    SessionMemoryStats,
-    Tokens,
-    Tool,
-    TransportFlags,
-    UpdateSessionRequest,
-    Workspace,
+)
+from clio_agent.gact.usage import (  # noqa: E402,F401
+    _PRICE_TABLE_PER_M,
+    _all_known_lms,
+    _entry_prompt_text,
+    _entry_reasoning_text,
+    _entry_response_text,
+    _estimate_cost_usd,
+    _reasoning_records_from_history_slice,
+    _snapshot_lm_history_index,
+    _usage_from_dspy_history,
+    _usage_from_history_slice,
 )
 from clio_agent.gact.workspaces import (
     WorkspaceStore,
@@ -1991,32 +924,6 @@ class AgentLike(Protocol):
 
     def forward(self, question: str, session_id: str) -> Any:  # pragma: no cover
         ...
-
-# Version pins. Keep in sync with the gact-tui SPEC.md version bump
-# history; bump EMULATOR_VERSION-equivalent here only when the
-# *module's* behaviour changes, not every spec revision.
-CONTRACT_VERSION = "0.2"
-GACT_BACKEND_VERSION = "0.1.0"  # version of this clio_agent.gact module
-
-
-def _not_implemented(capability: str) -> ErrorEnvelope:
-    """Build the v0.2 error envelope for a 501 response."""
-
-    return ErrorEnvelope(
-        error=ErrorInfo(
-            error="config_error",
-            message=f"capability not yet implemented: {capability}",
-            details={
-                "capability": capability,
-                "note": (
-                    "This endpoint is stubbed at CLIO-BBBBBBBBBB6; it will "
-                    "be wired in a follow-on iteration. See "
-                    "gact-tui/PLAN.md phase CLIO-BBBBBBBBBB for the roadmap."
-                ),
-            },
-            recoverable=False,
-        )
-    )
 
 
 @asynccontextmanager
@@ -2048,14 +955,39 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     yield
 
-    for t in (task, agent_task):
+    lm_config_task = getattr(app.state, "lm_config_task", None)
+    for t in (task, agent_task, lm_config_task):
         if t is None:
+            continue
+        if getattr(t, "done", lambda: False)():
             continue
         t.cancel()
         try:
             await t
-        except (asyncio.CancelledError, Exception):
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001,S110 - shutdown task drain; cancellation/errors ignored on teardown
             pass
+    try:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            lambda: _release_owned_lm_studio_instance(app, raise_on_error=False),
+        )
+    except Exception:  # noqa: BLE001,S110 - best-effort LM-Studio instance release on shutdown
+        pass
+    # Drain + stop the off-loop semantic-trace writer so no events are lost on shutdown.
+    _trace_backend = getattr(app.state, "semantic_trace_backend", None)
+    _trace_close = getattr(_trace_backend, "close", None)
+    if callable(_trace_close):
+        try:
+            _trace_close()
+        except Exception:  # pragma: no cover - defensive shutdown cleanup  # noqa: BLE001,S110 - defensive shutdown cleanup
+            pass
+    # NOTE: the shared clio-core runtime client is released (last-one-out stop) via the
+    # atexit hook registered in CTEStore — NOT here. uvicorn handles SIGTERM by exiting
+    # the serve loop and returning normally, so the interpreter exits and atexit fires
+    # ("I leave the TUI, everything gets released"). Doing it in this lifespan hook would
+    # wrongly stop the SHARED daemon on any app teardown that is not a process exit
+    # (e.g. a second app in the same process), which the atexit path correctly avoids.
 
 
 async def _construct_agent_async(app: "FastAPI") -> None:
@@ -2073,24 +1005,54 @@ async def _construct_agent_async(app: "FastAPI") -> None:
     """
 
     loop = asyncio.get_running_loop()
+    # Construct (or reuse) the ONE per-process ARC up front and inject it into the build,
+    # so the agent does not mint a fresh ARC — the same instance is app.state.arc for the
+    # whole process across every later LM bind (no per-build ARC churn / trace ⊋ ARC split).
+    arc = _process_arc(app)
 
     def _build() -> Any:
         import dspy  # noqa: PLC0415
 
         from clio_agent.agent import ClioAgent  # noqa: PLC0415
         from clio_agent.config import (  # noqa: PLC0415
+            create_chat_adapter,
             create_lm,
-            is_local_openai_compatible_backend,
             load_config_from_env,
         )
 
         cfg = load_config_from_env()
-        use_json_fallback = not is_local_openai_compatible_backend(cfg)
+        # Boot-time process-global dspy default: a HARMLESS ambient fallback only
+        # (design §6). It is never rewritten on a per-expert path; the main agent
+        # and every expert select their LM per-call via ``dspy.context``. Kept so
+        # any un-wrapped ambient caller still has a valid LM.
         dspy.configure(
             lm=create_lm(cfg),
-            adapter=dspy.ChatAdapter(use_json_adapter_fallback=use_json_fallback),
+            adapter=create_chat_adapter(cfg),
         )
-        return ClioAgent(verbose=False)
+        # Drop the boot env-handoff (design §9 step 9): hand the ONE boot config to
+        # ClioAgent instead of letting it read the environment a SECOND time. The
+        # main agent binds ``_main_lm`` / ``_planner_lm`` / ``_dspy_adapter`` off
+        # this exact config (credential included — the boot/default config is the
+        # sanctioned env-credential read, design §6), so a GACT booted purely from
+        # ``CLIO_LM_*`` still authenticates.
+        agent = ClioAgent(verbose=False, arc=arc, provider_config=cfg)
+        # Make the ProviderProfileStore the authoritative identity registry:
+        # reseed its default from the agent's FINAL resolved config (post
+        # lm_studio model discovery) so the store's default profile and
+        # ``ClioAgent._main_lm`` are the SAME identity, and every expert inherits
+        # exactly what the main agent runs (design §9 step 9). build_app already
+        # seeded a default; this keeps the store consistent via an atomic swap.
+        from clio_agent.gact.providers.profile_store import ProviderProfileStore
+        from clio_agent.providers.lm_spec import spec_from_config
+
+        existing = getattr(app.state, "provider_profiles", None)
+        default_spec = spec_from_config(agent._provider_config)
+        app.state.provider_profiles = (
+            existing.with_default(default_spec)
+            if isinstance(existing, ProviderProfileStore)
+            else ProviderProfileStore.seed(default_spec)
+        )
+        return agent
 
     try:
         agent = await loop.run_in_executor(None, _build)
@@ -2104,74 +1066,124 @@ async def _construct_agent_async(app: "FastAPI") -> None:
         return
 
     app.state.agent = agent
-    app.state.arc = agent.arc
+    # The agent's ARCMemory is built HERE (async), after build_app ran with arc=None;
+    # _set_app_arc (re)wires the arc.op op-logger so ARC writes are observable.
+    _set_app_arc(app, agent.arc)
 
     # Install the deferred permission gate + tool observer now that we
     # know an agent exists to gate. See build_app for why these aren't
     # installed at construction time.
     try:
-        from clio_agent.tools.execution import (  # noqa: PLC0415
-            set_global_permission_gate,
-            set_global_tool_observer,
+        _install_tool_runtime_hooks(app)
+    except Exception as exc:  # noqa: BLE001 - logged reason=tool_runtime_hooks_install_failed + state flag set (see below)
+        # HIGHEST-SEVERITY silent fallback (#772): a failed install leaves the
+        # server running WITHOUT a permission gate or tool observer — tools would
+        # execute ungated and unobserved. Never swallow: flip the flag, capture the
+        # error, and log a structured reason so /v1/health and the trace show it.
+        app.state.tool_hooks_installed = False
+        app.state.tool_hooks_install_error = repr(exc)
+        logger.error(
+            "tool runtime hooks failed to install "
+            "reason=tool_runtime_hooks_install_failed error=%r",
+            exc,
         )
-
-        gate = getattr(app.state, "pending_permission_gate", None)
-        observer = getattr(app.state, "pending_tool_observer", None)
-        if gate is not None:
-            set_global_permission_gate(gate)
-        if observer is not None:
-            set_global_tool_observer(observer)
-    except Exception:  # pragma: no cover - defensive
-        pass
 
     print("[clio-agent-gact] agent ready.", flush=True)
 
 
-async def _scheduler_tick(app: "FastAPI") -> None:
-    """Once-a-minute loop: fire any due schedules.
+def _seconds_until_next_minute(now: datetime) -> float:
+    """Seconds from ``now`` to just past the next UTC minute boundary.
 
-    Each due schedule kicks the same _run_turn_in_background path
-    a regular POST /messages would, so SSE subscribers see the
-    automated turn unfold like any other.
+    Aligning the inter-tick sleep to the boundary (instead of a flat
+    ``sleep(60)`` after processing) keeps slow ticks from drifting past
+    cron minutes (#766). The small epsilon lands the wake *after* the
+    boundary so ``due_now``'s minute-truncation sees the new minute; the
+    floor guards against a zero/negative sleep hot loop right at the
+    boundary (``due_now`` already dedupes within a minute).
+    """
+
+    remaining = 60.0 - (now.second + now.microsecond / 1_000_000.0)
+    return max(0.5, remaining + 0.05)
+
+
+def _fire_schedule(app: "FastAPI", sch: Any) -> None:
+    """Fire one due schedule through the standard user-turn staging.
+
+    Marks the schedule fired, then stages the question via the same
+    :func:`_start_background_user_turn` engine POST /messages uses (#766):
+    the user message is persisted + published, the session flips to
+    ``running`` with a ``session.status_changed`` event, and the turn task
+    is registered in ``app.state.in_flight_turns`` so cancellation can
+    reach it (and the task reference is held, so it cannot be GC'd
+    mid-run). A schedule pointing at a missing session is logged with a
+    structured reason instead of firing into nothing.
+    """
+
+    sess = app.state.sessions.get(sch.session_id)
+    if sess is None:
+        app.state.schedules.mark_fired(sch.id)
+        logger.warning(
+            "scheduler tick error reason=schedule_session_not_found schedule_id=%s session_id=%s",
+            sch.id,
+            sch.session_id,
+        )
+        return
+    app.state.schedules.mark_fired(sch.id)
+    _turn_start_background_user_turn(
+        app,
+        sch.session_id,
+        sess,
+        sch.question,
+        metadata={"scheduled": True, "schedule_id": sch.id},
+        prev_status=str(getattr(sess, "status", "idle") or "idle"),
+    )
+
+
+def _scheduler_tick_once(app: "FastAPI") -> None:
+    """Process one scheduler tick: fire every currently-due schedule.
+
+    Never raises: a due-scan failure or a per-schedule firing failure is
+    logged with a structured reason (``schedule_due_scan_failed`` /
+    ``schedule_fire_failed``) so failed schedules are visible instead of
+    silently swallowed (#766), and one bad schedule cannot starve the rest.
+    """
+
+    try:
+        now = datetime.now(timezone.utc)
+        due = list(app.state.schedules.due_now(now))
+    except Exception:  # noqa: BLE001 - the tick loop must survive a bad store
+        logger.warning(
+            "scheduler tick error reason=schedule_due_scan_failed",
+            exc_info=True,
+        )
+        return
+    for sch in due:
+        try:
+            _fire_schedule(app, sch)
+        except Exception:  # noqa: BLE001 - one bad schedule must not kill the loop
+            logger.warning(
+                "scheduler tick error reason=schedule_fire_failed schedule_id=%s session_id=%s",
+                sch.id,
+                sch.session_id,
+                exc_info=True,
+            )
+
+
+async def _scheduler_tick(app: "FastAPI") -> None:
+    """Once-a-minute loop: fire any due schedules (UTC cron, #21/#766).
+
+    Each due schedule is staged through the same
+    :func:`_start_background_user_turn` engine a regular POST /messages
+    uses, so the session status, ``in_flight_turns`` registration,
+    cancellation, and SSE stream all behave exactly like a user turn.
+    Errors are logged with a structured reason (never silently dropped),
+    and the sleep is aligned to just past the next minute boundary so
+    slow ticks don't drift past cron minutes.
     """
 
     while True:
-        try:
-            now = datetime.now(timezone.utc)
-            for sch in list(app.state.schedules.due_now(now)):
-                user_msg = Message(
-                    id=_new_message_id("user"),
-                    session_id=sch.session_id,
-                    role="user",
-                    created_at=_iso_from_epoch(time.time()),
-                    updated_at=_iso_from_epoch(time.time()),
-                    parts=[Part(
-                        id=_new_part_id(),
-                        type="text",
-                        text=sch.question,
-                    )],
-                    metadata={"scheduled": True, "schedule_id": sch.id},
-                )
-                app.state.messages.setdefault(
-                    sch.session_id, []
-                ).append(user_msg)
-                app.state.bus.publish(Event(
-                    type="message.created",
-                    session_id=sch.session_id,
-                    payload=user_msg.model_dump(exclude_none=True),
-                ))
-                app.state.schedules.mark_fired(sch.id)
-                # Fire-and-forget the turn task.
-                asyncio.create_task(
-                    _run_turn_in_background(
-                        app, sch.session_id, sch.question, user_msg,
-                    )
-                )
-        except Exception:  # noqa: BLE001
-            pass
-        # Sleep until just past the next minute boundary so we don't
-        # double-fire on the same minute.
-        await asyncio.sleep(60)
+        _scheduler_tick_once(app)
+        await asyncio.sleep(_seconds_until_next_minute(datetime.now(timezone.utc)))
 
 
 class ARCLike(Protocol):
@@ -2215,38 +1227,108 @@ def build_app(
         version=GACT_BACKEND_VERSION,
         lifespan=_lifespan,
     )
+
+    # CORS: browser/WebView frontends must opt in with explicit origins.
+    # CLIO's default auth scheme is trust_socket, which is safe for local
+    # non-browser clients but must not grant arbitrary browser origins access
+    # to a localhost agent. Operators can enable trusted web origins with
+    # ``gact.cors.origins`` in .clio/config.yaml; CLIO_GACT_CORS_ORIGINS remains
+    # a compatibility fallback.
+    allow_origins = _gact_cors_origins()
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allow_origins,
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["*"],
+    )
     # Initialise state eagerly in case the caller skips the lifespan
     # context (TestClient normally runs it, but older FastAPI + some
     # test-utility paths don't).
     app.state.started_at = time.time()
-    app.state.sessions = SessionStore(
-        path=sessions_path if sessions_path is not None else _default_store_path()
-    )
+    session_store_path = sessions_path if sessions_path is not None else _default_store_path()
+    app.state.sessions = SessionStore(path=session_store_path)
     app.state.agent = agent  # may be None; POST message checks before using
-    app.state.arc = arc  # may be None; /v1/memory/stats returns zeros in that case
-    # CLIO-BBBBBBBBBB13: per-session pub/sub. POST /messages
+    _set_app_arc(app, arc)  # arc may be None; /v1/memory/stats returns zeros then
+    prompt_write_root = session_store_path.parent / "prompts"
+    app.state.prompt_registry = PromptRegistry(
+        sources=[
+            PromptSource("global", prompt_write_root),
+            PromptSource("workspace", Path.cwd() / ".clio" / "prompts"),
+        ],
+        write_root=prompt_write_root,
+    )
+    app.state.memory_events = {}
+    app.state.command_audit = []
+    # per-session pub/sub. POST /messages
     # publishes; /v1/sessions/{sid}/events subscribers consume.
     app.state.bus = EventBus()
-    # CLIO-BBBBBBBBBB14: in-memory message log keyed by session_id.
-    # Populated by POST /messages, read by GET /messages. Not
-    # persisted across restarts — disk-backed persistence lives in
-    # the CLIO catch-up phase alongside ARC session replay.
-    app.state.messages = {}
-    # CLIO-BBBBBBBBBB20: cooperative cancellation flags. POST /cancel
+    app.state.semantic_trace_detail_level = (
+        os.environ.get(
+            "CLIO_SEMANTIC_TRACE_DETAIL",
+            DEFAULT_DETAIL_LEVEL,
+        ).strip()
+        or DEFAULT_DETAIL_LEVEL
+    )
+    app.state.semantic_trace_backend = build_trace_backend(
+        session_store_path.parent / "semantic_traces"
+    )
+    # ARC-as-source: the sink has NO arc live_consumer. ARC is the SOURCE now —
+    # _emit_semantic_event routes each event through arc.record_semantic_event, which
+    # folds the observer (on_semantic_event) INSIDE its record and then derives THIS
+    # sink. Registering arc.on_semantic_event here too would double-fold; routing the
+    # sink back into arc would recurse. So live_consumers stays empty: arc.record ->
+    # sink.emit -> {trace, SSE, hooks} (no arc), a strict one-way derivation.
+    app.state.semantic_event_sink = SemanticEventSink(
+        bus=app.state.bus,
+        trace_backend=app.state.semantic_trace_backend,
+        detail_level=app.state.semantic_trace_detail_level,
+        live_consumers=None,
+    )
+    # (ARC's arc.op op-logger AND highway-derive sink are wired via _set_app_arc
+    # whenever app.state.arc is assigned — see _set_app_arc; the highway closure reads
+    # app.state.semantic_event_sink at fire-time, so this construction order is fine.)
+    # message log keyed by session_id. Populated by
+    # POST /messages, read by GET /messages, and backed by per-session
+    # JSON ledgers so adapter deletion/redeploy preserves transcripts.
+    app.state.message_store = MessageStore(path=session_store_path.parent / "messages")
+    app.state.messages = app.state.message_store.load_all()
+    # #770 C3: running metrics aggregate so GET /v1/metrics reads a counter
+    # instead of re-walking every message of every session on each poll. Seeded
+    # once from the loaded ledger, then kept live by the session_store write
+    # seams (_append/_extend/_replace/_delete_session_messages).
+    app.state.metrics_counters = MetricsCounters()
+    app.state.metrics_counters.rebuild(app.state.messages)
+    # #770 C3: bounded eviction-audit trail for the in-memory ledgers below;
+    # every retention drop records a typed reason here (no silent drop).
+    init_retention_state(app)
+    # cooperative cancellation flags. POST /cancel
     # adds a sid; the POST-message handler checks + clears after the
     # agent returns. Set (not dict) because the flag's presence IS
     # the signal — no payload.
     app.state.cancel_flags = set()
-    # CLIO-BBBBBBBBBB22: per-session context files. Keyed by
+    app.state.cancel_events = {}
+    app.state.cancel_attempts = {}
+    # per-session context files. Keyed by
     # session_id, each value is an ordered dict of
     # path -> ContextFile dict.
-    app.state.context_files = {}
-    # CLIO-BBBBBBBBBB21: per-session pending diffs. Keyed by
+    app.state.context_files_path = session_store_path.parent / "context_files.json"
+    app.state.context_files = _load_context_files(app.state.context_files_path)
+    # iowarp/clio-agent#331: per-turn context truth frames. These
+    # capture what visible transcript/context attachments were
+    # retained for a turn, plus model/agent/prompt provenance.
+    app.state.context_frames = {}
+    # iowarp/clio-agent#369: agent-callable memory tool audit. Tool
+    # reads are policy-gated and provenance-bearing so cross-session
+    # context is visible after the fact.
+    app.state.memory_tool_audit = []
+    # per-session pending diffs. Keyed by
     # session_id -> list of {path, unified_diff, status,
     # part_id, message_id}. Status is "pending" until apply/reject
     # flips it.
     app.state.pending_diffs = {}
-    # CLIO-BBBBBBBBBB23: pending permission requests. Flat dict
+    # pending permission requests. Flat dict
     # keyed by permission_id so GET /v1/permissions can filter by
     # session cheaply. Each record carries
     # {id, session_id, tool_call, summary, created_at, status,
@@ -2256,6 +1338,13 @@ def build_app(
     # MCPToolBridge gate (running in a worker thread) can block on
     # the user's response without polling.
     app.state.permission_events = {}
+    # iowarp/clio-agent#333: structured ask-user protocol. The
+    # orchestrator/backend can publish pending questions; clients
+    # answer or cancel them through explicit endpoints.
+    app.state.user_questions = {}
+    # iowarp/clio-agent#333: retry attempts preserve provenance for
+    # retry-with-notes/model flows without mutating the original turn.
+    app.state.turn_attempts = {}
     # SPEC §6.17 hooks (declarative event→command/url callouts that
     # gact-tui drives via /v1/hooks). Distinct from CLIO's runtime
     # in-process Python hooks (clio_agent.runtime.hooks) — these are
@@ -2266,8 +1355,9 @@ def build_app(
     # SPEC §6.11.b permission policies — list, not dict. Backends
     # consult this on every tool call to decide allow/deny/ask before
     # falling back to the per-tool permission_default. PUT replaces
-    # the whole list; in-memory.
-    app.state.permission_policies = []
+    # the whole list.
+    app.state.permission_policies_path = session_store_path.parent / "permission_policies.json"
+    app.state.permission_policies = _load_permission_policies(app.state.permission_policies_path)
     # iowarp/clio-agent#18: per-session task list (todo-style).
     # Keyed by session_id -> {task_id -> task dict}. In-memory.
     app.state.session_tasks = {}
@@ -2281,6 +1371,17 @@ def build_app(
     # tools_called metadata even when the underlying expert
     # didn't populate ``pred.tools_called`` itself.
     app.state.tool_call_ledger = {}
+    # In-flight assistant message/parts emitted from real runtime
+    # boundaries before the final assistant message is persisted. This
+    # lets SSE clients show tool calls and delegations as they happen.
+    app.state.live_assistant_message_ids = {}
+    app.state.live_assistant_parts = {}
+    app.state.live_assistant_part_keys = {}
+    # #767 PR1: the single-writer part-ledger registry (TurnTranscript). No
+    # production path opens a turn yet — the turn loop adopts it in PR2/PR3 —
+    # but the tool-observer/delegation append helpers already shim into any
+    # open ledger, falling back to the legacy dicts above when none is open.
+    app.state.turn_transcripts = TurnTranscriptRegistry()
 
     # iowarp/clio-agent#7 + #2: install process-global hooks on the
     # MCPToolBridge so EVERY expert's tool call routes through our
@@ -2294,18 +1395,46 @@ def build_app(
     # finishes constructing — importing clio_agent.tools.execution
     # transitively pulls litellm + dspy (~4 s) and we need build_app
     # to stay cheap enough for gact-tui's 3-second deploy probe.
+    #
+    # Expose the gate/observer CONSTRUCTORS on app.state so runtime code carved
+    # out of this module (#714 decomposition) can build a fresh gate/observer
+    # WITHOUT importing _make_permission_gate/_make_tool_observer from app.py
+    # (which would reintroduce the no-cycle violation). Callers prefer the
+    # already-installed app.state.pending_permission_gate/pending_tool_observer
+    # and fall back to these factories — mirroring _call_enabled_external_mcp_tool.
+    app.state.make_permission_gate = lambda: _make_permission_gate(app)
+    app.state.make_tool_observer = lambda: _make_tool_observer(app)
+    # #735 unified-concurrency seam: install the STATELESS tool-runtime resolver
+    # once (idempotent). It dispatches on the live turn's ``active_app()`` so N
+    # apps in one process each read THEIR OWN ``app.state.pending_*`` hooks — no
+    # shared process-global on the in-turn path. Installed unconditionally (both
+    # the eager-agent and deferred-construction branches below run turns).
+    from clio_agent.gact.runtime.app_state import resolve_tool_runtime  # noqa: PLC0415
+    from clio_agent.tools.execution import set_tool_runtime_resolver  # noqa: PLC0415
+
+    set_tool_runtime_resolver(resolve_tool_runtime)
     if agent is not None:
         try:
-            from clio_agent.tools.execution import (
-                set_global_permission_gate,
-                set_global_tool_observer,
+            _install_tool_runtime_hooks(app)
+        except Exception as exc:  # noqa: BLE001 - logged reason=tool_runtime_hooks_install_failed + state flag set (see below)
+            # HIGHEST-SEVERITY silent fallback (#772): see the sibling handler in
+            # _finish_agent_init. A swallowed install failure = an ungated,
+            # unobserved tool surface. Fail loud: flip the flag, capture the
+            # error, and log a structured reason.
+            app.state.tool_hooks_installed = False
+            app.state.tool_hooks_install_error = repr(exc)
+            logger.error(
+                "tool runtime hooks failed to install "
+                "reason=tool_runtime_hooks_install_failed error=%r",
+                exc,
             )
-
-            set_global_permission_gate(_make_permission_gate(app))
-            set_global_tool_observer(_make_tool_observer(app))
-        except Exception:  # pragma: no cover - defensive
-            pass
     else:
+        # Deferred-agent boot (production main()): hooks are installed later by
+        # _construct_agent_async. ``None`` = not-yet-determined; ``False`` is
+        # reserved EXCLUSIVELY for an install failure so /v1/health never
+        # reports a normal startup window as an ungated tool surface (#772).
+        app.state.tool_hooks_installed = None
+        app.state.pending_cancellation_checker = _make_cancellation_checker(app)
         app.state.pending_permission_gate = _make_permission_gate(app)
         app.state.pending_tool_observer = _make_tool_observer(app)
 
@@ -2316,23 +1445,58 @@ def build_app(
     # nothing's currently wired so the test-side hook stays.
     try:
         from clio_agent.runtime.hooks import (
-            HookRegistry,
-            install_global_registry,
+            _registry as _current_registry,
         )
         from clio_agent.runtime.hooks import (
-            _registry as _current_registry,
+            build_hook_registry,
+            install_global_registry,
         )
 
         if _current_registry is None:
-            install_global_registry(HookRegistry())
-    except Exception:  # pragma: no cover - defensive
+            registry = build_hook_registry()
+            install_global_registry(registry)
+            app.state.runtime_hook_registry_metadata = (
+                registry.metadata() if hasattr(registry, "metadata") else {}
+            )
+        else:
+            app.state.runtime_hook_registry_metadata = (
+                _current_registry.metadata() if hasattr(_current_registry, "metadata") else {}
+            )
+    except Exception:  # pragma: no cover - defensive  # noqa: BLE001 - registry-metadata unavailability recorded in app.state
+        app.state.runtime_hook_registry_metadata = {
+            "backend": "unavailable",
+            "enabled": False,
+            "error": "failed_to_initialize",
+        }
         pass
 
-    # CLIO-BBBBBBBBBB-D: live LM config — what the TUI configured
+    # live LM config — what the TUI configured
     # us with. Distinct from boot-time env because PUT /providers/lm
     # rebuilds the agent + DSPy config in-place.
     app.state.lm_config = None
-    # CLIO-BBBBBBBBBB-WS: workspaces store. Persisted alongside
+    app.state.lm_config_status = {"state": "idle"}
+    app.state.lm_config_task = None
+    app.state.lm_studio_owned_instance = None
+    # Per-app provider-profile registry (design §3.4 / §9 step 4). An immutable
+    # snapshot mapping profile-id -> LMSpec with one "default" entry, seeded from
+    # the same boot config the agent builds from (spec_from_config of
+    # load_config_from_env). Per-app so the two-app test topology holds two
+    # independent stores instead of racing one process-global. Additive/shadow:
+    # nothing routes LM resolution through it yet. load_config_from_env may raise
+    # for a misconfigured cloud provider (missing key); that must not fail app
+    # construction (baseline: the deferred agent build tolerates it), so we fall
+    # back to the plain provider-default spec and let the deferred build surface
+    # the real error.
+    from clio_agent.config import LMProviderConfig, load_config_from_env
+    from clio_agent.gact.providers.profile_store import ProviderProfileStore
+    from clio_agent.providers.lm_spec import spec_from_config
+
+    try:
+        _boot_cfg = load_config_from_env()
+    except Exception:  # noqa: BLE001 - misconfig must not break app construction
+        _boot_cfg = LMProviderConfig()
+    app.state.provider_profiles = ProviderProfileStore.seed(spec_from_config(_boot_cfg))
+    # workspaces store. Persisted alongside
     # sessions; seeds a default workspace if none exist so the TUI
     # always has something to render.
     app.state.workspaces = WorkspaceStore(
@@ -2350,192 +1514,26 @@ def build_app(
     from clio_agent.gact.user_agents import (
         _default_store_path as _ua_default,
     )
+
     app.state.user_agents = UserAgentStore(
-        path=(sessions_path.parent / "agents.json")
-        if sessions_path is not None
-        else _ua_default()
+        path=(sessions_path.parent / "agents.json") if sessions_path is not None else _ua_default()
     )
     # iowarp/clio-agent#21: scheduled turns store + tick task.
     from clio_agent.gact.scheduler import ScheduleStore as _SchedStore
+
     app.state.schedules = _SchedStore(
-        path=(sessions_path.parent / "schedules.json")
-        if sessions_path is not None else None
+        path=(sessions_path.parent / "schedules.json") if sessions_path is not None else None
     )
     app.state.scheduler_task = None
     # iowarp/clio-agent#22: shared session tokens.
     app.state.shared_tokens = {}
 
-    @app.get("/v1/health", response_model=HealthResponse)
-    async def health() -> HealthResponse:
-        """SPEC §3.4 — per-subsystem status feeds the TUI's /doctor
-        modal (v0.2 `integration_health`). We report on whatever is
-        actually wired in this build: the API itself, the session
-        store, the agent (real vs fake vs not-wired), and ARC.
-
-        overall_status collapses the rows to the worst case:
-        ready > degraded > unavailable.
-        """
-
-        uptime = int(time.time() - app.state.started_at)
-        rows: list[Integration] = [
-            Integration(
-                name="api",
-                status="ready",
-                detail=f"clio-agent-gact {GACT_BACKEND_VERSION}",
-            ),
-            Integration(
-                name="sessions",
-                status="ready",
-                detail=f"{len(app.state.sessions.list())} session(s) registered",
-            ),
-        ]
-
-        agent = app.state.agent
-        if agent is None:
-            rows.append(Integration(
-                name="agent",
-                status="unavailable",
-                detail="no ClioAgent wired; POST /messages will 503",
-            ))
-        else:
-            # Heuristic: the production ClioAgent is a class that
-            # imports DSPy under the hood and exposes it via
-            # `agent.__class__.__module__`. The smoke/test fakes
-            # live under 'gact_smoke_server' or '__main__'. Label
-            # them so the /doctor modal is honest about what's
-            # running.
-            mod = type(agent).__module__
-            is_fake = (
-                "smoke" in mod
-                or mod == "__main__"
-                or "test" in mod.lower()
-            )
-            rows.append(Integration(
-                name="agent",
-                status="degraded" if is_fake else "ready",
-                detail=(
-                    f"{type(agent).__name__} (fake — dev harness)"
-                    if is_fake
-                    else f"{type(agent).__name__} wired"
-                ),
-            ))
-
-        if app.state.arc is None:
-            rows.append(Integration(
-                name="memory",
-                status="degraded",
-                detail="memory layer not wired; /v1/memory/stats returns zeros",
-            ))
-        else:
-            try:
-                stats = app.state.arc.get_cache_stats()
-                hr = stats.get("hit_rate", 0.0)
-                rows.append(Integration(
-                    name="memory",
-                    status="ready",
-                    detail=f"cache {int(hr * 100)}% hit rate",
-                ))
-            except Exception as exc:
-                rows.append(Integration(
-                    name="memory",
-                    status="unavailable",
-                    detail=f"memory cache stats raised: {exc!r}",
-                ))
-
-        # LM row drives the TUI's "configure provider on connect"
-        # decision. ``configured`` mirrors what GET /v1/providers/lm
-        # reports — agent present + last-known config from PUT.
-        cfg = app.state.lm_config or {}
-        if app.state.agent is not None and cfg:
-            detail = f"{cfg.get('provider', '?')}/{cfg.get('model', '?')}"
-            rows.append(Integration(
-                name="lm",
-                status="ready",
-                detail=detail,
-            ))
-        elif app.state.agent is not None:
-            # Agent wired by env at boot; lm_config wasn't recorded
-            # but we know an LM is configured.
-            rows.append(Integration(
-                name="lm",
-                status="ready",
-                detail="configured from env at boot",
-            ))
-        else:
-            rows.append(Integration(
-                name="lm",
-                status="unavailable",
-                detail=(
-                    "no LM configured; PUT /v1/providers/lm or set "
-                    "CLIO_LM_PROVIDER and restart"
-                ),
-            ))
-
-        # Worst-status wins.
-        statuses = {r.status for r in rows}
-        if "unavailable" in statuses:
-            overall = "unavailable"
-        elif "degraded" in statuses:
-            overall = "degraded"
-        else:
-            overall = "ready"
-
-        return HealthResponse(
-            healthy=overall != "unavailable",
-            uptime_s=uptime,
-            overall_status=overall,  # type: ignore[arg-type]  # narrowed by branches above
-            integrations=rows,
-        )
-
-    @app.get("/v1/capabilities", response_model=Capabilities)
-    async def capabilities() -> Capabilities:
-        return Capabilities(
-            contract_version=CONTRACT_VERSION,
-            backend=BackendInfo(
-                name="clio-agent-gact",
-                version=GACT_BACKEND_VERSION,
-                vendor="iowarp",
-                homepage="https://github.com/iowarp/clio-agent",
-            ),
-            capabilities=CapabilityFlags(
-                # v0.1 baseline — flipped on as each surface lands.
-                # Honest reporting lets the TUI disable UI for
-                # capabilities we don't actually provide.
-                sessions=True,  # BBB8 — /v1/sessions CRUD
-                workspaces=True,  # CLIO-WS — /v1/workspaces CRUD
-                metrics=True,  # BBB15 — /v1/metrics returns SPEC §6.16 envelope
-                session_branching=True,  # BBB26 — POST /sessions/{sid}/fork
-                search_messages=True,  # BBB27 — GET /sessions/{sid}/messages/search
-                cost_tracking=True,  # BBB24 — Message.tokens + Session.cost_usd rollup
-                files=True,  # BBB22 — /v1/sessions/{sid}/context/files CRUD
-                diffs=True,  # BBB21 — file_diff parts + /diffs/apply,reject
-                permissions=True,  # BBB23 — /v1/permissions + permission.* events
-                subagents=True,  # BBB25 — nanoagent subsessions + subagent.* events
-                session_export=True,  # #16 — /v1/sessions/{sid}/export + import
-                mcp=True,  # #13 — /v1/mcp/servers exposes the gateway namespaces
-                providers=True,  # #15 — /v1/providers catalogs the LM presets
-                commands=True,  # #14 — /v1/commands + dispatch
-                thinking_blocks=True,  # #17 — DSPy reasoning trace as thinking Parts
-                session_tasks=True,  # #18 — per-session todo CRUD
-                plan_mode=True,  # session.mode=plan blocks destructive tools
-                edit_modes=True,  # session.edit_mode toggles diff/whole/patch
-                agent_write=True,  # #19 — POST/PUT/DELETE /v1/agents
-                hooks=True,  # #20 — pre/post_tool + pre/post_message hooks
-                scheduled_sessions=True,  # #21 — cron schedules
-                session_sharing=True,  # #22 — share tokens
-                skills_extraction=True,  # #23 — POST /v1/agents/extract
-                # v0.2 additions — advertised when the scaffold
-                # actually emits them. Turned on piecewise as the
-                # follow-on items land.
-                agent_routing=True,  # BBB10 — /v1/agents?tier= + tier-2 catalog
-                memory=True,  # BBB11 — /v1/memory/stats backed by ARC
-                structured_errors=True,  # always — we return the envelope for every error
-                integration_health=True,  # /v1/health above carries it
-                tool_telemetry=True,  # BBB18 — tool.call.started/completed events
-            ),
-            transports=TransportFlags(events_sse=True, events_websocket=False),
-            auth=AuthInfo(schemes=["trust_socket"], current="trust_socket"),
-        )
+    # ---- /v1/health + /v1/capabilities + /v1/capability-gaps + /v1/metrics ----
+    # + /v1/memory/stats: the read-only system/observability surface is owned by
+    # routes/system.py and registered below via register_system_routes(app, deps)
+    # once ``deps`` is built. The static capability/metrics catalogs they project
+    # live in runtime/capabilities.py (shared with the message-turn streaming
+    # path here); the wire/limit constants live in runtime/constants.py.
 
     # ---- 501 stubs for the rest of the surface ---------------------------
     # Every route in the v0.2 contract that we haven't wired yet
@@ -2543,3901 +1541,771 @@ def build_app(
     # shape v0.2 clients expect, while honestly reporting that the
     # backend doesn't yet implement the endpoint.
 
-    # ---- /v1/sessions CRUD -----------------------------------------
-    # CLIO-BBBBBBBBBB8 — four real handlers against app.state.sessions
-    # (the SessionStore wired above). Kept as nested closures so they
-    # can close over `app` cleanly without passing the store around.
+    # ---- /v1/prompts (CLIO prompt registry) ------------------------------
 
-    @app.post("/v1/sessions", response_model=Session)
-    async def create_session(req: CreateSessionRequest) -> Session:
-        wid = req.workspace_id or "ws_default"
-        if app.state.workspaces.get(wid) is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"workspace not found: {wid}",
-                        details={"workspace_id": wid},
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        sess = app.state.sessions.create(
-            workspace_id=wid,
-            title=req.title,
-            metadata=req.metadata,
-            mode=req.mode,
-            edit_mode=req.edit_mode,
-            routing_mode=req.routing_mode,
-        )
-        return Session(**sess.to_wire())
-
-    @app.patch("/v1/sessions/{sid}", response_model=Session)
-    async def patch_session(
-        sid: str, req: UpdateSessionRequest
-    ) -> Session:
-        """Update mutable session fields (title + mode + edit_mode).
-
-        Lets the TUI flip plan ↔ edit ↔ chat ↔ architect mid-
-        session without recreating, and rename via the existing
-        rename modal.
-        """
-
-        sess = app.state.sessions.update(
-            sid,
-            title=req.title,
-            mode=req.mode,
-            edit_mode=req.edit_mode,
-            routing_mode=req.routing_mode,
-        )
-        if sess is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        # Publish so live SSE subscribers see mode flips immediately.
-        app.state.bus.publish(Event(
-            type="session.updated",
-            session_id=sid,
-            payload=Session(**sess.to_wire()).model_dump(exclude_none=True),
-        ))
-        return Session(**sess.to_wire())
-
-    @app.get("/v1/sessions", response_model=ListSessionsResponse)
-    async def list_sessions(workspace_id: Optional[str] = None) -> ListSessionsResponse:
-        rows = app.state.sessions.list(workspace_id=workspace_id)
-        return ListSessionsResponse(
-            sessions=[Session(**row.to_wire()) for row in rows]
-        )
-
-    @app.get("/v1/sessions/{sid}", response_model=Session)
-    async def get_session(sid: str) -> Session:
-        sess = app.state.sessions.get(sid)
-        if sess is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        details={"session_id": sid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        return Session(**sess.to_wire())
-
-    @app.delete("/v1/sessions/{sid}")
-    async def delete_session(sid: str) -> JSONResponse:
-        existed = app.state.sessions.delete(sid)
-        if not existed:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        details={"session_id": sid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        return JSONResponse(status_code=204, content=None)
-
-    # ---- /v1/permissions (BBB23) --------------------------------------
-
-    @app.get("/v1/permissions")
-    async def list_permissions(
-        session_id: str = "", status: str = ""
-    ) -> dict[str, Any]:
-        """List permission requests.
-
-        ?session_id=<sid> narrows to a session; ?status=pending
-        hides resolved rows. Both are optional.
-        """
-
-        rows = list(app.state.permissions.values())
+    def _prompt_workspace_root(workspace_id: str = "", session_id: str = "") -> Path:
+        wid = workspace_id
         if session_id:
-            rows = [r for r in rows if r.get("session_id") == session_id]
-        if status:
-            rows = [r for r in rows if r.get("status") == status]
-        return {"permissions": rows}
+            sess = app.state.sessions.get(session_id)
+            if sess is not None:
+                wid = wid or str(getattr(sess, "workspace_id", "") or "")
+        if wid:
+            ws = app.state.workspaces.get(wid)
+            if ws is not None:
+                root_path = str(getattr(ws, "root_path", "") or "")
+                if root_path:
+                    return Path(root_path).expanduser()
+        return Path.cwd()
 
-    @app.post("/v1/permissions/{pid}")
-    async def respond_permission(
-        pid: str, request: Request
-    ) -> JSONResponse:
-        """Resolve a pending permission. Body: ``{action}`` where
-        action is ``allow | deny | allow_session | allow_workspace``.
-        Idempotent when the row is already resolved (returns the
-        existing resolution rather than erroring).
-        """
-
-        row = app.state.permissions.get(pid)
-        if row is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"permission not found: {pid}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        action = body.get("action") or ""
-        if action not in {
-            "allow", "deny", "allow_session", "allow_workspace"
-        }:
-            raise HTTPException(
-                status_code=422,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=(
-                            "action must be one of allow, deny, "
-                            "allow_session, allow_workspace"
-                        ),
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        if row.get("status") == "pending":
-            row["status"] = "resolved"
-            row["action"] = action
-            row["resolved_at"] = datetime.now(timezone.utc).isoformat()
-            # iowarp/clio-agent#7: wake any MCPToolBridge thread
-            # waiting on this permission's event.
-            evt = app.state.permission_events.pop(pid, None)
-            if evt is not None:
-                evt.set()
-            app.state.bus.publish(Event(
-                type="permission.resolved",
-                session_id=row.get("session_id", ""),
-                payload={
-                    "permission_id": pid,
-                    "action": action,
-                    "session_id": row.get("session_id", ""),
-                },
-            ))
-        return JSONResponse(status_code=204, content=None)
-
-    # ---- /v1/sessions/{sid}/diffs/* (BBB21) ---------------------------
-
-    def _filter_diff_paths(
-        rows: list[dict[str, Any]], paths: list[str]
-    ) -> list[dict[str, Any]]:
-        """Narrow pending diffs to a given path allow-list. Empty
-        list (or no param) means "every pending row"."""
-
-        if not paths:
-            return [r for r in rows if r["status"] == "pending"]
-        allow = set(paths)
-        return [r for r in rows if r["path"] in allow and r["status"] == "pending"]
-
-    @app.post("/v1/sessions/{sid}/diffs/apply")
-    async def diffs_apply(
-        sid: str, request: Request
-    ) -> dict[str, Any]:
-        """Mark pending diffs as applied + actually write to disk
-        via the fs_apply_edit_write MCP tool.
-
-        Body: ``{paths: [...]}`` (optional). If omitted, every
-        pending diff is applied. Returns ``{applied: [...],
-        write_errors?: {...}}``. iowarp/clio-agent#4: writes are
-        scoped to the session's workspace.root_path; failures
-        per-path go into write_errors but don't block the rest.
-        """
-
-        sess = app.state.sessions.get(sid)
+    def _active_prompt_pack_path(session_id: str = "") -> Path | None:
+        if not session_id:
+            return None
+        sess = app.state.sessions.get(session_id)
         if sess is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        paths = [p for p in (body.get("paths") or []) if isinstance(p, str)]
+            return None
+        metadata = getattr(sess, "metadata", {}) or {}
+        if not isinstance(metadata, Mapping):
+            return None
+        raw = str(metadata.get("active_expert_pack_path") or "").strip()
+        return Path(raw).expanduser() if raw else None
 
-        rows = app.state.pending_diffs.get(sid, [])
-        targets = _filter_diff_paths(rows, paths)
-        applied: list[str] = []
-        write_errors: dict[str, str] = {}
-        for r in targets:
-            # iowarp/clio-agent#4: actually write to disk if the
-            # row carries a `new_content` field. The
-            # propose_edit-driven path always sets it; legacy/test
-            # diffs that don't get the wire event but no write.
-            new_content = r.get("new_content")
-            if new_content is not None:
-                try:
-                    _apply_edit_to_disk(
-                        path=r["path"],
-                        new_content=new_content,
-                        session=sess,
-                        app=app,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    err = repr(exc)
-                    write_errors[r["path"]] = err
-                    r["status"] = "apply_failed"
-                    # Publish a failure event so the TUI sees the write
-                    # error live (was a silent failure: the response
-                    # body carried write_errors but the TUI's apply-
-                    # button path discards it). file.diff.write_failed
-                    # mirrors file.diff.applied for parity.
-                    app.state.bus.publish(Event(
-                        type="file.diff.write_failed",
-                        session_id=sid,
-                        payload={
-                            "session_id": sid,
-                            "path": r["path"],
-                            "part_id": r.get("part_id", ""),
-                            "message_id": r.get("message_id", ""),
-                            "error": err,
-                        },
-                    ))
-                    continue
-            r["status"] = "applied"
-            applied.append(r["path"])
-            app.state.bus.publish(Event(
-                type="file.diff.applied",
-                session_id=sid,
-                payload={
-                    "session_id": sid,
-                    "path": r["path"],
-                    "part_id": r.get("part_id", ""),
-                    "message_id": r.get("message_id", ""),
-                },
-            ))
-        out: dict[str, Any] = {"applied": applied}
-        if write_errors:
-            out["write_errors"] = write_errors
-        return out
-
-    @app.post("/v1/sessions/{sid}/diffs/reject")
-    async def diffs_reject(
-        sid: str, request: Request
-    ) -> dict[str, list[str]]:
-        """Mark pending diffs as rejected + publish events."""
-
-        if app.state.sessions.get(sid) is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        paths = [p for p in (body.get("paths") or []) if isinstance(p, str)]
-
-        rows = app.state.pending_diffs.get(sid, [])
-        targets = _filter_diff_paths(rows, paths)
-        rejected: list[str] = []
-        for r in targets:
-            r["status"] = "rejected"
-            rejected.append(r["path"])
-            app.state.bus.publish(Event(
-                type="file.diff.rejected",
-                session_id=sid,
-                payload={
-                    "session_id": sid,
-                    "path": r["path"],
-                    "part_id": r.get("part_id", ""),
-                    "message_id": r.get("message_id", ""),
-                },
-            ))
-        return {"rejected": rejected}
-
-    # ---- /v1/sessions/{sid}/context/files (BBB22) ---------------------
-
-    @app.get("/v1/sessions/{sid}/context/files")
-    async def list_context_files(sid: str) -> dict[str, Any]:
-        if app.state.sessions.get(sid) is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        details={"session_id": sid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        rows = list(app.state.context_files.get(sid, {}).values())
-        return {"files": rows}
-
-    @app.post("/v1/sessions/{sid}/context/files")
-    async def add_context_file(sid: str, request: Request) -> dict[str, Any]:
-        """Attach a file to the session's context. Body: ``{path,
-        mode?, size?, last_modified?, language?}``. Existing rows
-        for the same path are upserted so the TUI can swap modes
-        without racing an explicit delete.
-        """
-
-        if app.state.sessions.get(sid) is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        details={"session_id": sid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        body = {}
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        path = (body.get("path") or "").strip()
-        if not path:
-            raise HTTPException(
-                status_code=422,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message="missing required field: path",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        mode = body.get("mode") or "read"
-        if mode not in {"edit", "read", "pin"}:
-            mode = "read"
-        row = {
-            "path": path,
-            "mode": mode,
-            "added_at": datetime.now(timezone.utc).isoformat(),
-            "last_modified": body.get("last_modified") or "",
-            "size": int(body.get("size") or 0),
-            "language": body.get("language") or "",
-        }
-        bucket = app.state.context_files.setdefault(sid, {})
-        bucket[path] = row
-        app.state.bus.publish(Event(
-            type="context.file.added",
-            session_id=sid,
-            payload={"session_id": sid, "file": row},
-        ))
-        return row
-
-    @app.delete("/v1/sessions/{sid}/context/files")
-    async def remove_context_file(
-        sid: str, request: Request
-    ) -> JSONResponse:
-        """Detach a file by path. 204 whether the path was attached
-        — the TUI fires this optimistically on `d` in the context
-        pane and doesn't want to error if the file was already
-        removed."""
-
-        if app.state.sessions.get(sid) is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        details={"session_id": sid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        body = {}
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        path = (body.get("path") or "").strip()
-        bucket = app.state.context_files.get(sid, {})
-        removed = bucket.pop(path, None) if path else None
-        if removed is not None:
-            app.state.bus.publish(Event(
-                type="context.file.removed",
-                session_id=sid,
-                payload={"session_id": sid, "path": path},
-            ))
-        return JSONResponse(status_code=204, content=None)
-
-    # ---- POST /v1/sessions/{sid}/fork (BBB26) -------------------------
-
-    @app.post("/v1/sessions/{sid}/fork")
-    async def fork_session(sid: str, request: Request) -> JSONResponse:
-        """Copy a session + its messages into a fresh session.
-
-        Body (optional): ``{"at_message_id": "<id>", "title": "..."}``
-        ``at_message_id`` truncates the copy at + including that
-        message (so "branch from this point"). Absent → copy every
-        stored message.
-
-        The new session's ``parent_session_id`` points at the source
-        so the TUI's sidebar can render the fork hierarchy (the v0.1
-        Session already carries that field).
-        """
-
-        sess = app.state.sessions.get(sid)
-        if sess is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        details={"session_id": sid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        at = body.get("at_message_id") or ""
-        title = body.get("title") or f"{sess.title} (fork)"
-
-        src_msgs = list(app.state.messages.get(sid, []))
-        if at:
-            kept: list[Message] = []
-            for m in src_msgs:
-                kept.append(m)
-                if m.id == at:
-                    break
-            src_msgs = kept
-
-        new_sess = app.state.sessions.create(
-            workspace_id=sess.workspace_id,
-            title=title,
-            parent_session_id=sid,
-        )
-        # Deep-copy parts so the fork's message log doesn't alias the
-        # source's. Pydantic's model_copy gives us a snapshot.
-        app.state.messages[new_sess.id] = [m.model_copy(deep=True) for m in src_msgs]
-        app.state.sessions.update(
-            new_sess.id, message_count=len(src_msgs)
-        )
-        return JSONResponse(
-            status_code=201,
-            content=Session(**new_sess.to_wire()).model_dump(exclude_none=True),
-        )
-
-    # ---- /v1/sessions/{sid}/tasks + /v1/tasks/{tid} (#18) ------------
-
-    def _task_id() -> str:
-        return f"task_{uuid.uuid4().hex[:12]}"
-
-    @app.get("/v1/sessions/{sid}/tasks")
-    async def list_session_tasks(sid: str) -> dict[str, Any]:
-        if app.state.sessions.get(sid) is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        rows = list(app.state.session_tasks.get(sid, {}).values())
-        return {"tasks": rows}
-
-    @app.post("/v1/sessions/{sid}/tasks")
-    async def create_session_task(
-        sid: str, request: Request
-    ) -> dict[str, Any]:
-        if app.state.sessions.get(sid) is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        title = (body.get("title") or "").strip()
-        if not title:
-            raise HTTPException(
-                status_code=422,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message="missing required field: title",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        status = body.get("status") or "pending"
-        if status not in {"pending", "running", "completed", "failed"}:
-            status = "pending"
-        tid = _task_id()
-        row = {
-            "id": tid,
-            "session_id": sid,
-            "title": title,
-            "status": status,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
-        app.state.session_tasks.setdefault(sid, {})[tid] = row
-        return row
-
-    def _find_task(tid: str) -> Optional[tuple[str, dict[str, Any]]]:
-        for sid_key, rows in app.state.session_tasks.items():
-            if tid in rows:
-                return sid_key, rows[tid]
-        return None
-
-    @app.patch("/v1/tasks/{tid}")
-    async def patch_task(tid: str, request: Request) -> dict[str, Any]:
-        found = _find_task(tid)
-        if found is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"task not found: {tid}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        _, row = found
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        if "title" in body and body["title"]:
-            row["title"] = str(body["title"])
-        if "status" in body and body["status"] in {
-            "pending", "running", "completed", "failed"
-        }:
-            row["status"] = body["status"]
-        row["updated_at"] = datetime.now(timezone.utc).isoformat()
-        return row
-
-    @app.delete("/v1/tasks/{tid}")
-    async def delete_task(tid: str) -> JSONResponse:
-        found = _find_task(tid)
-        if found is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"task not found: {tid}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        sid_key, _ = found
-        app.state.session_tasks[sid_key].pop(tid, None)
-        return JSONResponse(status_code=204, content=None)
-
-    # ---- /v1/commands + dispatch (#14) --------------------------------
-
-    _BACKEND_COMMANDS: list[dict[str, str]] = [
-        {
-            "id": "/clear",
-            "title": "Clear session messages",
-            "description": "Drop the in-memory log for the active session (does NOT touch ARC).",
-            "source": "builtin",
-        },
-        {
-            "id": "/cache-stats",
-            "title": "ARC cache stats",
-            "description": "Append the current ARC cache hit/miss counters as a system message.",
-            "source": "builtin",
-        },
-        {
-            "id": "/dump-trace",
-            "title": "Dump last reasoning trace",
-            "description": "Append the last assistant turn's DSPy reasoning (when available).",
-            "source": "builtin",
-        },
-        {
-            "id": "/optimize",
-            "title": "Optimize active expert",
-            "description": "(Stub) trigger SIMBA optimization on the active expert; reports a system message.",
-            "source": "builtin",
-        },
-    ]
-
-    @app.get("/v1/commands")
-    async def list_commands() -> dict[str, Any]:
-        """SPEC §6.13 — backend-provided slash commands."""
-
-        return {"commands": _BACKEND_COMMANDS}
-
-    @app.post("/v1/sessions/{sid}/commands/{cmd}")
-    async def dispatch_command(sid: str, cmd: str) -> dict[str, Any]:
-        """Dispatch a backend command for a session. Returns a
-        system-style result the TUI can render inline as a message.
-        """
-
-        sess = app.state.sessions.get(sid)
-        if sess is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        # Accept "clear" or "/clear"; the TUI sends both shapes.
-        cmd_id = cmd if cmd.startswith("/") else "/" + cmd
-        known = {c["id"] for c in _BACKEND_COMMANDS}
-        if cmd_id not in known:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"unknown command: {cmd_id}",
-                        details={"known": sorted(known)},
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        # Side effects + system message body per command.
-        body_text: str
-        if cmd_id == "/clear":
-            app.state.messages.pop(sid, None)
-            app.state.sessions.update(sid, message_count=0)
-            app.state.bus.publish(Event(
-                type="session.cleared",
-                session_id=sid,
-                payload={"session_id": sid},
-            ))
-            body_text = "session messages cleared"
-        elif cmd_id == "/cache-stats":
-            stats: dict[str, Any] = {}
-            if app.state.arc is not None:
-                try:
-                    stats = app.state.arc.get_cache_stats() or {}
-                except Exception:
-                    stats = {}
-            body_text = (
-                f"ARC cache: hits={stats.get('hits', 0)} "
-                f"misses={stats.get('misses', 0)} "
-                f"hit_rate={stats.get('hit_rate', 0.0):.2f} "
-                f"capacity={stats.get('capacity', 0)}"
-            )
-        elif cmd_id == "/dump-trace":
-            log = app.state.messages.get(sid, [])
-            last_asst = next(
-                (m for m in reversed(log) if m.role == "assistant"), None
-            )
-            if last_asst is None:
-                body_text = "no assistant turns yet"
-            else:
-                trace_part = next(
-                    (p for p in last_asst.parts if p.type == "thinking"),
+    def _prompt_sources_for_request(
+        *,
+        session_id: str = "",
+        workspace_id: str = "",
+    ) -> list[PromptSource]:
+        cwd = _prompt_workspace_root(workspace_id=workspace_id, session_id=session_id)
+        sources = [
+            PromptSource("global", prompt_write_root),
+        ]
+        for pack in discover_expert_packs(cwd=cwd):
+            prompt_root = pack.root / "prompts"
+            if prompt_root.is_dir():
+                sources.append(PromptSource(f"{pack.scope}_pack", prompt_root))
+        sources.append(PromptSource("workspace", cwd / ".clio" / "prompts"))
+        if session_id:
+            active_blueprint_path = _active_session_agent_blueprint_path(session_id)
+            active_blueprint_id = _active_session_agent_blueprint_id(session_id)
+            active_blueprint_root = active_blueprint_path
+            if active_blueprint_root is None and active_blueprint_id:
+                active = next(
+                    (
+                        row
+                        for row in discover_agent_blueprints(cwd=cwd)
+                        if row.id == active_blueprint_id
+                    ),
                     None,
                 )
-                body_text = (
-                    trace_part.text if trace_part is not None
-                    else "no thinking trace on the last turn"
+                active_blueprint_root = active.root if active is not None else None
+            if active_blueprint_root is not None and (active_blueprint_root / "prompts").is_dir():
+                sources.append(
+                    PromptSource("session_agent_blueprint", active_blueprint_root / "prompts")
                 )
-        elif cmd_id == "/optimize":
-            body_text = (
-                "SIMBA optimization isn't wired yet — see "
-                "iowarp/clio-agent for the optimizer roadmap"
+        active_pack_path = _active_prompt_pack_path(session_id)
+        if active_pack_path is not None and (active_pack_path / "prompts").is_dir():
+            sources.append(PromptSource("session_pack", active_pack_path / "prompts"))
+        if session_id:
+            sources.append(
+                PromptSource("session", prompt_write_root.parent / "session-prompts" / session_id)
             )
-        else:  # pragma: no cover - guarded above
-            body_text = f"unhandled command: {cmd_id}"
+        return sources
 
-        # Materialise body_text as a real assistant message so the TUI
-        # actually shows the result. Previously the body_text was only
-        # in the POST response — the TUI's runCommandCmd discards that,
-        # so /cache-stats, /dump-trace, /optimize, and /clear all looked
-        # like they did nothing. Persist + publish so SSE redraws and
-        # GET /messages reflects.
-        from clio_agent.gact.types import Message, Part, Tokens  # noqa: PLC0415
-        sys_msg = Message(
-            id=f"msg_cmd_{uuid.uuid4().hex[:10]}",
-            session_id=sid,
-            role="assistant",
-            created_at=datetime.now(timezone.utc).isoformat(),
-            updated_at=datetime.now(timezone.utc).isoformat(),
-            parts=[Part(
-                id=f"part_cmd_{uuid.uuid4().hex[:10]}",
-                type="text",
-                metadata={"synthetic": "command_result", "command": cmd_id},
-                text=f"[{cmd_id}] {body_text}",
-            )],
-            tokens=Tokens(input=0, output=0, cache_read=0, cache_write=0),
-            cost_usd=0.0,
-            stop_reason="end_turn",
-            metadata={"synthetic": "command_result", "command": cmd_id},
-        )
-        app.state.messages.setdefault(sid, []).append(sys_msg)
-        app.state.bus.publish(Event(
-            type="message.created",
-            session_id=sid,
-            payload=sys_msg.model_dump(exclude_none=True),
-        ))
+    def _prompt_write_root_for_request(
+        *,
+        scope: str,
+        session_id: str = "",
+        workspace_id: str = "",
+    ) -> Path:
+        if scope == "session":
+            if not session_id:
+                raise ValueError("session_id is required for session prompt writes")
+            return prompt_write_root.parent / "session-prompts" / session_id
+        if scope == "workspace":
+            cwd = _prompt_workspace_root(workspace_id=workspace_id, session_id=session_id)
+            return cwd / ".clio" / "prompts"
+        if scope in {"global", "user", ""}:
+            return prompt_write_root
+        raise ValueError("scope must be global, workspace, or session")
 
-        return {
-            "command": cmd_id,
-            "session_id": sid,
-            "result": {
-                "type": "system_message",
-                "text": body_text,
-            },
-        }
-
-    # ---- /v1/providers (#15) ------------------------------------------
-
-    def _provider_auth_state(preset: "LMProviderPreset") -> tuple[list[str], bool]:
-        """Return (auth_methods, is_authenticated) for a preset.
-
-        Maps CLIO's preset flags to the GACT v0.1 §6.12 Provider shape so
-        the TUI's settings picker can render the right state badge:
-
-        - argonne_*: globus oauth; authenticated when tokens are on disk
-          AND globus-sdk is importable.
-        - cloud (requires_api_key=True): api_key auth; authenticated when
-          the matching env var is set.
-        - local (lm_studio/ollama/meridian/codex): no auth required;
-          surface as ``["none"]``, always authenticated.
-        """
-        if preset.provider == "argonne":
-            authed = False
-            try:
-                from clio_agent.providers import argonne_auth  # noqa: PLC0415
-                authed = (
-                    argonne_auth.tokens_exist()
-                    and importlib.util.find_spec("globus_sdk") is not None
-                )
-            except Exception:
-                authed = False
-            return ["oauth"], authed
-
-        if preset.requires_api_key:
-            env_var = {
-                "anthropic": "ANTHROPIC_API_KEY",
-                "openai": "OPENAI_API_KEY",
-            }.get(preset.provider, "CLIO_LM_API_KEY")
-            return ["api_key"], bool(os.environ.get(env_var) or os.environ.get("CLIO_LM_API_KEY"))
-
-        return ["none"], True
-
-    @app.get("/v1/providers")
-    async def list_providers() -> dict[str, Any]:
-        """SPEC §6.12 — generic LM provider catalog.
-
-        Returns one row per preset with the v0.1 fields (id, name,
-        auth_methods, is_authenticated, default_model) so the TUI's
-        settings picker can render the right state badge per provider
-        and decide whether to surface a "Login" affordance.
-        """
-
-        rows = []
-        for p in _LM_PRESETS:
-            auth_methods, is_authed = _provider_auth_state(p)
-            rows.append({
-                "id": p.id,
-                "name": p.label,
-                "auth_methods": auth_methods,
-                "is_authenticated": is_authed,
-                "default_model": p.suggested_model,
-                "api_base": p.api_base,
-                "env_keys": (
-                    ["CLIO_LM_API_KEY"] if p.requires_api_key else []
-                ),
-                "description": p.description,
-                "metadata": {
-                    "provider_kind": p.provider,
-                    "requires_api_key": p.requires_api_key,
-                },
-            })
-        return {"providers": rows}
-
-    # NOTE: GET /v1/providers/{provider_id} is in the v0.1 spec but
-    # we deliberately don't register it — it would shadow the literal
-    # /v1/providers/lm route (FastAPI matches by registration order),
-    # and the gact-tui client only uses ListProviders + ListProviderModels
-    # so the per-id GET has no real consumer. If a consumer appears,
-    # move the lm route registration earlier than the dynamic match.
-
-    @app.post("/v1/providers/{provider_id}/auth")
-    async def auth_provider(provider_id: str, request: Request) -> dict[str, Any]:
-        """SPEC §6.12 — kick off provider-specific auth.
-
-        For argonne_*, this drives the Globus OAuth flow. The Globus
-        SDK prints a URL to the *backend's* stdout that the user must
-        visit; we report the status back to the TUI so it can render a
-        "check your terminal" banner. If tokens already exist and
-        validate, we return is_authenticated=true immediately and the
-        TUI can skip its banner.
-
-        Other providers (cloud / local) use api_key / no-auth and
-        return 405 with a hint pointing to PUT /v1/providers/lm.
-        """
-
-        preset = next((p for p in _LM_PRESETS if p.id == provider_id), None)
-        if preset is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="not_found",
-                    message=f"unknown provider: {provider_id}",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
-            )
-
-        if preset.provider != "argonne":
-            raise HTTPException(
-                status_code=405,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="unsupported",
-                    message=(
-                        f"provider '{provider_id}' uses "
-                        f"{'api_key' if preset.requires_api_key else 'no'} "
-                        "auth; pass api_key directly to PUT /v1/providers/lm."
-                    ),
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
-            )
-
-        # Argonne / ALCF: invoke the Globus authenticate flow. Run in a
-        # thread because the SDK's login_flow is blocking (prints a URL
-        # and waits for the user to paste a code).
-        try:
-            from clio_agent.providers import argonne_auth  # noqa: PLC0415
-        except Exception as exc:
-            raise HTTPException(
-                status_code=503,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="dependency_missing",
-                    message=f"argonne_auth import failed: {exc}",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
-            ) from exc
-
-        if importlib.util.find_spec("globus_sdk") is None:
-            raise HTTPException(
-                status_code=503,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="dependency_missing",
-                    message=(
-                        "globus-sdk not installed. Install with "
-                        "'pip install clio-agent[argonne]' on the "
-                        "backend host and retry."
-                    ),
-                    recoverable=True,
-                )).model_dump(exclude_none=True),
-            )
-
-        body = {}
-        try:
-            body = await request.json()
-        except Exception:
-            pass
-        force = bool(body.get("force", False))
-
-        # Fast path: tokens already valid → no terminal interaction needed.
-        if not force and argonne_auth.check_auth_status():
-            return {
-                "is_authenticated": True,
-                "provider_id": provider_id,
-                "instructions": "",
-            }
-
-        loop = asyncio.get_running_loop()
-        try:
-            await loop.run_in_executor(
-                None, lambda: argonne_auth.authenticate(force=force)
-            )
-        except Exception as exc:
-            raise HTTPException(
-                status_code=502,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="argonne_auth_failed",
-                    message=f"Globus authentication failed: {exc}",
-                    recoverable=True,
-                )).model_dump(exclude_none=True),
-            ) from exc
-
-        is_authed = argonne_auth.check_auth_status()
-        return {
-            "is_authenticated": is_authed,
-            "provider_id": provider_id,
-            "instructions": (
-                ""
-                if is_authed
-                else (
-                    "Globus printed an OAuth URL to the backend host's "
-                    "terminal — visit it and paste the code there to "
-                    "complete login, then retry."
-                )
+    def _prompt_registry_for_request(
+        *,
+        session_id: str = "",
+        workspace_id: str = "",
+        write_scope: str = "global",
+    ) -> PromptRegistry:
+        sources = _prompt_sources_for_request(session_id=session_id, workspace_id=workspace_id)
+        return PromptRegistry(
+            sources=sources,
+            builtins=app.state.prompt_registry._builtins(),
+            write_root=_prompt_write_root_for_request(
+                scope=write_scope,
+                session_id=session_id,
+                workspace_id=workspace_id,
             ),
+        )
+
+    app.state.prompt_registry_for_request = _prompt_registry_for_request
+
+    def _prompt_agent_overlay_for_request(session_id: str = "") -> dict[str, Any]:
+        if not session_id:
+            return {}
+        overlay = _session_agent_overlay(session_id)
+        agents = overlay.get("agents") if isinstance(overlay, Mapping) else None
+        if not isinstance(agents, Mapping):
+            return {}
+        rows: list[dict[str, Any]] = []
+        prompt_fields = {
+            "system_prompt",
+            "prompt_id",
+            "prompt_profile",
+            "default_provider",
+            "default_model",
+        }
+        for agent_id, raw_patch in sorted(agents.items(), key=lambda item: str(item[0])):
+            if not isinstance(raw_patch, Mapping):
+                continue
+            fields = sorted(str(key) for key in raw_patch if str(key) in prompt_fields)
+            if not fields:
+                continue
+            rows.append(
+                {
+                    "agent_id": str(agent_id),
+                    "fields": fields,
+                    "has_system_prompt": bool(str(raw_patch.get("system_prompt") or "").strip()),
+                    "prompt_id": str(raw_patch.get("prompt_id") or "").strip(),
+                    "prompt_profile": str(raw_patch.get("prompt_profile") or "").strip(),
+                    "default_provider": str(raw_patch.get("default_provider") or "").strip(),
+                    "default_model": str(raw_patch.get("default_model") or "").strip(),
+                    "source": "session_agent_overlay",
+                    "session_id": session_id,
+                }
+            )
+        return {
+            "session_id": session_id,
+            "source": "session_agent_overlay",
+            "agents": rows,
         }
 
-    # Per-provider model catalogs. Hand-curated rather than introspected
-    # because most upstreams either don't expose a /models endpoint or
-    # return hundreds of irrelevant entries. The TUI's Settings → Model
-    # picker calls this once per provider and lists the rows verbatim.
-    _PROVIDER_MODELS: dict[str, list[dict[str, str]]] = {
-        "meridian": [
-            {"id": "claude-haiku-4-5",  "name": "Claude Haiku 4.5",
-             "description": "Fast + cheap. Default for CLIO development."},
-            {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6",
-             "description": "Balanced; better reasoning at moderate cost."},
-            {"id": "claude-opus-4-6",   "name": "Claude Opus 4.6",
-             "description": "Highest-capability Anthropic model. Slow + expensive."},
-        ],
-        "anthropic": [
-            {"id": "claude-haiku-4-5-20251001",  "name": "Claude Haiku 4.5",
-             "description": "Direct Anthropic. Fast + cheap."},
-            {"id": "claude-sonnet-4-6-20251001", "name": "Claude Sonnet 4.6",
-             "description": "Direct Anthropic. Balanced."},
-            {"id": "claude-opus-4-6-20251001",   "name": "Claude Opus 4.6",
-             "description": "Direct Anthropic. Highest capability."},
-        ],
-        "openai": [
-            {"id": "gpt-4o-mini", "name": "GPT-4o mini",
-             "description": "OpenAI's cheap fast model. Good default."},
-            {"id": "gpt-4o",      "name": "GPT-4o",
-             "description": "OpenAI's flagship multimodal model."},
-            {"id": "gpt-4-turbo", "name": "GPT-4 Turbo",
-             "description": "Higher capability, slower + pricier."},
-        ],
-        "openrouter": [
-            {"id": "openai/gpt-oss-120b:free",
-             "name": "GPT-OSS 120B (free)",
-             "description": "Free tier. Heavily rate-limited."},
-            {"id": "anthropic/claude-haiku-4-5",
-             "name": "Claude Haiku 4.5 via OpenRouter",
-             "description": "Pay-per-token via OpenRouter."},
-            {"id": "anthropic/claude-sonnet-4-6",
-             "name": "Claude Sonnet 4.6 via OpenRouter",
-             "description": "Pay-per-token via OpenRouter."},
-        ],
-        "lm_studio": [
-            {"id": "", "name": "(auto-discovered)",
-             "description": "LM Studio reports the loaded model on /v1/models."},
-        ],
-        "ollama": [
-            {"id": "llama3.2", "name": "Llama 3.2",
-             "description": "Default Ollama model. Local."},
-            {"id": "qwen2.5-coder:14b", "name": "Qwen2.5 Coder 14B",
-             "description": "Better at code than llama3.2; same speed band."},
-        ],
-        "codex": [
-            {"id": "gpt-5.4", "name": "GPT-5.4 (via Codex)",
-             "description": "Codex's reasoning-tuned default."},
-            {"id": "gpt-5", "name": "GPT-5 (via Codex)",
-             "description": "Standard GPT-5 through the Codex app-server."},
-            {"id": "gpt-4.1", "name": "GPT-4.1 (via Codex)",
-             "description": "Older GPT-4.1 routed through Codex."},
-        ],
-        # ALCF / Argonne — model availability is dynamic (jobs spin up
-        # and tear down behind the gateway). These are the models we've
-        # observed loaded on Sophia + Polaris in 2025–2026; the actual
-        # live set can be queried with
-        # `scripts/list_active_models.sh` in alcf-agentics-workflow.
-        "argonne": [
-            {"id": "meta-llama/Meta-Llama-3.1-8B-Instruct",
-             "name": "Llama 3.1 8B Instruct (Sophia/Polaris)",
-             "description": "Default ALCF demo model. Fastest of the lot."},
-            {"id": "meta-llama/Meta-Llama-3.1-70B-Instruct",
-             "name": "Llama 3.1 70B Instruct",
-             "description": "Heavier reasoning; jobs may need to warm up."},
-            {"id": "meta-llama/Meta-Llama-3.1-405B-Instruct",
-             "name": "Llama 3.1 405B Instruct",
-             "description": "Frontier-class. Often offline; check active models first."},
-            {"id": "mistralai/Mistral-7B-Instruct-v0.3",
-             "name": "Mistral 7B Instruct v0.3",
-             "description": "Lightweight alternative to Llama."},
-        ],
-    }
-
-    # Cache for live model discovery. Keyed by preset id (or
-    # "argonne:<cluster>" for the cluster-aware argonne path); value
-    # is (epoch_seconds, [models]). 30 s TTL keeps the picker snappy
-    # if the user spams ←/→ but doesn't mask backend churn (ALCF
-    # rotates loaded models as PBS jobs come and go; LM Studio swaps
-    # models on user action).
-    _LIVE_MODELS_TTL_S = 30.0
-    # Cache value: (epoch_seconds, models, source, error_message). Source
-    # is "live" / "static_fallback"; error_message is the human-readable
-    # reason live failed (empty when source=="live"). Surfacing this on
-    # /v1/providers/{id}/models lets the TUI render a banner instead of
-    # silently lying with a stale catalog.
-    _live_models_cache: dict[
-        str, tuple[float, list[dict[str, str]], str, str]
-    ] = {}
-
-    def _argonne_live_models(
-        cluster: str,
-        chat_base: str = "",
-    ) -> tuple[list[dict[str, str]], str, str]:
-        """Hit the ALCF jobs endpoint and return ``(models, source,
-        error_message)`` for the catalog endpoint.
-
-        On any failure we still return the static fallback so the
-        picker isn't empty, BUT the error is surfaced verbatim
-        (with an actionable hint when known) so the TUI can warn
-        the user. Caller decides whether to render the warning.
-        """
-        cache_key = f"argonne:{cluster}"
-        now = time.time()
-        cached = _live_models_cache.get(cache_key)
-        if cached is not None and now - cached[0] < _LIVE_MODELS_TTL_S:
-            return cached[1], cached[2], cached[3]
-
-        static = list(_PROVIDER_MODELS.get("argonne", []))
-
-        def _fallback(reason: str) -> tuple[list[dict[str, str]], str, str]:
-            _live_models_cache[cache_key] = (now, static, "static_fallback", reason)
-            return static, "static_fallback", reason
-
-        # Accept CLIO's own override OR the env var alcf-agentics-
-        # workflow uses (ALCF_INFERENCE_TOKEN / access_token).
-        token = (
-            os.environ.get("CLIO_ARGONNE_TOKEN", "").strip()
-            or os.environ.get("ALCF_INFERENCE_TOKEN", "").strip()
-            or os.environ.get("access_token", "").strip()
-        )
-        token_source = "env"
-        if not token:
+    def _prompt_render_context_for_request(
+        *,
+        session_id: str = "",
+        workspace_id: str = "",
+    ) -> dict[str, str]:
+        context = _prompt_render_context(app)
+        if session_id or workspace_id:
             try:
-                from clio_agent.providers.argonne_auth import (  # noqa: PLC0415
-                    get_access_token,
-                    tokens_exist,
+                agents = [
+                    row
+                    for row in _agent_rows(session_id=session_id, workspace_id=workspace_id)
+                    if row.enabled
+                ]
+                by_parent: dict[str, list[AgentDef]] = {}
+                for agent in agents:
+                    by_parent.setdefault(agent.parent_id or "", []).append(agent)
+
+                def render_tree(parent_id: str = "", depth: int = 0) -> list[str]:
+                    lines: list[str] = []
+                    for agent in sorted(
+                        by_parent.get(parent_id, []), key=lambda row: (row.tier, row.id)
+                    ):
+                        indent = "  " * depth
+                        detail = f" - {agent.description}" if agent.description else ""
+                        lines.append(f"{indent}- {agent.id}: {agent.title}{detail}")
+                        lines.extend(render_tree(agent.id, depth + 1))
+                    return lines
+
+                context["agents.available_tree"] = (
+                    "\n".join(render_tree()) or "(no enabled experts)"
                 )
-                if tokens_exist():
-                    token = get_access_token()
-                    token_source = "globus_disk"
-            except Exception as exc:
-                return _fallback(
-                    "no token available — globus refresh failed: "
-                    f"{exc}. Re-auth: `python -m clio_agent.providers"
-                    ".argonne_auth authenticate -f`"
+                context["agents.available_flat"] = (
+                    "\n".join(
+                        f"- {agent.id}: {agent.title}"
+                        for agent in sorted(agents, key=lambda row: row.id)
+                    )
+                    or "(no enabled experts)"
                 )
-        if not token:
-            return _fallback(
-                "no token available. Set CLIO_ARGONNE_TOKEN / "
-                "ALCF_INFERENCE_TOKEN, or run `python -m clio_agent."
-                "providers.argonne_auth authenticate -f` once to "
-                "store one in ~/.globus."
-            )
-
-        try:
-            import requests  # noqa: PLC0415
-
-            r = requests.get(
-                f"https://inference-api.alcf.anl.gov/resource_server/{cluster}/jobs",
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=4,
-            )
-        except Exception as exc:
-            return _fallback(
-                f"ALCF gateway unreachable: {exc}. Check network / proxy."
-            )
-
-        if r.status_code == 401:
-            return _fallback(
-                f"ALCF token rejected (401, source={token_source}). "
-                "Token likely expired — re-auth: `python -m "
-                "clio_agent.providers.argonne_auth authenticate -f` "
-                "and re-export ALCF_INFERENCE_TOKEN before redeploying."
-            )
-        if r.status_code >= 400:
-            return _fallback(
-                f"ALCF gateway returned HTTP {r.status_code}: "
-                f"{(r.text or '')[:200]}"
-            )
-
-        try:
-            payload = r.json()
-        except Exception as exc:
-            return _fallback(f"ALCF response not JSON: {exc}")
-
-        seen: set[str] = set()
-        models: list[dict[str, str]] = []
-        for job in payload.get("running") or []:
-            for raw in (job.get("Models") or "").split(","):
-                mid = raw.strip()
-                if not mid or mid in seen:
-                    continue
-                seen.add(mid)
-                name = mid.split("/", 1)[-1] if "/" in mid else mid
-                walltime = (job.get("Walltime") or "").strip()
-                nodes = (job.get("Nodes Reserved") or "").strip()
-                desc = f"loaded on {cluster}"
-                if nodes:
-                    desc += f" ({nodes} node{'s' if nodes != '1' else ''})"
-                if walltime:
-                    desc += f", walltime {walltime}"
-                models.append({"id": mid, "name": name, "description": desc})
-
-        if not models:
-            # /jobs returned 0 running — could be "cluster idle (PBS
-            # jobs cycle)" OR "cluster in maintenance". The maintenance
-            # signal lives behind /chat/completions, not /jobs:
-            #
-            #   "Error: Sophia cluster currently unavailable due to
-            #    maintenance. Expected to come back online around 3pm
-            #    Central."
-            #
-            # Probe that endpoint with a 1-token payload to discover
-            # the gateway's actual status message and surface it
-            # verbatim, instead of guessing at "idle". 2-second budget
-            # so a hung gateway doesn't stall the picker.
-            queued = len(payload.get("queued") or [])
-            stopped = len(payload.get("stopped") or [])
-            empty: list[dict[str, str]] = []
-            maintenance_msg = ""
-            # Sophia hangs the framework path off /vllm/v1; Metis off
-            # /api/v1; future clusters could differ again. Use the
-            # preset's api_base when supplied (it already encodes the
-            # right framework path); fall back to the sophia layout
-            # for the bare-kind call site.
-            probe_base = chat_base.rstrip("/") if chat_base else (
-                f"https://inference-api.alcf.anl.gov/resource_server/{cluster}/vllm/v1"
-            )
-            try:
-                probe = requests.post(
-                    f"{probe_base}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {token}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": "meta-llama/Meta-Llama-3.1-8B-Instruct",
-                        "messages": [{"role": "user", "content": "ping"}],
-                        "max_tokens": 1,
-                        "temperature": 0,
-                    },
-                    timeout=2,
-                )
-                # Gateway returns maintenance text as a JSON-encoded
-                # bare string body. Tolerate either bare string or
-                # {"detail": "..."} envelope.
-                try:
-                    body = probe.json()
-                except Exception:
-                    body = probe.text
-                text = body if isinstance(body, str) else (
-                    body.get("detail") if isinstance(body, dict) else ""
-                ) or ""
-                if isinstance(text, str) and text.lower().startswith("error:"):
-                    maintenance_msg = text
-            except Exception:
+            except Exception:  # noqa: BLE001,S110 - enabled-experts prompt hint is best-effort; planner proceeds without it
                 pass
-
-            if maintenance_msg:
-                msg = f"ALCF {cluster}: {maintenance_msg}"
-            else:
-                details = []
-                if queued:
-                    details.append(f"{queued} queued")
-                if stopped:
-                    details.append(f"{stopped} recently stopped")
-                tail = f" ({', '.join(details)})" if details else ""
-                msg = (
-                    f"ALCF {cluster} has no models loaded right now"
-                    f"{tail}. PBS jobs cycle — check back in a few minutes, "
-                    f"or visit https://docs.alcf.anl.gov/services/inference-endpoints/ "
-                    f"for current status."
+            if session_id:
+                pack_id = ""
+                blueprint_id = ""
+                agent_id = ""
+                sess = app.state.sessions.get(session_id)
+                if sess is not None:
+                    agent_id = _session_agent_id(sess)
+                    metadata = getattr(sess, "metadata", {}) or {}
+                    if isinstance(metadata, Mapping):
+                        pack_id = str(metadata.get("active_expert_pack_id") or "").strip()
+                        blueprint_id = str(metadata.get("active_agent_blueprint_id") or "").strip()
+                context["session.active_pack"] = pack_id or "(no active expert pack)"
+                context["session.active_agent_blueprint"] = (
+                    blueprint_id or "(no active agent blueprint)"
                 )
-            _live_models_cache[cache_key] = (now, empty, "static_fallback", msg)
-            return empty, "static_fallback", msg
+                try:
+                    commands = [
+                        f"- {row.get('id')}: {row.get('description') or row.get('title')}"
+                        for row in _planner_command_rows(
+                            app,
+                            _resolve_runtime_dynamic_agent_bound,
+                            agent_id=agent_id,
+                            cwd=_command_cwd_for_request(app, session_id),
+                            session_id=session_id,
+                        )
+                    ]
+                    context["commands.agent_invocable"] = (
+                        "\n".join(commands) or "(no agent-invocable commands)"
+                    )
+                except Exception as exc:  # noqa: BLE001 - enrichment; keep the base list
+                    # No silent fallback: record WHY the agent-scoped command
+                    # enrichment was skipped so an arity/resolver break is
+                    # queryable in the trace instead of silently reverting the
+                    # render context to the un-scoped base command list.
+                    trace.event(
+                        "PROMPT-CTX",
+                        "agent-invocable command enrichment failed for agent %r "
+                        "(session %r): %s; rendering un-scoped base command list",
+                        agent_id,
+                        session_id,
+                        exc,
+                    )
+        return context
 
-        _live_models_cache[cache_key] = (now, models, "live", "")
-        return models, "live", ""
+    # ---- /v1/sessions CRUD + delete -----------------------------------
+    # Session create/list/get/patch + permission-gated delete are owned by
+    # routes/sessions.py and registered below via register_sessions_routes(
+    # app, deps); the delete cascade (messages/context-files/ARC release)
+    # travels on ``deps``.
 
-    def _openai_compat_live_models(
-        preset: "LMProviderPreset",
-    ) -> tuple[list[dict[str, str]], str, str]:
-        """Discover models for any OpenAI-compatible preset.
+    # ---- /v1/sessions/{sid}/context/* (ARC live-context plane) -------
+    # The session context compartment policy + the live ARC context-plane
+    # routes (state/ops/compact/search) are owned by routes/context.py and
+    # registered below (after ``deps`` is built); the segment-token arithmetic
+    # + window resolution remain in runtime/context_tokens.py (shared with the
+    # expert forward path).
 
-        Returns ``(models, source, error_message)`` so the TUI can
-        render an actionable warning when live discovery fell back.
-        """
-        cache_key = f"preset:{preset.id}"
-        now = time.time()
-        cached = _live_models_cache.get(cache_key)
-        if cached is not None and now - cached[0] < _LIVE_MODELS_TTL_S:
-            return cached[1], cached[2], cached[3]
+    # ---- /v1/sessions/{sid}/undo + .../rewind -------------------------
+    # Transcript rollback (undo/rewind) is owned by routes/sessions.py and
+    # registered below via register_sessions_routes(app, deps); the ledger
+    # replace + destructive-action guard travel on ``deps``.
 
-        static = list(_PROVIDER_MODELS.get(preset.provider, []))
+    # ---- /v1/permissions (BBB23) + /v1/policies (SPEC §6.11.b) --------
+    # Permission-request ledger CRUD + declarative permission-policy CRUD are
+    # owned by routes/permissions.py; registered once below alongside the other
+    # register_<concern>_routes factories (after ``deps`` is built).
 
-        def _fallback(reason: str) -> tuple[list[dict[str, str]], str, str]:
-            _live_models_cache[cache_key] = (now, static, "static_fallback", reason)
-            return static, "static_fallback", reason
+    # ---- POST /v1/sessions/{sid}/fork (BBB26) -------------------------
+    # Forking a session + its messages into a fresh child is owned by
+    # routes/sessions.py and registered below via register_sessions_routes(
+    # app, deps); the ledger replace travels on ``deps``.
 
-        base = (preset.api_base or "").rstrip("/")
-        if not base:
-            return _fallback("preset has no api_base — nothing to query")
-        url = base + "/models"
-
-        headers: dict[str, str] = {}
-        if preset.provider == "anthropic":
-            key = (
-                os.environ.get("ANTHROPIC_API_KEY")
-                or os.environ.get("CLIO_LM_API_KEY")
-                or ""
-            )
-            if not key:
-                return _fallback(
-                    "no API key — set ANTHROPIC_API_KEY (or "
-                    "CLIO_LM_API_KEY) in the backend's env."
-                )
-            headers["x-api-key"] = key
-            headers["anthropic-version"] = "2023-06-01"
-        else:
-            key = (
-                os.environ.get("OPENAI_API_KEY")
-                or os.environ.get("CLIO_LM_API_KEY")
-                or {"lm_studio": "lm-studio", "ollama": "ollama"}.get(
-                    preset.provider, ""
-                )
-            )
-            if key:
-                headers["Authorization"] = f"Bearer {key}"
-
-        try:
-            import requests  # noqa: PLC0415
-
-            r = requests.get(url, headers=headers, timeout=4)
-        except Exception as exc:
-            return _fallback(f"{preset.label} unreachable: {exc}")
-
-        if r.status_code == 401:
-            return _fallback(
-                f"{preset.label} rejected the API key (401). "
-                "Check the env var on the backend host."
-            )
-        if r.status_code >= 400:
-            return _fallback(
-                f"{preset.label} returned HTTP {r.status_code}: "
-                f"{(r.text or '')[:200]}"
-            )
-
-        try:
-            payload = r.json()
-        except Exception as exc:
-            return _fallback(
-                f"{preset.label} response not JSON: {exc}"
-            )
-
-        raw = payload.get("data") if isinstance(payload, dict) else payload
-        if not isinstance(raw, list):
-            return _fallback(
-                f"{preset.label} response missing data[] array"
-            )
-
-        seen: set[str] = set()
-        models: list[dict[str, str]] = []
-        for item in raw:
-            if not isinstance(item, dict):
-                continue
-            mid = (item.get("id") or item.get("name") or "").strip()
-            if not mid or mid in seen:
-                continue
-            seen.add(mid)
-            name = mid.split("/", 1)[-1] if "/" in mid else mid
-            owner = item.get("owned_by") or ""
-            desc = f"live from {preset.label}"
-            if owner and owner.lower() not in {"system", "openai-internal"}:
-                desc += f" (owned_by {owner})"
-            models.append({"id": mid, "name": name, "description": desc})
-
-        if not models:
-            return _fallback(
-                f"{preset.label} returned an empty model list"
-            )
-        _live_models_cache[cache_key] = (now, models, "live", "")
-        return models, "live", ""
-
-    @app.get("/v1/providers/{provider_id}/models")
-    async def list_provider_models(provider_id: str) -> dict[str, Any]:
-        """Per-provider model catalog — live where possible.
-
-        Resolution:
-        - Path is a preset id (``argonne_sophia``, ``anthropic``,
-          ``lm_studio``, …): look the preset up. Argonne presets hit
-          ALCF's /jobs endpoint (the vLLM /models proxy 405s on the
-          gateway). Everyone else uses the OpenAI-compatible
-          ``GET {api_base}/models`` discovery (Anthropic, OpenAI,
-          OpenRouter, LM Studio, Ollama, Meridian, vLLM-direct all
-          implement that shape).
-        - Path is a bare provider kind (``argonne``, ``openai``):
-          live-fetch using the kind's first registered preset's
-          api_base + auth.
-        - Fall through to the static catalog for anything else.
-
-        Live fetches are cached for _LIVE_MODELS_TTL_S so spamming
-        ←/→ in the picker doesn't hammer the upstream. Failures
-        (no key, network down, 5xx) silently fall back to the static
-        catalog so the picker is never empty.
-        """
-        # Match a preset id first.
-        def _wrap(triple: tuple[list[dict[str, str]], str, str]) -> dict[str, Any]:
-            models, source, err = triple
-            out: dict[str, Any] = {"models": models, "source": source}
-            if err:
-                out["error"] = err
-            return out
-
-        for p in _LM_PRESETS:
-            if p.id == provider_id:
-                if p.provider == "argonne":
-                    cluster = _argonne_cluster_from_preset(p)
-                    return _wrap(_argonne_live_models(cluster, p.api_base))
-                return _wrap(_openai_compat_live_models(p))
-        # Bare provider kind — pick the first preset that uses this
-        # kind so we have an api_base + label to drive discovery.
-        if provider_id == "argonne":
-            for p in _LM_PRESETS:
-                if p.provider == "argonne":
-                    cluster = _argonne_cluster_from_preset(p)
-                    return _wrap(_argonne_live_models(cluster, p.api_base))
-            return _wrap(_argonne_live_models("sophia"))
-        for p in _LM_PRESETS:
-            if p.provider == provider_id:
-                return _wrap(_openai_compat_live_models(p))
-        # Last-ditch static.
-        models = _PROVIDER_MODELS.get(provider_id, [])
-        return {"models": models, "source": "static_fallback"}
-
-    def _argonne_cluster_from_preset(preset: "LMProviderPreset") -> str:
-        """Pull the cluster slug ("sophia"/"polaris") out of an
-        argonne preset's api_base. Argonne presets all point at
-        ``…/resource_server/<cluster>/vllm/v1`` so the slug is the
-        path component immediately after ``resource_server``."""
-        base = (preset.api_base or "").rstrip("/")
-        marker = "/resource_server/"
-        idx = base.find(marker)
-        if idx == -1:
-            return "sophia"
-        tail = base[idx + len(marker):]
-        slug = tail.split("/", 1)[0]
-        return slug or "sophia"
+    # ---- /v1/providers (#15) + /v1/providers/lm ---
+    # The LM-provider catalog (list/detail/auth/models/handshake) and the
+    # runtime LM-bind routes (get/put/wait LM config, incl. the dspy.settings
+    # + env snapshot/restore bind closures) are owned by routes/providers.py and
+    # registered below via ``register_providers_routes(app, deps)`` once ``deps``
+    # is built. The bind reaches the agent-rebuild hooks (install-tool-runtime-
+    # hooks / clear-session-model-refs) through ``deps``.
 
     # ---- /v1/mcp/servers (#13) ---------------------------------------
-
-    @app.get("/v1/mcp/servers")
-    async def list_mcp_servers() -> dict[str, Any]:
-        """SPEC §6.7 — enumerate MCP servers the backend has mounted.
-
-        Returns BOTH the bundled in-process servers (fs/hdf5/parquet)
-        AND any third-party servers installed via POST /v1/mcp/servers.
-        Each row carries id/name/status/transport/tools_count/tools.
-        """
-
-        rows = []
-
-        # In-process bundled servers (fs/hdf5/parquet via gateway).
-        try:
-            from clio_agent.tools.gateway import list_capabilities
-            caps = list_capabilities()
-            per_server: dict[str, list[dict[str, str]]] = {}
-            for tool in caps:
-                srv = tool.get("server", "unknown")
-                per_server.setdefault(srv, []).append(tool)
-            for name, tools in sorted(per_server.items()):
-                rows.append({
-                    "id": f"mcp_{name}",
-                    "name": name,
-                    "status": "ready",
-                    "transport": "in_process",
-                    "tools_count": len(tools),
-                    "tools": [t["name"] for t in tools],
-                })
-        except Exception as exc:  # noqa: BLE001
-            rows.append({
-                "id": "mcp_bundled_error",
-                "name": "bundled-gateway",
-                "status": "error",
-                "transport": "in_process",
-                "tools_count": 0,
-                "tools": [],
-                "error": f"gateway introspection failed: {exc!r}",
-            })
-
-        # Third-party servers installed at runtime.
-        installed = getattr(app.state, "external_mcp_servers", {})
-        for sid, info in sorted(installed.items()):
-            rows.append({
-                "id": sid,
-                "name": info.get("name", sid),
-                "status": info.get("status", "unknown"),
-                "transport": info.get("transport", "unknown"),
-                "tools_count": len(info.get("tools") or []),
-                "tools": list(info.get("tools") or []),
-                "spec": info.get("spec", {}),
-            })
-        return {"servers": rows}
-
-    @app.post("/v1/mcp/servers", status_code=201)
-    async def install_mcp_server(request: Request) -> dict[str, Any]:
-        """Install + connect to a third-party MCP server.
-
-        Body shapes:
-        - stdio:  {"name": "everything", "transport": "stdio",
-                   "command": "npx", "args": ["-y", "@modelcontextprotocol/server-everything"],
-                   "env": {...}}
-        - http:   {"name": "remote", "transport": "http",
-                   "url": "https://mcp.example.com"}
-
-        Connects via fastmcp.Client, lists the server's tools, and
-        records the server in ``app.state.external_mcp_servers`` so
-        subsequent /v1/mcp/servers GETs and tool dispatch can see it.
-
-        Returns the same row shape /v1/mcp/servers does.
-        """
-
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        name = body.get("name") or body.get("id") or "unnamed"
-        transport_kind = (body.get("transport") or "stdio").lower()
-
-        try:
-            from fastmcp import Client
-            from fastmcp.client.transports import (
-                StdioTransport,
-                StreamableHttpTransport,
-            )
-        except Exception as exc:
-            raise HTTPException(
-                status_code=503,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="dependency_missing",
-                    message=f"fastmcp Client unavailable: {exc!r}",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
-            ) from exc
-
-        if transport_kind == "stdio":
-            command = body.get("command")
-            args = body.get("args") or []
-            env = body.get("env") or {}
-            if not command:
-                raise HTTPException(
-                    status_code=422,
-                    detail=ErrorEnvelope(error=ErrorInfo(
-                        error="bad_request",
-                        message="stdio transport requires 'command'",
-                        recoverable=True,
-                    )).model_dump(exclude_none=True),
-                )
-            transport = StdioTransport(command=command, args=list(args), env=dict(env) or None)
-            spec = {"transport": "stdio", "command": command, "args": list(args)}
-        elif transport_kind in {"http", "streamable-http"}:
-            url = body.get("url")
-            if not url:
-                raise HTTPException(
-                    status_code=422,
-                    detail=ErrorEnvelope(error=ErrorInfo(
-                        error="bad_request",
-                        message="http transport requires 'url'",
-                        recoverable=True,
-                    )).model_dump(exclude_none=True),
-                )
-            transport = StreamableHttpTransport(url=url)  # type: ignore[assignment]
-            spec = {"transport": "http", "url": url}
-        else:
-            raise HTTPException(
-                status_code=422,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="bad_request",
-                    message=f"unknown transport: {transport_kind!r} (use stdio|http)",
-                    recoverable=True,
-                )).model_dump(exclude_none=True),
-            )
-
-        # Probe the server: connect, list tools, disconnect cleanly.
-        # We re-create the Client per dispatch later (cheap for stdio,
-        # no shared global state to worry about).
-        tool_names: list[str] = []
-        connect_error: Optional[str] = None
-        try:
-            async with Client(transport) as client:
-                tools = await client.list_tools()
-                tool_names = [t.name for t in tools]
-        except Exception as exc:  # noqa: BLE001
-            connect_error = repr(exc)
-
-        sid = f"mcp_ext_{uuid.uuid4().hex[:10]}"
-        if not hasattr(app.state, "external_mcp_servers"):
-            app.state.external_mcp_servers = {}
-        info = {
-            "id": sid,
-            "name": name,
-            "status": "ready" if connect_error is None else "error",
-            "transport": transport_kind,
-            "tools": tool_names,
-            "spec": spec,
-        }
-        if connect_error:
-            info["error"] = connect_error
-        app.state.external_mcp_servers[sid] = info
-
-        if connect_error is not None:
-            raise HTTPException(
-                status_code=502,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="upstream_unavailable",
-                    message=f"MCP server probe failed: {connect_error}",
-                    details={"id": sid, "spec": spec},
-                    recoverable=True,
-                )).model_dump(exclude_none=True),
-            )
-        return {
-            "id": sid,
-            "name": name,
-            "status": "ready",
-            "transport": transport_kind,
-            "tools_count": len(tool_names),
-            "tools": tool_names,
-            "spec": spec,
-        }
-
-    @app.post("/v1/mcp/servers/{sid}/call")
-    async def call_external_mcp_tool(sid: str, request: Request) -> dict[str, Any]:
-        """Invoke a tool on an installed third-party MCP server.
-
-        Body: {"tool": "<tool_name>", "args": {...}}
-
-        Connects via fastmcp.Client using the spec recorded at
-        install time, calls the tool, fires the same global
-        tool_observer the agent uses (so SSE events + tools_called
-        ledger entries land identically to in-process tools), and
-        returns the structured result.
-        """
-
-        installed = getattr(app.state, "external_mcp_servers", {}) or {}
-        info = installed.get(sid)
-        if info is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="not_found",
-                    message=f"no installed MCP server: {sid}",
-                    recoverable=True,
-                )).model_dump(exclude_none=True),
-            )
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        tool_name = body.get("tool")
-        tool_args = body.get("args") or {}
-        if not tool_name:
-            raise HTTPException(
-                status_code=422,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="bad_request",
-                    message="missing 'tool' in request body",
-                    recoverable=True,
-                )).model_dump(exclude_none=True),
-            )
-
-        try:
-            from fastmcp import Client
-            from fastmcp.client.transports import (
-                StdioTransport,
-                StreamableHttpTransport,
-            )
-        except Exception as exc:
-            raise HTTPException(
-                status_code=503,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="dependency_missing",
-                    message=f"fastmcp Client unavailable: {exc!r}",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
-            ) from exc
-
-        spec = info.get("spec", {})
-        if spec.get("transport") == "stdio":
-            transport = StdioTransport(
-                command=spec["command"],
-                args=spec.get("args") or [],
-            )
-        elif spec.get("transport") == "http":
-            transport = StreamableHttpTransport(url=spec["url"])  # type: ignore[assignment]
-        else:
-            raise HTTPException(
-                status_code=500,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="internal_error",
-                    message=f"unknown stored transport: {spec!r}",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
-            )
-
-        # Fire tool observer manually so this call shows up in
-        # tools_called + tool.call.* SSE events identically to an
-        # agent-driven tool call. Same observer, no special path.
-        try:
-            from clio_agent.tools.execution import _GLOBAL_TOOL_OBSERVER
-        except Exception:
-            _GLOBAL_TOOL_OBSERVER = None
-        observer_name = f"{info.get('name','ext')}.{tool_name}"
-        if _GLOBAL_TOOL_OBSERVER is not None:
-            try:
-                _GLOBAL_TOOL_OBSERVER(observer_name, tool_args, "started", None)
-            except Exception:
-                pass
-        try:
-            async with Client(transport) as client:
-                result = await client.call_tool(tool_name, tool_args)
-            content = []
-            for c in (getattr(result, "content", None) or []):
-                content.append({
-                    "type": getattr(c, "type", "text"),
-                    "text": getattr(c, "text", str(c)),
-                })
-        except Exception as exc:  # noqa: BLE001
-            if _GLOBAL_TOOL_OBSERVER is not None:
-                try:
-                    _GLOBAL_TOOL_OBSERVER(observer_name, tool_args, "completed", repr(exc))
-                except Exception:
-                    pass
-            raise HTTPException(
-                status_code=502,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="upstream_error",
-                    message=f"tool call failed: {exc!r}",
-                    recoverable=True,
-                )).model_dump(exclude_none=True),
-            ) from exc
-        if _GLOBAL_TOOL_OBSERVER is not None:
-            try:
-                _GLOBAL_TOOL_OBSERVER(observer_name, tool_args, "completed", None)
-            except Exception:
-                pass
-        return {
-            "server_id": sid,
-            "tool": tool_name,
-            "args": tool_args,
-            "content": content,
-            "is_error": getattr(result, "isError", False),
-        }
+    # The MCP server registry + dispatch routes (servers list/detail/install/
+    # call/reconnect/uninstall + tools/resources/prompts + handshake) are owned
+    # by routes/mcp.py; registered below via register_mcp_routes(app, deps).
 
     # ---- /v1/sessions/{sid}/compact (Codex/CC parity) -----------------
-    # Summarise the in-memory conversation transcript and replace it with
-    # a compact synopsis to reclaim context. The TUI's /compact slash
-    # command POSTs here. Today this is opportunistic: we ask the chat
-    # agent to produce a one-paragraph summary and store it as a new
-    # synthetic system message; the original transcript is preserved for
-    # any future /resume work.
-
-    @app.post("/v1/sessions/{sid}/compact")
-    async def compact_session(sid: str, request: Request) -> dict[str, Any]:
-        sess = app.state.sessions.get(sid)
-        if sess is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="not_found",
-                    message=f"session not found: {sid}",
-                    recoverable=True,
-                )).model_dump(exclude_none=True),
-            )
-        ledger = app.state.messages.get(sid, [])
-        if not ledger:
-            return {"session_id": sid, "compacted": False,
-                    "reason": "session has no messages to compact"}
-
-        # Build a transcript blob. Cap each message at 800 chars so a
-        # huge tool-result payload doesn't dominate the prompt.
-        # ledger entries are Pydantic Message models (see types.py); use
-        # attribute access + model_dump() defensively for dict-shaped
-        # entries the older code paths still produce.
-        def _attr(o, name, default=None):
-            if hasattr(o, name):
-                return getattr(o, name)
-            if isinstance(o, dict):
-                return o.get(name, default)
-            return default
-
-        chunks: list[str] = []
-        for m in ledger[-50:]:  # last 50 messages should be enough context
-            role = (_attr(m, "role", "user") or "user").upper()
-            for p in (_attr(m, "parts", []) or []):
-                txt = (_attr(p, "text", "") or "")[:800]
-                if txt.strip():
-                    chunks.append(f"{role}: {txt}")
-        transcript = "\n".join(chunks)
-        if not transcript.strip():
-            return {"session_id": sid, "compacted": False,
-                    "reason": "transcript is empty after part filtering"}
-
-        agent = app.state.agent
-        if agent is None:
-            raise HTTPException(
-                status_code=503,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="agent_unavailable",
-                    message="no LM agent wired; configure one via PUT /v1/providers/lm",
-                    recoverable=True,
-                )).model_dump(exclude_none=True),
-            )
-
-        # Try to extract optional focus instructions from the body.
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        focus = (body.get("focus") or "").strip()
-
-        prompt = (
-            "Summarise the following CLIO conversation transcript into a "
-            "single paragraph (max 6 sentences). Capture the user's goal, "
-            "any open questions, decisions made, and next steps. Drop "
-            "minutiae and tool-call mechanics."
-        )
-        if focus:
-            prompt += f"\n\nFocus the summary on: {focus}"
-        prompt += f"\n\n--- transcript ---\n{transcript}\n--- end ---"
-
-        try:
-            summary = await asyncio.get_running_loop().run_in_executor(
-                None,
-                lambda: agent._run_chat_agent(prompt, ""),
-            )
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(
-                status_code=502,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="upstream_error",
-                    message=f"compact summarisation failed: {exc!r}",
-                    recoverable=True,
-                )).model_dump(exclude_none=True),
-            ) from exc
-
-        # Insert the summary as a new assistant message at the head of the
-        # ledger (after archiving the originals to a parallel list so a
-        # future /resume can recover full history). The TUI doesn't see
-        # archived messages — only the compact summary + anything that
-        # comes after it.
-        archive = app.state.__dict__.setdefault("session_archives", {})
-        archive.setdefault(sid, []).append({
-            "compacted_at": time.time(),
-            "messages": list(ledger),
-        })
-        from clio_agent.gact.types import Message, Part, Tokens  # noqa: PLC0415
-        compact_message = Message(
-            id=f"msg_compact_{uuid.uuid4().hex[:10]}",
-            session_id=sid,
-            role="assistant",
-            created_at=datetime.now(timezone.utc).isoformat(),
-            updated_at=datetime.now(timezone.utc).isoformat(),
-            parts=[Part(
-                id=f"part_compact_{uuid.uuid4().hex[:10]}",
-                type="text",
-                metadata={"synthetic": "compact_summary"},
-                text="[compact summary]\n" + (summary or "").strip(),
-            )],
-            tokens=Tokens(input=0, output=0, cache_read=0, cache_write=0),
-            cost_usd=0.0,
-            stop_reason="end_turn",
-            metadata={"synthetic": "compact_summary"},
-        )
-        app.state.messages[sid] = [compact_message]
-
-        # Publish so any open SSE stream redraws.
-        app.state.bus.publish(Event(
-            type="session.compacted",
-            session_id=sid,
-            payload={
-                "archived_count": len(ledger),
-                "summary_chars": len((summary or "")),
-            },
-        ))
-        return {
-            "session_id": sid,
-            "compacted": True,
-            "archived_count": len(ledger),
-            "summary": summary,
-        }
-
-    @app.delete("/v1/mcp/servers/{sid}", status_code=204)
-    async def uninstall_mcp_server(sid: str) -> None:
-        """Drop a third-party MCP server registration. Bundled
-        in-process servers (mcp_fs/mcp_hdf5/mcp_parquet) cannot be
-        removed at runtime — return 404 for those."""
-
-        installed = getattr(app.state, "external_mcp_servers", {}) or {}
-        if sid not in installed:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="not_found",
-                    message=f"no externally-installed MCP server: {sid}",
-                    recoverable=True,
-                )).model_dump(exclude_none=True),
-            )
-        installed.pop(sid, None)
-        return None
-
-    # ---- /v1/mcp/servers/{sid}/(tools|resources|prompts) ----------------
-    # Detail enumeration for the TUI MCP browser. Bundled servers are
-    # introspected via the in-process gateway; external servers via a
-    # short-lived fastmcp.Client connection (same transport spec used at
-    # install time).
-
-    def _bundled_server_tools(short_name: str) -> list[dict[str, Any]]:
-        """Return tools for a bundled in-process server, shaped for the
-        TUI's catalog detail rows (id/name/description)."""
-        try:
-            from clio_agent.tools.gateway import list_capabilities
-            caps = list_capabilities()
-        except Exception:
-            return []
-        out = []
-        for tool in caps:
-            if tool.get("server") != short_name:
-                continue
-            out.append({
-                "id": tool.get("name", ""),
-                "name": tool.get("name", ""),
-                "description": tool.get("description") or "",
-            })
-        return out
-
-    async def _external_mcp_inventory(
-        sid: str, kind: str
-    ) -> list[dict[str, Any]]:
-        """Fetch tools|resources|prompts from a third-party MCP server."""
-        installed = getattr(app.state, "external_mcp_servers", {}) or {}
-        info = installed.get(sid)
-        if info is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="not_found",
-                    message=f"no installed MCP server: {sid}",
-                    recoverable=True,
-                )).model_dump(exclude_none=True),
-            )
-        try:
-            from fastmcp import Client
-            from fastmcp.client.transports import (
-                StdioTransport,
-                StreamableHttpTransport,
-            )
-        except Exception as exc:
-            raise HTTPException(
-                status_code=503,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="dependency_missing",
-                    message=f"fastmcp Client unavailable: {exc!r}",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
-            ) from exc
-        spec = info.get("spec", {})
-        if spec.get("transport") == "stdio":
-            transport = StdioTransport(
-                command=spec["command"],
-                args=spec.get("args") or [],
-            )
-        elif spec.get("transport") == "http":
-            transport = StreamableHttpTransport(url=spec["url"])  # type: ignore[assignment]
-        else:
-            return []
-        rows: list[dict[str, Any]] = []
-        try:
-            async with Client(transport) as client:
-                if kind == "tools":
-                    items = await client.list_tools()
-                    for t in items:
-                        rows.append({
-                            "id": t.name,
-                            "name": t.name,
-                            "description": getattr(t, "description", "") or "",
-                        })
-                elif kind == "resources":
-                    items = await client.list_resources()
-                    for r in items:
-                        uri = str(getattr(r, "uri", ""))
-                        rows.append({
-                            "id": uri or getattr(r, "name", ""),
-                            "name": getattr(r, "name", "") or uri,
-                            "description": getattr(r, "description", "") or "",
-                        })
-                elif kind == "prompts":
-                    items = await client.list_prompts()
-                    for p in items:
-                        rows.append({
-                            "id": p.name,
-                            "name": p.name,
-                            "description": getattr(p, "description", "") or "",
-                        })
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(
-                status_code=502,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="upstream_error",
-                    message=f"MCP {kind} listing failed: {exc!r}",
-                    recoverable=True,
-                )).model_dump(exclude_none=True),
-            ) from exc
-        return rows
-
-    @app.get("/v1/mcp/servers/{sid}/tools")
-    async def get_mcp_tools(sid: str) -> dict[str, Any]:
-        """List tools for an MCP server. Bundled servers report what the
-        in-process gateway has registered; third-party servers connect
-        via fastmcp.Client and call tools/list."""
-        if sid.startswith("mcp_") and sid not in (
-            getattr(app.state, "external_mcp_servers", {}) or {}
-        ):
-            return {"tools": _bundled_server_tools(sid[len("mcp_"):])}
-        return {"tools": await _external_mcp_inventory(sid, "tools")}
-
-    @app.get("/v1/mcp/servers/{sid}/resources")
-    async def get_mcp_resources(sid: str) -> dict[str, Any]:
-        """List resources for an MCP server. Bundled servers don't
-        expose resources today (return empty); external servers query
-        resources/list via fastmcp.Client."""
-        if sid.startswith("mcp_") and sid not in (
-            getattr(app.state, "external_mcp_servers", {}) or {}
-        ):
-            return {"resources": []}
-        return {"resources": await _external_mcp_inventory(sid, "resources")}
-
-    @app.get("/v1/mcp/servers/{sid}/prompts")
-    async def get_mcp_prompts(sid: str) -> dict[str, Any]:
-        """List prompts for an MCP server. Bundled servers don't expose
-        prompts today (return empty); external servers query
-        prompts/list via fastmcp.Client."""
-        if sid.startswith("mcp_") and sid not in (
-            getattr(app.state, "external_mcp_servers", {}) or {}
-        ):
-            return {"prompts": []}
-        return {"prompts": await _external_mcp_inventory(sid, "prompts")}
+    # Transcript compaction into an evidence-preserving compact memory is
+    # owned by routes/sessions.py and registered below via
+    # register_sessions_routes(app, deps); the deterministic evidence index
+    # + ledger replace travel on ``deps``.
 
     # ---- /v1/sessions/{sid}/schedules (#21) --------------------------
-
-    @app.get("/v1/sessions/{sid}/schedules")
-    async def list_schedules(sid: str) -> dict[str, Any]:
-        if app.state.sessions.get(sid) is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        rows = [s.to_wire() for s in app.state.schedules.list(session_id=sid)]
-        return {"schedules": rows}
-
-    @app.post("/v1/sessions/{sid}/schedules")
-    async def add_schedule(
-        sid: str, request: Request
-    ) -> dict[str, Any]:
-        if app.state.sessions.get(sid) is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        cron = (body.get("cron") or "").strip()
-        question = (body.get("question") or "").strip()
-        if not cron or not question:
-            raise HTTPException(
-                status_code=422,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message="missing required fields: cron + question",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        sch = app.state.schedules.add(
-            session_id=sid, cron=cron, question=question
-        )
-        return sch.to_wire()
-
-    @app.delete("/v1/schedules/{schedule_id}")
-    async def delete_schedule(schedule_id: str) -> JSONResponse:
-        existed = app.state.schedules.delete(schedule_id)
-        if not existed:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"schedule not found: {schedule_id}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        return JSONResponse(status_code=204, content=None)
-
-    # ---- /v1/sessions/{sid}/share + /v1/shared/{token} (#22) ---------
-
-    @app.post("/v1/sessions/{sid}/share")
-    async def share_session(
-        sid: str, request: Request
-    ) -> dict[str, Any]:
-        sess = app.state.sessions.get(sid)
-        if sess is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        ttl_s = int(body.get("ttl_s") or 0)
-        token = "shr_" + uuid.uuid4().hex[:24]
-        expires_at: str | float = ""
-        if ttl_s > 0:
-            expires_at = (
-                datetime.now(timezone.utc).timestamp() + ttl_s
-            )
-        app.state.shared_tokens[token] = {
-            "session_id": sid,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "expires_at": expires_at,
-        }
-        return {
-            "token": token,
-            "session_id": sid,
-            "url": f"/v1/shared/{token}",
-            "expires_at": expires_at,
-        }
-
-    @app.get("/v1/shared/{token}")
-    async def get_shared(token: str) -> dict[str, Any]:
-        row = app.state.shared_tokens.get(token)
-        if row is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"share token not found: {token}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        # Expiry check.
-        expires_at = row.get("expires_at") or 0
-        if expires_at and (
-            datetime.now(timezone.utc).timestamp() > float(expires_at)
-        ):
-            app.state.shared_tokens.pop(token, None)
-            raise HTTPException(
-                status_code=410,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message="share token expired",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        sid = row["session_id"]
-        sess = app.state.sessions.get(sid)
-        if sess is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=(
-                            f"underlying session {sid} no longer exists"
-                        ),
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        msgs = app.state.messages.get(sid, [])
-        return {
-            "session": Session(**sess.to_wire()).model_dump(exclude_none=True),
-            "messages": [m.model_dump(exclude_none=True) for m in msgs],
-            "shared_at": row.get("created_at"),
-        }
-
-    # ---- /v1/agents/extract (#23) -------------------------------------
-
-    @app.post("/v1/agents/extract", response_model=AgentDef, status_code=201)
-    async def extract_agent(request: Request) -> AgentDef:
-        """Extract a new dynamic agent from past sessions.
-
-        Body: ``{session_ids: [..], agent_id: ".."}``. Walks the
-        message logs of the listed sessions, harvests the most-
-        common tool names called, and registers a user agent
-        whose tools list reflects that pattern. Real DSPy SIMBA
-        compilation is deferred — this is the heuristic baseline.
-        """
-
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        sids = [s for s in (body.get("session_ids") or []) if isinstance(s, str)]
-        new_id = (body.get("agent_id") or "").strip()
-        if not sids or not new_id:
-            raise HTTPException(
-                status_code=422,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message="required: session_ids[] + agent_id",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        if new_id in {"main", "data", "analysis", "visualization"}:
-            raise HTTPException(
-                status_code=409,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="permission_error",
-                        message=(
-                            f"agent id {new_id!r} is built-in; "
-                            "pick a different one"
-                        ),
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        # Walk the message logs.
-        from collections import Counter
-        tool_counts: Counter[str] = Counter()
-        sample_questions: list[str] = []
-        for sid in sids:
-            for m in app.state.messages.get(sid, []):
-                if m.role == "user":
-                    text = next(
-                        (p.text for p in m.parts if p.type == "text" and p.text),
-                        "",
-                    )
-                    if text:
-                        sample_questions.append(text)
-                if m.role == "assistant":
-                    md = m.metadata or {}
-                    for call in md.get("tools_called", []) or []:
-                        name = call.get("name") if isinstance(call, dict) else getattr(call, "name", "")
-                        if name:
-                            tool_counts[name] += 1
-        top_tools = [t for t, _ in tool_counts.most_common(5)]
-        keywords = sorted({
-            w.strip(".,").lower()
-            for q in sample_questions[:5]
-            for w in q.split()
-            if len(w) >= 4
-        })[:8]
-        payload = {
-            "id": new_id,
-            "title": f"Extracted from {len(sids)} session(s)",
-            "description": (
-                f"Auto-extracted agent from {len(sids)} session log(s). "
-                f"Common tools: {', '.join(top_tools) if top_tools else '(none)'}"
-            ),
-            "tier": 2,
-            "specialization": "extracted",
-            "keywords": keywords,
-            "tools": top_tools,
-        }
-        agent = app.state.user_agents.upsert(payload)
-        return AgentDef(**agent.to_wire())
+    # Scheduled-turn CRUD (list/add/delete) is owned by routes/schedules.py and
+    # registered below via register_schedules_routes(app, deps) once ``deps`` is
+    # built; the scheduler tick task (above) owns the actual firing.
 
     # ---- /v1/sessions/{sid}/export + /v1/sessions/import (#16) -------
-
-    @app.get("/v1/sessions/{sid}/export")
-    async def export_session(sid: str) -> dict[str, Any]:
-        """SPEC §6.x — dump a session + its messages as a single
-        portable JSON blob. Useful for sharing analyses, archiving,
-        replay. Round-trips through POST /v1/sessions/import.
-        """
-
-        sess = app.state.sessions.get(sid)
-        if sess is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        msgs = app.state.messages.get(sid, [])
-        ws = app.state.workspaces.get(sess.workspace_id)
-        return {
-            "version": "1",
-            "session": Session(**sess.to_wire()).model_dump(exclude_none=True),
-            "workspace": (
-                Workspace(**ws.to_wire()).model_dump(exclude_none=True)
-                if ws else None
-            ),
-            "messages": [m.model_dump(exclude_none=True) for m in msgs],
-        }
-
-    @app.post("/v1/sessions/import", response_model=Session)
-    async def import_session(blob: dict[str, Any]) -> Session:
-        """Restore a session from an export blob. Creates a fresh
-        session in ws_default (or the workspace named in the blob
-        if it exists locally) and re-plays the messages as already-
-        settled rows. Returns the new Session row.
-        """
-
-        sess_data = blob.get("session", {})
-        title = sess_data.get("title") or "imported"
-        wid = "ws_default"
-        if blob.get("workspace") and app.state.workspaces.get(
-            blob["workspace"].get("id", "")
-        ):
-            wid = blob["workspace"]["id"]
-        new_sess = app.state.sessions.create(
-            workspace_id=wid,
-            title=title,
-            metadata=sess_data.get("metadata") or {},
-        )
-        msg_rows: list[Message] = []
-        for m in blob.get("messages", []):
-            try:
-                msg = Message(**{**m, "session_id": new_sess.id})
-                msg_rows.append(msg)
-            except Exception:
-                continue
-        app.state.messages[new_sess.id] = msg_rows
-        cost_total = sum(
-            float(m.get("cost_usd", 0.0) or 0.0)
-            for m in blob.get("messages", [])
-        )
-        in_total = sum(
-            int((m.get("tokens") or {}).get("input", 0) or 0)
-            for m in blob.get("messages", [])
-        )
-        out_total = sum(
-            int((m.get("tokens") or {}).get("output", 0) or 0)
-            for m in blob.get("messages", [])
-        )
-        app.state.sessions.update(
-            new_sess.id,
-            message_count=len(msg_rows),
-            add_tokens_input=in_total,
-            add_tokens_output=out_total,
-            add_cost_usd=cost_total,
-        )
-        refreshed = app.state.sessions.get(new_sess.id)
-        return Session(**refreshed.to_wire())
+    # Portable session export + import round-trip are owned by
+    # routes/sessions.py and registered below via register_sessions_routes(
+    # app, deps).
 
     # ---- GET /v1/sessions/{sid}/messages/search (BBB27) ---------------
+    # The message ledger surface -- search, the turn-entry POST, the
+    # list/get reads and the message-delete routes -- is owned by
+    # routes/messages.py and registered below via register_messages_routes(
+    # app, deps); the destructive-action guard, ledger replace,
+    # background-turn entrypoint, active-model ref + override error, and
+    # the agent-not-available error all travel on ``deps``.
 
-    @app.get("/v1/sessions/{sid}/messages/search")
-    async def search_messages(sid: str, q: str = "") -> dict[str, Any]:
-        """Case-insensitive substring search across stored messages.
+    # ---- Ask-user and retry protocol (#333) --------------------------
+    # The user-question ledger (list/create/answer/cancel) + the turn
+    # retry routes (attempts list + messages/{id}/retry) are owned by
+    # routes/sessions.py and registered below via register_sessions_routes(
+    # app, deps). Answering a resume-on-answer question + executing a retry
+    # both drive a turn through ``deps.start_background_user_turn`` (the
+    # thin ``build_app`` wrapper around the turn engine, defined just below).
+    def _start_background_user_turn(
+        sid: str,
+        sess: Session,
+        user_text: str,
+        *,
+        request_parts: Optional[list[Part]] = None,
+        metadata: Optional[dict[str, Any]] = None,
+        prev_status: str = "idle",
+        turn_agent_id: str = "",
+    ) -> Message:
+        """Stage + drive a user turn (thin ``build_app`` wrapper, #714).
 
-        Returns ``{matches: [{message_id, part_id, snippet, score}]}``.
-        Score is a crude recency-biased ranking: newer hits score
-        higher (+0.01 per message index) so identical snippets
-        surface in turn order.
+        The engine moved to :func:`clio_agent.gact.turn._start_background_user_turn`
+        (single source). ``build_app``'s in-closure callers + the route factories
+        (via ``GactDeps.start_background_user_turn``) reach it through this wrapper
+        so they need not thread ``app`` explicitly; behavior is unchanged.
         """
-
-        sess = app.state.sessions.get(sid)
-        if sess is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        details={"session_id": sid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        needle = q.strip().lower()
-        if not needle:
-            return {"matches": []}
-
-        matches: list[dict[str, Any]] = []
-        rows = app.state.messages.get(sid, [])
-        for idx, m in enumerate(rows):
-            for part in m.parts:
-                text = (part.text or "").lower()
-                i = text.find(needle)
-                if i < 0:
-                    continue
-                # 60-char snippet window centered on the hit.
-                start = max(0, i - 30)
-                end = min(len(part.text), i + len(needle) + 30)
-                snippet = part.text[start:end]
-                if start > 0:
-                    snippet = "…" + snippet
-                if end < len(part.text):
-                    snippet = snippet + "…"
-                matches.append({
-                    "message_id": m.id,
-                    "part_id": part.id,
-                    "snippet": snippet,
-                    "score": 1.0 + (idx * 0.01),
-                })
-        matches.sort(key=lambda r: r["score"], reverse=True)
-        return {"matches": matches}
+        return _turn_start_background_user_turn(
+            app,
+            sid,
+            sess,
+            user_text,
+            request_parts=request_parts,
+            metadata=metadata,
+            prev_status=prev_status,
+            turn_agent_id=turn_agent_id,
+        )
 
     # ---- POST /v1/sessions/{sid}/cancel (BBB20) -----------------------
+    # Best-effort cooperative cancel of an in-flight turn is owned by
+    # routes/sessions.py and registered below via register_sessions_routes(
+    # app, deps); the cancellation-attempt summary travels on ``deps``.
 
-    @app.post("/v1/sessions/{sid}/cancel")
-    async def cancel_session(sid: str) -> JSONResponse:
-        """Cooperative cancel of an in-flight turn on this session.
-
-        The agent's ``forward()`` checks ``agent.is_cancelled(sid)``
-        periodically (or honors a threading.Event we hand it) and
-        returns early with ``error_info.error == "cancelled"``. The
-        endpoint itself just flips the flag + publishes a
-        ``session.cancelled`` event so any live SSE subscriber sees
-        the transition without waiting for the next turn boundary.
-
-        Returns 204 whether a turn was actually running — the TUI
-        fires this on Esc/Ctrl+C speculatively and doesn't want an
-        error if the race finished on its own.
-        """
-
-        sess = app.state.sessions.get(sid)
-        if sess is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        details={"session_id": sid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        # Set the cancellation flag. The POST-message handler checks
-        # this after forward() returns so even agents that don't
-        # cooperate produce a cancelled-looking turn envelope.
-        app.state.cancel_flags.add(sid)
-        # iowarp/clio-agent#3: hard-abort the in-flight turn task.
-        # The task's coroutine catches asyncio.CancelledError +
-        # finalises with error="cancelled" so the wire still settles
-        # cleanly. Cooperative flag stays set as a belt-and-braces:
-        # if cancel races a finishing turn we still report it as
-        # cancelled rather than a successful answer.
-        in_flight = app.state.in_flight_turns.get(sid)
-        if in_flight is not None and not in_flight.done():
-            in_flight.cancel()
-        app.state.sessions.update(sid, status="cancelled")
-        app.state.bus.publish(Event(
-            type="session.status_changed",
-            session_id=sid,
-            payload={
-                "session_id": sid,
-                "status": "cancelled",
-                "prev_status": sess.status,
-            },
-        ))
-        return JSONResponse(status_code=204, content=None)
-
-    # ---- POST /v1/sessions/{sid}/messages (BBB9) ---------------------
-    # Non-streaming turn: 1 request, 1 response body containing both
-    # the stored user message + the assistant's reply. Streaming
-    # (SSE on /v1/sessions/{sid}/events) lands in BBB10.
-
-    @app.post(
-        "/v1/sessions/{sid}/messages", response_model=PostMessageResponse
-    )
-    async def post_message(
-        sid: str, req: PostMessageRequest, background_tasks: BackgroundTasks
-    ) -> PostMessageResponse:
-        """Accept a user message and ack immediately. The agent turn
-        runs in the background; clients consume progress via the SSE
-        channel (message.created, message.part.delta, ..., message.completed).
-
-        Returning early matters: real LM turns can run for minutes
-        (DSPy ReAct loops × 5-15s per Claude call). Holding the POST
-        connection open for the whole turn means TUI timeouts, broken
-        streaming UX, and no way to surface progress to the user.
-        """
-
-        sess = app.state.sessions.get(sid)
-        if sess is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        details={"session_id": sid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        if app.state.agent is None:
-            raise HTTPException(
-                status_code=503,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="config_error",
-                        message=(
-                            "ClioAgent not wired into this build. Launch "
-                            "`clio-agent-gact` with CLIO_LM_PROVIDER set "
-                            "or pass `agent=...` to build_app()."
-                        ),
-                        details={"session_id": sid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        user_text = req.extract_text()
-        if not user_text:
-            raise HTTPException(
-                status_code=422,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=(
-                            "request body carried no text: expected "
-                            "parts[] containing a text part or legacy "
-                            "top-level text field"
-                        ),
-                        details={"session_id": sid},
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        now = time.time()
-        user_msg = Message(
-            id=_new_message_id("user"),
-            session_id=sid,
-            role="user",
-            created_at=_iso_from_epoch(now),
-            updated_at=_iso_from_epoch(now),
-            parts=[Part(id=_new_part_id(), type="text", text=user_text)],
-            metadata=req.metadata,
-        )
-
-        # Persist + publish the user message synchronously so by the
-        # time the ack returns, GET /messages reflects it. Then mark
-        # the session running, then schedule the turn in the
-        # background and return.
-        app.state.messages.setdefault(sid, []).append(user_msg)
-        app.state.sessions.update(sid, status="running")
-        app.state.bus.publish(Event(
-            type="session.status_changed",
-            session_id=sid,
-            payload={"session_id": sid, "status": "running", "prev_status": "idle"},
-        ))
-        app.state.bus.publish(Event(
-            type="message.created",
-            session_id=sid,
-            payload=user_msg.model_dump(exclude_none=True),
-        ))
-
-        # iowarp/clio-agent#3: switched from BackgroundTasks (which
-        # doesn't expose the task back) to asyncio.create_task so
-        # /v1/sessions/{sid}/cancel can hard-abort mid-flight.
-        # Task is registered in app.state.in_flight_turns; the cancel
-        # handler calls .cancel() on it. We schedule the task on the
-        # running loop AFTER queueing background_tasks (which
-        # FastAPI now runs nothing in, but kept as a hook in case
-        # we want a post-response side-effect later).
-        task = asyncio.create_task(
-            _run_turn_in_background(app, sid, user_text, user_msg)
-        )
-        app.state.in_flight_turns[sid] = task
-
-        def _drop_task(_t, _sid=sid) -> None:
-            cur = app.state.in_flight_turns.get(_sid)
-            if cur is _t:
-                app.state.in_flight_turns.pop(_sid, None)
-
-        task.add_done_callback(_drop_task)
-        # background_tasks parameter is unused but kept on the
-        # signature so existing callers (and FastAPI's docs) don't
-        # change shape.
-        del background_tasks
-
-        return PostMessageResponse(
-            message_id=user_msg.id,
-            accepted_at=user_msg.created_at,
-        )
-
-
-    @app.get("/v1/sessions/{sid}/messages")
-    async def list_messages(sid: str) -> dict[str, Any]:
-        """List messages in a session.
-
-        Today: in-memory log populated by POST /messages; returns
-        empty when the session exists but has no turns yet. The v0.1
-        wire shape (no pagination header, bare array) is what every
-        v0.1 backend does; v0.2 clients accept both.
-        """
-
-        sess = app.state.sessions.get(sid)
-        if sess is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        details={"session_id": sid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        # TUI (and SPEC §6.4) expect newest-first with an optional
-        # cursor for older pages. We store chronologically so reverse
-        # at read time.
-        rows = list(reversed(app.state.messages.get(sid, [])))
-        return {
-            "messages": [m.model_dump(exclude_none=True) for m in rows],
-            "next_cursor": None,
-        }
+    # ---- POST /v1/sessions/{sid}/messages (BBB9) + reads (BBB10) -----
+    # The turn-entry POST, the list/get reads and the message-delete
+    # routes are owned by routes/messages.py and registered below via
+    # register_messages_routes(app, deps) (see the search pointer above).
 
     # ---- /v1/agents catalog (BBB10) + dynamic registry (#19) ---------
+    #
+    # Effective-agent resolution (blueprint rows + MCP tool-gating + capability
+    # refs + default-blueprint fallback) is owned by
+    # ``clio_agent.gact.agents.resolution``; ``/v1/agents`` (``_agent_rows``) and
+    # the runtime turn path share the ONE ``_runtime_active_agent_blueprint_rows``
+    # seam so they can never disagree (#770 C1). The build_app-local closures kept
+    # here are the thin app-binding wrappers ``deps`` needs (1-arg seams that bind
+    # ``app``) plus the metadata-only readers that are deliberately distinct from
+    # the fallback-aware runtime readers.
 
-    @app.get("/v1/agents", response_model=ListAgentsResponse)
-    async def list_agents(tier: Optional[int] = None) -> ListAgentsResponse:
-        """SPEC §6.5 + v0.2 §4.3.1: optional ?tier=N filter.
+    def _agent_with_capability_refs_bound(agent_def: AgentDef) -> AgentDef:
+        """Bind ``app`` for the 1-arg capability-ref seam ``deps`` + routes use."""
 
-        Combines built-in tier-1/2 experts with any user-registered
-        agents (iowarp/clio-agent#19). Built-ins always come first
-        so the TUI's sidebar groups consistently.
+        return _agent_with_capability_refs(app, agent_def)
+
+    def _workspace_catalog_cwd(workspace_id: str = "", session_id: str = "") -> Path | None:
+        wid = workspace_id
+        if session_id:
+            sess = app.state.sessions.get(session_id)
+            if sess is not None:
+                wid = wid or str(getattr(sess, "workspace_id", "") or "")
+        if not wid:
+            return None
+        ws = app.state.workspaces.get(wid)
+        if ws is None:
+            return None
+        root_path = str(getattr(ws, "root_path", "") or "")
+        return Path(root_path).expanduser() if root_path else None
+
+    def _active_session_agent_blueprint_id(session_id: str = "") -> str:
+        if not session_id:
+            return ""
+        sess = app.state.sessions.get(session_id)
+        if sess is None:
+            return ""
+        metadata = getattr(sess, "metadata", {}) or {}
+        if not isinstance(metadata, Mapping):
+            return ""
+        return str(metadata.get("active_agent_blueprint_id") or "").strip()
+
+    def _active_session_agent_blueprint_path(session_id: str = "") -> Path | None:
+        if not session_id:
+            return None
+        sess = app.state.sessions.get(session_id)
+        if sess is None:
+            return None
+        metadata = getattr(sess, "metadata", {}) or {}
+        if not isinstance(metadata, Mapping):
+            return None
+        raw = str(metadata.get("active_agent_blueprint_path") or "").strip()
+        return Path(raw).expanduser() if raw else None
+
+    def _agent_blueprint_activation_metadata(
+        *,
+        blueprint_wire: Mapping[str, Any],
+        install_root: Path | None,
+        scope: str,
+    ) -> dict[str, str]:
+        install = read_install_metadata(install_root) if install_root is not None else {}
+        return {
+            "active_agent_blueprint_id": str(blueprint_wire.get("id") or ""),
+            "active_agent_blueprint_name": str(
+                blueprint_wire.get("name")
+                or blueprint_wire.get("display_name")
+                or blueprint_wire.get("title")
+                or ""
+            ),
+            "active_agent_blueprint_version": str(blueprint_wire.get("version") or ""),
+            "active_agent_blueprint_scope": scope,
+            "active_agent_blueprint_definition_path": str(
+                blueprint_wire.get("definition_path") or ""
+            ),
+            "active_agent_blueprint_source": str(install.get("source") or ""),
+            "active_agent_blueprint_source_kind": str(install.get("source_kind") or ""),
+            "active_agent_blueprint_ref": str(install.get("ref") or ""),
+            "active_agent_blueprint_commit": str(install.get("commit") or ""),
+            "active_agent_blueprint_checksum": str(install.get("checksum") or ""),
+            "active_agent_blueprint_installed_at": str(install.get("installed_at") or ""),
+        }
+
+    def _session_agent_overlay(session_id: str = "") -> dict[str, Any]:
+        if not session_id:
+            return {}
+        sess = app.state.sessions.get(session_id)
+        if sess is None:
+            return {}
+        metadata = getattr(sess, "metadata", {}) or {}
+        if not isinstance(metadata, Mapping):
+            return {}
+        overlay = metadata.get("agent_blueprint_overlay")
+        return dict(overlay) if isinstance(overlay, Mapping) else {}
+
+    def _base_session_agent_blueprint_rows(
+        session_id: str = "",
+        workspace_id: str = "",
+    ) -> list[AgentDef]:
+        if not session_id:
+            return []
+        cwd = _workspace_catalog_cwd(workspace_id=workspace_id, session_id=session_id)
+        active_blueprint_id = _active_session_agent_blueprint_id(session_id)
+        active_blueprint_path = _active_session_agent_blueprint_path(session_id)
+        if active_blueprint_path is not None:
+            return load_agent_blueprint_path(active_blueprint_path, scope="session")
+        if active_blueprint_id:
+            return load_agent_blueprints(cwd=cwd, blueprint_id=active_blueprint_id)
+        return []
+
+    def _apply_agent_overlay_rows(
+        rows: list[AgentDef],
+        overlay: Mapping[str, Any],
+        *,
+        session_id: str = "",
+    ) -> list[AgentDef]:
+        agents = overlay.get("agents") if isinstance(overlay, Mapping) else None
+        if not isinstance(agents, Mapping):
+            return rows
+        patchable = _agent_overlay_patchable_fields()
+        out: list[AgentDef] = []
+        for row in rows:
+            raw_patch = agents.get(row.id)
+            if not isinstance(raw_patch, Mapping):
+                out.append(row)
+                continue
+            update = {key: value for key, value in raw_patch.items() if key in patchable}
+            metadata = {
+                **row.metadata,
+                "agent_blueprint_overlay": {
+                    "session_id": session_id,
+                    "fields": sorted(update),
+                    "status": "applied",
+                },
+            }
+            out.append(row.model_copy(update={**update, "metadata": metadata}))
+        return out
+
+    def _apply_session_agent_overlay(rows: list[AgentDef], session_id: str = "") -> list[AgentDef]:
+        overlay = _session_agent_overlay(session_id)
+        return _apply_agent_overlay_rows(rows, overlay, session_id=session_id)
+
+    def _agent_rows(session_id: str = "", workspace_id: str = "") -> list[AgentDef]:
+        """Resolve the effective agent catalog ``GET /v1/agents`` renders.
+
+        Delegates the active-blueprint branch to the shared
+        :func:`clio_agent.gact.agents.resolution._runtime_active_agent_blueprint_rows`
+        seam (dispatched through the module so a monkeypatch of that ONE function
+        is honoured identically by this route and the runtime turn path), so the
+        list a client sees and the agents that actually execute never diverge
+        (#770 C1). Only when no blueprint resolves does it fall back to the
+        builtin/user/skill/expert-pack hierarchy.
         """
 
+        cwd = _workspace_catalog_cwd(workspace_id=workspace_id, session_id=session_id)
+        prompt_registry = _prompt_registry_for_request(
+            session_id=session_id,
+            workspace_id=workspace_id,
+        )
+        rows = _resolution._runtime_active_agent_blueprint_rows(
+            app,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            prompt_registry=prompt_registry,
+        )
+        if rows:
+            return rows
+        active_pack_id = _runtime_active_session_expert_pack_id(app, session_id)
+        active_pack_path = _runtime_active_session_expert_pack_path(app, session_id)
+        explicit_session_rows = (
+            load_expert_pack_path(active_pack_path, scope="session")
+            if active_pack_path is not None
+            else []
+        )
         rows = (
             _builtin_agents()
             + [AgentDef(**row.to_wire()) for row in app.state.user_agents.list()]
             + _load_skills_from_disk()
+            + load_expert_packs(cwd=cwd, pack_id=active_pack_id)
+            + explicit_session_rows
         )
-        if tier is not None:
-            rows = [a for a in rows if a.tier == tier]
-        return ListAgentsResponse(agents=rows)
+        return [
+            _apply_prompt_registry_to_agent(
+                app,
+                _agent_with_capability_refs(app, row),
+                prompt_registry=prompt_registry,
+            )
+            for row in validate_expert_hierarchy(_merge_agent_def_rows(rows))
+        ]
 
-    @app.post(
-        "/v1/agents", response_model=AgentDef, status_code=201
+    def _resolve_runtime_dynamic_agent_bound(
+        agent_id: str,
+        *,
+        session_id: str = "",
+        workspace_id: str = "",
+        prompt_registry: PromptRegistry | None = None,
+    ) -> "AgentDef | None":
+        """Bind ``app`` for the 1-arg overlay-aware resolver seam ``deps`` carries.
+
+        Dispatches through the ``resolution`` module so both this seam (command
+        dispatch / planner-command filter) and the runtime turn path share the ONE
+        unified resolver -- the divergent build_app shadow is gone (#770 C1).
+        """
+
+        return _resolution._resolve_runtime_dynamic_agent(
+            app,
+            agent_id,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            prompt_registry=prompt_registry,
+        )
+
+    # ---- /v1/agent-blueprints/* + /v1/expert-packs/* lifecycle + session
+    # blueprint activation (iowarp/clio-agent#663) -----------------------
+    # Blueprint source registry, install/update/delete engine, MCP-descriptor
+    # enable, and the session-scoped get/set-active-blueprint routes are owned
+    # by routes/blueprints.py and registered below via
+    # ``register_blueprints_routes(app, deps)`` once ``deps`` is built. The
+    # expert-pack routes are thin aliases of the blueprint lifecycle (one engine,
+    # ``kind``-distinguished). The set-active route reaches the activation-metadata
+    # builder (and the metadata-only active-id reader) through ``deps``.
+
+    # ---- /v1/expert-packs/* discovery + session attachment ----------------
+    # The expert-pack discovery (list/get/validate) and session attachment
+    # (get/set active pack) routes are owned by routes/expert_packs.py and
+    # registered below via ``register_expert_packs_routes(app, deps)`` once
+    # ``deps`` is built. (Pack install/update/delete are blueprint-engine
+    # aliases owned by routes/blueprints.py.)
+
+    # ---- /v1/agents/* registry CRUD + extract + /v1/sessions/{sid}/agent-overlay ---
+    # The Tier-2 agent registry (list/get/create/update/delete + extract) and the
+    # session agent-overlay routes (get/put/export) are owned by routes/agents.py
+    # and registered below via ``register_agents_routes(app, deps)`` once ``deps``
+    # is built. They reach the shared row-resolution closures (``agent_rows``/
+    # ``agent_with_capability_refs``/``base_session_agent_blueprint_rows``/
+    # ``apply_agent_overlay_rows``/``prompt_registry_for_request``) plus the
+    # destructive-action guard through ``deps``.
+
+    # Cross-concern seam (#714): built once and threaded to every extracted
+    # ``register_<concern>_routes(app, deps)`` factory so moved handlers reach
+    # shared ``build_app``-local helpers via ``deps`` rather than closing over
+    # them. Built here, after every closure it carries is defined. Keep minimal
+    # — add a field only when a moved handler needs it.
+    deps = GactDeps(
+        guard_direct_destructive_action=_guard_direct_destructive_action,
+        apply_edit_to_disk=_apply_edit_to_disk,
+        flush_context_files=_flush_context_files,
+        prompt_registry_for_request=_prompt_registry_for_request,
+        prompt_agent_overlay_for_request=_prompt_agent_overlay_for_request,
+        prompt_render_context_for_request=_prompt_render_context_for_request,
+        active_session_agent_blueprint_id=_active_session_agent_blueprint_id,
+        agent_blueprint_activation_metadata=_agent_blueprint_activation_metadata,
+        agent_rows=_agent_rows,
+        agent_with_capability_refs=_agent_with_capability_refs_bound,
+        base_session_agent_blueprint_rows=_base_session_agent_blueprint_rows,
+        apply_agent_overlay_rows=_apply_agent_overlay_rows,
+        append_session_message=_append_session_message,
+        delete_session_messages=_delete_session_messages,
+        blueprint_runner_for_agent=_blueprint_runner_for_agent,
+        resolve_runtime_dynamic_agent=_resolve_runtime_dynamic_agent_bound,
+        start_background_user_turn=_start_background_user_turn,
+        delete_session_context_files=_delete_session_context_files,
+        release_session_arc=_release_session_arc,
+        replace_session_messages=_replace_session_messages,
+        cancellation_attempt_summary=_cancellation_attempt_summary,
+        active_lm_model_ref=_active_lm_model_ref,
+        unsupported_model_ref_error=_unsupported_model_ref_error,
+        agent_not_available_error=_agent_not_available_error,
+        ask_user_resume_text=_ask_user_resume_text,
+        compact_exact_evidence_index=_compact_exact_evidence_index,
+        install_tool_runtime_hooks=_install_tool_runtime_hooks,
+        clear_session_model_refs=_clear_session_model_refs,
     )
-    async def create_agent(req: dict[str, Any]) -> AgentDef:
-        """iowarp/clio-agent#19: register a new dynamic agent.
 
-        The agent is stored as an AgentDef row + persisted to disk;
-        future GET /v1/agents calls include it. Built-in id collision
-        is rejected so users can't shadow CLIO's core experts.
-        Source is forced to "user" regardless of what the client sent.
-        """
-
-        agent_id = req.get("id", "")
-        if agent_id in {"main", "data", "analysis", "visualization"}:
-            raise HTTPException(
-                status_code=409,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="permission_error",
-                        message=(
-                            f"agent id {agent_id!r} is reserved for a "
-                            "built-in expert; pick a different id"
-                        ),
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        if not agent_id:
-            raise HTTPException(
-                status_code=422,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message="missing required field: id",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        # Force user-source so a malicious client can't claim builtin.
-        req = dict(req)
-        req["source"] = "user"
-        agent = app.state.user_agents.upsert(req)
-        return AgentDef(**agent.to_wire())
-
-    @app.put("/v1/agents/{agent_id}", response_model=AgentDef)
-    async def update_agent(agent_id: str, req: dict[str, Any]) -> AgentDef:
-        """Replace an existing user agent. Built-ins are immutable."""
-
-        if agent_id in {"main", "data", "analysis", "visualization"}:
-            raise HTTPException(
-                status_code=409,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="permission_error",
-                        message=(
-                            f"agent id {agent_id!r} is a built-in; "
-                            "rebuild CLIO to change its definition"
-                        ),
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        if app.state.user_agents.get(agent_id) is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"agent not found: {agent_id}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        # Force the URL id to win over the body to avoid the user
-        # silently renaming via PUT. Force user source.
-        body = dict(req)
-        body["id"] = agent_id
-        body["source"] = "user"
-        agent = app.state.user_agents.upsert(body)
-        return AgentDef(**agent.to_wire())
-
-    @app.delete("/v1/agents/{agent_id}")
-    async def delete_agent(agent_id: str) -> JSONResponse:
-        """Drop a user-registered agent. Built-ins are immutable."""
-
-        if agent_id in {"main", "data", "analysis", "visualization"}:
-            raise HTTPException(
-                status_code=409,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="permission_error",
-                        message=(
-                            f"agent id {agent_id!r} is a built-in and "
-                            "cannot be removed"
-                        ),
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        existed = app.state.user_agents.delete(agent_id)
-        if not existed:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"agent not found: {agent_id}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        return JSONResponse(status_code=204, content=None)
-
-    @app.get("/v1/catalog/tools", response_model=ListToolsResponse)
-    async def list_tools() -> ListToolsResponse:
-        return ListToolsResponse(tools=_builtin_tools())
-
-    # ---- /v1/memory/stats (BBB11) ------------------------------------
-    # Returns cache counters + per-session context retention + global
-    # ARC totals. When ARC isn't wired (tests, smoke-boot scenarios)
-    # returns zeros per SPEC §6.19 ("zeros are a valid signal").
-
-    @app.get(
-        "/v1/memory/stats",
-        response_model=MemoryStats,
-        response_model_by_alias=True,
-    )
-    async def memory_stats(session_id: Optional[str] = None) -> MemoryStats:
-        if app.state.arc is not None:
-            raw = app.state.arc.get_cache_stats()
-            cache = CacheStats(
-                hits=int(raw.get("hits", 0)),
-                misses=int(raw.get("misses", 0)),
-                hit_rate=float(raw.get("hit_rate", 0.0)),
-                capacity=int(raw.get("capacity", 0)),
-            )
-            # ARC tracks conversation + invocation counts via the
-            # index sizes it reports alongside the cache. Future: if
-            # the numbers start diverging from what operators expect
-            # we can call dedicated getters; for now the index sizes
-            # are a good-faith approximation.
-            global_stats = GlobalMemoryStats(
-                conversations_total=int(raw.get("conv_index_size", 0)),
-                invocations_total=int(raw.get("inv_index_size", 0)),
-            )
-        else:
-            cache = CacheStats()
-            global_stats = GlobalMemoryStats()
-
-        session_block: Optional[SessionMemoryStats] = None
-        if session_id:
-            sess_rec = app.state.sessions.get(session_id)
-            if sess_rec is not None:
-                # CLIO tracks tokens per invocation, not per
-                # session; for the TUI's purposes message_count is
-                # a reasonable proxy until BBB19 moves sessions into
-                # ARC and per-turn tokens become available on the
-                # Session record.
-                session_block = SessionMemoryStats(
-                    session_id=session_id,
-                    messages_retained=sess_rec.message_count,
-                    tokens_retained=0,
-                    tokens_budget=4000,
-                    profiles_attached=0,
-                )
-            else:
-                # Unknown session: return an empty block rather than
-                # a 404. The TUI's footer chip handles zero stats
-                # gracefully; a 404 would spam the logs on every
-                # mis-timed fetch.
-                session_block = SessionMemoryStats(session_id=session_id)
-
-        return MemoryStats(
-            cache=cache,
-            session=session_block,
-            global_=global_stats,  # type: ignore[call-arg]  # Pydantic alias "global"
-        )
-
-    # ---- /v1/sessions/{sid}/events SSE (BBB13) -----------------------
-
-    @app.get("/v1/sessions/{sid}/events")
-    async def session_events(sid: str, request: Request) -> StreamingResponse:
-        """SSE feed for one session. Emits the events POST /messages
-        publishes (status_changed, message.created, message.part.*,
-        message.completed) plus periodic 15-s heartbeats so HTTP
-        proxies don't drop the idle connection.
-
-        Per SPEC §7.1: streams forever until the client disconnects.
-        Emits ``server.connected`` immediately so clients can confirm
-        the wire is healthy before any real event arrives.
-        """
-
-        if app.state.sessions.get(sid) is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"session not found: {sid}",
-                        details={"session_id": sid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        async def event_stream() -> AsyncIterator[bytes]:
-            # Initial server.connected event so clients can flip
-            # their UI from "connecting" to "live" immediately.
-            connected = Event(
-                type="server.connected",
-                session_id=sid,
-                payload={"server_version": GACT_BACKEND_VERSION},
-            )
-            yield _format_sse(connected)
-
-            try:
-                last_event_id = int(
-                    request.headers.get("last-event-id", "0")
-                )
-            except (TypeError, ValueError):
-                last_event_id = 0
-            sub = app.state.bus.subscribe(sid, last_event_id=last_event_id)
-            heartbeat_task: Optional[asyncio.Task] = None
-            try:
-                # Heartbeat task — pumps a server.heartbeat event
-                # into the queue every 15s. SPEC §7.1.
-                async def _heartbeat() -> None:
-                    while True:
-                        await asyncio.sleep(15)
-                        app.state.bus.publish(
-                            Event(
-                                type="server.heartbeat",
-                                session_id=sid,
-                                payload=heartbeat_payload(),
-                            )
-                        )
-
-                heartbeat_task = asyncio.create_task(_heartbeat())
-
-                async for event in sub:
-                    yield _format_sse(event)
-            except asyncio.CancelledError:
-                # Client disconnected. Cleanup happens in `finally`.
-                pass
-            finally:
-                if heartbeat_task is not None:
-                    heartbeat_task.cancel()
-
-        return StreamingResponse(
-            event_stream(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",  # nginx: don't buffer SSE
-            },
-        )
-
-    # ---- /v1/metrics (BBB15) -----------------------------------------
-
-    @app.get("/v1/metrics", response_model=Metrics)
-    async def metrics() -> Metrics:
-        """Aggregate runtime metrics — SPEC §6.16.
-
-        Today: counters synthesised from the session + in-memory
-        message logs. ARC-backed per-expert latency/success-rate
-        rollups come in when we reshape `ARCMemory.get_metrics()`
-        into this envelope (tracked in the v0.3 roadmap); for now
-        the endpoint returns the wire-compatible skeleton with zero
-        tokens/cost/latencies so the TUI's Metrics tab renders
-        rather than falling back to a permanent "n/a".
-        """
-
-        uptime = max(0, int(time.time() - app.state.started_at))
-
-        all_sessions = app.state.sessions.list()
-        by_status: dict[str, int] = {}
-        active = 0
-        for s in all_sessions:
-            by_status[s.status] = by_status.get(s.status, 0) + 1
-            if s.status in {"running", "idle"}:
-                active += 1
-
-        message_total = 0
-        role_counts: dict[str, int] = {}
-        for rows in app.state.messages.values():
-            message_total += len(rows)
-            for m in rows:
-                role_counts[m.role] = role_counts.get(m.role, 0) + 1
-
-        # CLIO-BBBBBBBBBB24: tokens + cost rollup across every
-        # session's cumulative counters.
-        from clio_agent.gact.types import MetricsCost, MetricsTokens
-
-        tokens_input = sum(s.tokens_input for s in all_sessions)
-        tokens_output = sum(s.tokens_output for s in all_sessions)
-        cost_total = sum(s.cost_usd for s in all_sessions)
-
-        return Metrics(
-            uptime_s=uptime,
-            sessions=MetricsSessions(
-                total=len(all_sessions),
-                active=active,
-                by_status=by_status,
-            ),
-            messages=MetricsMessages(
-                total=message_total,
-                by_role=role_counts,
-            ),
-            tokens=MetricsTokens(
-                input_total=tokens_input,
-                output_total=tokens_output,
-            ),
-            cost=MetricsCost(total_usd=cost_total),
-        )
-
-    # ---- /v1/workspaces (CLIO-BBBBBBBBBB-WS) -------------------------
-
-    @app.get("/v1/workspaces", response_model=ListWorkspacesResponse)
-    async def list_workspaces() -> ListWorkspacesResponse:
-        """SPEC §6.1 — list workspaces."""
-
-        rows = app.state.workspaces.list()
-        return ListWorkspacesResponse(
-            workspaces=[Workspace(**w.to_wire()) for w in rows]
-        )
-
-    @app.post("/v1/workspaces", response_model=Workspace, status_code=201)
-    async def create_workspace(req: CreateWorkspaceRequest) -> Workspace:
-        """SPEC §6.1 — create a workspace pinned to ``root_path``."""
-
-        ws = app.state.workspaces.create(
-            name=req.name,
-            root_path=req.root_path,
-            metadata=req.metadata,
-        )
-        return Workspace(**ws.to_wire())
-
-    @app.get("/v1/workspaces/{wid}", response_model=Workspace)
-    async def get_workspace(wid: str) -> Workspace:
-        ws = app.state.workspaces.get(wid)
-        if ws is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"workspace not found: {wid}",
-                        details={"workspace_id": wid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        return Workspace(**ws.to_wire())
-
-    @app.delete("/v1/workspaces/{wid}")
-    async def delete_workspace(wid: str) -> JSONResponse:
-        """Refuses to delete ws_default — every CLIO install needs
-        one workspace alive so sessions have a parent."""
-
-        if wid == "ws_default":
-            raise HTTPException(
-                status_code=409,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="permission_error",
-                        message="ws_default is not deletable",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        existed = app.state.workspaces.delete(wid)
-        if not existed:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="internal_error",
-                        message=f"workspace not found: {wid}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        return JSONResponse(status_code=204, content=None)
-
-    # ---- /v1/workspaces/{wid}/files (gact-tui @-picker) -------------
-    #
-    # gact-tui's `@`-trigger file picker calls
-    # /v1/workspaces/{wid}/files expecting a flat list of FileEntry
-    # rooted at the workspace's root_path. Until this endpoint existed
-    # the picker rendered as 404 ("file-picker: gact: 404"). We walk
-    # the workspace root, skip cost-walking dirs (.git, __pycache__,
-    # node_modules, .venv, build/), respect the file policy's
-    # allow-symlinks flag, and cap at _FILE_PICKER_LIMIT entries so a
-    # giant repo doesn't lock the picker for seconds while the
-    # filesystem walk runs.
-    _FILE_PICKER_LIMIT = 5000
-    _FILE_PICKER_SKIP_DIRS = {
-        ".git", ".hg", ".svn",
-        "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache",
-        "node_modules", ".npm",
-        ".venv", "venv", ".tox",
-        "build", "dist", ".egg-info",
-        ".clio_agent",  # ARC's local persistence
-    }
-
-    @app.get("/v1/workspaces/{wid}/files")
-    async def list_workspace_files(wid: str) -> dict[str, Any]:
-        """SPEC §6.9 — list files under a workspace's root_path.
-
-        Returns ``{"entries": [{"path", "type", "size", "modified"}, …]}``
-        with paths relative to root_path so the TUI can show short
-        labels. Type is "file" or "dir"; the picker filters dirs
-        client-side. Hard-capped at _FILE_PICKER_LIMIT to keep large
-        repos from blocking the modal.
-        """
-
-        ws = app.state.workspaces.get(wid)
-        if ws is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="not_found",
-                    message=f"workspace not found: {wid}",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
-            )
-        root = Path(ws.root_path or os.getcwd()).expanduser()
-        if not root.is_dir():
-            return {"entries": []}
-
-        # File policy decides whether symlinks are walkable; everything
-        # else (size cap, allowed-roots) is enforced at read-time, not
-        # listing-time.
-        allow_symlinks = False
-        try:
-            from clio_agent.tools.file_policy import FileAccessPolicy  # noqa: PLC0415
-
-            policy = FileAccessPolicy.from_mapping(os.environ)
-            allow_symlinks = policy.allow_symlinks
-        except Exception:
-            pass
-
-        entries: list[dict[str, Any]] = []
-        cap = _FILE_PICKER_LIMIT
-
-        def _walk(d: Path) -> None:
-            nonlocal cap
-            if cap <= 0:
-                return
-            try:
-                raw_children = list(d.iterdir())
-            except (OSError, PermissionError):
-                return
-            # Don't stat-sort up front — a single un-statable child
-            # (broken symlink, restricted unix socket in /tmp) raises
-            # mid-key-eval and drops the entire list. Sort by name only;
-            # we'll check is_dir per-entry behind a try.
-            raw_children.sort(key=lambda p: p.name)
-            for child in raw_children:
-                if cap <= 0:
-                    return
-                name = child.name
-                if name in _FILE_PICKER_SKIP_DIRS:
-                    continue
-                try:
-                    if child.is_symlink() and not allow_symlinks:
-                        continue
-                    is_dir = child.is_dir()
-                except OSError:
-                    # Unreadable entry — skip rather than abort the whole
-                    # walk. Common in /tmp where other users' sockets
-                    # are 0600 and trip stat's permission check.
-                    continue
-                rel = str(child.relative_to(root))
-                entry: dict[str, Any] = {
-                    "path": rel,
-                    "type": "dir" if is_dir else "file",
-                }
-                if not is_dir:
-                    try:
-                        st = child.stat()
-                        entry["size"] = st.st_size
-                        entry["modified"] = datetime.fromtimestamp(
-                            st.st_mtime, tz=timezone.utc
-                        ).isoformat().replace("+00:00", "Z")
-                    except OSError:
-                        pass
-                entries.append(entry)
-                cap -= 1
-                if is_dir:
-                    _walk(child)
-
-        _walk(root)
-        return {"entries": entries}
-
-    @app.get("/v1/workspaces/{wid}/files/read")
-    async def read_workspace_file(wid: str, path: str) -> JSONResponse:
-        """SPEC §6.9 — read one file's content.
-
-        Serves the raw bytes (text/plain) so the TUI's preview panel
-        can render code without a base64 decode. Refuses paths that
-        escape the workspace root (``..`` segments) and paths beyond
-        the file policy's max_file_size_bytes.
-        """
-
-        ws = app.state.workspaces.get(wid)
-        if ws is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="not_found",
-                    message=f"workspace not found: {wid}",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
-            )
-        root = Path(ws.root_path or os.getcwd()).expanduser().resolve()
-        try:
-            target = (root / path).resolve()
-        except Exception:
-            raise HTTPException(
-                status_code=400,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="invalid_path",
-                    message=f"could not resolve path: {path}",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
-            ) from None
-        # Refuse path-traversal: target must be at-or-below root.
-        try:
-            target.relative_to(root)
-        except ValueError:
-            raise HTTPException(
-                status_code=403,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="path_outside_workspace",
-                    message=f"path escapes workspace: {path}",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
-            ) from None
-        if not target.is_file():
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="not_found",
-                    message=f"file not found: {path}",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
-            )
-        # Enforce file-policy size cap so a 50 GB log doesn't OOM.
-        try:
-            from clio_agent.tools.file_policy import FileAccessPolicy  # noqa: PLC0415
-
-            policy = FileAccessPolicy.from_mapping(os.environ)
-            max_bytes = policy.max_file_size_bytes
-        except Exception:
-            max_bytes = 1024 * 1024 * 1024  # 1 GiB fallback
-        size = target.stat().st_size
-        if size > max_bytes:
-            raise HTTPException(
-                status_code=413,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="file_too_large",
-                    message=f"file exceeds policy cap ({size} > {max_bytes} bytes)",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
-            )
-        try:
-            data = target.read_bytes()
-        except Exception as exc:
-            raise HTTPException(
-                status_code=500,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="read_failed",
-                    message=f"could not read file: {exc}",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
-            ) from exc
-        return JSONResponse(
-            content=data.decode("utf-8", errors="replace"),
-            media_type="text/plain; charset=utf-8",
-        )
-
-    # ---- /v1/providers/lm (CLIO-BBBBBBBBBB-D) ------------------------
-
-    _LM_PRESETS: list[LMProviderPreset] = [
-        LMProviderPreset(
-            id="meridian",
-            label="Claude Max via Meridian",
-            provider="openai",
-            api_base="http://127.0.0.1:3456/v1",
-            suggested_model="claude-haiku-4-5-20251001",
-            requires_api_key=False,
-            description=(
-                "Routes through a local Meridian proxy that translates "
-                "your Claude Max OAuth into an OpenAI-compatible API. "
-                "Cheapest, fastest, default for CLIO development."
-            ),
-        ),
-        LMProviderPreset(
-            id="anthropic",
-            label="Anthropic API",
-            provider="anthropic",
-            api_base="https://api.anthropic.com",
-            suggested_model="claude-haiku-4-5-20251001",
-            requires_api_key=True,
-            description="Direct Anthropic API. Requires an ANTHROPIC_API_KEY.",
-        ),
-        LMProviderPreset(
-            id="openai",
-            label="OpenAI / ChatGPT",
-            provider="openai",
-            api_base="https://api.openai.com/v1",
-            suggested_model="gpt-4o-mini",
-            requires_api_key=True,
-            description=(
-                "Direct OpenAI API (powers ChatGPT + Codex CLI). "
-                "Requires an OPENAI_API_KEY. Defaults to gpt-4o-mini "
-                "for low cost; swap in gpt-4o or gpt-4-turbo for "
-                "heavier work."
-            ),
-        ),
-        LMProviderPreset(
-            id="openrouter",
-            label="OpenRouter",
-            provider="openai",
-            api_base="https://openrouter.ai/api/v1",
-            suggested_model="openai/gpt-oss-120b:free",
-            requires_api_key=True,
-            description=(
-                "OpenAI-compatible gateway over many providers. Free "
-                "tier models (suffixed :free) work without spend but "
-                "are heavily rate-limited."
-            ),
-        ),
-        LMProviderPreset(
-            id="lm_studio",
-            label="LM Studio (localhost)",
-            provider="lm_studio",
-            api_base="http://127.0.0.1:1234/v1",
-            suggested_model="",
-            requires_api_key=False,
-            description=(
-                "Locally-hosted models via LM Studio. Model name is "
-                "discovered automatically when blank."
-            ),
-        ),
-        LMProviderPreset(
-            id="ollama",
-            label="Ollama (localhost)",
-            provider="ollama",
-            api_base="http://127.0.0.1:11434/v1",
-            suggested_model="llama3.2",
-            requires_api_key=False,
-            description="Locally-hosted models via Ollama.",
-        ),
-        LMProviderPreset(
-            id="codex",
-            label="OpenAI Codex (via bridge)",
-            provider="openai",
-            api_base="http://127.0.0.1:18900/v1",
-            suggested_model="gpt-5.4",
-            requires_api_key=False,
-            description=(
-                "Routes through scripts/codex_bridge.py which fronts the "
-                "Codex app-server SDK with an OpenAI-compatible HTTP "
-                "interface. Requires the bridge running locally (default "
-                "port 18900) and the `codex` binary on PATH."
-            ),
-        ),
-        # ALCF inference endpoints. The api_key is left blank in the
-        # preset and resolved by the PUT /v1/providers/lm handler via
-        # Globus Auth (providers.argonne_auth) — that's why
-        # requires_api_key=False even though this is a remote service.
-        LMProviderPreset(
-            id="argonne_sophia",
-            label="ALCF Sophia (Globus Auth)",
-            provider="argonne",
-            api_base="https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",
-            suggested_model="meta-llama/Meta-Llama-3.1-8B-Instruct",
-            requires_api_key=False,
-            description=(
-                "Argonne's Sophia inference gateway (vLLM, OpenAI-"
-                "compatible). Auth is a Globus access token minted on "
-                "demand from the user's anl.gov / alcf.anl.gov identity. "
-                "Run `python -m clio_agent.providers.argonne_auth "
-                "authenticate` once per machine; tokens auto-refresh."
-            ),
-        ),
-        # Polaris preset removed — the inference-api gateway returns
-        # 400 'cluster polaris does not exist' for /resource_server/
-        # polaris/vllm/v1, so the preset was just a guaranteed dead end
-        # for users. If/when ALCF brings Polaris-side inference back
-        # online, restore this entry.
-        LMProviderPreset(
-            id="argonne_metis",
-            label="ALCF Metis (Globus Auth)",
-            provider="argonne",
-            # Metis hangs framework="api" off /api/v1, not /vllm/v1
-            # the way Sophia does. Same Globus auth, same /jobs schema
-            # for live model discovery, different chat-completions path.
-            api_base="https://inference-api.alcf.anl.gov/resource_server/metis/api/v1",
-            suggested_model="gpt-oss-120b",
-            requires_api_key=False,
-            description=(
-                "Argonne's Metis inference gateway (FastCoE 'api' "
-                "framework, OpenAI-compatible chat-completions). Useful "
-                "fallback when Sophia is in maintenance — typically "
-                "loads gpt-oss-120b and Llama-4-Maverick. Same Globus "
-                "tokens as Sophia/Polaris."
-            ),
-        ),
-        LMProviderPreset(
-            id="argonne_local_vllm",
-            label="ALCF local vLLM (compute-node)",
-            provider="openai",
-            api_base="http://127.0.0.1:8000/v1",
-            suggested_model="meta-llama/Llama-3.1-8B-Instruct",
-            requires_api_key=False,
-            description=(
-                "vLLM running co-located on an Aurora / Polaris compute "
-                "node (see localWorkflow/scripts/vllm_setup.sh). No "
-                "Globus needed — the server accepts the literal "
-                "'EMPTY' API key. Override api_base with the bound port."
-            ),
-        ),
-    ]
-
-    @app.get("/v1/providers/lm", response_model=LMProviderInfo)
-    async def get_lm_provider() -> LMProviderInfo:
-        """Report the live LM config — what we'd report on /doctor as
-        the 'lm' integration row, plus a list of presets the TUI's
-        provider picker shows.
-
-        ``configured`` is true when an agent is wired and ready to
-        run; the TUI uses this to decide whether to show the config
-        modal on connect.
-        """
-
-        cfg = app.state.lm_config or {}
-        return LMProviderInfo(
-            configured=app.state.agent is not None,
-            provider=cfg.get("provider", ""),
-            api_base=cfg.get("api_base", ""),
-            model=cfg.get("model", ""),
-            temperature=float(cfg.get("temperature", 1.0) or 1.0),
-            max_tokens=int(cfg.get("max_tokens", 32000) or 32000),
-            thinking_budget=int(cfg.get("thinking_budget", 0) or 0),
-            presets=_LM_PRESETS,
-        )
-
-    @app.put("/v1/providers/lm", response_model=LMProviderInfo)
-    async def put_lm_provider(req: LMProviderRequest) -> LMProviderInfo:
-        """Reconfigure the LM in-place. Rebuilds DSPy + the
-        ClioAgent so subsequent POST /messages drive the new
-        provider. The old agent's state (ARC, sessions, in-flight
-        messages) is preserved across the swap.
-        """
-
-        try:
-            import dspy
-
-            from clio_agent.agent import ClioAgent
-            from clio_agent.config import (
-                LMProviderConfig,
-                create_lm,
-            )
-
-            # Argonne / ALCF: if the TUI didn't ship an api_key, mint
-            # one from the user's stored Globus session. ``LMProviderConfig``
-            # will do this lazily inside __post_init__ too, but we resolve
-            # eagerly here so the env mirror below carries the real token
-            # for ClioAgent's reconstruction (load_config_from_env reads
-            # CLIO_LM_API_KEY first, before LMProviderConfig defaults run).
-            resolved_api_key = req.api_key
-            if req.provider == "argonne" and not resolved_api_key:
-                from clio_agent.config import _resolve_argonne_api_key  # noqa: PLC0415
-                resolved_api_key = _resolve_argonne_api_key()
-                if not resolved_api_key:
-                    raise HTTPException(
-                        status_code=401,
-                        detail=ErrorEnvelope(error=ErrorInfo(
-                            error="argonne_auth_required",
-                            message=(
-                                "ALCF provider selected but no Globus token "
-                                "is available. Run "
-                                "`python -m clio_agent.providers.argonne_auth "
-                                "authenticate` once, or pass api_key in this "
-                                "request."
-                            ),
-                            recoverable=True,
-                        )).model_dump(exclude_none=True),
-                    )
-
-            cfg = LMProviderConfig(
-                provider=req.provider,  # type: ignore[arg-type]  # str validated at boundary
-                api_base=req.api_base,
-                model=req.model,
-                api_key=resolved_api_key or "x",
-                temperature=req.temperature,
-                max_tokens=req.max_tokens,
-                thinking_budget=req.thinking_budget,
-            )
-            # ClioAgent.__init__ reads load_config_from_env() to
-            # wire its router + experts. Stamp the env before
-            # construction so the fresh agent matches what we just
-            # configured for DSPy — otherwise it falls back to the
-            # default provider (lm_studio) and we silently configure
-            # the wrong endpoint.
-            os.environ["CLIO_LM_PROVIDER"] = req.provider
-            os.environ["CLIO_LM_API_BASE"] = req.api_base
-            os.environ["CLIO_LM_MODEL"] = req.model
-            os.environ["CLIO_LM_API_KEY"] = resolved_api_key or "x"
-            # iowarp/clio-agent — DSPy 3.x forbids dspy.configure()
-            # being re-called from a different async task than the
-            # first one. PUT /v1/providers/lm comes from the FastAPI
-            # request task, never the boot task, so the second call
-            # always blew up. Side-step the guard by mutating
-            # ``settings.main_thread_config['lm']`` directly — same
-            # underlying state DSPy's __getattr__ reads, no async
-            # task ownership check.
-            new_lm = create_lm(cfg)
-            from clio_agent.config import (  # noqa: PLC0415
-                create_router_lm,
-                is_local_openai_compatible_backend,
-            )
-            use_json_fallback = not is_local_openai_compatible_backend(cfg)
-            new_adapter = dspy.ChatAdapter(use_json_adapter_fallback=use_json_fallback)
-            try:
-                from dspy.dsp.utils.settings import main_thread_config  # noqa: PLC0415
-                main_thread_config["lm"] = new_lm
-                main_thread_config["adapter"] = new_adapter
-            except Exception:  # pragma: no cover - dspy missing
-                dspy.configure(lm=new_lm, adapter=new_adapter)
-            # Hot-swap the LM on the existing agent instead of
-            # rebuilding from scratch. ClioAgent's expensive state
-            # (ARC retriever, LSM tree, registry, expert instances,
-            # tool gateways) is LM-independent — rebuilding it for
-            # every Save+Connect costs ~5-10 s and is exactly the
-            # latency the user complained about. Three attribute
-            # swaps cover the LM-dependent surface:
-            #   * _provider_config   → direct-chat fallback uses it
-            #   * _router_lm         → router runs with new lm
-            #   * dspy.settings.lm   → experts pick it up via
-            #                          dspy.context()
-            # Only rebuild from scratch when no agent yet exists
-            # (first-connect lifecycle: the deferred-construction
-            # task hasn't completed).
-            existing = app.state.agent
-            if existing is not None:
-                existing._provider_config = cfg
-                existing._router_lm = create_router_lm(cfg)
-                agent = existing
-            else:
-                agent = await asyncio.get_running_loop().run_in_executor(
-                    None, lambda: ClioAgent(verbose=False)
-                )
-        except HTTPException:
-            # Argonne auth path raises a structured 401 above; keep its
-            # error code intact instead of flattening to a generic 400.
-            raise
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(
-                status_code=400,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="config_error",
-                        message=f"failed to configure LM: {exc}",
-                        details={"original_error": type(exc).__name__},
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from exc
-
-        # Swap the agent + ARC atomically. Old agent isn't
-        # explicitly closed because we don't know what background
-        # state it owns; Python's GC will clean up.
-        app.state.agent = agent
-        app.state.arc = agent.arc
-        app.state.lm_config = {
-            "provider": req.provider,
-            "api_base": req.api_base,
-            "model": req.model,
-            "temperature": req.temperature,
-            "max_tokens": req.max_tokens,
-            "thinking_budget": req.thinking_budget,
-        }
-        # Publish so live SSE subscribers see the swap (TUI updates
-        # its model chip without polling).
-        app.state.bus.publish(Event(
-            type="lm.provider.changed",
-            session_id="",
-            payload={
-                "provider": req.provider,
-                "model": req.model,
-                "api_base": req.api_base,
-                "temperature": req.temperature,
-                "max_tokens": req.max_tokens,
-            },
-        ))
-        return LMProviderInfo(
-            configured=True,
-            provider=req.provider,
-            api_base=req.api_base,
-            model=req.model,
-            temperature=req.temperature,
-            max_tokens=req.max_tokens,
-            thinking_budget=req.thinking_budget,
-            presets=_LM_PRESETS,
-        )
-
-    # ---- 501 stubs for the still-unwired v0.2 surface ----------------
-
-    _stub_routes: list[tuple[str, str, str]] = [
-        # (method, path, capability_name_for_error)
-        # /v1/tools moved out of stubs — implemented below.
-    ]
-
-    # ---- /v1/tools (unified catalog across all MCP servers) ----------
-    # Aggregates bundled (in_process) + installed (third-party) MCP
-    # servers into a single flat list keyed by tool name. Each row
-    # carries the source server id so the TUI can group/filter.
-    @app.get("/v1/tools")
-    async def list_tools_unified() -> dict[str, Any]:
-        """SPEC §6.5 — unified tool catalog.
-
-        Walks every MCP server the backend has mounted (bundled fs/
-        hdf5/parquet via the in-process gateway, plus any third-party
-        servers installed via POST /v1/mcp/servers) and returns a
-        single flat list of tools. Each tool row carries:
-        - id / name: the tool name (namespaced where the gateway
-          namespaces them, e.g. "fs_read_file")
-        - description: from the tool's docstring or schema
-        - server_id / source: which MCP server exposes it
-        - input_schema: JSON Schema (when available)
-        """
-        rows: list[dict[str, Any]] = []
-        # Bundled in-process tools.
-        try:
-            from clio_agent.tools.gateway import list_capabilities  # noqa: PLC0415
-            for tool in list_capabilities():
-                srv = tool.get("server", "")
-                rows.append({
-                    "id": tool.get("name", ""),
-                    "name": tool.get("name", ""),
-                    "description": tool.get("description") or "",
-                    "server_id": f"mcp_{srv}" if srv else "",
-                    "source": "mcp",
-                    "input_schema": tool.get("input_schema") or {},
-                })
-        except Exception as exc:  # noqa: BLE001
-            rows.append({
-                "id": "_bundled_error",
-                "name": "_bundled_error",
-                "description": f"bundled gateway introspection failed: {exc!r}",
-                "source": "error",
-            })
-
-        # Third-party installed servers — query each via fastmcp.Client.
-        installed = getattr(app.state, "external_mcp_servers", {}) or {}
-        if installed:
-            try:
-                from fastmcp import Client  # noqa: PLC0415
-                from fastmcp.client.transports import (  # noqa: PLC0415
-                    StdioTransport,
-                    StreamableHttpTransport,
-                )
-            except Exception:  # noqa: BLE001
-                Client = None  # type: ignore
-            for sid, info in sorted(installed.items()):
-                spec = info.get("spec", {})
-                if Client is None:
-                    continue
-                if spec.get("transport") == "stdio":
-                    transport = StdioTransport(
-                        command=spec["command"],
-                        args=spec.get("args") or [],
-                    )
-                elif spec.get("transport") == "http":
-                    transport = StreamableHttpTransport(url=spec["url"])  # type: ignore[assignment]
-                else:
-                    continue
-                try:
-                    async with Client(transport) as client:
-                        tools = await client.list_tools()
-                    for t in tools:
-                        rows.append({
-                            "id": t.name,
-                            "name": t.name,
-                            "description": getattr(t, "description", "") or "",
-                            "server_id": sid,
-                            "source": "mcp",
-                            "input_schema": getattr(t, "inputSchema", None)
-                                or getattr(t, "input_schema", None) or {},
-                        })
-                except Exception as exc:  # noqa: BLE001
-                    rows.append({
-                        "id": f"{sid}_error",
-                        "name": f"{sid}_error",
-                        "description": f"failed to list {sid} tools: {exc!r}",
-                        "server_id": sid,
-                        "source": "error",
-                    })
-        return {"tools": rows}
-
-    @app.get("/v1/tools/{tool_id}")
-    async def get_tool_detail(tool_id: str) -> dict[str, Any]:
-        """SPEC §6.6 — single-tool detail. The TUI's tool-detail
-        modal calls this when the user opens a row from the /tools
-        catalog. Walks the same source as list_tools_unified() and
-        returns the matching row, or 404 if no tool registers under
-        ``tool_id``."""
-
-        # Bundled in-process tools first — cheap.
-        try:
-            from clio_agent.tools.gateway import list_capabilities  # noqa: PLC0415
-            for tool in list_capabilities():
-                if tool.get("name") == tool_id:
-                    srv = tool.get("server", "")
-                    return {
-                        "id": tool_id,
-                        "name": tool_id,
-                        "description": tool.get("description") or "",
-                        "server_id": f"mcp_{srv}" if srv else "",
-                        "source": "mcp",
-                        "input_schema": tool.get("input_schema") or {},
-                    }
-        except Exception:
-            pass
-
-        # Fall back to installed third-party MCP servers — heavier
-        # because each lookup spawns a Client; cache could come later.
-        installed = getattr(app.state, "external_mcp_servers", {}) or {}
-        if installed:
-            try:
-                from fastmcp import Client  # noqa: PLC0415
-                from fastmcp.client.transports import (  # noqa: PLC0415
-                    StdioTransport,
-                    StreamableHttpTransport,
-                )
-            except Exception:
-                Client = None  # type: ignore
-            for sid, info in installed.items():
-                if Client is None:
-                    break
-                try:
-                    transport = info.get("transport") or "stdio"
-                    if transport == "stdio":
-                        t = StdioTransport(
-                            command=info.get("command") or "",
-                            args=info.get("args") or [],
-                            env=info.get("env") or None,
-                        )
-                    else:
-                        t = StreamableHttpTransport(url=info.get("url") or "")  # type: ignore[assignment]
-                    async with Client(t) as cli:
-                        tools = await cli.list_tools()
-                    for tt in tools:
-                        if getattr(tt, "name", "") == tool_id:
-                            return {
-                                "id": tool_id,
-                                "name": tool_id,
-                                "description": getattr(tt, "description", "") or "",
-                                "server_id": sid,
-                                "source": "mcp",
-                                "input_schema": getattr(tt, "inputSchema", None)
-                                    or getattr(tt, "input_schema", None) or {},
-                            }
-                except Exception:
-                    continue
-
-        raise HTTPException(
-            status_code=404,
-            detail=ErrorEnvelope(error=ErrorInfo(
-                error="not_found",
-                message=f"tool not found: {tool_id}",
-                recoverable=False,
-            )).model_dump(exclude_none=True),
-        )
+    # ---- /v1/sessions/* lifecycle + ask-user/retry -------------------
+    # Session CRUD/delete, rollback (undo/rewind), fork, export/import,
+    # compaction, cancel, the user-question ledger and the turn-retry routes
+    # are owned by routes/sessions.py. The fork/answer/retry routes drive a
+    # background turn through ``deps.start_background_user_turn``; the ledger
+    # replace + delete cascade, model-ref errors, evidence
+    # index and resume text travel on ``deps``.
+    register_sessions_routes(app, deps)
+
+    # ---- /v1/sessions/{sid}/messages + /v1/messages (BBB9/BBB10/BBB27) ---
+    # The session message ledger -- the turn-entry POST, the list/get reads,
+    # substring search and both message-delete routes -- is owned by
+    # routes/messages.py. The turn-entry POST kicks a background turn through
+    # ``deps.start_background_user_turn``; the destructive-action guard, ledger
+    # replace, active-model ref + override error and the agent-not-available
+    # error travel on ``deps``.
+    register_messages_routes(app, deps)
+
+    # ---- /v1/workspaces -------------------------
+    # Workspace store CRUD + file listing/reading are owned by
+    # routes/workspaces.py; registered here so they bind to the same app.
+    register_workspaces_routes(app, deps)
+
+    # ---- /v1/agent-blueprints/* + /v1/expert-packs/* + session blueprint ---
+    # Blueprint source registry, install/update/delete engine, MCP-descriptor
+    # enable, and the session get/set-active-blueprint routes are owned by
+    # routes/blueprints.py; the expert-pack routes are thin aliases of the same
+    # lifecycle. The set-active route reaches the activation-metadata builder
+    # and metadata-only active-id reader through ``deps``.
+    register_blueprints_routes(app, deps)
+
+    # ---- /v1/expert-packs/* discovery + session attachment -----------
+    # Pack discovery (list/get/validate) and session attachment (get/set the
+    # active pack) are owned by routes/expert_packs.py. (Pack install/update/delete
+    # are blueprint-engine aliases registered above by register_blueprints_routes.)
+    register_expert_packs_routes(app, deps)
+
+    # ---- /v1/agents/* + /v1/sessions/{sid}/agent-overlay -------------
+    # Tier-2 agent registry CRUD + list + extract and the session agent-overlay
+    # routes (get/put/export) are owned by routes/agents.py; they reach the shared
+    # row-resolution closures plus the destructive-action guard through ``deps``.
+    register_agents_routes(app, deps)
+
+    # ---- /v1/mcp/servers (#13) ---------------------------------------
+    # MCP server registry + dispatch (list/detail/install/call/reconnect/
+    # uninstall + tools/resources/prompts + handshake) are owned by
+    # routes/mcp.py; the uninstall route reaches the destructive-action guard
+    # through ``deps``.
+    register_mcp_routes(app, deps)
+
+    # ---- /v1/prompts (CLIO prompt-management vendor surface) ---------
+    # Prompt registry browse/render/validate/save/reload are owned by
+    # routes/prompts.py; the request-scoped registry/overlay/render-context
+    # builders travel on ``deps``.
+    register_prompts_routes(app, deps)
+
+    # ---- /v1/sessions/{sid}/context/* (ARC live-context plane) -------
+    # Session context compartment policy + the live ARC context-plane routes
+    # (state/ops/compact/search) are owned by routes/context.py; the
+    # state-assembly + ARC-unavailable helpers they share live there.
+    register_context_routes(app, deps)
+
+    # ---- /v1/sessions/{sid}/diffs/* + /context/files + /context/frames ---
+    # Pending/applied file-diff list/apply/reject plus the context-file
+    # attach/detach/list ledger and per-turn context frames are owned by
+    # routes/diffs.py; the diff-to-disk commit + ledger flush + destructive-
+    # action guard travel on ``deps``.
+    register_diffs_routes(app, deps)
+
+    # ---- /v1/memory/* (transcript-memory recall surface) -------------
+    # The read-only memory search + the three agent-callable, policy-gated
+    # memory tools (search-sessions / read-session-summary / read-context-frame)
+    # are owned by routes/memory.py. The ranked-search primitives they share with
+    # the agent-run path live in runtime/memory_search.py (single source); the
+    # error/audit/policy + bounded-projection helpers are private to that module.
+    register_memory_routes(app, deps)
+
+    # ---- /v1/sessions/{sid}/schedules + /v1/schedules/{id} (#21) -----
+    # Scheduled-turn CRUD (list/add/delete) is owned by routes/schedules.py; the
+    # delete route reaches the destructive-action guard through ``deps`` and the
+    # scheduler tick task owns the actual firing of due schedules.
+    register_schedules_routes(app, deps)
+
+    # ---- /v1/health + /v1/capabilities + /v1/capability-gaps + /v1/metrics ----
+    # + /v1/memory/stats: the read-only system/observability surface is owned by
+    # routes/system.py. The static capability/metrics catalogs it projects live in
+    # runtime/capabilities.py (shared with the message-turn streaming path here);
+    # the wire/limit constants live in runtime/constants.py. It needs no
+    # cross-concern seam from ``deps``.
+    register_system_routes(app, deps)
+
+    # ---- /v1/sessions/{sid}/tasks + /v1/tasks/{tid} + memory/events + share ----
+    # + /v1/shared/{token} + /v1/sessions/{sid}/events SSE: the misc session-
+    # adjacent surfaces are owned by routes/misc.py; the task-delete route reaches
+    # the direct-destructive-action guard through ``deps``.
+    register_misc_routes(app, deps)
+
+    # ---- /v1/catalog/tools + /v1/tools + /v1/commands + dispatch -----
+    # The tool catalog (built-in + unified live) and the slash-command catalog +
+    # dispatch are owned by routes/catalog.py. The command-table assembly lives in
+    # runtime/commands.py (shared with the prompt-render-context closure here); the
+    # dispatch route reaches the message-ledger primitives, agent runner, and
+    # destructive-action guard through ``deps``.
+    register_catalog_routes(app, deps)
+
+    # ---- /v1/providers (#15) + /v1/providers/lm ---
+    # The LM-provider catalog (list/detail/auth/models/handshake) and the runtime
+    # LM-bind routes (get/put/wait LM config) are owned by routes/providers.py. The
+    # write-side bind hot-swaps the live agent's LMs and mutates
+    # ``dspy.settings.main_thread_config`` + ``os.environ`` (snapshot/restore on
+    # failure); it reaches the agent-rebuild hooks (install-tool-runtime-hooks /
+    # clear-session-model-refs) through ``deps``.
+    register_providers_routes(app, deps)
+
+    # ---- /v1/catalog/tools + /v1/tools + /v1/tools/{tool_id} ----------
+    # The built-in tool catalog and the unified live catalog (bundled gateway +
+    # installed third-party MCP servers) are owned by routes/catalog.py and
+    # registered below via register_catalog_routes(app, deps).
 
     # ---- /v1/hooks (SPEC §6.17 declarative hooks) --------------------
-    #
-    # Distinct from clio_agent.runtime.hooks (in-process Python hooks
-    # the framework fires on tool/message events). These are the
-    # gact-tui-driven declarative hooks: id + event + (command|url) +
-    # optional session_id/workspace_id scope. The TUI's `gact hook`
-    # subcommand reads/writes them. In-memory; no persistence.
+    # Declarative event-hook CRUD is owned by routes/hooks.py; the
+    # direct-destructive-action guard the delete route needs travels on
+    # ``deps``. Distinct from clio_agent.runtime.hooks (in-process Python
+    # hooks the framework fires on tool/message events).
+    register_hooks_routes(app, deps)
 
-    @app.get("/v1/hooks")
-    async def list_hooks() -> dict[str, Any]:
-        return {"hooks": list(app.state.declarative_hooks.values())}
+    # ---- /v1/permissions (BBB23) + /v1/policies (SPEC §6.11.b) --------
+    # Permission-request ledger CRUD (list/resolve) + declarative permission-
+    # policy CRUD (list/replace) are owned by routes/permissions.py; the
+    # resolution-derived-policy + validation/persistence data layer lives in
+    # runtime/permission_policies.py (shared with the build_app startup load).
+    register_permissions_routes(app, deps)
 
-    @app.post("/v1/hooks")
-    async def create_hook(request: Request) -> dict[str, Any]:
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        event = (body.get("event") or "").strip()
-        if not event:
-            raise HTTPException(
-                status_code=400,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="invalid_request",
-                    message="hook missing required field: event",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
-            )
-        if not (body.get("command") or body.get("url")):
-            raise HTTPException(
-                status_code=400,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="invalid_request",
-                    message="hook needs command or url",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
-            )
-        hid = body.get("id") or f"hook_{uuid.uuid4().hex[:12]}"
-        row = {
-            "id": hid,
-            "event": event,
-            "command": body.get("command") or "",
-            "url": body.get("url") or "",
-            "session_id": body.get("session_id") or "",
-            "workspace_id": body.get("workspace_id") or "",
-        }
-        app.state.declarative_hooks[hid] = row
-        return row
+    # ---- DELETE /v1/sessions/{sid}/messages/{id} + /v1/messages/{id} -
+    # Both message-delete routes (session-scoped + the global, optionally
+    # session-hinted variant gact-tui historically hit) are owned by
+    # routes/messages.py and registered below via register_messages_routes(
+    # app, deps); the destructive-action guard + ledger replace travel on
+    # ``deps`` and both publish message.deleted for SSE subscribers.
 
-    @app.delete("/v1/hooks/{hook_id}")
-    async def delete_hook(hook_id: str) -> JSONResponse:
-        if app.state.declarative_hooks.pop(hook_id, None) is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="not_found",
-                    message=f"hook not found: {hook_id}",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
-            )
-        return JSONResponse(status_code=204, content=None)
-
-    # ---- /v1/policies (SPEC §6.11.b permission policies) -------------
-    #
-    # Declarative allow/deny/ask rules consulted before the per-tool
-    # permission_default. PUT replaces the whole list (matches the
-    # gact-tui client's PutPolicies shape). In-memory; no persistence.
-
-    @app.get("/v1/policies")
-    async def list_policies() -> dict[str, Any]:
-        return {"policies": list(app.state.permission_policies)}
-
-    @app.put("/v1/policies")
-    async def put_policies(request: Request) -> dict[str, Any]:
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        policies = body.get("policies")
-        if not isinstance(policies, list):
-            raise HTTPException(
-                status_code=400,
-                detail=ErrorEnvelope(error=ErrorInfo(
-                    error="invalid_request",
-                    message="body must be {'policies': [...]}",
-                    recoverable=False,
-                )).model_dump(exclude_none=True),
-            )
-        # Light validation — keep unknown fields so future spec
-        # additions round-trip; require the two fields the SPEC
-        # mandates so a malformed config doesn't silently disable
-        # permission gating.
-        clean: list[dict[str, Any]] = []
-        for p in policies:
-            if not isinstance(p, dict):
-                continue
-            if not p.get("scope") or not p.get("action"):
-                continue
-            clean.append(p)
-        app.state.permission_policies = clean
-        return {"policies": clean}
-
-    # ---- DELETE /v1/messages/{id} ------------------------------------
-    #
-    # gact-tui's "delete this message" gesture (used in the search
-    # palette + the per-message context menu) hits this. We scan every
-    # session's in-memory log for a matching id; not indexed because
-    # message lists are short and deletion is rare. Publishes
-    # message.deleted so SSE subscribers can redraw without polling.
-
-    @app.delete("/v1/messages/{message_id}")
-    async def delete_message(message_id: str) -> JSONResponse:
-        for sid, msgs in app.state.messages.items():
-            for i, m in enumerate(msgs):
-                if m.id == message_id:
-                    msgs.pop(i)
-                    app.state.bus.publish(Event(
-                        type="message.deleted",
-                        session_id=sid,
-                        payload={"message_id": message_id, "session_id": sid},
-                    ))
-                    return JSONResponse(status_code=204, content=None)
-        raise HTTPException(
-            status_code=404,
-            detail=ErrorEnvelope(error=ErrorInfo(
-                error="not_found",
-                message=f"message not found: {message_id}",
-                recoverable=False,
-            )).model_dump(exclude_none=True),
-        )
-
-    def _make_stub(cap: str):
-        # Use a Request param so FastAPI doesn't try to validate
-        # path/query/body params against the handler signature —
-        # stubs take anything and return 501.
-        async def _stub(request: Request) -> JSONResponse:
-            body = _not_implemented(cap).model_dump(exclude_none=True)
-            return JSONResponse(status_code=501, content=body)
-
-        return _stub
-
-    for method, path, cap in _stub_routes:
-        app.add_api_route(
-            path,
-            _make_stub(cap),
-            methods=[method],
-            include_in_schema=False,
-        )
+    def _error_code_for_status(status_code: int) -> str:
+        if status_code == 404:
+            return "not_found"
+        if status_code == 405:
+            return "unsupported"
+        if status_code in {400, 422}:
+            return "validation_error"
+        if status_code in {401, 403}:
+            return "permission_error"
+        return "internal_error" if status_code >= 500 else "request_error"
 
     @app.exception_handler(HTTPException)
-    async def _http_exception_handler(
-        request, exc: HTTPException
-    ) -> JSONResponse:
+    @app.exception_handler(StarletteHTTPException)
+    async def _http_exception_handler(request, exc: StarletteHTTPException) -> JSONResponse:
         """Wrap HTTPExceptions in the v0.2 error envelope."""
 
         if isinstance(exc.detail, dict) and "error" in exc.detail:
@@ -6445,7 +2313,7 @@ def build_app(
             return JSONResponse(status_code=exc.status_code, content=exc.detail)
         envelope = ErrorEnvelope(
             error=ErrorInfo(
-                error="internal_error",
+                error=_error_code_for_status(exc.status_code),
                 message=str(exc.detail) if exc.detail else "",
                 recoverable=exc.status_code < 500,
             )
@@ -6454,6 +2322,67 @@ def build_app(
             status_code=exc.status_code,
             content=envelope.model_dump(exclude_none=True),
         )
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_exception_handler(request, exc: RequestValidationError) -> JSONResponse:
+        """Wrap FastAPI request validation failures in the GACT envelope."""
+
+        envelope = ErrorEnvelope(
+            error=ErrorInfo(
+                error="validation_error",
+                message="Request validation failed.",
+                details={"errors": exc.errors()},
+                recoverable=True,
+            )
+        )
+        return JSONResponse(
+            status_code=422,
+            content=envelope.model_dump(exclude_none=True),
+        )
+
+    @app.exception_handler(Exception)
+    async def _unhandled_exception_handler(request, exc: Exception) -> JSONResponse:
+        """Return a structured 500 for unexpected route failures."""
+
+        envelope = ErrorEnvelope(
+            error=ErrorInfo(
+                error="internal_error",
+                message="Unhandled server error.",
+                details={
+                    "original_error": type(exc).__name__,
+                    "original_message": str(exc),
+                },
+                recoverable=False,
+            )
+        )
+        return JSONResponse(
+            status_code=500,
+            content=envelope.model_dump(exclude_none=True),
+        )
+
+    # --- optional web UI (`clio web`): serve the built SPA bundle same-origin ---
+    # Gated on CLIO_WEB_DIR so the default server (TUI / headless API) is byte-for-
+    # byte unchanged unless web mode is explicitly enabled. Mounted LAST so every
+    # /v1 API route (and /docs, /openapi.json) registered above takes precedence;
+    # an SPA fallback serves index.html for unknown non-API paths so client-side
+    # (history) routing works. The bundle's API calls are same-origin (relative
+    # /v1/...), so no CORS/proxy is needed — this is the in-process equivalent of
+    # the docker clio-web nginx setup.
+    web_dir = _web_dir()
+    if web_dir and (Path(web_dir) / "index.html").is_file():
+        from fastapi.staticfiles import StaticFiles
+        from starlette.responses import FileResponse
+
+        class _SPAStaticFiles(StaticFiles):
+            async def get_response(self, path: str, scope: Any) -> Any:
+                try:
+                    return await super().get_response(path, scope)
+                except StarletteHTTPException as exc:
+                    if exc.status_code == 404:
+                        return FileResponse(Path(web_dir) / "index.html")
+                    raise
+
+        app.mount("/", _SPAStaticFiles(directory=web_dir, html=True), name="web")
 
     return app
 
@@ -6480,6 +2409,57 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+def run_server(
+    host: str = "127.0.0.1",
+    port: int = 8100,
+    *,
+    reload: bool = False,
+    no_agent: bool = False,
+) -> None:
+    """Build the GACT app and run it in the foreground via uvicorn.
+
+    This is the single foreground-serve path shared by the
+    ``clio-agent-gact`` console script (:func:`main`) and the
+    ``clio-agent serve`` subcommand. It blocks until the server exits.
+
+    When ``CLIO_LM_PROVIDER`` is set (and ``no_agent`` is False) the real
+    ``ClioAgent`` is constructed by the lifespan startup task so POST
+    /messages drives a real LM; otherwise the app runs agent-less (fine for
+    capability introspection, 503s on /messages).
+
+    Args:
+        host: Bind host.
+        port: Bind port.
+        reload: uvicorn auto-reload on source changes (dev only).
+        no_agent: Skip ClioAgent construction even when LM env is configured.
+    """
+    import uvicorn
+
+    # Resolve trace verbosity (file→env→default) and install the formatted log
+    # handler for the server process, now that the environment is settled.
+    trace.configure()
+
+    # Always build a fresh app here — the module-level ``app`` symbol is
+    # intentionally lazy (see __getattr__ above) so that just importing
+    # ``clio_agent.gact.app`` doesn't pay build_app's cost. When the env
+    # requests an agent we set want_agent so the lifespan startup task
+    # constructs ClioAgent in the background — uvicorn binds the port
+    # immediately, beating gact-tui's 3-second deploy probe. POST /messages
+    # 503s until app.state.agent is stamped by the background task.
+    app_to_run: FastAPI = build_app()
+    if not no_agent and conf.resolve(
+        "lm.provider", env="CLIO_LM_PROVIDER", default="", cast=conf.as_str
+    ) != "":
+        app_to_run.state.want_agent = True
+
+    uvicorn.run(
+        app_to_run,
+        host=host,
+        port=port,
+        reload=reload,
+    )
+
+
 def main() -> None:
     """Console-script entry point.
 
@@ -6488,8 +2468,6 @@ def main() -> None:
     Otherwise the module-level ``app`` (no agent wired) runs, which
     is fine for capability introspection but 503s on /messages.
     """
-
-    import uvicorn
 
     parser = argparse.ArgumentParser(
         prog="clio-agent-gact",
@@ -6525,21 +2503,25 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Always build a fresh app inside main() — the module-level
-    # ``app`` symbol is intentionally lazy (see __getattr__ above) so
-    # that just importing ``clio_agent.gact.app`` doesn't pay
-    # build_app's cost. When the env requests an agent we set
-    # want_agent so the lifespan startup task constructs ClioAgent
-    # in the background — uvicorn binds the port immediately, beating
-    # gact-tui's 3-second deploy probe. POST /messages 503s until
-    # app.state.agent is stamped by the background task.
-    app_to_run: FastAPI = build_app()
-    if not args.no_agent and os.environ.get("CLIO_LM_PROVIDER"):
-        app_to_run.state.want_agent = True
-
-    uvicorn.run(
-        app_to_run,
+    run_server(
         host=args.host,
         port=args.port,
         reload=args.reload,
+        no_agent=args.no_agent,
     )
+
+
+def main_deprecated() -> None:
+    """Deprecation alias for the ``clio-agent-gact`` console script.
+
+    ``clio-agent serve`` is now the single front door. This alias stays
+    fully functional for one release so old installed launchers that still
+    call ``clio-agent-gact`` keep working; it just emits a one-line stderr
+    notice before delegating to :func:`main`.
+    """
+
+    print(
+        "clio-agent-gact is deprecated; use clio-agent serve",
+        file=sys.stderr,
+    )
+    main()

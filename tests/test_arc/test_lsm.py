@@ -9,6 +9,7 @@ Tests cover:
 - Performance targets (>1000 writes/sec)
 """
 
+import logging
 import shutil
 import tempfile
 import time
@@ -130,9 +131,7 @@ class TestLSMTree:
     def test_compaction(self, temp_dir):
         """Test SSTable compaction."""
         # Create LSM with low compaction threshold
-        lsm = LSMTree(
-            data_dir=temp_dir, memtable_size=5, compaction_threshold=3
-        )
+        lsm = LSMTree(data_dir=temp_dir, memtable_size=5, compaction_threshold=3)
 
         try:
             # Write enough data to create multiple SSTables
@@ -158,6 +157,28 @@ class TestLSMTree:
                 assert result is not None
                 assert result["index"] == i
 
+        finally:
+            lsm.close()
+
+    def test_sstable_filenames_survive_clock_collision(self, temp_dir, monkeypatch):
+        """Rapid flushes must not overwrite earlier SSTables.
+
+        Windows can return identical ``time_ns`` values for back-to-back
+        calls. SSTable names need a non-clock suffix so compaction sees
+        every flushed table.
+        """
+
+        monkeypatch.setattr("clio_agent.arc.lsm.time.time_ns", lambda: 123456789)
+        lsm = LSMTree(data_dir=temp_dir, memtable_size=5, compaction_threshold=3)
+
+        try:
+            for i in range(20):
+                lsm.write(1704800000.0 + i, {"index": i})
+
+            for i in range(20):
+                result = lsm.read(1704800000.0 + i)
+                assert result is not None
+                assert result["index"] == i
         finally:
             lsm.close()
 
@@ -292,3 +313,37 @@ class TestLSMTree:
         assert sst.min_key == 1.0
         assert sst.max_key == 100.0
         assert sst.record_count == 50
+
+
+class TestCorruptSSTableSkip:
+    """Corrupt SSTables must be skipped with a structured, logged reason (#772)."""
+
+    def test_corrupt_sstable_skipped_with_reason(self, tmp_path, caplog):
+        """A corrupt SSTable file is skipped on load and a reason is logged."""
+        data_dir = tmp_path / "lsm"
+        data_dir.mkdir()
+
+        # Write a good SSTable first so a healthy one survives the load.
+        good = LSMTree(data_dir=str(data_dir), memtable_size=2, compaction_threshold=99)
+        good.write(1704800000.0, {"agent": "Main", "latency_ms": 100})
+        good.write(1704800001.0, {"agent": "DataExpert", "latency_ms": 200})
+        good.write(1704800002.0, {"agent": "Main", "latency_ms": 300})
+        good.close()
+
+        # Plant a corrupt SSTable file that msgpack cannot decode.
+        corrupt = data_dir / "sst_9999999999_corrupt.msgpack"
+        corrupt.write_bytes(b"\xff\xff not valid msgpack \x00\x01\x02")
+
+        with caplog.at_level(logging.WARNING, logger="clio_agent.arc.lsm"):
+            reloaded = LSMTree(
+                data_dir=str(data_dir), memtable_size=2, compaction_threshold=99
+            )
+
+        try:
+            # The healthy SSTable still loaded despite the corrupt neighbour.
+            assert len(reloaded._sstables) >= 1
+            # The skip was surfaced with a structured reason and the offending path.
+            assert "sstable_corrupt_skipped" in caplog.text
+            assert corrupt.name in caplog.text
+        finally:
+            reloaded.close()

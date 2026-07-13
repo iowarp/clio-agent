@@ -127,17 +127,16 @@ TIER 1: CLIO (Main Agent)
 │            │          │             │
 ▼            ▼          ▼             ▼
 
-TIER 2: Expert Agents (Persistent Specialists)
-┌─────────────┐  ┌──────────────┐  ┌──────────────┐
-│ DataExpert  │  │  HPCExpert   │  │ External Agents│
-│  (Current)  │  │  (Planned)   │  │ (via Registry)│
-│             │  │              │  │               │
-│ Capabilities│  │ Capabilities │  │ Capabilities  │
-│ • HDF5      │  │ • SLURM      │  │ • Custom      │
-│ • ADIOS     │  │ • MPI        │  │ • LangChain   │
-│ • Parquet   │  │ • Darshan    │  │ • CrewAI      │
-│             │  │              │  │ • AutoGen     │
-└──────┬──────┘  └──────┬───────┘  └───────────────┘
+TIER 2: Agent Blueprint Experts (Persistent Specialists)
+┌────────────────┬────────────────┬────────────────┐
+│ Data semantics │ HPC/workflow    │ User registry  │
+│ blueprint      │ blueprints      │ blueprints     │
+│                │                │                │
+│ Capabilities   │ Capabilities   │ Capabilities   │
+│ • HDF5         │ • SLURM        │ • Custom       │
+│ • ADIOS        │ • MPI          │ • Pack tools   │
+│ • Parquet      │ • Darshan      │ • MCP servers  │
+└───────┬────────┴───────┬────────┴────────────────┘
        │                │
        └────────────────┘
                 │
@@ -165,7 +164,7 @@ TIER 3: Nanoagents (Ephemeral Workers)
 **Purpose**: Central registry for agent discovery, capability matching, and routing.
 
 **Key Functions**:
-- **Registration**: Native experts and external agents register their capabilities
+- **Registration**: Registry-loaded Agent Blueprints and user agents register their capabilities
 - **Discovery**: Query available agents by capability (e.g., "HDF5 optimization")
 - **Compilation**: Translate external agents (LangChain, CrewAI, AutoGen) into CLIO Agent-compatible instances
 - **Routing**: Match user queries to appropriate agents based on declared capabilities
@@ -173,12 +172,12 @@ TIER 3: Nanoagents (Ephemeral Workers)
 **Agent Metadata Structure**:
 ```
 Agent Entry:
-  - name: "DataExpert"
+  - name: "data"
   - tier: 2 (expert) or 3 (nanoagent)
   - capabilities: ["HDF5", "ADIOS", "Parquet", "compression", "chunking"]
   - tools: ["hdf5_analyze", "hdf5_optimize", "adios_convert"]
-  - source: "native" | "langchain" | "crewai" | "autogen" | "custom"
-  - interface: "A2A" (for external agents)
+  - source: "agent_blueprint" | "user_agent" | "skill" | "custom"
+  - definition_path: registry or workspace blueprint path
 ```
 
 **Routing Algorithm**:
@@ -695,7 +694,7 @@ import dspy
 async with Client(gateway) as client:
     mcp_tools = await client.list_tools()
     dspy_tools = [dspy.Tool.from_mcp_tool(t) for t in mcp_tools]
-    expert = dspy.ReAct(DataExpertSignature, tools=dspy_tools)
+    expert = dspy.ReAct(compiled_blueprint_signature, tools=dspy_tools)
 ```
 
 ### 6. Expert Agents (ReAct Pattern - Tier 2)
@@ -927,7 +926,7 @@ lm = setup_lm(provider="custom", endpoint="http://my-model:8000")
 
 ### Current State (Apr 2026)
 - [x] Main agent orchestration (Tier 1) with conversation management and deterministic local-tool shortcuts for explicit file paths
-- [x] DataExpert, AnalysisExpert, and VisualizationExpert wired as built-in Tier 2 experts
+- [x] Native DataExpert, AnalysisExpert, and VisualizationExpert runtime paths retired; baseline domain behavior loads from registry Agent Blueprints
 - [x] Real local HDF5 and Parquet FastMCP servers plus CSV inspection and matplotlib visualization tools
 - [x] FastMCP gateway with stable namespaced tool names and namespace/prefix compatibility
 - [x] ARC Memory Layer: cache, index, LSM metrics, context compiler, local persistence, dataset profiles, and procedural memory
@@ -1082,7 +1081,6 @@ These are implementation details - users interact with CLIO Agent through:
 
 - [System Identity](SYSTEM_IDENTITY.md) - CLIO Agent identity, capabilities, and design principles
 - [ARC Memory Layer](ARC_MEMORY_LAYER.md) - Deep dive on memory architecture, indexing, IOWarp integration
-- [Self Improvement](SELF_IMPROVEMENT.md) - Optimizer concepts, metrics, and tuning direction
 - [Global Development Plan](../PLAN.md) - Active roadmap, work packages, and current delivery status
 - [IOWarp Architecture](https://iowarp.ai/docs) - Full IOWarp 3-tier architecture (CEI/CAE/CTE)
 - [MCP Protocol Specification](https://modelcontextprotocol.io) - Model Context Protocol docs

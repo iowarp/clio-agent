@@ -35,6 +35,8 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger("clio_agent.providers.argonne_auth")
@@ -46,9 +48,7 @@ logger = logging.getLogger("clio_agent.providers.argonne_auth")
 APP_NAME = "alcf_agentics_workflow"
 AUTH_CLIENT_ID = "58fdd3bc-e1c3-4ce5-80ea-8d6b87cfb944"
 GATEWAY_CLIENT_ID = "681c10cc-f684-4540-bcd7-0b4df3bc26ef"
-GATEWAY_SCOPE = (
-    f"https://auth.globus.org/scopes/{GATEWAY_CLIENT_ID}/action_all"
-)
+GATEWAY_SCOPE = f"https://auth.globus.org/scopes/{GATEWAY_CLIENT_ID}/action_all"
 ALLOWED_DOMAINS = ["anl.gov", "alcf.anl.gov"]
 
 TOKENS_PATH = os.path.join(
@@ -96,7 +96,7 @@ def _require_globus() -> Any:
     return globus_sdk
 
 
-def _domain_error_handler(app: Any, error: Any) -> None:
+def _domain_error_handler(app: Any, error: Any, *, allow_interactive: bool = True) -> None:
     """Force the user back through OAuth into an ALCF-allowed domain.
 
     Globus authorises arbitrary identity providers, but ALCF's
@@ -104,7 +104,23 @@ def _domain_error_handler(app: Any, error: Any) -> None:
     identities. Re-driving login with ``session_required_single_domain``
     keeps the user from picking, e.g., a personal Google identity that
     the gateway will then 403.
+
+    When ``allow_interactive`` is ``False`` (passive probes such as
+    ``check_auth_status`` / the handshake), we must never pop a browser:
+    instead we raise :class:`GlobusAuthError` with a structured
+    ``reason=argonne_login_required`` so the caller can report
+    "login required" rather than block the server on an interactive flow.
     """
+    if not allow_interactive:
+        logger.warning(
+            "Globus auth error %r — interactive login disabled "
+            "(reason=argonne_login_required)",
+            error,
+        )
+        raise GlobusAuthError(
+            "argonne login required: interactive Globus login is disabled for "
+            "passive probes (reason=argonne_login_required)"
+        )
     globus_sdk = _require_globus()
     logger.warning("Globus auth error %r — re-running login flow", error)
     auth_params = globus_sdk.gare.GlobusAuthorizationParameters(
@@ -118,19 +134,23 @@ def _domain_error_handler(app: Any, error: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _build_user_app(force: bool = False) -> Any:
+def _build_user_app(force: bool = False, *, allow_interactive: bool = True) -> Any:
     """Instantiate (and optionally re-login) the Globus ``UserApp``.
 
     The UserApp persists tokens at ``TOKENS_PATH`` (managed by Globus
     SDK). On first call without an existing token, the SDK prints a
     URL the user must visit and paste back a code; afterwards the
     refresh token keeps things going for ~6 months.
+
+    ``allow_interactive`` is threaded into the token-validation error
+    handler so passive callers (health / doctor / handshake) get a
+    ``reason=argonne_login_required`` error instead of a blocking login.
     """
     globus_sdk = _require_globus()
 
     class _Handler:
         def __call__(self, app: Any, error: Any) -> None:
-            _domain_error_handler(app, error)
+            _domain_error_handler(app, error, allow_interactive=allow_interactive)
 
     app = globus_sdk.UserApp(
         APP_NAME,
@@ -151,9 +171,9 @@ def _build_user_app(force: bool = False) -> Any:
     return app
 
 
-def _get_authorizer(force: bool = False) -> Any:
+def _get_authorizer(force: bool = False, *, allow_interactive: bool = True) -> Any:
     """Return a ``RefreshTokenAuthorizer`` bound to the gateway scope."""
-    app = _build_user_app(force=force)
+    app = _build_user_app(force=force, allow_interactive=allow_interactive)
     return app.get_authorizer(GATEWAY_CLIENT_ID)
 
 
@@ -162,25 +182,68 @@ def _get_authorizer(force: bool = False) -> Any:
 # ---------------------------------------------------------------------------
 
 
+def token_paths() -> tuple[str, ...]:
+    """Return token paths used by Globus SDK versions on supported platforms."""
+    paths = [
+        Path(TOKENS_PATH),
+    ]
+    if sys.platform == "win32":
+        local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+        if local_app_data:
+            paths.append(
+                Path(local_app_data) / "globus" / "app" / AUTH_CLIENT_ID / APP_NAME / "tokens.json"
+            )
+    else:
+        xdg_data_home = os.environ.get("XDG_DATA_HOME", "").strip()
+        if xdg_data_home:
+            paths.append(
+                Path(xdg_data_home) / "globus" / "app" / AUTH_CLIENT_ID / APP_NAME / "tokens.json"
+            )
+        paths.append(
+            Path.home()
+            / ".local"
+            / "share"
+            / "globus"
+            / "app"
+            / AUTH_CLIENT_ID
+            / APP_NAME
+            / "tokens.json"
+        )
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for path in paths:
+        resolved = str(path)
+        if resolved not in seen:
+            seen.add(resolved)
+            out.append(resolved)
+    return tuple(out)
+
+
 def tokens_exist() -> bool:
     """Whether stored tokens exist on disk (cheap, no globus import)."""
-    return os.path.isfile(TOKENS_PATH)
+    return any(os.path.isfile(path) for path in token_paths())
 
 
-def get_access_token(force_refresh: bool = False) -> str:
+def get_access_token(force_refresh: bool = False, *, allow_interactive: bool = True) -> str:
     """Return a valid bearer token for the ALCF inference gateway.
 
     Args:
         force_refresh: Re-drive OAuth even if a stored token exists.
             Use after an explicit logout or when the user reports a
             403 they suspect is auth-related.
+        allow_interactive: When ``False`` (passive probes: health /
+            doctor / handshake), an expired refresh token raises
+            :class:`GlobusAuthError` with ``reason=argonne_login_required``
+            instead of blocking on an interactive Globus login.
 
     Raises:
         GlobusUnavailable: ``globus-sdk`` isn't installed.
-        GlobusAuthError: OAuth flow failed (bad creds, network, …).
+        GlobusAuthError: OAuth flow failed (bad creds, network, …) or a
+            passive probe needs an interactive login.
     """
     try:
-        authorizer = _get_authorizer(force=force_refresh)
+        authorizer = _get_authorizer(force=force_refresh, allow_interactive=allow_interactive)
         # ensure_valid_token refreshes silently when within the
         # refresh-token lifetime; otherwise it triggers the
         # token_validation_error_handler we registered above.
@@ -189,9 +252,7 @@ def get_access_token(force_refresh: bool = False) -> str:
     except GlobusUnavailable:
         raise
     except Exception as exc:
-        raise GlobusAuthError(
-            f"Failed to obtain ALCF access token: {exc}"
-        ) from exc
+        raise GlobusAuthError(f"Failed to obtain ALCF access token: {exc}") from exc
 
 
 def check_auth_status() -> bool:
@@ -204,12 +265,12 @@ def check_auth_status() -> bool:
     try:
         if not tokens_exist():
             return False
-        authorizer = _get_authorizer(force=False)
+        authorizer = _get_authorizer(force=False, allow_interactive=False)
         authorizer.ensure_valid_token()
         return True
     except GlobusUnavailable:
         return False
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - probe failure logged (ALCF auth probe failed); treated as unauthenticated
         logger.info("ALCF auth probe failed: %s", exc)
         return False
 
@@ -218,8 +279,9 @@ def authenticate(force: bool = False) -> None:
     """Run the OAuth flow explicitly. Wired to the CLI ``/argonne login``
     command (and equivalent TUI button). On a fresh machine this
     prints a URL the user must visit; on machines that already have
-    tokens it's a no-op unless ``force=True``."""
-    _get_authorizer(force=force)
+    tokens it validates or refreshes the gateway access token unless
+    ``force=True`` redrives the interactive Globus login first."""
+    get_access_token(force_refresh=force)
 
 
 # ---------------------------------------------------------------------------
@@ -250,12 +312,10 @@ def _main() -> None:  # pragma: no cover - thin CLI wrapper
 
     if args.action == "authenticate":
         authenticate(force=args.force)
-        print("Authentication complete.")
+        print("ALCF access token validated.")
     elif args.action == "get-access-token":
         if not tokens_exist():
-            raise SystemExit(
-                "No tokens on disk; run 'authenticate' first."
-            )
+            raise SystemExit("No tokens on disk; run 'authenticate' first.")
         print(get_access_token(force_refresh=args.force))
     elif args.action == "status":
         ok = check_auth_status()

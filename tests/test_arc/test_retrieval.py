@@ -7,7 +7,6 @@ Tests cover:
 - _calculate_relevance_score with various overlaps
 - _extract_keywords filtering and tokenization
 - compile_expert_context delegation to ContextCompiler
-- get_relevant_tool_results with cached tool data
 """
 
 import time
@@ -17,8 +16,6 @@ import pytest
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.retrieval import ContextRetriever
 from clio_agent.arc.schema import (
-    CachedToolResult,
-    Context,
     Conversation,
     Message,
 )
@@ -44,10 +41,7 @@ def _make_conversation(session_id: str, messages: list[tuple[str, str]]) -> Conv
         updated_at=now,
         last_accessed=now,
         status="active",
-        messages=[
-            Message(role=role, content=content, timestamp=now)
-            for role, content in messages
-        ],
+        messages=[Message(role=role, content=content, timestamp=now) for role, content in messages],
     )
 
 
@@ -94,25 +88,19 @@ class TestCalculateRelevanceScore:
     def test_identical_content(self, retriever):
         """Identical query and conversation should score high."""
         conv = _make_conversation("s1", [("user", "optimize HDF5 compression")])
-        score = retriever._calculate_relevance_score(
-            "optimize HDF5 compression", conv
-        )
+        score = retriever._calculate_relevance_score("optimize HDF5 compression", conv)
         assert score > 0.5
 
     def test_no_overlap(self, retriever):
         """No keyword overlap should score 0."""
         conv = _make_conversation("s1", [("user", "weather forecast tomorrow")])
-        score = retriever._calculate_relevance_score(
-            "optimize HDF5 compression", conv
-        )
+        score = retriever._calculate_relevance_score("optimize HDF5 compression", conv)
         assert score == 0.0
 
     def test_partial_overlap(self, retriever):
         """Partial overlap should score between 0 and 1."""
         conv = _make_conversation("s1", [("user", "HDF5 file structure analysis")])
-        score = retriever._calculate_relevance_score(
-            "optimize HDF5 compression", conv
-        )
+        score = retriever._calculate_relevance_score("optimize HDF5 compression", conv)
         assert 0.0 < score < 1.0
 
     def test_empty_query(self, retriever):
@@ -152,10 +140,13 @@ class TestExtractKeyTopics:
 
     def test_extracts_frequent_words(self, retriever):
         """Should extract most frequent meaningful words."""
-        conv = _make_conversation("s1", [
-            ("user", "HDF5 compression HDF5 gzip HDF5"),
-            ("assistant", "HDF5 uses gzip compression by default"),
-        ])
+        conv = _make_conversation(
+            "s1",
+            [
+                ("user", "HDF5 compression HDF5 gzip HDF5"),
+                ("assistant", "HDF5 uses gzip compression by default"),
+            ],
+        )
         topics = retriever.extract_key_topics([conv])
         assert "hdf5" in topics
         assert "compression" in topics
@@ -170,31 +161,28 @@ class TestRetrieveContextForQuery:
 
     def test_returns_context_object(self, retriever, arc):
         """Should return a Context object."""
-        context = retriever.retrieve_context_for_query(
-            "optimize HDF5", "session-1"
-        )
+        context = retriever.retrieve_context_for_query("optimize HDF5", "session-1")
         assert context is not None
         assert context.domain.startswith("query_context_")
 
     def test_with_conversation_history(self, retriever, arc):
         """Should include learned patterns from conversation."""
-        conv = _make_conversation("session-1", [
-            ("user", "How to optimize HDF5 compression?"),
-            ("assistant", "Use gzip compression with chunking."),
-        ])
+        conv = _make_conversation(
+            "session-1",
+            [
+                ("user", "How to optimize HDF5 compression?"),
+                ("assistant", "Use gzip compression with chunking."),
+            ],
+        )
         arc.store_conversation(conv)
 
-        context = retriever.retrieve_context_for_query(
-            "HDF5 compression", "session-1"
-        )
+        context = retriever.retrieve_context_for_query("HDF5 compression", "session-1")
         # Should have learned patterns
         assert len(context.learned_patterns) >= 0
 
     def test_without_conversation(self, retriever, arc):
         """Should handle missing conversation gracefully."""
-        context = retriever.retrieve_context_for_query(
-            "test query", "nonexistent-session"
-        )
+        context = retriever.retrieve_context_for_query("test query", "nonexistent-session")
         assert context is not None
 
 
@@ -203,9 +191,7 @@ class TestCompileExpertContext:
 
     def test_returns_string(self, retriever, arc):
         """Should return a compiled context string."""
-        result = retriever.compile_expert_context(
-            "analyze HDF5", "session-1", tier=2
-        )
+        result = retriever.compile_expert_context("analyze HDF5", "session-1", tier=2)
         assert isinstance(result, str)
 
     def test_lazy_init_compiler(self, retriever):
@@ -213,73 +199,3 @@ class TestCompileExpertContext:
         assert retriever._context_compiler is None
         retriever.compile_expert_context("test", "s1")
         assert retriever._context_compiler is not None
-
-
-class TestGetRelevantToolResults:
-    """Test get_relevant_tool_results."""
-
-    def test_no_context_returns_empty(self, retriever):
-        """Missing context should return empty list."""
-        results = retriever.get_relevant_tool_results(
-            "analyze HDF5", "hdf5_domain"
-        )
-        assert results == []
-
-    def test_with_cached_results(self, retriever, arc):
-        """Should return scored cached tool results."""
-        now = time.time()
-        ctx = Context(
-            domain="hdf5_domain",
-            created_at=now,
-            updated_at=now,
-            cached_tool_results={
-                "hdf5_analyze": CachedToolResult(
-                    params_hash="hash1",
-                    result={"format": "hdf5", "compression": "gzip", "size": 1024},
-                    cached_at=now,
-                    ttl=3600,
-                    hit_count=5,
-                ),
-                "parquet_read": CachedToolResult(
-                    params_hash="hash2",
-                    result={"format": "parquet", "rows": 100},
-                    cached_at=now,
-                    ttl=3600,
-                    hit_count=2,
-                ),
-            },
-        )
-        arc.store_context(ctx)
-
-        results = retriever.get_relevant_tool_results(
-            "HDF5 compression analysis", "hdf5_domain"
-        )
-        # Should return results with hdf5-related content ranked higher
-        assert len(results) >= 1
-        assert "tool" in results[0]
-        assert "result" in results[0]
-
-    def test_max_results_limit(self, retriever, arc):
-        """Should respect max_results parameter."""
-        now = time.time()
-        ctx = Context(
-            domain="test_domain",
-            created_at=now,
-            updated_at=now,
-            cached_tool_results={
-                f"tool_{i}": CachedToolResult(
-                    params_hash=f"hash{i}",
-                    result={"data": f"result_{i}", "hdf5": "yes"},
-                    cached_at=now,
-                    ttl=3600,
-                    hit_count=i,
-                )
-                for i in range(10)
-            },
-        )
-        arc.store_context(ctx)
-
-        results = retriever.get_relevant_tool_results(
-            "hdf5 data analysis", "test_domain", max_results=3
-        )
-        assert len(results) <= 3

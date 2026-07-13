@@ -1,0 +1,247 @@
+{
+ "arcee-ai/trinity-large-thinking-w4a16": {
+  "context": 131072,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T03:55:34.104645+00:00"
+ },
+ "claude-3-5-haiku": {
+  "context": 200000,
+  "source": "seed"
+ },
+ "claude-3-5-sonnet": {
+  "context": 200000,
+  "source": "seed"
+ },
+ "claude-3-opus": {
+  "context": 200000,
+  "source": "seed"
+ },
+ "google/gemma-3-27b-it": {
+  "context": 32768,
+  "output": 8192,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T03:55:34.106898+00:00"
+ },
+ "google/gemma-4-26b-a4b-it": {
+  "context": 262144,
+  "output": 32768,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T03:55:34.107375+00:00"
+ },
+ "google/gemma-4-31b-it": {
+  "context": 262144,
+  "output": 32768,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T03:55:34.107718+00:00"
+ },
+ "gpt-4-turbo": {
+  "context": 128000,
+  "source": "seed"
+ },
+ "gpt-4o": {
+  "context": 128000,
+  "source": "seed"
+ },
+ "gpt-4o-mini": {
+  "context": 128000,
+  "source": "seed"
+ },
+ "gpt-5.1": {
+  "context": 400000,
+  "provider": "codex",
+  "source": "seed"
+ },
+ "gpt-5.5": {
+  "context": 1050000,
+  "provider": "codex",
+  "source": "seed"
+ },
+ "gpt-5.5-codex": {
+  "context": 1050000,
+  "provider": "codex",
+  "source": "seed"
+ },
+ "gpt-oss-120b": {
+  "context": 65536,
+  "source": "seed"
+ },
+ "gpt-oss-20b": {
+  "context": 131072,
+  "source": "seed"
+ },
+ "granite-4-h-tiny": {
+  "context": 1048576,
+  "source": "seed"
+ },
+ "haiku": {
+  "context": 200000,
+  "provider": "claude_code",
+  "source": "seed"
+ },
+ "ibm/granite-4-h-tiny": {
+  "context": 1048576,
+  "provider": "lm_studio",
+  "source": "live",
+  "updated_at": "2026-06-10T14:08:07.480817+00:00"
+ },
+ "llama-3-70b": {
+  "context": 8192,
+  "source": "seed"
+ },
+ "llama-3-8b": {
+  "context": 8192,
+  "source": "seed"
+ },
+ "llama3.2:1b": {
+  "context": 131072,
+  "provider": "ollama",
+  "source": "live",
+  "updated_at": "2026-06-09T21:54:40.641247+00:00"
+ },
+ "llama3.2:3b": {
+  "context": 131072,
+  "provider": "ollama",
+  "source": "live",
+  "updated_at": "2026-06-09T21:54:40.641435+00:00"
+ },
+ "meta-llama/llama-3.2-90b-vision-instruct": {
+  "context": 8192,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T03:55:34.108009+00:00"
+ },
+ "meta-llama/llama-3.3-70b-instruct": {
+  "context": 32768,
+  "output": 4096,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T03:55:34.108318+00:00"
+ },
+ "meta-llama/llama-4-maverick-17b-128e-instruct": {
+  "context": 16384,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T03:55:34.108592+00:00"
+ },
+ "meta-llama/llama-4-scout-17b-16e-instruct": {
+  "context": 32768,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T03:55:34.108907+00:00"
+ },
+ "meta-llama/meta-llama-3.1-405b-instruct": {
+  "context": 24576,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T03:55:34.109262+00:00"
+ },
+ "meta-llama/meta-llama-3.1-70b-instruct": {
+  "context": 16384,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T03:55:34.109555+00:00"
+ },
+ "meta-llama/meta-llama-3.1-8b-instruct": {
+  "context": 32768,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T03:55:34.109835+00:00"
+ },
+ "mistral-7b": {
+  "context": 32768,
+  "source": "seed"
+ },
+ "mistralai/devstral-2-123b-instruct-2512": {
+  "context": 16384,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T03:55:34.110092+00:00"
+ },
+ "mistralai/mistral-large-instruct-2407": {
+  "context": 16384,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T03:55:34.110498+00:00"
+ },
+ "mistralai/mixtral-8x22b-instruct-v0.1": {
+  "context": 16384,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T03:55:34.110929+00:00"
+ },
+ "nvidia/nemotron-3-super-120b": {
+  "context": 262144,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T03:55:34.111331+00:00"
+ },
+ "openai/gpt-oss-120b": {
+  "context": 65536,
+  "output": 32768,
+  "provider": "argonne",
+  "source": "live",
+  "updated_at": "2026-06-10T03:55:34.111784+00:00"
+ },
+ "opus": {
+  "context": 1000000,
+  "provider": "claude_code",
+  "source": "seed"
+ },
+ "qwen2.5:0.5b": {
+  "context": 32768,
+  "provider": "ollama",
+  "source": "live",
+  "updated_at": "2026-06-09T21:54:40.639233+00:00"
+ },
+ "qwen3:1.7b": {
+  "context": 40960,
+  "provider": "ollama",
+  "source": "live",
+  "updated_at": "2026-06-09T21:54:40.639475+00:00"
+ },
+ "qwen3:4b": {
+  "context": 40960,
+  "provider": "ollama",
+  "source": "live",
+  "updated_at": "2026-06-09T21:54:40.640428+00:00"
+ },
+ "qwen3:8b": {
+  "context": 40960,
+  "provider": "ollama",
+  "source": "live",
+  "updated_at": "2026-06-09T21:54:40.640928+00:00"
+ },
+ "qwen3:latest": {
+  "context": 40960,
+  "provider": "ollama",
+  "source": "live",
+  "updated_at": "2026-06-09T21:54:40.640754+00:00"
+ },
+ "qwopus3.5-9b-v3": {
+  "context": 262144,
+  "provider": "lm_studio",
+  "source": "live",
+  "updated_at": "2026-07-01T05:45:36.840885+00:00"
+ },
+ "qwopus3.5-9b-v3:2": {
+  "context": 262144,
+  "provider": "lm_studio",
+  "source": "live",
+  "updated_at": "2026-06-10T03:04:43.976697+00:00"
+ },
+ "sonnet": {
+  "context": 1000000,
+  "provider": "claude_code",
+  "source": "seed"
+ },
+ "text-embedding-nomic-embed-text-v1.5": {
+  "context": 2048,
+  "provider": "lm_studio",
+  "source": "live",
+  "updated_at": "2026-07-01T05:45:36.850763+00:00"
+ }
+}

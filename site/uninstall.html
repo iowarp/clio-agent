@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CLIO: Uninstall</title>
+  <meta name="description" content="Removing CLIO is one command: keep your data or wipe it clean. Trying CLIO is low-risk; uninstalling is just as easy." />
+  <link rel="icon" href="assets/logo.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- ===== Beta ribbon ===== -->
+  <a class="beta-ribbon" href="https://github.com/iowarp/clio-agent/releases" target="_blank" rel="noopener" aria-label="CLIO is in beta">BETA</a>
+
+  <!-- ===== Nav ===== -->
+  <header class="nav">
+    <div class="wrap nav-inner">
+      <a class="brand" href="index.html">
+        <img src="assets/logo.svg" alt="CLIO logo" />
+        <span class="wordmark">CLIO</span>
+        <span class="beta-tag">Beta</span>
+      </a>
+      <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation">☰</button>
+      <nav class="nav-links" id="navLinks">
+        <a href="index.html#install">Install</a>
+        <a href="index.html#desktop">Desktop</a>
+        <a href="index.html#docker">Docker</a>
+        <a href="docs.html">Docs</a>
+        <a href="contributing.html">Contributing</a>
+        <a href="uninstall.html">Uninstall</a>
+        <a class="ghbtn" href="https://github.com/iowarp/clio-agent" target="_blank" rel="noopener">GitHub ↗</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap doc">
+    <p class="eyebrow">Uninstall</p>
+    <h1>Removing CLIO</h1>
+    <p class="lead">Trying CLIO is low-risk: and so is changing your mind. Removing it is a single command, and you decide whether to keep your config and data or wipe everything clean.</p>
+
+    <h2>One command, your choice</h2>
+    <p>Run <code>clio uninstall</code> to remove the install and stop the server. By default it leaves your config and data in place, so you can reinstall later and pick up where you left off. Add the purge flag when you'd rather leave nothing behind.</p>
+
+    <div class="uninstall-grid">
+      <div class="uninstall-card">
+        <h3>Keep your data</h3>
+        <p>Removes the install: the venv, binaries, and launcher: and stops the server. Your config and data stay put. Good for reinstalling fresh.</p>
+        <p class="uninstall-keeps"><strong>Keeps:</strong> <code>~/.config/clio-agent</code> (sessions, workspaces, blueprints) and <code>~/.config/gact</code>.</p>
+        <div class="code" data-copy="clio uninstall">
+          <pre><span class="prompt">$ </span>clio uninstall</pre>
+          <button class="copy-btn" type="button" aria-label="Copy command" title="Copy command"></button>
+        </div>
+      </div>
+
+      <div class="uninstall-card">
+        <h3>Wipe everything</h3>
+        <p>Does everything above and also removes <strong>all</strong> of your config and data. Nothing is left behind.</p>
+        <p class="uninstall-keeps"><strong>Removes:</strong> <code>~/.config/clio-agent</code> and <code>~/.config/gact</code> too.</p>
+        <div class="code" data-copy="clio uninstall --purge">
+          <pre><span class="prompt">$ </span>clio uninstall --purge</pre>
+          <button class="copy-btn" type="button" aria-label="Copy command" title="Copy command"></button>
+        </div>
+        <p class="hint">On Windows (PowerShell), the flag is single-dash:</p>
+        <div class="code" data-copy="clio uninstall -Purge">
+          <pre><span class="prompt">PS&gt; </span>clio uninstall -Purge</pre>
+          <button class="copy-btn" type="button" aria-label="Copy command" title="Copy command"></button>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout">
+      <p>The purge flag form differs by platform: <code>--purge</code> (double-dash) on macOS / Linux, and <code>-Purge</code> (single-dash) on Windows. Everything else is the same.</p>
+    </div>
+
+    <h2>If <code>clio</code> isn't on your PATH</h2>
+    <p>You can run the uninstaller script directly. On macOS / Linux:</p>
+    <div class="code" data-copy="~/.local/share/clio/uninstall.sh">
+      <pre><span class="prompt">$ </span>~/.local/share/clio/uninstall.sh</pre>
+      <button class="copy-btn" type="button" aria-label="Copy command" title="Copy command"></button>
+    </div>
+    <p>On Windows, run the <code>uninstall.ps1</code> script in the install prefix.</p>
+
+    <div class="doc-links">
+      <a class="btn btn-primary" href="index.html">← Back to home</a>
+      <a class="btn" href="docs.html">Docs</a>
+      <a class="btn" href="https://github.com/iowarp/clio-agent/issues" target="_blank" rel="noopener">Open an issue</a>
+    </div>
+  </main>
+
+  <!-- ===== Footer ===== -->
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <div class="footer-links">
+        <a href="https://github.com/iowarp/clio-agent" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://pypi.org/project/clio-agent/" target="_blank" rel="noopener">PyPI</a>
+        <a href="docs.html">Docs</a>
+        <a href="contributing.html">Contributing</a>
+        <a href="uninstall.html">Uninstall</a>
+        <a href="https://github.com/iowarp/clio-agent/blob/main/LICENSE" target="_blank" rel="noopener">License · BSD-3-Clause</a>
+      </div>
+      <div class="footer-family">
+        <span class="footer-family-label">IOWarp family</span>
+        <a href="https://iowarp.org" target="_blank" rel="noopener">IOWarp</a>
+        <a href="https://github.com/iowarp/gact-tui" target="_blank" rel="noopener">gact-tui</a>
+        <a href="https://github.com/iowarp/clio-agent-marketplace" target="_blank" rel="noopener">Marketplace</a>
+        <a href="https://github.com/iowarp/clio-core" target="_blank" rel="noopener">clio-core</a>
+      </div>
+      <div class="credit">
+        <span class="accent">Gnosis Research Center</span> · Illinois Tech
+      </div>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

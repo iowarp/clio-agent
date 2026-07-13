@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from clio_agent.gact.workspace_scope import resolve_workspace_storage_root
+
 _WORKSPACE_ID_PREFIX = "ws_"
 
 
@@ -28,13 +30,20 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _config_with_storage_root(root_path: str, metadata: Optional[dict[str, Any]]) -> dict[str, Any]:
+    metadata = dict(metadata or {})
+    configured = str(metadata.get("storage_root") or metadata.get("storage_path") or "").strip()
+    if configured:
+        return {"storage_root": configured}
+    return {}
+
+
 def _default_store_path() -> Path:
     """Same XDG-friendly resolution sessions.py uses, sibling file."""
 
-    base = os.environ.get("XDG_CONFIG_HOME")
-    if base:
-        return Path(base) / "clio-agent" / "workspaces.json"
-    return Path.home() / ".config" / "clio-agent" / "workspaces.json"
+    from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
+
+    return paths.user_config_dir() / "workspaces.json"
 
 
 @dataclass
@@ -50,7 +59,9 @@ class Workspace:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_wire(self) -> dict[str, Any]:
-        return asdict(self)
+        row = asdict(self)
+        row["storage_root"] = str(resolve_workspace_storage_root(self))
+        return row
 
 
 class WorkspaceStore:
@@ -87,13 +98,15 @@ class WorkspaceStore:
             import json
 
             data = json.loads(self._path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception:  # noqa: BLE001 - unreadable workspaces store ignored
             return
         for row in data.get("workspaces", []):
             try:
+                if isinstance(row, dict):
+                    row = {key: value for key, value in row.items() if key != "storage_root"}
                 ws = Workspace(**row)
                 self._workspaces[ws.id] = ws
-            except Exception:
+            except Exception:  # noqa: BLE001 - malformed workspace row skipped
                 continue
 
     def _flush(self) -> None:
@@ -126,6 +139,7 @@ class WorkspaceStore:
         *,
         name: str,
         root_path: str = "",
+        storage_root: str = "",
         metadata: Optional[dict[str, Any]] = None,
     ) -> Workspace:
         """Create a new workspace + persist."""
@@ -138,6 +152,7 @@ class WorkspaceStore:
             root_path=root_path,
             created_at=now,
             updated_at=now,
+            config={"storage_root": storage_root} if storage_root else _config_with_storage_root(root_path, metadata),
             metadata=dict(metadata or {}),
         )
         with self._lock:
@@ -178,6 +193,7 @@ class WorkspaceStore:
         *,
         name: Optional[str] = None,
         root_path: Optional[str] = None,
+        storage_root: Optional[str] = None,
         metadata_patch: Optional[dict[str, Any]] = None,
     ) -> Optional[Workspace]:
         with self._lock:
@@ -188,6 +204,11 @@ class WorkspaceStore:
                 ws.name = name
             if root_path is not None:
                 ws.root_path = root_path
+            if storage_root is not None:
+                if storage_root:
+                    ws.config["storage_root"] = storage_root
+                else:
+                    ws.config.pop("storage_root", None)
             if metadata_patch is not None:
                 ws.metadata.update(metadata_patch)
             ws.updated_at = _utcnow_iso()

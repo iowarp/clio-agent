@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB13: tests for /v1/sessions/{sid}/events.
+"""tests for /v1/sessions/{sid}/events.
 
 Two-layer testing strategy:
 
@@ -25,6 +25,7 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import _format_sse, build_app
 from clio_agent.gact.events import Event, EventBus
+from clio_agent.gact.routes.misc import _sse_wire_tap
 
 # ---- EventBus unit tests --------------------------------------------------
 
@@ -35,6 +36,16 @@ def test_event_envelope_carries_type_and_payload() -> None:
     assert env["type"] == "message.created"
     assert env["payload"] == {"k": "v"}
     assert env["occurred_at"]  # ISO timestamp present
+    assert "replay" not in env
+
+
+def test_replay_event_envelope_is_distinguishable() -> None:
+    e = Event(type="message.created", session_id="s1", payload={"k": "v"})
+    replay = e.replay_copy()
+
+    assert replay.id == e.id
+    assert replay.occurred_at == e.occurred_at
+    assert replay.envelope()["replay"] is True
 
 
 def test_event_ids_are_monotonic() -> None:
@@ -52,12 +63,38 @@ def test_format_sse_emits_canonical_wire_shape() -> None:
     assert "data: " in raw
     assert raw.endswith("\n\n")
     # The data line is valid JSON matching the envelope.
-    data_line = next(
-        ln for ln in raw.splitlines() if ln.startswith("data: ")
-    )
+    data_line = next(ln for ln in raw.splitlines() if ln.startswith("data: "))
     payload = json.loads(data_line.removeprefix("data: "))
     assert payload["type"] == "message.completed"
     assert payload["payload"] == {"a": 1}
+
+
+def test_sse_wire_tap_writes_timestamped_event_log(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    raw_path = tmp_path / "sse.raw"
+    event_log_path = tmp_path / "sse.events.jsonl"
+    audit_path = tmp_path / "stream-audit.jsonl"
+    monkeypatch.setenv("CLIO_SSE_WIRE_TAP", str(raw_path))
+    monkeypatch.setenv("CLIO_SSE_EVENT_LOG", str(event_log_path))
+    monkeypatch.setenv("CLIO_STREAM_AUDIT_LOG", str(audit_path))
+    event = Event(type="message.part.delta", session_id="sess_1", payload={"turn_id": "t1"})
+    frame = _format_sse(event)
+
+    _sse_wire_tap("sess_1", frame, event)
+
+    assert raw_path.read_bytes() == frame
+    row = json.loads(event_log_path.read_text(encoding="utf-8"))
+    assert row["session_id"] == "sess_1"
+    assert row["event_id"] == event.id
+    assert row["event_type"] == "message.part.delta"
+    assert row["event_occurred_at"] == event.occurred_at
+    assert row["sse_written_at"]
+    assert row["frame_bytes"] == len(frame)
+
+    audit_row = json.loads(audit_path.read_text(encoding="utf-8"))
+    assert audit_row["stage"] == "sse.write"
+    assert audit_row["event_id"] == event.id
 
 
 @pytest.mark.asyncio
@@ -100,6 +137,49 @@ async def test_eventbus_only_delivers_to_matching_session() -> None:
     await asyncio.wait_for(task, timeout=2.0)
 
     assert s1_received == ["mine"]
+
+
+@pytest.mark.asyncio
+async def test_eventbus_global_events_fan_out_to_session_subscribers() -> None:
+    bus = EventBus()
+    received: list[str] = []
+
+    async def reader() -> None:
+        async for ev in bus.subscribe("s1"):
+            received.append(ev.type)
+            if len(received) >= 2:
+                break
+
+    task = asyncio.create_task(reader())
+    await asyncio.sleep(0)
+
+    bus.publish(Event(type="lm.provider.changed", session_id="", payload={}))
+    bus.publish(Event(type="message.created", session_id="s1", payload={}))
+
+    await asyncio.wait_for(task, timeout=2.0)
+
+    assert received == ["lm.provider.changed", "message.created"]
+
+
+@pytest.mark.asyncio
+async def test_eventbus_replays_global_and_session_history_as_replay_events() -> None:
+    bus = EventBus()
+    bus.publish(Event(type="lm.provider.changed", session_id="", payload={}))
+    bus.publish(Event(type="message.created", session_id="s1", payload={}))
+
+    received: list[Event] = []
+    sub = bus.subscribe("s1")
+    async for ev in sub:
+        received.append(ev)
+        if len(received) >= 2:
+            await sub.aclose()
+            break
+
+    assert [event.type for event in received] == [
+        "lm.provider.changed",
+        "message.created",
+    ]
+    assert all(event.replay for event in received)
 
 
 @pytest.mark.asyncio
@@ -146,9 +226,7 @@ class _FakeAgent:
 
 @pytest.fixture()
 def client(tmp_path: Path) -> TestClient:
-    return TestClient(
-        build_app(sessions_path=tmp_path / "s.json", agent=_FakeAgent())
-    )
+    return TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_FakeAgent()))
 
 
 def test_sse_endpoint_404s_for_unknown_session(client: TestClient) -> None:
@@ -157,7 +235,7 @@ def test_sse_endpoint_404s_for_unknown_session(client: TestClient) -> None:
     resp = client.get("/v1/sessions/sess_nope/events")
     assert resp.status_code == 404
     body = resp.json()
-    assert body["error"]["error"] == "internal_error"
+    assert body["error"]["error"] == "not_found"
     assert "session not found" in body["error"]["message"]
 
 

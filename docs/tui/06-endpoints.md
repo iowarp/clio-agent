@@ -1,14 +1,18 @@
 # 06 — Endpoints
 
-> Every surface a TUI can hit today. Source: `src/clio_agent/ui/cli.py`, `ui/api.py`, `pyproject.toml`.
+> Every surface a TUI can hit today. Source: `src/clio_agent/ui/cli.py`, `gact/app.py`, `pyproject.toml`.
 
 ## Console entry points
 
 From `pyproject.toml` (`[project.scripts]`):
 
 ```toml
-clio-agent     = "clio_agent.ui.cli:run_cli"
-clio-agent-api = "clio_agent.ui.api:main"
+clio-agent      = "clio_agent.ui.cli:main"          # `clio-agent serve` is the front door
+clio-agent-gact = "clio_agent.gact.app:main_deprecated"
+# clio-agent-gact is a deprecation alias: it warns on stderr, then delegates to
+# `clio-agent serve` (kept functional for one release for old launchers).
+# clio-agent-api is a removed-shim entry point: it prints a pointer to
+# `clio-agent serve` and exits non-zero (clio_agent.ui._deprecated_api:main).
 ```
 
 ## CLI — interactive + one-shot
@@ -45,63 +49,61 @@ $ clio-agent --query "Optimize my HDF5?" [--session SID] [--json] [--verbose]
 
 Prints `{"answer","selected_expert","session_id","duration_ms","error_info"}` with `--json`. Handy for scripted integration or testing without a server.
 
-## REST API — `clio-agent-api`
+## REST API — REMOVED (`clio-agent-api`)
 
-Module: `ui/api.py`. FastAPI + Uvicorn. Default `:8000`.
+The legacy `clio-agent-api` REST server (`ui/api.py`, `POST /query`, `GET
+/health`, `GET /experts`, `GET /metrics` on `:8000`) has been **removed**. CLIO
+now has a single HTTP front door: the unified GACT server below. The
+`clio-agent-api` console script survives only as a deprecation shim — it prints
+a pointer to `clio-agent serve` and exits non-zero.
 
-```
-$ clio-agent-api --host 0.0.0.0 --port 8000 [--reload]
-```
+Migration: start `clio-agent serve --host 0.0.0.0 --port 8100` and use the `/v1`
+API. Health moved from `/health` to `/v1/health`; per-session live streaming is
+at `/v1/sessions/{sid}/events`.
 
-### Lifecycle
+## GACT API — `clio-agent serve`
 
-On startup (`api.py:103-138`):
-1. `load_config_from_env()` → `LMProviderConfig`
-2. `setup_dspy()`
-3. `ClioAgent()` → attached to `app.state.agent`
-4. `app.state.healthy = True` once init succeeds
-
-On shutdown: `agent.shutdown()` if available.
-
-### Routes
-
-| Method | Path | Body | Response | Status codes |
-|---|---|---|---|---|
-| **POST** | `/query` | `{"question": str, "session_id": str?, "stream": bool?}` | JSON `QueryResponse` **or** SSE stream | 200, 422 (validation), 500, 503 (degraded) |
-| **GET** | `/health` | — | `{status, version, provider, environment, overall_status, integrations[], error?}` | 200 / 503 |
-| **GET** | `/experts` | — | `{experts: [{id, description, keywords, tools}]}` | 200 |
-| **GET** | `/metrics` | — | `{metrics: {agent_id → Metrics}}` | 200 |
-
-### `QueryResponse`
-
-```json
-{
-  "answer": "string",
-  "selected_expert": "data|analysis|visualization|chat|none",
-  "session_id": "string",
-  "duration_ms": 1234.5,
-  "error_info": null | {"error": "expert_error", "message": "...", "details": {...}}
-}
-```
-
-### SSE streaming
-
-When `stream: true`, the response is `text/event-stream`. Events (`api.py:259-299`):
+Module: `gact/app.py`. FastAPI + Uvicorn. The single HTTP front door.
 
 ```
-event: routing
-data: {"selected_expert": "data"}
-
-event: chunk
-data: {"text": "partial answer…"}
-
-event: done
-data: {"duration_ms": 1234.5, "selected_expert": "data"}
+$ clio-agent serve --host 127.0.0.1 --port 17800
 ```
 
-> **Note:** the SSE `chunk` events are currently **composed in the FastAPI layer** (`test_api.py:238-271`) — they're not driven by real token streaming from the agent core. Today the FastAPI wrapper synthesises them from the final answer. True token streaming is Phase 4+.
+### Core routes
 
-### Health shape
+| Method | Path | Purpose |
+|---|---|---|
+| **GET** | `/v1/health` | backend and integration health |
+| **GET** | `/v1/capabilities` | advertised GACT capability flags |
+| **GET / POST** | `/v1/sessions` | session list/create |
+| **GET / PATCH / DELETE** | `/v1/sessions/{sid}` | session metadata and lifecycle |
+| **POST** | `/v1/sessions/{sid}/messages` | enqueue a user turn; response acks quickly |
+| **DELETE** | `/v1/sessions/{sid}/messages/{message_id}` | delete one message from a specific session |
+| **GET** | `/v1/sessions/{sid}/events` | SSE stream for `message.*`, `tool.call.*`, and session status events |
+| **POST** | `/v1/sessions/{sid}/cancel` | best-effort cancellation envelope |
+| **GET / PUT** | `/v1/providers/lm` | inspect or hot-swap LM provider config |
+
+### GACT streaming
+
+Clients post the message, then consume `/events`. Live text deltas include `stream_source` so the TUI can distinguish live token/proxy streaming from post-hoc text delivery:
+
+| `stream_source` | Meaning |
+|---|---|
+| `live` | delta arrived through the live `dspy.streamify` path |
+| `batch` | final answer was already available before live provider-token deltas could be emitted |
+
+Batch fallback payloads include a structured `stream_fallback`
+object with `reason`, `category`, `description`, `recovery_actions`,
+legacy `synthetic_posthoc=true`, and `live_streaming=false`. The allowed reason
+catalog is advertised in `/v1/capabilities` as
+`capabilities.x_clio_stream_fallback_reasons`.
+Provider/planner failures during live stream execution settle the turn
+with structured `error_info` instead of falling back to fabricated answer
+text.
+
+Cancellation is also explicit rather than hidden. Cancelling a running turn settles the GACT envelope as cancelled; if provider/tool work is already inside an executor thread, `session.status_changed` marks `execution_cancellation="best_effort"` and `executor_work_may_continue=true`.
+
+## Legacy REST health shape
 
 ```json
 {
@@ -134,7 +136,7 @@ Tracked in `PLAN.md:149-150, 339-350`:
 
 ## MCP gateway
 
-`from clio_agent.tools.gateway import gateway` → `FastMCP("clio-gateway")` with 8 tools (see `05-tools.md`). Not bound to an HTTP transport by default. Can be exposed:
+`from clio_agent.tools.gateway import gateway` → `FastMCP("clio-gateway")` with 8 tools (see [`../MCP_TOOL_INTEGRATION.md`](../MCP_TOOL_INTEGRATION.md)). Not bound to an HTTP transport by default. Can be exposed:
 
 ```python
 # In-process (tests):
@@ -146,11 +148,20 @@ app = gateway.http_app()
 uvicorn.run(app, host="0.0.0.0", port=8001)
 ```
 
-The TUI does **not** need to speak MCP directly — it goes through `/query` and the expert dispatches the tool calls internally. MCP is relevant if the TUI wants to show a "raw tool palette" mode.
+The TUI does **not** need to speak MCP directly — it goes through the GACT message endpoint and the expert dispatches tool calls internally. MCP is relevant if the TUI wants to show a "raw tool palette" mode.
 
-## Calling CLIO from the TUI — four options
+## Calling CLIO from the TUI — options
 
-### A. Subprocess CLI + `--json`
+### A. Native GACT backend (recommended)
+
+```sh
+clio-agent serve --host 127.0.0.1 --port 17800
+GACT_BACKEND=http://127.0.0.1:17800 gact
+```
+
+**Pros:** first-class `/v1` contract, native sessions, SSE event bus, best-effort cancellation, LM provider configuration, and explicit streaming provenance. **Cons:** runs the CLIO Python backend beside the Go TUI.
+
+### B. Subprocess CLI + `--json`
 
 ```go
 out, _ := exec.Command("clio-agent", "--query", q, "--session", sid, "--json").Output()
@@ -158,7 +169,7 @@ out, _ := exec.Command("clio-agent", "--query", q, "--session", sid, "--json").O
 
 **Pros:** zero runtime deps. **Cons:** 1–2 s subprocess boot per query.
 
-### B. REST API (recommended for TUI)
+### C. Legacy REST API
 
 ```go
 resp, _ := http.Post(url+"/query", "application/json",
@@ -166,9 +177,12 @@ resp, _ := http.Post(url+"/query", "application/json",
 // then SSE-parse if stream=true
 ```
 
-**Pros:** long-running server, health endpoint, SSE for progress. **Cons:** must manage uvicorn process (solvable via `gact agent deploy`-style adapter).
+**Pros:** long-running server, health endpoint, simple query response.
+**Cons:** old `/query` SSE shape; it only returns a completed answer
+with batch provenance and must not be presented as live
+token streaming.
 
-### C. Direct Python import (same-process)
+### D. Direct Python import (same-process)
 
 ```python
 from clio_agent import ClioAgent
@@ -178,17 +192,12 @@ result = agent(question=q, session_id=sid)
 
 Not useful for a Go TUI; relevant only for a Python wrapper.
 
-### D. MCP client (tool-level)
+### E. MCP client (tool-level)
 
 If the MCP gateway is served over HTTP, the TUI can call individual tools directly (bypassing expert dispatch). Niche — use for a power-user "raw tool" panel.
 
 ## Recommended path for gact-tui
 
-**Option B with a thin adapter.** The GACT protocol already models the same primitives (sessions, messages, tool calls, streaming events). The integration work is:
-
-1. Translate GACT `/v1/sessions/{id}/messages` POST → `POST /query` with `session_id` + question.
-2. Map CLIO's SSE events (`routing`, `chunk`, `done`) → GACT's `message.part.delta` / `tool.call.started` / `message.completed`.
-3. Surface `/experts`, `/health`, `/metrics` behind GACT's `/v1/catalog`, `/v1/health`, `/v1/metrics`.
-4. Package the adapter the same way we did `claudecode` (`adapters/claudecode/`) so `gact agent deploy clio my-clio` just works.
+Use `clio-agent serve` directly. It already exposes the GACT primitives gact-tui expects: sessions, messages, event streams, cancellation, catalog, provider config, metrics, permissions, hooks, context files, diffs, tasks, and workspaces. Remaining truth gaps are tracked in `REAL_GAPS.md`.
 
 Covered in depth in `09-integration-plan.md`.

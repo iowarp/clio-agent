@@ -1,12 +1,11 @@
 """
 ClioAgent - Main Agent Module
 
-Agent-loop architecture over registered experts and tools.
+Agent-loop architecture over registered tools.
 
 Architecture:
     User Query -> Planner action
         -> tool call -> observation -> Planner action
-        -> expert delegation -> expert result
         -> answer from observations
 
 Usage:
@@ -20,120 +19,259 @@ Usage:
     >>> print(result.selected_expert)
 """
 
+import contextvars
 import json
-import os
+import logging
+import re
 import time
 import uuid
 from collections.abc import Mapping
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, Iterator, List, Literal
 
 import dspy
-import requests
 
-from clio_agent.arc.lsm import LSMTree
+from clio_agent import conf
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.retrieval import ContextRetriever
 from clio_agent.arc.schema import (
     Conversation,
     Invocation,
     Message,
+    NanoagentSpawn,
     RoutingDecision,
 )
+from clio_agent.arc.storage import make_arc_store
 from clio_agent.config import (
-    create_router_lm,
-    fetch_lm_studio_models,
+    LMProviderConfig,
+    create_chat_adapter,
+    create_lm,
+    create_planner_lm,
     has_explicit_model_override,
-    is_local_openai_compatible_backend,
+    list_lm_studio_models,
     load_config_from_env,
     select_models_for_agents,
 )
 from clio_agent.errors import (
+    CancellationError,
+    ClioError,
     ExpertError,
+    ProviderError,
     RoutingError,
-    ToolError,
 )
-from clio_agent.experts import AnalysisExpert, DataExpert, VisualizationExpert
 from clio_agent.harness import (
+    SPECIAL_ROUTE_TARGETS,
     RouteDecision,
     RunTrace,
     compact_tool_result,
     extract_file_paths,
-    format_tool_error,
     normalize_tool_error,
     normalize_tool_result,
     tool_result_ok,
 )
 from clio_agent.optimizer.instrumentation import _extract_output
 from clio_agent.registry.registry import AgentCapability, AgentRegistry
+
+# Generic path-detection allowlist: file suffixes recognized when extracting
+# candidate file paths from free text. Re-exported from the shared vocabulary
+# module (single source of truth — see clio_agent.scientific_suffixes).
+from clio_agent.scientific_suffixes import SCIENTIFIC_FILE_SUFFIXES
 from clio_agent.signatures.main_agent_sig import (
     AgentActionSignature,
     AgentAnswerSignature,
     ChatAgentSignature,
 )
-from clio_agent.tools.execution import create_sync_tool_executor
-from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError, validate_write_path
-from clio_agent.tools.gateway import gateway
+from clio_agent.tools.catalog import (
+    set_active_catalog,
+    tool_owner,
+    tool_tags,
+    tool_visible_to,
+)
+from clio_agent.tools.execution import (
+    create_sync_tool_executor,
+    get_active_tool_workspace_root,
+)
+from clio_agent.tools.gateway import build_gateway, build_tool_catalog
+from clio_agent.tools.mcp_config import load_mcp_servers
 
-SCIENTIFIC_FILE_SUFFIXES = {".h5", ".hdf5", ".parquet", ".csv"}
-DEFAULT_AGENT_MAX_STEPS = 4
+logger = logging.getLogger(__name__)
+
+
+def _clio_agent_version() -> str:
+    """Return the installed clio-agent package version.
+
+    Stamped into ARC conversation metadata so persisted records carry the
+    build that wrote them. Falls back to the in-tree ``__version__`` when the
+    distribution metadata is unavailable (e.g. a non-installed source tree).
+    """
+
+    from importlib import metadata  # noqa: PLC0415 - local to keep import list lean
+
+    try:
+        return metadata.version("clio-agent")
+    except metadata.PackageNotFoundError:
+        import clio_agent  # noqa: PLC0415
+
+        return str(getattr(clio_agent, "__version__", "0.0.0"))
+
+
+PLANNER_HIDDEN_TOOL_NAMES = {"fs_read_file", "fs_apply_edit_write"}
+
+# Action kinds the agent loop can execute. Enum validation happens at the
+# parse layer (_parse_action_json) as the sanctioned format-only barrier.
+SUPPORTED_PLANNER_ACTION_KINDS = frozenset({"tool", "answer", "none"})
+
+
+class UnsupportedPlannerActionError(ValueError):
+    """Planner returned well-formed JSON whose action kind has no executor.
+
+    Raised by :meth:`ClioAgent._parse_action_json` so the agent loop can
+    surface the rejected action back to the planner as a structured
+    ``planner_error`` observation and re-ask. The model stays the decider;
+    CLIO does not reroute, scrub, or fabricate a decision on its behalf.
+    """
+
+    def __init__(self, action: dict[str, Any]) -> None:
+        kind = str(action.get("action", "")).strip().lower()
+        super().__init__(
+            f"Planner returned unsupported action {kind!r}. "
+            f"Supported actions: {', '.join(sorted(SUPPORTED_PLANNER_ACTION_KINDS))}."
+        )
+        self.kind = kind
+        self.action = action
+
+
+_ROUTING_MODE_OVERRIDE: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "clio_routing_mode_override",
+    default="",
+)
+_CANCELLATION_CHECKER: contextvars.ContextVar[Callable[[], bool] | None] = contextvars.ContextVar(
+    "clio_cancellation_checker", default=None
+)
+
+
+@contextmanager
+def routing_mode_override(mode: str) -> Iterator[None]:
+    """Scope a GACT routing override to the current turn context."""
+
+    token = _ROUTING_MODE_OVERRIDE.set(str(mode or "auto"))
+    try:
+        yield
+    finally:
+        _ROUTING_MODE_OVERRIDE.reset(token)
+
+
+@contextmanager
+def cancellation_checker(checker: Callable[[], bool] | None) -> Iterator[None]:
+    """Scope a cooperative cancellation checker to the current agent turn."""
+
+    token = _CANCELLATION_CHECKER.set(checker)
+    try:
+        yield
+    finally:
+        _CANCELLATION_CHECKER.reset(token)
+
+
+def cancellation_requested() -> bool:
+    """Return whether the active cooperative cancellation checker is set."""
+
+    checker = _CANCELLATION_CHECKER.get()
+    return bool(checker is not None and checker())
+
+
+DEFAULT_AGENT_MAX_STEPS = 8
+ERROR_RECOVERY_ACTIONS = ("retry", "reconfigure_provider", "exit")
 
 
 class ClioAgent(dspy.Module):
-    """CLIO Agent with a planner loop over registered tools and experts.
+    """CLIO Agent with a planner loop over registered tools.
 
     Architecture:
         User Query -> Planner action
             -> tool call -> observation -> next planner action
-            -> expert delegation -> expert result
             -> answer from observations or conversation
 
     Attributes:
         action_planner: DSPy Predict module with AgentActionSignature
         chat_agent: DSPy Predict module with ChatAgentSignature
-        data_expert: DataExpert instance with native HDF5 tools
-        analysis_expert: AnalysisExpert instance with native Parquet/CSV tools
-        visualization_expert: VisualizationExpert instance with matplotlib tools
         arc: ARC Memory instance
         context_retriever: Context retrieval module
         registry: Agent registry for discovery
-        lsm: LSM Tree for metrics storage
 
     Example:
         >>> agent = ClioAgent()
         >>> result = agent(question="Optimize my HDF5 file", session_id="session-123")
         >>> print(result.answer)
-        >>> print(result.selected_expert)  # "data", "analysis", "visualization", "chat", or "none"
+        >>> print(result.selected_expert)  # "chat", "utility", or tool-owner metadata
     """
 
-    def __init__(self, verbose: bool = False, data_dir: str = ".clio_agent"):
-        """Initialize ClioAgent with planner, ChatAgent, and all experts.
+    def __init__(
+        self,
+        verbose: bool = False,
+        data_dir: str = ".clio/agent",
+        arc: ARCMemory | None = None,
+        provider_config: LMProviderConfig | None = None,
+    ):
+        """Initialize ClioAgent with planner, chat, tool execution, and runtime storage.
 
         Args:
             verbose: If True, print reasoning and decisions
             data_dir: Base directory for ClioAgent data storage
+            arc: An EXISTING ARCMemory to reuse. ARC is a per-clio-agent keystone:
+                exactly ONE per process (one ARC per clio-agent, the gact server owns
+                its lifecycle). When the LM bind rebuilds the agent it MUST inject the
+                same ARC here so ``app.state.arc`` stays the SAME object across binds —
+                otherwise a fresh ARC's empty ``_events`` strands every event the prior
+                ARC already recorded onto the shared durable trace (the trace ⊋ ARC
+                split). ``None`` mints a fresh ARC (the standalone CLI / test path that
+                owns no server-level ARC).
+            provider_config: The default-profile provider config the agent binds its
+                ``_main_lm`` / ``_planner_lm`` / ``_dspy_adapter`` from. The gact
+                server supplies the config resolved off its authoritative
+                ``ProviderProfileStore`` default (design §9 step 9), so the main agent
+                and the store agree on ONE identity rather than each reading the
+                environment independently (the dropped boot env-handoff). ``None``
+                reads :func:`load_config_from_env` directly — the standalone CLI / test
+                baseline, byte-identical to before.
         """
         super().__init__()
         self.verbose = verbose
 
-        # Initialize ARC Memory
-        self.arc = ARCMemory(data_dir=f"{data_dir}/arc", cache_capacity=1000)
+        # ARC Memory: reuse the injected one (the gact server owns the single per-process
+        # ARC and re-injects it on every bind) or mint one. The persistence backend comes
+        # from the factory: clio-core CTE by default (the gold-standard, in-process tiered
+        # store), LocalFSStore via CLIO_ARC_STORE=local. Falls back to LocalFS if the CTE
+        # binding/runtime is unavailable.
+        self.arc = (
+            arc
+            if arc is not None
+            else ARCMemory(
+                data_dir=f"{data_dir}/arc",
+                cache_capacity=1000,
+                store=make_arc_store(data_dir=f"{data_dir}/arc"),
+            )
+        )
         self.context_retriever = ContextRetriever(self.arc)
-
-        # Initialize LSM Tree for metrics
-        self.lsm = LSMTree(data_dir=f"{data_dir}/arc/lsm")
 
         # Initialize Agent Registry (for discovery, not routing)
         self.registry = AgentRegistry()
 
-        # Load provider-agnostic config from environment
-        self._provider_config = load_config_from_env()
+        # Provider identity: bind the injected default-profile config when the gact
+        # server supplies one (its ``ProviderProfileStore`` default is the
+        # authoritative source — design §9 step 9), so the main agent and the store
+        # share ONE identity instead of each reading the environment independently.
+        # ``None`` reads the environment directly — the standalone CLI / test
+        # baseline, byte-identical to before.
+        self._provider_config = (
+            provider_config if provider_config is not None else load_config_from_env()
+        )
 
         if self._provider_config.provider == "lm_studio" and not has_explicit_model_override():
             # LM Studio without an explicit model pin: discover loaded models
             # from the configured API base and use the same selected model for
-            # routing and the global DSPy runtime.
-            available_models = fetch_lm_studio_models(base_url=self._provider_config.api_base)
+            # planning and the global DSPy runtime.
+            available_models = list_lm_studio_models(base_url=self._provider_config.api_base)
             if self.verbose:
                 main_model, expert_model = select_models_for_agents(available_models)
             else:
@@ -153,11 +291,9 @@ class ClioAgent(dspy.Module):
             print(f"[ClioAgent] Expert model: {expert_model}")
 
         # Planner: a model-chosen action loop over live capabilities.
-        self._router_lm = create_router_lm(self._provider_config)
+        self.rebind_lms(self._provider_config)
         self.action_planner = dspy.Predict(AgentActionSignature)
         self.answer_synthesizer = dspy.Predict(AgentAnswerSignature)
-        self.router = self.action_planner
-        self._active_trace: RunTrace | None = None
 
         # Chat Agent: Predict for conversational responses. This keeps the
         # structured output surface smaller than ChainOfThought, which is more
@@ -165,138 +301,207 @@ class ClioAgent(dspy.Module):
         self.chat_agent = dspy.Predict(ChatAgentSignature)
 
         # Shared MCP executor: one explicit sync boundary for CLI/API thread calls.
-        self.tool_executor = create_sync_tool_executor(gateway)
+        # The tool gateway is built from the universal in-process built-ins
+        # (fs/shell) PLUS the declared MCP servers for the discovered blueprints
+        # and user/workspace config. Declared MCPs are the only source of domain
+        # tools; the catalog (ownership/visibility) is derived from the connected
+        # namespaces merged with the static built-in entries.
+        #
+        # Per active workspace: stdio MCP subprocesses are spawned with
+        # ``cwd=<workspace root>`` so every stdio tool writes into the workspace
+        # by default; http MCPs stay shared. The default (no-cwd) gateway and the
+        # process-global tool catalog are built once here (the catalog/tool-set is
+        # identical across workspaces). The tool *executor* is then resolved per
+        # active workspace via ``_active_tool_executor``: each workspace root keys
+        # a lazily built executor over a gateway built with that cwd, so each
+        # workspace spawns its stdio MCPs at most once. No active workspace falls
+        # back to this default executor (current behavior).
+        self._tool_gateway = self._build_tool_gateway(set_catalog=True)
+        self.tool_executor = create_sync_tool_executor(self._tool_gateway)
+        # Cache of workspace root -> sync tool executor (lazy, one per workspace).
+        self._workspace_tool_executors: dict[str, Any] = {}
 
-        # DataExpert: native deterministic HDF5 tools with optional DSPy synthesis
-        self.data_expert = DataExpert(
-            arc_memory=self.arc,
-            tool_executor=self.tool_executor,
-        )
-
-        # AnalysisExpert: native deterministic Parquet/CSV tools with optional DSPy synthesis
-        self.analysis_expert = AnalysisExpert(
-            arc_memory=self.arc,
-            tool_executor=self.tool_executor,
-        )
-
-        # VisualizationExpert: ReAct with matplotlib chart tools
-        self.visualization_expert = VisualizationExpert(arc_memory=self.arc)
-
-        # Register all experts in registry
+        # Core no longer installs domain experts into the Python registry.
+        # Default and baseline agents are blueprint programs loaded through
+        # the pinned registry bootstrap path.
         self.registry.register_agent(
-            "data",
-            self.data_expert,
+            "utility",
+            self,
             AgentCapability(
-                keywords=["hdf5", "compression", "chunking", "data", "io"],
-                description="Data I/O optimization expert with HDF5 tools",
-                tools=[
-                    "hdf5_list_datasets",
-                    "hdf5_analyze_dataset",
-                    "hdf5_check_compression",
-                    "hdf5_optimize_chunking",
-                    "hdf5_analyze_file",
-                ],
-                specialization="data_io",
-                metadata={"file_suffixes": [".h5", ".hdf5"]},
+                keywords=["shell", "bash", "terminal", "command", "time", "date", "environment"],
+                description=(
+                    "Local utility command expert. Exposes the permission-gated "
+                    "shell_bash tool for simple local diagnostics such as current time, "
+                    "plus workspace edit proposal tools."
+                ),
+                tools=["shell_bash", "fs_propose_edit"],
+                specialization="utility",
             ),
         )
-
-        self.registry.register_agent(
-            "analysis",
-            self.analysis_expert,
-            AgentCapability(
-                keywords=[
-                    "parquet",
-                    "statistics",
-                    "schema",
-                    "profiling",
-                    "analysis",
-                    "data quality",
-                    "csv",
-                ],
-                description="Statistical analysis and data profiling expert with Parquet tools",
-                tools=[
-                    "parquet_analyze_schema",
-                    "parquet_query_data",
-                    "parquet_compute_statistics",
-                    "csv_read_table",
-                ],
-                specialization="data_analysis",
-                metadata={"file_suffixes": [".parquet", ".csv"]},
-            ),
-        )
-
-        self.registry.register_agent(
-            "visualization",
-            self.visualization_expert,
-            AgentCapability(
-                keywords=["plot", "chart", "histogram", "scatter", "visualization", "graph"],
-                description="Scientific data visualization expert with matplotlib tools",
-                tools=[
-                    "plot_histogram",
-                    "plot_bar_chart",
-                    "plot_scatter",
-                    "plot_summary",
-                ],
-                specialization="data_visualization",
-                metadata={"file_suffixes": [".parquet", ".csv"]},
-            ),
-        )
-
-        # Load active variants for each expert (if any)
-        try:
-            from clio_agent.optimizer.variants import VariantManager
-
-            vm = VariantManager(self.arc)
-            for agent_id, expert_attr in [
-                ("data", "data_expert"),
-                ("analysis", "analysis_expert"),
-                ("visualization", "visualization_expert"),
-            ]:
-                active = vm.get_active_variant(agent_id)
-                if active and Path(active.file_path).exists():
-                    try:
-                        vm.load_variant(getattr(self, expert_attr), active.variant_id)
-                        if self.verbose:
-                            print(f"[ClioAgent] Loaded variant {active.variant_id} for {agent_id}")
-                    except Exception as e:
-                        if self.verbose:
-                            print(
-                                f"[ClioAgent] Warning: Could not load variant for {agent_id}: {e}"
-                            )
-        except Exception as e:
-            if self.verbose:
-                print(f"[ClioAgent] Warning: Variant loading failed: {e}")
 
         if self.verbose:
-            print(f"[ClioAgent] Registered {self.registry.get_agent_count()} experts")
+            print(f"[ClioAgent] Registered {self.registry.get_agent_count()} runtime agents")
             print(f"[ClioAgent] ARC Memory initialized at {data_dir}/arc")
-            print(f"[ClioAgent] LSM Tree initialized at {data_dir}/arc/lsm")
 
-    def forward(self, question: str, session_id: str = "default") -> dspy.Prediction:
+    def rebind_lms(self, provider_config: LMProviderConfig) -> None:
+        """(Re)build the LM-dependent surface from a provider config.
+
+        The single writer for ``_provider_config`` / ``_main_lm`` / ``_planner_lm`` /
+        ``_dspy_adapter``. Used by ``__init__`` and by the gact LM-bind hot-swap, so the
+        four fields are always rebuilt together (no partial/torn LM surface).
+        """
+
+        self._provider_config = provider_config
+        self._main_lm = create_lm(provider_config)
+        self._planner_lm = create_planner_lm(provider_config)
+        self._dspy_adapter = create_chat_adapter(provider_config)
+
+    def _discover_pack_servers(self) -> dict[str, dict[str, Any]]:
+        """Return declared ``mcp_servers`` per discovered blueprint id.
+
+        Reads each blueprint's ``AGENT.md`` frontmatter ``mcp_servers`` map so
+        the active pack's declared MCP servers become available tools. Discovery
+        failures degrade to "no pack servers" (pure reasoning / built-ins only).
+        """
+
+        from clio_agent.gact.agent_blueprints import (  # noqa: PLC0415
+            discover_agent_blueprints,
+        )
+
+        pack_servers: dict[str, dict[str, Any]] = {}
+        try:
+            blueprints = discover_agent_blueprints()
+        except Exception as exc:  # noqa: BLE001 - discovery is best-effort
+            if self.verbose:
+                print(f"[ClioAgent] blueprint discovery failed: {exc}")
+            return pack_servers
+        for blueprint in blueprints:
+            servers = blueprint.metadata.get("mcp_servers")
+            if isinstance(servers, Mapping) and servers:
+                pack_servers[blueprint.id] = {str(k): v for k, v in servers.items()}
+        return pack_servers
+
+    def _build_tool_gateway(self, *, cwd: str | None = None, set_catalog: bool = False) -> Any:
+        """Build the tool gateway from built-ins + declared MCP servers.
+
+        Merges declared MCP servers across pack ``AGENT.md`` frontmatter and
+        user/workspace ``mcp.yaml`` (``load_mcp_servers``), proxy-mounts them next
+        to the in-process built-ins (``build_gateway``), then installs the derived
+        tool catalog (``build_tool_catalog``) so ownership/visibility for declared
+        tools comes from connected namespaces + each expert's ``tools:`` list.
+
+        Args:
+            cwd: Working directory for stdio MCP subprocesses (per active
+                workspace). Http MCPs stay shared and ignore it. ``None`` keeps
+                the process cwd (the default gateway).
+            set_catalog: Whether to derive and install the process-global tool
+                catalog from this gateway. The catalog/tool-set is identical
+                across workspaces, so only the default gateway sets it; per-
+                workspace gateways reuse the already-installed catalog.
+        """
+
+        pack_servers = self._discover_pack_servers()
+        specs = load_mcp_servers(pack_servers=pack_servers)
+        tool_gateway = build_gateway(specs, cwd=cwd)
+        if not set_catalog:
+            return tool_gateway
+        experts = self._discover_pack_experts()
+        try:
+            catalog = build_tool_catalog(tool_gateway, experts=experts)
+            set_active_catalog(catalog)
+        except Exception as exc:  # noqa: BLE001 - degrade to static built-ins
+            if self.verbose:
+                print(f"[ClioAgent] tool catalog derivation failed: {exc}")
+            set_active_catalog(None)
+        return tool_gateway
+
+    def _active_tool_executor(self) -> Any:
+        """Resolve the tool executor for the active session workspace.
+
+        Reads the active workspace root from the tool-execution contextvar. With
+        no active workspace, returns the default (no-cwd) executor (current
+        behavior). Otherwise returns a per-workspace executor over a gateway whose
+        stdio MCP subprocesses are spawned with ``cwd=<workspace root>`` (http MCPs
+        stay shared). The executor is cached per root, so each workspace spawns its
+        stdio MCPs at most once (lazy, on first tool use for that workspace).
+        """
+
+        root = get_active_tool_workspace_root().strip()
+        if not root:
+            return self.tool_executor
+        executor = self._workspace_tool_executors.get(root)
+        if executor is None:
+            gateway = self._build_tool_gateway(cwd=root)
+            executor = create_sync_tool_executor(gateway)
+            self._workspace_tool_executors[root] = executor
+        return executor
+
+    def _discover_pack_experts(self) -> list[Any]:
+        """Return loaded pack experts (for declared-tool visibility derivation)."""
+
+        from clio_agent.gact.agent_blueprints import load_agent_blueprints  # noqa: PLC0415
+
+        try:
+            return list(load_agent_blueprints())
+        except Exception as exc:  # noqa: BLE001 - best-effort
+            if self.verbose:
+                print(f"[ClioAgent] expert discovery failed: {exc}")
+            return []
+
+    def forward(
+        self,
+        question: str,
+        session_id: str = "default",
+        *,
+        session_mode: str = "chat",
+        session_edit_mode: str = "diff",
+        images: list[Any] | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> dspy.Prediction:
         """Process a question through the CLIO agent loop.
 
         Flow:
             1. Retrieve session and current-file context from ARC
             2. Ask the planner for the next action using live capabilities
-            3. Execute tools or experts and append observations
+            3. Execute tools and append observations
             4. Answer from observations or direct conversation
             5. Store decisions, provenance, metrics, and conversation in ARC
 
         Args:
             question: User's question or request
             session_id: Session identifier for conversation tracking
+            session_mode: GACT session mode. Currently recorded at the
+                boundary; write enforcement happens in the GACT layer.
+            session_edit_mode: GACT edit shaping mode. File-diff shaping
+                happens in the GACT layer.
+            cancel_requested: Optional cooperative cancellation checker
+                supplied by service frontends such as GACT.
 
         Returns:
             dspy.Prediction with answer, selected_expert, session_id,
-            duration_ms, arc_stats, lsm_stats
+            duration_ms, arc_stats
         """
+        if cancel_requested is not None:
+            with cancellation_checker(cancel_requested):
+                return self.forward(
+                    question,
+                    session_id=session_id,
+                    session_mode=session_mode,
+                    session_edit_mode=session_edit_mode,
+                    images=images,
+                )
+
         start_time = time.time()
 
-        # Step 1: Retrieve context from ARC Memory
-        session_context = self._get_session_context(question, session_id)
+        # Step 1: Retrieve context from ARC Memory. The gact turn path prepends
+        # the full transcript as THE conversation channel, so the compiled
+        # context deliberately omits conversation/routing turns (#771).
+        session_context = self._get_session_context(
+            question, session_id, tool_scope="chat", include_conversation=False
+        )
         active_file = self._resolve_session_file_reference(question, session_id)
         file_context = self._get_file_context(session_id, active_file)
+        routing_mode = self._effective_routing_mode()
 
         route = RouteDecision(
             target="chat",
@@ -305,7 +510,6 @@ class ClioAgent(dspy.Module):
             confidence=0.0,
         )
         trace = RunTrace(route=route)
-        self._active_trace = trace
 
         if self.verbose:
             print(f"[Planner] {question[:50]}...")
@@ -322,40 +526,51 @@ class ClioAgent(dspy.Module):
                 question=question,
                 session_context=session_context,
                 file_context=file_context,
+                images=images,
                 trace=trace,
+                routing_mode=routing_mode,
             )
             trace.route = route
             success = True
-            if selected in ("data", "analysis", "visualization") and error_info is None:
-                error_info = self._tool_error_info_from_trace(selected, trace)
-            if error_info and not error_info.get("details", {}).get("partial", False):
-                success = False
-                error_msg = str(error_info.get("message") or "Tool execution failed.")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - routing failure recorded on the trace (success=False + inferred expert)
             success = False
-            if isinstance(e, RoutingError):
-                error_info = e.to_dict()
-                answer = (
-                    "I could not choose a valid CLIO action for this request. "
-                    "Check the configured local model and retry."
+            inferred_selected = self._selected_expert_from_trace(trace)
+            if selected == "chat" and inferred_selected != "chat":
+                selected = inferred_selected
+                route = RouteDecision(
+                    target=selected,
+                    source=route.source,
+                    reason=(
+                        f"{route.reason} Selected expert inferred from completed "
+                        "tool provenance after the turn failed."
+                    ).strip(),
+                    confidence=route.confidence,
+                    capabilities=route.capabilities,
                 )
+            if isinstance(e, RoutingError):
+                error_info = self._with_recovery_actions(e.to_dict())
+                answer = ""
+            elif isinstance(e, ClioError):
+                error_info = self._with_recovery_actions(e.to_dict())
+                answer = ""
             else:
                 agent_err = ExpertError(
                     message="CLIO could not complete the agent loop for this request.",
-                    details={"selected": selected, "original_error": str(e)},
+                    details=self._recovery_details(
+                        selected=selected,
+                        original_error=str(e),
+                    ),
                 )
                 error_info = agent_err.to_dict()
-                answer = (
-                    "I could not complete the requested action. "
-                    "The failure is recorded in error_info for inspection."
-                )
+                answer = ""
             error_msg = str(e)
             if self.verbose:
                 print(f"[ClioAgent] Agent loop error: {e}")
 
         # Step 4b: Store tier-2 expert invocation for optimizer training data
         expert_duration_ms = (time.time() - start_time) * 1000
-        if selected in ("data", "analysis", "visualization"):
+        nanoagents_spawned = self._extract_nanoagents_spawned(expert_result)
+        if selected not in SPECIAL_ROUTE_TARGETS:
             self._store_expert_invocation(
                 question=self._question_with_session_file(question, active_file),
                 file_context=file_context,
@@ -373,18 +588,32 @@ class ClioAgent(dspy.Module):
         duration_ms = (time.time() - start_time) * 1000
         self._store_conversation(question, answer, session_id)
         self._store_routing_decision(question, route, session_id)
-        self._store_metrics(question, session_id, selected, duration_ms, success, error_msg, trace)
-        self._active_trace = None
+        self._store_metrics(
+            question,
+            session_id,
+            selected,
+            duration_ms,
+            success,
+            error_msg,
+            trace,
+            nanoagents_spawned=nanoagents_spawned,
+        )
 
         return dspy.Prediction(
             answer=answer,
             selected_expert=selected,
+            tools_called=[tool.to_arc_tool_call() for tool in trace.tools],
+            expert_handoffs=[handoff.to_dict() for handoff in trace.expert_handoffs],
+            file_diffs=self._file_diffs_from_trace(
+                trace,
+                edit_mode=session_edit_mode,
+            ),
             route_source=route.source,
             route_reason=route.reason,
             session_id=session_id,
             duration_ms=duration_ms,
             arc_stats=self.arc.get_cache_stats(),
-            lsm_stats=self.lsm.get_stats(),
+            nanoagents_spawned=nanoagents_spawned,
             error_info=error_info,
         )
 
@@ -395,28 +624,133 @@ class ClioAgent(dspy.Module):
         session_context: str,
         file_context: str,
         trace: RunTrace,
+        images: list[Any] | None = None,
+        routing_mode: str = "auto",
     ) -> tuple[str, str, Any, dict[str, Any] | None, RouteDecision]:
         """Run the planner/executor loop for one user request."""
-        capabilities = self._build_capabilities_context()
+        self._raise_if_cancelled("agent_loop_start")
+        image_inputs = list(images or [])
+        if routing_mode == "chat":
+            answer = self._run_chat_agent(
+                question,
+                session_context,
+                images=image_inputs,
+                trace=trace,
+            )
+            route = self._route_for_selected(
+                "chat",
+                "Session routing_mode='chat' forced the conversational path.",
+                confidence=1.0,
+            )
+            return "chat", answer, None, None, route
+
+        capabilities = self._build_capabilities_context(routing_mode=routing_mode)
         observations: list[dict[str, Any]] = []
         selected = "chat"
+        error_info: dict[str, Any] | None = None
         route = trace.route
 
         for step in range(self._agent_max_steps()):
-            action = self._plan_next_action(
-                question=question,
-                session_context=session_context,
-                file_context=file_context,
-                capabilities=capabilities,
-                observations=observations,
-            )
+            self._raise_if_cancelled("planner_before")
+            try:
+                action = self._plan_next_action(
+                    question=question,
+                    session_context=session_context,
+                    file_context=file_context,
+                    images=image_inputs,
+                    capabilities=capabilities,
+                    observations=observations,
+                )
+            except UnsupportedPlannerActionError as unsupported:
+                # Bounded re-ask: surface the rejected action back to the
+                # planner as a structured observation and let it decide.
+                observations.append(
+                    {
+                        "step": step + 1,
+                        "type": "planner_error",
+                        "ok": False,
+                        "result": {
+                            "message": str(unsupported),
+                            "action": unsupported.action,
+                        },
+                    }
+                )
+                continue
+            except RoutingError as planner_error:
+                if not self._has_successful_execution_observation(observations):
+                    raise
+                answer = self._synthesize_agent_answer(
+                    question=question,
+                    session_context=session_context,
+                    images=image_inputs,
+                    observations=observations,
+                )
+                trace_selected = self._selected_expert_from_trace(trace)
+                if selected == "chat" and trace_selected != "chat":
+                    selected = trace_selected
+                route = self._route_for_selected(
+                    selected,
+                    "Agent planner failed after completed tool observations; "
+                    "CLIO answered from accumulated observations.",
+                    confidence=0.55,
+                )
+                planner_error_details = planner_error.details
+                planner_original_error = (
+                    self._coerce_text(planner_error_details.get("original_error")).strip()
+                    if isinstance(planner_error_details, dict)
+                    else ""
+                )
+                error_info = RoutingError(
+                    "Agent planner failed after completed tool observations.",
+                    details=self._recovery_details(
+                        partial=True,
+                        stage="post_observation_planning",
+                        original_error=planner_original_error or str(planner_error),
+                        planner_error=planner_error.to_dict(),
+                        planner_observations=observations[-3:],
+                    ),
+                ).to_dict()
+                return selected, answer, None, error_info, route
+            self._raise_if_cancelled("planner_after")
             kind = self._coerce_text(action.get("action")).strip().lower()
             reason = self._coerce_text(action.get("reason")).strip()
 
             if kind == "tool":
                 tool_name = self._coerce_text(action.get("tool")).strip()
-                result = self._execute_tool_action(tool_name, action.get("args"), trace)
-                selected = self._selected_expert_for_tool(tool_name)
+                owning_expert = self._selected_expert_for_tool(tool_name)
+                selected = self._parent_route_for_child(owning_expert) or owning_expert
+                scope_error = self._tool_action_scope_error(
+                    tool_name,
+                    selected=selected,
+                    question=question,
+                    file_context=file_context,
+                    session_context=session_context,
+                )
+                if scope_error is not None:
+                    observations.append(
+                        {
+                            "step": step + 1,
+                            "type": "planner_error",
+                            "ok": False,
+                            "result": scope_error,
+                        }
+                    )
+                    continue
+                self._raise_if_cancelled("tool_before")
+                try:
+                    result = self._execute_tool_action(
+                        tool_name,
+                        action.get("args"),
+                        trace,
+                        question=question,
+                        file_context=file_context,
+                        session_context=session_context,
+                    )
+                except TypeError as exc:
+                    if "unexpected keyword argument" not in str(exc):
+                        raise
+                    result = self._execute_tool_action(tool_name, action.get("args"), trace)
+                self._raise_if_cancelled("tool_after")
                 route = self._route_for_selected(
                     selected,
                     reason or f"Agent planner called tool {tool_name}.",
@@ -437,41 +771,21 @@ class ClioAgent(dspy.Module):
                 )
                 continue
 
-            if kind == "expert":
-                expert_id = self._coerce_text(action.get("expert")).strip().lower()
-                expert_question = self._coerce_text(action.get("question")).strip() or question
-                compatibility_error = self._expert_file_compatibility_error(
-                    expert_id,
-                    file_context,
-                )
-                if compatibility_error is not None:
-                    observations.append(
-                        {
-                            "step": step + 1,
-                            "type": "planner_error",
-                            "ok": False,
-                            "result": compatibility_error,
-                        }
-                    )
-                    continue
-                selected, answer, expert_result, error_info = self._dispatch_expert_action(
-                    expert_id=expert_id,
-                    question=expert_question,
-                    file_context=file_context,
-                    trace=trace,
-                )
-                route = self._route_for_selected(
-                    selected,
-                    reason or f"Agent planner delegated to the {selected} expert.",
-                    confidence=0.75,
-                )
-                return selected, answer, expert_result, error_info, route
-
             if kind == "none":
-                answer = self._coerce_text(action.get("answer")).strip() or (
-                    "I can help with local scientific data files, analysis, and visualizations. "
-                    "I do not have a useful CLIO action for that request."
-                )
+                if routing_mode == "experts":
+                    raise RoutingError(
+                        "Session routing_mode='experts' rejected the planner's no-op route.",
+                        details=self._recovery_details(
+                            requested_mode=routing_mode,
+                            planner_action=action,
+                        ),
+                    )
+                answer = self._coerce_text(action.get("answer")).strip()
+                if not answer:
+                    raise RoutingError(
+                        "Agent planner selected no action but did not provide an explanation.",
+                        details=self._recovery_details(planner_action=action),
+                    )
                 route = self._route_for_selected(
                     "none",
                     reason or "Agent planner found no suitable CLIO action.",
@@ -480,15 +794,27 @@ class ClioAgent(dspy.Module):
                 return "none", answer, None, None, route
 
             if kind == "answer":
+                if routing_mode == "experts" and not observations:
+                    raise RoutingError(
+                        "Session routing_mode='experts' rejected a direct planner answer.",
+                        details=self._recovery_details(
+                            requested_mode=routing_mode,
+                            planner_action=action,
+                        ),
+                    )
                 answer = self._coerce_text(action.get("answer")).strip()
                 if not answer and observations:
                     answer = self._synthesize_agent_answer(
                         question=question,
                         session_context=session_context,
+                        images=image_inputs,
                         observations=observations,
                     )
                 if not answer:
-                    answer = self._run_chat_agent(question, session_context)
+                    raise RoutingError(
+                        "Agent planner selected a direct answer but did not provide usable text.",
+                        details=self._recovery_details(planner_action=action),
+                    )
                 if selected == "chat":
                     selected = self._selected_expert_from_trace(trace)
                 route = self._route_for_selected(
@@ -510,18 +836,48 @@ class ClioAgent(dspy.Module):
                 }
             )
 
+        if not observations or all(obs.get("type") == "planner_error" for obs in observations):
+            raise RoutingError(
+                "Agent planner reached the step limit without producing a valid action.",
+                details=self._recovery_details(
+                    step_limit=self._agent_max_steps(),
+                    planner_observations=observations[-3:],
+                ),
+            )
+
+        self._raise_if_cancelled("answer_synthesis_before")
         answer = self._synthesize_agent_answer(
             question=question,
             session_context=session_context,
+            images=image_inputs,
             observations=observations,
         )
-        selected = self._selected_expert_from_trace(trace)
+        self._raise_if_cancelled("answer_synthesis_after")
+        if selected == "chat":
+            selected = self._selected_expert_from_trace(trace)
         route = self._route_for_selected(
             selected,
             "Agent planner reached the step limit and answered from accumulated observations.",
             confidence=0.55,
         )
-        return selected, answer, None, None, route
+        error_info = RoutingError(
+            "Agent planner reached the step limit after partial observations.",
+            details=self._recovery_details(
+                partial=True,
+                stage="step_limit_after_observations",
+                step_limit=self._agent_max_steps(),
+                planner_observations=observations[-3:],
+            ),
+        ).to_dict()
+        return selected, answer, None, error_info, route
+
+    @staticmethod
+    def _has_successful_execution_observation(observations: list[dict[str, Any]]) -> bool:
+        """Return whether the loop has a completed non-planner observation to answer from."""
+        return any(
+            observation.get("type") != "planner_error" and observation.get("ok") is True
+            for observation in observations
+        )
 
     def _plan_next_action(
         self,
@@ -529,156 +885,245 @@ class ClioAgent(dspy.Module):
         question: str,
         session_context: str,
         file_context: str,
+        images: list[Any] | None = None,
         capabilities: str,
         observations: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        """Ask the planner for a validated JSON action."""
+        """Ask the planner for a validated JSON action.
+
+        All providers, including local OpenAI-compatible backends, must
+        route through DSPy/LiteLLM. Adapter or provider failures are
+        surfaced as routing errors rather than retried through a raw
+        HTTP side channel with different semantics.
+        """
         observations_text = self._format_observations_for_prompt(observations)
+        planner_context = self._planner_session_context(session_context)
+        image_inputs = list(images or [])
         try:
-            with dspy.context(lm=self._router_lm):
-                result = self.action_planner(
-                    question=question,
-                    session_context=session_context,
-                    file_context=file_context or "No current file context",
-                    capabilities=capabilities,
-                    observations=observations_text,
-                )
-            return self._parse_action_json(getattr(result, "action_json", ""))
-        except Exception as planner_error:
-            if self.verbose:
-                print(f"[Planner] DSPy planner failed, trying direct JSON call: {planner_error}")
-
-            if not is_local_openai_compatible_backend(self._provider_config):
-                raise RoutingError(
-                    "Agent planner failed to produce an action.",
-                    details={"original_error": str(planner_error)},
-                ) from planner_error
-
-            try:
-                raw = self._direct_action_completion(
-                    question=question,
-                    session_context=session_context,
+            result = self._call_with_transient_provider_retries(
+                "action_planner",
+                lambda: self._call_action_planner(
+                    question=self._planner_question(question),
+                    images=image_inputs,
+                    session_context=planner_context,
                     file_context=file_context,
                     capabilities=capabilities,
                     observations=observations_text,
-                )
-                return self._parse_action_json(raw)
-            except Exception as fallback_error:
-                raise RoutingError(
-                    "Agent planner failed through DSPy and direct JSON fallback.",
-                    details={
-                        "planner_error": str(planner_error),
-                        "fallback_error": str(fallback_error),
-                    },
-                ) from fallback_error
+                ),
+            )
+            return self._parse_action_json(getattr(result, "action_json", ""))
+        except UnsupportedPlannerActionError:
+            # Well-formed JSON with a non-executable kind is not a format
+            # failure: the agent loop re-asks the planner with a structured
+            # planner_error observation instead of a compact-prompt retry.
+            raise
+        except Exception as planner_error:
+            raw_action = self._parse_action_from_adapter_error(planner_error)
+            if raw_action is not None:
+                return raw_action
+            retry_capabilities = self._compact_planner_capabilities(capabilities)
+            if retry_capabilities != capabilities:
+                try:
+                    result = self._call_with_transient_provider_retries(
+                        "action_planner_compact",
+                        lambda: self._call_action_planner(
+                            question=self._planner_retry_question(question),
+                            images=image_inputs,
+                            session_context=planner_context,
+                            file_context=file_context,
+                            capabilities=retry_capabilities,
+                            observations=observations_text,
+                        ),
+                    )
+                    return self._parse_action_json(getattr(result, "action_json", ""))
+                except UnsupportedPlannerActionError:
+                    raise
+                except Exception as retry_error:
+                    raw_action = self._parse_action_from_adapter_error(retry_error)
+                    if raw_action is not None:
+                        return raw_action
+                    if self.verbose:
+                        print(f"[Planner] DSPy compact planner failed: {retry_error}")
+                    raise RoutingError(
+                        "Agent planner failed to produce an action.",
+                        details={
+                            "original_error": str(planner_error),
+                            "retry_error": str(retry_error),
+                        },
+                    ) from retry_error
+            if self.verbose:
+                print(f"[Planner] DSPy planner failed: {planner_error}")
+            raise RoutingError(
+                "Agent planner failed to produce an action.",
+                details={"original_error": str(planner_error)},
+            ) from planner_error
 
-    def _direct_action_completion(
+    def _call_action_planner(
         self,
         *,
         question: str,
+        images: list[Any] | None = None,
         session_context: str,
         file_context: str,
         capabilities: str,
         observations: str,
-    ) -> str:
-        """Call the local OpenAI-compatible backend for one planner JSON object."""
-        headers = {"Content-Type": "application/json"}
-        if self._provider_config.api_key:
-            headers["Authorization"] = f"Bearer {self._provider_config.api_key}"
-
-        system_prompt = (AgentActionSignature.__doc__ or "").strip()
-        user_prompt = (
-            f"Question:\n{question}\n\n"
-            f"Session context:\n{session_context}\n\n"
-            f"File context:\n{file_context or 'No current file context'}\n\n"
-            f"Capabilities:\n{capabilities}\n\n"
-            f"Observations:\n{observations}\n\n"
-            "Return one JSON object only."
-        )
-        payload = {
-            "model": self._provider_config.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": self._provider_config.temperature,
-            "max_tokens": self._provider_config.max_tokens,
-        }
-
-        response = requests.post(
-            f"{self._provider_config.api_base.rstrip('/')}/chat/completions",
-            json=payload,
-            headers=headers,
-            timeout=120,
-        )
-        response.raise_for_status()
-        return self._extract_chat_completion_text(response.json()).strip()
-
-    def _dispatch_expert_action(
-        self,
-        *,
-        expert_id: str,
-        question: str,
-        file_context: str,
-        trace: RunTrace,
-    ) -> tuple[str, str, Any, dict[str, Any] | None]:
-        """Execute one planner-selected expert delegation."""
-        if expert_id not in self.registry.list_agents():
-            error = ExpertError(
-                f"Unknown expert selected by planner: {expert_id}",
-                details={"expert": expert_id, "available": self.registry.list_agents()},
-            ).to_dict()
-            return "none", error["message"], None, error
-
-        expert_question = self._question_with_file_context(question, file_context)
-        try:
-            if expert_id == "data":
-                expert_result = self.data_expert(question=expert_question, file_context=file_context)
-                self._merge_expert_provenance(trace, expert_result)
-                answer = f"{expert_result.analysis}\n\nRecommendations:\n{expert_result.recommendations}"
-                return "data", answer, expert_result, None
-
-            if expert_id == "analysis":
-                expert_result = self.analysis_expert(
-                    question=expert_question,
-                    file_context=file_context,
-                )
-                self._merge_expert_provenance(trace, expert_result)
-                answer = f"{expert_result.analysis}\n\nRecommendations:\n{expert_result.recommendations}"
-                return "analysis", answer, expert_result, None
-
-            expert_result = self.visualization_expert(
-                question=expert_question,
-                file_context=file_context,
+    ) -> Any:
+        """Invoke the DSPy/LiteLLM action planner."""
+        with dspy.context(lm=self._planner_lm, adapter=self._dspy_adapter):
+            return self.action_planner(
+                question=question,
+                images=list(images or []),
+                session_context=session_context,
+                file_context=file_context or "No current file context",
+                capabilities=capabilities,
+                observations=observations,
             )
-            description = self._coerce_text(
-                getattr(expert_result, "visualization_description", "")
-            ).strip()
-            file_path = self._coerce_text(getattr(expert_result, "file_path", "")).strip()
-            answer = f"Visualization: {description}\n\nFile: {file_path}".strip()
-            return "visualization", answer, expert_result, getattr(expert_result, "error_info", None)
-        except Exception as exc:
-            error = ExpertError(
-                f"The {expert_id} expert encountered an issue processing your request.",
-                details={"expert": expert_id, "original_error": str(exc)},
-            ).to_dict()
-            answer = (
-                f"I encountered an issue with the {expert_id} expert. "
-                "The failure is recorded in error_info for inspection."
+
+    @classmethod
+    def _planner_session_context(cls, session_context: str) -> str:
+        """Return ARC session context suitable for planner routing prompts.
+
+        ContextCompiler enriches expert context with an ``[Available Tools]``
+        section. The action planner already receives the live registry/tool
+        capability context separately, so duplicating tool lists here makes
+        local structured-output models more likely to spend their small
+        planner budget on repeated capability text instead of the JSON action.
+        """
+        return cls._strip_context_sections(session_context, {"Available Tools"})
+
+    @classmethod
+    def _chat_session_context(cls, session_context: str) -> str:
+        """Return ARC session context suitable for conversational answers.
+
+        Chat answers are plain LM synthesis, not a tool execution surface. Keep
+        prior conversation, data, analysis, and routing context, but remove the
+        global tool catalog so chat does not claim direct ownership of tools
+        that are actually routed through planner-selected experts.
+        """
+        return cls._strip_context_sections(session_context, {"Available Tools"})
+
+    @staticmethod
+    def _strip_context_sections(session_context: str, excluded: set[str]) -> str:
+        """Remove named bracketed sections from compiled ARC context."""
+        text = session_context.strip()
+        if not text:
+            return "No prior context"
+
+        output: list[str] = []
+        skipping = False
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                section_name = stripped[1:-1].strip()
+                skipping = section_name in excluded
+                if not skipping:
+                    output.append(line)
+                continue
+            if not skipping:
+                output.append(line)
+
+        cleaned = "\n".join(output).strip()
+        return cleaned or "No prior context"
+
+    def _planner_question(self, question: str) -> str:
+        """Return the user question with planner-only local reasoning controls."""
+        if not self._uses_no_think_planner_profile():
+            return question
+        return (
+            "/no_think\n"
+            "Return only the action_json JSON object. Do not include reasoning, "
+            "analysis, markdown, or prose outside the JSON object.\n"
+            f"{question}"
+        )
+
+    def _planner_retry_question(self, question: str) -> str:
+        """Return a stricter planner prompt for compact retry attempts."""
+        if not self._uses_no_think_planner_profile():
+            return question
+        return (
+            "/no_think\n"
+            "Return exactly one minified JSON action: a listed tool call, an "
+            "answer, or none.\n"
+            f"{question}"
+        )
+
+    @staticmethod
+    def _compact_planner_capabilities(capabilities: str) -> str:
+        """Shorten capability text for a structured-output retry."""
+        lines: list[str] = []
+        in_tools = False
+        for raw_line in capabilities.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line in {"Scoped tools:", "Chat utility tools:"}:
+                in_tools = True
+                lines.append(line)
+                continue
+            if line in {"Experts:", "Tool scope rules:"}:
+                in_tools = False
+                lines.append(line)
+                continue
+            if line.startswith("Routing strategy:"):
+                in_tools = False
+                lines.append(line)
+                continue
+            if line.startswith("Routing override:"):
+                in_tools = False
+                lines.append(line)
+                continue
+            if in_tools and line.startswith("- ") and line.endswith(":"):
+                lines.append(line)
+                continue
+            if in_tools and line.startswith("- "):
+                lines.append(line.split(":", 1)[0])
+                continue
+            if line.startswith("- ") and "; tools:" in line:
+                expert_part, tools_part = line.split("; tools:", 1)
+                tools = ", ".join(tool.strip() for tool in tools_part.split(",") if tool.strip())
+                lines.append(f"{expert_part}; tools: {tools}")
+                continue
+            lines.append(line)
+        compacted = "\n".join(lines).strip()
+        return compacted or capabilities
+
+    def _uses_no_think_planner_profile(self) -> bool:
+        """Return whether the configured local planner supports /no_think control."""
+        provider = self._coerce_text(getattr(self._provider_config, "provider", "")).lower()
+        if provider not in {"lm_studio", "ollama"}:
+            return False
+        model = self._coerce_text(getattr(self._provider_config, "model", "")).lower()
+        normalized = model.replace("_", "-")
+        return any(
+            marker in normalized
+            for marker in (
+                "qwopus",
+                "qwen3",
+                "qwen-3",
+                "qwen35",
+                "qwen-3.5",
             )
-            return expert_id, answer, None, error
+        )
 
     def _execute_tool_action(
         self,
         tool_name: str,
         raw_args: Any,
         trace: RunTrace,
+        *,
+        question: str = "",
+        file_context: str = "",
+        session_context: str = "",
     ) -> Any:
         """Execute a planner-selected tool and record provenance."""
         args = self._normalize_tool_args(raw_args)
-        gateway_tools = set(self.tool_executor.get_tool_names())
-        visualization_tools = self._visualization_tool_map()
-        known_tools = gateway_tools | set(visualization_tools)
+        args = self._repair_filepath_arg_from_context(
+            args,
+            question=question,
+            file_context=file_context,
+            session_context=session_context,
+        )
+        known_tools = self._known_tool_names()
 
         if not tool_name or tool_name not in known_tools:
             return {
@@ -691,14 +1136,14 @@ class ClioAgent(dspy.Module):
                 )
             }
 
-        if tool_name in visualization_tools:
-            return self._execute_visualization_tool(tool_name, visualization_tools[tool_name], args)
-
+        owner = self._selected_expert_for_tool(tool_name)
         start = time.time()
         try:
-            raw_result = self.tool_executor.call_tool(tool_name, args)
+            raw_result = self._active_tool_executor().call_tool(tool_name, args)
             result = normalize_tool_result(self._decode_tool_result(raw_result), tool=tool_name)
-        except Exception as exc:
+        except CancellationError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - error surfaced in result['error'] via normalize_tool_error
             result = {"error": normalize_tool_error(exc, tool=tool_name, code="tool_exception")}
         duration_ms = (time.time() - start) * 1000
         trace.record_tool(
@@ -708,207 +1153,641 @@ class ClioAgent(dspy.Module):
             duration_ms=duration_ms,
             ok=tool_result_ok(result),
         )
+        self._record_direct_tool_handoff(
+            trace,
+            expert_id=owner,
+            tool_name=tool_name,
+            args=args,
+            result=result,
+            duration_ms=duration_ms,
+        )
         return result
 
-    def _execute_visualization_tool(self, tool_name: str, tool: Any, args: dict[str, Any]) -> Any:
-        """Execute one local visualization tool with policy-aware artifact defaults."""
-        args = dict(args)
-        filepath = self._coerce_text(args.get("filepath")).strip()
-        if filepath and not self._coerce_text(args.get("output_path")).strip():
-            prepared = self._prepare_visualization_output_path(tool_name, filepath)
-            if isinstance(prepared, dict) and "error" in prepared:
-                start = time.time()
-                self._record_tool_call(tool_name, args, prepared, (time.time() - start) * 1000)
-                return prepared
-            args["output_path"] = str(prepared)
+    def _record_direct_tool_handoff(
+        self,
+        trace: RunTrace,
+        *,
+        expert_id: str,
+        tool_name: str,
+        args: Mapping[str, Any],
+        result: Any,
+        duration_ms: float,
+    ) -> None:
+        """Record the expert boundary for a planner-selected direct tool call."""
+        if not expert_id:
+            return
+        self._record_expert_handoff(
+            trace,
+            expert_id=expert_id,
+            dispatch_target=tool_name,
+            stage="direct_tool",
+            input_summary=f"{tool_name}({', '.join(sorted(str(key) for key in args))})",
+            result=result,
+            status="success" if tool_result_ok(result) else "failure",
+            duration_ms=duration_ms,
+            error=None if tool_result_ok(result) else self._coerce_text(result),
+        )
 
-        start = time.time()
-        try:
-            result = normalize_tool_result(
-                self._call_tool_function(tool, **args),
-                tool=tool_name,
+    def _tool_action_scope_error(
+        self,
+        tool_name: str,
+        *,
+        selected: str,
+        question: str,
+        file_context: str,
+        session_context: str,
+    ) -> dict[str, Any] | None:
+        """Return a planner validation error for an out-of-scope tool action."""
+
+        if tool_name != "shell_bash":
+            return None
+        if self._question_allows_shell_tool(question, file_context):
+            return None
+
+        paths = extract_file_paths(
+            question,
+            "\n".join(part for part in (file_context, session_context) if part),
+            SCIENTIFIC_FILE_SUFFIXES,
+        )
+        if not paths:
+            return None
+
+        native_tools = [
+            name
+            for name in sorted(self._known_tool_names())
+            if tool_visible_to(name, selected) and name != tool_name
+        ]
+        return {
+            "message": (
+                "Planner selected shell_bash for a scientific file request, but shell_bash "
+                "is scoped to utility diagnostics and must not be used as a data-inspection "
+                "shortcut."
+            ),
+            "tool": tool_name,
+            "selected_expert": selected,
+            "detected_files": [str(path) for path in paths],
+            "next_action": (
+                "Use the appropriate native scientific tool from available_scoped_tools instead."
+            ),
+            "available_scoped_tools": native_tools,
+        }
+
+    @staticmethod
+    def _question_allows_shell_tool(
+        question: str,
+        file_context: str = "",
+        session_context: str = "",
+    ) -> bool:
+        """Return whether the user explicitly asked for local shell diagnostics."""
+
+        del session_context
+        text = " ".join((question, file_context)).lower()
+        for path in extract_file_paths(question, file_context, SCIENTIFIC_FILE_SUFFIXES):
+            text = text.replace(str(path).lower(), " ")
+        phrase_terms = (
+            "bash",
+            "shell",
+            "terminal",
+            "command line",
+            "run command",
+            "execute command",
+            "cwd",
+            "working directory",
+            "current directory",
+            "environment variable",
+            "env var",
+            "current time",
+            "what time",
+            "what day",
+        )
+        word_terms = ("date", "today", "whoami", "hostname")
+        return any(term in text for term in phrase_terms) or any(
+            re.search(rf"\b{re.escape(term)}\b", text) for term in word_terms
+        )
+
+    @classmethod
+    def _file_diffs_from_trace(
+        cls,
+        trace: RunTrace,
+        *,
+        edit_mode: str = "diff",
+    ) -> list[dict[str, Any]]:
+        """Return GACT file_diff rows produced by successful propose_edit tools."""
+
+        rows: list[dict[str, Any]] = []
+        for observation in trace.tools:
+            if not observation.ok or not observation.tool.endswith("propose_edit"):
+                continue
+            if not isinstance(observation.result, Mapping):
+                continue
+            path = cls._coerce_text(observation.result.get("path")).strip()
+            unified_diff = cls._coerce_text(observation.result.get("unified_diff"))
+            new_content = cls._coerce_text(observation.result.get("new_content"))
+            if not new_content:
+                new_content = cls._coerce_text(observation.params.get("new_content"))
+            if not path or (not unified_diff and not new_content):
+                continue
+            rows.append(
+                {
+                    "path": path,
+                    "unified_diff": unified_diff,
+                    "new_content": new_content,
+                    "edit_mode": edit_mode,
+                    "lines_added": int(observation.result.get("lines_added", 0) or 0),
+                    "lines_removed": int(observation.result.get("lines_removed", 0) or 0),
+                }
             )
-        except Exception as exc:
-            result = {"error": normalize_tool_error(exc, tool=tool_name, code="tool_exception")}
-        duration_ms = (time.time() - start) * 1000
-        self._record_tool_call(tool_name, args, result, duration_ms)
-        return result
-
-    def _prepare_visualization_output_path(self, tool_name: str, filepath: str) -> Path | dict[str, Any]:
-        """Return a safe default chart output path or a normalized policy error."""
-        source_path = Path(filepath).expanduser()
-        artifact_root = self._default_artifact_root(source_path)
-        output_dir = artifact_root / "charts"
-        default_name = f"{tool_name.removeprefix('plot_')}_{source_path.stem}.png"
-        output_path = output_dir / default_name
-        try:
-            validate_write_path(str(artifact_root.parent / f".{artifact_root.name}.probe"))
-            output_dir.mkdir(parents=True, exist_ok=True)
-            return validate_write_path(str(output_path))
-        except FilePolicyError as exc:
-            return {"error": normalize_tool_error(exc.to_result()["error"], tool=tool_name)}
+        return rows
 
     def _synthesize_agent_answer(
         self,
         *,
         question: str,
         session_context: str,
+        images: list[Any] | None = None,
         observations: list[dict[str, Any]],
     ) -> str:
-        """Produce a final answer from observations, with a deterministic fallback."""
+        """Produce a final answer from observations or surface synthesis failure."""
+        self._raise_if_cancelled("answer_synthesis_before")
         observations_text = self._format_observations_for_prompt(observations)
+        answer_question = self._answer_synthesis_question(question)
         try:
-            with dspy.context(lm=self._router_lm):
-                result = self.answer_synthesizer(
-                    question=question,
-                    session_context=session_context,
-                    observations=observations_text,
+            with dspy.context(lm=self._main_lm, adapter=self._dspy_adapter):
+                result = self._call_with_transient_provider_retries(
+                    "answer_synthesizer",
+                    lambda: self.answer_synthesizer(
+                        question=answer_question,
+                        images=list(images or []),
+                        session_context=session_context,
+                        observations=observations_text,
+                    ),
                 )
             answer = self._coerce_text(getattr(result, "answer", "")).strip()
+            self._raise_if_cancelled("answer_synthesis_after")
             if answer:
                 return answer
+        except CancellationError:
+            raise
         except Exception as exc:
+            recovered = self._parse_answer_from_adapter_error(exc)
+            if recovered:
+                self._raise_if_cancelled("answer_synthesis_after")
+                return recovered
+            fallback = (
+                self._fallback_answer_from_observations(observations)
+                if self._can_fallback_after_synthesis_exception(exc)
+                else ""
+            )
+            if fallback:
+                self._raise_if_cancelled("answer_synthesis_after")
+                return fallback
             if self.verbose:
                 print(f"[Planner] Answer synthesis failed: {exc}")
-        return self._fallback_answer_from_observations(observations)
+            raise ProviderError(
+                "CLIO could not synthesize a final answer from the completed observations.",
+                details=self._recovery_details(
+                    stage="answer_synthesis",
+                    original_error=str(exc),
+                    observations=observations[-3:],
+                ),
+            ) from exc
+        fallback = self._fallback_answer_from_observations(observations)
+        if fallback:
+            self._raise_if_cancelled("answer_synthesis_after")
+            return fallback
+        raise ProviderError(
+            "CLIO could not synthesize a final answer from the completed observations.",
+            details=self._recovery_details(
+                stage="answer_synthesis",
+                original_error="answer synthesizer returned an empty answer",
+                observations=observations[-3:],
+            ),
+        )
 
-    def _fallback_answer_from_observations(self, observations: list[dict[str, Any]]) -> str:
-        """Return a compact non-hallucinated answer when synthesis is unavailable."""
-        if not observations:
-            return (
-                "I could not choose a valid CLIO action. Check the configured local model "
-                "and retry with a concrete file path or task."
+    @classmethod
+    def _fallback_answer_from_observations(cls, observations: list[dict[str, Any]]) -> str:
+        """Return a compact answer grounded only in successful observations."""
+        lines: list[str] = []
+        for observation in observations:
+            if observation.get("ok") is False:
+                continue
+            tool = cls._coerce_text(observation.get("tool")).strip()
+            result = observation.get("result")
+            if not tool or result in (None, ""):
+                continue
+            if isinstance(result, dict) and "error" in result:
+                continue
+
+            scalar_summary = cls._scalar_observation_summary(result)
+            if scalar_summary:
+                lines.append(f"{tool} returned: {scalar_summary}.")
+            else:
+                lines.append(f"{tool} returned a successful result.")
+
+            try:
+                lines.append(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+            except TypeError:
+                lines.append(cls._coerce_text(result))
+
+        return "\n".join(line for line in lines if line).strip()
+
+    @staticmethod
+    def _can_fallback_after_synthesis_exception(exc: Exception) -> bool:
+        """Return whether completed observations may replace failed synthesis.
+
+        Provider/runtime failures should still surface as errors. This fallback
+        is only for adapter formatting failures where tools already completed
+        and the provider returned unusable structured output.
+        """
+        text = str(exc).lower()
+        return "expected to find output fields" in text or "failed to parse" in text
+
+    def _call_with_transient_provider_retries(
+        self,
+        label: str,
+        call: Callable[[], Any],
+    ) -> Any:
+        """Call a provider-backed function with bounded transient-error backoff."""
+        delays = self._transient_provider_retry_delays()
+        attempt = 0
+        while True:
+            try:
+                return call()
+            except CancellationError:
+                raise
+            except Exception as exc:
+                if not self._is_transient_provider_error(exc) or attempt >= len(delays):
+                    raise
+                delay_s = delays[attempt]
+                attempt += 1
+                if self.verbose:
+                    print(
+                        f"[Provider] {label} transient failure; "
+                        f"retry {attempt}/{len(delays)} after {delay_s:g}s: {exc}"
+                    )
+                if delay_s > 0:
+                    time.sleep(delay_s)
+
+    @staticmethod
+    def _is_transient_provider_error(exc: Exception) -> bool:
+        """Return whether an exception looks like a retryable provider throttle/outage."""
+        text = str(exc).lower()
+        return any(
+            marker in text
+            for marker in (
+                "ratelimit",
+                "rate limit",
+                "tokens/minute",
+                "429",
+                "too many requests",
+                "temporarily unavailable",
+                "service unavailable",
+            )
+        )
+
+    @staticmethod
+    def _transient_provider_retry_delays() -> tuple[float, ...]:
+        """Return configured transient provider retry delays in seconds."""
+        items: list[str] | None = conf.resolve(
+            "limits.transient_provider_retry_delays",
+            env="CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS",
+            default=None,
+            cast=conf.as_csv,
+        )
+        if items is None:
+            # conf treats a set-but-empty env var as "unset" (it falls through
+            # to the default), but this knob's documented disable contract is
+            # that CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS="" (set, empty) turns
+            # retries OFF. Preserve it: only a truly absent variable falls back
+            # to the 5s/15s default. A file-layer value still wins when present
+            # (resolve returned it above before we ever got here).
+            import os  # noqa: PLC0415 - only needed on this fallthrough
+
+            raw_env = os.environ.get("CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS")
+            if raw_env is not None and raw_env.strip() == "":
+                return ()
+            items = ["5", "15"]
+        # Explicit disable sentinel (a lone false/off/none/disabled token) -> no
+        # retries.
+        if len(items) == 1 and str(items[0]).strip().lower() in {
+            "false",
+            "off",
+            "none",
+            "disabled",
+        }:
+            return ()
+        delays: list[float] = []
+        for item in items:
+            token = str(item).strip()
+            if not token:
+                continue
+            try:
+                delay = float(token)
+            except ValueError:
+                continue
+            delays.append(max(0.0, min(delay, 60.0)))
+        return tuple(delays)
+
+    @classmethod
+    def _scalar_observation_summary(cls, value: Any) -> str:
+        """Return key=value text for top-level scalar observation fields."""
+        if not isinstance(value, dict):
+            return ""
+        scalars: list[str] = []
+        for key, item in value.items():
+            if isinstance(item, (str, int, float, bool)) or item is None:
+                scalars.append(f"{key}={item}")
+        return ", ".join(scalars[:8])
+
+    def _answer_synthesis_question(self, question: str) -> str:
+        """Return provider-profile-specific instructions for answer synthesis."""
+        if not self._uses_no_think_planner_profile():
+            return question
+        return (
+            "/no_think\n"
+            "Answer from the observations only. Do not include reasoning or hidden "
+            "analysis. Return visible final answer text in the answer field; never "
+            "leave it empty when tool observations succeeded.\n\n"
+            f"User question: {question}"
+        )
+
+    @staticmethod
+    def _recovery_details(**details: Any) -> dict[str, Any]:
+        """Attach client-facing recovery actions to a structured error."""
+        return {**details, "recovery_actions": list(ERROR_RECOVERY_ACTIONS)}
+
+    @classmethod
+    def _with_recovery_actions(cls, error_info: dict[str, Any]) -> dict[str, Any]:
+        """Ensure a serialized error advertises retry/reconfigure/exit options."""
+        details = error_info.get("details")
+        if isinstance(details, dict):
+            details.setdefault("recovery_actions", list(ERROR_RECOVERY_ACTIONS))
+        else:
+            error_info["details"] = cls._recovery_details()
+        return error_info
+
+    @staticmethod
+    def _raise_if_cancelled(stage: str) -> None:
+        """Raise a structured cancellation if the active turn was cancelled."""
+        if cancellation_requested():
+            raise CancellationError(
+                "turn cancelled by client",
+                details={
+                    "execution_cancellation": "cooperative",
+                    "executor_work_may_continue": False,
+                    "stage": stage,
+                },
             )
 
-        last = observations[-1]
-        if not last.get("ok", False):
-            result = last.get("result")
-            if isinstance(result, Mapping) and "error" in result:
-                return f"Tool {last.get('tool')} failed: {format_tool_error(result['error'])}"
-            return f"CLIO could not complete the action: {result}"
+    def _effective_routing_mode(self) -> str:
+        """Return the active GACT routing override, if one is set."""
+        mode = str(_ROUTING_MODE_OVERRIDE.get() or "").strip().lower() or "auto"
+        if mode in {"auto", "chat", "experts", "reasoning_only"}:
+            return mode
+        return "auto"
 
-        result = last.get("result")
-        if isinstance(result, Mapping) and "value" in result:
-            return f"Tool {last.get('tool')} completed: {result['value']}"
-        return f"Tool {last.get('tool')} completed.\n\n{json.dumps(result, indent=2)}"
-
-    def _build_capabilities_context(self) -> str:
-        """Describe live experts and tools for the planner without query heuristics."""
+    def _build_capabilities_context(self, routing_mode: str = "auto") -> str:
+        """Describe live experts and scoped tools for the planner."""
+        available_tools = {
+            tool.name: tool for tool in sorted(self._available_dspy_tools(), key=lambda t: t.name)
+        }
         lines = ["Experts:"]
-        for agent_id in self.registry.list_agents():
+        for agent_id in self.registry.list_root_agents(planner_visible_only=True):
             caps = self.registry.get_capabilities(agent_id)
             if caps is None:
                 continue
             tools = ", ".join(caps.tools) if caps.tools else "no direct tools"
-            suffixes = ", ".join(caps.metadata.get("file_suffixes", []))
-            file_note = f"; files: {suffixes}" if suffixes else ""
-            lines.append(f"- {agent_id}: {caps.description}{file_note}; tools: {tools}")
+            metadata_notes = self._planner_capability_metadata_notes(caps.metadata)
+            metadata_text = f"; {metadata_notes}" if metadata_notes else ""
+            lines.append(f"- {agent_id}: {caps.description}{metadata_text}; tools: {tools}")
+            child_lines = self._planner_child_capability_lines(agent_id)
+            lines.extend(f"  {line}" for line in child_lines)
 
-        lines.append("Tools:")
-        for tool in sorted(self._available_dspy_tools(), key=lambda t: t.name):
-            arg_names = ", ".join(sorted((getattr(tool, "args", {}) or {}).keys()))
-            desc = self._first_sentence(self._coerce_text(getattr(tool, "desc", "")))
-            if arg_names:
-                lines.append(f"- {tool.name}({arg_names}): {desc}")
-            else:
-                lines.append(f"- {tool.name}: {desc}")
+        lines.append("Scoped tools:")
+        for agent_id in self.registry.list_root_agents(planner_visible_only=True):
+            caps = self.registry.get_capabilities(agent_id)
+            if caps is None:
+                continue
+            scoped_lines = [
+                self._planner_tool_line(tool_name, available_tools)
+                for tool_name in caps.tools
+                if tool_visible_to(tool_name, agent_id)
+            ]
+            scoped_lines = [line for line in scoped_lines if line]
+            child_scoped_lines = self._planner_child_tool_lines(agent_id, available_tools)
+            if not scoped_lines and not child_scoped_lines:
+                continue
+            lines.append(f"- {agent_id}:")
+            lines.extend(f"  {line}" for line in scoped_lines)
+            lines.extend(f"  {line}" for line in child_scoped_lines)
+
+        chat_utility_lines = [
+            self._planner_tool_line(tool_name, available_tools)
+            for tool_name in sorted(available_tools)
+            if tool_visible_to(tool_name, "chat")
+        ]
+        chat_utility_lines = [line for line in chat_utility_lines if line]
+        if chat_utility_lines:
+            lines.append("Chat utility tools:")
+            lines.extend(chat_utility_lines)
+
+        lines.append("Tool scope rules:")
+        lines.append(
+            "- Tools are owned by the expert section they are listed under; do not treat "
+            "scientific data, analysis, visualization, and utility tools as one shared pool."
+        )
+        lines.append(
+            "- Direct tool actions are allowed only for listed tool names and are attributed "
+            "to the owning expert. Chat may only use tools listed under Chat utility tools."
+        )
+        lines.append(
+            "- Child experts are delegated capabilities owned by their parent expert. "
+            "Call their listed tools directly; CLIO attributes the work to the owning "
+            "hierarchy."
+        )
+        lines.append(
+            "Routing strategy: choose the tool that resolves the next unresolved phase, "
+            "not the final deliverable. For multi-phase work, run one phase, observe "
+            "its result, then plan the next phase from the updated state. Do not skip "
+            "data acquisition/discovery before analysis, and do not skip analysis "
+            "before visualization."
+        )
+        lines.append(
+            "Observation rule: local_paths in observations are newly available files. "
+            "Use them for the next phase instead of repeating the same discovery or "
+            "staging tool, while preserving source/provenance caveats."
+        )
+        if routing_mode == "experts":
+            lines.append(
+                "Routing override: experts mode is active. Do not choose answer or none "
+                "before a tool has produced an observation."
+            )
         return "\n".join(lines)
 
-    def _available_dspy_tools(self) -> list[dspy.Tool]:
-        """Return gateway and local visualization tools visible to the planner."""
-        return [*self.tool_executor.to_dspy_tools(), *self._visualization_tool_map().values()]
+    def _planner_child_capability_lines(self, parent_id: str) -> list[str]:
+        """Return planner-facing child summaries nested under a parent expert."""
+        lines: list[str] = []
+        for child_id in self.registry.list_child_agents(parent_id):
+            caps = self.registry.get_capabilities(child_id)
+            if caps is None or not caps.planner_visible:
+                continue
+            tools = ", ".join(caps.tools) if caps.tools else "no direct tools"
+            metadata_notes = self._planner_capability_metadata_notes(caps.metadata)
+            metadata_text = f"; {metadata_notes}" if metadata_notes else ""
+            lines.append(
+                f"delegated child {child_id}: {caps.description}{metadata_text}; tools: {tools}"
+            )
+        return lines
 
-    def _visualization_tool_map(self) -> dict[str, dspy.Tool]:
-        """Return local visualization tools keyed by their stable names."""
-        return {
-            tool.name: tool
-            for tool in getattr(self.visualization_expert, "_tools", [])
-            if hasattr(tool, "name")
-        }
+    def _planner_child_tool_lines(
+        self,
+        parent_id: str,
+        available_tools: Mapping[str, dspy.Tool],
+    ) -> list[str]:
+        """Return child tool descriptions nested under their parent expert."""
+        lines: list[str] = []
+        for child_id in self.registry.list_child_agents(parent_id):
+            caps = self.registry.get_capabilities(child_id)
+            if caps is None or not caps.planner_visible:
+                continue
+            scoped_lines = [
+                self._planner_tool_line(tool_name, available_tools)
+                for tool_name in caps.tools
+                if tool_visible_to(tool_name, child_id)
+            ]
+            scoped_lines = [line for line in scoped_lines if line]
+            if not scoped_lines:
+                continue
+            lines.append(f"delegated child {child_id}:")
+            lines.extend(f"  {line}" for line in scoped_lines)
+        return lines
+
+    def _planner_tool_line(self, tool_name: str, available_tools: Mapping[str, dspy.Tool]) -> str:
+        """Return one planner-facing tool signature line if the tool is callable."""
+        tool = available_tools.get(tool_name)
+        if tool is None:
+            return ""
+        arg_names = ", ".join(sorted((getattr(tool, "args", {}) or {}).keys()))
+        desc = self._first_sentence(self._coerce_text(getattr(tool, "desc", "")))
+        tags = ", ".join(sorted(tool_tags(tool_name)))
+        tag_text = f"; tags: {tags}" if tags else ""
+        if arg_names:
+            return f"- {tool.name}({arg_names}): {desc}{tag_text}"
+        return f"- {tool.name}: {desc}{tag_text}"
+
+    @staticmethod
+    def _planner_capability_metadata_notes(metadata: Mapping[str, Any]) -> str:
+        """Return compact registry metadata notes for planner capability text."""
+        notes: list[str] = []
+        suffixes = [
+            str(suffix) for suffix in metadata.get("file_suffixes", []) if str(suffix).strip()
+        ]
+        if suffixes:
+            notes.append(f"direct files: {', '.join(suffixes)}")
+        coordinated = [
+            str(suffix)
+            for suffix in metadata.get("coordinated_file_suffixes", [])
+            if str(suffix).strip()
+        ]
+        if coordinated:
+            notes.append(f"coordinates multi-file bundles: {', '.join(coordinated)}")
+        intents = [
+            str(intent) for intent in metadata.get("coordinator_intents", []) if str(intent).strip()
+        ]
+        if intents:
+            notes.append(f"coordination intents: {', '.join(intents)}")
+        delegates = [
+            str(agent_id) for agent_id in metadata.get("delegates_to", []) if str(agent_id).strip()
+        ]
+        if delegates:
+            notes.append(f"delegates to: {', '.join(delegates)}")
+        return "; ".join(notes)
+
+    def _available_dspy_tools(self) -> list[dspy.Tool]:
+        """Return gateway tools visible to the planner."""
+        return [
+            tool
+            for tool in self._active_tool_executor().to_dspy_tools()
+            if tool.name not in PLANNER_HIDDEN_TOOL_NAMES
+        ]
+
+    def _known_tool_names(self) -> set[str]:
+        """Return every tool name currently visible to the planner."""
+        return set(self._active_tool_executor().get_tool_names())
 
     def _selected_expert_for_tool(self, tool_name: str) -> str:
         """Resolve a tool's owning expert from the registered capability table."""
+        owner = tool_owner(tool_name)
+        if owner:
+            return owner
         for agent_id in self.registry.list_agents():
             caps = self.registry.get_capabilities(agent_id)
             if caps and tool_name in caps.tools:
                 return agent_id
-        return "chat"
+        known_tools = self._known_tool_names()
+        if not tool_name or tool_name not in known_tools:
+            raise RoutingError(
+                f"Agent planner selected unknown tool {tool_name!r}.",
+                details={
+                    "tool": tool_name,
+                    "available_tools": sorted(known_tools),
+                },
+            )
+        raise RoutingError(
+            f"Tool {tool_name!r} has no registered owning expert.",
+            details={
+                "tool": tool_name,
+                "available_experts": self.registry.list_agents(),
+            },
+        )
 
     def _selected_expert_from_trace(self, trace: RunTrace) -> str:
         """Infer the public selected_expert from executed tool provenance."""
         for observation in reversed(trace.tools):
             selected = self._selected_expert_for_tool(observation.tool)
             if selected != "chat":
-                return selected
+                return self._parent_route_for_child(selected) or selected
         return "chat"
 
-    def _expert_file_compatibility_error(
+    def _route_for_selected(
         self,
-        expert_id: str,
-        file_context: str,
-    ) -> dict[str, Any] | None:
-        """Reject expert delegation that cannot inspect the current file context."""
-        paths = extract_file_paths(file_context, "", SCIENTIFIC_FILE_SUFFIXES)
-        if not paths:
-            return None
-
-        caps = self.registry.get_capabilities(expert_id)
-        if caps is None:
-            return {
-                "message": f"Unknown expert {expert_id!r}.",
-                "available_experts": self.registry.list_agents(),
-            }
-
-        supported = {
-            str(suffix).lower()
-            for suffix in caps.metadata.get("file_suffixes", [])
-            if str(suffix).strip()
-        }
-        if not supported:
-            return None
-
-        unsupported = [str(path) for path in paths if path.suffix.lower() not in supported]
-        if not unsupported:
-            return None
-
-        compatible = self._compatible_experts_for_paths(paths)
-        return {
-            "message": (
-                f"Expert {expert_id!r} cannot inspect the current file context "
-                f"({', '.join(unsupported)}). Choose a compatible expert or tool."
-            ),
-            "expert": expert_id,
-            "supported_suffixes": sorted(supported),
-            "compatible_experts": compatible,
-        }
-
-    def _compatible_experts_for_paths(self, paths: list[Path]) -> list[str]:
-        """List registered experts that support all current file suffixes."""
-        suffixes = {path.suffix.lower() for path in paths}
-        compatible: list[str] = []
-        for agent_id in self.registry.list_agents():
-            caps = self.registry.get_capabilities(agent_id)
-            if caps is None:
-                continue
-            supported = {
-                str(suffix).lower()
-                for suffix in caps.metadata.get("file_suffixes", [])
-                if str(suffix).strip()
-            }
-            if supported and suffixes.issubset(supported):
-                compatible.append(agent_id)
-        return compatible
-
-    @staticmethod
-    def _route_for_selected(selected: str, reason: str, confidence: float) -> RouteDecision:
+        selected: str,
+        reason: str,
+        confidence: float,
+    ) -> RouteDecision:
         """Build the public route decision for a planner-selected handler."""
-        target = selected if selected in {"chat", "data", "analysis", "visualization", "none"} else "chat"
+        valid_targets = self._valid_route_targets()
+        if selected not in valid_targets:
+            raise RoutingError(
+                f"Agent planner produced invalid route target {selected!r}.",
+                details={
+                    "selected": selected,
+                    "available_targets": sorted(valid_targets),
+                },
+            )
         return RouteDecision(
-            target=target,  # type: ignore[arg-type]
+            target=selected,  # type: ignore[arg-type]
             source="dspy",
             reason=reason,
             confidence=confidence,
         )
+
+    def _valid_route_targets(self) -> set[str]:
+        """Return root route targets from the live agent registry plus special routes."""
+        targets = {
+            str(agent_id).strip().lower()
+            for agent_id in self.registry.list_root_agents(planner_visible_only=True)
+            if str(agent_id).strip()
+        }
+        targets.update(SPECIAL_ROUTE_TARGETS)
+        return targets
+
+    def _parent_route_for_child(self, expert_id: str) -> str | None:
+        """Return the public parent route for a child expert, if registered."""
+        caps = self.registry.get_capabilities(expert_id)
+        if caps is None or not caps.parent_id:
+            return None
+        return caps.parent_id
 
     @staticmethod
     def _normalize_tool_args(raw_args: Any) -> dict[str, Any]:
@@ -923,6 +1802,43 @@ class ClioAgent(dspy.Module):
             if isinstance(decoded, Mapping):
                 return dict(decoded)
         return {}
+
+    @staticmethod
+    def _repair_filepath_arg_from_context(
+        args: dict[str, Any],
+        *,
+        question: str,
+        file_context: str,
+        session_context: str = "",
+    ) -> dict[str, Any]:
+        """Repair a degraded filepath arg using explicit paths from the turn context."""
+        raw_filepath = ClioAgent._coerce_text(args.get("filepath")).strip()
+        if not raw_filepath:
+            return args
+        filepath = Path(raw_filepath).expanduser()
+        if filepath.exists():
+            return args
+
+        basename = filepath.name
+        if not basename:
+            return args
+
+        candidates = extract_file_paths(
+            question,
+            "\n".join(part for part in (file_context, session_context) if part),
+            SCIENTIFIC_FILE_SUFFIXES,
+        )
+        matches = [
+            candidate
+            for candidate in candidates
+            if candidate.name == basename and candidate.expanduser().exists()
+        ]
+        if len(matches) != 1:
+            return args
+
+        repaired = dict(args)
+        repaired["filepath"] = str(matches[0].expanduser())
+        return repaired
 
     @staticmethod
     def _decode_tool_result(raw_result: Any) -> Any:
@@ -946,22 +1862,219 @@ class ClioAgent(dspy.Module):
                 if text.lower().startswith("json"):
                     text = text[4:].strip()
             if not text.startswith("{"):
-                start = text.find("{")
-                end = text.rfind("}")
-                if start >= 0 and end > start:
-                    text = text[start : end + 1]
+                extracted = cls._extract_json_object_text(text)
+                if extracted is None:
+                    raise ValueError(f"Planner returned invalid JSON action: {raw!r}")
+                text = extracted
             try:
                 decoded = json.loads(text)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"Planner returned invalid JSON action: {raw!r}") from exc
+            except json.JSONDecodeError:
+                try:
+                    decoded, end = json.JSONDecoder().raw_decode(text)
+                except json.JSONDecodeError as exc:
+                    repaired = cls._repair_truncated_action_json(text)
+                    if repaired is None:
+                        raise ValueError(f"Planner returned invalid JSON action: {raw!r}") from exc
+                    decoded = repaired
+                else:
+                    trailing = text[end:].strip()
+                    # DSPy ChatAdapter error strings can append one bracket after the LM payload.
+                    if trailing != "]" and not trailing.startswith("[[ ## completed ## ]]"):
+                        raise ValueError(f"Planner returned invalid JSON action: {raw!r}") from None
             if not isinstance(decoded, dict):
                 raise ValueError(f"Planner action must be a JSON object: {raw!r}")
 
         action = cls._coerce_text(decoded.get("action")).strip().lower()
-        if action not in {"tool", "expert", "answer", "none"}:
-            raise ValueError(f"Planner returned unsupported action: {decoded!r}")
         decoded["action"] = action
+        if action not in SUPPORTED_PLANNER_ACTION_KINDS:
+            raise UnsupportedPlannerActionError(decoded)
         return decoded
+
+    @classmethod
+    def _repair_truncated_action_json(cls, text: str) -> dict[str, Any] | None:
+        """Repair a planner JSON object that ended before final delimiters.
+
+        This intentionally accepts only a single object that starts at the
+        first character. It may close an unterminated string and missing
+        brackets/braces, then normal action validation still decides whether
+        the repaired object is usable.
+        """
+
+        repaired = cls._close_truncated_json(text)
+        if repaired is None or repaired == text:
+            return None
+        try:
+            decoded = json.loads(repaired)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(decoded, dict):
+            return None
+        return decoded
+
+    @staticmethod
+    def _close_truncated_json(text: str) -> str | None:
+        """Return text with missing trailing JSON delimiters appended."""
+
+        stack: list[str] = []
+        in_string = False
+        escaped = False
+        string_start = -1
+
+        for index, char in enumerate(text):
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                    string_start = -1
+                continue
+
+            if char == '"':
+                in_string = True
+                string_start = index
+            elif char == "{":
+                stack.append("}")
+            elif char == "[":
+                stack.append("]")
+            elif char in {"}", "]"}:
+                if not stack or stack.pop() != char:
+                    return None
+
+        # Only a truncated "reason" string may be closed: it is advisory text.
+        # Closing a truncated argument value would hand a tool corrupted input.
+        if in_string and ClioAgent._unterminated_string_key(text, string_start) != "reason":
+            return None
+        suffix = '"' if in_string else ""
+        suffix += "".join(reversed(stack))
+        if not suffix:
+            return None
+        return text + suffix
+
+    @staticmethod
+    def _extract_json_object_text(text: str) -> str | None:
+        """Extract the first balanced JSON object from model text."""
+        start = text.find("{")
+        if start < 0:
+            return None
+
+        stack: list[str] = []
+        in_string = False
+        escaped = False
+        for index in range(start, len(text)):
+            char = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                stack.append("}")
+            elif char == "[":
+                stack.append("]")
+            elif char in {"}", "]"}:
+                if not stack or stack.pop() != char:
+                    return None
+                if not stack:
+                    return text[start : index + 1]
+        return None
+
+    @staticmethod
+    def _unterminated_string_key(text: str, string_start: int) -> str | None:
+        """Return the object key for an unterminated string value."""
+
+        prefix = text[:string_start].rstrip()
+        if not prefix.endswith(":"):
+            return None
+        key_prefix = prefix[:-1].rstrip()
+        if not key_prefix.endswith('"'):
+            return None
+        key_end = len(key_prefix) - 1
+        key_start = key_end - 1
+        while key_start >= 0:
+            if key_prefix[key_start] == '"' and not ClioAgent._is_escaped(key_prefix, key_start):
+                return key_prefix[key_start + 1 : key_end]
+            key_start -= 1
+        return None
+
+    @staticmethod
+    def _is_escaped(text: str, index: int) -> bool:
+        """Return whether text[index] is escaped by an odd number of backslashes."""
+
+        slash_count = 0
+        cursor = index - 1
+        while cursor >= 0 and text[cursor] == "\\":
+            slash_count += 1
+            cursor -= 1
+        return slash_count % 2 == 1
+
+    @classmethod
+    def _parse_action_from_adapter_error(cls, error: Exception) -> dict[str, Any] | None:
+        """Recover valid planner JSON from a DSPy ChatAdapter parse error.
+
+        Weak local models sometimes follow the planner instruction to return
+        exactly one JSON object, but omit DSPy's ``[[ ## action_json ## ]]``
+        marker. This keeps the call on the DSPy/LiteLLM path and accepts only
+        a valid CLIO action object from the already-returned LM text.
+        """
+        message = str(error)
+        marker = "LM Response:"
+        expected = "Expected to find output fields"
+        if marker not in message or expected not in message or "action_json" not in message:
+            return None
+
+        raw_response = message.split(marker, 1)[1].split(expected, 1)[0].strip()
+        try:
+            return cls._parse_action_json(raw_response)
+        except UnsupportedPlannerActionError:
+            raise
+        except ValueError:
+            return None
+
+    @classmethod
+    def _parse_answer_from_adapter_error(cls, error: Exception) -> str | None:
+        """Recover visible answer text from a DSPy answer-field parse error.
+
+        Local models sometimes return useful prose while omitting DSPy's
+        ``answer`` marker. This accepts only the already-returned model text
+        and only when DSPy was explicitly expecting an ``answer`` field.
+        """
+        if not cls._is_answer_adapter_parse_error(error):
+            return None
+        message = str(error)
+        marker = "LM Response:"
+        expected = "Expected to find output fields"
+
+        raw_response = message.split(marker, 1)[1].split(expected, 1)[0].strip()
+        if not raw_response:
+            return None
+        raw_response = re.sub(r"\[\[\s*##\s*completed\s*##\s*\]\]", "", raw_response).strip()
+        raw_response = re.sub(
+            r"^\[\[\s*##\s*answer\s*##\s*(?:\]\])?\s*",
+            "",
+            raw_response,
+        ).strip()
+        if raw_response.startswith("[[") or raw_response in {"[", "]"}:
+            return None
+        return raw_response or None
+
+    @staticmethod
+    def _is_answer_adapter_parse_error(error: Exception) -> bool:
+        """Return whether an exception contains an unparsed answer-field response."""
+        message = str(error)
+        marker = "LM Response:"
+        expected = "Expected to find output fields"
+        if marker not in message or expected not in message:
+            return False
+        expected_fields = message.split(expected, 1)[1].lower()
+        return "answer" in expected_fields
 
     def _format_observations_for_prompt(self, observations: list[dict[str, Any]]) -> str:
         """Format loop observations as compact JSON for planner prompts."""
@@ -982,221 +2095,194 @@ class ClioAgent(dspy.Module):
     @staticmethod
     def _agent_max_steps() -> int:
         """Read the planner loop step budget from configuration."""
-        raw = os.environ.get("CLIO_AGENT_MAX_STEPS", str(DEFAULT_AGENT_MAX_STEPS))
         try:
-            value = int(raw)
-        except ValueError:
+            value = conf.resolve(
+                "limits.agent_max_steps",
+                env="CLIO_AGENT_MAX_STEPS",
+                default=DEFAULT_AGENT_MAX_STEPS,
+                cast=conf.as_int,
+            )
+        except (ValueError, TypeError):
             value = DEFAULT_AGENT_MAX_STEPS
         return max(1, min(value, 12))
 
-    @staticmethod
-    def _merge_expert_provenance(trace: RunTrace, expert_result: Any) -> None:
-        """Copy native expert tool provenance into the active run trace."""
-        provenance = getattr(expert_result, "tool_provenance", None)
-        if not isinstance(provenance, (list, tuple)):
-            return
-        for observation in provenance:
-            if hasattr(observation, "to_arc_tool_call"):
-                trace.tools.append(observation)
+    def _record_expert_handoff(
+        self,
+        trace: RunTrace,
+        *,
+        expert_id: str,
+        dispatch_target: str,
+        stage: str,
+        input_summary: str,
+        result: Any | None = None,
+        status: Literal["success", "failure"] = "success",
+        duration_ms: float = 0.0,
+        error: str | None = None,
+    ) -> None:
+        """Record an expert-stage handoff without relying on final route labels."""
+        metadata = self._expert_result_metadata(result)
+        output_summary = self._expert_result_summary(result)
+        parent_id = self._registered_parent_id(expert_id)
+        trace.record_expert_handoff(
+            agent_id=expert_id,
+            parent_id=parent_id,
+            dispatch_target=dispatch_target,
+            stage=stage,
+            status=status,
+            input_summary=self._compact_handoff_text(input_summary),
+            output_summary=output_summary,
+            duration_ms=duration_ms,
+            error=error,
+            metadata=metadata,
+        )
 
-    def _run_chat_agent(self, question: str, session_context: str) -> str:
-        """Generate a conversational reply, falling back for local backends."""
+    def _registered_parent_id(self, expert_id: str) -> str | None:
+        """Return a registered parent ID for an expert, if one exists."""
+        caps = self.registry.get_capabilities(expert_id)
+        if caps is None:
+            return None
+        return caps.parent_id
+
+    @staticmethod
+    def _expert_result_metadata(result: Any | None) -> dict[str, Any]:
+        """Return JSON-like metadata from a native expert result."""
+        metadata = getattr(result, "metadata", None)
+        if isinstance(metadata, Mapping):
+            return dict(metadata)
+        return {}
+
+    @classmethod
+    def _expert_result_summary(cls, result: Any | None) -> str:
+        """Return a compact human-readable expert output summary."""
+        if result is None:
+            return ""
+        candidates = (
+            getattr(result, "analysis", ""),
+            getattr(result, "visualization_description", ""),
+            getattr(result, "answer", ""),
+        )
+        for candidate in candidates:
+            text = cls._coerce_text(candidate).strip()
+            if text:
+                return cls._compact_handoff_text(text)
+        file_path = cls._coerce_text(getattr(result, "file_path", "")).strip()
+        if file_path:
+            return cls._compact_handoff_text(f"Artifact: {file_path}")
+        return ""
+
+    @staticmethod
+    def _compact_handoff_text(text: str, *, limit: int = 500) -> str:
+        """Compact one handoff field for durable metadata."""
+        normalized = " ".join(str(text).split())
+        if len(normalized) <= limit:
+            return normalized
+        return normalized[: limit - 15].rstrip() + "...[truncated]"
+
+    def _run_chat_agent(
+        self,
+        question: str,
+        session_context: str,
+        *,
+        images: list[Any] | None = None,
+        trace: RunTrace | None = None,
+    ) -> str:
+        """Generate a conversational reply through DSPy/LiteLLM."""
+        self._raise_if_cancelled("chat_before")
+        chat_context = self._chat_session_context(session_context)
+        image_inputs = list(images or [])
         try:
-            result = self.chat_agent(question=question, session_context=session_context)
+            with dspy.context(lm=self._main_lm, adapter=self._dspy_adapter):
+                if self._chat_should_use_utility_tools(question, session_context):
+                    tool_agent = self._build_chat_tool_agent(
+                        trace=trace,
+                        question=question,
+                        session_context=session_context,
+                    )
+                    result = tool_agent(
+                        question=question,
+                        images=image_inputs,
+                        session_context=chat_context,
+                    )
+                else:
+                    result = self.chat_agent(
+                        question=question,
+                        images=image_inputs,
+                        session_context=chat_context,
+                    )
             answer = self._coerce_text(getattr(result, "answer", None)).strip()
+            self._raise_if_cancelled("chat_after")
             if answer:
                 return answer
             raise ValueError("Chat agent returned an empty answer.")
         except Exception as chat_error:
+            recovered = self._parse_answer_from_adapter_error(chat_error)
+            if recovered:
+                self._raise_if_cancelled("chat_after")
+                return recovered
             if self.verbose:
-                print(f"[ClioAgent] ChatAgent failed, trying direct fallback: {chat_error}")
+                print(f"[ClioAgent] ChatAgent failed: {chat_error}")
+            raise
 
-            if not is_local_openai_compatible_backend(self._provider_config):
-                raise
-
-            try:
-                return self._direct_chat_completion(question, session_context)
-            except Exception as fallback_error:
-                raise RuntimeError(
-                    f"ChatAgent failed ({chat_error}); direct fallback failed ({fallback_error})"
-                ) from fallback_error
-
-    def _direct_chat_completion(self, question: str, session_context: str) -> str:
-        """Call the configured OpenAI-compatible chat endpoint directly."""
-        headers = {"Content-Type": "application/json"}
-        if self._provider_config.api_key:
-            headers["Authorization"] = f"Bearer {self._provider_config.api_key}"
-
-        system_prompt = self._build_direct_chat_system_prompt(session_context)
-        payload = {
-            "model": self._provider_config.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": question},
-            ],
-            "temperature": self._provider_config.temperature,
-            "max_tokens": self._provider_config.max_tokens,
-        }
-
-        response = requests.post(
-            f"{self._provider_config.api_base.rstrip('/')}/chat/completions",
-            json=payload,
-            headers=headers,
-            timeout=60,
+    def _chat_should_use_utility_tools(self, question: str, session_context: str) -> bool:
+        """Return whether chat should receive its scoped utility ReAct surface."""
+        return bool(
+            self._question_allows_shell_tool(question, session_context=session_context)
+            and self._chat_visible_tool_names()
         )
-        response.raise_for_status()
-        data = response.json()
-        answer = self._extract_chat_completion_text(data).strip()
-        if not answer:
-            raise ValueError("Direct chat completion returned empty content.")
-        return answer
 
-    @staticmethod
-    def _build_direct_chat_system_prompt(session_context: str) -> str:
-        """Build the system prompt used by the direct chat fallback."""
-        prompt = (ChatAgentSignature.__doc__ or "").strip()
-        if session_context and session_context != "No prior context":
-            return f"{prompt}\n\nRelevant session context:\n{session_context}"
-        return prompt
+    def _chat_visible_tool_names(self) -> list[str]:
+        """Return tools explicitly visible to the chat utility surface."""
+        return [name for name in sorted(self._known_tool_names()) if tool_visible_to(name, "chat")]
 
-    @staticmethod
-    def _extract_chat_completion_text(payload: Dict[str, Any]) -> str:
-        """Extract assistant text from an OpenAI-compatible chat response."""
-        try:
-            content = payload["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise ValueError(f"Unexpected chat completion payload: {payload}") from exc
-
-        if isinstance(content, list):
-            text_parts = [
-                part.get("text", "")
-                for part in content
-                if isinstance(part, dict) and isinstance(part.get("text"), str)
-            ]
-            return "\n".join(part for part in text_parts if part).strip()
-
-        return ClioAgent._coerce_text(content)
-
-    @staticmethod
-    def _default_artifact_root(filepath: Path) -> Path:
-        """Return an artifact root that respects configured file policy roots."""
-        configured = os.environ.get("CLIO_ARTIFACT_DIR", "").strip()
-        if configured:
-            return Path(configured).expanduser()
-
-        if not os.environ.get("CLIO_ALLOWED_ROOTS", "").strip():
-            return Path("/tmp/clio-agent-artifacts")
-
-        policy = FileAccessPolicy.from_env()
-        resolved_file = filepath.expanduser().resolve(strict=False)
-        for root in policy.allowed_roots:
-            try:
-                resolved_file.relative_to(root)
-                return root / ".clio-agent-artifacts"
-            except ValueError:
-                continue
-        return policy.allowed_roots[0] / ".clio-agent-artifacts"
-
-    @classmethod
-    def _tool_error_info_from_trace(
-        cls,
-        selected: str,
-        trace: RunTrace,
-    ) -> dict[str, Any] | None:
-        """Return structured error_info for the first failed tool in a trace."""
-        successful_tools = [tool.tool for tool in trace.tools if tool.ok]
-        for observation in trace.tools:
-            if observation.ok:
-                continue
-            error = cls._tool_error_from_result(observation.tool, observation.result)
-            info = cls._tool_error_info(
-                selected=selected,
-                tool=observation.tool,
-                error=error,
-                partial=bool(successful_tools),
-            )
-            if successful_tools:
-                info["details"]["successful_tools"] = successful_tools
-            return info
-        return None
-
-    @staticmethod
-    def _tool_error_from_result(tool: str, result: Any) -> dict[str, Any]:
-        """Extract one normalized tool error from a raw or structured result."""
-        normalized = normalize_tool_result(result, tool=tool)
-        if isinstance(normalized, dict) and "error" in normalized:
-            return normalize_tool_error(normalized["error"], tool=tool)
-        return normalize_tool_error(result, tool=tool)
-
-    @staticmethod
-    def _tool_error_info(
-        *,
-        selected: str,
-        tool: str,
-        error: dict[str, Any],
-        partial: bool,
-    ) -> dict[str, Any]:
-        """Build the public result error_info shape for handled tool failures."""
-        normalized = normalize_tool_error(error, tool=tool)
-        message = str(normalized.get("message") or f"{tool} failed.")
-        return ToolError(
-            message,
-            details={
-                "expert": selected,
-                "tool": tool,
-                "tool_error": normalized,
-                "partial": partial,
-            },
-        ).to_dict()
-
-    @staticmethod
-    def _call_tool_function(tool: Any, *args: Any, **kwargs: Any) -> Any:
-        """Call either a FastMCP FunctionTool or a plain Python helper."""
-        fn = getattr(tool, "fn", None) or getattr(tool, "func", None) or tool
-        return fn(*args, **kwargs)
-
-    def _run_local_tool(self, name: str, tool: Any, *args: Any, **kwargs: Any) -> Any:
-        """Run a local tool and record its result in the active harness trace."""
-        start = time.time()
-        result = self._call_tool_function(tool, *args, **kwargs)
-        duration_ms = (time.time() - start) * 1000
-        params = self._bind_tool_params(tool, args, kwargs)
-        self._record_tool_call(name, params, result, duration_ms)
-        return result
-
-    def _record_tool_call(
+    def _build_chat_tool_agent(
         self,
-        name: str,
-        params: dict[str, Any],
-        result: Any,
-        duration_ms: float,
-    ) -> None:
-        """Record a tool call if a run trace is active."""
-        if self._active_trace is None:
-            return
-        self._active_trace.record_tool(
-            tool=name,
-            params=params,
-            result=result,
-            duration_ms=duration_ms,
-            ok=tool_result_ok(result),
+        *,
+        trace: RunTrace | None,
+        question: str,
+        session_context: str,
+    ) -> Any:
+        """Build a per-turn ReAct agent with only chat-visible utility tools."""
+        available_tools = {tool.name: tool for tool in self._available_dspy_tools()}
+        tools: list[dspy.Tool] = []
+        for tool_name in self._chat_visible_tool_names():
+            source_tool = available_tools.get(tool_name)
+            if source_tool is None:
+                continue
+            tools.append(self._chat_scoped_tool(source_tool, trace, question, session_context))
+        if not tools:
+            raise RoutingError(
+                "Chat utility tool surface is empty.",
+                details=self._recovery_details(scope="chat", visible_tools=[]),
+            )
+        return dspy.ReAct(ChatAgentSignature, tools=tools, max_iters=3)
+
+    def _chat_scoped_tool(
+        self,
+        source_tool: dspy.Tool,
+        trace: RunTrace | None,
+        question: str,
+        session_context: str,
+    ) -> dspy.Tool:
+        """Wrap one chat-visible tool so it uses CLIO's normal tool path."""
+        tool_name = source_tool.name
+
+        def run(**kwargs: Any) -> Any:
+            active_trace = trace or RunTrace(route=self._route_for_selected("chat", "chat", 1.0))
+            return self._execute_tool_action(
+                tool_name,
+                kwargs,
+                active_trace,
+                question=question,
+                file_context="",
+                session_context=session_context,
+            )
+
+        return dspy.Tool(
+            func=run,
+            name=tool_name,
+            desc=getattr(source_tool, "desc", "") or "",
+            args=getattr(source_tool, "args", {}) or {},
         )
-
-    @staticmethod
-    def _bind_tool_params(
-        tool: Any, args: tuple[Any, ...], kwargs: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Best-effort conversion of positional tool args into named params."""
-        import inspect
-
-        fn = getattr(tool, "fn", None) or getattr(tool, "func", None) or tool
-        try:
-            bound = inspect.signature(fn).bind_partial(*args, **kwargs)
-            return dict(bound.arguments)
-        except Exception:
-            params: dict[str, Any] = {"args": list(args)}
-            params.update(kwargs)
-            return params
 
     @staticmethod
     def _coerce_text(value: Any) -> str:
@@ -1210,7 +2296,7 @@ class ClioAgent(dspy.Module):
         if isinstance(value, (list, dict)):
             try:
                 return json.dumps(value, ensure_ascii=False)
-            except Exception:
+            except Exception:  # noqa: BLE001 - value->JSON coercion falls back to str(); never fatal
                 return str(value)
 
         # Pydantic v2 models: avoid warning-emitting serialization paths.
@@ -1218,7 +2304,7 @@ class ClioAgent(dspy.Module):
             try:
                 dumped = value.model_dump(mode="json", warnings="none")
                 return json.dumps(dumped, ensure_ascii=False)
-            except Exception:
+            except Exception:  # noqa: BLE001,S110 - value coercion cascade; falls through to the next strategy
                 pass
 
         # Common chat/message object shape from LM backends.
@@ -1228,7 +2314,14 @@ class ClioAgent(dspy.Module):
 
         return str(value)
 
-    def _get_session_context(self, question: str, session_id: str, tier: int = 2) -> str:
+    def _get_session_context(
+        self,
+        question: str,
+        session_id: str,
+        tier: int = 2,
+        tool_scope: str = "none",
+        include_conversation: bool = False,
+    ) -> str:
         """Retrieve compiled session context from ARC Memory.
 
         Uses ContextCompiler pipeline (filter -> compact -> enrich -> assemble)
@@ -1238,6 +2331,12 @@ class ClioAgent(dspy.Module):
             question: User's current question
             session_id: Session identifier
             tier: Agent tier for token budget (1=planner/2K, 2=expert/4K)
+            tool_scope: Agent/tool visibility scope for ARC tool summaries.
+            include_conversation: Whether the compiled context should carry the
+                conversation/routing sections. Defaults to ``False`` because the
+                gact turn path prepends the full transcript as THE conversation
+                channel — compiling the same turns here would double the token
+                spend (#771).
 
         Returns:
             Compiled context string or "No prior context"
@@ -1247,13 +2346,20 @@ class ClioAgent(dspy.Module):
                 query=question,
                 session_id=session_id,
                 tier=tier,
+                tool_scope=tool_scope,
+                include_conversation=include_conversation,
             )
             if self.verbose:
                 print(f"[ClioAgent] Compiled context ({len(compiled)} chars, tier={tier})")
             return compiled
-        except Exception as e:
-            if self.verbose:
-                print(f"[ClioAgent] Warning: ContextCompiler failed: {e}, falling back")
+        except Exception as exc:  # noqa: BLE001 - degraded context, not a failed turn
+            logger.warning(
+                "ARC context compilation failed; falling back to legacy retrieval "
+                "reason=context_compile_failed session=%s tier=%s error=%s",
+                session_id,
+                tier,
+                exc,
+            )
             # Fallback to legacy retrieval
             try:
                 arc_context = self.context_retriever.retrieve_context_for_query(
@@ -1270,37 +2376,31 @@ class ClioAgent(dspy.Module):
                                     context_parts.append(f"{key}: {value}")
                     if context_parts:
                         return "; ".join(context_parts[:5])
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - degraded context, not a failed turn
+                logger.warning(
+                    "ARC legacy context retrieval failed; expert runs without prior context "
+                    "reason=arc_context_unavailable session=%s error=%s",
+                    session_id,
+                    exc,
+                )
+        logger.warning(
+            "no prior context recovered; expert runs cold "
+            "reason=context_unavailable session=%s",
+            session_id,
+        )
         return "No prior context"
 
     def _get_file_context(self, session_id: str, active_file: Path | None = None) -> str:
-        """Load dataset profiles from ARC for expert file context.
+        """Return the active session file reference, if any.
 
         Args:
-            session_id: Session identifier
+            session_id: Session identifier (kept for signature stability).
+            active_file: The resolved session file for this turn, if any.
 
         Returns:
-            JSON string of dataset profiles, or empty string if none.
+            The ``Current session file`` line, or an empty string when no file
+            is bound to the turn.
         """
-        try:
-            profiles = self.arc.get_session_profiles(session_id)
-            if profiles:
-                context = json.dumps(
-                    [
-                        {
-                            "filepath": p.filepath,
-                            "schema": p.schema_info,
-                            "stats": p.statistics,
-                        }
-                        for p in profiles
-                    ]
-                )
-                if active_file is not None:
-                    return f"{context}\nCurrent session file: {active_file}"
-                return context
-        except Exception:
-            pass
         if active_file is not None:
             return f"Current session file: {active_file}"
         return ""
@@ -1314,18 +2414,30 @@ class ClioAgent(dspy.Module):
 
     def _last_session_file_path(self, session_id: str) -> Path | None:
         """Find the last local scientific file path mentioned in this session."""
+        suffix_filter = SCIENTIFIC_FILE_SUFFIXES
         try:
             conv = self.arc.get_conversation(session_id)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - best-effort file lookup, degrades to None
+            logger.debug(
+                "session conversation lookup failed; no session file resolved "
+                "reason=session_file_lookup_failed session=%s error=%s",
+                session_id,
+                exc,
+            )
             return None
         if conv is None:
             return None
 
+        fallback: Path | None = None
         for message in reversed(conv.messages):
-            paths = extract_file_paths(message.content, "", SCIENTIFIC_FILE_SUFFIXES)
+            paths = extract_file_paths(message.content, "", suffix_filter)
             if paths:
-                return paths[0]
-        return None
+                if fallback is None:
+                    fallback = paths[0]
+                for path in paths:
+                    if path.expanduser().exists():
+                        return path
+        return fallback
 
     @staticmethod
     def _question_with_session_file(question: str, active_file: Path | None) -> str:
@@ -1335,16 +2447,6 @@ class ClioAgent(dspy.Module):
         if extract_file_paths(question, "", SCIENTIFIC_FILE_SUFFIXES):
             return question
         return f"{question}\n\nUse this file from the current session: {active_file}"
-
-    @staticmethod
-    def _question_with_file_context(question: str, file_context: str) -> str:
-        """Append current file context when a planner expert action omits the path."""
-        if extract_file_paths(question, "", SCIENTIFIC_FILE_SUFFIXES):
-            return question
-        paths = extract_file_paths(file_context, "", SCIENTIFIC_FILE_SUFFIXES)
-        if not paths:
-            return question
-        return f"{question}\n\nUse this file from the current session: {paths[0]}"
 
     def _store_routing_decision(
         self,
@@ -1374,9 +2476,13 @@ class ClioAgent(dspy.Module):
                 conv.routing_decisions.append(routing_decision)
                 conv.updated_at = time.time()
                 self.arc.store_conversation(conv)
-        except Exception as e:
-            if self.verbose:
-                print(f"[ClioAgent] Warning: Failed to store routing decision: {e}")
+        except Exception as exc:  # noqa: BLE001 - telemetry write, not a failed turn
+            logger.warning(
+                "routing decision not persisted to ARC "
+                "reason=routing_decision_store_failed session=%s error=%s",
+                session_id,
+                exc,
+            )
 
     def _store_metrics(
         self,
@@ -1387,8 +2493,9 @@ class ClioAgent(dspy.Module):
         success: bool,
         error_msg: str | None = None,
         trace: RunTrace | None = None,
+        nanoagents_spawned: list[dict[str, Any]] | None = None,
     ) -> None:
-        """Store invocation metrics in LSM Tree and ARC Memory.
+        """Store invocation metrics in ARC Memory.
 
         Args:
             question: User's question
@@ -1398,20 +2505,6 @@ class ClioAgent(dspy.Module):
             success: Whether the query succeeded
             error_msg: Error message if failed
         """
-        # Write to LSM Tree
-        self.lsm.write(
-            timestamp=time.time(),
-            metric={
-                "session_id": session_id,
-                "query": question,
-                "selected_expert": selected_expert,
-                "duration_ms": duration_ms,
-                "success": success,
-                "error": error_msg,
-            },
-        )
-
-        # Store invocation in ARC Memory
         invocation_id = trace.trace_id if trace else str(uuid.uuid4())
         invocation = Invocation(
             trace_id=invocation_id,
@@ -1427,7 +2520,7 @@ class ClioAgent(dspy.Module):
             input={"query": question},
             output={"error": error_msg} if error_msg else {},
             tools_called=[tool.to_arc_tool_call() for tool in (trace.tools if trace else [])],
-            nanoagents_spawned=[],
+            nanoagents_spawned=self._to_arc_nanoagent_spawns(nanoagents_spawned or []),
             performance={"success": success, "duration_ms": duration_ms},
             storage_tier="warm",
         )
@@ -1481,14 +2574,81 @@ class ClioAgent(dspy.Module):
                 input={"question": question, "file_context": file_context},
                 output=output_data,
                 tools_called=[tool.to_arc_tool_call() for tool in (trace.tools if trace else [])],
-                nanoagents_spawned=[],
+                nanoagents_spawned=self._to_arc_nanoagent_spawns(
+                    self._extract_nanoagents_spawned(expert_result)
+                ),
                 performance={"success": success, "duration_ms": duration_ms},
                 storage_tier="warm",
             )
             self.arc.store_invocation(invocation)
-        except Exception as e:
-            if self.verbose:
-                print(f"[ClioAgent] Warning: Failed to store expert invocation: {e}")
+        except Exception as exc:  # noqa: BLE001 - telemetry write, not a failed turn
+            logger.warning(
+                "expert invocation not persisted to ARC "
+                "reason=invocation_store_failed session=%s agent=%s error=%s",
+                session_id,
+                selected,
+                exc,
+            )
+
+    @staticmethod
+    def _extract_nanoagents_spawned(prediction: Any) -> list[dict[str, Any]]:
+        """Return nanoagent spawn wire rows from an expert prediction."""
+        raw = getattr(prediction, "nanoagents_spawned", None)
+        if not raw:
+            return []
+
+        out: list[dict[str, Any]] = []
+        for spawn in raw:
+            if isinstance(spawn, Mapping):
+                row = dict(spawn)
+            else:
+                row = {
+                    key: getattr(spawn, key)
+                    for key in (
+                        "agent_id",
+                        "nanoagent_id",
+                        "trace_id",
+                        "input",
+                        "task",
+                        "answer",
+                        "duration_ms",
+                        "status",
+                        "error",
+                    )
+                    if hasattr(spawn, key)
+                }
+            if row:
+                out.append(row)
+        return out
+
+    @staticmethod
+    def _to_arc_nanoagent_spawns(spawns: list[dict[str, Any]]) -> list[NanoagentSpawn]:
+        """Convert GACT nanoagent wire rows into ARC invocation records."""
+        out: list[NanoagentSpawn] = []
+        for spawn in spawns:
+            agent_id = str(
+                spawn.get("nanoagent_id")
+                or spawn.get("agent_id")
+                or spawn.get("agent")
+                or "nanoagent"
+            )
+            trace_id = str(spawn.get("trace_id") or spawn.get("id") or uuid.uuid4())
+            task = str(spawn.get("task") or spawn.get("question") or spawn.get("input") or "")
+            try:
+                duration_ms = float(spawn.get("duration_ms", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                duration_ms = 0.0
+            status = str(spawn.get("status") or ("failure" if spawn.get("error") else "success"))
+            out.append(
+                NanoagentSpawn(
+                    nanoagent_id=agent_id,
+                    trace_id=trace_id,
+                    task=task,
+                    duration_ms=duration_ms,
+                    status=status,
+                )
+            )
+        return out
 
     def _store_conversation(self, question: str, answer: str, session_id: str) -> None:
         """Store conversation in ARC Memory.
@@ -1535,7 +2695,7 @@ class ClioAgent(dspy.Module):
                 status="active",
                 messages=[user_msg, assistant_msg],
                 routing_decisions=[],
-                metadata={"clio_agent_version": "0.2.0", "arc_enabled": True},
+                metadata={"clio_agent_version": _clio_agent_version(), "arc_enabled": True},
                 storage_tier="warm",
             )
             self.arc.store_conversation(conv)
@@ -1543,10 +2703,6 @@ class ClioAgent(dspy.Module):
     def get_arc_stats(self) -> Dict[str, Any]:
         """Get ARC memory statistics."""
         return self.arc.get_cache_stats()
-
-    def get_lsm_stats(self) -> Dict[str, Any]:
-        """Get LSM Tree statistics."""
-        return self.lsm.get_stats()
 
     def get_session_history(self, session_id: str, limit: int = 10) -> List[Conversation]:
         """Get conversation history for session from ARC Memory."""
@@ -1556,32 +2712,4 @@ class ClioAgent(dspy.Module):
         """Clean shutdown of ClioAgent resources."""
         if self.verbose:
             print("[ClioAgent] Shutting down...")
-
-        for attr in ("data_expert", "analysis_expert", "visualization_expert"):
-            expert = getattr(self, attr, None)
-            close = getattr(expert, "close", None)
-            if callable(close):
-                try:
-                    close()
-                except Exception as e:
-                    if self.verbose:
-                        print(f"[ClioAgent] Warning: failed to close {attr}: {e}")
-
-        self.lsm.close()
-
-        if self.verbose:
-            print("[ClioAgent] LSM Tree closed")
             print("[ClioAgent] Shutdown complete")
-
-
-def load_optimized_clio_agent(path: str, verbose: bool = False) -> ClioAgent:
-    """Load an optimized ClioAgent agent from disk.
-
-    Args:
-        path: Path to saved ClioAgent JSON
-        verbose: If True, print loading info
-
-    Returns:
-        Optimized ClioAgent instance
-    """
-    raise NotImplementedError("Optimization loading not yet implemented")

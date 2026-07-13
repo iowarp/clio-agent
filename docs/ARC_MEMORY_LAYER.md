@@ -2,955 +2,268 @@
 title: "ARC Memory Layer: Agent Runtime Context Architecture"
 category: architecture
 priority: high
-version: "1.0"
-focus: "Memory Architecture, O(log N) Retrieval, IOWarp CTE Integration"
+version: "2.0"
+focus: "Live context plane, one semantic-event log, pluggable record backends, honest storage topology"
 ---
 
 # ARC Memory Layer
 
-**Agent Runtime Context (ARC)** is CLIO Agent's native, high-performance memory system providing persistent context storage, fast retrieval, and agent coordination.
+**Agent Runtime Context (ARC)** is CLIO Agent's in-process memory layer. It is
+the live, mutable context plane the DSPy ReAct loop reads on every iteration, the
+one semantic-event log every turn appends to, and a thin durable tier beneath a
+hot in-memory layer. It is **not** a multi-tier storage engine and does **not**
+migrate data across GPU/NVMe/PFS tiers — the durable backend is either the
+clio-core CTE daemon or plain files on disk.
 
-## Overview
+The class that ties it together is `ARCMemory` (`src/clio_agent/arc/memory.py`).
+It composes four pieces:
 
-### Purpose
+- `LRUCache` (`arc/cache.py`) — the hot in-memory layer for recently touched
+  records (bounded, LRU eviction; its own lock).
+- `BTreeIndex` (`arc/index.py`) — a `sortedcontainers`-backed index over
+  invocation keys `(session_id, timestamp, trace_id)` for ordered range reads.
+- `SegmentStore` (`arc/segments.py`) — the **live context plane** and the one
+  semantic-event log (see below).
+- `LSMTree` (`arc/lsm.py`) — an append-optimized log-structured merge tree for
+  the write-heavy invocation-metrics path.
 
-ARC solves critical problems in multi-agent systems:
-- **Context Continuity**: Resume conversations seamlessly across sessions
-- **Performance Tracking**: Store metrics for continuous learning
-- **Agent Coordination**: All tiers (T1/T2/T3) share context efficiently
-- **Fast Retrieval**: O(log N) search, not linear scan
-- **Persistent Storage**: Integrated with IOWarp CTE multi-tier storage
+Durable records for all of the above flow through one pluggable seam,
+`ARCStore` (`arc/storage.py`), whose two concrete backends are described under
+[Backends](#backends).
 
-### Key Features
-
-- ⚡ **O(log N) Retrieval**: B-tree indexing for fast search
-- 🗄️ **IOWarp CTE Integration**: Persistent storage across tiers (GPU → NVMe → PFS → Archive)
-- 🔥 **In-Memory Cache**: LRU cache for hot data (O(1) access)
-- 📊 **Metrics Collection**: High-throughput metrics for Optimizer Layer
-- 🤝 **Multi-Agent Coordination**: Shared context across all tiers
-- 🔍 **Rich Query API**: Search by session, agent, timestamp, domain
-
----
-
-## Architecture
-
-### 3-Tier Memory Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  TIER 1: In-Memory Layer (Hot Data, Sub-Millisecond Access)│
-│                                                              │
-│  ┌────────────────────────────────────────────────────────┐ │
-│  │  LRU Cache (Least Recently Used)                      │ │
-│  │                                                        │ │
-│  │  Data Stored:                                         │ │
-│  │  • Active conversations (last N accessed)             │ │
-│  │  • Recent tool results (1-hour TTL)                   │ │
-│  │  • User preferences (session-specific)                │ │
-│  │  • Routing decisions (last 100)                       │ │
-│  │                                                        │ │
-│  │  Performance:                                         │ │
-│  │  • Access: O(1)                                       │ │
-│  │  • Eviction: LRU policy                               │ │
-│  │  • Size: Configurable (default: 1000 items)           │ │
-│  │  • Hit Rate: 85-95% for recent data                   │ │
-│  └────────────────────────────────────────────────────────┘ │
-└──────────────────────────┬───────────────────────────────────┘
-                           │ (Cache miss)
-                           ▼
-┌─────────────────────────────────────────────────────────────┐
-│  TIER 2: Index Layer (Fast Search, Millisecond Access)     │
-│                                                              │
-│  ┌────────────────────────────────────────────────────────┐ │
-│  │  B-Tree Index                                         │ │
-│  │                                                        │ │
-│  │  Indexes:                                             │ │
-│  │  • session_id → Conversation                          │ │
-│  │  • (agent_id, timestamp) → Invocations                │ │
-│  │  • (domain, keywords) → Context                       │ │
-│  │  • user_id → Sessions                                 │ │
-│  │                                                        │ │
-│  │  Performance:                                         │ │
-│  │  • Search: O(log N)                                   │ │
-│  │  • Range Queries: Supported                           │ │
-│  │  • Fan-out: Configurable (default: 128)               │ │
-│  │  • Height: log₁₂₈(N) ≈ 2-3 for millions of entries    │ │
-│  └────────────────────────────────────────────────────────┘ │
-│                                                              │
-│  ┌────────────────────────────────────────────────────────┐ │
-│  │  LSM Tree (Log-Structured Merge Tree)                │ │
-│  │                                                        │ │
-│  │  Optimized For:                                       │ │
-│  │  • Write-heavy metrics collection                     │ │
-│  │  • High throughput (10,000+ writes/sec)               │ │
-│  │  • Append-only workloads                              │ │
-│  │  • Background compaction                              │ │
-│  │                                                        │ │
-│  │  Data:                                                │ │
-│  │  • /metrics/<agent_id>/ performance data              │ │
-│  │  • /invocations/<trace_id>/ execution traces          │ │
-│  └────────────────────────────────────────────────────────┘ │
-└──────────────────────────┬───────────────────────────────────┘
-                           │ (Persistent storage)
-                           ▼
-┌─────────────────────────────────────────────────────────────┐
-│  TIER 3: Persistent Layer (IOWarp CTE Multi-Tier Storage)  │
-│                                                              │
-│  ┌────────────────────────────────────────────────────────┐ │
-│  │  IOWarp Namespace: /clio_agent/arc/*                     │ │
-│  │                                                        │ │
-│  │  Storage Tier Policy (Automatic Migration):           │ │
-│  │                                                        │ │
-│  │  🔥 HOT (GPU Memory)                                  │ │
-│  │     • Active sessions (< 1 hour old)                  │ │
-│  │     • Access pattern: Read/Write heavy                │ │
-│  │     • Capacity: Limited (GPU VRAM)                    │ │
-│  │     • Latency: < 1ms                                  │ │
-│  │                                                        │ │
-│  │  🌡️ WARM (NVMe SSD)                                   │ │
-│  │     • Recent sessions (1-24 hours old)                │ │
-│  │     • Access pattern: Read-mostly                     │ │
-│  │     • Capacity: Medium (100GB - 1TB)                  │ │
-│  │     • Latency: 1-10ms                                 │ │
-│  │                                                        │ │
-│  │  ❄️ COLD (Parallel File System)                       │ │
-│  │     • Historical data (1-30 days old)                 │ │
-│  │     • Access pattern: Infrequent reads                │ │
-│  │     • Capacity: Large (10TB+)                         │ │
-│  │     • Latency: 10-100ms                               │ │
-│  │                                                        │ │
-│  │  📦 ARCHIVE (Object Storage)                          │ │
-│  │     • Long-term storage (> 30 days old)               │ │
-│  │     • Access pattern: Rare                            │ │
-│  │     • Capacity: Unlimited                             │ │
-│  │     • Latency: 100ms - 1s                             │ │
-│  │                                                        │ │
-│  │  Migration Policy:                                    │ │
-│  │  • Access frequency triggers promotion (cold → warm)  │ │
-│  │  • Age triggers demotion (hot → warm → cold → archive)│
-│  │  • Configurable thresholds                            │ │
-│  └────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────┘
-```
+`ARCMemory._lock` guards **only** the in-process hot structures (cache,
+invocation index, counters). It is never held across store or LSM I/O; the
+`SegmentStore`, `LSMTree`, and `LRUCache` each self-lock. The invariant is
+documented at the lock's declaration in `arc/memory.py`.
 
 ---
 
-## Data Schema
+## The live context plane
 
-### 1. Conversations (`/conversations/<session_id>/`)
+`SegmentStore` is an ordered, scoped, mutable sequence of `Segment`s
+(`arc/schema.py`). The ReAct loop *writes* one segment per produced piece
+(thought / tool_call / observation) and *reads* the prompt back by rendering the
+live ordered set for a scope. The context operations — `append` / `insert` /
+`delete` / `summarize` / `replace` — mutate segments between renders, so an
+out-of-band edit changes the *next* prompt. That is the whole point of the live
+plane: compressing ARC actually changes what the model attends over, instead of
+being a post-hoc record with zero effect on the turn.
 
-**Structure**:
-```python
-Conversation = {
-    "session_id": "uuid-v4",
-    "user_id": "user@example.com",
-    "created_at": "2025-01-09T14:30:00Z",
-    "updated_at": "2025-01-09T15:45:00Z",
-    "last_accessed": "2025-01-09T15:45:00Z",  # For tier migration
-    "status": "active" | "completed" | "abandoned",
+Design detail lives in `docs/archive/arc-live-context-plane.md`. Two properties
+matter for storage:
 
-    "messages": [
-        {
-            "message_id": "uuid-v4",
-            "role": "user" | "assistant",
-            "content": "How do I optimize my 100GB HDF5 file?",
-            "timestamp": "2025-01-09T14:30:05Z",
-            "metadata": {
-                "source": "cli",  # or "api", "a2a"
-                "model_used": "gpt-oss-20b",
-            }
-        },
-        # ... more messages
-    ],
+- Each `(session_id, scope)` persists as **one** record through the injected
+  `ARCStore`; `render` batches the whole scope into a single get/decode because
+  it is the every-iteration hot path.
+- `order` is a gap-allocated float, so a mid-sequence `insert` picks a midpoint
+  and never renumbers later segments. `delete` **tombstones** rather than erases,
+  so segments survive for Trace reconstruction and as-of-`T` reads.
 
-    "routing_decisions": [
-        {
-            "timestamp": "2025-01-09T14:30:06Z",
-            "query": "How do I optimize my 100GB HDF5 file?",
-            "capabilities_needed": ["HDF5", "optimization"],
-            "selected_agent": "DataExpert",
-            "reasoning": "Query mentions HDF5 file and optimization",
-            "confidence": 0.95,
-            "alternatives": [
-                {"agent": "HPCExpert", "score": 0.12},
-            ]
-        }
-    ],
+Every applied op is forwarded to the durable Trace through an injected
+`op_logger` (wired by `gact` via `set_segment_op_logger`, so `arc/` never imports
+`gact/`). ARC is replayable from those `arc.op` events — see `arc/replay.py`.
 
-    "metadata": {
-        "user_preferences": {
-            "verbose": false,
-            "preferred_compression": "gzip-6",
-        },
-        "domain": "scientific_computing",
-        "total_tokens": 1234,
-        "total_invocations": 3,
-    },
+### The one semantic-event log (`_events`, chunked)
 
-    "storage_tier": "warm",  # Current IOWarp CTE tier
-}
-```
+There is exactly **one** persisted semantic-event log. Every recorded semantic
+event (`ARCMemory.record_semantic_event`) is appended as one lean
+`semantic_event` segment via `ARCMemory._append_event_segment`. `build_event_content`
+(`arc/live.py`) stores the event **verbatim — no truncation, no caps**: ARC is
+the source and holds everything (freeze-anytime); any downstream bound is that
+consumer's own deliberate choice.
 
-### 2. Invocations (`/invocations/<trace_id>/`)
+`LiveRuntimeContext` (`arc/live.py`) is a pure **reader** over this log.
+`view` / `project_conversation` / `project_invocations` are queries that render
+the log, group by `turn_id`, and replay each turn through one reducer to rebuild
+`Conversation` / `Invocation` projections. ARC's conversation and invocation
+records are therefore **projections of the log**, not independently built copies.
 
-**Structure**:
-```python
-Invocation = {
-    "trace_id": "uuid-v4",
-    "session_id": "uuid-v4",  # Parent conversation
-    "parent_trace_id": "uuid-v4" | null,  # For nanoagent spawns
+The log is a **chunk family**, not one ever-growing scope. The reserved scope
+`EVENTS_SCOPE = "_events"` is chunk 1; chunk `N >= 2` is `_events/N`
+(`events_chunk_scope` / `events_chunk_index` / `is_events_scope` in `arc/live.py`).
+The writer rolls to the next chunk once the active one reaches
+`arc.events_chunk_segments` segments (env `CLIO_ARC_EVENTS_CHUNK_SEGMENTS`,
+default 512). A single append re-encodes only the active chunk — **O(chunk)** —
+instead of re-encoding the whole log per event, which was the previous
+**O(N²)** hot-path cost. Reads concatenate `render` across the family in chunk
+order; a store-wide monotonic `logical_time` guarantees the concatenation equals
+the old single-scope render (each chunk fills to capacity before the next opens).
 
-    "agent_id": "DataExpert",
-    "tier": 2,  # 1=Main, 2=Expert, 3=Nanoagent
-    "source": "native" | "langchain" | "crewai" | "autogen",
+The `_events` family is its own scope and `semantic_event` is not a working-set
+kind, so the log is invisible to any expert-prompt render and is deliberately
+kept out of every backend's keyword-search companion — it can never leak into a
+model prompt.
 
-    "started_at": "2025-01-09T14:30:07Z",
-    "completed_at": "2025-01-09T14:30:08.247Z",
-    "duration_ms": 1247,
-    "status": "success" | "failure" | "timeout",
+Lifecycle: the log's chunks are erased on `release`/`clear` **only** when a
+durable Trace backend is enabled (so the full history is preserved elsewhere);
+under the default `none` trace backend the log is the only copy and is retained
+instead (#762).
 
-    "input": {
-        "query": "Optimize 100GB HDF5 file",
-        "context": {...},
-    },
+### Record kinds
 
-    "output": {
-        "answer": "Apply gzip-6 compression...",
-        "reasoning_trace": [
-            {"step": 1, "thought": "Need to analyze first", "action": "hdf5_analyze"},
-            {"step": 2, "observation": {...}, "thought": "No compression"},
-        ],
-    },
+The logical record families ARC persists are the single source of truth in
+`ARC_KINDS` (`arc/storage.py`):
 
-    "tools_called": [
-        {
-            "tool": "hdf5_analyze",
-            "params": {"filepath": "/data/file.h5"},
-            "result": {"compression": "none", "size": "100GB"},
-            "duration_ms": 342,
-            "cached": false,  # Was result from cache?
-        }
-    ],
+| Kind | What it holds |
+| --- | --- |
+| `conversations` | One `Conversation` per session (projected from the log). |
+| `invocations` | Per-turn `Invocation` records (projected from the log). |
+| `variants` | Optimizer prompt/program variants. |
+| `segments` | The live context plane: one record per `(session_id, scope)`, including the `_events` log chunks. |
 
-    "nanoagents_spawned": [
-        {
-            "nanoagent_id": "uuid-v4",
-            "trace_id": "uuid-v4",  # Links to separate invocation record
-            "task": "analyze_chunk",
-            "duration_ms": 123,
-            "status": "success",
-        }
-    ],
+> Earlier revisions of this doc described `profiles` (dataset profiles) and
+> `procedural` (procedural memory) kinds with `[Available Data]` / `[Prior
+> Analysis]` context sections. Those schemas had **zero writers** and were
+> deleted in #771 (Slice D); they no longer exist in `arc/schema.py`,
+> `ARC_KINDS`, or `arc/context_compiler.py`.
 
-    "performance": {
-        "latency_ms": 1247,
-        "success": true,
-        "user_satisfied": true,  # Implicit: task completed without errors
-        "prompt_variant": "v2.3.1",  # Which optimized prompt was used
-    },
+### Invocation metrics (LSM)
 
-    "storage_tier": "cold",  # Most invocations archived quickly
-}
-```
-
-### 3. Metrics (`/metrics/<agent_id>/`)
-
-**Structure**:
-```python
-Metrics = {
-    "agent_id": "DataExpert",
-    "tier": 2,
-    "period": "2025-01-01/2025-01-31",
-    "computed_at": "2025-01-31T23:59:59Z",
-
-    "invocations": {
-        "total": 1234,
-        "success": 1193,
-        "failure": 31,
-        "timeout": 10,
-        "success_rate": 0.967,
-    },
-
-    "latency": {
-        "avg_ms": 1523,
-        "median_ms": 1200,
-        "p95_ms": 2500,
-        "p99_ms": 4200,
-        "min_ms": 234,
-        "max_ms": 8900,
-    },
-
-    "user_satisfaction": {
-        "total_rated": 342,
-        "positive": 305,
-        "negative": 37,
-        "score": 0.89,  # 0-1 scale
-    },
-
-    "tools": {
-        "hdf5_analyze": {
-            "calls": 567,
-            "avg_duration_ms": 342,
-            "cache_hit_rate": 0.23,
-        },
-        "hdf5_optimize": {
-            "calls": 423,
-            "avg_duration_ms": 2134,
-            "cache_hit_rate": 0.05,  # Optimization rarely cached
-        },
-    },
-
-    "optimization_history": [
-        {
-            "timestamp": "2025-01-15T10:00:00Z",
-            "optimizer": "PromptOptimizer",
-            "method": "MIPRO",
-            "variant_id": "v2.3.1",
-            "improvements": {
-                "success_rate": {"before": 0.87, "after": 0.94, "delta": "+8%"},
-                "avg_latency_ms": {"before": 1732, "after": 1523, "delta": "-12%"},
-            },
-            "training_examples": 856,
-            "optimization_duration": "2h 15m",
-        }
-    ],
-
-    "storage_tier": "warm",  # Metrics accessed frequently
-}
-```
-
-### 4. Context (`/context/<domain>/`)
-
-**Structure**:
-```python
-Context = {
-    "domain": "hdf5_optimization",
-    "created_at": "2025-01-09T...",
-    "updated_at": "2025-01-31T...",
-
-    "retrieved_docs": [
-        {
-            "doc_id": "uuid-v4",
-            "source": "rag_system",
-            "title": "HDF5 Compression Best Practices",
-            "content": "...",
-            "relevance_score": 0.94,
-            "accessed_count": 47,
-        }
-    ],
-
-    "cached_tool_results": {
-        "hdf5_analyze": {
-            "params_hash": "sha256(...)",
-            "result": {...},
-            "cached_at": "2025-01-09T14:30:08Z",
-            "ttl": 3600,  # 1 hour
-            "hit_count": 3,
-        }
-    },
-
-    "learned_patterns": [
-        {
-            "pattern_id": "uuid-v4",
-            "description": "Large files (>10GB) typically need compression",
-            "confidence": 0.92,
-            "examples_seen": 47,
-            "learned_at": "2025-01-15T...",
-            "rule": {
-                "condition": "file_size > 10GB and compression == 'none'",
-                "recommendation": "Apply gzip-6 or blosc compression",
-            }
-        }
-    ],
-
-    "storage_tier": "cold",  # Context accessed less frequently
-}
-```
+`ARCMemory.store_invocation` is the single caller of `LSMTree` (`arc/lsm.py`).
+The LSM tree is append-optimized: a `SortedDict` MemTable takes recent writes,
+immutable on-disk SSTables hold the rest, and a background thread compacts
+SSTables to bound read amplification (the MemTable is double-buffered so a flush
+does not block writers). Metrics live under `.clio/agent/arc/lsm/sst_*.msgpack`.
 
 ---
 
-## Implementation
+## Backends
 
-### Data Structures
+Durable records go through the `ARCStore` protocol (`arc/storage.py`):
+`put(kind, name, data, search_text=...)` / `get(kind, name)` /
+`scan(kind, prefix)` over opaque `bytes` keyed by `(kind, name)`. Any backend
+satisfying it plugs in. Two ship:
 
-**LRU Cache**:
-```python
-from lru import LRU
+- **`CTEStore` (default, `CLIO_ARC_STORE=cte`)** — the clio-core CTE (Convergent
+  Tiered Environment) binding. It connects to a shared per-user daemon
+  (connect-or-spawn) and stops it at interpreter exit via `atexit` (see the
+  shutdown note below). The daemon's DRAM tier is the live working set; a file
+  tier at `<user_data_dir>/cte/storage.bin` backs it. On-disk recovery of the
+  file tier is still WIP, so for guaranteed disk durability today prefer the
+  local backend.
+- **`LocalFSStore` (`CLIO_ARC_STORE=local`)** — plain files under the ARC data
+  dir: one `<kind>/<name>.msgpack` record per key, plus a `<kind>/<name>.search`
+  plain-text companion for the degraded keyword-overlap search. Durable on disk,
+  no external process.
 
-class ARCCache:
-    """In-memory LRU cache for hot data"""
+**Selection is fail-loud, never a silent fallback** (`make_arc_store`,
+`arc/storage.py`). `cte` is the default; if its binding is absent or fails to
+initialize it **raises** — it does not quietly degrade to `LocalFSStore`, which
+would mask a misconfigured deploy and hide that ARC is no longer on clio-core.
+`LocalFSStore` is used only when `local` is selected explicitly. This is the
+`[[deliberate-config-fail-loud]]` policy.
 
-    def __init__(self, size: int = 1000):
-        self.conversations = LRU(size)
-        self.tool_results = LRU(size)
-        self.preferences = LRU(size)
+**Doctor surfaces the backend's real state.** `clio doctor` (`runtime/status.py`,
+`_probe_arc_cte` / `_probe_arc_local`) reports `arc` as a required integration:
+when the CTE backend is selected but `iowarp_core` is not installed, or its
+shared daemon is not listening, the probe returns `UNAVAILABLE` (red) with a
+concrete next action (install the package or set `CLIO_ARC_STORE=local`) —
+never a green "everything's fine" over a missing store.
 
-    def get(self, key: str) -> Any | None:
-        """O(1) access"""
-        return self.conversations.get(key) or self.tool_results.get(key)
+### Shutdown story (atexit, deliberate)
 
-    def set(self, key: str, value: Any, ttl: int = None):
-        """O(1) insertion with optional TTL"""
-        # Store with expiration timestamp
-        pass
-```
-
-**B-Tree Index**:
-```python
-from sortedcontainers import SortedDict
-
-class BTreeIndex:
-    """B-tree index for O(log N) retrieval"""
-
-    def __init__(self):
-        self.session_index = SortedDict()  # session_id → offset
-        self.agent_index = SortedDict()    # (agent_id, timestamp) → offset
-        self.domain_index = SortedDict()   # (domain, keyword) → offsets
-
-    def search(self, key: str) -> List[str]:
-        """O(log N) search"""
-        return self.session_index.get(key, [])
-
-    def range_query(self, start_key: str, end_key: str) -> List[str]:
-        """O(log N + k) range query"""
-        return self.session_index.irange(start_key, end_key)
-```
-
-**LSM Tree**:
-```python
-class LSMTree:
-    """Log-Structured Merge Tree for write-heavy metrics"""
-
-    def __init__(self):
-        self.memtable = {}  # In-memory buffer
-        self.sstables = []  # Sorted String Tables (on disk)
-
-    def append(self, key: str, value: Any):
-        """O(1) write to memtable"""
-        self.memtable[key] = value
-        if len(self.memtable) > FLUSH_THRESHOLD:
-            self.flush_to_sstable()
-
-    def get(self, key: str) -> Any:
-        """O(log N) read (check memtable first, then sstables)"""
-        if key in self.memtable:
-            return self.memtable[key]
-        return self.search_sstables(key)
-
-    def flush_to_sstable(self):
-        """Background: flush memtable to sorted SSTable file"""
-        pass
-
-    def compact(self):
-        """Background: merge sstables, remove duplicates"""
-        pass
-```
-
-### IOWarp CTE Integration
-
-**Namespace Registration**:
-```python
-from iowarp import IOWarp
-
-class ARCStorage:
-    """ARC persistent storage via IOWarp CTE"""
-
-    def __init__(self):
-        # Register CLIO Agent namespace in IOWarp
-        self.iowarp = IOWarp.connect()
-        self.namespace = self.iowarp.register_namespace(
-            path="/clio_agent/arc",
-            tier_policy={
-                "hot": {
-                    "storage": "gpu_memory",
-                    "criteria": "age < 1h",
-                    "capacity": "8GB",
-                },
-                "warm": {
-                    "storage": "nvme",
-                    "criteria": "age < 24h",
-                    "capacity": "100GB",
-                },
-                "cold": {
-                    "storage": "parallel_fs",
-                    "criteria": "age < 30d",
-                    "capacity": "1TB",
-                },
-                "archive": {
-                    "storage": "object_store",
-                    "criteria": "age >= 30d",
-                    "capacity": "unlimited",
-                },
-            },
-            migration_policy="automatic",  # IOWarp handles tier migration
-        )
-
-    def write(self, path: str, data: bytes):
-        """Write to IOWarp CTE (initially to 'hot' tier)"""
-        self.namespace.write(path, data)
-        # IOWarp automatically migrates based on access patterns
-
-    def read(self, path: str) -> bytes:
-        """Read from IOWarp CTE (IOWarp fetches from appropriate tier)"""
-        return self.namespace.read(path)
-        # IOWarp may prefetch or promote to faster tier
-```
-
-**Tier Migration Example**:
-```
-New conversation created at 14:30
-  ↓
-Stored in HOT tier (GPU memory)
-  ↓ (1 hour passes, no access)
-IOWarp auto-migrates to WARM tier (NVMe)
-  ↓ (24 hours pass)
-IOWarp auto-migrates to COLD tier (Parallel FS)
-  ↓ (User accesses conversation)
-IOWarp promotes back to WARM tier (NVMe)
-  ↓ (30 days pass)
-IOWarp auto-migrates to ARCHIVE tier (Object Store)
-```
+The shared clio-core daemon is released via an `atexit`-registered
+`release_runtime_client`, **not** from the gact server's lifespan shutdown. This
+is deliberate: uvicorn returns from `serve` on `SIGTERM`, the interpreter exits,
+and `atexit` fires. Stopping the shared daemon inside the FastAPI lifespan would
+wrongly kill it on any non-exit app teardown (tests, reloads, embedded use)
+while another process may still be attached. See the lifespan note in
+`gact/app.py`.
 
 ---
 
-## API Reference
+## Storage topology
 
-### Core ARC Class
+ARC is one materialization among several the running server keeps. Per RULE 4
+(honest topology), here is every durable location, its owner, and who reads it.
+The default paths below assume the LocalFS layout and the gact session store's
+default root `<cwd>/.clio/agent/`.
 
-```python
-class ARC:
-    """Agent Runtime Context - Memory Layer API"""
+| # | Location | Owner | Path (default) | Reader |
+| --- | --- | --- | --- | --- |
+| 1 | ARC records (`ARC_KINDS`) | ARC (`arc/storage.py`) | CTE: daemon DRAM + `<user_data_dir>/cte/storage.bin`; LocalFS: `.clio/agent/arc/<kind>/*.msgpack` (+ `.search`) | `ARCMemory` reads/projections; `arc/context_compiler.py` |
+| 2 | LSM invocation metrics | ARC (`arc/lsm.py`) | `.clio/agent/arc/lsm/sst_*.msgpack` | `ARCMemory.store_invocation` range reads |
+| 3 | Session registry | gact (`gact/sessions.py`) | `.clio/agent/sessions.json` | gact session routes; TUI |
+| 4 | Message ledgers | gact (`gact/messages.py`, `MessageStore`) | `.clio/agent/messages/<session_id>.json` | gact message routes; the turn transcript prepend |
+| 5 | Durable semantic Trace | gact (`gact/semantic_events.py`) | `.clio/agent/semantic_traces/` — **default disabled** (`CLIO_SEMANTIC_TRACE_BACKEND=none`) | audit/replay tooling when enabled |
+| 6 | Context-files ledger | gact (`gact/app.py`) | `.clio/agent/context_files.json` | context-file routes |
 
-    def __init__(
-        self,
-        cache_size: int = 1000,
-        tool_cache_ttl: int = 3600,
-        iowarp_namespace: str = "/clio_agent/arc",
-        tier_policy: dict = None,
-    ):
-        """
-        Initialize ARC Memory Layer
+Plus `~/.clio/` daemon coordination artifacts (lock/port files) owned by the
+clio-core runtime — infrastructure, not an ARC record store.
 
-        Args:
-            cache_size: LRU cache size for hot data
-            tool_cache_ttl: Tool result cache TTL (seconds)
-            iowarp_namespace: IOWarp CTE namespace path
-            tier_policy: Storage tier configuration (or use defaults)
-        """
-        pass
-```
+> The former **workspace session mirror** (a second copy of sessions + messages
+> under a workspace storage root) was **deleted** in #771 (Slice E): it had zero
+> readers in `src/` or the TUI. Only the `storage_root` wire field
+> (`resolve_workspace_storage_root`) remains. Any pre-existing mirror files are
+> orphaned artifacts and safe to hand-delete.
 
-### Read Operations
-
-```python
-# Get conversation history (O(log N))
-conversation = arc.get_conversation(session_id: str) -> Conversation | None
-
-# Get invocations for agent (O(log N))
-invocations = arc.get_invocations(
-    agent_id: str,
-    limit: int = 100,
-    start_time: str = None,
-    end_time: str = None,
-) -> List[Invocation]
-
-# Get aggregated metrics (O(1) - pre-computed)
-metrics = arc.get_metrics(
-    agent_id: str,
-    period: str = "2025-01",  # YYYY-MM
-) -> Metrics
-
-# Search context (O(log N))
-contexts = arc.search_context(
-    query: str,
-    domain: str = None,
-    limit: int = 10,
-) -> List[Context]
-
-# Get cached tool result (O(1))
-result = arc.get_cached_tool_result(
-    tool: str,
-    params: dict,
-) -> Any | None
-
-# Get shared context for multi-agent coordination (O(1))
-shared = arc.get_shared_context(session_id: str) -> dict
-```
-
-### Write Operations
-
-```python
-# Store conversation message
-arc.store_message(
-    session_id: str,
-    message: Message,
-) -> None
-
-# Store invocation trace
-arc.store_invocation(
-    invocation: Invocation,
-) -> None
-
-# Update metrics (async, batched)
-arc.update_metrics(
-    agent_id: str,
-    metrics: MetricsUpdate,
-) -> None
-
-# Cache tool result
-arc.cache_tool_result(
-    tool: str,
-    params: dict,
-    result: Any,
-    ttl: int = 3600,
-) -> None
-
-# Update shared context
-arc.update_shared_context(
-    session_id: str,
-    context: dict,
-) -> None
-```
+Note that today conversations, invocations, the message ledger, and the
+semantic-event log are still **parallel materializations of the same history**.
+The agreed direction for collapsing them is below.
 
 ---
 
-## Performance Characteristics
+## FUTURE: one normalized log (event-sourcing, #737)
 
-### Retrieval Performance
+The end-state is tracked in
+[#737](https://github.com/iowarp/clio-agent/issues/737) and is **not yet
+built** — this section is a pointer, not a description of current behavior.
 
-| Operation | Complexity | Typical Latency | Notes |
-|-----------|-----------|-----------------|-------|
-| Cache hit (hot data) | O(1) | < 1ms | LRU cache |
-| B-tree search (indexed) | O(log N) | 1-10ms | N = millions |
-| Range query | O(log N + k) | 5-50ms | k = result count |
-| LSM tree write | O(1) | < 1ms | Append to memtable |
-| Full-text search | O(N) | 100ms - 1s | Avoid if possible |
+The plan is to collapse the parallel materializations (ARC conversations/
+invocations, the gact message ledger, the `_events` log, and workflow state)
+into **one normalized append-only log with thin projections** — event sourcing.
+ARC's chunked `_events` log and its projection readers (`LiveRuntimeContext`)
+are the first step in that direction: conversation and invocation records are
+already *derived* from the log rather than built independently.
 
-### Storage Tier Latencies
-
-| Tier | Access Latency | Capacity | Use Case |
-|------|----------------|----------|----------|
-| **Hot (GPU)** | < 1ms | 8GB | Active conversations |
-| **Warm (NVMe)** | 1-10ms | 100GB | Recent sessions (24h) |
-| **Cold (PFS)** | 10-100ms | 1TB | Historical data |
-| **Archive (Object)** | 100ms - 1s | Unlimited | Long-term storage |
-
-### Scalability
-
-- **Cache capacity**: 1,000 conversations (configurable)
-- **Index capacity**: 10M+ conversations (B-tree scales to billions)
-- **Write throughput**: 10,000+ invocations/sec (LSM tree)
-- **Storage**: Unlimited via IOWarp CTE + Object Storage
+The separable physical follow-on is the clio-core KV plane
+(`context-transfer-engine` / `llm-hooks` / `kvcache`) described in
+`docs/archive/arc-live-context-plane.md`: a store-level append/KV-surgery backend
+that turns the live-plane ops into true O(1) appends behind the same `apply`
+interface. Until #737 lands, treat the topology table above as the real,
+present-day layout.
 
 ---
 
-## Usage Examples
+## Configuration reference
 
-### Example 1: Expert Agent Using ARC
-
-```python
-from clio_agent.arc import ARC
-from clio_agent.experts.data_expert import DataExpert
-
-class DataExpertWithARC(DataExpert):
-    def __init__(self):
-        super().__init__()
-        self.arc = ARC()
-
-    def forward(self, question: str, context: str, session_id: str):
-        # Load conversation history from ARC
-        conversation = self.arc.get_conversation(session_id)
-
-        # Load relevant context from previous invocations
-        past_invocations = self.arc.get_invocations(
-            agent_id="DataExpert",
-            limit=5,
-        )
-
-        # Check if similar query was answered before
-        for inv in past_invocations:
-            if similarity(inv.input.query, question) > 0.9:
-                # Reuse previous reasoning
-                cached_answer = inv.output.answer
-                return f"Based on previous analysis: {cached_answer}"
-
-        # Execute with optimized prompts (loaded from ARC)
-        result = super().forward(question, context)
-
-        # Store invocation in ARC
-        self.arc.store_invocation({
-            "trace_id": generate_uuid(),
-            "session_id": session_id,
-            "agent_id": "DataExpert",
-            "tier": 2,
-            "input": {"query": question, "context": context},
-            "output": {"answer": result},
-            "duration_ms": ...,
-            "status": "success",
-        })
-
-        return result
-```
-
-### Example 2: Tool Result Caching
-
-```python
-from clio_agent.arc import ARC
-
-arc = ARC()
-
-def call_mcp_tool(tool: str, params: dict) -> Any:
-    """Call MCP tool with ARC caching"""
-
-    # Check cache first (O(1))
-    cached = arc.get_cached_tool_result(tool, params)
-    if cached:
-        print(f"Cache hit for {tool}")
-        return cached
-
-    # Cache miss - execute tool
-    print(f"Cache miss, executing {tool}")
-    result = execute_mcp_tool(tool, params)  # Via CAE/PPI
-
-    # Cache result (TTL = 1 hour)
-    arc.cache_tool_result(tool, params, result, ttl=3600)
-
-    return result
-
-# Usage in expert
-result = call_mcp_tool("hdf5_analyze", {"filepath": "/data/file.h5"})
-# First call: Cache miss, executes MCP server
-# Second call (within 1 hour): Cache hit, instant return
-```
-
-### Example 3: Multi-Agent Coordination via ARC
-
-```python
-from clio_agent.arc import ARC
-
-arc = ARC()
-
-# Expert 1: HPCExpert profiles the system
-hpc_result = hpc_expert.forward(...)
-arc.update_shared_context(
-    session_id="current",
-    context={"hpc_profile": hpc_result}
-)
-
-# Expert 2: DataExpert uses HPC profile from ARC
-shared_context = arc.get_shared_context("current")
-hpc_profile = shared_context.get("hpc_profile")
-data_result = data_expert.forward(..., hpc_context=hpc_profile)
-```
-
----
-
-## Best Practices
-
-### For Agent Developers
-
-1. **Always check ARC cache before expensive operations**:
-   ```python
-   cached = arc.get_cached_tool_result(tool, params)
-   if cached:
-       return cached
-   result = expensive_mcp_call(tool, params)
-   arc.cache_tool_result(tool, params, result)
-   ```
-
-2. **Store performance metrics after every invocation**:
-   ```python
-   start = time.time()
-   result = expert.forward(...)
-   arc.store_invocation({
-       "duration_ms": (time.time() - start) * 1000,
-       "success": True,
-       ...
-   })
-   ```
-
-3. **Use shared context for multi-agent coordination**:
-   ```python
-   # Expert 1 stores results
-   arc.update_shared_context(session_id, {"expert1_result": ...})
-   # Expert 2 reads results
-   expert1_data = arc.get_shared_context(session_id)["expert1_result"]
-   ```
-
-4. **Leverage O(log N) for historical queries**:
-   ```python
-   # Get last 100 invocations for this agent
-   history = arc.get_invocations(agent_id="DataExpert", limit=100)
-   # Analyze patterns, reuse successful strategies
-   ```
-
-### For Performance
-
-1. **Configure appropriate cache size**:
-   - Small deployments: 100-500 items
-   - Medium: 1,000-5,000 items
-   - Large: 10,000+ items
-
-2. **Set reasonable TTLs for tool caching**:
-   - Fast-changing data: 300s (5 min)
-   - Stable data: 3600s (1 hour)
-   - Static data: 86400s (24 hours)
-
-3. **Use IOWarp tier policy to balance cost vs. latency**:
-   - Critical data: Keep in GPU/NVMe
-   - Historical data: Allow migration to PFS/Object Store
-
-4. **Monitor cache hit rates**:
-   ```python
-   metrics = arc.get_cache_stats()
-   print(f"Cache hit rate: {metrics.hit_rate:.2%}")
-   # Adjust cache size if hit rate < 80%
-   ```
-
----
-
-## Troubleshooting
-
-### Issue: Low Cache Hit Rate
-
-**Symptoms**: Cache hit rate < 70%, frequent cache misses
-
-**Solutions**:
-1. Increase cache size: `ARC(cache_size=5000)`
-2. Increase TTL for stable data: `tool_cache_ttl=7200`
-3. Check query patterns - are queries actually similar?
-
-### Issue: Slow Retrieval
-
-**Symptoms**: `get_conversation()` takes > 100ms
-
-**Solutions**:
-1. Check if data migrated to slow tier (archive)
-2. Increase warm tier size to keep data in NVMe
-3. Review IOWarp tier policy
-4. Consider pre-warming frequently accessed data
-
-### Issue: IOWarp CTE Connection Failure
-
-**Symptoms**: `ARC.__init__()` fails with IOWarp connection error
-
-**Solutions**:
-```bash
-# Verify IOWarp is running
-curl http://localhost:8080/health
-
-# Check namespace registration
-iowarp namespaces list | grep clio-agent
-
-# Re-register namespace
-uv run src/clio_agent/arc/storage.py --register-namespace
-```
-
-### Issue: High Memory Usage
-
-**Symptoms**: ARC consuming excessive RAM
-
-**Solutions**:
-1. Reduce cache size: `ARC(cache_size=500)`
-2. Decrease tool cache TTL (more aggressive eviction)
-3. Enable aggressive compaction for LSM tree
-4. Check for memory leaks in custom code
-
----
-
-## Configuration Reference
-
-### Environment Variables
+The canonical, source-derived list of every knob lives in
+[ENVIRONMENT.md](ENVIRONMENT.md) (generated by `scripts/gen_env_reference.py`;
+`tests/test_docs/test_env_reference.py` fails on drift). The ARC-specific
+variables are:
 
 ```bash
-# ARC Configuration
-CLIO_AGENT_ARC_CACHE_SIZE=1000           # LRU cache size
-CLIO_AGENT_ARC_TOOL_TTL=3600             # Tool cache TTL (seconds)
-CLIO_AGENT_ARC_NAMESPACE=/clio_agent/arc    # IOWarp namespace
+# Record backend selection (fail-loud; no silent fallback)
+CLIO_ARC_STORE=cte                    # "cte" (clio-core CTE, default) or "local" (file-based)
+CLIO_ARC_STORE_CONFIG=                # path to a clio-core CTE config; blank = auto-discover
 
-# IOWarp CTE Connection
-IOWARP_ENDPOINT=http://localhost:8080
-IOWARP_API_KEY=<your-key>
+# Live semantic-event log
+CLIO_ARC_EVENTS_CHUNK_SEGMENTS=512    # segments per _events chunk before rolling to the next
 
-# Tier Policy Overrides
-CLIO_AGENT_ARC_HOT_TIER=gpu_memory
-CLIO_AGENT_ARC_WARM_TIER=nvme
-CLIO_AGENT_ARC_COLD_TIER=parallel_fs
-CLIO_AGENT_ARC_ARCHIVE_TIER=object_store
+# In-memory hot layer + LSM metrics index
+CLIO_ARC_CACHE_CAPACITY=1000          # LRUCache capacity (entries)
+CLIO_ARC_LSM_MEMTABLE_SIZE=1000       # LSM memtable size before flush
+CLIO_ARC_LSM_COMPACTION_THRESHOLD=5   # SSTables before a compaction
+
+# CTE spillover (CTE backend only)
+CLIO_ARC_CTE_DIR=                     # CTE working dir; blank = OS data dir
+CLIO_ARC_CTE_FILE_CAPACITY=50GB       # on-disk capacity for the CTE file tier
 ```
 
-### Config File
-
-```yaml
-# .clio_agent/arc_config.yaml
-
-cache:
-  size: 1000
-  tool_ttl: 3600
-  eviction_policy: lru
-
-index:
-  type: btree
-  fan_out: 128
-
-lsm_tree:
-  memtable_size: 1000
-  compaction_threshold: 10
-  background_compaction: true
-
-iowarp:
-  namespace: /clio_agent/arc
-  endpoint: http://localhost:8080
-
-  tier_policy:
-    hot:
-      storage: gpu_memory
-      age_threshold: 1h
-      capacity: 8GB
-    warm:
-      storage: nvme
-      age_threshold: 24h
-      capacity: 100GB
-    cold:
-      storage: parallel_fs
-      age_threshold: 30d
-      capacity: 1TB
-    archive:
-      storage: object_store
-      age_threshold: infinity
-      capacity: unlimited
-```
-
----
-
-## Future Enhancements
-
-### v0.3.0: ARC-CTE Full Integration
-- Complete IOWarp CTE integration
-- Automatic tier migration based on access patterns
-- Prefetching for predicted queries
-
-### v0.4.0: Advanced Indexing
-- Full-text search on conversation content
-- Vector embeddings for semantic search
-- Graph indexing for conversation flow analysis
-
-### v0.5.0: Distributed ARC
-- Multi-node ARC for distributed deployments
-- Eventual consistency across replicas
-- Sharding for massive scale (billions of conversations)
+The durable semantic Trace backend is off by default; enable it via
+`CLIO_SEMANTIC_TRACE_BACKEND` (see ENVIRONMENT.md).
 
 ---
 
 ## Related Documentation
 
-- [CLIO Agent Architecture](CLIO_AGENT_ARCHITECTURE.md) - Full system architecture
-- [System Identity](SYSTEM_IDENTITY.md) - CLIO Agent capabilities and design
-- [Self Improvement](SELF_IMPROVEMENT.md) - How Optimizer Layer uses ARC metrics
-- [IOWarp CTE Documentation](https://iowarp.ai/docs/cte) - Context Transfer Engine
+- [ARC as the Live Context Plane](archive/arc-live-context-plane.md) — the design
+  rationale for the mutable plane and the #737 north-star.
+- [CLIO Agent Architecture](CLIO_AGENT_ARCHITECTURE.md) — full system architecture.
+- [Environment variable reference](ENVIRONMENT.md) — every `CLIO_*` knob.
 
 ---
 
-**Version**: 1.0 (ARC Memory Layer)
-**Last Updated**: 2025-01-09
-**Focus**: O(log N) Retrieval + IOWarp CTE Integration + Agent Coordination
+**Version**: 2.0 (truthful rewrite, #771)
+**Focus**: Live context plane + one chunked semantic-event log + pluggable
+fail-loud record backends + honest storage topology

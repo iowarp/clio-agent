@@ -1,0 +1,960 @@
+"""Delegation + workflow-state derivation helpers for the GACT server (#714).
+
+Behavior-preserving extraction from :mod:`clio_agent.gact.app`. This module owns
+the cohesive cluster that turns model-returned *expert handoffs* into executable
+delegations and reconciles the *typed workflow_state* that flows back up from
+child experts. It pairs with :mod:`clio_agent.gact.turn` (the turn-orchestration
+engine imports these), and reuses the pure merge/normalize primitives in
+:mod:`clio_agent.gact.workflow_state.merge` rather than duplicating them.
+
+Responsibilities grouped here:
+
+* Expert-handoff coercion + summary (parsing model output into dict rows).
+* Delegation continuation: the parent resume prompt + nested return-row walks.
+* Child-output compaction that retains exact evidence (paths/identifiers/state).
+* Workflow-state derivation: extracting typed state from outputs/handoff rows and
+  building the parent-consumable payloads.
+* Synchronous delegated-expert prompt assembly + failure state.
+* Small typed-state predicates used by reactivity/grounding checks.
+
+The module imports only leaves (stdlib + :mod:`clio_agent.gact.runtime.globals`
+for ``_jsonish`` + :mod:`clio_agent.gact.workflow_state.merge` for the merge
+primitive); it never imports :mod:`clio_agent.gact.app` at module top. The one
+tool-call-evidence helper it needs (``_tool_calls_from_handoff_rows``) still
+lives with its sibling tool-call-row helpers in ``app.py`` and is imported
+lazily inside the single function that uses it, matching the cycle-break pattern
+already used by ``turn.py`` / ``agents/builders.py``.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from collections.abc import Iterable, Iterator, Mapping
+from functools import lru_cache
+from typing import TYPE_CHECKING, Any
+
+from clio_agent.gact.runtime.globals import _jsonish
+from clio_agent.gact.workflow_state.merge import _merge_workflow_state_mapping
+from clio_agent.scientific_suffixes import scientific_suffix_alternation
+
+# Evidence-index suffix vocabulary: the shared scientific vocabulary plus a
+# delegation-local "json" extension (compact summaries must retain config /
+# manifest paths too). Single source of truth — issue #765.
+_EVIDENCE_SUFFIX_PATTERN = scientific_suffix_alternation(extra=("json",))
+
+if TYPE_CHECKING:
+    from clio_agent.gact.types import AgentDef
+    from clio_agent.gact.workflow_state.schema import WorkflowStateSchema
+
+
+# ------------------------------------------------------------------------- #
+# Expert-handoff coercion + summary #
+# ------------------------------------------------------------------------- #
+
+
+def _coerce_expert_handoff_rows(value: Any) -> list[dict[str, Any]]:
+    """Normalize model-returned expert handoff data into dict rows."""
+
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [dict(row) for row in value if isinstance(row, Mapping)]
+    if isinstance(value, tuple):
+        return [dict(row) for row in value if isinstance(row, Mapping)]
+    if isinstance(value, str):
+        text = value.strip()
+        if not text or text in {"[]", "null", "None"}:
+            return []
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE).strip()
+            text = re.sub(r"\s*```$", "", text).strip()
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            match = re.search(r"(\[[\s\S]*\])", text)
+            if match is None:
+                return []
+            try:
+                parsed = json.loads(match.group(1))
+            except json.JSONDecodeError:
+                return []
+        return _coerce_expert_handoff_rows(parsed)
+    return []
+
+
+def _expert_handoff_fields(handoff: Mapping[str, Any]) -> dict[str, str]:
+    """Return the structured handoff fields for an ``expert_handoff`` Part.
+
+    Mirrors the keys :func:`_expert_handoff_summary` reads so the message Part can
+    carry the delegation as typed fields (``parent_agent`` / ``child_agent`` /
+    ``stage`` / ``status``) instead of forcing a client to parse the prose label.
+    The generating party is the parent, so callers set ``Part.agent_id`` to
+    ``parent_agent``.
+    """
+
+    child = str(handoff.get("agent_id") or handoff.get("expert") or "").strip()
+    parent = str(handoff.get("parent_id") or handoff.get("parent") or "").strip()
+    status = str(handoff.get("status") or "observed").strip()
+    stage = str(handoff.get("stage") or handoff.get("dispatch_target") or "").strip()
+    return {
+        "parent_agent": parent,
+        "child_agent": child,
+        "stage": stage,
+        "status": status,
+    }
+
+
+def _expert_handoff_summary(handoff: Mapping[str, Any]) -> str:
+    """Return a compact user-facing summary for an expert handoff part."""
+
+    agent = str(handoff.get("agent_id") or handoff.get("expert") or "expert")
+    parent = str(handoff.get("parent_id") or handoff.get("parent") or "").strip()
+    status = str(handoff.get("status") or "observed")
+    stage = str(handoff.get("stage") or handoff.get("dispatch_target") or "").strip()
+    output = str(
+        handoff.get("output") or handoff.get("output_summary") or handoff.get("summary") or ""
+    ).strip()
+    route = f"{parent} -> {agent}" if parent else agent
+    bits = [route, status]
+    if stage:
+        bits.append(stage)
+    if output:
+        bits.append(output)
+    return " | ".join(bits)
+
+
+# ------------------------------------------------------------------------- #
+# Delegation continuation: parent resume + nested return-row walks #
+# ------------------------------------------------------------------------- #
+
+
+def _dynamic_parent_resume_prompt(
+    original_request: str,
+    parent_agent: "AgentDef",
+    executed_handoffs: list[dict[str, Any]],
+    declared_child_ids: set[str] | None = None,
+    *,
+    schema: "WorkflowStateSchema",
+) -> str:
+    """Build the compact continuation prompt given back to a dynamic parent."""
+
+    rows: list[str] = []
+    merged_state: dict[str, Any] = {}
+    completed_ids: list[str] = []
+    for row in executed_handoffs:
+        if str(row.get("stage") or "") != "delegate.completed":
+            continue
+        agent_id = str(row.get("agent_id") or row.get("delegate_to") or "")
+        if agent_id and agent_id not in completed_ids:
+            completed_ids.append(agent_id)
+        status = str(row.get("status") or "")
+        summary = str(
+            row.get("output") or row.get("output_summary") or row.get("summary") or ""
+        ).strip()
+        children = row.get("children")
+        child_note = ""
+        if isinstance(children, list) and children:
+            child_note = f"; nested_child_events={len(children)}"
+        rows.append(f"- {agent_id}: status={status}{child_note}; result={summary}")
+        child_state = row.get("workflow_state")
+        if isinstance(child_state, Mapping):
+            _merge_workflow_state_mapping(merged_state, child_state, schema=schema)
+    result_block = "\n".join(rows) or "- No completed child delegation results were returned."
+    # Surface the MERGED typed workflow_state from the completed children, not just the
+    # prose summaries. A child may put its key result ONLY in the typed field (in the
+    # structured workflow_state but not in its prose answer); without this the parent
+    # cannot see the child already delivered, and re-delegates to it in a loop. The
+    # example field names shown to the model are declared by the pack schema.
+    state_block = ""
+    if merged_state:
+        example_fields = ", ".join(schema.resume_example_fields)
+        example_clause = f" (e.g. {example_fields})" if example_fields else ""
+        state_block = (
+            "\n\nAuthoritative typed workflow_state accumulated from the completed "
+            "children — read these typed fields" + example_clause + " to decide "
+            "the next step. A child whose result already appears here is DONE; do NOT "
+            "re-delegate to it:\n" + _workflow_state_payload(merged_state)
+        )
+    # Show the orchestrator its own progress as a visible to-do list, so it does not
+    # have to track "which of my children have run" mentally across re-invocations
+    # (small models lose that thread and finish early). This is reactive grounding
+    # (showing state), not forced routing — the agent still decides the next hop, and
+    # a child being "not yet run" is informational, not an order to run it.
+    progress_block = ""
+    if declared_child_ids:
+        remaining = [c for c in sorted(declared_child_ids) if c not in completed_ids]
+        progress_block = (
+            "\n\nYour delegation progress this turn — "
+            f"your child experts: {sorted(declared_child_ids)}; "
+            f"already run: {completed_ids or '[]'}; "
+            f"not yet run: {remaining or '[]'}. "
+            "You are the orchestrator: keep delegating to the children this task still "
+            "needs, and finish only when the work is genuinely complete. Not every child "
+            "is needed for every request — use judgment: skip the ones the evidence makes "
+            "unnecessary (e.g. analysis/visualization when there is no data staged), but "
+            "do not finish prematurely while a needed step has not run."
+        )
+    return (
+        f"Original user request:\n{original_request}\n\n"
+        f"Returned child expert results for parent expert {parent_agent.id!r}:\n"
+        f"{result_block}{state_block}{progress_block}\n\n"
+        "Continue from these results. Decide the next step via your next_expert / "
+        "next_task output: route to the next child the task still needs, or set "
+        "next_expert='finish' and write the final answer when the work is genuinely "
+        "complete. You MAY go back and re-invoke a child you already ran when you need "
+        "MORE or DIFFERENT results from it (e.g. more candidates, a wider search, the "
+        "next-ranked item, a retry with corrected arguments) — give it a NEW, specific "
+        "sub-task that says what additional result you need. Only restriction: do NOT "
+        "re-delegate to repeat work that is ALREADY captured in the typed workflow_state "
+        "above (same task, same result already present) — that is a loop, not progress."
+    )
+
+
+def _iter_delegation_return_rows(rows: list[dict[str, Any]]) -> Iterator[dict[str, Any]]:
+    """Yield completed delegation rows, including nested child return rows."""
+
+    for row in rows:
+        if row.get("stage") == "delegate.completed":
+            yield row
+        children = row.get("children")
+        if isinstance(children, list):
+            child_rows = [child for child in children if isinstance(child, dict)]
+            yield from _iter_delegation_return_rows(child_rows)
+
+
+def _latest_parent_resumed_output_summary(
+    rows: list[dict[str, Any]],
+    parent_id: str,
+) -> str:
+    """Return the latest compact output from a resumed delegated parent."""
+
+    latest = ""
+    stack = list(rows)
+    while stack:
+        row = stack.pop(0)
+        if (
+            str(row.get("agent_id") or "") == parent_id
+            and str(row.get("stage") or "") == "parent.resumed"
+        ):
+            summary = str(
+                row.get("output") or row.get("output_summary") or row.get("summary") or ""
+            ).strip()
+            if summary:
+                latest = summary
+        children = row.get("children")
+        if isinstance(children, list):
+            stack.extend(child for child in children if isinstance(child, dict))
+    return latest
+
+
+def _latest_delegation_output_summary(rows: list[dict[str, Any]]) -> str:
+    """Return the latest completed delegated child output from nested rows."""
+
+    latest = ""
+    for row in _iter_delegation_return_rows(rows):
+        summary = str(
+            row.get("output") or row.get("output_summary") or row.get("summary") or ""
+        ).strip()
+        if summary:
+            latest = summary
+    return latest
+
+
+def _latest_completed_child_output_summary(
+    rows: list[dict[str, Any]],
+    child_ids: Iterable[str],
+) -> str:
+    """Return the latest completed output from one of the named child experts."""
+
+    target_ids = {str(child_id).strip() for child_id in child_ids if str(child_id).strip()}
+    if not target_ids:
+        return ""
+    latest = ""
+    for row in _iter_delegation_return_rows(rows):
+        if (
+            str(row.get("stage") or "") == "delegate.completed"
+            and str(row.get("status") or "") in {"", "completed"}
+            and str(row.get("agent_id") or row.get("delegate_to") or "").strip() in target_ids
+        ):
+            summary = str(
+                row.get("output") or row.get("output_summary") or row.get("summary") or ""
+            ).strip()
+            if summary:
+                latest = summary
+    return latest
+
+
+def _latest_final_child_output_summary(rows: list[dict[str, Any]]) -> str:
+    """Return completed synthesis/final-report output when a parent finalizes poorly."""
+
+    return _latest_completed_child_output_summary(
+        rows,
+        ("synthesis", "final", "final_report", "report", "summary"),
+    )
+
+
+def _bubbled_child_evidence_output_summary(
+    rows: list[dict[str, Any]],
+    parent_id: str,
+    declared_child_ids: Iterable[str],
+) -> str:
+    """Return the best child-subtree result for strict-depth parent completion."""
+
+    return _latest_parent_resumed_output_summary(
+        rows,
+        parent_id,
+    ) or _latest_completed_child_output_summary(rows, declared_child_ids)
+
+
+# ------------------------------------------------------------------------- #
+# Child-output compaction retaining exact evidence #
+# ------------------------------------------------------------------------- #
+
+
+def _compact_exact_evidence_index(transcript: str) -> str:
+    """Build a deterministic evidence index to append to LM compact summaries."""
+    paths: list[str] = []
+    identifiers: list[str] = []
+    caveats: list[str] = []
+
+    def add_unique(target: list[str], value: str, *, limit: int) -> None:
+        cleaned = " ".join(value.strip("`'\" \t\r\n,.;:()[]{}").split())
+        cleaned = cleaned.rstrip("/")
+        if not cleaned or cleaned in target:
+            return
+        if len(cleaned) > 180:
+            cleaned = cleaned[:177] + "..."
+        if len(target) < limit:
+            target.append(cleaned)
+
+    quoted = re.findall(r"`([^`]+)`", transcript)
+    for item in quoted:
+        if re.search(rf"\.{_EVIDENCE_SUFFIX_PATTERN}\b", item, re.I):
+            add_unique(paths, item, limit=40)
+        elif re.search(r"[/_]", item) or re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{2,}", item):
+            add_unique(identifiers, item, limit=80)
+
+    path_pattern = re.compile(
+        rf"(?:[A-Za-z]:\\[^\r\n`\"<>|]*?\.{_EVIDENCE_SUFFIX_PATTERN})"
+        rf"|(?:/[^\s`\"<>|]*?\.{_EVIDENCE_SUFFIX_PATTERN})",
+        re.I,
+    )
+    for match in path_pattern.finditer(transcript):
+        add_unique(paths, match.group(0), limit=40)
+
+    identifier_pattern = re.compile(
+        r"(?<![A-Za-z0-9])/?[A-Za-z][A-Za-z0-9]*(?:[_/.-][A-Za-z0-9]+)+\b",
+    )
+    for match in identifier_pattern.finditer(transcript):
+        value = match.group(0)
+        if len(value) < 4:
+            continue
+        if value.lower().startswith(("http", "https")):
+            continue
+        add_unique(identifiers, value, limit=80)
+
+    caveat_terms = (
+        "error",
+        "failed",
+        "missing",
+        "unavailable",
+        "not installed",
+        "caveat",
+        "unresolved",
+        "follow-up",
+        "follow up",
+        "needs checking",
+        "action needed",
+    )
+    for raw_line in transcript.splitlines():
+        line = " ".join(raw_line.split())
+        if not line:
+            continue
+        lowered = line.lower()
+        if any(term in lowered for term in caveat_terms):
+            add_unique(caveats, line, limit=16)
+
+    sections: list[str] = []
+    if paths:
+        sections.append("Paths:\n" + "\n".join(f"- {path}" for path in paths))
+    if identifiers:
+        sections.append(
+            "Identifiers:\n" + "\n".join(f"- {identifier}" for identifier in identifiers)
+        )
+    if caveats:
+        sections.append("Caveats/errors:\n" + "\n".join(f"- {caveat}" for caveat in caveats))
+    if not sections:
+        return ""
+    return "[exact retained evidence index]\n" + "\n\n".join(sections)
+
+
+# ------------------------------------------------------------------------- #
+# Workflow-state derivation from outputs + handoff rows #
+# ------------------------------------------------------------------------- #
+
+
+def _json_objects_from_text(text: str) -> list[Any]:
+    """Extract JSON objects embedded in model/tool evidence without trusting prose."""
+
+    stripped = text.strip()
+    objects: list[Any] = []
+    decoder = json.JSONDecoder()
+    if stripped.startswith(("{", "[")):
+        try:
+            objects.append(json.loads(stripped))
+            return objects
+        except json.JSONDecodeError:
+            pass
+    index = 0
+    while index < len(text):
+        if text[index] not in "{[":
+            index += 1
+            continue
+        try:
+            value, end = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            index += 1
+            continue
+        objects.append(value)
+        index += max(end, 1)
+    return objects
+
+
+def _merge_workflow_state_from_value(
+    value: Any, state: dict[str, Any], *, schema: "WorkflowStateSchema"
+) -> None:
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith(("{", "[")):
+            for nested in _json_objects_from_text(text):
+                _merge_workflow_state_from_value(nested, state, schema=schema)
+        return
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            _merge_workflow_state_from_value(item, state, schema=schema)
+        return
+    if not isinstance(value, Mapping):
+        # A typed workflow_state field may arrive as a Pydantic model when a pack
+        # declares it as a nested object signature field. Convert it to a plain
+        # mapping so its sections merge. Generic across all packs.
+        if callable(getattr(value, "model_dump", None)):
+            normalized = _jsonish(value)
+            if isinstance(normalized, Mapping):
+                _merge_workflow_state_from_value(normalized, state, schema=schema)
+        return
+    for key in ("workflow_state", "semantic_state", "state"):
+        nested = value.get(key)
+        if isinstance(nested, Mapping):
+            _merge_workflow_state_mapping(state, nested, schema=schema)
+    structured = value.get("structured")
+    if isinstance(structured, Mapping):
+        for nested in structured.values():
+            _merge_workflow_state_from_value(nested, state, schema=schema)
+    for key, nested in value.items():
+        if key in {"workflow_state", "semantic_state", "state", "structured"}:
+            continue
+        if isinstance(nested, Mapping):
+            if str(key) == "provenance":
+                _merge_workflow_state_mapping(state, nested, schema=schema)
+            _merge_workflow_state_mapping(state, {str(key): nested}, schema=schema)
+
+
+def _workflow_state_from_outputs(
+    completed_outputs: list[Any], *, schema: "WorkflowStateSchema"
+) -> dict[str, Any]:
+    state: dict[str, Any] = {}
+    for output in completed_outputs:
+        if isinstance(output, str):
+            for obj in _json_objects_from_text(output):
+                _merge_workflow_state_from_value(obj, state, schema=schema)
+        elif output is not None:
+            _merge_workflow_state_from_value(output, state, schema=schema)
+    return state
+
+
+def _workflow_state_payload(state: Mapping[str, Any]) -> str:
+    """Return a parseable workflow-state payload for prompts and compact rows."""
+
+    return json.dumps({"workflow_state": state}, sort_keys=True, default=str)
+
+
+def _workflow_state_from_handoff_rows(
+    rows: list[dict[str, Any]], *, schema: "WorkflowStateSchema"
+) -> dict[str, Any]:
+    """Return durable typed state stored on handoff rows and nested tool rows."""
+
+    state: dict[str, Any] = {}
+
+    def visit(row: Any) -> None:
+        if not isinstance(row, Mapping):
+            return
+        raw_state = row.get("workflow_state")
+        if isinstance(raw_state, Mapping):
+            _merge_workflow_state_mapping(state, raw_state, schema=schema)
+        for output_key in ("output_summary", "summary"):
+            output = str(row.get(output_key) or "").strip()
+            if output:
+                _merge_workflow_state_mapping(
+                    state, _workflow_state_from_outputs([output], schema=schema), schema=schema
+                )
+        for call in row.get("tools_called") or []:
+            if isinstance(call, Mapping):
+                call_state = call.get("workflow_state")
+                if isinstance(call_state, Mapping):
+                    _merge_workflow_state_mapping(state, call_state, schema=schema)
+        for child in row.get("children") or []:
+            visit(child)
+
+    for row in rows:
+        visit(row)
+    return state
+
+
+# ------------------------------------------------------------------------- #
+# Synchronous delegated-expert prompt assembly #
+# ------------------------------------------------------------------------- #
+
+
+def _delegated_expert_agent_id(row: Mapping[str, Any]) -> str:
+    """Return the requested delegated expert id from a handoff row."""
+
+    for key in ("delegate_to", "agent_id", "target_agent_id", "expert"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _delegated_expert_prompt(row: Mapping[str, Any], fallback: str) -> str:
+    """Build the child prompt for a synchronous expert delegation."""
+
+    fallback = fallback.strip()
+    for key in ("question", "input", "prompt", "request"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            if not fallback or fallback in value:
+                return value
+            # Pass the FULL parent evidence — clio must not heuristically truncate
+            # content a child expert sees; only an LLM may reduce content.
+            return "\n\n".join(
+                (
+                    value,
+                    "Parent evidence available for this delegated task:",
+                    fallback,
+                )
+            )
+    return fallback
+
+
+def _delegated_expert_public_prompt(
+    row: Mapping[str, Any], fallback: str, *, schema: "WorkflowStateSchema"
+) -> str:
+    """Return the public task text for an agent-call transcript event.
+
+    This is intentionally narrower than :func:`_delegated_expert_prompt`: child
+    execution may need parent evidence and typed workflow state, but the GACT
+    transcript action prompt is the task shown under ``call(agent)``. Execution
+    context must travel privately in the child prompt or structurally in state
+    events, not as public transcript prose.
+    """
+
+    for key in ("question", "input", "prompt", "request"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            return _clean_public_delegation_prompt(value, schema=schema)
+    return _clean_public_delegation_prompt(fallback, schema=schema)
+
+
+@lru_cache(maxsize=None)
+def _scrub_alternation(members: tuple[str, ...]) -> str:
+    """Return a longest-first, regex-escaped alternation of the alias members.
+
+    Longest-first ordering keeps a longer member (``datasets``) from being
+    pre-empted by a prefix member (``dataset``) so the trailing ``\\.field``
+    continuation still matches. An empty tuple yields a never-match sentinel so a
+    schema that declares no scrub aliases (the generic default) strips nothing.
+    """
+
+    if not members:
+        return "(?!)"
+    ordered = sorted(dict.fromkeys(members), key=lambda member: (-len(member), member))
+    return "|".join(re.escape(member) for member in ordered)
+
+
+def _clean_public_delegation_prompt(text: str, *, schema: "WorkflowStateSchema") -> str:
+    """Strip CLIO execution contract context from a public agent-call prompt.
+
+    The domain half of the scrub vocabulary (section paths, field names, trailing
+    orphan sections) is declared by the pack ``schema``; the CLIO-carrier half
+    (``workflow[_ ]state`` / ``structured state`` / the ``{"workflow_state"`` JSON
+    block) stays in core.
+    """
+
+    public = text.strip()
+    for marker in (
+        "Parent evidence available for this delegated task:",
+        "Accumulated typed workflow state from prior CLIO tool evidence",
+        "Authoritative typed workflow_state accumulated from the completed",
+    ):
+        index = public.find(marker)
+        if index >= 0:
+            public = public[:index].rstrip()
+
+    json_index = public.find('{"workflow_state"')
+    if json_index >= 0:
+        public = public[:json_index].rstrip()
+
+    sections_alternation = _scrub_alternation(schema.aliases.sections)
+    orphan_alternation = _scrub_alternation(schema.aliases.orphan_sections)
+    fields_alternation = _scrub_alternation(schema.aliases.fields)
+    state_path = rf"(?:{sections_alternation})\.[A-Za-z0-9_]+"
+    state_field = rf"(?:{fields_alternation}|workflow[_ ]state|structured state)"
+    public = re.sub(
+        rf"(?is)\s*\(\d+\)\s*[^.;\n]*\b(?:{state_path}|{state_field})\b[^.;\n]*(?:[.;]|$)",
+        " ",
+        public,
+    )
+    public = re.sub(
+        rf"(?is)\s+using\b[^.?!\n]*\b(?:{state_path}|{state_field})\b[^.?!\n]*(?=[.?!]|$)",
+        "",
+        public,
+    )
+    public = re.sub(
+        rf"(?is)(^|[.!?]\s+)Until\b[^.\n]*?\b{state_path}\b[^.\n]*?\bworkflow\s+state\b,\s*[^.?!\n]*(?:[.?!]|$)",
+        lambda match: match.group(1) if match.group(1).strip() else "",
+        public,
+    )
+    public = re.sub(
+        rf"(?is)\s*,?\s*\b(?:which|that)\s+[^.?!\n]*\b{state_path}\b[^.?!\n]*(?:\bworkflow[_ ]state\b[^.?!\n]*)?",
+        "",
+        public,
+    )
+
+    # Public call prompts should describe the work, not the private CLIO output
+    # carrier. Keep the rest of the task while removing the contract sentence.
+    public = re.sub(
+        r"(?is)(^|[.!?]\s+)[^.?!\n]*\bworkflow_state\b[^.?!\n]*(?:[.?!]|$)",
+        lambda match: match.group(1) if match.group(1).strip() else "",
+        public,
+    )
+    state_field_sentence_pattern = re.compile(
+        rf"(?is)(^|[.!?]\s+)[^.?!\n]*\b{state_path}\b[^.?!\n]*(?:[.?!]|$)"
+    )
+    while True:
+        cleaned = state_field_sentence_pattern.sub(
+            lambda match: match.group(1) if match.group(1).strip() else "",
+            public,
+        )
+        if cleaned == public:
+            break
+        public = cleaned
+    public = re.sub(
+        rf"(?is)\s*\([^()\n]*\b{state_path}\b[^()\n]*\)",
+        "",
+        public,
+    )
+    public = re.sub(
+        r"(?is)(^|[.!?]\s+)[^.?!\n]*\bworkflow\s+state\b[^.?!\n]*(?:[.?!]|$)",
+        lambda match: match.group(1) if match.group(1).strip() else "",
+        public,
+    )
+    public = re.sub(
+        rf"(?is)([.!?])\s+\b(?:{orphan_alternation})\s+so\s+that\b[^.?!\n]*(?:[.?!]|$)",
+        r"\1",
+        public,
+    )
+    public = re.sub(
+        rf"(?is)([.!?])\s+\b(?:{orphan_alternation})\s*[.?!]\s+",
+        r"\1 ",
+        public,
+    )
+    public = re.sub(
+        rf"(?is)([.!?])\s+\b(?:{orphan_alternation})\s*[.?!]\s*$",
+        r"\1",
+        public,
+    )
+    return re.sub(r"[ \t]+\n", "\n", public).strip()
+
+
+def _clean_public_transcript_text(
+    text: str, *, schema: "WorkflowStateSchema", preserve_whitespace: bool = False
+) -> str:
+    """Strip CLIO contract prose from visible thought/answer transcript text.
+
+    ``preserve_whitespace`` keeps the text's exact leading/trailing/inner spacing
+    after the contract-prose removal. Use it for STREAMING chunks: each token
+    delta must keep its boundary whitespace so concatenated chunks read
+    ``"thinking next"`` and not ``"thinkingnext"``. The default (full-text)
+    behavior still trims and collapses runs of spaces for one-shot cleaning.
+
+    The fenced-block intro labels and the structured-field paragraph vocabulary
+    are declared by the pack ``schema``; the CLIO-carrier ``workflow_state`` /
+    ``structured state`` tokens stay in core.
+    """
+
+    public = _clean_public_delegation_prompt(text, schema=schema)
+    # DSPy ChatAdapter field markers ([[ ## field ## ]]) must never reach the
+    # visible transcript. They survive into a field's text when the model
+    # re-emits a marker mid-field (self-referential) — DSPy's StreamListener then
+    # folds the SECOND marker into the field content (e.g. a `next_thought` chunk
+    # that contains a literal "[[ ## next_thought ## ]]"). Strip any that leaked;
+    # collapse to a single space so the two halves of the field rejoin cleanly.
+    public = re.sub(r"\s*\[\[\s*##\s*[A-Za-z0-9_]+\s*##\s*\]\]\s*", " ", public)
+    fence_alternation = _scrub_alternation(schema.aliases.fence_labels)
+    fields_alternation = _scrub_alternation(schema.aliases.fields)
+    public = re.sub(
+        rf"(?ims)\n*\s*[A-Za-z ]*(?:{fence_alternation}):\s*```(?:json)?\s*[\s\S]*?\bworkflow_state\b[\s\S]*?```",
+        "",
+        public,
+    )
+    public = re.sub(
+        r"(?ims)```(?:json)?\s*[\s\S]*?\bworkflow_state\b[\s\S]*?```",
+        "",
+        public,
+    )
+    public = re.sub(
+        rf"(?ims)(^|\n\n)[^\n]*(?:\b(?:{fields_alternation})\b|\bstructured state\b)[\s\S]*?(?=\n\n|$)",
+        lambda match: match.group(1) if match.group(1).strip() else "",
+        public,
+    )
+    public = re.sub(
+        r"(?is)(^|[.!?]\s+)[^.?!\n]*\btyped\s+workflow[_ ]state\b[^.?!\n]*(?:[.?!]|$)",
+        lambda match: match.group(1) if match.group(1).strip() else "",
+        public,
+    )
+    if preserve_whitespace:
+        # The inner cleaner strips boundary whitespace; re-attach the ORIGINAL
+        # leading/trailing whitespace around the cleaned core so streamed chunks
+        # keep their spacing ("thinking " stays "thinking ", not "thinking").
+        leading = text[: len(text) - len(text.lstrip())]
+        trailing = text[len(text.rstrip()) :]
+        return f"{leading}{public.strip()}{trailing}"
+    return re.sub(r" {2,}", " ", public).strip()
+
+
+def _append_accumulated_workflow_state_context(prompt: str, state: Mapping[str, Any]) -> str:
+    """Attach durable typed state to child prompts without relying on prose."""
+
+    if not state:
+        return prompt
+    block = (
+        "Accumulated typed workflow state from prior CLIO tool evidence "
+        "(authoritative; use this before local prose summaries):\n"
+        f"{json.dumps({'workflow_state': state}, sort_keys=True, default=str)}"
+    )
+    if block in prompt:
+        return prompt
+    return "\n\n".join(part for part in (prompt.strip(), block) if part)
+
+
+def _append_session_workflow_state_context(
+    app: Any,
+    session_id: str,
+    prompt: str,
+    *,
+    schema: "WorkflowStateSchema",
+) -> str:
+    """Attach accumulated session tool state to a delegated expert prompt."""
+
+    ledger = getattr(getattr(app, "state", None), "tool_call_ledger", None)
+    if not isinstance(ledger, dict):
+        return prompt
+    rows = ledger.get(session_id)
+    if not isinstance(rows, list):
+        return prompt
+    prior_rows = [row for row in rows if isinstance(row, Mapping)]
+    state: dict[str, Any] = {}
+    for row in prior_rows:
+        row_state = row.get("workflow_state")
+        if isinstance(row_state, Mapping):
+            _merge_workflow_state_mapping(state, row_state, schema=schema)
+    if not state:
+        return prompt
+    return _append_accumulated_workflow_state_context(prompt, state)
+
+
+def _should_execute_delegated_handoff(row: Mapping[str, Any]) -> bool:
+    status = str(row.get("status") or "").strip().lower()
+    if status in {"skipped", "failed", "cancelled", "completed"}:
+        return False
+    if row.get("execute") is False:
+        return False
+    if row.get("execute") is True or row.get("delegate_to") or row.get("target_agent_id"):
+        return True
+    return status in {"requested", "pending", "delegate", "delegated"}
+
+
+# ------------------------------------------------------------------------- #
+# Failed-child delegation state #
+# ------------------------------------------------------------------------- #
+
+
+def _failed_child_delegation_workflow_state(
+    *,
+    prompt: str,
+    child_agent_id: str,
+    parent_agent_id: str,
+    error: str,
+    message: str,
+    tools_called: list[dict[str, Any]],
+    schema: "WorkflowStateSchema",
+) -> dict[str, Any]:
+    """Build typed state for a child failure without discarding prior evidence.
+
+    The generic ``delegation`` bookkeeping section is core's own; the
+    domain-specific failure stamps (which sections to mark blocked, the blocker
+    prose) are declared by the pack ``schema`` and applied by
+    :meth:`WorkflowStateSchema.apply_failure_rules`.
+    """
+
+    state = _workflow_state_from_outputs([prompt], schema=schema)
+    for tool_row in tools_called:
+        row_state = tool_row.get("workflow_state")
+        if isinstance(row_state, Mapping):
+            _merge_workflow_state_mapping(state, row_state, schema=schema)
+    state["delegation"] = {
+        "status": "failed",
+        "failed_child": child_agent_id,
+        "parent": parent_agent_id,
+        "error": error,
+        "message": message,
+    }
+    schema.apply_failure_rules(
+        state, child_agent_id=child_agent_id, error=error, message=message
+    )
+    return state
+
+
+def _failed_child_delegation_output_summary(
+    *,
+    child_agent_id: str,
+    parent_agent_id: str,
+    error: str,
+    message: str,
+) -> str:
+    """Return compact parent-consumable text for a failed child expert.
+
+    The failure's typed ``workflow_state`` is carried STRUCTURALLY on the failed
+    delegation row's ``workflow_state`` field (see the caller); it is NOT
+    serialized into this human-readable summary text anymore.
+    """
+
+    return (
+        f"Child expert {child_agent_id!r} failed while delegated from "
+        f"{parent_agent_id!r}: {error}. {message}"
+    )
+
+
+def _prediction_workflow_state(result: Any, *, schema: "WorkflowStateSchema") -> dict[str, Any]:
+    """Return a prediction's first-class typed ``workflow_state`` as a Mapping.
+
+    ``workflow_state`` is the ONE load-bearing structured output on the dynamic
+    expert signature. This is the STRUCTURED twin of the (now removed) prose
+    append: instead of serializing the typed field into the answer text and
+    re-parsing it back out (which polluted the user-facing answer), callers read
+    the typed field directly via this helper and carry it on the structured
+    carrier (the completed/handoff/ledger row's ``workflow_state`` Mapping).
+
+    A typed ``workflow_state`` field may arrive as a Pydantic model (when a pack
+    declares it as a nested object signature field), a JSON string, or a plain
+    dict. Each is normalized to a plain ``{section: ...}`` mapping. Generic for
+    all packs.
+    """
+
+    raw_state = getattr(result, "workflow_state", None)
+    if raw_state in (None, ""):
+        return {}
+    if isinstance(raw_state, str):
+        text = raw_state.strip()
+        if not text:
+            return {}
+        return _workflow_state_from_outputs([text], schema=schema)
+    normalized_state = _jsonish(raw_state)
+    if isinstance(normalized_state, Mapping):
+        inner = normalized_state.get("workflow_state")
+        if isinstance(inner, Mapping):
+            return dict(inner)
+        return dict(normalized_state)
+    return {}
+
+
+def _fallback_answer_from_delegation(handoffs: list[dict[str, Any]]) -> str:
+    """Return the latest compact parent-resume output as answer fallback."""
+
+    for row in reversed(handoffs):
+        if str(row.get("stage") or "") != "parent.resumed":
+            continue
+        if str(row.get("status") or "") not in {"", "completed"}:
+            continue
+        text = str(row.get("output") or row.get("output_summary") or "").strip()
+        if text:
+            return text
+    return ""
+
+
+# ------------------------------------------------------------------------- #
+# Structured-answer rendering (delegation return summaries) #
+# ------------------------------------------------------------------------- #
+
+
+def _looks_like_structured_answer(text: str) -> bool:
+    """True when an expert answer is machine-readable state, not prose."""
+
+    stripped = (text or "").lstrip()
+    if not stripped:
+        return False
+    return stripped[0] in "{[" or stripped.startswith("```json") or stripped.startswith("```JSON")
+
+
+def _render_return_summary(output: str) -> str:
+    """A human-readable one-liner for a child's return, from its GENUINE answer.
+
+    Prose answers pass through unchanged. Structured (JSON) answers — the typed
+    ``dspy.extract`` deliverable — are rendered into a compact, grounded summary
+    (a ``summary``/``description`` field if present, else the top-level scalar
+    fields) so the transcript shows the real result instead of a generic
+    "returned a compact result" placeholder. Returns "" when there is nothing
+    meaningful to show (caller supplies the fallback)."""
+
+    text = (output or "").strip()
+    if not text or not _looks_like_structured_answer(text):
+        return text
+    body = text
+    if body.startswith("```"):
+        body = body.strip("`")
+        body = body.split("\n", 1)[-1].strip() if "\n" in body else ""
+    try:
+        data = json.loads(body)
+    except Exception:  # noqa: BLE001 - non-JSON delegation body returned verbatim
+        return text
+    if isinstance(data, Mapping):
+        node: Mapping[str, Any] = data
+        # Unwrap a single-key namespace wrapper (e.g. {"<namespace>": {...}}) so the
+        # salient fields one level down are summarised, not just "{namespace}".
+        for _ in range(2):
+            if len(node) == 1:
+                only = next(iter(node.values()))
+                if isinstance(only, Mapping):
+                    node = only
+                    continue
+            break
+        for key in ("summary", "description", "answer", "result"):
+            value = node.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        scalars = []
+        for key, value in node.items():
+            if isinstance(value, bool) or isinstance(value, (str, int, float)):
+                text_value = str(value)
+                if len(text_value) > 60:
+                    text_value = text_value[:57] + "..."
+                scalars.append(f"{key}: {text_value}")
+            if len(scalars) >= 6:
+                break
+        if scalars:
+            return "; ".join(scalars)
+    if isinstance(data, list):
+        return f"{len(data)} item(s)"
+    # Structured but unrenderable (e.g. empty object): no meaningful one-liner.
+    return ""

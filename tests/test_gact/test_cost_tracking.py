@@ -1,4 +1,4 @@
-"""CLIO-BBBBBBBBBB24: tokens + cost_usd propagate through every layer.
+"""tokens + cost_usd propagate through every layer.
 
 The Prediction can carry ``.tokens`` (dict or attr) and ``.cost_usd``;
 the POST-message path threads those onto:
@@ -39,13 +39,12 @@ class _Agent:
 
 
 def _client(tmp_path: Path, pred) -> TestClient:
-    return TestClient(
-        build_app(sessions_path=tmp_path / "s.json", agent=_Agent(pred))
-    )
+    return TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent(pred)))
 
 
 def _turn(client: TestClient, sid: str) -> dict:
     from .conftest import complete_turn
+
     return complete_turn(client, sid, "hello")
 
 

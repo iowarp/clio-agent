@@ -1,120 +1,68 @@
 """
 Tests for clio_agent.config module.
 
-Tests LM Studio configuration classes and DSPy setup functions.
+The legacy LM-Studio-specific dataclasses (LMStudioConfig / RouterLMConfig
+/ ReasonerLMConfig) and their configure_dspy_*_lm_studio factories were
+removed alongside the provider registry refactor (umbrella iowarp/clio-
+agent#48, sprint #50). The canonical surface is now
+LMProviderConfig + create_lm() / create_planner_lm() driven by the
+PROVIDER_DEFAULTS dict derived from clio_agent.providers.catalog.
 """
 
-import dspy
+import pytest
 
 from clio_agent.config import (
-    LMStudioConfig,
-    ReasonerLMConfig,
-    RouterLMConfig,
-    configure_dspy_lm_studio,
-    configure_dspy_reasoner_lm_studio,
-    configure_dspy_router_lm_studio,
+    _recover_malformed_structured_value,
+    _unwrap_self_named_envelope,
     select_models_for_agents,
 )
 
 
-class TestLMStudioConfig:
-    """Test LM Studio configuration."""
+class TestStructuredValueRecovery:
+    """Recovery of structured output fields from local-model malformations.
 
-    def test_default_config(self):
-        """Test default LM Studio configuration values."""
-        config = LMStudioConfig()
-        assert config.base_url == "http://127.0.0.1:1234"
-        assert config.model == "ibm/granite-4-h-tiny"
-        assert config.temperature == 1.0
-        assert config.max_tokens == 32000
-        assert config.api_key == "lm-studio"
+    These are format-only repairs (no semantic change) the lenient ChatAdapter
+    applies when the strict parse fails -- the exact failure modes reasoning/
+    small models produce on JSON-object fields.
+    """
 
-    def test_custom_config(self):
-        """Test custom LM Studio configuration."""
-        config = LMStudioConfig(
-            base_url="http://localhost:1234",
-            model="custom-model",
-            temperature=0.5,
+    def test_unwrap_self_named_envelope(self):
+        """A value framed under its own field name is unwrapped."""
+        wrapped = {"workflow_state": {"catalog": {"status": "metadata_found"}}}
+        assert _unwrap_self_named_envelope(wrapped, "workflow_state") == {
+            "catalog": {"status": "metadata_found"}
+        }
+
+    def test_unwrap_leaves_genuine_single_key_payload(self):
+        """A single-key dict whose key is NOT the field name is left intact."""
+        payload = {"catalog": {"status": "metadata_found"}}
+        assert _unwrap_self_named_envelope(payload, "workflow_state") == payload
+
+    def test_recover_double_wrapped_with_dropped_brace(self):
+        """The exact qwopus failure: self-named envelope + a missing closing brace."""
+        # 7 '{' vs 6 '}' -- json_repair rebalances, then the envelope is unwrapped.
+        malformed = (
+            '{"workflow_state": {"catalog": {"status": "metadata_found"}, '
+            '"acquisition": {"metadata_path": "/tmp/es_clean.csv", '
+            '"analysis_ready": false}}'
         )
-        assert config.base_url == "http://localhost:1234"
-        assert config.model == "custom-model"
-        assert config.temperature == 0.5
+        recovered = _recover_malformed_structured_value("workflow_state", malformed)
+        assert set(recovered.keys()) >= {"catalog", "acquisition"}
+        assert recovered["acquisition"]["metadata_path"] == "/tmp/es_clean.csv"
 
+    def test_recover_plain_valid_json_unchanged(self):
+        """A well-formed, non-wrapped value round-trips untouched."""
+        good = '{"catalog": {"status": "no_candidates"}}'
+        assert _recover_malformed_structured_value("workflow_state", good) == {
+            "catalog": {"status": "no_candidates"}
+        }
 
-class TestRouterLMConfig:
-    """Test Router LM configuration."""
-
-    def test_default_temperature(self):
-        """Router should use low temperature for deterministic routing."""
-        config = RouterLMConfig()
-        assert config.temperature == 0.3
-
-    def test_default_model(self):
-        """Router should default to granite model."""
-        config = RouterLMConfig()
-        assert config.model == "ibm/granite-4-h-tiny"
-
-    def test_custom_model(self):
-        """Router config should accept custom model."""
-        config = RouterLMConfig(model="custom/router-model")
-        assert config.model == "custom/router-model"
-
-
-class TestReasonerLMConfig:
-    """Test Reasoner LM configuration."""
-
-    def test_default_temperature(self):
-        """Reasoner should use higher temperature for creativity."""
-        config = ReasonerLMConfig()
-        assert config.temperature == 1.0
-
-    def test_default_model(self):
-        """Reasoner should default to granite model."""
-        config = ReasonerLMConfig()
-        assert config.model == "ibm/granite-4-h-tiny"
-
-
-class TestConfigureFunctions:
-    """Test DSPy LM configuration functions."""
-
-    def test_configure_lm_studio_returns_lm(self):
-        """configure_dspy_lm_studio should return a dspy.LM instance."""
-        config = LMStudioConfig()
-        lm = configure_dspy_lm_studio(config)
-        assert isinstance(lm, dspy.LM)
-
-    def test_configure_lm_studio_default(self):
-        """configure_dspy_lm_studio with no args uses defaults."""
-        lm = configure_dspy_lm_studio()
-        assert isinstance(lm, dspy.LM)
-
-    def test_configure_lm_studio_does_not_duplicate_v1_suffix(self):
-        """Legacy LM Studio config should accept base URLs that already include /v1."""
-        config = LMStudioConfig(base_url="http://localhost:1234/v1")
-        lm = configure_dspy_lm_studio(config)
-        assert lm.kwargs["api_base"] == "http://localhost:1234/v1"
-
-    def test_configure_router_lm(self):
-        """configure_dspy_router_lm_studio should return a dspy.LM."""
-        config = RouterLMConfig()
-        lm = configure_dspy_router_lm_studio(config)
-        assert isinstance(lm, dspy.LM)
-
-    def test_configure_router_lm_default(self):
-        """configure_dspy_router_lm_studio with no args uses defaults."""
-        lm = configure_dspy_router_lm_studio()
-        assert isinstance(lm, dspy.LM)
-
-    def test_configure_reasoner_lm(self):
-        """configure_dspy_reasoner_lm_studio should return a dspy.LM."""
-        config = ReasonerLMConfig()
-        lm = configure_dspy_reasoner_lm_studio(config)
-        assert isinstance(lm, dspy.LM)
-
-    def test_configure_reasoner_lm_default(self):
-        """configure_dspy_reasoner_lm_studio with no args uses defaults."""
-        lm = configure_dspy_reasoner_lm_studio()
-        assert isinstance(lm, dspy.LM)
+    def test_recover_constructor_repr(self):
+        """A Python constructor-repr value still coerces (legacy qwopus shape)."""
+        repr_text = "State(catalog=Cat(status='metadata_found'), ready=false)"
+        recovered = _recover_malformed_structured_value("workflow_state", repr_text)
+        assert recovered["catalog"]["status"] == "metadata_found"
+        assert recovered["ready"] is False
 
 
 class TestSelectModels:
@@ -146,9 +94,32 @@ class TestSelectModels:
         main, expert = select_models_for_agents(models)
         assert main == "chat-model"
 
-    def test_select_empty_fallback(self):
-        """With empty list, should fall back to default model."""
-        models = []
-        main, expert = select_models_for_agents(models)
-        assert main is not None
-        assert expert is not None
+    def test_select_empty_surfaces_configuration_error(self):
+        """With no discovered models, do not guess a hardcoded fallback."""
+        with pytest.raises(ValueError, match="reported no loaded models"):
+            select_models_for_agents([])
+
+    def test_select_embedding_only_surfaces_configuration_error(self):
+        """Embedding-only models are not usable for chat/planner turns."""
+        with pytest.raises(ValueError, match="only embedding/non-chat models"):
+            select_models_for_agents(["text-embedding-nomic-embed-text-v1.5"])
+
+
+def test_lenient_chat_adapter_is_streamable() -> None:
+    """The lenient ChatAdapter subclass must pass DSPy's streaming allowlist.
+
+    DSPy gates streaming on ``settings.adapter.__class__.__name__`` (a STRING) being
+    in {ChatAdapter, XMLAdapter, JSONAdapter} — NOT isinstance. Our subclass IS a
+    ChatAdapter but a non-allowlisted name made DSPy raise "Unsupported adapter for
+    streaming: LenientChatAdapter", which surfaced as nemotron/Sophia's TaskGroup
+    "live streaming failed before emitting output". Regression: it must report a
+    name DSPy accepts while staying a ChatAdapter with recovery intact.
+    """
+    import dspy
+
+    from clio_agent.config import _lenient_chat_adapter_cls
+
+    cls = _lenient_chat_adapter_cls()
+    inst = cls(use_json_adapter_fallback=False)
+    assert inst.__class__.__name__ in {"ChatAdapter", "XMLAdapter", "JSONAdapter"}
+    assert isinstance(inst, dspy.ChatAdapter)
