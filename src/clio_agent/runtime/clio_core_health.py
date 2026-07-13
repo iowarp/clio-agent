@@ -76,6 +76,7 @@ def probe_clio_core_ram_cap(*, env: Mapping[str, str] | None = None) -> list[Int
         "config_path": cap.config_path,
         "config_exists": cap.file_exists,
         "ram_capacity_limit": cap.cap,
+        "ram_bdev_capacity": cap.bdev_capacity,
         "cap_source": cap.source,
     }
 

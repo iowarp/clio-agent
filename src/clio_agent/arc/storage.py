@@ -871,6 +871,13 @@ def make_arc_store(
 
             ws_cfg = paths.workspace_core_dir() / "cte.yaml"
             cfg = str(ws_cfg) if ws_cfg.is_file() else default_cte_config_path()
+        # Environment conformance (#906): inspect the EXACT config this store
+        # will load and warn typed (clio_core_ram_uncapped) if its effective
+        # ram cap is unbounded — a stale pre-#890 file is otherwise invisible
+        # until the machine is starved. Read-only; never blocks boot.
+        from clio_agent.arc.clio_core_config import boot_check_ram_cap  # noqa: PLC0415
+
+        boot_check_ram_cap(cfg, env=os.environ)
         try:
             return ClioCoreStore(config_path=cfg)
         except Exception as exc:  # noqa: BLE001 - LOUD degrade to LocalFS, recorded below
