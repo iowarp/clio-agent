@@ -96,7 +96,7 @@ def main() -> int:
     total_mb = int(os.environ.get("CLIO_OFFLOAD_TOTAL_MB", "30"))
     result: dict[str, Any] = {"run_id": run_id, "stage": "start"}
     try:
-        from clio_agent.arc.storage import ClioCoreStore, make_arc_store
+        from clio_agent.arc.storage import ClioCoreStore, make_arc_store, release_runtime_client
 
         store = make_arc_store(backend="cte")
         result["store_type"] = type(store).__name__
@@ -139,6 +139,16 @@ def main() -> int:
         except Exception:  # noqa: BLE001,S110 - out-path unwritable: fall through
             pass
         return 5
+    finally:
+        # Deterministically release this subprocess's clio-core client (last-one-out
+        # stops the PRIVATE daemon) instead of leaning on atexit, so a client is never
+        # left ghost-registered even if the interpreter is torn down abruptly. The parent
+        # test still force-reaps as belt-and-suspenders. Best-effort: a release failure
+        # must not mask the op result the parent asserts on.
+        try:
+            release_runtime_client()
+        except Exception:  # noqa: BLE001,S110 - import/release failure: parent reap covers it
+            pass
 
 
 if __name__ == "__main__":
