@@ -195,6 +195,24 @@ Copy-Item -LiteralPath $Out -Destination $reloc -Recurse
 $relocPy = Join-Path $reloc 'python\python.exe'
 Write-Host "[build-gact-runtime] sanity (relocated): $relocPy -m clio_agent.gact --help"
 Invoke-Native -Exe $relocPy -Args @('-m', 'clio_agent.gact', '--help') | Out-Null
+# --help only proves imports; BOOT the relocated copy and poll the API --
+# the only automated proof a prune casualty or loader problem would fail.
+$port = Get-Random -Minimum 24000 -Maximum 44000
+Write-Host "[build-gact-runtime] sanity (relocated boot): /v1/capabilities on :$port"
+$srv = Start-Process -FilePath $relocPy -PassThru -WindowStyle Hidden `
+  -ArgumentList @('-m', 'clio_agent.gact', '--no-agent', '--host', '127.0.0.1', '--port', "$port")
+$bootOk = $false
+foreach ($i in 1..60) {
+  try {
+    $resp = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 -Uri "http://127.0.0.1:$port/v1/capabilities"
+    if ($resp.StatusCode -eq 200) { $bootOk = $true; break }
+  } catch {}
+  Start-Sleep -Seconds 1
+}
+Stop-Process -Id $srv.Id -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $reloc -Recurse -Force -ErrorAction SilentlyContinue
+if (-not $bootOk) {
+  throw "build-gact-runtime: relocated runtime failed to serve /v1/capabilities"
+}
 
 Write-Host "[build-gact-runtime] OK - portable runtime ready at $Out ($sizeAfter MB)"

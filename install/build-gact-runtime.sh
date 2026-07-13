@@ -119,7 +119,9 @@ fi
 
 # Console-script shims embed the absolute build path — relocation traps.
 # Delete every non-interpreter regular file in bin/; -m is the only entry.
+# python*-config is a shell script embedding build prefixes — same trap.
 find "$OUT/python/bin" -maxdepth 1 -type f ! -name 'python*' -delete
+find "$OUT/python/bin" -maxdepth 1 -type f -name 'python*-config' -delete
 
 SIZE_AFTER="$(dir_size_mb "$OUT")"
 echo "[build-gact-runtime] size after prune:  ${SIZE_AFTER} MB (was ${SIZE_BEFORE} MB)"
@@ -145,6 +147,26 @@ RELOC="$(mktemp -d)/gact-runtime-relocated"
 cp -a "$OUT" "$RELOC"
 echo "[build-gact-runtime] sanity (relocated): $RELOC/$PYBIN_REL -m clio_agent.gact --help"
 "$RELOC/$PYBIN_REL" -m clio_agent.gact --help >/dev/null
+# --help only proves imports; BOOT the relocated copy and poll the API —
+# the only automated proof a prune casualty or loader problem would fail.
+PORT=$((RANDOM % 20000 + 24000))
+echo "[build-gact-runtime] sanity (relocated boot): /v1/capabilities on :$PORT"
+"$RELOC/$PYBIN_REL" -m clio_agent.gact --no-agent --host 127.0.0.1 --port "$PORT" >/dev/null 2>&1 &
+SRV=$!
+BOOT_OK=""
+for _ in $(seq 1 60); do
+  if curl -fsS --max-time 2 "http://127.0.0.1:$PORT/v1/capabilities" >/dev/null 2>&1; then
+    BOOT_OK=1
+    break
+  fi
+  sleep 1
+done
+kill "$SRV" 2>/dev/null || true
+wait "$SRV" 2>/dev/null || true
 rm -rf "$(dirname "$RELOC")"
+if [ -z "$BOOT_OK" ]; then
+  echo "build-gact-runtime: relocated runtime failed to serve /v1/capabilities" >&2
+  exit 1
+fi
 
 echo "[build-gact-runtime] OK — portable runtime ready at $OUT (${SIZE_AFTER} MB)"
