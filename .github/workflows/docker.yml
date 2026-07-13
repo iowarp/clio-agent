@@ -8,6 +8,12 @@ on:
       - "branding/**"
       - "external/gact-tui/**"
       - ".github/workflows/docker.yml"
+    # Release images: the push-to-ghcr step is gated on a v* tag ref, but without
+    # this trigger the workflow never RAN on tags - release images were silently
+    # never pushed (found on v0.6.0; a submodule gitlink bump also does not match
+    # the external/gact-tui/** path filter on branch pushes).
+    tags: ["v*"]
+  workflow_dispatch: {}
   pull_request:
     paths:
       - "docker/**"
