@@ -411,13 +411,17 @@ def test_canonical_flow_byte_equals_stock_dspy_shape(tmp_path, seed):
     assert list(keys.keys()) == list(expected.keys())
 
 
-def test_canonical_flow_format_trajectory_byte_equal_to_stock(arc):
+def test_canonical_flow_format_trajectory_byte_equal_to_stock(arc, monkeypatch):
     """The REAL _RetainingReAct._format_trajectory over a canonical ARC must be
-    byte-identical to dspy's stock formatter fed the same render_keys."""
+    byte-identical to dspy's stock formatter fed the same render_keys.
+
+    classic-path contract; V2 equivalent in
+    tests/test_arc/test_reactv2_wire_byte_equality.py (#901 rule 4)."""
     import dspy
 
     from .conftest import live_plane_context, make_react_agent, stock_format_trajectory
 
+    monkeypatch.setattr("clio_agent.gact.agents.runtime._reactv2_enabled", lambda: False)
     agent = make_react_agent()
     for i in range(4):
         arc.append_segment(SID, SCOPE, "thought", {"text": f"T{i}"}, step=i)

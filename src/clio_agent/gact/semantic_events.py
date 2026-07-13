@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from clio_agent.arc.segments import _encode_safe
 from clio_agent.gact.events import Event, EventBus
 
 SCHEMA_VERSION = "clio.semantic_event.v1"
@@ -125,21 +126,26 @@ def _event_id() -> str:
 
 
 def _json_safe(value: Any) -> Any:
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, dict):
-        return {str(k): _json_safe(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_safe(v) for v in value]
-    if isinstance(value, set):
-        return sorted(_json_safe(v) for v in value)
-    model_dump = getattr(value, "model_dump", None)
-    if callable(model_dump):
-        try:
-            return _json_safe(model_dump(exclude_none=True))
-        except TypeError:
-            return _json_safe(model_dump())
-    return str(value)
+    """Coerce ``value`` to a plain JSON/msgpack-native form for the durable trace,
+    the SSE projection, and hook views.
+
+    Delegates to the ONE shared coercion :func:`clio_agent.arc.segments._encode_safe`
+    (re-exported as :func:`clio_agent.arc.live._encode_safe`) — the SAME function
+    :func:`clio_agent.arc.live.build_event_content` uses to encode the canonical
+    ``_events`` log. Sharing the coercion is what makes the durable-trace JSONL body a
+    LOSSLESS derivation of the ``_events`` segment body (design §2.8.b caveat a /
+    §4.3, #737 S1): the trace line is the log with the same bytes, not a second,
+    differently-encoded history.
+
+    Before unification this function had its own rules — ``sorted`` sets (which raised
+    ``TypeError`` on a mixed-type set), ``str()`` for frozensets / dataclasses / plain
+    objects (leaking a nondeterministic ``<obj at 0x…>`` memory address), and
+    ``exclude_none`` pydantic dumps — every one of which DIVERGED from the log encoder,
+    so no projection could reconstruct one from the other. The shared coercion is a
+    strict superset (frozenset→list, dataclass→asdict, ``__dict__``→dict, None kept) and
+    never raises, so it is both lossless-derivable and more robust.
+    """
+    return _encode_safe(value)
 
 
 def normalize_detail_level(value: str) -> str:
@@ -298,6 +304,102 @@ def project_handoff(event: SemanticEvent, mode: str = "FINAL") -> dict[str, Any]
 def project_history(event: SemanticEvent) -> dict[str, Any]:
     """dspy.History / KV-rehydration view — DEFERRED (see GitHub issue)."""
     raise NotImplementedError("dspy.History / resume projection is deferred")
+
+
+# --- _events log → durable-trace derivation (design §2.8.a / §4.3; #737 S1) ---
+# The ARC ``_events`` semantic-event log is the CANONICAL floor: every event is folded
+# into ``_events`` (via ``build_event_content``) BEFORE the durable-trace sink writes
+# its JSONL line (``to_dict("full")``). The seams below PIN that the trace is a
+# *derivation* of the log, not an independent second history:
+#   * ``semantic_event_from_events_content`` folds a stored ``_events`` content dict back
+#     into a SemanticEvent so the trace line can be RE-DERIVED and diffed (this file).
+#   * ``backfill_events_from_trace`` (``gact.trace_backfill``) is the INVERSE recovery
+#     seam for the #762 case where ``release_session`` erases ``_events`` when
+#     ``trace.backend=file``: the JSONL is then the lossless backfill source.
+
+#: SemanticEvent envelope fields the ``_events`` content form (``build_event_content``)
+#: does NOT carry. ``session_id``/``turn_id`` live on the ``Segment`` ENVELOPE (so a
+#: fold recovers them from the segment, not the content); the rest are identity/serving
+#: concerns a later slice's ``message_part`` atoms will carry (§2.3). Declared here so
+#: the derivation proof masks EXACTLY these and asserts every carried field verbatim.
+EVENTS_CONTENT_CARRIED_FIELDS: frozenset[str] = frozenset(
+    {
+        "event_type",
+        "status",
+        "summary",
+        "actor",
+        "subject",
+        "payload",
+        "provider",
+        "occurred_at",
+        "trace_id",
+    }
+)
+
+#: The ``to_dict("full")`` keys NOT reconstructable from ``_events`` content alone
+#: (``session_id``/``turn_id`` ARE, from the Segment envelope). A later slice adds the
+#: identity-carrying atoms (§2.3); until then the derivation proof masks these.
+EVENTS_CONTENT_UNCARRIED_TRACE_FIELDS: frozenset[str] = frozenset(
+    {
+        "event_id",
+        "span_id",
+        "parent_span_id",
+        "workspace_id",
+        "blueprint",
+        "live_observed",
+        "detail_level",
+        "schema_version",
+    }
+)
+
+
+def semantic_event_from_events_content(
+    content: dict[str, Any], *, session_id: str = "", turn_id: str = ""
+) -> SemanticEvent:
+    """Fold a stored ``_events`` segment ``content`` dict back into a SemanticEvent.
+
+    ``content`` is exactly what :func:`clio_agent.arc.live.build_event_content` stored
+    (the carried fields, :data:`EVENTS_CONTENT_CARRIED_FIELDS`); ``session_id`` and
+    ``turn_id`` come from the owning ``Segment`` envelope (the caller passes them). The
+    fields ``_events`` does not carry (:data:`EVENTS_CONTENT_UNCARRIED_TRACE_FIELDS`)
+    take deterministic empties — in particular ``span_id=""`` so the fold NEVER mints a
+    random id — which is why ``to_dict("full")`` on the result matches the durable trace
+    line on every carried field and only differs on the (declared-uncarried) envelope.
+
+    Args:
+        content: The ``_events`` segment content (``build_event_content`` form).
+        session_id: The owning segment's ``session_id`` (envelope, not content).
+        turn_id: The owning segment's ``turn_id`` (envelope, not content).
+
+    Returns:
+        A SemanticEvent whose carried fields equal ``content``'s, with deterministic
+        empty defaults for the uncarried envelope so the fold is pure (no random ids).
+    """
+    return SemanticEvent(
+        event_type=str(content.get("event_type", "") or ""),
+        session_id=session_id,
+        trace_id=str(content.get("trace_id", "") or ""),
+        turn_id=turn_id,
+        span_id="",  # deterministic: never mint a random id on a fold
+        status=str(content.get("status", "") or ""),
+        summary=str(content.get("summary", "") or ""),
+        actor=dict(content.get("actor") or {}),
+        subject=dict(content.get("subject") or {}),
+        provider=dict(content.get("provider") or {}),
+        payload=dict(content.get("payload") or {}),
+        occurred_at=str(content.get("occurred_at", "") or ""),
+    )
+
+
+def trace_line_from_events_content(
+    content: dict[str, Any], *, session_id: str = "", turn_id: str = ""
+) -> dict[str, Any]:
+    """Re-derive a durable-trace JSONL line (``to_dict("full")`` shape) from ``_events``
+    content — the projection scope-1 proves equals the trace the sink actually wrote,
+    masking :data:`EVENTS_CONTENT_UNCARRIED_TRACE_FIELDS`.
+    """
+    event = semantic_event_from_events_content(content, session_id=session_id, turn_id=turn_id)
+    return event.to_dict("full")
 
 
 # --- lm.token.delta: the live token stream on the highway (#693) --------------

@@ -1,7 +1,7 @@
 """Thread D: semantic discovery over the ARC live context plane.
 
-"Which expert/scope knows about X" — BM25 on the clio-core CTE backend (the
-plain-text companion), naive word-overlap on LocalFS. CTE cases are integration.
+"Which expert/scope knows about X" — BM25 on the clio-core backend (the
+plain-text companion), naive word-overlap on LocalFS. clio-core cases are integration.
 """
 
 from __future__ import annotations
@@ -57,9 +57,9 @@ def test_search_empty_query(tmp_path):
 
 
 @pytest.mark.integration
-def test_search_bm25_on_cte():
+def test_search_bm25_on_clio_core():
     arc = ARCMemory(store=make_arc_store(backend="cte"))
-    sid = _seed(arc, sid="search_cte_s1")
+    sid = _seed(arc, sid="search_clio_core_s1")
     assert arc.segment_search_is_semantic() is True  # real BM25
     hits = arc.search_segment_scopes(sid, "earthquake magnitude and epicenter location", k=3)
     assert hits and hits[0][0] == "agentA/seismic"

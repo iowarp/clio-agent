@@ -4,7 +4,7 @@ This module provides the ARCMemory class which serves as the main interface
 for all ARC (Adaptive Retrieval Cache) operations. It integrates:
     - LRUCache for hot data (O(1) access)
     - BTreeIndex for retrieval index
-    - a pluggable ARCStore backend (clio-core CTE or LocalFS; see storage.py)
+    - a pluggable ARCStore backend (clio-core or LocalFS; see storage.py)
       for durable records, an LSM tree (lsm.py) for write-heavy invocation
       metrics, and a SegmentStore (segments.py) for the live context plane
     - msgspec for serialization
@@ -130,7 +130,7 @@ class ARCMemory:
             data_dir: Directory path for persistent storage
             cache_capacity: Maximum number of cached items
             store: Optional ARCStore for record persistence. When ``None`` the
-                backend is chosen by :func:`make_arc_store` — clio-core CTE by
+                backend is chosen by :func:`make_arc_store` — clio-core by
                 default, LocalFS only on explicit ``CLIO_ARC_STORE=local``. Pass a
                 store to override the factory (e.g. tests injecting a specific backend).
         """
@@ -140,7 +140,7 @@ class ARCMemory:
         # Persistence seam: every record kind is read/written through an
         # ARCStore, so ARC never touches the filesystem directly. The LSM tree
         # (below) remains a separate high-throughput subsystem. The backend is
-        # chosen by the factory (default clio-core CTE; LocalFS only on explicit
+        # chosen by the factory (default clio-core; LocalFS only on explicit
         # CLIO_ARC_STORE=local), NOT hardcoded -- a hardcoded LocalFS here is what
         # silently kept ARC off clio-core regardless of config.
         self._store: ARCStore = (
@@ -239,7 +239,7 @@ class ARCMemory:
         # ``_disk_reads`` / ``_disk_writes`` counters, and multi-step *composite*
         # reads/writes over the cache (e.g. scanning ``_cache._cache`` internals, or
         # a cache+index pair that a reader must see consistently). It is NEVER held
-        # across ``_store`` I/O (CTE RPCs / LocalFS reads) or ``_lsm`` writes — those
+        # across ``_store`` I/O (clio-core RPCs / LocalFS reads) or ``_lsm`` writes — those
         # sub-components carry their own locks (``LRUCache._lock`` cache.py,
         # ``LSMTree._lock`` with double-buffered flush lsm.py, ``SegmentStore``
         # per-scope locks segments.py), and holding this lock across their I/O
@@ -1136,11 +1136,11 @@ class ARCMemory:
         self, session_id: str, query_text: str, *, scope_prefix: str = "", k: int = 10
     ) -> List[Any]:
         """Semantic discovery: rank a session's scopes by content relevance to
-        ``query_text`` — "which expert/scope knows about X" (BM25 on CTE)."""
+        ``query_text`` — "which expert/scope knows about X" (BM25 on clio-core)."""
         return self._segments.search_scopes(session_id, query_text, scope_prefix=scope_prefix, k=k)
 
     def segment_search_is_semantic(self) -> bool:
-        """Whether scope search uses real BM25 (CTE backend) vs the naive fallback."""
+        """Whether scope search uses real BM25 (clio-core backend) vs the naive fallback."""
         return self._segments.supports_search()
 
     def _enter_inflight(self, session_id: str) -> None:

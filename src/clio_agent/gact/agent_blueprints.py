@@ -30,6 +30,7 @@ from clio_agent.gact.expert_packs import (
     parse_expert_file,
     validate_expert_hierarchy,
 )
+from clio_agent.gact.git_source import normalize_git_clone_source
 from clio_agent.gact.types import AgentDef
 from clio_agent.tools.catalog import TOOL_CATALOG
 
@@ -820,10 +821,9 @@ def install_agent_blueprint(
         else:
             source_kind = "git"
             clone_target = tmp_path / "repo"
-            cmd = ["git", "clone", "--depth", "1"]
-            if ref:
-                cmd.extend(["--branch", ref])
-            cmd.extend([source, str(clone_target)])
+            branch = ["--branch", ref] if ref else []
+            clone_source = normalize_git_clone_source(source)  # file:// -> path (#903)
+            cmd = ["git", "clone", "--depth", "1", *branch, clone_source, str(clone_target)]
             env = {
                 **os.environ,
                 "GIT_TERMINAL_PROMPT": "0",

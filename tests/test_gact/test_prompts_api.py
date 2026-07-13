@@ -504,6 +504,10 @@ def test_planner_render_context_records_reason_on_enrichment_failure(
         if "PROMPT-CTX" in rec.getMessage() and "enrichment failed" in rec.getMessage()
     ]
     assert reasons, "expected a structured PROMPT-CTX enrichment-failure reason"
-    assert "planner enrichment exploded" in reasons[0]
+    # Match by content, not position: caplog.records ordering is not guaranteed to be
+    # stable across runs (logger propagation / concurrent handlers can interleave), so
+    # a positional ``reasons[0]`` was order-dependent and flaked (#902). Assert the
+    # cause appears in *some* captured PROMPT-CTX reason instead.
+    assert any("planner enrichment exploded" in reason for reason in reasons)
     # Enrichment failed -> render still succeeds on the base command list.
     assert "/summarize" in resp.json()["prompt"]["text"]

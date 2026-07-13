@@ -10,15 +10,15 @@ This file captures the larger arc we scoped early but the v1 GOAL did not — wr
 dependency graph of threads, not a phased timeline. Threads marked *(independent)* can run
 in parallel with the rest.
 
-## Thread B — clio-core CTE backend via an `ARCStore` factory  *(the core idea / seam #2)*
+## Thread B — clio-core backend via an `ARCStore` factory  *(the core idea / seam #2)*
 
 The `ARCStore` protocol (`put/get/exists/scan/delete/clear`) is already the swap seam; v1
 uses `LocalFSStore`. Introduce a **factory** resolved from config:
-`make_arc_store(config) -> clio-core CTE (default, gold standard) | LocalFSStore (files) |
+`make_arc_store(config) -> clio-core (default, gold standard) | LocalFSStore (files) |
 <future>`. Targets **clio-core** (IOWarp CTE, `pip install iowarp-core`, `clio_cee`) as the
 canonical backend so the live plane runs on distributed, tiered storage — the original
 "ARC ⇄ CTE" idea. Unblocks Threads D and E. Keep files as a config fallback (and the unit
-default) so nothing requires a CTE daemon to test.
+default) so nothing requires a clio-core daemon to test.
 
 ## Thread A — expose ARC context over the REST API for the TUI  *(independent)*
 
@@ -34,8 +34,8 @@ This turns ARC from an invisible substrate into a first-class, inspectable surfa
 
 ## Thread D — connect the clio-core CEE MCP  *(needs B)*
 
-Once CTE is the backend, expose/consume the CEE MCP (`iowarp-cei-mcp`) as the agent's
-context + retrieval tool surface over CTE: semantic (BM25) + temporal + tag queries become
+Once clio-core is the backend, expose/consume the CEE MCP (`iowarp-cei-mcp`) as the agent's
+context + retrieval tool surface over clio-core: semantic (BM25) + temporal + tag queries become
 discovery primitives. This is how an expert finds another expert's published context.
 
 ## Thread C — enrich testing  *(independent, ongoing)*
@@ -57,7 +57,7 @@ The team-of-agents vision from early in the design:
 
 ## Suggested lead
 
-**B** (clio-core CTE backend) is the highest-leverage next move — it's the core idea, it
+**B** (clio-core backend) is the highest-leverage next move — it's the core idea, it
 connects the clio-core work we explored first, and it unblocks D and E. **A** (REST/TUI
 exposure) is the best *parallel* companion: independent, immediately useful, and it makes B
 and everything after it visible.

@@ -1,4 +1,4 @@
-"""Regression tests for the CTE daemon clean-stop path (issue #765 (c)).
+"""Regression tests for the clio-core daemon clean-stop path (issue #765 (c)).
 
 ``_stop_runtime_daemon`` must build the ``clio_run stop`` command and its
 environment with the SAME cross-platform helpers as the spawn path

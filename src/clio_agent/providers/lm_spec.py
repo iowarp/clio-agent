@@ -68,6 +68,7 @@ class LMSpec:
     temperature: float | None = None
     max_tokens: int | None = None
     thinking_budget: int | None = None
+    thinking_level: str | None = None
     top_p: float | None = None
     top_k: int | None = None
     min_p: float | None = None
@@ -105,6 +106,7 @@ def spec_from_config(cfg: "LMProviderConfig") -> LMSpec:
         temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,
         thinking_budget=cfg.thinking_budget,
+        thinking_level=cfg.thinking_level,
         top_p=cfg.top_p,
         top_k=cfg.top_k,
         min_p=cfg.min_p,
@@ -135,6 +137,14 @@ def _opt_int(params: Mapping[str, Any], key: str, default: int | None) -> int | 
             return int(params[key])
         except (TypeError, ValueError):
             return default
+    return default
+
+
+def _opt_str(params: Mapping[str, Any], key: str, default: str | None) -> str | None:
+    """Read an optional string override from ``params``, else return ``default``."""
+    if key in params and params[key] is not None:
+        value = str(params[key]).strip()
+        return value or default
     return default
 
 
@@ -176,6 +186,7 @@ def build_spec(agent_def: "AgentDef", default_spec: LMSpec) -> LMSpec:
         temperature=_opt_float(params, "temperature", default_spec.temperature),
         max_tokens=_opt_int(params, "max_tokens", default_spec.max_tokens),
         thinking_budget=_opt_int(params, "thinking_budget", default_spec.thinking_budget),
+        thinking_level=_opt_str(params, "thinking_level", default_spec.thinking_level),
         top_p=_opt_float(params, "top_p", default_spec.top_p),
         top_k=_opt_int(params, "top_k", default_spec.top_k),
         min_p=_opt_float(params, "min_p", default_spec.min_p),

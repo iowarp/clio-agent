@@ -1,6 +1,6 @@
-"""Acceptance: the clio-core CTE backend transparently OFFLOADS context data from
+"""Acceptance: the clio-core backend transparently OFFLOADS context data from
 its RAM tier to its disk tier under capacity pressure and RELOADS it byte-identical
--- proven through clio-agent's REAL store path (``arc/storage.py`` ``CTEStore``),
+-- proven through clio-agent's REAL store path (``arc/storage.py`` ``ClioCoreStore``),
 not raw binding calls.
 
 WHAT IS PROVEN
@@ -26,7 +26,7 @@ HERMETICITY (why a private daemon in a subprocess)
     ``capacity_limit``) on a DISTINCT, contiguous RPC port block, under a private
     ``HOME`` so its runtime bookkeeping (pidfile / client registry / spawn lock)
     never touches the shared ``~/.clio``. The client ops run in a SUBPROCESS
-    (:mod:`tests.test_arc._cte_offload_client`) so that (a) the process-global init
+    (:mod:`tests.test_arc._clio_core_offload_client`) so that (a) the process-global init
     guard stays clean and (b) clio-core#722 -- a native access-violation on ops
     against a dead runtime -- fails the subprocess (non-zero exit) instead of
     killing the pytest host. The subprocess only ever runs ops after the store's
@@ -157,11 +157,11 @@ def _reserve_port_block(block: int = 5) -> int:
 def _expected_needle(run_id: str) -> bytes:
     """Return the on-disk needle: the base64 encoding of the run marker.
 
-    Mirrors :func:`tests.test_arc._cte_offload_client._marker` (the marker is padded
+    Mirrors :func:`tests.test_arc._clio_core_offload_client._marker` (the marker is padded
     to a multiple of 3 so ``base64(marker * k) == base64(marker) * k``), so a
     contiguous run of the marker on disk is a contiguous run of this needle.
     """
-    marker = f"CLIO_CTE_OFFLOAD_{run_id}".encode()
+    marker = f"CLIO_CLIO_CORE_OFFLOAD_{run_id}".encode()
     while len(marker) % 3:
         marker += b"_"
     return base64.b64encode(marker)
@@ -215,9 +215,9 @@ def _reap_private_daemon(private_home: Path) -> None:
 
 
 @pytest.mark.integration
-def test_cte_backend_offloads_to_disk_and_reloads(tmp_path: Path) -> None:
+def test_clio_core_backend_offloads_to_disk_and_reloads(tmp_path: Path) -> None:
     """A working set exceeding the CTE ram cap physically spills to the disk tier and
-    reloads byte-identical, all through the real ``CTEStore`` path."""
+    reloads byte-identical, all through the real ``ClioCoreStore`` path."""
     _require_launcher()
 
     private_home = tmp_path / "home"
@@ -258,7 +258,7 @@ def test_cte_backend_offloads_to_disk_and_reloads(tmp_path: Path) -> None:
         CLIO_OFFLOAD_TOTAL_MB=str(_TOTAL_MB),
         CTP_LOG_LEVEL="error",
     )
-    client = Path(__file__).with_name("_cte_offload_client.py")
+    client = Path(__file__).with_name("_clio_core_offload_client.py")
 
     try:
         proc = subprocess.run(  # noqa: S603 - fixed interpreter + in-repo script
@@ -286,12 +286,12 @@ def test_cte_backend_offloads_to_disk_and_reloads(tmp_path: Path) -> None:
 
     # (1) The real store was used -- never a silent LocalFS fallback (which would make
     # the whole proof vacuous).
-    assert result.get("store_type") == "CTEStore", f"not the CTE path: {result}"
+    assert result.get("store_type") == "ClioCoreStore", f"not the clio-core path: {result}"
     assert result.get("put_count", 0) >= 1 and result.get("total_bytes", 0) >= _TOTAL_MB * 1_000_000
 
     # (2) RELOAD: every blob read back through the store is byte-identical.
     assert result.get("readback_identical") is True, (
-        f"CTE read-back was NOT byte-identical: mismatches={result.get('mismatches')}"
+        f"clio-core read-back was NOT byte-identical: mismatches={result.get('mismatches')}"
     )
 
     # (3) OFFLOAD (physical, non-vacuous): the marker bytes are in the disk backing

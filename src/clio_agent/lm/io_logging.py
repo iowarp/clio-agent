@@ -89,6 +89,11 @@ _TRANSIENT_PROVIDER_MARKERS = (
     "remote end closed connection",
     "connection reset",
     "overloaded",
+    # claude_code SDK: the pooled CLI subprocess died mid-stream (exit 1, no
+    # structured result). Typed at the provider boundary as transient so the
+    # call re-issues on a fresh pooled connection (#891). Keep in sync with
+    # providers.claude_code_sessions.TRANSIENT_TRANSPORT_MARKER.
+    "claude agent sdk transport failed mid-stream",
 )
 
 

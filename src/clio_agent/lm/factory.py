@@ -148,40 +148,36 @@ def _is_argonne_sophia(config: LMProviderConfig) -> bool:
 
 
 def _thinking_kwargs(config: LMProviderConfig) -> dict:
-    """Translate thinking_budget to provider-specific litellm kwargs.
+    """Translate the provider-generic thinking knob to LiteLLM/transport kwargs.
 
-    Anthropic: extended-thinking is configured via the ``thinking``
-    parameter (budget_tokens controls how much reasoning the model
-    spends). DSPy/litellm pass it through as a kwarg.
-
-    OpenAI / openai-compatible: rough mapping of token budget to
-    `reasoning_effort` ('low' | 'medium' | 'high'). Most openai-compat
-    proxies ignore unknown kwargs gracefully.
-
-    All other providers: returns {} so we don't trip on unsupported
-    parameters.
+    Delegates the ``off|low|medium|high`` level (+ explicit ``thinking_budget``
+    override) to :func:`clio_agent.providers.thinking.resolve_thinking`, which
+    owns the per-provider mapping (anthropic ``thinking``; openai/compat
+    ``reasoning_effort``; claude_code SDK thinking config; typed unsupported for
+    the rest). The claude_code SDK config rides ``optional_params`` under
+    ``claude_code_thinking`` — the provider reads it and applies it to
+    ``ClaudeAgentOptions`` (LiteLLM ignores ``reasoning_effort`` on that
+    transport, which is why the old mapping was a silent no-op there).
     """
-    n = int(getattr(config, "thinking_budget", 0) or 0)
-    if n <= 0:
+    from clio_agent.providers.thinking import (  # noqa: PLC0415
+        log_unsupported_thinking,
+        resolve_thinking,
+    )
+
+    plan = resolve_thinking(
+        config.provider,
+        getattr(config, "thinking_level", None),
+        int(getattr(config, "thinking_budget", 0) or 0),
+    )
+    if not plan.supported:
+        # No silent no-op: a requested level with no provider mapping is recorded
+        # with a typed reason (and surfaced in doctor/status via resolve_thinking).
+        log_unsupported_thinking(plan)
         return {}
-    if config.provider == "anthropic":
-        return {"thinking": {"type": "enabled", "budget_tokens": n}}
-    if config.provider in (
-        "openai",
-        "lm_studio",
-        "ollama",
-        "argonne",
-        "codex",
-        "claude_code",
-    ):
-        if n < 2000:
-            effort = "low"
-        elif n < 8000:
-            effort = "medium"
-        else:
-            effort = "high"
-        return {"reasoning_effort": effort}
-    return {}
+    extras = dict(plan.litellm_kwargs)
+    if plan.sdk_thinking is not None:
+        extras["claude_code_thinking"] = plan.sdk_thinking
+    return extras
 
 
 def create_planner_lm(config: LMProviderConfig) -> dspy.LM:

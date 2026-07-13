@@ -13,7 +13,7 @@ the live, mutable context plane the DSPy ReAct loop reads on every iteration, th
 one semantic-event log every turn appends to, and a thin durable tier beneath a
 hot in-memory layer. It is **not** a multi-tier storage engine and does **not**
 migrate data across GPU/NVMe/PFS tiers — the durable backend is either the
-clio-core CTE daemon or plain files on disk.
+clio-core daemon or plain files on disk.
 
 The class that ties it together is `ARCMemory` (`src/clio_agent/arc/memory.py`).
 It composes four pieces:
@@ -134,7 +134,7 @@ Durable records go through the `ARCStore` protocol (`arc/storage.py`):
 `scan(kind, prefix)` over opaque `bytes` keyed by `(kind, name)`. Any backend
 satisfying it plugs in. Two ship:
 
-- **`CTEStore` (default, `CLIO_ARC_STORE=cte`)** — the clio-core CTE (Convergent
+- **`ClioCoreStore` (default, `CLIO_ARC_STORE=cte`)** — the clio-core CTE (Convergent
   Tiered Environment) binding. It connects to a shared per-user daemon
   (connect-or-spawn) and stops it at interpreter exit via `atexit` (see the
   shutdown note below). The daemon's DRAM tier is the live working set; a file
@@ -154,8 +154,8 @@ would mask a misconfigured deploy and hide that ARC is no longer on clio-core.
 `[[deliberate-config-fail-loud]]` policy.
 
 **Doctor surfaces the backend's real state.** `clio doctor` (`runtime/status.py`,
-`_probe_arc_cte` / `_probe_arc_local`) reports `arc` as a required integration:
-when the CTE backend is selected but `iowarp_core` is not installed, or its
+`_probe_arc_clio_core` / `_probe_arc_local`) reports `arc` as a required integration:
+when the clio-core backend is selected but `iowarp_core` is not installed, or its
 shared daemon is not listening, the probe returns `UNAVAILABLE` (red) with a
 concrete next action (install the package or set `CLIO_ARC_STORE=local`) —
 never a green "everything's fine" over a missing store.
@@ -245,7 +245,7 @@ CLIO_ARC_CACHE_CAPACITY=1000          # LRUCache capacity (entries)
 CLIO_ARC_LSM_MEMTABLE_SIZE=1000       # LSM memtable size before flush
 CLIO_ARC_LSM_COMPACTION_THRESHOLD=5   # SSTables before a compaction
 
-# CTE spillover (CTE backend only)
+# CTE spillover (clio-core backend only)
 CLIO_ARC_CTE_DIR=                     # CTE working dir; blank = OS data dir
 CLIO_ARC_CTE_FILE_CAPACITY=50GB       # on-disk capacity for the CTE file tier
 ```

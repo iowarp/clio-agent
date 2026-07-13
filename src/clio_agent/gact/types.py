@@ -324,7 +324,7 @@ class ContextSearchHit(BaseModel):
 class ContextSearchResponse(BaseModel):
     """GET /v1/sessions/{sid}/context/search — semantic discovery over scopes.
 
-    'which expert/scope knows about X'. ``semantic`` is True for real BM25 (the CTE
+    'which expert/scope knows about X'. ``semantic`` is True for real BM25 (the clio-core
     backend) and False for the naive word-overlap fallback (LocalFS).
     """
 
@@ -1017,14 +1017,12 @@ class Metrics(BaseModel):
 
 
 class LMProviderInfo(BaseModel):
-    """GET /v1/providers/lm body. Reports current LM config state
-    + an enumerated list of presets the TUI can show in its
-    provider picker. ``api_key`` is never echoed back; the TUI
-    asks the user fresh on every change.
-
-    ``thinking_budget`` controls reasoning effort/budget on providers
-    that support it (Anthropic Sonnet 4.6+ extended thinking,
-    OpenAI/Codex `model_reasoning_effort`). 0 means default / disabled.
+    """GET /v1/providers/lm body: current LM config state + the preset list the
+    TUI's picker shows. ``api_key`` is never echoed back.
+    ``thinking_level`` (off|low|medium|high, null=unset) is the provider-generic
+    reasoning control; ``thinking_budget`` is the explicit token override; and
+    ``thinking_effective`` is the resolved per-provider effect (#895), so the
+    knob is never invisible on the wire — including a typed ``unsupported`` note.
     """
 
     configured: bool
@@ -1045,8 +1043,10 @@ class LMProviderInfo(BaseModel):
     context_window: Optional[int] = None
     is_reasoning: bool = False
     native_tool_calling: bool = False
+    thinking_level: Optional[str] = None
+    thinking_effective: str = ""
     thinking_budget: int = 0
-    transport: Optional[Literal["exec", "sdk"]] = None
+    transport: Optional[Literal["app_server", "exec", "sdk"]] = None
     state: Literal["idle", "configuring", "ready", "error"] = "idle"
     status_message: str = ""
     error: str = ""
@@ -1133,11 +1133,11 @@ class LMProviderRequest(BaseModel):
     turn_timeout_s: float = 0.0
     # Codex-only transport selector. Other providers ignore it.
     transport: Optional[Literal["exec", "sdk"]] = None
-    # Reasoning/thinking budget. Mapped per-provider:
-    # - Anthropic (haiku/sonnet/opus 4.6+): used as
-    #   thinking.budget_tokens in the API call. 0 disables extended
-    #   thinking. Range: ~1024..32000 typically.
-    # - OpenAI/Codex: mapped to model_reasoning_effort by bucketing
-    #   (0 = none, <2000 = low, <8000 = medium, >=8000 = high).
-    # - Other providers: ignored.
+    # Reasoning knobs, mapped per-provider in providers.thinking (#895).
+    # thinking_level (off|low|medium|high, null=unset → shipped per-model default)
+    # is the provider-generic control (budget_tokens for anthropic/claude_code,
+    # reasoning_effort for openai/codex); an invalid string is a structured 422 and
+    # a provider with no mapping surfaces a typed ``unsupported`` in the GET.
+    # thinking_budget is the explicit token override (0 = defer to the level).
+    thinking_level: Optional[Literal["off", "low", "medium", "high"]] = None
     thinking_budget: int = 0

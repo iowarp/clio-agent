@@ -17,6 +17,7 @@ from clio_agent.config import (
     create_planner_lm,
     load_config_from_env,
 )
+from tests.env_isolation import isolated_environ
 
 
 class TestLMProviderConfig:
@@ -132,9 +133,9 @@ class TestLMProviderConfig:
         assert config.environment == "dev"
 
     def test_default_codex_transport(self):
-        """Codex transport should default to exec."""
+        """Codex transport defaults to app_server (native JSON-RPC/stdio, #896)."""
         config = LMProviderConfig(provider="codex")
-        assert config.codex_transport == "exec"
+        assert config.codex_transport == "app_server"
 
     def test_invalid_codex_transport_rejected(self):
         """Invalid Codex transport should fail during config construction."""
@@ -163,7 +164,7 @@ class TestLoadConfigFromEnv:
 
     def test_default_returns_lm_studio(self):
         """With no env vars, default provider is lm_studio."""
-        with patch.dict("os.environ", {}, clear=True):
+        with isolated_environ():
             config = load_config_from_env()
             assert config.provider == "lm_studio"
             assert config.api_base == "http://127.0.0.1:1234/v1"
@@ -182,7 +183,7 @@ class TestLoadConfigFromEnv:
         monkeypatch.setattr(Path, "home", staticmethod(_no_home))
         conf.reload()  # force the next resolve to hit ConfigStore._load
         try:
-            with patch.dict("os.environ", {}, clear=True):
+            with isolated_environ():
                 config = load_config_from_env()
         finally:
             conf.reload()  # drop the degraded cache so later tests re-read fresh
@@ -190,7 +191,7 @@ class TestLoadConfigFromEnv:
 
     def test_ollama_provider_from_env(self):
         """CLIO_LM_PROVIDER=ollama should configure ollama defaults."""
-        with patch.dict("os.environ", {"CLIO_LM_PROVIDER": "ollama"}, clear=True):
+        with isolated_environ({"CLIO_LM_PROVIDER": "ollama"}):
             config = load_config_from_env()
             assert config.provider == "ollama"
             assert config.api_base == "http://127.0.0.1:11434/v1"
@@ -199,42 +200,42 @@ class TestLoadConfigFromEnv:
     def test_env_model_overrides_provider_default(self):
         """CLIO_LM_MODEL should override provider's default model."""
         env = {"CLIO_LM_PROVIDER": "lm_studio", "CLIO_LM_MODEL": "custom/override"}
-        with patch.dict("os.environ", env, clear=True):
+        with isolated_environ(env):
             config = load_config_from_env()
             assert config.model == "custom/override"
 
     def test_env_api_base_override(self):
         """CLIO_LM_API_BASE should override provider's default api_base."""
         env = {"CLIO_LM_API_BASE": "http://remote:5000/v1"}
-        with patch.dict("os.environ", env, clear=True):
+        with isolated_environ(env):
             config = load_config_from_env()
             assert config.api_base == "http://remote:5000/v1"
 
     def test_env_api_key_override(self):
         """CLIO_LM_API_KEY should override provider's default api_key."""
         env = {"CLIO_LM_API_KEY": "my-secret-key"}
-        with patch.dict("os.environ", env, clear=True):
+        with isolated_environ(env):
             config = load_config_from_env()
             assert config.api_key == "my-secret-key"
 
     def test_env_temperature_override(self):
         """CLIO_LM_TEMPERATURE should override default temperature."""
         env = {"CLIO_LM_TEMPERATURE": "0.7"}
-        with patch.dict("os.environ", env, clear=True):
+        with isolated_environ(env):
             config = load_config_from_env()
             assert config.temperature == 0.7
 
     def test_env_max_tokens_override(self):
         """CLIO_LM_MAX_TOKENS should override default max_tokens."""
         env = {"CLIO_LM_MAX_TOKENS": "8192"}
-        with patch.dict("os.environ", env, clear=True):
+        with isolated_environ(env):
             config = load_config_from_env()
             assert config.max_tokens == 8192
 
     def test_env_planner_max_tokens_override(self):
         """CLIO_LM_PLANNER_MAX_TOKENS should override planner max tokens."""
         env = {"CLIO_LM_PLANNER_MAX_TOKENS": "2048"}
-        with patch.dict("os.environ", env, clear=True):
+        with isolated_environ(env):
             config = load_config_from_env()
             assert config.max_tokens == 32000
             assert config.planner_max_tokens == 2048
@@ -246,7 +247,7 @@ class TestLoadConfigFromEnv:
             "CLIO_LM_MODEL": "qwopus3.5-9b-v3",
             "CLIO_LM_MAX_TOKENS": "1024",
         }
-        with patch.dict("os.environ", env, clear=True):
+        with isolated_environ(env):
             config = load_config_from_env()
             assert config.planner_temperature == 0.0
             assert config.planner_max_tokens == 4096
@@ -259,7 +260,7 @@ class TestLoadConfigFromEnv:
             "CLIO_LM_MAX_TOKENS": "8192",
             "CLIO_LM_PLANNER_MAX_TOKENS": "1024",
         }
-        with patch.dict("os.environ", env, clear=True):
+        with isolated_environ(env):
             config = load_config_from_env()
             assert config.max_tokens == 8192
             assert config.planner_max_tokens == 4096
@@ -267,49 +268,49 @@ class TestLoadConfigFromEnv:
     def test_env_environment(self):
         """CLIO_ENVIRONMENT should set environment field."""
         env = {"CLIO_ENVIRONMENT": "production"}
-        with patch.dict("os.environ", env, clear=True):
+        with isolated_environ(env):
             config = load_config_from_env()
             assert config.environment == "production"
 
     def test_openai_requires_api_key(self):
         """OpenAI provider without API key should raise ValueError."""
         env = {"CLIO_LM_PROVIDER": "openai"}
-        with patch.dict("os.environ", env, clear=True):
+        with isolated_environ(env):
             with pytest.raises(ValueError, match="requires an API key"):
                 load_config_from_env()
 
     def test_anthropic_requires_api_key(self):
         """Anthropic provider without API key should raise ValueError."""
         env = {"CLIO_LM_PROVIDER": "anthropic"}
-        with patch.dict("os.environ", env, clear=True):
+        with isolated_environ(env):
             with pytest.raises(ValueError, match="requires an API key"):
                 load_config_from_env()
 
     def test_openai_with_clio_api_key(self):
         """OpenAI with CLIO_LM_API_KEY should work."""
         env = {"CLIO_LM_PROVIDER": "openai", "CLIO_LM_API_KEY": "sk-from-clio"}
-        with patch.dict("os.environ", env, clear=True):
+        with isolated_environ(env):
             config = load_config_from_env()
             assert config.api_key == "sk-from-clio"
 
     def test_openai_with_native_env_key(self):
         """OpenAI with OPENAI_API_KEY (not CLIO_) should work via __post_init__."""
         env = {"CLIO_LM_PROVIDER": "openai", "OPENAI_API_KEY": "sk-native"}
-        with patch.dict("os.environ", env, clear=True):
+        with isolated_environ(env):
             config = load_config_from_env()
             assert config.api_key == "sk-native"
 
     def test_codex_transport_from_env(self):
         """CLIO_CODEX_TRANSPORT should select the Codex transport mode."""
         env = {"CLIO_LM_PROVIDER": "codex", "CLIO_CODEX_TRANSPORT": "sdk"}
-        with patch.dict("os.environ", env, clear=True):
+        with isolated_environ(env):
             config = load_config_from_env()
             assert config.codex_transport == "sdk"
 
     def test_claude_code_transport_from_env(self):
         """CLIO_CLAUDE_CODE_TRANSPORT should select the Claude Code transport mode."""
         env = {"CLIO_LM_PROVIDER": "claude_code", "CLIO_CLAUDE_CODE_TRANSPORT": "exec"}
-        with patch.dict("os.environ", env, clear=True):
+        with isolated_environ(env):
             config = load_config_from_env()
             assert config.claude_code_transport == "exec"
 
@@ -513,7 +514,7 @@ class TestCreateLM:
         config = LMProviderConfig(provider="codex", model="gpt-5.5")
         lm = create_lm(config)
         assert lm.model == "codex/cdx-gpt-5.5"
-        assert lm.kwargs["codex_transport"] == "exec"
+        assert lm.kwargs["codex_transport"] == "app_server"
 
     def test_codex_model_marker_is_not_doubled(self):
         """Codex should accept already-prefixed config values idempotently."""
@@ -530,6 +531,24 @@ class TestCreateLM:
         )
         lm = create_lm(config)
         assert lm.kwargs["codex_transport"] == "sdk"
+
+    def test_codex_thinking_level_passes_codex_reasoning_effort_kwarg(self):
+        """SEAM (#896): the #895 thinking level survives the factory into the LM
+        kwargs as codex_reasoning_effort — the same optional_params lane
+        codex_transport already proves reaches the CustomLLM. off → codex's
+        explicit 'none' (never omit-and-inherit-ambient)."""
+        config = LMProviderConfig(provider="codex", model="gpt-5.5", thinking_level="high")
+        lm = create_lm(config)
+        assert lm.kwargs["codex_reasoning_effort"] == "high"
+
+        config_off = LMProviderConfig(provider="codex", model="gpt-5.5", thinking_level="off")
+        lm_off = create_lm(config_off)
+        assert lm_off.kwargs["codex_reasoning_effort"] == "none"
+
+        # Unset level → no effort kwarg at all (codex's own default governs).
+        config_default = LMProviderConfig(provider="codex", model="gpt-5.5")
+        lm_default = create_lm(config_default)
+        assert "codex_reasoning_effort" not in lm_default.kwargs
 
     def test_claude_code_uses_custom_provider_prefix(self):
         """Claude Code should keep user-facing model ids clean and mark internally."""
@@ -602,7 +621,7 @@ class TestSetupDspy:
         """setup_dspy should return a dspy.LM instance."""
         from clio_agent.config import setup_dspy
 
-        with patch.dict("os.environ", {"CLIO_LM_MODEL": "loaded-model"}, clear=True):
+        with isolated_environ({"CLIO_LM_MODEL": "loaded-model"}):
             lm = setup_dspy(verbose=False)
             assert isinstance(lm, dspy.LM)
 
@@ -610,7 +629,7 @@ class TestSetupDspy:
         """setup_dspy with model override should use specified model."""
         from clio_agent.config import setup_dspy
 
-        with patch.dict("os.environ", {}, clear=True):
+        with isolated_environ():
             lm = setup_dspy(model="custom/model", verbose=False)
             assert "custom/model" in lm.model
 
@@ -618,7 +637,7 @@ class TestSetupDspy:
         """setup_dspy with verbose=True should print config info."""
         from clio_agent.config import setup_dspy
 
-        with patch.dict("os.environ", {"CLIO_LM_MODEL": "loaded-model"}, clear=True):
+        with isolated_environ({"CLIO_LM_MODEL": "loaded-model"}):
             setup_dspy(verbose=True)
             captured = capsys.readouterr()
             assert "LM configured" in captured.out
@@ -628,7 +647,7 @@ class TestSetupDspy:
         from clio_agent.config import setup_dspy
 
         env = {"CLIO_LM_PROVIDER": "openai"}
-        with patch.dict("os.environ", env, clear=True):
+        with isolated_environ(env):
             with pytest.raises(ValueError, match="requires an API key"):
                 setup_dspy(verbose=False)
 
@@ -642,7 +661,7 @@ class TestSetupDspy:
             "CLIO_LM_API_KEY": "lm-studio",
             "CLIO_LM_MODEL": "nemotron-cascade-2-30b-a3b-i1",
         }
-        with patch.dict("os.environ", env, clear=True):
+        with isolated_environ(env):
             # config.py imports dspy lazily via _dspy() — patch the
             # underlying dspy.configure directly rather than the
             # (no-longer-existent) module-level alias.
@@ -660,7 +679,7 @@ class TestSetupDspy:
             "CLIO_LM_PROVIDER": "openai",
             "CLIO_LM_API_KEY": "sk-test",
         }
-        with patch.dict("os.environ", env, clear=True):
+        with isolated_environ(env):
             # config.py imports dspy lazily via _dspy() — patch the
             # underlying dspy.configure directly rather than the
             # (no-longer-existent) module-level alias.
