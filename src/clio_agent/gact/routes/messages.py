@@ -134,6 +134,12 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         live_parts = list((getattr(app.state, "live_assistant_parts", {}) or {}).get(sid, []))
         if not live_parts:
             return None
+        # #737 S7: overlay the coalesced live-edge text onto the still-open part so a
+        # mid-stream reload reflects the growing edge (else its text is empty until the
+        # part closes). A no-op unless the live edge is engaged (flag + atoms regime).
+        from clio_agent.gact.live_edge import overlay_in_flight_part  # noqa: PLC0415
+
+        live_parts = overlay_in_flight_part(app, sid, live_parts)
         now = datetime.now(timezone.utc).isoformat()
         return Message(
             id=msg_id,
