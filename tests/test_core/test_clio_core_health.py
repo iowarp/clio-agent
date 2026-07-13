@@ -9,12 +9,30 @@ row. Assertions read real IntegrationStatus rows built from real on-disk config 
 from __future__ import annotations
 
 from clio_agent.arc import clio_core_config
+from clio_agent.arc.clio_core_daemon import DaemonMemorySnapshot
 from clio_agent.arc.init_degradation import ArcInitDegradation
 from clio_agent.runtime.clio_core_health import (
+    probe_clio_core_daemon_memory,
     probe_clio_core_init_degradation,
     probe_clio_core_ram_cap,
 )
 from clio_agent.runtime.status import IntegrationState
+
+_GiB = 1024**3
+
+
+def _daemon_snapshot(rss: int, *, live: int = 0, stale: int = 0, pid: int = 4321):
+    return DaemonMemorySnapshot(
+        pid=pid,
+        pid_source="pidfile",
+        rss_bytes=rss,
+        committed_bytes=rss * 2,
+        thread_count=15,
+        live_client_count=live,
+        stale_client_count=stale,
+        registered_client_count=live + stale,
+        port=9413,
+    )
 
 
 def _degrade_record(reason: str = "clio_core_binding_absent", was_explicit: bool = False):
@@ -127,6 +145,66 @@ def test_probe_default_backend_is_clio_core(tmp_path):
     rows = probe_clio_core_ram_cap(env={"CLIO_ARC_STORE_CONFIG": str(cfg)})
     assert len(rows) == 1
     assert rows[0].state is IntegrationState.READY
+
+
+def test_daemon_memory_ok_is_ready():
+    rows = probe_clio_core_daemon_memory(
+        env={"CLIO_ARC_STORE": "cte"}, snapshot=_daemon_snapshot(512 * 1024**2, live=1)
+    )
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.name == "clio_core_daemon_memory"
+    assert row.state is IntegrationState.READY
+    assert row.details["daemon_mem_status"] == "ok"
+    assert row.details["reason"] == "clio_core_daemon_rss_ok"
+    assert row.details["live_client_count"] == 1
+    assert row.endpoint == "127.0.0.1:9413"
+
+
+def test_daemon_memory_elevated_is_degraded():
+    row = probe_clio_core_daemon_memory(
+        env={"CLIO_ARC_STORE": "cte"}, snapshot=_daemon_snapshot(2 * _GiB)
+    )[0]
+    assert row.state is IntegrationState.DEGRADED
+    assert row.details["daemon_mem_status"] == "elevated"
+    assert row.details["reason"] == "clio_core_daemon_rss_elevated"
+
+
+def test_daemon_memory_critical_is_degraded_and_names_recycle():
+    row = probe_clio_core_daemon_memory(
+        env={"CLIO_ARC_STORE": "cte"}, snapshot=_daemon_snapshot(5 * _GiB, stale=3)
+    )[0]
+    assert row.state is IntegrationState.DEGRADED
+    assert row.details["daemon_mem_status"] == "critical"
+    assert row.details["reason"] == "clio_core_daemon_rss_critical"
+    assert row.details["stale_client_count"] == 3
+    # The critical remediation surfaces the opt-in recycle knob.
+    assert "CLIO_ARC_CLIO_CORE_DAEMON_RECYCLE" in row.next_action
+
+
+def test_daemon_memory_sabotage_critical_would_go_green():
+    """SABOTAGE guard: a critical daemon reported as READY goes red here."""
+    row = probe_clio_core_daemon_memory(
+        env={"CLIO_ARC_STORE": "cte"}, snapshot=_daemon_snapshot(9 * _GiB)
+    )[0]
+    assert row.state is not IntegrationState.READY
+    # A genuinely small daemon on the same wire IS ready -> the flag is specific.
+    ok = probe_clio_core_daemon_memory(
+        env={"CLIO_ARC_STORE": "cte"}, snapshot=_daemon_snapshot(64 * 1024**2)
+    )[0]
+    assert ok.state is IntegrationState.READY
+
+
+def test_daemon_memory_local_backend_yields_no_row():
+    assert probe_clio_core_daemon_memory(env={"CLIO_ARC_STORE": "local"}) == []
+
+
+def test_daemon_memory_no_daemon_yields_no_row(monkeypatch):
+    # cte backend but no daemon located (snapshot gather returns None) -> no row.
+    from clio_agent.arc import clio_core_daemon
+
+    monkeypatch.setattr(clio_core_daemon, "collect_daemon_memory_snapshot", lambda **_k: None)
+    assert probe_clio_core_daemon_memory(env={"CLIO_ARC_STORE": "cte"}) == []
 
 
 def test_probe_wired_into_collect(tmp_path):

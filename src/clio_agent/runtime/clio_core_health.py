@@ -18,10 +18,14 @@ no row is produced (mirrors :meth:`RuntimeProbe._arc_backend`).
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import TYPE_CHECKING
 
 from clio_agent.arc.clio_core_config import RamTierCap, effective_ram_cap, parse_capacity_bytes
 from clio_agent.runtime.humanize import format_bytes
 from clio_agent.runtime.status import IntegrationState, IntegrationStatus
+
+if TYPE_CHECKING:
+    from clio_agent.arc.clio_core_daemon import DaemonMemorySnapshot
 
 _REMEDIATION = (
     "Set a bounded ram cap via arc.cte.ram_capacity (or env CLIO_ARC_CTE_RAM_CAPACITY), "
@@ -273,19 +277,136 @@ def probe_clio_core_init_degradation(*, record: object | None = None) -> list[In
     ]
 
 
+def probe_clio_core_daemon_memory(
+    *,
+    env: Mapping[str, str] | None = None,
+    snapshot: DaemonMemorySnapshot | None = None,
+) -> list[IntegrationStatus]:
+    """Surface the shared clio-core daemon's memory as a doctor row (#891).
+
+    The shared ``clio_run`` daemon can grow *daemon-internally* — heap/arena/thread
+    growth the #890 data-tier ram cap does not bound — and until now that growth was
+    invisible (found only in Task Manager: 12.3 GiB resident / 20.2 GiB committed). This
+    row makes it visible and bounded-by-policy:
+
+    * READY when RSS is ``ok`` (below the elevated threshold);
+    * DEGRADED with ``clio_core_daemon_rss_elevated`` when RSS is >= the warn threshold
+      (default 1 GiB);
+    * DEGRADED with ``clio_core_daemon_rss_critical`` when RSS is >= the critical
+      threshold (default 4 GiB), naming the opt-in recycle policy in the remediation.
+
+    Emitted only for the clio-core ARC backend (``CLIO_ARC_STORE`` is ``cte`` or unset)
+    and only when a daemon is actually located (a down daemon is surfaced by the #892
+    liveness row instead). The typed ``ok`` | ``elevated`` | ``critical`` status rides in
+    ``details['daemon_mem_status']``; both non-ok statuses map to DEGRADED (the doctor
+    state vocabulary has no separate elevated/critical rows).
+
+    Args:
+        env: Environment mapping (drives backend selection + port resolution); defaults
+            to the process environment.
+        snapshot: An injected :class:`~clio_agent.arc.clio_core_daemon.DaemonMemorySnapshot`
+            (test seam); gathered fresh when ``None``.
+
+    Returns:
+        Zero or one :class:`IntegrationStatus`.
+    """
+    import os  # noqa: PLC0415 - default env without a module-level os handle
+
+    from clio_agent.arc import clio_core_daemon  # noqa: PLC0415 - lazy: avoid load-time cycle
+
+    env = env if env is not None else os.environ
+    backend = env.get("CLIO_ARC_STORE", "cte").strip().lower()
+    if backend != "cte":
+        return []
+
+    snap = (
+        snapshot
+        if snapshot is not None
+        else clio_core_daemon.collect_daemon_memory_snapshot(env=env)
+    )
+    if snap is None:
+        return []
+
+    warn, critical = clio_core_daemon._resolve_daemon_rss_thresholds()
+    status = clio_core_daemon.classify_daemon_rss(snap.rss_bytes, warn=warn, critical=critical)
+    human_rss = format_bytes(snap.rss_bytes)
+    human_committed = format_bytes(snap.committed_bytes)
+    details = {
+        **snap.to_details(),
+        "daemon_mem_status": status,
+        "rss_warn_bytes": warn,
+        "rss_critical_bytes": critical,
+    }
+    endpoint = f"127.0.0.1:{snap.port}"
+    clients = (
+        f"{snap.live_client_count} live client(s)"
+        + (f", {snap.stale_client_count} stale" if snap.stale_client_count else "")
+    )
+
+    if status == "ok":
+        return [
+            IntegrationStatus(
+                name="clio_core_daemon_memory",
+                state=IntegrationState.READY,
+                summary=(
+                    f"clio-core daemon (pid {snap.pid}) RSS is {human_rss} "
+                    f"(committed {human_committed}), {snap.thread_count} threads, "
+                    f"{clients}; within the elevated threshold (~{format_bytes(warn)})."
+                ),
+                config_source="runtime:clio_core_daemon_memory",
+                next_action="No action required.",
+                endpoint=endpoint,
+                capabilities=["daemon-memory-visible"],
+                details={**details, "reason": "clio_core_daemon_rss_ok"},
+                required=True,
+            )
+        ]
+
+    reason = (
+        "clio_core_daemon_rss_critical" if status == "critical" else "clio_core_daemon_rss_elevated"
+    )
+    threshold = format_bytes(critical if status == "critical" else warn)
+    next_action = (
+        "The shared clio-core daemon has grown daemon-internally (upstream-filed; the "
+        "#890 data-tier cap does not bound it). Restart it with no live clients (clio "
+        "restart / clio_run stop), or enable the opt-in bounded recycle "
+        "(CLIO_ARC_CLIO_CORE_DAEMON_RECYCLE=1 / arc.clio_core.daemon_recycle_enabled) to "
+        "auto-recycle it when critical AND idle."
+    )
+    return [
+        IntegrationStatus(
+            name="clio_core_daemon_memory",
+            state=IntegrationState.DEGRADED,
+            summary=(
+                f"clio-core daemon (pid {snap.pid}) RSS is {human_rss} "
+                f"(committed {human_committed}) — {status.upper()}, over the "
+                f"{status} threshold (~{threshold}); {snap.thread_count} threads, {clients} (#891)."
+            ),
+            config_source="runtime:clio_core_daemon_memory",
+            next_action=next_action,
+            endpoint=endpoint,
+            fallback="none",
+            details={**details, "reason": reason},
+            required=True,
+        )
+    ]
+
+
 def probe_clio_core_health(*, env: Mapping[str, str] | None = None) -> list[IntegrationStatus]:
-    """Aggregate the clio-core doctor rows: init degrade (#897) + ram cap (#890) + liveness (#892).
+    """Aggregate the clio-core doctor rows: init (#897) + ram cap (#890) + liveness (#892) + daemon mem (#891).
 
     A single collection seam so the doctor wires ONE call for all clio-core sub-checks.
 
     Args:
-        env: Environment mapping forwarded to :func:`probe_clio_core_ram_cap`.
+        env: Environment mapping forwarded to the sub-probes.
 
     Returns:
-        The concatenated init-degradation, ram-cap, and liveness rows (each may be empty).
+        The concatenated init-degradation, ram-cap, liveness, and daemon-memory rows
+        (each may be empty).
     """
     return [
         *probe_clio_core_init_degradation(),
         *probe_clio_core_ram_cap(env=env),
         *probe_clio_core_liveness(),
+        *probe_clio_core_daemon_memory(env=env),
     ]

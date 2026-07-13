@@ -16,6 +16,9 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ALLOWED_ROOTS` | `tools.file_policy.allowed_roots` | str | `_default_allowed_roots()` _(computed)_ | `src/clio_agent/tools/file_policy.py` |
 | `CLIO_ALLOW_SYMLINKS` | `tools.file_policy.allow_symlinks` | bool | `false` | `src/clio_agent/tools/file_policy.py` |
 | `CLIO_ARC_CACHE_CAPACITY` | `arc.cache_capacity` | int | `1000` | `src/clio_agent/arc/memory.py` |
+| `CLIO_ARC_CLIO_CORE_DAEMON_RECYCLE` | `arc.clio_core.daemon_recycle_enabled` | bool | `false` | `src/clio_agent/arc/clio_core_daemon.py` |
+| `CLIO_ARC_CLIO_CORE_DAEMON_RSS_CRITICAL` | `arc.clio_core.daemon_rss_critical_bytes` | int | `4294967296` | `src/clio_agent/arc/clio_core_daemon.py` |
+| `CLIO_ARC_CLIO_CORE_DAEMON_RSS_WARN` | `arc.clio_core.daemon_rss_warn_bytes` | int | `1073741824` | `src/clio_agent/arc/clio_core_daemon.py` |
 | `CLIO_ARC_CLIO_CORE_LIVENESS_TTL_S` | `arc.clio_core.liveness_ttl_s` | float | `3.0` | `src/clio_agent/arc/clio_core_liveness.py` |
 | `CLIO_ARC_CTE_DIR` | `arc.cte.dir` | str | _(unset)_ | `src/clio_agent/arc/clio_core_config.py` |
 | `CLIO_ARC_CTE_FILE_CAPACITY` | `arc.cte.file_capacity` | str | `50GB` | `src/clio_agent/arc/clio_core_config.py` |
