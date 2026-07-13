@@ -41,12 +41,40 @@ back.
 
 from __future__ import annotations
 
+import logging
+import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
+
+logger = logging.getLogger(__name__)
+
+
+def runtime_state_dir() -> Path:
+    """Return the directory holding the clio-core runtime's host bookkeeping.
+
+    This is where the connect-or-spawn lifecycle keeps its coordination state — the
+    spawn lock (``clio-runtime.lock``), the daemon pidfile (``clio-runtime.pid``), the
+    client refcount registry (``clio-runtime.clients/``), and the daemon log
+    (``clio-runtime.log``). Default: ``~/.clio`` — the host-global location that lets
+    every clio-agent process on the machine share ONE daemon.
+
+    ``CLIO_RUNTIME_STATE_DIR`` overrides it (explicit selection, not a degrade): a
+    process family that must NOT share the host daemon — the test suite's hermetic
+    private daemon (``tests/_cte_isolation.py``), or a sandboxed deployment — points
+    this at its own directory, and its spawn lock / pidfile / registry / last-one-out
+    stop all move coherently with it. The directory is created if absent.
+
+    Returns:
+        The state directory path (guaranteed to exist).
+    """
+    override = os.environ.get("CLIO_RUNTIME_STATE_DIR", "").strip()
+    state = Path(override).expanduser() if override else Path.home() / ".clio"
+    state.mkdir(parents=True, exist_ok=True)
+    return state
 
 # Default clio-core CTE config: a self-managed DRAM↔disk hierarchy on the OS data
 # dir. The DRAM tier (score 1.0) is the hot working set; the file tier (score 0.0)
@@ -266,6 +294,11 @@ class RamTierCap:
         unbounded: True when ``cap`` parses to zero — the ``0g`` = 80%-DRAM footgun.
         parse_error: A fail-loud message when ``cap`` is present but unparseable, else
             ``None``.
+        bdev_capacity: The ram *bdev* ``capacity`` string, surfaced for visibility
+            (#906 — the 12.3 GiB incident's stale config carried ``0g`` in TWO places).
+            ``"0g"`` here is the device ceiling and is the proven-safe generated
+            default WHEN the tier ``capacity_limit`` is bounded (the tier limit is the
+            spill trigger — see the module docstring); it is reported, not judged.
     """
 
     config_path: str
@@ -274,31 +307,42 @@ class RamTierCap:
     source: str
     unbounded: bool
     parse_error: str | None
+    bdev_capacity: str | None = None
 
 
-def _read_ram_cap_from_file(path: Path) -> str | None:
-    """Return the ram hot-tier ``capacity_limit`` declared in ``path``, or ``None``.
+def _read_ram_caps_from_file(path: Path) -> tuple[str | None, str | None]:
+    """Return ``(tier_capacity_limit, ram_bdev_capacity)`` declared in ``path``.
 
-    Reads the clio-core ``compose`` block and returns the ``capacity_limit`` of the
-    storage tier whose path ends with :data:`_RAM_TIER_PATH_SUFFIX`. Returns ``None``
-    on a missing/invalid file or when no ram tier is declared (never raises).
+    Reads the clio-core ``compose`` block: the ram hot tier's ``capacity_limit``
+    (the storage tier whose path ends with :data:`_RAM_TIER_PATH_SUFFIX` — the
+    spill trigger, #890) AND the ram bdev module's ``capacity`` (the device
+    ceiling — the SECOND ``0g`` the 12.3 GiB incident's stale config carried,
+    #906). Either is ``None`` when absent; both are ``None`` on a
+    missing/invalid file (never raises).
     """
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError):
-        return None
+        return None, None
     if not isinstance(data, Mapping):
-        return None
+        return None, None
+    tier_cap: str | None = None
+    bdev_cap: str | None = None
     for module in data.get("compose", []) or []:
         if not isinstance(module, Mapping):
             continue
+        if str(module.get("bdev_type", "")).strip().lower() == "ram":
+            capacity = module.get("capacity")
+            if capacity is not None:
+                bdev_cap = str(capacity)
         for tier in module.get("storage", []) or []:
             if not isinstance(tier, Mapping):
                 continue
             if str(tier.get("path", "")).endswith(_RAM_TIER_PATH_SUFFIX):
                 cap = tier.get("capacity_limit")
-                return None if cap is None else str(cap)
-    return None
+                if cap is not None:
+                    tier_cap = str(cap)
+    return tier_cap, bdev_cap
 
 
 def _resolve_config_path(env: Mapping[str, str]) -> Path:
@@ -320,21 +364,33 @@ def _resolve_config_path(env: Mapping[str, str]) -> Path:
     return _default_cte_dir() / "cte.yaml"
 
 
-def effective_ram_cap(*, env: Mapping[str, str]) -> RamTierCap:
+def effective_ram_cap(
+    *, env: Mapping[str, str], config_path: str | Path | None = None
+) -> RamTierCap:
     """Report the effective ram hot-tier cap for the doctor (read-only, no seeding).
 
     When the config file exists its declared ram cap is authoritative; when it does not
     yet exist the bounded default the generator *would* write is reported. A ``0g`` cap
     (or one parsing to zero) is marked :attr:`RamTierCap.unbounded`, and an unparseable
     cap is captured in :attr:`RamTierCap.parse_error` — neither is silently accepted.
+    The ram bdev ``capacity`` rides along in :attr:`RamTierCap.bdev_capacity` (#906).
+
+    Args:
+        env: Environment mapping driving the config-path resolution.
+        config_path: The exact ``cte.yaml`` to inspect, when the caller already
+            resolved it (the boot check passes the file the store will actually
+            use — which may come from a conf-file setting the env-only resolver
+            cannot see). Defaults to the env-based resolution.
     """
-    path = _resolve_config_path(env)
+    path = Path(config_path).expanduser() if config_path else _resolve_config_path(env)
     file_exists = path.is_file()
+    bdev_cap: str | None = None
     if file_exists:
-        cap = _read_ram_cap_from_file(path)
+        cap, bdev_cap = _read_ram_caps_from_file(path)
         source = f"file:{path}"
     else:
         cap = _default_cte_ram_capacity()
+        bdev_cap = "0g"  # the generated template's ram bdev device ceiling
         source = "generator-default"
 
     parse_error: str | None = None
@@ -351,4 +407,57 @@ def effective_ram_cap(*, env: Mapping[str, str]) -> RamTierCap:
         source=source,
         unbounded=unbounded,
         parse_error=parse_error,
+        bdev_capacity=bdev_cap,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Boot-time environment conformance (#906): check the EFFECTIVE config loudly.
+# --------------------------------------------------------------------------- #
+
+# Typed reason for an unbounded/unparseable EFFECTIVE ram cap at backend init.
+CLIO_CORE_RAM_UNCAPPED = "clio_core_ram_uncapped"
+
+_BOOT_REMEDIATION = (
+    "set arc.cte.ram_capacity / CLIO_ARC_CTE_RAM_CAPACITY and regenerate, or edit "
+    "capacity_limit under storage[cte_ram_tier] in the config file"
+)
+
+
+def boot_check_ram_cap(config_path: str | Path, *, env: Mapping[str, str]) -> RamTierCap:
+    """Check the EFFECTIVE ram cap of the config the store will use, loudly (#906).
+
+    The #890 bounded default only governs *generated* configs; a stale on-disk
+    ``cte.yaml`` (deliberately never rewritten) kept this box's daemon unbounded
+    for weeks with only an on-demand doctor flag. Tests can never own this —
+    they are correctly isolated from the real environment — so conformance is a
+    RUNTIME responsibility: this runs at clio-core backend init, inspects the
+    exact file handed to the store, and emits ONE typed WARNING
+    (:data:`CLIO_CORE_RAM_UNCAPPED`) when the effective cap is unbounded,
+    unparseable, or missing. Read-only; never blocks boot.
+
+    Args:
+        config_path: The resolved ``cte.yaml`` the store is about to load.
+        env: Environment mapping (forwarded for provenance only).
+
+    Returns:
+        The inspected :class:`RamTierCap` (callers may record it further).
+    """
+    cap = effective_ram_cap(env=env, config_path=config_path)
+    if cap.parse_error is not None:
+        problem = f"ram capacity_limit {cap.cap!r} is unparseable ({cap.parse_error})"
+    elif cap.cap is None and cap.file_exists:
+        problem = "config declares no ram hot-tier capacity_limit"
+    elif cap.unbounded:
+        problem = f"ram capacity_limit {cap.cap!r} = 80% of total system DRAM"
+    else:
+        return cap
+    logger.warning(
+        "reason=%s config=%s problem=%s bdev_capacity=%s remediation=%s (#906)",
+        CLIO_CORE_RAM_UNCAPPED,
+        cap.config_path,
+        problem,
+        cap.bdev_capacity,
+        _BOOT_REMEDIATION,
+    )
+    return cap

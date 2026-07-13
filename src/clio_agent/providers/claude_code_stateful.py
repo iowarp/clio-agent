@@ -28,7 +28,7 @@ another :meth:`ClaudeSDKClient.query` under the SAME ``session_id`` sends ONLY t
 new content. The delta = the tail of newly-appended messages.
 
 **Scope / kill-switch.** This whole path is inert unless BOTH the ``stateful_delta``
-flag is ON (:func:`stateful_delta_enabled`, default OFF) AND a per-forward stateful
+flag is ON (:func:`stateful_delta_enabled`, default ON) AND a per-forward stateful
 scope token is active (:func:`active_stateful_scope`, set ONLY by the ReActV2 loop's
 ``forward``). The classic ReAct path never sets that token, so it is byte-for-byte
 unchanged: it resolves to a full send under a fresh ``session_id`` exactly as before
@@ -84,13 +84,15 @@ _DELTA_BENEATH_STATIC_TAIL = _delta_beneath_static_tail
 # Kill-switch + bound config (``claude_code``-specific).
 # --------------------------------------------------------------------------- #
 def stateful_delta_enabled() -> bool:
-    """Whether the stateful session-delta transport is enabled (default OFF).
+    """Whether the stateful session-delta transport is enabled (default ON).
 
     Resolved via ``providers.claude_code.stateful_delta`` /
-    ``CLIO_CLAUDE_CODE_STATEFUL_DELTA`` (file → env → default False). A NEW
-    optimisation rung on top of #891's connection pooling: even when ON it only
-    engages on the ReActV2 loop (an active :func:`active_stateful_scope`); the
-    classic path stays byte-identical full sends.
+    ``CLIO_CLAUDE_CODE_STATEFUL_DELTA`` (file → env → default True; set ``=0``
+    to opt out). Default flipped ON on live acceptance evidence (#893): delta
+    TTFT 1.79s vs 7+s cold, 76.7% cached-input, typed reset catalog covering
+    every fallback-to-full-send path. Even when ON it only engages on the
+    ReActV2 loop (an active :func:`active_stateful_scope`); the classic path
+    stays byte-identical full sends.
     """
     from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
 
@@ -98,7 +100,7 @@ def stateful_delta_enabled() -> bool:
         conf.resolve(
             "providers.claude_code.stateful_delta",
             env="CLIO_CLAUDE_CODE_STATEFUL_DELTA",
-            default=False,
+            default=True,
             cast=conf.as_bool,
         )
     )

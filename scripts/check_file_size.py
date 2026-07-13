@@ -49,6 +49,13 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/arc/segments.py": 1117,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
     "src/clio_agent/arc/storage.py": 883,
+    # #737 S2 fold owner module. Crossed the 800 new-file cap restoring the FROZEN
+    # arc.op reproducibility contract (§2 / GOAL.md DoD #4): the five working-set write
+    # overrides now emit a per-op arc.op via _emit_op so arc.replay rebuilds the live
+    # plane byte-identically (the S2 slice had dropped these, breaking replay). Footprint
+    # minimized to concise docstrings; the per-op payload passing is irreducible. Ratchet
+    # down with the #714/#767 decomposition.
+    "src/clio_agent/arc/working_set_fold.py": 924,
     "src/clio_agent/gact/agent_blueprints.py": 1100,
     "src/clio_agent/gact/agents/builders.py": 2209,
     "src/clio_agent/gact/agents/resolution.py": 803,
