@@ -53,14 +53,10 @@ compose:
     pool_id: "512.0"
     restart: true
     storage:
-      - path: "ram::cte_ram_tier"
-        bdev_type: "ram"
-        capacity_limit: "256MB"
-        score: 1.0
       - path: "{file_tier}"
         bdev_type: "file"
-        capacity_limit: "1GB"
-        score: 0.0
+        capacity_limit: "4GB"
+        score: 1.0
     dpe:
       dpe_type: "max_bw"
     performance:

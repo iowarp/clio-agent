@@ -108,17 +108,19 @@ def test_boot_check_is_silent_on_a_bounded_config(
     assert not [r for r in caplog.records if CLIO_CORE_RAM_UNCAPPED in r.getMessage()]
 
 
-def test_boot_check_warns_on_missing_capacity_limit(
+def test_disk_only_with_bounded_arena_is_silent(
     tmp_path: Path, caplog: "logging.LogCaptureFixture"
 ) -> None:
-    # A declared ram tier WITHOUT capacity_limit: clio-core falls back to its
-    # own 0g default (80% DRAM) — must warn, not pass silently.
+    # The #906 desktop default: NO ram data tier ("data is in memory or is in
+    # disk" — owner ruling), arena bounded at the budget. Must be silent — the
+    # memory bound is the ARENA, not a tier.
     body = _BOUNDED_CONFIG.replace('        capacity_limit: "1GB"\n', "", 1)
     cfg = _write(tmp_path, body)
     with caplog.at_level(logging.WARNING, logger="clio_agent.arc.clio_core_config"):
         cap = boot_check_ram_cap(cfg, env={})
     assert cap.cap is None
-    assert [r for r in caplog.records if CLIO_CORE_RAM_UNCAPPED in r.getMessage()]
+    assert cap.bdev_capacity == "2GB"
+    assert not caplog.records
 
 
 def test_boot_check_warns_on_unparseable_cap(
@@ -210,26 +212,25 @@ def test_generator_default_final_tier_far_exceeds_ram_tier() -> None:
     assert final >= 10 * ram, "final layer must dwarf the hot tier (engine forbids 0)"
 
 
-def test_memory_budget_derives_hard_ceiling_and_half_tier() -> None:
-    """#906 release gate: ONE budget knob -> ceiling = budget, tier = budget/2.
+def test_memory_budget_is_the_arena_and_data_is_disk_only() -> None:
+    """#906 release gate: the generated arena capacity IS the user's budget.
 
-    'use 1GB of ram, and whatever you want of <disk>' — the budget IS the hard
-    bound; the tier keeps 2x eviction headroom (bounded-ceiling probe: spill OK
-    at 2x, rc=13 deadlock at ceiling == tier).
+    'use 1GB of ram, and whatever you want of <disk>' — data lives on the ONE
+    disk tier (owner ruling: "data is in memory or is in disk"; no ram data
+    tier means nothing to evict and no rc=13 pressure class at all).
     """
-    from clio_agent.arc.clio_core_config import derive_ram_shape, parse_capacity_bytes
+    from clio_agent.arc.clio_core_config import _DEFAULT_CTE_CONFIG_TEMPLATE
 
-    ceiling, tier = derive_ram_shape("1GB")
-    assert ceiling == "1GB"
-    assert parse_capacity_bytes(tier) * 2 == parse_capacity_bytes("1GB")
-
-    ceiling, tier = derive_ram_shape("512MB")
-    assert parse_capacity_bytes(tier) * 2 == parse_capacity_bytes("512MB")
-
-    import pytest
-
-    with pytest.raises(ValueError):
-        derive_ram_shape("0g")  # an unbounded budget is not a budget
+    rendered = _DEFAULT_CTE_CONFIG_TEMPLATE.format(
+        conf_dir="c",
+        file_tier="f",
+        file_capacity="50GB",
+        ram_budget="1GB",
+        metadata_log="m",
+    )
+    assert 'capacity: "1GB"' in rendered  # the arena = the budget, hard bound
+    assert "cte_ram_tier" not in rendered  # disk-only: no ram data tier
+    assert rendered.count("capacity_limit") == 1  # exactly the file tier
 
 
 def test_generated_default_config_is_topology_conformant(tmp_path, monkeypatch) -> None:
@@ -253,8 +254,8 @@ def test_generated_default_config_is_topology_conformant(tmp_path, monkeypatch) 
             cap = boot_check_ram_cap(cfg, env={})
         finally:
             lg.removeHandler(handler)
-        assert cap.bdev_capacity == "1GB"  # ceiling = the default 1GB budget
-        assert cap.cap == "512MB"  # tier = budget/2
+        assert cap.bdev_capacity == "1GB"  # arena = the default 1GB budget
+        assert cap.cap is None  # disk-only: no ram data tier
         assert not caplog_records, [r.getMessage() for r in caplog_records]
     finally:
         conf.reload()
