@@ -142,3 +142,64 @@ def test_doctor_row_carries_bdev_capacity(tmp_path: Path) -> None:
     assert len(rows) == 1
     assert rows[0].details["ram_bdev_capacity"] == "0g"
     assert rows[0].details["reason"] == "ram_cap_unbounded_80pct_dram"
+
+
+# --------------------------------------------------------------------------- #
+# Tier-topology rule (#893 live-gate finding; owner rule 2026-07-13):
+# capacity limits bound INTERMEDIATE tiers only — the ram bdev ceiling and the
+# FINAL tier must be unbounded. The gate's SF leg proved the failure mode:
+# an all-bounded hierarchy fills and PutBlob fails rc=13 instead of spilling.
+# --------------------------------------------------------------------------- #
+
+# The exact broken shape from the incident hand-fix: ALL THREE fields bounded.
+_ALL_BOUNDED_CONFIG = (
+    _BOUNDED_CONFIG
+    .replace('capacity: "0g"', 'capacity: "1GB"')
+    .replace('capacity_limit: "50GB"', 'capacity_limit: "1GB"')
+)
+
+
+def test_all_bounded_topology_warns_typed(
+    tmp_path: Path, caplog: "logging.LogCaptureFixture"
+) -> None:
+    from clio_agent.arc.clio_core_config import CLIO_CORE_TIER_TOPOLOGY
+
+    cfg = _write(tmp_path, _ALL_BOUNDED_CONFIG)
+    with caplog.at_level(logging.WARNING, logger="clio_agent.arc.clio_core_config"):
+        cap = boot_check_ram_cap(cfg, env={})
+    assert cap.bdev_capacity == "1GB"
+    assert cap.final_tier_capacity == "1GB"
+    warned = [r for r in caplog.records if CLIO_CORE_TIER_TOPOLOGY in r.getMessage()]
+    assert warned, "bounded bdev + final<=ram must warn clio_core_tier_topology"
+    msg = warned[0].getMessage()
+    assert "device ceiling" in msg
+    assert "cannot absorb one full hot-tier spill" in msg
+    # The ram tier itself is correctly bounded — no ram_uncapped warning.
+    assert not [
+        r for r in caplog.records if "clio_core_ram_uncapped" in r.getMessage()
+    ]
+
+
+def test_correct_topology_is_silent(
+    tmp_path: Path, caplog: "logging.LogCaptureFixture"
+) -> None:
+    # Generator-shaped: bdev 0g, ram tier 1GB, final tier 50GB (>> ram; a
+    # LARGE bound stands in for "unbounded" until clio-core accepts 0 on
+    # non-ram tiers — core_config.cc rejects it today).
+    cfg = _write(tmp_path, _BOUNDED_CONFIG)
+    with caplog.at_level(logging.WARNING, logger="clio_agent.arc.clio_core_config"):
+        cap = boot_check_ram_cap(cfg, env={})
+    assert cap.final_tier_capacity == "50GB"
+    assert not caplog.records
+
+
+def test_generator_default_final_tier_far_exceeds_ram_tier() -> None:
+    from clio_agent.arc.clio_core_config import (
+        _default_cte_file_capacity,
+        _default_cte_ram_capacity,
+        parse_capacity_bytes,
+    )
+
+    final = parse_capacity_bytes(_default_cte_file_capacity())
+    ram = parse_capacity_bytes(_default_cte_ram_capacity())
+    assert final >= 10 * ram, "final layer must dwarf the hot tier (engine forbids 0)"

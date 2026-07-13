@@ -59,7 +59,7 @@ compose:
         score: 1.0
       - path: "{file_tier}"
         bdev_type: "file"
-        capacity_limit: "4GB"
+        capacity_limit: "1GB"
         score: 0.0
     dpe:
       dpe_type: "max_bw"

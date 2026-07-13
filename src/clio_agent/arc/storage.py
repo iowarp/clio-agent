@@ -55,11 +55,6 @@ from clio_agent.arc.clio_core_config import (  # noqa: F401 - re-exported for ca
     default_cte_config_path,
     runtime_state_dir,
 )
-
-# The daemon port-resolution + socket-liveness helpers moved to the liveness owner
-# module (iowarp/clio-agent#892). Re-exported so callers/tests reaching
-# ``storage._runtime_alive`` / ``_resolve_runtime_port`` / ``_read_yaml_port`` /
-# ``_DEFAULT_RUNTIME_PORT`` keep working while the liveness gate has a single home.
 from clio_agent.arc.clio_core_liveness import (  # noqa: F401 - re-exported for callers/tests
     _DEFAULT_RUNTIME_PORT,
     ClioCoreRuntimeLostError,
@@ -68,6 +63,11 @@ from clio_agent.arc.clio_core_liveness import (  # noqa: F401 - re-exported for 
     _resolve_runtime_port,
     _runtime_alive,
 )
+
+# Daemon port-resolution + socket-liveness helpers live in the liveness owner
+# module (#892), re-exported above for callers/tests; blob writes ride the
+# bounded rc=13-class retry owner module (#893).
+from clio_agent.arc.clio_core_retry import put_blob_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -750,14 +750,14 @@ class ClioCoreStore:
         self._live()
         # base64-wrap: CTE GetBlob UTF-8-decodes, so store ascii-safe bytes.
         tag = self._cte.Tag(kind)
-        tag.PutBlob(name, base64.b64encode(data), 0)
+        put_blob_with_retry(tag, name, base64.b64encode(data))
         # Optional plain-text companion for BM25 semantic discovery (Thread D). CTE
         # SemanticSearch tokenises blob payloads, which the base64 record defeats —
         # so a UTF-8 companion at <name>.text carries the searchable text. scan()/get()
         # skip it so it is never mistaken for a record.
         companion = name + _SEARCH_SUFFIX
         if search_text is not None:
-            tag.PutBlob(companion, search_text.encode("utf-8"), 0)
+            put_blob_with_retry(tag, companion, search_text.encode("utf-8"))
         elif tag.GetBlobSize(companion) > 0:
             self._client.DelBlob(tag.GetTagId(), companion)  # drop a now-stale companion
         # ``tier`` is advisory: the default single DRAM tier makes ReorganizeBlob a
