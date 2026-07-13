@@ -79,6 +79,11 @@ SegmentKind = Literal[
     # applies it (e.g. ``delete`` tombstones its targets at the op's logical_time)
     "step_open",  # a pre-execution breadcrumb so a crash mid-step still leaves the
     # step's opening atoms on the log (caveat b); excluded from BOTH renders
+    "message_part",  # #737 S4: a wire-identity atom for one gact Message part (or a
+    # zero-part message envelope). Lives on the canonical ``_events/m`` lane, dual-written
+    # at message persist alongside final_message; NEITHER a working-set kind NOR modeled by
+    # segments_to_keys and NOT ``semantic_event``, so the live reader ignores it and it
+    # never reaches a prompt or a working-set render (see gact/part_atoms.py).
 ]
 SegmentStatus = Literal["live", "tombstoned"]
 

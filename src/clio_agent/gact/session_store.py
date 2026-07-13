@@ -69,6 +69,16 @@ def _append_session_message(app: "FastAPI", session_id: str, message: "Message")
     store = getattr(app.state, "message_store", None)
     if store is not None:
         store.append(session_id, message)
+    # #737 S4: dual-write the message's ``message_part`` atoms onto the canonical ARC
+    # log alongside this messages-store write (the single append-one persist seam every
+    # user-ingest / assistant-finalize / error-settle / compaction message flows
+    # through). Provisioning for S5's assemble-by-reference; invisible on every served
+    # surface until then. Best-effort-but-loud (part_atoms.record_...).
+    from clio_agent.gact.part_atoms import (  # noqa: PLC0415 - lazy: keep session_store a leaf
+        record_message_parts_for_message,
+    )
+
+    record_message_parts_for_message(app, session_id, message)
 
 
 def _extend_session_messages(
