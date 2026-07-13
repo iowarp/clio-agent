@@ -10,9 +10,11 @@ normal user approval path.
 from __future__ import annotations
 
 import os
+import platform
 import re
 import shutil
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +24,11 @@ from clio_agent import conf
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
 
 shell_server = FastMCP("shell")
+
+# POSIX text utilities the model tends to reach for (and improvises `wsl bash -c`
+# to get on Windows, booting a resident VM — iowarp/clio-agent#898). Their real
+# presence on the host PATH is probed, not assumed.
+_POSIX_TEXT_TOOLS = ("cut", "sed", "awk", "grep")
 
 # Operational caps — resolved file → env → default (see clio_agent.conf).
 _DEFAULT_TIMEOUT_S = conf.resolve(
@@ -148,6 +155,108 @@ def _shell_argv(command: str) -> list[str]:
     return [shell, "-lc", command]
 
 
+@dataclass(frozen=True)
+class ShellEnvFacts:
+    """Host facts the shell tool description is computed from (#898).
+
+    The tool description the model reads must describe the environment the
+    command ACTUALLY executes in — the model improvised ``wsl bash -c "cut ..."``
+    on Windows precisely because the tool called itself a *bash* and the host was
+    not one. This is grounding, not a behavioural handcuff (CLAUDE.md ⚑ #3).
+    """
+
+    is_windows: bool
+    system_label: str  # e.g. "Windows", "Linux", "Darwin"
+    shell_label: str  # effective shell + version, e.g. "PowerShell 5.1", "bash 5.2"
+    posix_text_tools: bool  # cut/sed/awk/grep present on PATH
+
+
+def _detect_shell_env() -> ShellEnvFacts:
+    """Detect the effective shell environment for the running host (#898).
+
+    Reads the platform, the effective shell backend (honouring
+    :func:`_windows_shell_backend`, matching what :func:`_shell_argv` actually
+    invokes), and whether the POSIX text tools are truly present on PATH. Platform
+    detection is via ``os.name`` so tests can monkeypatch it.
+
+    Deliberately spawns **no subprocess**: this runs at server build (module
+    import), a hot path for every gact/CLI/test boot, so it must not block on a
+    shell version probe. The shell *name* (not a live version string) is enough
+    grounding to stop the model calling a POSIX shell a "bash".
+    """
+    is_windows = os.name == "nt"
+    posix_text_tools = all(shutil.which(tool) for tool in _POSIX_TEXT_TOOLS)
+
+    if is_windows:
+        backend = _windows_shell_backend()
+        if backend == "bash" and (shutil.which("bash.exe") or shutil.which("bash")):
+            shell_label = "bash (Windows, e.g. Git Bash)"
+        elif backend == "cmd" or not (shutil.which("pwsh.exe") or shutil.which("powershell.exe")):
+            shell_label = "cmd.exe" if backend == "cmd" else "cmd.exe (PowerShell not on PATH)"
+        else:
+            shell_label = "PowerShell"
+        return ShellEnvFacts(
+            is_windows=True,
+            system_label=platform.system() or "Windows",
+            shell_label=shell_label,
+            posix_text_tools=posix_text_tools,
+        )
+
+    shell = shutil.which("bash") or shutil.which("sh") or "sh"
+    return ShellEnvFacts(
+        is_windows=False,
+        system_label=platform.system() or "POSIX",
+        shell_label=Path(shell).name,
+        posix_text_tools=posix_text_tools,
+    )
+
+
+def build_shell_tool_description(facts: ShellEnvFacts) -> str:
+    """Compose the shell ``bash`` tool description from host facts (#898).
+
+    Pure function of ``facts`` so the per-platform content is unit-pinnable: the
+    Windows text carries an explicit 'do NOT assume WSL exists' and the POSIX text
+    does not. Both steer tabular/CSV work to the pandas MCP tool.
+    """
+    tools = ", ".join(_POSIX_TEXT_TOOLS)
+    tools_line = (
+        f"POSIX text tools ({tools}) ARE available on this host's PATH."
+        if facts.posix_text_tools
+        else f"POSIX text tools ({tools}) are NOT available on this host's PATH."
+    )
+    if facts.is_windows:
+        return (
+            f"Run ONE local shell command on a {facts.system_label} host and return "
+            f"stdout, stderr, and exit code. Commands execute under {facts.shell_label} "
+            "semantics (this is NOT a bash/POSIX shell). "
+            f"{tools_line} "
+            "Do NOT assume WSL exists: do not invoke `wsl`, `wsl bash -c`, or POSIX "
+            "pipelines to reach cut/sed/awk/grep — on a WSL-less host they fail, and the "
+            "first `wsl` call boots a utility VM that stays resident holding gigabytes. "
+            "Paths use Windows conventions (drive letters, backslashes). For tabular, "
+            "CSV, or columnar work (column selection, filtering, joins) use the pandas "
+            "MCP tool when available instead of shell text pipelines — it is portable and "
+            "spawns no VM. The working directory must be inside CLIO_ALLOWED_ROOTS; the "
+            "command runs in a subprocess with a strict timeout and output cap."
+        )
+    return (
+        f"Run ONE local shell command on a {facts.system_label} host and return stdout, "
+        f"stderr, and exit code. Commands execute under {facts.shell_label}. "
+        f"{tools_line} "
+        "Paths use POSIX conventions (forward slashes). For large tabular, CSV, or "
+        "columnar work (column selection, filtering, joins) prefer the pandas MCP tool "
+        "when available over ad-hoc text pipelines. The working directory must be inside "
+        "CLIO_ALLOWED_ROOTS; the command runs in a subprocess with a strict timeout and "
+        "output cap."
+    )
+
+
+#: Computed once at server build from the running host (#898). The model reads
+#: this as the ``bash`` tool description, so it is grounded in the real platform,
+#: shell, and tool availability rather than a static "bash"-flavoured string.
+_SHELL_TOOL_DESCRIPTION = build_shell_tool_description(_detect_shell_env())
+
+
 def _clip_output(text: str, max_bytes: int) -> tuple[str, bool]:
     """Clip text by UTF-8 byte size while preserving valid text."""
 
@@ -158,7 +267,7 @@ def _clip_output(text: str, max_bytes: int) -> tuple[str, bool]:
     return clipped, True
 
 
-@shell_server.tool()
+@shell_server.tool(description=_SHELL_TOOL_DESCRIPTION)
 def bash(
     command: str,
     cwd: str | None = None,
@@ -167,10 +276,11 @@ def bash(
 ) -> dict[str, Any]:
     """Run one local shell command and return stdout, stderr, and exit code.
 
-    Use for simple local utility checks such as the current time, environment
-    diagnostics, or file listings. The command runs in a subprocess with a
-    strict timeout and output cap. The working directory must be inside
-    ``CLIO_ALLOWED_ROOTS``.
+    The model-facing description is computed at server build from the host
+    (:data:`_SHELL_TOOL_DESCRIPTION`) so it names the real platform, effective
+    shell, and POSIX-tool availability (#898); this docstring is the developer
+    reference. The command runs in a subprocess with a strict timeout and output
+    cap; the working directory must be inside ``CLIO_ALLOWED_ROOTS``.
     """
 
     if not isinstance(command, str) or not command.strip():
@@ -260,4 +370,8 @@ def bash(
     }
 
 
-__all__ = ["shell_server"]
+__all__ = [
+    "ShellEnvFacts",
+    "build_shell_tool_description",
+    "shell_server",
+]

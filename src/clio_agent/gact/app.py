@@ -414,8 +414,7 @@ from clio_agent.gact.agents.runtime import (  # noqa: E402,F401
 from clio_agent.gact.delegation import (  # noqa: E402,F401
     _append_accumulated_workflow_state_context,
     _append_session_workflow_state_context,
-    _bubbled_child_evidence_output_summary,
-    _clean_public_transcript_text,
+    _bubbled_child_evidence_output,
     _coerce_expert_handoff_rows,
     _compact_exact_evidence_index,
     _delegated_expert_agent_id,
@@ -423,16 +422,14 @@ from clio_agent.gact.delegation import (  # noqa: E402,F401
     _delegated_expert_public_prompt,
     _dynamic_parent_resume_prompt,
     _expert_handoff_fields,
-    _expert_handoff_summary,
-    _failed_child_delegation_output_summary,
     _failed_child_delegation_workflow_state,
     _fallback_answer_from_delegation,
     _iter_delegation_return_rows,
     _json_objects_from_text,
-    _latest_completed_child_output_summary,
-    _latest_delegation_output_summary,
-    _latest_final_child_output_summary,
-    _latest_parent_resumed_output_summary,
+    _latest_completed_child_output,
+    _latest_delegation_output,
+    _latest_final_child_output,
+    _latest_parent_resumed_output,
     _merge_workflow_state_from_value,
     _prediction_workflow_state,
     _should_execute_delegated_handoff,
@@ -825,6 +822,7 @@ from clio_agent.gact.permission_gate import (  # noqa: E402,F401
     _policy_action_for_tool,
     _record_resolved_permission,
 )
+from clio_agent.gact.resident_ledgers import build_resident_ledger_set, seed_metrics_counters
 from clio_agent.gact.sessions import SessionStore, _default_store_path
 
 # Live-streaming + prediction-rendering cluster (#714 decomposition) moved to
@@ -943,6 +941,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """
 
     app.state.started_at = time.time()
+    # #900: bind CLIO's child tree (MCP stdio + pooled SDK CLI) to this server so a HARD
+    # kill reaps it (Windows Job Object / POSIX pdeathsig). Typed result → doctor probe.
+    from clio_agent.runtime.process_tree import install_child_reaper  # noqa: PLC0415
+
+    app.state.child_reaper = install_child_reaper()
+
     task: Optional[asyncio.Task] = None
     if getattr(app.state, "schedules", None) is not None:
         task = asyncio.create_task(_scheduler_tick(app))
@@ -982,8 +986,16 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             _trace_close()
         except Exception:  # pragma: no cover - defensive shutdown cleanup  # noqa: BLE001,S110 - defensive shutdown cleanup
             pass
+    # #900: explicit clean-shutdown teardown (promoted from atexit best-effort) — close
+    # the agent's MCP stdio executors + pooled SDK CLI transports now, with typed logging,
+    # off the event loop (thread joins). A HARD kill skips this; the Job Object / pdeathsig
+    # binding above is the backstop. The owner helper never raises.
+    from clio_agent.runtime.process_tree import shutdown_child_processes  # noqa: PLC0415
+
+    _agent = getattr(app.state, "agent", None)
+    await asyncio.get_running_loop().run_in_executor(None, lambda: shutdown_child_processes(_agent))
     # NOTE: the shared clio-core runtime client is released (last-one-out stop) via the
-    # atexit hook registered in CTEStore — NOT here. uvicorn handles SIGTERM by exiting
+    # atexit hook registered in ClioCoreStore — NOT here. uvicorn handles SIGTERM by exiting
     # the serve loop and returning normally, so the interpreter exits and atexit fires
     # ("I leave the TUI, everything gets released"). Doing it in this lifespan hook would
     # wrongly stop the SHARED daemon on any app teardown that is not a process exit
@@ -1289,20 +1301,19 @@ def build_app(
     # (ARC's arc.op op-logger AND highway-derive sink are wired via _set_app_arc
     # whenever app.state.arc is assigned — see _set_app_arc; the highway closure reads
     # app.state.semantic_event_sink at fire-time, so this construction order is fine.)
-    # message log keyed by session_id. Populated by
-    # POST /messages, read by GET /messages, and backed by per-session
-    # JSON ledgers so adapter deletion/redeploy preserves transcripts.
+    # Durable per-session message log (POST /messages writes, GET /messages reads);
+    # per-session JSON ledgers so adapter deletion/redeploy preserves transcripts.
     app.state.message_store = MessageStore(path=session_store_path.parent / "messages")
-    app.state.messages = app.state.message_store.load_all()
-    # #770 C3: running metrics aggregate so GET /v1/metrics reads a counter
-    # instead of re-walking every message of every session on each poll. Seeded
-    # once from the loaded ledger, then kept live by the session_store write
-    # seams (_append/_extend/_replace/_delete_session_messages).
-    app.state.metrics_counters = MetricsCounters()
-    app.state.metrics_counters.rebuild(app.state.messages)
-    # #770 C3: bounded eviction-audit trail for the in-memory ledgers below;
-    # every retention drop records a typed reason here (no silent drop).
+    # #770 C3: bounded eviction-audit trail (init before the resident set).
     init_retention_state(app)
+    # #770 C3 / #889: running metrics aggregate, seeded by a streaming parse-and-
+    # DISCARD walk so the metrics wire stays byte-identical across a restart WITHOUT
+    # pinning every transcript in RAM.
+    app.state.metrics_counters = MetricsCounters()
+    seed_metrics_counters(app.state.message_store, app.state.metrics_counters)
+    # #889: BOUNDED (LRU + byte cap + idle-TTL) resident projection over the store —
+    # boots empty (index only), materializes lazily. See gact.resident_ledgers.
+    app.state.messages = build_resident_ledger_set(app)
     # cooperative cancellation flags. POST /cancel
     # adds a sid; the POST-message handler checks + clears after the
     # agent returns. Set (not dict) because the flag's presence IS
@@ -2447,9 +2458,10 @@ def run_server(
     # immediately, beating gact-tui's 3-second deploy probe. POST /messages
     # 503s until app.state.agent is stamped by the background task.
     app_to_run: FastAPI = build_app()
-    if not no_agent and conf.resolve(
-        "lm.provider", env="CLIO_LM_PROVIDER", default="", cast=conf.as_str
-    ) != "":
+    if (
+        not no_agent
+        and conf.resolve("lm.provider", env="CLIO_LM_PROVIDER", default="", cast=conf.as_str) != ""
+    ):
         app_to_run.state.want_agent = True
 
     uvicorn.run(

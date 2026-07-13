@@ -90,7 +90,11 @@ class ExpertHandoff:
     stage: str
     status: Literal["success", "failure"]
     input_summary: str
-    output_summary: str = ""
+    # #880: no ``output_summary`` — the delegation contract carries the child's
+    # answer verbatim on ``output``; clio never authors a summary of it. The
+    # benchmark surface reads the real ``output`` off the wire, not a synthesized
+    # one-liner.
+    output: str = ""
     duration_ms: float = 0.0
     error: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
@@ -103,7 +107,7 @@ class ExpertHandoff:
             "stage": self.stage,
             "status": self.status,
             "input_summary": self.input_summary,
-            "output_summary": self.output_summary,
+            "output": self.output,
             "duration_ms": self.duration_ms,
             "metadata": _json_safe(self.metadata),
         }
@@ -153,7 +157,7 @@ class RunTrace:
         stage: str,
         status: Literal["success", "failure"],
         input_summary: str,
-        output_summary: str = "",
+        output: str = "",
         duration_ms: float = 0.0,
         error: str | None = None,
         metadata: Mapping[str, Any] | None = None,
@@ -167,7 +171,7 @@ class RunTrace:
                 stage=stage,
                 status=status,
                 input_summary=input_summary,
-                output_summary=output_summary,
+                output=output,
                 duration_ms=duration_ms,
                 error=error,
                 metadata=dict(metadata or {}),
@@ -189,9 +193,7 @@ def tool_result_ok(result: Any) -> bool:
     return True
 
 
-def extract_file_paths(
-    question: str, file_context: str, suffixes: AbstractSet[str]
-) -> list[Path]:
+def extract_file_paths(question: str, file_context: str, suffixes: AbstractSet[str]) -> list[Path]:
     """Extract file paths with one of the requested suffixes.
 
     Paths explicitly provided in the user question are kept even if they do not

@@ -251,7 +251,9 @@ class TestStreamAuditEnabled:
 
         monkeypatch.delenv("CLIO_STREAM_AUDIT_LOG", raising=False)
         _write_user_config(
-            monkeypatch, tmp_path, f"debug:\n  stream_audit_log: {(tmp_path / 'a.jsonl').as_posix()}\n"
+            monkeypatch,
+            tmp_path,
+            f"debug:\n  stream_audit_log: {(tmp_path / 'a.jsonl').as_posix()}\n",
         )
         assert stream_audit_enabled() is True
 
@@ -422,9 +424,7 @@ class TestStopSequencesOverride:
         from clio_agent.config import _provider_lm_kwargs
 
         monkeypatch.setenv("CLIO_LM_STOP_SEQUENCES", "</s>")
-        _write_user_config(
-            monkeypatch, tmp_path, "lm:\n  stop_sequences:\n    - AAA\n    - BBB\n"
-        )
+        _write_user_config(monkeypatch, tmp_path, "lm:\n  stop_sequences:\n    - AAA\n    - BBB\n")
         assert _provider_lm_kwargs(self._cfg())["stop"] == ["AAA", "BBB"]
 
 
@@ -494,9 +494,7 @@ class TestArcStore:
         from clio_agent.arc.storage import LocalFSStore, make_arc_store
 
         monkeypatch.setenv("CLIO_ARC_STORE", "cte")
-        assert isinstance(
-            make_arc_store(backend="local", data_dir=tmp_path / "arc"), LocalFSStore
-        )
+        assert isinstance(make_arc_store(backend="local", data_dir=tmp_path / "arc"), LocalFSStore)
 
     def test_unknown_backend_fails_loud(self, monkeypatch, tmp_path):
         from clio_agent.arc.storage import make_arc_store
@@ -510,27 +508,27 @@ class TestArcStoreConfig:
     """``arc.store_config`` / ``CLIO_ARC_STORE_CONFIG`` — CTE config path."""
 
     @pytest.fixture()
-    def _stub_cte(self, monkeypatch):
+    def _stub_clio_core(self, monkeypatch):
         from clio_agent.arc import storage
 
         captured: dict[str, str] = {}
 
-        class _StubCTE:
+        class _StubClioCore:
             def __init__(self, config_path: str = "") -> None:
                 captured["config_path"] = config_path
 
-        monkeypatch.setattr(storage, "CTEStore", _StubCTE)
+        monkeypatch.setattr(storage, "ClioCoreStore", _StubClioCore)
         return captured
 
-    def test_env(self, monkeypatch, tmp_path, _stub_cte):
+    def test_env(self, monkeypatch, tmp_path, _stub_clio_core):
         from clio_agent.arc.storage import make_arc_store
 
         monkeypatch.setenv("CLIO_ARC_STORE", "cte")
         monkeypatch.setenv("CLIO_ARC_STORE_CONFIG", str(tmp_path / "env-cte.yaml"))
         make_arc_store(data_dir=tmp_path / "arc")
-        assert _stub_cte["config_path"] == str(tmp_path / "env-cte.yaml")
+        assert _stub_clio_core["config_path"] == str(tmp_path / "env-cte.yaml")
 
-    def test_file_wins(self, monkeypatch, tmp_path, _stub_cte):
+    def test_file_wins(self, monkeypatch, tmp_path, _stub_clio_core):
         from clio_agent.arc.storage import make_arc_store
 
         monkeypatch.setenv("CLIO_ARC_STORE", "cte")
@@ -538,7 +536,7 @@ class TestArcStoreConfig:
         file_cfg = (tmp_path / "file-cte.yaml").as_posix()
         _write_user_config(monkeypatch, tmp_path, f"arc:\n  store_config: {file_cfg}\n")
         make_arc_store(data_dir=tmp_path / "arc")
-        assert _stub_cte["config_path"] == file_cfg
+        assert _stub_clio_core["config_path"] == file_cfg
 
 
 class TestSessionsPath:
@@ -723,7 +721,7 @@ class TestMemprofFrames:
         assert _memprof_frames() == 33
 
 
-_TRACE_FACTORY_MODULE = '''\
+_TRACE_FACTORY_MODULE = """\
 class _Backend:
     name = "conf-mig-trace-backend"
 
@@ -737,16 +735,14 @@ class _Backend:
 
 def make(default_root, config):
     return _Backend(default_root, config)
-'''
+"""
 
 
 def _install_trace_factory_module(tmp_path, monkeypatch) -> str:
     """Write an importable trace-factory module and return its factory path."""
     mod_dir = tmp_path / "trace_factory_mods"
     mod_dir.mkdir(exist_ok=True)
-    (mod_dir / "conf_mig_trace_factory.py").write_text(
-        _TRACE_FACTORY_MODULE, encoding="utf-8"
-    )
+    (mod_dir / "conf_mig_trace_factory.py").write_text(_TRACE_FACTORY_MODULE, encoding="utf-8")
     monkeypatch.syspath_prepend(str(mod_dir))
     return "conf_mig_trace_factory:make"
 
@@ -786,16 +782,14 @@ class TestSemanticTraceFactory:
         _write_user_config(
             monkeypatch,
             tmp_path,
-            "trace:\n"
-            f"  semantic_factory: {factory_path}\n"
-            '  semantic_config: \'{"b": 2}\'\n',
+            f"trace:\n  semantic_factory: {factory_path}\n  semantic_config: '{{\"b\": 2}}'\n",
         )
         backend = build_trace_backend(tmp_path)
         assert backend.name == "conf-mig-trace-backend"
         assert backend.config == {"b": 2}
 
 
-_HOOK_FACTORY_MODULE = '''\
+_HOOK_FACTORY_MODULE = """\
 class _Registry:
     backend_name = "conf-mig-hooks"
 
@@ -811,7 +805,7 @@ class _Registry:
 
 def make():
     return _Registry()
-'''
+"""
 
 
 class TestHooksBackend:
@@ -872,9 +866,7 @@ class TestHooksFactory:
     def _install_factory_module(tmp_path, monkeypatch) -> str:
         mod_dir = tmp_path / "hook_factory_mods"
         mod_dir.mkdir(exist_ok=True)
-        (mod_dir / "conf_mig_hook_factory.py").write_text(
-            _HOOK_FACTORY_MODULE, encoding="utf-8"
-        )
+        (mod_dir / "conf_mig_hook_factory.py").write_text(_HOOK_FACTORY_MODULE, encoding="utf-8")
         monkeypatch.syspath_prepend(str(mod_dir))
         return "conf_mig_hook_factory:make"
 
@@ -923,9 +915,7 @@ class TestLmStudioFlashAttention:
         from clio_agent.gact.routes.providers import _lmstudio_flash_attention_enabled
 
         monkeypatch.setenv("CLIO_LMSTUDIO_FLASH_ATTENTION", "1")
-        _write_user_config(
-            monkeypatch, tmp_path, "lm:\n  lmstudio_flash_attention: false\n"
-        )
+        _write_user_config(monkeypatch, tmp_path, "lm:\n  lmstudio_flash_attention: false\n")
         assert _lmstudio_flash_attention_enabled() is False
 
 
@@ -966,9 +956,7 @@ class TestDisableJsonAdapterFallback:
 
         monkeypatch.setenv("CLIO_DISABLE_JSON_ADAPTER_FALLBACK", "1")
         monkeypatch.delenv("CLIO_LM_GUIDED_OUTPUT", raising=False)
-        _write_user_config(
-            monkeypatch, tmp_path, "lm:\n  disable_json_adapter_fallback: false\n"
-        )
+        _write_user_config(monkeypatch, tmp_path, "lm:\n  disable_json_adapter_fallback: false\n")
         adapter = create_chat_adapter(self._remote_cfg())
         assert adapter.use_json_adapter_fallback is True
 
@@ -1013,19 +1001,19 @@ class TestCaptureReasoning:
     """``runtime.capture_reasoning`` / ``CLIO_CAPTURE_REASONING`` (default on)."""
 
     def test_default(self, monkeypatch):
-        from clio_agent.gact.turn_finalize import _capture_reasoning_enabled
+        from clio_agent.gact.usage import _capture_reasoning_enabled
 
         monkeypatch.delenv("CLIO_CAPTURE_REASONING", raising=False)
         assert _capture_reasoning_enabled() is True
 
     def test_env(self, monkeypatch):
-        from clio_agent.gact.turn_finalize import _capture_reasoning_enabled
+        from clio_agent.gact.usage import _capture_reasoning_enabled
 
         monkeypatch.setenv("CLIO_CAPTURE_REASONING", "0")
         assert _capture_reasoning_enabled() is False
 
     def test_file_wins(self, monkeypatch, tmp_path):
-        from clio_agent.gact.turn_finalize import _capture_reasoning_enabled
+        from clio_agent.gact.usage import _capture_reasoning_enabled
 
         monkeypatch.setenv("CLIO_CAPTURE_REASONING", "1")
         _write_user_config(monkeypatch, tmp_path, "runtime:\n  capture_reasoning: false\n")

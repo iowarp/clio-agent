@@ -193,7 +193,7 @@ class LMProviderConfig:
         planner_temperature: Lower temperature for deterministic action planning
         planner_max_tokens: Maximum tokens for planner JSON generation
         environment: Deployment environment (dev/staging/production)
-        codex_transport: Codex transport mode, either "exec" or "sdk"
+        codex_transport: Codex transport: "app_server" (default), "exec", "sdk"
     """
 
     provider: Literal[
@@ -241,7 +241,7 @@ class LMProviderConfig:
     min_p: float | None = None
     presence_penalty: float | None = None
     environment: str = "dev"
-    codex_transport: Literal["exec", "sdk"] = "exec"
+    codex_transport: Literal["app_server", "exec", "sdk"] = "app_server"
     # "sdk" (DEFAULT — the best config): the in-process Claude Agent SDK with a
     #   persistent CLI session — no per-call spawn, streaming-capable, and
     #   setting_sources=[] keeps the user's ~/.claude/CLAUDE.md out of the prompt
@@ -250,11 +250,17 @@ class LMProviderConfig:
     # "exec": one `claude -p` subprocess per LM call — needs only the `claude` CLI on
     #   PATH, but pays ~10-15s cold start every call (#715). Explicit opt-out.
     claude_code_transport: Literal["exec", "sdk"] = "sdk"
-    # Reasoning/thinking budget. Mapped per-provider in create_lm:
+    # Reasoning/thinking budget (explicit token override). Mapped per-provider in
+    # create_lm via providers.thinking.resolve_thinking:
     #   anthropic → thinking={"type":"enabled","budget_tokens":N}
+    #   claude_code → SDK ClaudeAgentOptions.thinking budget
     #   openai/openai-compat → reasoning_effort bucketed from N
-    # 0 disables.
+    # 0 = unset (defers to thinking_level / the provider default).
     thinking_budget: int = 0
+    # Provider-generic thinking LEVEL (#895): off|low|medium|high, or None=unset.
+    # 'off' actively disables; None defers to the SHIPPED per-model default
+    # (providers.thinking.shipped_default_level — haiku/claude_code ships 'low').
+    thinking_level: str | None = None
     # Per-provider capability flags. init=False so callers don't need
     # to know they exist; __post_init__ populates them from
     # PROVIDER_DEFAULTS so adding a new wire-protocol quirk = one
@@ -279,6 +285,11 @@ class LMProviderConfig:
             self.planner_temperature = self.router_temperature
         self.router_temperature = self.planner_temperature
         defaults = PROVIDER_DEFAULTS.get(self.provider, PROVIDER_DEFAULTS["lm_studio"])
+        from clio_agent.providers.thinking import shipped_default_level  # noqa: PLC0415
+
+        self.thinking_level = shipped_default_level(
+            self.provider, self.model or "", self.thinking_level, self.thinking_budget
+        )
         if not self.api_base:
             self.api_base = defaults["api_base"]
         if not self.model:
@@ -306,15 +317,22 @@ class LMProviderConfig:
         # so re-reading on every config load is safe.
         self.strip_openai_prefix = bool(defaults.get("strip_openai_prefix", True))
         self.supports_vision = bool(defaults.get("supports_vision", False))
-        if self.codex_transport not in {"exec", "sdk"}:
+        if self.codex_transport not in {"app_server", "exec", "sdk"}:
             raise ValueError(
-                f"codex_transport must be 'exec' or 'sdk' (got {self.codex_transport!r})"
+                f"codex_transport must be 'app_server', 'exec' or 'sdk' (got {self.codex_transport!r})"
             )
         if self.claude_code_transport not in {"exec", "sdk"}:
             raise ValueError(
                 f"claude_code_transport must be 'exec' or 'sdk' "
                 f"(got {self.claude_code_transport!r})"
             )
+        if self.thinking_level is not None:
+            level = str(self.thinking_level).strip().lower()
+            if level not in {"off", "low", "medium", "high"}:
+                raise ValueError(
+                    f"thinking_level must be off|low|medium|high (got {self.thinking_level!r})"
+                )
+            self.thinking_level = level
 
     def _apply_model_profile_defaults(self) -> None:
         """Apply safe defaults for known model families."""
@@ -472,12 +490,34 @@ def load_config_from_env() -> LMProviderConfig:
     environment = conf.resolve(
         "runtime.environment", env="CLIO_ENVIRONMENT", default="dev", cast=conf.as_str
     )
-    codex_transport = conf.resolve(
-        "lm.codex_transport", env="CLIO_CODEX_TRANSPORT", default="", cast=conf.as_str
-    ).strip().lower()
-    claude_code_transport = conf.resolve(
-        "lm.claude_code_transport", env="CLIO_CLAUDE_CODE_TRANSPORT", default="", cast=conf.as_str
-    ).strip().lower()
+    codex_transport = (
+        conf.resolve("lm.codex_transport", env="CLIO_CODEX_TRANSPORT", default="", cast=conf.as_str)
+        .strip()
+        .lower()
+    )
+    claude_code_transport = (
+        conf.resolve(
+            "lm.claude_code_transport",
+            env="CLIO_CLAUDE_CODE_TRANSPORT",
+            default="",
+            cast=conf.as_str,
+        )
+        .strip()
+        .lower()
+    )
+    # Provider-generic thinking knob (#895): level (off|low|medium|high) and an
+    # optional explicit token budget override. Both env-settable so an experiment
+    # harness can boot a server at a fixed level without a PUT round-trip.
+    thinking_level = (
+        conf.resolve(
+            "lm.thinking_level", env="CLIO_LM_THINKING_LEVEL", default="", cast=conf.as_str
+        )
+        .strip()
+        .lower()
+    )
+    thinking_budget = conf.resolve(
+        "lm.thinking_budget", env="CLIO_LM_THINKING_BUDGET", default=None, cast=conf.as_int
+    )
 
     # Numeric knobs: default ``None`` means "unset" → the LMProviderConfig
     # provider default applies. cast is applied only to a real file/env value.
@@ -538,6 +578,10 @@ def load_config_from_env() -> LMProviderConfig:
         kwargs["codex_transport"] = codex_transport
     if claude_code_transport:
         kwargs["claude_code_transport"] = claude_code_transport
+    if thinking_level:
+        kwargs["thinking_level"] = thinking_level
+    if thinking_budget is not None:
+        kwargs["thinking_budget"] = thinking_budget
 
     config = LMProviderConfig(**kwargs)
 

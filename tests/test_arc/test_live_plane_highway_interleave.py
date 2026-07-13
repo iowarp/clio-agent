@@ -27,6 +27,18 @@ from .conftest import live_plane_context, make_react_agent
 SID, SCOPE = "interleave-s1", "agentA"
 
 
+@pytest.fixture(autouse=True)
+def _pin_classic_reactv2(monkeypatch: pytest.MonkeyPatch) -> None:
+    """classic-path contract; V2 equivalent in tests/test_arc/test_reactv2_highway.py.
+
+    This locks the CLASSIC forward's ARC-write + highway-emit conjunction with a
+    classic-shaped scripted DummyLM (next_tool_name/next_tool_args + extract). The V2
+    append-only loop drives the SAME ARC/highway emission through
+    ``reactv2_events.instrumented_forward``, proven in the V2 file; force the classic
+    loop so the frozen classic path stays tested (#901 rule 1)."""
+    monkeypatch.setattr("clio_agent.gact.agents.runtime._reactv2_enabled", lambda: False)
+
+
 def test_forward_writes_arc_and_emits_highway_in_one_run(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

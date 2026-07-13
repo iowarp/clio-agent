@@ -47,7 +47,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from typing import Any, Optional, Protocol
 
 from clio_agent.gact.events import Event, EventBus
@@ -135,10 +135,11 @@ class TurnTranscript:
     - Append-only; arrival order IS persisted order; a 1-based sequence is
       stamped at :meth:`finalize` (stamping it on the ``part.added`` wire event
       would change today's byte-for-byte event shapes, which PR1 must preserve).
-    - Text mutates exactly once: ``clean_text`` runs on the WHOLE buffer at
-      close (text parts only; provider thinking is verbatim); the cleaned
-      result is recorded into the close event AND the part. ``finalize()``
-      never rewrites text.
+    - Text is stored VERBATIM (#881): a streamed part carries the model's text
+      byte-for-byte to the close event AND the part; the server binds no
+      visible-text prose cleaner. The only close-time transform is dropping a
+      part that is whitespace-only after buffering (it carries no content).
+      ``finalize()`` never rewrites text.
     - Thread-safe: one re-entrant lock guards the ledger; events publish while
       holding it, so ledger order == bus order.
     - Appends after :meth:`finalize` are rejected and audited
@@ -152,13 +153,11 @@ class TurnTranscript:
         session_id: str,
         turn_id: str,
         publisher: TranscriptPublisher,
-        clean_text: Callable[[str], str],
     ) -> None:
         self.session_id = session_id
         self.turn_id = turn_id
         self.message_id: str = ""
         self._publisher = publisher
-        self._clean_text = clean_text
         # Re-entrant: append_part -> ensure_message / close_open_text nest.
         self._lock = threading.RLock()
         # THE ledger. This exact list object is also exposed through
@@ -178,15 +177,14 @@ class TurnTranscript:
         # (agent_id, field) -> raw streamed chunks THIS turn (turn-scoped by
         # construction — subsumes app.state.live_streamed_field_text, #757).
         self._streamed: dict[tuple[str, str], list[str]] = {}
-        # (agent_id, field) -> chunks recorded SYNCHRONOUSLY by the LM stream tap,
-        # in the tap's own (executor) thread, BEFORE the cross-thread
-        # ``append_text_delta`` is scheduled onto the loop (#732). The tool
-        # observer's thought-dedup gate runs in that SAME executor thread, so it
-        # must read a source written before the tool fires — not the ledger's
-        # ``_streamed``, which the loop populates asynchronously and may not have
-        # drained yet. This restores the happens-before the retired synchronous
-        # ``live_streamed_field_text`` buffer provided (audit #732).
+        # (agent_id, field) -> chunks recorded SYNCHRONOUSLY by the LM stream tap in
+        # the executor thread, BEFORE the cross-thread ``append_text_delta`` is
+        # scheduled (#732) — the SAME thread the thought-dedup gate reads on.
         self._tap_streamed: dict[tuple[str, str], list[str]] = {}
+        # Per-(agent,field) high-water cursor INTO _tap_streamed, advanced once per
+        # tool-fire by the observer gate — carves the append-only tap bucket into
+        # per-ReAct-step slices so step N is not latched by step N-1's chunks (#883).
+        self._tap_gate_cursor: dict[tuple[str, str], int] = {}
         # Every accepted streamed chunk in arrival order, across agents AND
         # fields (provider thinking included) — the whole-turn concat the
         # timeout/StreamingOutputError partials read; byte-identical to the
@@ -492,15 +490,11 @@ class TurnTranscript:
     def record_streamed_field_text(self, agent_id: str, field: str, chunk: str) -> None:
         """Record a streamed contract-field ``chunk`` SYNCHRONOUSLY from the LM tap.
 
-        The LM stream tap (``lm_activity.note_lm_answer_delta``) runs in the
-        expert's executor thread and schedules the visible delta onto the turn's
-        loop cross-thread (fire-and-forget). The tool observer's thought-dedup
-        gate runs in that SAME executor thread when a tool fires, so it cannot
-        rely on the loop having drained the scheduled ``append_text_delta`` yet.
-        The tap therefore records here first, in-thread, giving the gate a source
-        with a real happens-before — exactly the guarantee the retired
-        ``live_streamed_field_text`` buffer provided (#732). Turn-scoped by
-        construction (one ledger per turn), so a prior turn never leaks in.
+        The LM stream tap runs in the expert's executor thread and schedules the
+        visible delta onto the loop cross-thread. The thought-dedup gate runs in
+        that SAME executor thread when a tool fires, so the tap records here first,
+        in-thread, giving the gate a source with a real happens-before (#732).
+        Turn-scoped by construction, so a prior turn never leaks in.
         """
 
         if not chunk:
@@ -509,22 +503,30 @@ class TurnTranscript:
         with self._lock:
             self._tap_streamed.setdefault(key, []).append(chunk)
 
-    def streamed_field_dedup_text(self, agent_id: str, field: str) -> str:
-        """Streamed text for ``(agent_id, field)`` for the thought-dedup gate.
+    def tap_step_survives_clean(self, agent_id: str, field: str) -> tuple[bool, bool]:
+        """Per-step (consumed) tap classification for the #883 thought-dedup gate.
 
-        Prefers the tap-recorded copy (:meth:`record_streamed_field_text`),
-        written synchronously in the LM tap thread so the same-thread tool
-        observer never races the cross-thread ledger append (#732). Falls back to
-        the ledger deltas for non-tap producers (a direct
-        :meth:`append_text_delta`, e.g. tests / batch paths), so dedup behaves
-        exactly as before wherever no tap wrote.
+        Returns ``(had_stream, survives_clean)`` for the tap slice since the LAST
+        call for ``(agent_id, field)`` — a per-key cursor carves the append-only
+        ``_tap_streamed`` bucket into ReAct steps. Computed SYNCHRONOUSLY in the
+        caller's thread with NO cross-thread-close dependency (why ``has_closed_text``
+        is rejected: it reads False for a not-yet-closed non-empty row -> double
+        render). Since #881 the transcript stores text VERBATIM, so "survives as a
+        visible row" is exactly "has non-whitespace content" — the SAME whitespace-
+        only close drop :meth:`_close_open_text_locked` applies (the DSPy contract
+        markers that used to empty a slice are split off at the root, #877, and can
+        no longer reach a field's streamed text). CONSUMING READ — called EXACTLY
+        ONCE per tool-fire (the observer gate).
         """
 
+        key = (agent_id, field)
         with self._lock:
-            tap = self._tap_streamed.get((agent_id, field))
-            if tap:
-                return "".join(tap)
-            return "".join(self._streamed.get((agent_id, field), []))
+            chunks = self._tap_streamed.get(key, [])
+            start = self._tap_gate_cursor.get(key, 0)
+            self._tap_gate_cursor[key] = len(chunks)
+            tail = "".join(chunks[start:])
+        survived = bool(tail.strip())
+        return (survived, survived)
 
     def raw_streamed_text(self) -> str:
         """Every accepted streamed chunk THIS turn, concatenated in arrival order.
@@ -609,9 +611,7 @@ class TurnTranscript:
 
         return FieldStream(self, agent_id, field)
 
-    def turn_answer_stream(
-        self, responder_agent_id: str, *also_covering: str
-    ) -> "FieldStream":
+    def turn_answer_stream(self, responder_agent_id: str, *also_covering: str) -> "FieldStream":
         """The finalize-scoped exactly-once handle for the turn's canonical answer.
 
         The channel covers the AGENT LABELS the turn's top-level answer can
@@ -628,9 +628,9 @@ class TurnTranscript:
         responder's distinct final answer.
         """
 
-        covers = frozenset(
-            {responder_agent_id, *also_covering} - {""}
-        ) or frozenset({responder_agent_id})
+        covers = frozenset({responder_agent_id, *also_covering} - {""}) or frozenset(
+            {responder_agent_id}
+        )
         return FieldStream(self, responder_agent_id, "answer", covers=covers)
 
     # -- the reader (finalize; loop-only) --------------------------------------
@@ -679,12 +679,11 @@ class TurnTranscript:
         # publish loop consults this so live parts are never re-published.
         self._closed_live_part_ids.add(part.id)
         buffered = "".join(self._buffers.pop(part.id, []))
-        # Clean the COMPLETE buffer exactly once, at close — never per chunk,
-        # never again at finalize (the b1b25d2 invariant, now structural).
-        if part.type == "text" and buffered.strip():
-            buffered = self._clean_text(buffered)
+        # #881: text is stored VERBATIM — no visible-text prose cleaner runs here.
+        # The buffer is the model's text byte-for-byte; the only transform is the
+        # whitespace-only drop below (a part with no content emits nothing).
         if not buffered.strip():
-            # Empty after clean: remove from the ledger and emit nothing.
+            # Whitespace-only: remove from the ledger and emit nothing.
             # Identity-based removal — Part equality is by value and live
             # ledgers can hold equal-valued parts.
             for index, candidate in enumerate(self._parts):
@@ -916,24 +915,17 @@ class FieldStream:
                 return None
             if not fallback_text.strip():
                 return None
-            cleaned = transcript._clean_text(fallback_text)
-            if not cleaned.strip():
-                stream_audit(
-                    "transcript.dropped_empty_part",
-                    session_id=transcript.session_id,
-                    turn_id=transcript.turn_id,
-                    part_id="",
-                    part_type="text",
-                )
-                return None
+            # #881: the batch fallback is the model's answer field VERBATIM — the
+            # server binds no visible-text prose cleaner, so a non-whitespace
+            # fallback always lands (the whitespace-only case returned above).
             part = transcript._append_batch_text_locked(
                 self._agent_id,
                 self._field,
-                cleaned,
+                fallback_text,
                 extra_metadata=fallback_metadata,
             )
             self.part_id = part.id
-            return cleaned
+            return fallback_text
 
 
 class TurnTranscriptRegistry:
@@ -954,7 +946,6 @@ class TurnTranscriptRegistry:
         sid: str,
         turn_id: str,
         publisher: TranscriptPublisher,
-        clean_text: Callable[[str], str],
     ) -> TurnTranscript:
         """Open the ledger for ``sid``'s new turn, evicting any leaked one loudly."""
 
@@ -978,7 +969,6 @@ class TurnTranscriptRegistry:
                 session_id=sid,
                 turn_id=turn_id,
                 publisher=publisher,
-                clean_text=clean_text,
             )
             self._by_session[sid] = transcript
             return transcript

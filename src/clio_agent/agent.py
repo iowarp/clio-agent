@@ -71,6 +71,7 @@ from clio_agent.harness import (
     tool_result_ok,
 )
 from clio_agent.optimizer.instrumentation import _extract_output
+from clio_agent.providers.stateful_common import stateful_scope as _stateful_scope
 from clio_agent.registry.registry import AgentCapability, AgentRegistry
 
 # Generic path-detection allowlist: file suffixes recognized when extracting
@@ -240,8 +241,8 @@ class ClioAgent(dspy.Module):
 
         # ARC Memory: reuse the injected one (the gact server owns the single per-process
         # ARC and re-injects it on every bind) or mint one. The persistence backend comes
-        # from the factory: clio-core CTE by default (the gold-standard, in-process tiered
-        # store), LocalFSStore via CLIO_ARC_STORE=local. Falls back to LocalFS if the CTE
+        # from the factory: clio-core by default (the gold-standard, in-process tiered
+        # store), LocalFSStore via CLIO_ARC_STORE=local. Falls back to LocalFS if the clio-core
         # binding/runtime is unavailable.
         self.arc = (
             arc
@@ -460,12 +461,8 @@ class ClioAgent(dspy.Module):
     ) -> dspy.Prediction:
         """Process a question through the CLIO agent loop.
 
-        Flow:
-            1. Retrieve session and current-file context from ARC
-            2. Ask the planner for the next action using live capabilities
-            3. Execute tools and append observations
-            4. Answer from observations or direct conversation
-            5. Store decisions, provenance, metrics, and conversation in ARC
+        Flow: retrieve session/file context from ARC → ask the planner for the next
+        action → execute tools and append observations → answer → store in ARC.
 
         Args:
             question: User's question or request
@@ -522,14 +519,17 @@ class ClioAgent(dspy.Module):
         error_info = None
 
         try:
-            selected, answer, expert_result, error_info, route = self._run_agent_loop(
-                question=question,
-                session_context=session_context,
-                file_context=file_context,
-                images=images,
-                trace=trace,
-                routing_mode=routing_mode,
-            )
+            # Bind ONE per-forward stateful scope around the Tier-1 planner loop (#891,
+            # like the V2 expert ``forward``) so append-only sends are delta-eligible.
+            with _stateful_scope():
+                selected, answer, expert_result, error_info, route = self._run_agent_loop(
+                    question=question,
+                    session_context=session_context,
+                    file_context=file_context,
+                    images=images,
+                    trace=trace,
+                    routing_mode=routing_mode,
+                )
             trace.route = route
             success = True
         except Exception as e:  # noqa: BLE001 - routing failure recorded on the trace (success=False + inferred expert)
@@ -2121,7 +2121,10 @@ class ClioAgent(dspy.Module):
     ) -> None:
         """Record an expert-stage handoff without relying on final route labels."""
         metadata = self._expert_result_metadata(result)
-        output_summary = self._expert_result_summary(result)
+        # #880: no server-authored summary of the expert result. The expert's
+        # deliverable rides ``output`` verbatim (empty here on the Tier-1 native
+        # path, which has no parent-bound answer to carry); clio never synthesizes
+        # a field-picked one-liner of the model's structured output.
         parent_id = self._registered_parent_id(expert_id)
         trace.record_expert_handoff(
             agent_id=expert_id,
@@ -2129,8 +2132,7 @@ class ClioAgent(dspy.Module):
             dispatch_target=dispatch_target,
             stage=stage,
             status=status,
-            input_summary=self._compact_handoff_text(input_summary),
-            output_summary=output_summary,
+            input_summary=input_summary,
             duration_ms=duration_ms,
             error=error,
             metadata=metadata,
@@ -2150,33 +2152,6 @@ class ClioAgent(dspy.Module):
         if isinstance(metadata, Mapping):
             return dict(metadata)
         return {}
-
-    @classmethod
-    def _expert_result_summary(cls, result: Any | None) -> str:
-        """Return a compact human-readable expert output summary."""
-        if result is None:
-            return ""
-        candidates = (
-            getattr(result, "analysis", ""),
-            getattr(result, "visualization_description", ""),
-            getattr(result, "answer", ""),
-        )
-        for candidate in candidates:
-            text = cls._coerce_text(candidate).strip()
-            if text:
-                return cls._compact_handoff_text(text)
-        file_path = cls._coerce_text(getattr(result, "file_path", "")).strip()
-        if file_path:
-            return cls._compact_handoff_text(f"Artifact: {file_path}")
-        return ""
-
-    @staticmethod
-    def _compact_handoff_text(text: str, *, limit: int = 500) -> str:
-        """Compact one handoff field for durable metadata."""
-        normalized = " ".join(str(text).split())
-        if len(normalized) <= limit:
-            return normalized
-        return normalized[: limit - 15].rstrip() + "...[truncated]"
 
     def _run_chat_agent(
         self,
@@ -2384,8 +2359,7 @@ class ClioAgent(dspy.Module):
                     exc,
                 )
         logger.warning(
-            "no prior context recovered; expert runs cold "
-            "reason=context_unavailable session=%s",
+            "no prior context recovered; expert runs cold reason=context_unavailable session=%s",
             session_id,
         )
         return "No prior context"
@@ -2709,7 +2683,11 @@ class ClioAgent(dspy.Module):
         return self.arc.get_conversation_history(session_id, limit=limit)
 
     def shutdown(self) -> None:
-        """Clean shutdown of ClioAgent resources."""
+        """Close the persistent MCP tool executors so their stdio children are reaped (#900)."""
+        from clio_agent.runtime.process_tree import close_tool_executors
+
         if self.verbose:
             print("[ClioAgent] Shutting down...")
-            print("[ClioAgent] Shutdown complete")
+        executors = [self.tool_executor, *self._workspace_tool_executors.values()]
+        self._workspace_tool_executors = {}
+        close_tool_executors(executors)

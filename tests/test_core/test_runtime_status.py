@@ -195,6 +195,67 @@ def test_lm_provider_probe_reports_malformed_schema_as_malformed(tmp_path):
     assert status.details["model_discovery_error"] == "malformed_schema"
 
 
+def _http_get_must_not_run(*args, **kwargs):
+    raise AssertionError("HTTP GET must not run for a CLI/SDK pseudo-scheme provider (#899)")
+
+
+def test_lm_provider_sdk_transport_ready_when_cli_present(tmp_path, monkeypatch):
+    """SDK transport (claude-code://sdk) -> READY when the `claude` CLI is on PATH (#899).
+
+    The probe must be transport-aware: it never HTTP-GETs the pseudo-scheme (which
+    yields 'No connection adapters'); it probes the CLI the transport spawns.
+    """
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda binary: f"/usr/bin/{binary}")
+    probe = RuntimeProbe(
+        env={"CLIO_DATA_DIR": str(tmp_path), "CLIO_LM_PROVIDER": "claude_code"},
+        http_get=_http_get_must_not_run,
+    )
+
+    status = probe.probe_lm_provider()
+
+    assert status.state == IntegrationState.READY
+    assert status.details["transport"] == "sdk"
+    assert status.details["cli_binary"] == "claude"
+
+
+def test_lm_provider_sdk_transport_unavailable_when_cli_absent(tmp_path, monkeypatch):
+    """SDK transport -> typed UNAVAILABLE (not an HTTP error) when the CLI is absent (#899)."""
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda binary: None)
+    probe = RuntimeProbe(
+        env={"CLIO_DATA_DIR": str(tmp_path), "CLIO_LM_PROVIDER": "claude_code"},
+        http_get=_http_get_must_not_run,
+    )
+
+    status = probe.probe_lm_provider()
+
+    assert status.state == IntegrationState.UNAVAILABLE
+    assert status.details["reason"] == "cli_binary_absent"
+    assert "No connection adapters" not in status.summary
+
+
+def test_lm_provider_http_provider_still_probes_models(tmp_path):
+    """HTTP providers are unchanged: the /models GET path still drives the row (#899)."""
+    seen: dict[str, str] = {}
+
+    def fake_get(url: str, timeout: float):
+        seen["url"] = url
+        return FakeResponse({"data": [{"id": "granite"}]})
+
+    probe = RuntimeProbe(
+        env={"CLIO_DATA_DIR": str(tmp_path)},  # default provider is lm_studio (HTTP)
+        http_get=fake_get,
+    )
+
+    status = probe.probe_lm_provider()
+
+    assert status.state == IntegrationState.READY
+    assert seen["url"].endswith("/models")
+
+
 def test_file_policy_probe_reports_configured_roots(tmp_path):
     """Doctor exposes the effective local file access policy."""
     probe = RuntimeProbe(
@@ -233,8 +294,8 @@ def test_file_policy_probe_reports_invalid_policy_as_misconfigured():
 # ---------------------------------------------------------------------------
 
 
-def test_arc_cte_default_backend_red_when_daemon_down(tmp_path):
-    """Default backend is CTE: iowarp_core installed but no daemon MUST go red."""
+def test_arc_clio_core_default_backend_red_when_daemon_down(tmp_path):
+    """Default backend is clio-core: iowarp_core installed but no daemon MUST go red."""
     clio_home = tmp_path / "clio-home"
     clio_home.mkdir()
     (clio_home / "clio-runtime.log").write_text(
@@ -253,14 +314,14 @@ def test_arc_cte_default_backend_red_when_daemon_down(tmp_path):
     assert status.state == IntegrationState.UNAVAILABLE
     assert status.required is True
     assert status.details["storage_mode"] == "cte"
-    assert status.details["reason"] == "cte_daemon_not_listening"
+    assert status.details["reason"] == "clio_core_daemon_not_listening"
     assert isinstance(status.details["port"], int)
     assert any("FATAL" in line for line in status.details["log_tail"])
     assert "clio-runtime.log" in status.details["log_path"]
 
 
-def test_arc_cte_backend_red_when_iowarp_core_missing(tmp_path):
-    """CTE selected but the pip runtime is absent: a broken install goes red."""
+def test_arc_clio_core_backend_red_when_iowarp_core_missing(tmp_path):
+    """clio-core selected but the pip runtime is absent: a broken install goes red."""
     probe = RuntimeProbe(
         env={"CLIO_ARC_STORE": "cte"},
         module_checker=lambda name: False,
@@ -276,7 +337,7 @@ def test_arc_cte_backend_red_when_iowarp_core_missing(tmp_path):
     assert "iowarp" in status.summary.lower()
 
 
-def test_arc_cte_backend_ready_when_daemon_listening(tmp_path):
+def test_arc_clio_core_backend_ready_when_daemon_listening(tmp_path):
     """Installed pip runtime + listening daemon reports READY with cte mode."""
     clio_home = tmp_path / "clio-home"
     clio_home.mkdir()
@@ -339,8 +400,8 @@ def test_arc_unknown_backend_is_misconfigured(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_clio_core_red_when_cte_backend_and_daemon_down(tmp_path):
-    """With the default CTE backend a dead daemon turns the report red."""
+def test_clio_core_red_when_clio_core_backend_and_daemon_down(tmp_path):
+    """With the default clio-core backend a dead daemon turns the report red."""
     clio_home = tmp_path / "clio-home"
     clio_home.mkdir()
     (clio_home / "clio-runtime.log").write_text("FATAL: shm init failed\n", encoding="utf-8")
@@ -356,7 +417,7 @@ def test_clio_core_red_when_cte_backend_and_daemon_down(tmp_path):
 
     assert status.state == IntegrationState.UNAVAILABLE
     assert status.required is True
-    assert status.details["reason"] == "cte_daemon_not_listening"
+    assert status.details["reason"] == "clio_core_daemon_not_listening"
     assert any("FATAL" in line for line in status.details["log_tail"])
 
     report = probe.collect(api_state=IntegrationState.READY)
@@ -407,7 +468,7 @@ def test_clio_core_optional_when_local_backend_and_daemon_down(tmp_path):
 
     assert status.state == IntegrationState.UNAVAILABLE
     assert status.required is False
-    assert status.details["reason"] == "cte_daemon_not_listening"
+    assert status.details["reason"] == "clio_core_daemon_not_listening"
 
 
 # ---------------------------------------------------------------------------

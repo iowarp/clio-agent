@@ -24,6 +24,7 @@ Run as part of CI (initially in warn-only mode) and locally::
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -43,6 +44,18 @@ SRC_ROOT = "src/clio_agent"
 # Matches one ``--statistics`` line, e.g. ``173\tBLE001\tblind-except``.
 _STAT_LINE = re.compile(r"^\s*(\d+)\s+([A-Z]+\d+)\b")
 
+# Any leading-count line ``--statistics`` could emit. Used only to distinguish a
+# statistics-shaped line we failed to fully parse (a format/colour regression)
+# from genuinely empty output, so the miscount cannot be swallowed as "clean".
+_STAT_LIKE = re.compile(r"^\s*\d")
+
+# CSI escape sequences (colour/formatting). ruff colours ``--statistics`` output
+# when FORCE_COLOR/CLICOLOR_FORCE are set; a coloured count like
+# ``\x1b[1m1\x1b[0m\t\x1b[1;31mBLE001\x1b[0m`` defeats :data:`_STAT_LINE` and
+# would silently zero the count. Strip these before parsing (defense in depth --
+# the subprocess is also launched with colour forced off).
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
 
 def _repo_root() -> Path:
     """Return the repository root (parent of the ``scripts`` directory)."""
@@ -56,9 +69,23 @@ def count_violations(path: Path, rules: tuple[str, ...] = RATCHET_RULES) -> dict
     be silently lowered by editing the project ruff config; per-line ``noqa``
     directives still apply) and parses the per-rule counts.
 
+    The subprocess is launched with colour forced off (``NO_COLOR`` set,
+    ``FORCE_COLOR``/``CLICOLOR_FORCE`` removed) and ANSI escapes are stripped
+    from the output before parsing, so an environment that colours ruff's
+    ``--statistics`` output cannot make the parser silently return zeros.
+
     Raises:
-        RuntimeError: if ruff itself fails (exit code other than 0/1).
+        RuntimeError: if ruff itself fails (exit code other than 0/1); if any
+            statistics-shaped line fails to parse into a known rule -- regardless
+            of the total, so a heterogeneous partial parse (one good line, one
+            mangled) cannot let the un-parsed rule read as zero; or if ruff
+            reports violations (exit 1) yet nothing parsed at all (a total
+            wipeout that would otherwise read as a clean tree).
     """
+    env = os.environ.copy()
+    env["NO_COLOR"] = "1"
+    env.pop("FORCE_COLOR", None)
+    env.pop("CLICOLOR_FORCE", None)
     proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
         [
             sys.executable,
@@ -75,16 +102,51 @@ def count_violations(path: Path, rules: tuple[str, ...] = RATCHET_RULES) -> dict
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
     if proc.returncode not in (0, 1):
         raise RuntimeError(
             f"ruff check failed (exit {proc.returncode}): {proc.stderr.strip() or proc.stdout.strip()}"
         )
+    stdout = _ANSI_RE.sub("", proc.stdout)
     counts = dict.fromkeys(rules, 0)
-    for line in proc.stdout.splitlines():
+    suspicious: list[str] = []
+    for line in stdout.splitlines():
+        if not line.strip():
+            continue
         match = _STAT_LINE.match(line)
-        if match is not None and match.group(2) in counts:
-            counts[match.group(2)] = int(match.group(1))
+        if match is not None:
+            # A well-formed statistics line. Record it when it names a rule we
+            # selected; a well-formed line for an UNSELECTED rule is valid output,
+            # not a parse failure, so it is ignored (never flagged suspicious).
+            if match.group(2) in counts:
+                counts[match.group(2)] = int(match.group(1))
+        elif _STAT_LIKE.match(line):
+            # Statistics-SHAPED (leading count) yet it did NOT parse into a rule
+            # code at all: a format/colour regression that would silently zero
+            # whichever selected rule this line was reporting.
+            suspicious.append(line)
+    # NO SILENT FALLBACK: a statistics-shaped line we could not resolve to a known
+    # rule means at least one selected rule's count is being read as zero when it
+    # may not be. Raise regardless of the total -- a heterogeneous partial parse
+    # (one good line parses, sum>0, one mangled line does not) still hides an
+    # undercount, the exact class this guard exists to catch (#772).
+    if suspicious:
+        raise RuntimeError(
+            "ruff emitted statistics-shaped output that did not parse into a "
+            "known rule -- the format changed or was mangled beyond ANSI "
+            "stripping, so the affected rule would be silently counted as zero. "
+            f"Suspicious line(s): {suspicious!r}. Raw stdout: {proc.stdout!r}"
+        )
+    # A total wipeout: ruff says violations exist (exit 1) yet nothing parsed and
+    # nothing was even statistics-shaped -- the output vanished entirely, which
+    # would otherwise read as a clean tree.
+    if proc.returncode == 1 and sum(counts.values()) == 0:
+        raise RuntimeError(
+            "ruff reported violations (exit 1) but no statistics line parsed -- "
+            "the output format changed or was mangled beyond ANSI stripping. "
+            f"Raw stdout: {proc.stdout!r}"
+        )
     return counts
 
 
