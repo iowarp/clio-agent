@@ -6,6 +6,25 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Changed
+- The unified-ARC highway regimes are the shipped defaults (#737, #893):
+  the working-set fold (`CLIO_ARC_WORKING_SET_FOLD`) and the transcript
+  projection (`CLIO_TRANSCRIPT_PROJECTION`) default ON — new sessions run
+  single-copy on the canonical `_events` log (byte-equality proven per
+  surface; reload==live green on the full real-session corpus). `=0` opts
+  back into the legacy regime; existing sessions keep their pinned regime
+  and their wire stays byte-identical.
+- Stateful session-delta transports default ON for `claude_code` (SDK
+  transport) and `codex` (app-server): `CLIO_CLAUDE_CODE_STATEFUL_DELTA` /
+  `CLIO_CODEX_STATEFUL_DELTA` `=0` opt out. Live acceptance: delta TTFT
+  1.79s vs 7+s cold (claude), 2.95s vs 7.37s (codex), 76.7% cached-input;
+  every fallback-to-full-send is a typed reset reason.
+- Boot-time environment conformance (#906): clio-core backend init inspects
+  the EFFECTIVE `cte.yaml` and emits a typed `clio_core_ram_uncapped`
+  warning when the ram cap is unbounded/unparseable/missing (the stale-0g
+  incident shape); the doctor ram-cap row also reports the ram bdev
+  capacity.
+
 ### Fixed
 - Desktop bundles ship their sidecar launcher again (#907): the CLIO branding
   overlay now declares `bundle.externalBin`, and the bundle workflow asserts

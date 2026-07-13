@@ -134,13 +134,13 @@ def test_reload_equals_live_multiturn(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_regime_pinned_at_first_message_no_midflight_flip(tmp_path: Path, monkeypatch) -> None:
-    """A session started under flag-OFF stays LEGACY even if the flag flips ON mid-life."""
+    """A session started under flag-off stays LEGACY even if the flag flips ON mid-life."""
 
-    monkeypatch.delenv("CLIO_TRANSCRIPT_PROJECTION", raising=False)
+    monkeypatch.setenv("CLIO_TRANSCRIPT_PROJECTION", "0")
     app, _arc = _build(tmp_path)
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "flip"}).json()["id"]
-        _run_turn(client, sid, "first")  # message #1 pins LEGACY (flag OFF)
+        _run_turn(client, sid, "first")  # message #1 pins LEGACY (flag =0)
         assert pinned_regime(app, sid) == REGIME_LEGACY
 
         # Flip the flag ON mid-session; a NEW turn must NOT flip this session's regime.
@@ -154,10 +154,23 @@ def test_regime_pinned_at_first_message_no_midflight_flip(tmp_path: Path, monkey
         assert pinned_regime(app, sid2) == REGIME_ATOMS
 
 
-def test_default_regime_is_legacy_and_wire_unchanged(tmp_path: Path, monkeypatch) -> None:
-    """Under the default (flag OFF) the session carries NO regime pin (wire unchanged)."""
+def test_default_regime_is_atoms(tmp_path: Path, monkeypatch) -> None:
+    """Under the shipped default (flag unset => ON) a new session pins the atoms regime."""
 
     monkeypatch.delenv("CLIO_TRANSCRIPT_PROJECTION", raising=False)
+    app, _arc = _build(tmp_path)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "default"}).json()["id"]
+        _run_turn(client, sid)
+        assert pinned_regime(app, sid) == REGIME_ATOMS
+
+
+def test_legacy_opt_out_carries_no_regime_pin_and_wire_unchanged(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Under the =0 opt-out the session carries NO regime pin (wire byte-unchanged)."""
+
+    monkeypatch.setenv("CLIO_TRANSCRIPT_PROJECTION", "0")
     app, _arc = _build(tmp_path)
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "legacy"}).json()["id"]

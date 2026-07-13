@@ -14,7 +14,7 @@ The regime is **session-scoped and pinned at the session's FIRST message** (desi
 (env ``CLIO_TRANSCRIPT_PROJECTION``) is resolved ONCE, on message #1, and — when ON —
 stamped as ``metadata["transcript_regime"] = "atoms"`` on the session record. Every
 later read/write consults the *pinned* value, never the live flag, so a session is
-EITHER atoms-regime or legacy end-to-end. Under the default (flag OFF) NOTHING is
+EITHER atoms-regime or legacy end-to-end. Under the legacy regime (flag =0) NOTHING is
 pinned and NOTHING changes — the legacy messages-store read path and the
 ``final_message`` embed are byte-for-byte preserved (the shipped default; see the
 module-level "shipped default" note below).
@@ -47,16 +47,18 @@ Design decisions (each answering a named constraint):
   Under the legacy regime the messages-store copy is still authoritative, so minting
   stays best-effort-but-loud exactly as S4 landed it.
 
-Shipped default — **flag OFF (legacy regime), honestly (design §5.2 Q4, the S2
-pattern).** The atoms read path + ``final_message`` deletion are proven byte-equal on
-TARGETED proofs — the reload==live corpus sweep (:mod:`tests.test_equivalence`) and
-scripted live turns (:mod:`tests.test_gact.test_transcript_projection`) — but the bar
-for default-ON is WHOLE-surface validation (every frozen surface under the atoms regime,
-both backends, the live gates), which is owner-gated per the strangler discipline. So,
-like S2/S3/S4, this ships flag-OFF/dual-write-invisible with the switch available and
-proven, not defaulted. If ``reload == live`` cannot be green under §4.1.A the switch is
-NOT shipped at all (§5.2 Q4) — it is; the divergence, were there one, would name the
-exact field via the S0 field-path differ.
+Shipped default — **flag ON (atoms regime for NEW sessions)** since the whole-surface
+bar was met: the reload==live corpus sweep is green on the full real-session corpus
+(:mod:`tests.test_equivalence`), scripted live turns byte-match
+(:mod:`tests.test_gact.test_transcript_projection`), and the campaign's final live
+web gate runs the entire stack under this default before any release tag (release
+authority 2026-07-12, #893/#737). ``CLIO_TRANSCRIPT_PROJECTION=0`` /
+``gact.transcript_projection`` opts back into the legacy regime. Existing sessions
+are untouched either way — the regime is pinned per session at message #1, so a
+legacy session stays legacy for life and its wire stays byte-identical. If
+``reload == live`` could not be green under §4.1.A the switch would NOT ship at all
+(§5.2 Q4) — it is; a divergence, were there one, would name the exact field via the
+S0 field-path differ.
 """
 
 from __future__ import annotations
@@ -92,8 +94,9 @@ REGIME_LEGACY = "legacy"
 # regime, so the default legacy path leaves the session wire byte-identical).
 REGIME_METADATA_KEY = "transcript_regime"
 
-# The process flag (file -> env -> default). Default False => legacy is the shipped
-# default (design §5.2 Q4 honesty; see the module docstring).
+# The process flag (file -> env -> default). Default True => atoms is the shipped
+# regime for NEW sessions (whole-surface proofs green; see the module docstring);
+# =0 opts back into legacy. Existing sessions keep their pinned regime either way.
 _FLAG_KEY = "gact.transcript_projection"
 _FLAG_ENV = "CLIO_TRANSCRIPT_PROJECTION"
 
@@ -142,9 +145,9 @@ class TranscriptBackfillError(RuntimeError):
 
 
 def _flag_on() -> bool:
-    """Resolve the process transcript-projection flag (file -> env -> default False)."""
+    """Resolve the process transcript-projection flag (file -> env -> default True)."""
 
-    return conf.resolve(_FLAG_KEY, env=_FLAG_ENV, default=False, cast=conf.as_bool)
+    return conf.resolve(_FLAG_KEY, env=_FLAG_ENV, default=True, cast=conf.as_bool)
 
 
 def _sessions(app: "FastAPI") -> Any:
