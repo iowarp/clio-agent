@@ -6,6 +6,37 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.6.0] — 2026-07-13
+
+The resource-usage campaign release. Pairs with gact-tui **v0.9.6**
+(pinned submodule) and marketplace **v0.5.4**.
+
+### Added
+- `PUT /v1/providers/lm` accepts `thinking_level` (`off|low|medium|high`;
+  out-of-vocabulary values are a structured 422). `GET`/`PUT` responses
+  report `thinking_level` and the resolved `thinking_effective`
+  (including the typed `unsupported (<reason>)` form). SPEC §6.12 (#895).
+- `LMProviderInfo.transport` may now report `app_server` — the codex
+  warm app-server transport (#896).
+
+### Changed
+- The expert loop is dspy ReActV2 (append-only History; provider prompt
+  prefix byte-stable across iterations). The SSE wire, semantic-event
+  stream, and tree view are contract-identical (byte-equality suites on
+  both paths); `CLIO_REACTV2=0` selects the classic loop (#901).
+- Typed degradation reasons and doctor probe names that referred to the
+  clio-core system as "CTE" are renamed `clio_core_*` (`CTEStore` →
+  `ClioCoreStore`, `cte_daemon_not_listening` →
+  `clio_core_daemon_not_listening`, etc.). CTE now names only the
+  actual clio-core component (config artifacts unchanged).
+
+### Fixed
+- Blueprint install from `file:///C:/...` marketplace URIs works from
+  native Windows processes (#903).
+- The earthscope pack no longer misreports geo-filter tool failures as
+  "no coverage"; the no-coverage terminal requires structural filter
+  evidence (marketplace v0.5.4, #904).
+
 ## [0.5.18] — 2026-07-09
 
 The grounding-demo release. Pairs with gact-tui **v0.9.5** (pinned
