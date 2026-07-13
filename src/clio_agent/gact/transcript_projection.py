@@ -72,6 +72,11 @@ from clio_agent.gact.part_atoms import (
     reproduce_message_wire,
 )
 from clio_agent.gact.types import Message
+from clio_agent.gact.workflow_state.state_merge import (
+    drop_state_merge_lane,
+    materialize_state_merge_projection,
+    record_state_merge_best_effort,
+)
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -255,7 +260,13 @@ def assemble_session_messages(arc: Any, session_id: str) -> list[Message]:
             groups.append([content])  # a fresh message begins (part_index resets to 0)
         else:
             groups[-1].append(content)
-    return [Message(**reproduce_message_wire(atoms)) for atoms in groups]
+    messages = [Message(**reproduce_message_wire(atoms)) for atoms in groups]
+    # #737 S6: workflow_state on the delegate rows is the recorded RESULT of the last
+    # state_merge op for the scope — materialized schema-free here, NEVER re-folded on
+    # read (design §2.8.d). A no-op when no op was recorded (rows keep their verbatim,
+    # equally-frozen value).
+    materialize_state_merge_projection(arc, session_id, messages)
+    return messages
 
 
 def has_atoms(arc: Any, session_id: str) -> bool:
@@ -291,6 +302,9 @@ def mint_atoms_from_ledger(arc: Any, session_id: str, messages: list[Message]) -
             mint_message_part_atoms(arc, session_id, message)
         except Exception as exc:  # noqa: BLE001 - re-raised as a typed, per-message reason
             raise TranscriptBackfillError(session_id, getattr(message, "id", ""), exc) from exc
+        # #737 S6: re-provision the state_merge op from the ledger too, so the recorded
+        # result survives a lifecycle-erased (#762) or pre-S6 ledger backfill.
+        record_state_merge_best_effort(arc, session_id, message)
 
 
 # --------------------------------------------------------------------------- #
@@ -403,6 +417,14 @@ def on_message_appended(app: "FastAPI", session_id: str, message: Message) -> No
             getattr(message, "id", ""),
             exc_info=True,
         )
+        return
+    # #737 S6: the mint landed — record the delegated-turn workflow_state as a
+    # state_merge op (atoms regime only; the legacy transcript is served from the
+    # messages-store ledger, which carries workflow_state verbatim and is never
+    # re-folded, so an op there is dead weight). Best-effort-but-loud: the verbatim
+    # message-part copy is the frozen fallback (§3.4).
+    if regime == REGIME_ATOMS:
+        record_state_merge_best_effort(arc, session_id, message)
 
 
 def on_messages_extended(app: "FastAPI", session_id: str, messages: list[Message]) -> None:
@@ -423,6 +445,7 @@ def on_messages_extended(app: "FastAPI", session_id: str, messages: list[Message
             mint_message_part_atoms(arc, session_id, message)
         except Exception as exc:  # noqa: BLE001 - atoms are the one copy under this regime
             raise TranscriptIngestError(session_id, getattr(message, "id", ""), exc) from exc
+        record_state_merge_best_effort(arc, session_id, message)  # #737 S6
 
 
 def on_ledger_replaced(app: "FastAPI", session_id: str, messages: list[Message]) -> None:
@@ -443,11 +466,13 @@ def on_ledger_replaced(app: "FastAPI", session_id: str, messages: list[Message])
     if arc is None:
         return
     arc._segments.drop_scope(session_id, MESSAGE_PART_SCOPE)
+    drop_state_merge_lane(arc, session_id)  # #737 S6: re-materialise the op lane too
     for message in messages:
         try:
             mint_message_part_atoms(arc, session_id, message)
         except Exception as exc:  # noqa: BLE001 - atoms are the one copy under this regime
             raise TranscriptIngestError(session_id, getattr(message, "id", ""), exc) from exc
+        record_state_merge_best_effort(arc, session_id, message)  # #737 S6
 
 
 def on_ledger_deleted(app: "FastAPI", session_id: str) -> None:
@@ -465,6 +490,7 @@ def on_ledger_deleted(app: "FastAPI", session_id: str) -> None:
     if arc is None:
         return
     arc._segments.drop_scope(session_id, MESSAGE_PART_SCOPE)
+    drop_state_merge_lane(arc, session_id)  # #737 S6: erase the op lane with the transcript
 
 
 # --------------------------------------------------------------------------- #
