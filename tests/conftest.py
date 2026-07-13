@@ -86,6 +86,15 @@ def _clio_process_hygiene_audit(request, _clio_private_cte_daemon):
     yield
     # Deterministic release first, THEN audit what remains.
     release_this_process_client()
+    # Reap the PRIVATE daemon before auditing: an eager attach that fails
+    # mid-spawn (a port race under xdist workers) leaves a clio_run child with
+    # ZERO registered clients and NO pidfile — last-one-out never stops it and
+    # the snapshot's daemon_pid() exclusion never saw it, so the audit would
+    # flag our own session-scoped daemon as a leak (the #912 flake-hunt hit).
+    # It is ours by construction (private state dir); killing it here is always
+    # safe, and the daemon fixture's later reap becomes a no-op.
+    if _clio_private_cte_daemon is not None:
+        reap_private_daemon(_clio_private_cte_daemon.state_dir)
     if os.environ.get(SKIP_ENV):
         return
     result = audit.finalize(own_pid=os.getpid())
