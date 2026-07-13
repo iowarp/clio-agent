@@ -6,6 +6,17 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Fixed
+- Desktop bundles ship their sidecar launcher again (#907): the CLIO branding
+  overlay now declares `bundle.externalBin`, and the bundle workflow asserts
+  the merged Tauri config + built launcher before packaging. Every desktop
+  installer since v0.5.18 (first post-de-clio gact-tui pin) was missing the
+  launcher and failed at boot with "sidecar launcher missing". Pairs with the
+  gact-tui lookup fix (iowarp/gact-tui#309) — the installed sidecar is
+  triple-stripped by the Tauri bundler. Known residual: the Windows-on-ARM
+  leg publishes a raw `--no-bundle` exe with no launcher beside it and
+  remains unfixed (noted in #907).
+
 ## [0.6.1] — 2026-07-13
 
 ### Fixed
