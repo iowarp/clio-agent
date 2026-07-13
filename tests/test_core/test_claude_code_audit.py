@@ -305,10 +305,14 @@ async def test_call_started_brackets_connect_and_usage_precedes_disconnect(
     disconnect_enter = next(t for name, t in events if name == "disconnect_enter")
 
     # Marker opens before connect begins; connect's 0.5 s lands inside the window.
-    assert started["ts"] <= connect_enter + 1e-3
+    # Tolerance 50ms, not 1ms: both stamps are sequential time.time() calls, and
+    # wall clock is NOT monotonic — an NTP slew inverted them by 1.5ms in a full
+    # suite run. A real misorder would be off by ~delay (500ms), so 50ms keeps
+    # 10x discrimination while being immune to clock adjustment.
+    assert started["ts"] <= connect_enter + 0.05
     assert usage["ts"] - started["ts"] >= delay * 0.8
     # Usage is recorded before teardown, so it survives a disconnect failure.
-    assert usage["ts"] <= disconnect_enter + 1e-3
+    assert usage["ts"] <= disconnect_enter + 0.05
 
 
 async def test_astream_sdk_emits_call_rows_when_gate_on(

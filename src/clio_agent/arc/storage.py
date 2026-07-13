@@ -838,19 +838,17 @@ def make_arc_store(
 ) -> "ARCStore":
     """Build the ARC persistence backend.
 
-    clio-core is clio-agent's data operator; its CTE (Convergent Tiered Environment) is
-    the tiering component that backs the canonical ARC store, not itself the product.
-    Selection (first match wins): explicit ``backend`` arg, then env ``CLIO_ARC_STORE``,
-    then the default ``"cte"`` (the clio-core backend).
+    clio-core is clio-agent's data operator; its CTE (Convergent Tiered Environment)
+    is the tiering component that backs the canonical ARC store. Selection (first
+    match wins): explicit ``backend`` arg, env ``CLIO_ARC_STORE``, default ``"cte"``.
 
-    LOUD DEGRADE (#897): clio-core is the default, but if it is not installed or fails to
-    init, the store degrades to ``LocalFSStore`` **loudly** — a typed reason
-    (:mod:`clio_agent.arc.init_degradation`), a WARNING log line, and a doctor DEGRADED
-    row — never silently, never by refusing to run. The default and an explicit
-    ``CLIO_ARC_STORE=cte`` both degrade this way; only an explicit ``=local`` (or
-    ``backend="local"``) selects LocalFS as a *choice* with no degrade row. INIT-time
-    only (a mid-life daemon loss stays the #892 quarantine); clio-core is retried afresh
-    on the next boot (no sticky state).
+    LOUD DEGRADE (#897): if clio-core is missing or fails to init, the store degrades
+    to ``LocalFSStore`` **loudly** — a typed reason
+    (:mod:`clio_agent.arc.init_degradation`), a WARNING log line, and a doctor
+    DEGRADED row — never silently, never by refusing to run. Only an explicit
+    ``=local`` (or ``backend="local"``) selects LocalFS as a *choice* with no degrade
+    row. INIT-time only (a mid-life daemon loss stays the #892 quarantine); clio-core
+    is retried afresh on the next boot (no sticky state).
     """
     from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
 
@@ -865,19 +863,14 @@ def make_arc_store(
             "arc.store_config", env="CLIO_ARC_STORE_CONFIG", default="", cast=conf.as_str
         )
         if not cfg:
-            # Prefer a per-workspace clio-core config under ``.clio/core`` if present;
-            # otherwise seed/use the default DRAM↔disk hierarchy on the OS data dir.
+            # Per-workspace ``.clio/core`` config if present, else the seeded default.
             from clio_agent import paths  # noqa: PLC0415 - avoid import cycle
 
             ws_cfg = paths.workspace_core_dir() / "cte.yaml"
             cfg = str(ws_cfg) if ws_cfg.is_file() else default_cte_config_path()
-        # Environment conformance (#906): inspect the EXACT config this store
-        # will load and warn typed (clio_core_ram_uncapped) if its effective
-        # ram cap is unbounded — a stale pre-#890 file is otherwise invisible
-        # until the machine is starved. Read-only; never blocks boot.
         from clio_agent.arc.clio_core_config import boot_check_ram_cap  # noqa: PLC0415
 
-        boot_check_ram_cap(cfg, env=os.environ)
+        boot_check_ram_cap(cfg, env=os.environ)  # #906: typed warn on unbounded cap
         try:
             return ClioCoreStore(config_path=cfg)
         except Exception as exc:  # noqa: BLE001 - LOUD degrade to LocalFS, recorded below

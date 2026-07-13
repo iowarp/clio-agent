@@ -175,11 +175,9 @@ def make_segment_store(
     The working-set fold is a **session-scoped** capability (design §4.4b): the flag
     is resolved once here at ARC construction and pinned for the store's life, so a
     session is either wholly old-regime or wholly new-regime — never a mid-session
-    flip. Default ON (``arc.working_set_fold`` / ``CLIO_ARC_WORKING_SET_FOLD`` opts
-    out) since the S2 proofs went green — byte-equality dual-run, reload==live on the
-    real-session corpus, and the fold-ON fixes (arc.op reproducibility, scan_scopes
-    lane hiding). Callers (and the dual-run harness) pass an explicit
-    ``working_set_fold`` to force a regime.
+    flip. Default ON since the S2 proofs went green (byte-equality dual-run,
+    reload==live on the real corpus); ``CLIO_ARC_WORKING_SET_FOLD=0`` opts out.
+    Callers (and the dual-run harness) pass ``working_set_fold`` to force a regime.
 
     Args:
         store: The persistence backend.
