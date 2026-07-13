@@ -29,10 +29,18 @@ from clio_agent.providers.claude_code_thinking_split import (
 
 @pytest.fixture(autouse=True)
 def reset_provider() -> None:
-    """Each test starts with a clean LiteLLM provider map."""
+    """Each test starts with a clean LiteLLM provider map AND a clean streaming
+    client pool — the pooled default (#891) would otherwise carry one test's fake
+    SDK client into the next test's differently-faked module."""
+    from clio_agent.providers.claude_code_sessions import (  # noqa: PLC0415
+        _reset_sessions_for_tests,
+    )
+
     claude_code_litellm._reset_for_tests()
+    _reset_sessions_for_tests()
     yield
     claude_code_litellm._reset_for_tests()
+    _reset_sessions_for_tests()
 
 
 def test_messages_to_claude_prompt_uses_role_metadata() -> None:
@@ -182,8 +190,9 @@ def test_custom_llm_sdk_transport_routes_to_run_sdk(monkeypatch) -> None:
     """transport='sdk' dispatches to the Agent SDK path (not `claude -p` exec)."""
     seen: dict = {}
 
-    def _fake_sdk(*, prompt, model, timeout, cwd):
+    def _fake_sdk(*, prompt, model, timeout, cwd, thinking=None):
         seen["model"] = model
+        seen["thinking"] = thinking
         return "sdk says hi", {"input_tokens": 2, "output_tokens": 3}
 
     monkeypatch.setattr(claude_code_litellm, "_run_sdk", _fake_sdk)

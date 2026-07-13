@@ -1180,6 +1180,10 @@ def test_blueprint_compiler_selects_declared_dspy_module_kind(
     monkeypatch.setattr(dspy, "Predict", FakePredict)
     monkeypatch.setattr(dspy, "ChainOfThought", FakeChainOfThought)
     monkeypatch.setattr(dspy, "ReAct", FakeReAct)
+    # classic-path contract; the V2 module-kind selection binds the concrete
+    # ``dspy.ReActV2`` and is covered in tests/test_gact/test_reactv2_subclass.py. This
+    # test monkeypatches the classic ``dspy.ReAct`` base, so force classic (#901 rule 1).
+    monkeypatch.setattr("clio_agent.gact.agents.runtime._reactv2_enabled", lambda: False)
     monkeypatch.setattr(
         "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
         lambda base_agent, agent_def: _fake_resolved_spec("openai", "gpt-5-mini"),
@@ -1371,6 +1375,10 @@ def test_blueprint_react_empty_answer_preserves_tool_trajectory(
             )
 
     monkeypatch.setattr(dspy, "ReAct", FakeReact)
+    # classic-path contract; the V2 empty-answer / trajectory-evidence equivalent lives
+    # in tests/test_gact/test_reactv2_repair.py. This test monkeypatches the classic
+    # ``dspy.ReAct`` base, so force the classic loop (#901 rule 1).
+    monkeypatch.setattr("clio_agent.gact.agents.runtime._reactv2_enabled", lambda: False)
     monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object())
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
     monkeypatch.setattr(
@@ -2101,7 +2109,7 @@ def test_earthscope_data_prompt_requires_staged_metadata_before_station_filter(
     # the cleaned workspace CSV is the station ranker's required input, and the run
     # is explicitly incomplete until that staging pipeline finishes.
     assert "The downstream ranker needs the CLEANED workspace file" in normalized_discovery
-    assert "your run is INCOMPLETE until the `shell_bash` clean has run" in normalized_discovery
+    assert "your run is INCOMPLETE until the `pandas_filter_data` clean has run" in normalized_discovery
     # The station ranker filters the staged metadata path, never a guessed name
     # (tool renamed: ndp_filter_earthscope_station_catalog -> geo_filter_points_by_radius).
     assert "never filter the raw catalog or a guessed filename" in normalized_station

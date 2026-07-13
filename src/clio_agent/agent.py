@@ -71,6 +71,7 @@ from clio_agent.harness import (
     tool_result_ok,
 )
 from clio_agent.optimizer.instrumentation import _extract_output
+from clio_agent.providers.stateful_common import stateful_scope as _stateful_scope
 from clio_agent.registry.registry import AgentCapability, AgentRegistry
 
 # Generic path-detection allowlist: file suffixes recognized when extracting
@@ -240,8 +241,8 @@ class ClioAgent(dspy.Module):
 
         # ARC Memory: reuse the injected one (the gact server owns the single per-process
         # ARC and re-injects it on every bind) or mint one. The persistence backend comes
-        # from the factory: clio-core CTE by default (the gold-standard, in-process tiered
-        # store), LocalFSStore via CLIO_ARC_STORE=local. Falls back to LocalFS if the CTE
+        # from the factory: clio-core by default (the gold-standard, in-process tiered
+        # store), LocalFSStore via CLIO_ARC_STORE=local. Falls back to LocalFS if the clio-core
         # binding/runtime is unavailable.
         self.arc = (
             arc
@@ -460,12 +461,8 @@ class ClioAgent(dspy.Module):
     ) -> dspy.Prediction:
         """Process a question through the CLIO agent loop.
 
-        Flow:
-            1. Retrieve session and current-file context from ARC
-            2. Ask the planner for the next action using live capabilities
-            3. Execute tools and append observations
-            4. Answer from observations or direct conversation
-            5. Store decisions, provenance, metrics, and conversation in ARC
+        Flow: retrieve session/file context from ARC → ask the planner for the next
+        action → execute tools and append observations → answer → store in ARC.
 
         Args:
             question: User's question or request
@@ -522,14 +519,17 @@ class ClioAgent(dspy.Module):
         error_info = None
 
         try:
-            selected, answer, expert_result, error_info, route = self._run_agent_loop(
-                question=question,
-                session_context=session_context,
-                file_context=file_context,
-                images=images,
-                trace=trace,
-                routing_mode=routing_mode,
-            )
+            # Bind ONE per-forward stateful scope around the Tier-1 planner loop (#891,
+            # like the V2 expert ``forward``) so append-only sends are delta-eligible.
+            with _stateful_scope():
+                selected, answer, expert_result, error_info, route = self._run_agent_loop(
+                    question=question,
+                    session_context=session_context,
+                    file_context=file_context,
+                    images=images,
+                    trace=trace,
+                    routing_mode=routing_mode,
+                )
             trace.route = route
             success = True
         except Exception as e:  # noqa: BLE001 - routing failure recorded on the trace (success=False + inferred expert)
@@ -2683,7 +2683,11 @@ class ClioAgent(dspy.Module):
         return self.arc.get_conversation_history(session_id, limit=limit)
 
     def shutdown(self) -> None:
-        """Clean shutdown of ClioAgent resources."""
+        """Close the persistent MCP tool executors so their stdio children are reaped (#900)."""
+        from clio_agent.runtime.process_tree import close_tool_executors
+
         if self.verbose:
             print("[ClioAgent] Shutting down...")
-            print("[ClioAgent] Shutdown complete")
+        executors = [self.tool_executor, *self._workspace_tool_executors.values()]
+        self._workspace_tool_executors = {}
+        close_tool_executors(executors)

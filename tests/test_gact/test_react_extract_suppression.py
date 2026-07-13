@@ -355,6 +355,11 @@ def test_return_contract_carries_answer_while_visible_parts_suppressed(
 
     from clio_agent.gact import app as gact_app
 
+    # classic-path contract; the V2 submit-turn suppression equivalent is
+    # ``react_submit_field_suppressed`` (tests/test_gact/test_reactv2_submit.py). This
+    # test drives the classic ``_RetainingReAct`` internals (mocked react/extract),
+    # so force the classic loop (#901 rule 1).
+    monkeypatch.setattr("clio_agent.gact.agents.runtime._reactv2_enabled", lambda: False)
     cls = gact_app._retaining_react_cls()
     inst = object.__new__(cls)  # bypass dspy.ReAct.__init__ (no real LM)
     inst.max_iters = 3

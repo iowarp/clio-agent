@@ -1006,7 +1006,7 @@ class SegmentStore:
         return sorted(out)
 
     def supports_search(self) -> bool:
-        """Whether the backend does real BM25 ranking (CTE) vs the naive fallback."""
+        """Whether the backend does real BM25 ranking (clio-core) vs the naive fallback."""
         fn = getattr(self._store, "supports_search", None)
         return bool(fn()) if callable(fn) else False
 
@@ -1015,7 +1015,7 @@ class SegmentStore:
     ) -> list[tuple[str, float]]:
         """Semantic discovery (Thread D): rank a session's scopes by how well their
         content matches ``query_text``. Returns ``[(scope, score)]`` best-first —
-        "which expert/scope knows about X". BM25 on CTE, naive word-overlap on LocalFS.
+        "which expert/scope knows about X". BM25 on clio-core, naive word-overlap on LocalFS.
         """
         search = getattr(self._store, "search", None)
         if not callable(search):

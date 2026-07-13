@@ -42,19 +42,28 @@ DEFAULT_MAX_LINES = 800
 # falls under DEFAULT_MAX_LINES) in the same change. Paths are relative to the
 # repository root and use forward slashes.
 RATCHET_BASELINE: dict[str, int] = {
-    "src/clio_agent/agent.py": 2689,
+    # #900: +4 for ClioAgent.shutdown closing the MCP tool executors (heavy reaping
+    # logic lives in the new owner module runtime/process_tree.py, not here).
+    "src/clio_agent/agent.py": 2693,
     "src/clio_agent/arc/memory.py": 1394,
     "src/clio_agent/arc/segments.py": 1117,
-    "src/clio_agent/arc/storage.py": 978,
+    # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
+    "src/clio_agent/arc/storage.py": 883,
     "src/clio_agent/gact/agent_blueprints.py": 1100,
     "src/clio_agent/gact/agents/builders.py": 2209,
     "src/clio_agent/gact/agents/resolution.py": 803,
-    "src/clio_agent/gact/app.py": 2525,
+    # #900: +14 for the lifespan child-reaper install + clean-shutdown teardown wiring
+    # (both delegate to the owner module runtime/process_tree.py).
+    "src/clio_agent/gact/app.py": 2539,
     "src/clio_agent/gact/routes/agents.py": 921,
     "src/clio_agent/gact/routes/blueprints.py": 859,
     "src/clio_agent/gact/routes/catalog.py": 880,
     "src/clio_agent/gact/routes/mcp.py": 939,
-    "src/clio_agent/gact/routes/providers.py": 1314,
+    # #895: +6 for threading the provider-generic thinking_level onto the LM bind
+    # (LMProviderConfig arg + app.state.lm_config + the GET's thinking_level /
+    # thinking_effective fields). The mapping logic itself lives in the owner
+    # module providers/thinking.py, not here.
+    "src/clio_agent/gact/routes/providers.py": 1320,
     "src/clio_agent/gact/routes/sessions.py": 1478,
     "src/clio_agent/gact/runtime/globals.py": 923,
     "src/clio_agent/gact/streaming.py": 1027,
@@ -64,8 +73,14 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/gact/turn_delegation.py": 913,
     "src/clio_agent/gact/turn_finalize.py": 935,
     "src/clio_agent/gact/types.py": 1143,
-    "src/clio_agent/providers/claude_code_litellm.py": 1176,
-    "src/clio_agent/runtime/status.py": 1222,
+    # -120 (#891): the SDK-session machinery moved out to sibling owner modules —
+    # the blocking-path pool to providers/claude_code_sdk_pool.py and the per-expert
+    # streaming session/delta transport to providers/claude_code_sessions.py; this
+    # file keeps only the LiteLLM handler + exec/stream plumbing. Ratchet back down
+    # further with the #714/#767 decomposition.
+    "src/clio_agent/providers/claude_code_litellm.py": 1025,
+    # #900: +2 for wiring probe_process_tree into the doctor collect().
+    "src/clio_agent/runtime/status.py": 1185,
     "src/clio_agent/tools/execution.py": 1187,
     "src/clio_agent/ui/cli.py": 1156,
 }

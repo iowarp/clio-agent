@@ -12,7 +12,6 @@ the only tool execution layer.
 from __future__ import annotations
 
 import asyncio
-import atexit
 import json
 import logging
 import os
@@ -28,6 +27,31 @@ from clio_agent.providers._cli_provider import (
     messages_to_prompt,
     register_custom_provider,
 )
+from clio_agent.providers.claude_code_audit import (
+    active_gact_ids,
+    emit_call_started,
+    emit_call_usage,
+)
+from clio_agent.providers.claude_code_bridge import (
+    build_model_response as _build_model_response,
+)
+from clio_agent.providers.claude_code_options import build_sdk_options
+from clio_agent.providers.claude_code_sessions import (
+    _SDK_SESSION_POOL,
+    _STREAM_CLIENT_POOL,
+    _per_call_message_source,
+    _run_sdk,
+    _SdkSession,
+    _SdkSessionPool,
+    _streaming_chunk,
+    session_reuse_enabled,
+    transient_transport_error_message,
+    transient_transport_error_types,
+)
+from clio_agent.providers.claude_code_stateful import (
+    StatefulSend,
+    resolve_stateful_send,
+)
 from clio_agent.providers.claude_code_thinking_split import (
     _split_provider_thinking_contract_delta,
 )
@@ -38,7 +62,7 @@ logger = logging.getLogger(__name__)
 
 try:
     from litellm import CustomLLM
-    from litellm.types.utils import Choices, Message, ModelResponse, Usage
+    from litellm.types.utils import ModelResponse
 except ImportError as e:  # pragma: no cover - litellm is a hard dep
     raise ImportError("litellm must be installed to use the Claude Code provider") from e
 
@@ -82,21 +106,6 @@ def _trace_json(value: Any) -> str:
         return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
     except TypeError:
         return json.dumps(str(value), ensure_ascii=False)
-
-
-def _active_gact_ids() -> tuple[str, str, str]:
-    """Return active GACT session, turn, and trace ids for audit rows."""
-
-    try:
-        from clio_agent.gact.context import (  # noqa: PLC0415
-            active_session_id,
-            active_trace_id,
-            active_turn_id,
-        )
-
-        return active_session_id(), active_turn_id(), active_trace_id()
-    except Exception:  # noqa: BLE001 - provider audit must never break calls
-        return "", "", ""
 
 
 def _messages_to_claude_prompt(messages: list[dict[str, Any]]) -> str:
@@ -193,7 +202,7 @@ def _run_exec(
     if not text:
         raise ClaudeCodeExecError(f"claude -p returned empty content (model={model})")
     usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
-    session_id, turn_id, trace_id = _active_gact_ids()
+    session_id, turn_id, trace_id = active_gact_ids()
     stream_audit(
         "provider.raw_event",
         provider="claude_code_exec",
@@ -230,191 +239,9 @@ def _run_exec(
     return text, usage
 
 
-class _SdkSession:
-    """Process-wide persistent Claude Agent SDK session (#715).
-
-    One ``ClaudeSDKClient`` CLI connection is opened once and reused across every LM
-    call, so calls after the first avoid the ~10-15s cold start that the ``exec`` path
-    (and a fresh ``query()``) pays. All SDK I/O runs on a single dedicated asyncio loop
-    in a daemon thread; clio's worker threads submit coroutines via
-    ``run_coroutine_threadsafe`` and block on the result, so concurrent calls are
-    serialized onto the one connection (the client handles one query/receive cycle at a
-    time). The connection is opened lazily and rebuilt when the bound model/cwd changes.
-
-    Bare-model transport, mirroring :func:`_run_exec`: Claude Code's own tools are
-    disabled, ``max_turns=1``, and ``setting_sources=[]`` so the model sees only clio's
-    transcript (no ``~/.claude`` CLAUDE.md/settings) and clio's ReAct loop drives tools.
-    """
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._loop: Any = None
-        self._thread: threading.Thread | None = None
-        self._client: Any = None
-        self._model: str | None = None
-        self._cwd: str | None = None
-
-    def _ensure_loop(self) -> None:
-        if self._loop is not None:
-            return
-        loop = asyncio.new_event_loop()
-        thread = threading.Thread(target=loop.run_forever, name="claude-sdk-loop", daemon=True)
-        thread.start()
-        self._loop, self._thread = loop, thread
-        atexit.register(self.close)
-
-    def _submit(self, coro: Any, timeout: float | None) -> Any:
-        return asyncio.run_coroutine_threadsafe(coro, self._loop).result(timeout=timeout)
-
-    async def _aconnect(self, model: str, cwd: str | None) -> Any:
-        from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient  # noqa: PLC0415
-
-        options = ClaudeAgentOptions(
-            tools=[],
-            model=model,
-            max_turns=1,
-            allowed_tools=[],
-            permission_mode="bypassPermissions",
-            setting_sources=[],
-            cwd=cwd,
-        )
-        client = ClaudeSDKClient(options=options)
-        await client.connect()
-        return client
-
-    async def _aquery(self, prompt: str) -> tuple[str, dict[str, Any]]:
-        from claude_agent_sdk import (  # noqa: PLC0415
-            AssistantMessage,
-            ResultMessage,
-            TextBlock,
-        )
-
-        await self._client.query(prompt, session_id=uuid.uuid4().hex)
-        parts: list[str] = []
-        usage: dict[str, Any] = {}
-        async for msg in self._client.receive_response():
-            if isinstance(msg, AssistantMessage):
-                parts.extend(b.text for b in msg.content if isinstance(b, TextBlock))
-            elif isinstance(msg, ResultMessage):
-                u = getattr(msg, "usage", None)
-                if isinstance(u, dict):
-                    usage = u
-        return "".join(parts).strip(), usage
-
-    def _reset_client(self) -> None:
-        if self._client is None:
-            return
-        try:
-            self._submit(self._client.disconnect(), timeout=15.0)
-        except Exception:  # noqa: BLE001 - best-effort teardown; never block the caller
-            logger.warning("claude sdk client disconnect failed", exc_info=True)
-        self._client = self._model = self._cwd = None
-
-    def complete(
-        self, *, prompt: str, model: str, timeout: float | None, cwd: str | None
-    ) -> tuple[str, dict[str, Any]]:
-        try:
-            import claude_agent_sdk  # noqa: F401,PLC0415
-        except ImportError as exc:
-            raise ClaudeCodeCLIUnavailableError(
-                "claude_code_transport='sdk' requires the claude-agent-sdk package "
-                "(install the 'claude-code' extra)."
-            ) from exc
-
-        with self._lock:
-            self._ensure_loop()
-            if self._client is None or self._model != model or self._cwd != cwd:
-                self._reset_client()
-                self._client = self._submit(self._aconnect(model, cwd), timeout=60.0)
-                self._model, self._cwd = model, cwd
-            try:
-                text, usage = self._submit(self._aquery(prompt), timeout=timeout)
-            except TimeoutError as exc:
-                # A timed-out call leaves the connection mid-cycle; drop it so the
-                # next call reconnects cleanly.
-                self._reset_client()
-                raise ClaudeCodeExecError(
-                    f"claude agent sdk timed out after {timeout}s (model={model})"
-                ) from exc
-        if not text:
-            raise ClaudeCodeExecError(f"claude agent sdk returned empty content (model={model})")
-        return text, usage
-
-    def close(self) -> None:
-        with self._lock:
-            self._reset_client()
-            if self._loop is not None:
-                self._loop.call_soon_threadsafe(self._loop.stop)
-                self._loop = None
-
-
-class _SdkSessionPool:
-    """Keyed pool of persistent Claude Agent SDK sessions (#818).
-
-    Maps ``(model, cwd)`` to a dedicated :class:`_SdkSession`, so two experts that
-    want *different* ``claude_code`` models can run concurrently — each holds its own
-    CLI connection (and its own asyncio loop/thread) instead of thrashing one shared
-    ``_SdkSession`` that would tear down and reconnect on every model/cwd flip.
-
-    Same-key calls still share one session and serialize onto its single connection
-    (the SDK client handles one query/receive cycle at a time); distinct-key calls
-    never contend. The per-app profile store (#818) makes concurrent distinct
-    ``claude_code`` experts *expressible*, and this pool makes them *safe*: the pool
-    lock is held only for the O(1) session lookup/creation, never across a completion.
-    """
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._sessions: dict[tuple[str, str | None], _SdkSession] = {}
-
-    def _session_for(self, model: str, cwd: str | None) -> _SdkSession:
-        """Return (creating if needed) the session bound to ``(model, cwd)``."""
-
-        key = (model, cwd)
-        with self._lock:
-            session = self._sessions.get(key)
-            if session is None:
-                session = _SdkSession()
-                self._sessions[key] = session
-            return session
-
-    def complete(
-        self, *, prompt: str, model: str, timeout: float | None, cwd: str | None
-    ) -> tuple[str, dict[str, Any]]:
-        """Complete one turn on the session keyed by ``(model, cwd)``."""
-
-        return self._session_for(model, cwd).complete(
-            prompt=prompt, model=model, timeout=timeout, cwd=cwd
-        )
-
-    def close(self) -> None:
-        """Tear down every pooled session and drop the pool."""
-
-        with self._lock:
-            sessions = list(self._sessions.values())
-            self._sessions.clear()
-        for session in sessions:
-            session.close()
-
-
-_SDK_SESSION_POOL = _SdkSessionPool()
-atexit.register(_SDK_SESSION_POOL.close)
-
-
-def _run_sdk(
-    *,
-    prompt: str,
-    model: str,
-    timeout: float | None = 180.0,
-    cwd: str | None = None,
-) -> tuple[str, dict[str, Any]]:
-    """Run one completion via the keyed Claude Agent SDK session pool (#715, #818).
-
-    Delegates to the process-wide :data:`_SDK_SESSION_POOL`, which keeps one CLI
-    connection per ``(model, cwd)`` so distinct-model experts run concurrently without
-    reconnect thrash. Returns ``(text, usage)`` in the same shape as :func:`_run_exec`.
-    """
-    return _SDK_SESSION_POOL.complete(prompt=prompt, model=model, timeout=timeout, cwd=cwd)
+# The SDK transport machinery (the blocking-path pool in ``claude_code_sdk_pool`` and
+# the #891 pooled streaming transport in ``claude_code_sessions``) is imported at the
+# top and re-exported below for the historical import seams (#775 no-accretion).
 
 
 def _sdk_stream_event_text(event: dict[str, Any]) -> str:
@@ -447,35 +274,6 @@ def _sdk_stream_event_thinking(event: dict[str, Any]) -> str:
     return ""
 
 
-def _streaming_chunk(
-    *,
-    text: str,
-    is_finished: bool,
-    finish_reason: str | None = None,
-    usage_payload: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Build a LiteLLM-compatible streaming chunk."""
-    usage: dict[str, int] | None = None
-    if usage_payload is not None:
-        prompt_tokens = int(usage_payload.get("input_tokens", 0) or 0)
-        prompt_tokens += int(usage_payload.get("cache_creation_input_tokens", 0) or 0)
-        prompt_tokens += int(usage_payload.get("cache_read_input_tokens", 0) or 0)
-        completion_tokens = int(usage_payload.get("output_tokens", 0) or 0)
-        usage = {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": prompt_tokens + completion_tokens,
-        }
-    return {
-        "text": text,
-        "is_finished": is_finished,
-        "finish_reason": finish_reason or ("stop" if is_finished else None),
-        "index": 0,
-        "tool_use": None,
-        "usage": usage,
-    }
-
-
 async def _astream_sdk(
     *,
     prompt: str,
@@ -483,12 +281,26 @@ async def _astream_sdk(
     timeout: float | None = 180.0,
     cwd: str | None = None,
     call_index: int = 0,
+    thinking: dict[str, Any] | None = None,
+    send: StatefulSend | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
-    """Stream one Claude Code SDK call as LiteLLM-compatible chunks."""
+    """Stream one Claude Code SDK call as LiteLLM-compatible chunks.
+
+    With connection reuse ON
+    (:func:`~clio_agent.providers.claude_code_sessions.session_reuse_enabled`, the
+    default) the call rides the pooled persistent client (#891): the connect is
+    paid once per ``(model, cwd, thinking)`` and every call sends its FULL prompt
+    under a FRESH ``session_id`` — the provider's content-prefix cache supplies the
+    cache_read win; the per-call conversation boundary supplies
+    compartmentalisation (no cross-call/cross-expert context bleed). With the kill
+    switch off the per-call path runs byte-for-byte as before — a fresh client,
+    connect, query, disconnect. The downstream normalization (#877 marker-split,
+    #878 suppression) is identical on both paths — only the client lifecycle
+    differs.
+    """
     try:
         from claude_agent_sdk import (  # noqa: PLC0415
             AssistantMessage,
-            ClaudeAgentOptions,
             ClaudeSDKClient,
             ResultMessage,
             StreamEvent,
@@ -500,30 +312,52 @@ async def _astream_sdk(
             "(install the 'claude-code' extra)."
         ) from exc
 
-    options = ClaudeAgentOptions(
-        tools=[],
+    call_id = (send.call_id if send is not None else "") or uuid.uuid4().hex  # #901: join stateful↔TTFT on ONE id
+    emit_call_started(  # BEFORE connect: SDK spawn cold-start counts in the call, not the gap (#891)
+        call_id=call_id,
+        call_index=call_index,
         model=model,
-        max_turns=1,
-        allowed_tools=[],
-        permission_mode="bypassPermissions",
-        setting_sources=[],
-        cwd=cwd,
-        include_partial_messages=True,
+        transport="sdk",
+        prompt=prompt,  # ALWAYS the full prompt — the fingerprint tracks cache-prefix stability
     )
-    client = ClaudeSDKClient(options=options)
+    # Full-vs-delta send plan (#901). ``send`` carries the actual payload (delta tail
+    # or full prompt) + the session_id to send under (stable across a delta run, fresh
+    # on any reset). ``None`` / not-engaged ⇒ the full prompt under a fresh id — the
+    # byte-identical pre-#901 transport.
+    payload = send.payload if send is not None else prompt
+    session_id = send.session_id if send is not None else uuid.uuid4().hex
+    if session_reuse_enabled():
+        # Pooled connection (connect reused, hosted on the entry's own loop-thread so
+        # it survives the per-call asyncio.run() loops). The entry's query lock
+        # serialises the query→receive cycle.
+        entry = _STREAM_CLIENT_POOL.entry_for(model=model, cwd=cwd, thinking=thinking)
+        source = entry.stream(
+            payload=payload,
+            session_id=session_id,
+            timeout=timeout,
+            on_construct=_STREAM_CLIENT_POOL.bump_construct,
+        )
+    else:
+        # Per-call path (kill switch off): a fresh client, the resolved payload, and a
+        # disconnect after the call.
+        client = ClaudeSDKClient(
+            options=build_sdk_options(model=model, cwd=cwd, stream=True, thinking=thinking)
+        )
+        source = _per_call_message_source(
+            client, prompt=payload, session_id=session_id, timeout=timeout
+        )
     emitted_partial = False
     final_text = ""
     final_usage: dict[str, Any] = {}
     final_reason = "stop"
     response_log: list[dict[str, Any]] = []
 
-    async def _run() -> AsyncIterator[dict[str, Any]]:
+    async def _process() -> AsyncIterator[dict[str, Any]]:
         nonlocal emitted_partial, final_text, final_usage, final_reason
         provider_thinking_marker_tail = ""
         provider_thinking_contract_started = False
         promoted_contract_text = ""
         emitted_regular_text = ""
-        await client.connect()
         start = time.monotonic()
         last = start
         index = 0
@@ -534,8 +368,7 @@ async def _astream_sdk(
             len(prompt),
             cwd or "",
         )
-        await client.query(prompt, session_id=uuid.uuid4().hex)
-        async for msg in client.receive_response():
+        async for msg in source:
             now = time.monotonic()
             index += 1
             trace.HF_ON and trace.hot(
@@ -736,23 +569,39 @@ async def _astream_sdk(
                         f"{getattr(msg, 'api_error_status', None) or getattr(msg, 'subtype', None)}"
                     )
 
+    # Both message sources are timeout-bounded internally (the pooled entry enforces
+    # it on its owner loop; the per-call source wraps its own query→receive), so the
+    # timeout surfaces here as a TimeoutError to translate.
     try:
-        if timeout is None:
-            async for chunk in _run():
-                yield chunk
-        else:
-            async with asyncio.timeout(timeout):
-                async for chunk in _run():
-                    yield chunk
+        async for chunk in _process():
+            yield chunk
     except TimeoutError as exc:
+        if send is not None:
+            send.note_error()  # drop the poisoned session → next call resets (provider_error)
         raise ClaudeCodeExecError(
             f"claude agent sdk timed out after {timeout}s (model={model})"
         ) from exc
+    except transient_transport_error_types() as exc:
+        # The pooled CLI subprocess died mid-stream (exit 1, no is_error result).
+        # The entry already dropped the poisoned client on the abnormal end, so
+        # surface a TYPED, audited, transient error → the LM retry layer re-issues
+        # on a fresh connection instead of failing the turn (#891 live-crash fix).
+        if send is not None:
+            send.note_error()  # drop the poisoned stateful session → bounded full resend
+        raise ClaudeCodeExecError(
+            transient_transport_error_message(model, exc, call_index=call_index)
+        ) from exc
     finally:
-        try:
-            await client.disconnect()
-        except Exception:  # noqa: BLE001 - best-effort teardown
-            logger.warning("claude sdk streaming client disconnect failed", exc_info=True)
+        emit_call_usage(  # BEFORE disconnect: record call end even if teardown raises (#891)
+            call_id=call_id,
+            call_index=call_index,
+            model=model,
+            transport="sdk",
+            usage=final_usage,
+            output_chars=len(final_text),
+        )
+        # The pooled client's lifecycle (connect reuse + reset-on-abnormal-end) is
+        # owned by the entry; the per-call client disconnects inside its own source.
         trace.HF_ON and trace.hot(
             "CLAUDE-CODE-IO",
             "response call=%d json=%s",
@@ -787,39 +636,6 @@ async def _astream_sdk(
         )
     else:
         raise ClaudeCodeExecError(f"claude agent sdk returned empty content (model={model})")
-
-
-def _build_model_response(
-    *,
-    text: str,
-    model: str,
-    usage_payload: dict[str, Any] | None = None,
-    request_id: str | None = None,
-) -> ModelResponse:
-    """Wrap a Claude Code result in a LiteLLM ``ModelResponse``."""
-    usage_payload = usage_payload or {}
-    prompt_tokens = int(usage_payload.get("input_tokens", 0) or 0)
-    prompt_tokens += int(usage_payload.get("cache_creation_input_tokens", 0) or 0)
-    prompt_tokens += int(usage_payload.get("cache_read_input_tokens", 0) or 0)
-    completion_tokens = int(usage_payload.get("output_tokens", 0) or 0)
-    return ModelResponse(
-        id=request_id or f"claude-code-{uuid.uuid4().hex}",
-        choices=[
-            Choices(
-                index=0,
-                message=Message(role="assistant", content=text),
-                finish_reason="stop",
-            )
-        ],
-        created=int(time.time()),
-        model=f"claude_code/{model}",
-        object="chat.completion",
-        usage=Usage(
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=prompt_tokens + completion_tokens,
-        ),
-    )
 
 
 class ClaudeCodeLLM(CustomLLM):
@@ -858,6 +674,8 @@ class ClaudeCodeLLM(CustomLLM):
             )
         timeout_s = float(timeout) if timeout else 180.0
         cwd = params.get("claude_code_cwd", os.getcwd())
+        # Provider-generic thinking (#895): resolved SDK config, or None = default.
+        thinking = params.get("claude_code_thinking")
         trace.HF_ON and trace.hot(
             "CLAUDE-CODE-IO",
             "request call=%d json=%s",
@@ -866,6 +684,7 @@ class ClaudeCodeLLM(CustomLLM):
                 {
                     "call": call_index,
                     "mode": "completion",
+                    "thinking": thinking,
                     "model": clean_model,
                     "transport": transport,
                     "api_base": api_base,
@@ -894,9 +713,23 @@ class ClaudeCodeLLM(CustomLLM):
             timeout_s,
             cwd or "",
         )
+        call_id = uuid.uuid4().hex
+        emit_call_started(
+            call_id=call_id,
+            call_index=call_index,
+            model=clean_model,
+            transport=transport,
+            prompt=prompt,
+        )
         started = time.monotonic()
         if transport == "sdk":
-            text, usage = _run_sdk(prompt=prompt, model=clean_model, timeout=timeout_s, cwd=cwd)
+            text, usage = _run_sdk(
+                prompt=prompt,
+                model=clean_model,
+                timeout=timeout_s,
+                cwd=cwd,
+                thinking=thinking,
+            )
         else:
             text, usage = _run_exec(
                 prompt=prompt,
@@ -905,6 +738,14 @@ class ClaudeCodeLLM(CustomLLM):
                 cwd=cwd,
                 call_index=call_index,
             )
+        emit_call_usage(
+            call_id=call_id,
+            call_index=call_index,
+            model=clean_model,
+            transport=transport,
+            usage=usage,
+            output_chars=len(text),
+        )
         trace.HF_ON and trace.hot(
             "CLAUDE-CODE-CALL",
             "completion_end call=%d model=%s transport=%s elapsed_ms=%.1f text_chars=%d",
@@ -987,24 +828,9 @@ class ClaudeCodeLLM(CustomLLM):
         timeout: Any = None,
         client: Any = None,
     ) -> Iterator[Any]:
-        del (
-            model,
-            messages,
-            api_base,
-            custom_prompt_dict,
-            model_response,
-            print_verbose,
-            encoding,
-            api_key,
-            logging_obj,
-            optional_params,
-            acompletion,
-            litellm_params,
-            logger_fn,
-            headers,
-            timeout,
-            client,
-        )
+        del (model, messages, api_base, custom_prompt_dict, model_response, print_verbose)
+        del (encoding, api_key, logging_obj, optional_params, acompletion, litellm_params)
+        del (logger_fn, headers, timeout, client)
         raise ClaudeCodeExecError(
             "Claude Code provider does not support live streaming; use non-streaming completion"
         )
@@ -1047,6 +873,8 @@ class ClaudeCodeLLM(CustomLLM):
         prompt = _messages_to_claude_prompt(messages)
         timeout_s = float(timeout) if timeout else 180.0
         cwd = params.get("claude_code_cwd", os.getcwd())
+        # Provider-generic thinking (#895): resolved SDK thinking config, or None.
+        thinking = params.get("claude_code_thinking")
         trace.HF_ON and trace.hot(
             "CLAUDE-CODE-IO",
             "request call=%d json=%s",
@@ -1055,6 +883,7 @@ class ClaudeCodeLLM(CustomLLM):
                 {
                     "call": call_index,
                     "mode": "astreaming",
+                    "thinking": thinking,
                     "model": clean_model,
                     "transport": transport,
                     "api_base": api_base,
@@ -1089,6 +918,18 @@ class ClaudeCodeLLM(CustomLLM):
         if transport == "sdk":
             chunk_count = 0
             text_chars = 0
+            # Full-vs-stateful-delta send plan (#901). Inert (fresh id, full prompt)
+            # unless the stateful flag is ON and a ReActV2 scope token is active; the
+            # classic path resolves to a byte-identical full send.
+            send = resolve_stateful_send(
+                messages=list(messages or []),
+                full_prompt=prompt,
+                model=clean_model,
+                cwd=cwd,
+                thinking=thinking,
+                serialize=_messages_to_claude_prompt,
+                call_index=call_index,
+            )
             try:
                 async for chunk in _astream_sdk(
                     prompt=prompt,
@@ -1096,6 +937,8 @@ class ClaudeCodeLLM(CustomLLM):
                     timeout=timeout_s,
                     cwd=cwd,
                     call_index=call_index,
+                    thinking=thinking,
+                    send=send,
                 ):
                     chunk_count += 1
                     text_chars += len(str(chunk.get("text") or ""))
@@ -1163,9 +1006,7 @@ class ClaudeCodeLLM(CustomLLM):
 
 # The once-per-process LiteLLM registration guard is the shared CLI-provider
 # machinery (identical lifecycle to codex; only the provider key differs).
-ensure_registered, _reset_for_tests = register_custom_provider(
-    "claude_code", ClaudeCodeLLM
-)
+ensure_registered, _reset_for_tests = register_custom_provider("claude_code", ClaudeCodeLLM)
 
 
 __all__ = [
@@ -1173,4 +1014,12 @@ __all__ = [
     "ClaudeCodeExecError",
     "ClaudeCodeLLM",
     "ensure_registered",
+    # Re-exported from providers.claude_code_sessions for the historical import
+    # seams (tests + the completion path) — the SDK-session machinery's owner
+    # module moved out of this file (#891, #775 no-accretion).
+    "_run_sdk",
+    "_SDK_SESSION_POOL",
+    "_SdkSession",
+    "_SdkSessionPool",
+    "_STREAM_CLIENT_POOL",
 ]

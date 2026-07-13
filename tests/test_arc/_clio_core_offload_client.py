@@ -1,11 +1,11 @@
-"""Subprocess client entrypoint for the CTE auto-offload / reload acceptance test.
+"""Subprocess client entrypoint for the clio-core auto-offload / reload acceptance test.
 
-This runs the **real** ``arc/storage.py`` ``CTEStore`` path (not raw binding
+This runs the **real** ``arc/storage.py`` ``ClioCoreStore`` path (not raw binding
 calls) against a *private*, env-configured clio-core daemon. It is deliberately
 a subprocess for two reasons:
 
-* clio-core's process-global one-init-per-process guard (``CTEStore._initialized``)
-  means a test process that also drives CTE elsewhere cannot re-init a second
+* clio-core's process-global one-init-per-process guard (``ClioCoreStore._initialized``)
+  means a test process that also drives clio-core elsewhere cannot re-init a second
   runtime; a fresh subprocess gets a clean guard.
 * clio-core#722: client ops against a *dead* runtime access-violate (0xC0000005)
   and take the whole process down. Isolating the ops in a subprocess turns that
@@ -55,7 +55,7 @@ def _marker(run_id: str) -> bytes:
     Returns:
         The marker bytes, ``len(...) % 3 == 0``.
     """
-    marker = f"CLIO_CTE_OFFLOAD_{run_id}".encode()
+    marker = f"CLIO_CLIO_CORE_OFFLOAD_{run_id}".encode()
     while len(marker) % 3:
         marker += b"_"
     return marker
@@ -96,13 +96,13 @@ def main() -> int:
     total_mb = int(os.environ.get("CLIO_OFFLOAD_TOTAL_MB", "30"))
     result: dict[str, Any] = {"run_id": run_id, "stage": "start"}
     try:
-        from clio_agent.arc.storage import CTEStore, make_arc_store
+        from clio_agent.arc.storage import ClioCoreStore, make_arc_store
 
         store = make_arc_store(backend="cte")
         result["store_type"] = type(store).__name__
-        if not isinstance(store, CTEStore):
+        if not isinstance(store, ClioCoreStore):
             # A silent LocalFS fallback would make the proof vacuous.
-            result["error"] = f"expected CTEStore, got {type(store).__name__}"
+            result["error"] = f"expected ClioCoreStore, got {type(store).__name__}"
             _emit(out_path, result)
             return 3
 

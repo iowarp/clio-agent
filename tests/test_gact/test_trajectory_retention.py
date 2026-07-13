@@ -14,6 +14,18 @@ from clio_agent.gact import context as ctx
 from clio_agent.gact.runtime import globals as gact_globals
 
 
+@pytest.fixture(autouse=True)
+def _pin_classic_reactv2(monkeypatch: pytest.MonkeyPatch) -> None:
+    """classic-path contract; V2 equivalent in tests/test_gact/test_reactv2_subclass.py
+    + tests/test_gact/test_reactv2_repair.py + tests/test_arc/test_reactv2_highway.py.
+
+    These pin the CLASSIC ``_RetainingReAct`` internals (``.signature`` / ``.extract`` /
+    ``_format_trajectory`` / ``dspy.ReAct`` subclassing / classic per-step highway).
+    The V2 retention/repair + highway equivalents live in the files above; force the
+    classic loop so the frozen classic path stays tested (#901 rule 1)."""
+    monkeypatch.setattr("clio_agent.gact.agents.runtime._reactv2_enabled", lambda: False)
+
+
 class _AttrDict(dict):
     """dict whose keys are also attribute-accessible (mimics dspy.Prediction)."""
 

@@ -65,7 +65,7 @@ def test_concurrent_distinct_models_hold_own_sessions(monkeypatch) -> None:
     handled_by: dict[str, int] = {}
     lock = threading.Lock()
 
-    def fake_complete(self, *, prompt: str, model: str, timeout, cwd):
+    def fake_complete(self, *, prompt: str, model: str, timeout, cwd, thinking=None):
         # Both concurrent calls must be here simultaneously; a shared serialized
         # session would deadlock this barrier.
         barrier.wait()
@@ -102,7 +102,7 @@ def test_run_sdk_delegates_to_the_module_pool(monkeypatch) -> None:
     """``_run_sdk`` routes through the process-wide keyed session pool."""
     seen: dict = {}
 
-    def fake_complete(*, prompt, model, timeout, cwd):
+    def fake_complete(*, prompt, model, timeout, cwd, thinking=None):
         seen.update(prompt=prompt, model=model, timeout=timeout, cwd=cwd)
         return "pooled", {"input_tokens": 1, "output_tokens": 2}
 
@@ -126,7 +126,7 @@ def test_transport_read_from_config_only_ignores_env(monkeypatch) -> None:
     """
     monkeypatch.setenv("CLIO_CLAUDE_CODE_TRANSPORT", "exec")
 
-    def fake_sdk(*, prompt, model, timeout, cwd):
+    def fake_sdk(*, prompt, model, timeout, cwd, thinking=None):
         return "sdk path", {"input_tokens": 1, "output_tokens": 1}
 
     def fake_exec(**_kwargs):

@@ -236,7 +236,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
         #800 collapsed the three divergent doctors into ONE: this endpoint now
         delegates to the same :func:`collect_runtime_status` probe engine the CLI
         renders, so the TUI/CLI read a single honest doctor. The rows are the rich
-        real-deployment probes (lm_provider, arc/CTE, gateway, data backends,
+        real-deployment probes (lm_provider, arc/clio-core, gateway, data backends,
         file_policy, api, clio_core) instead of the old hand-rolled five.
 
         ``api_state=READY`` reports the API in-process — the probe must never

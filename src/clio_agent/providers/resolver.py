@@ -260,6 +260,7 @@ def _build_key_less_skeleton(spec: "LMSpec") -> tuple["LMProviderConfig", str]:
         "temperature": spec.temperature if spec.temperature is not None else 0.0,
         "max_tokens": spec.max_tokens or 0,
         "thinking_budget": spec.thinking_budget or 0,
+        "thinking_level": spec.thinking_level,
         "top_p": spec.top_p,
         "top_k": spec.top_k,
         "min_p": spec.min_p,

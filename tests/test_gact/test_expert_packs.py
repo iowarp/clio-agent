@@ -1706,6 +1706,10 @@ def test_tool_agent_preserves_trajectory_evidence_when_answer_empty(
             )
 
     monkeypatch.setattr(dspy, "ReAct", FakeReact)
+    # classic-path contract; the V2 empty-answer / trajectory-evidence equivalents live
+    # in tests/test_gact/test_reactv2_submit.py + test_reactv2_repair.py. This test
+    # monkeypatches the classic ``dspy.ReAct`` base, so force the classic loop (#901 rule 1).
+    monkeypatch.setattr("clio_agent.gact.agents.runtime._reactv2_enabled", lambda: False)
     monkeypatch.setattr(dspy, "context", lambda **kwargs: nullcontext())
     monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object())
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
@@ -1796,6 +1800,10 @@ def test_tool_agent_empty_answer_without_observation_still_fails(
             )
 
     monkeypatch.setattr(dspy, "ReAct", FakeReact)
+    # classic-path contract; the V2 empty-answer / trajectory-evidence equivalents live
+    # in tests/test_gact/test_reactv2_submit.py + test_reactv2_repair.py. This test
+    # monkeypatches the classic ``dspy.ReAct`` base, so force the classic loop (#901 rule 1).
+    monkeypatch.setattr("clio_agent.gact.agents.runtime._reactv2_enabled", lambda: False)
     monkeypatch.setattr(dspy, "context", lambda **kwargs: nullcontext())
     monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object())
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
@@ -1837,6 +1845,10 @@ def test_tool_agent_invalid_tool_selection_emits_semantic_event(
             )
 
     monkeypatch.setattr(dspy, "ReAct", FakeReact)
+    # classic-path contract; the V2 empty-answer / trajectory-evidence equivalents live
+    # in tests/test_gact/test_reactv2_submit.py + test_reactv2_repair.py. This test
+    # monkeypatches the classic ``dspy.ReAct`` base, so force the classic loop (#901 rule 1).
+    monkeypatch.setattr("clio_agent.gact.agents.runtime._reactv2_enabled", lambda: False)
     monkeypatch.setattr(dspy, "context", lambda **kwargs: nullcontext())
     monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object())
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())

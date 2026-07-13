@@ -190,6 +190,53 @@ def _lenient_chat_adapter_cls() -> Any:
         Python constructor-repr (``Model(field=...)``) instead of JSON. The happy
         path is unchanged; recovery only runs when the strict parse fails."""
 
+        def format_conversation_history(self, signature, history_field_name, inputs):  # type: ignore[no-untyped-def]
+            """Source the ReActV2 History prefix from the materialized ARC live plane.
+
+            The V2 read seam (#901 S2, design B): before the stock formatter runs,
+            point the ``dspy.History`` input at ARC's materialized render (see
+            ``clio_agent.gact.agents.reactv2.override_history_inputs_from_arc``), so
+            ARC is the single wire source and out-of-band ARC edits change the next
+            prompt. A no-op for any signature without a ``dspy.History`` field — in
+            clio that is exclusively the ReActV2 react signature — so the classic
+            (History-less) wire path is byte-identical and unaffected. When ARC is not
+            the source (disabled / no scope / empty / read failure) the passed-in
+            History renders unchanged, so a standalone V2 loop still works.
+            ``override_history_inputs_from_arc`` is fully guarded internally (a read
+            failure records a typed reason and no-ops), so no blind swallow is needed
+            here — an unexpected raise is a real bug that must surface, not hide.
+            """
+            from clio_agent.gact.agents.reactv2 import (  # noqa: PLC0415
+                override_history_inputs_from_arc,
+            )
+
+            override_history_inputs_from_arc(
+                inputs, history_field_name, tuple(signature.input_fields)
+            )
+            return super().format_conversation_history(signature, history_field_name, inputs)
+
+        def format_assistant_message_content(self, signature, message, missing_field_message=None):  # type: ignore[no-untyped-def]
+            """Render NO assistant turn for an output-less history event (#901 S2).
+
+            The #901 append-only wire folds the static task inputs into a HEAD history
+            event; on the loop's first call that head is SYNTHETIC — it carries the inputs
+            but no output fields yet. Stock ``format_conversation_history`` would render a
+            placeholder assistant turn ("Not supplied for this conversation history
+            message.") for it, which is a MOVING message that breaks the append-only
+            prefix (call 1's placeholder ≠ call 2's real assistant turn). Suppressing the
+            assistant turn for a message that carries none of the signature's OUTPUT fields
+            keeps call 1 = ``[system, {head}, {closing}]`` a clean prefix of call 2 — so
+            every non-first call is a stateful delta, not a boundary reset. Only fires for
+            a genuinely output-less message (the synthetic head); every real turn event has
+            ``next_thought`` / ``tool_calls`` and renders verbatim through the stock path,
+            so no visible-lane content is ever dropped.
+            """
+            if not any(name in message for name in signature.output_fields):
+                return ""
+            return super().format_assistant_message_content(
+                signature, message, missing_field_message
+            )
+
         def parse(self, signature: Any, completion: str) -> dict:
             try:
                 return super().parse(signature, completion)
