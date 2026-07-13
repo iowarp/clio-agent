@@ -61,12 +61,15 @@ class WriterConfig:
 
     ``reactv2`` selects the classic vs V2 expert loop (the genuine writer flag later
     slices will diff across); ``None`` uses the production default (``_reactv2_enabled``).
-    ``label`` names the leg in reports. For the S0 determinism baseline both legs
-    share a config.
+    ``working_set_fold`` selects the #737 S2 regime: ``False`` = the old parallel
+    working-set write, ``True`` = the working set as a FOLD of the canonical ``_events``
+    log; ``None`` uses the production default. Diffing ``False`` vs ``True`` is the
+    S2 write-path proof (§4.1.B). ``label`` names the leg in reports.
     """
 
     label: str = "baseline"
     reactv2: Optional[bool] = None
+    working_set_fold: Optional[bool] = None
     answer: str = "final answer from the equivalence turn"
 
 
@@ -153,7 +156,11 @@ def _capture_arc_surfaces(config: WriterConfig, tmp_dir: Path) -> tuple[list[Any
         runtime._reactv2_enabled = lambda: bool(config.reactv2)
     try:
         use_v2 = runtime._reactv2_enabled()
-        arc = ARCMemory(data_dir=str(tmp_dir / "arc_loop"), store=_MemoryStore())
+        arc = ARCMemory(
+            data_dir=str(tmp_dir / "arc_loop"),
+            store=_MemoryStore(),
+            working_set_fold=config.working_set_fold,
+        )
         react_cls = runtime._retaining_react_cls()
         agent = react_cls("question -> answer", tools=[dspy.Tool(probe, name="probe")])
         lm = _script_loop(use_v2)
@@ -195,7 +202,11 @@ def _capture_gact_surfaces(
 
     from clio_agent.gact.app import build_app
 
-    arc = ARCMemory(data_dir=str(tmp_dir / "arc_gact"), store=_MemoryStore())
+    arc = ARCMemory(
+        data_dir=str(tmp_dir / "arc_gact"),
+        store=_MemoryStore(),
+        working_set_fold=config.working_set_fold,
+    )
     agent = FakeClioAgent(answer=config.answer, raise_on_forward=crash)
     app = build_app(sessions_path=tmp_dir / "sessions.json", agent=agent, arc=arc)
     with TestClient(app) as c:

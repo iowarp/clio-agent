@@ -43,6 +43,7 @@ from dspy.predict.react_v2 import (
 from dspy.primitives.prediction import Prediction
 from dspy.utils.exceptions import AdapterParseError, ContextWindowExceededError
 
+from clio_agent.arc.working_set_fold import emit_step_open
 from clio_agent.gact.runtime.context_tokens import _arc_obs_value
 from clio_agent.gact.runtime.globals import (
     _active_lm_last_reasoning,
@@ -289,6 +290,20 @@ def instrumented_forward(agent: Any, **input_args: Any) -> Prediction:
                 thought = getattr(pred, "next_thought", "")
                 reasoning = _active_lm_last_reasoning()
                 thought_token = _ctx.set_step_thought(str(thought or ""), str(reasoning or ""))
+                # Pre-execution breadcrumb (caveat b): under the working-set fold this
+                # lands the step's opening atoms on the canonical log BEFORE the tools
+                # run, so a crash mid-step still leaves them. A no-op when not folding;
+                # excluded from every render, so it never perturbs the working set.
+                emit_step_open(
+                    arc,
+                    session,
+                    scope,
+                    {"thought": str(thought or ""), "tools": [c.name for c in tool_calls.tool_calls]},
+                    step=turn_index,
+                    turn_id=turn_id,
+                    expert_span_id=expert_span_id,
+                    run_span_id=step_span_id,
+                )
                 tool_call_results, final_outputs = agent._execute_tool_calls(tool_calls)
                 event = agent._history_event(pending_inputs, pred, tool_calls, tool_call_results)
                 if final_outputs is not None:

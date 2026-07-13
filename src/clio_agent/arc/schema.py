@@ -71,6 +71,14 @@ SegmentKind = Literal[
     "answer",  # an expert/turn final message
     "semantic_event",  # one persisted raw semantic event — ARC's ONE log (the
     # ARC-as-source highway record AND the substrate the live observer projects over)
+    # Working-set-fold atoms (#737 S2). Both live on the canonical ``_events`` log
+    # (the span-partitioned ``_events/w`` content lane) and are NEITHER working-set
+    # kinds nor modeled by ``segments_to_keys`` — so they never reach a prompt and
+    # never appear in a working-set render:
+    "ws_op",  # an append-only working-set op record ({op, targets, ...}); the fold
+    # applies it (e.g. ``delete`` tombstones its targets at the op's logical_time)
+    "step_open",  # a pre-execution breadcrumb so a crash mid-step still leaves the
+    # step's opening atoms on the log (caveat b); excluded from BOTH renders
 ]
 SegmentStatus = Literal["live", "tombstoned"]
 
