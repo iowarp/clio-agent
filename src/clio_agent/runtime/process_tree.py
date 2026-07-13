@@ -144,6 +144,16 @@ def _install_windows_job() -> ChildReaperResult:
     which the doctor row then makes visible).
     """
     global _JOB_HANDLE
+    if sys.platform != "win32":
+        # Unreachable in practice (the sole caller gates on sys.platform), but this
+        # narrows sys.platform to "win32" so the type-checker admits the Windows-only
+        # ctypes API (WinDLL / get_last_error) on its POSIX/Linux view too.
+        return ChildReaperResult(
+            mechanism=MECHANISM_UNAVAILABLE,
+            active=False,
+            reason="not_windows",
+            details={"platform": sys.platform},
+        )
     from ctypes import wintypes  # noqa: PLC0415 - Windows type aliases, resolved lazily
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -500,52 +510,60 @@ def probe_process_tree(
 
 def _reaper_row(reaper: ChildReaperResult) -> IntegrationStatus:
     """Build the ``child_reaper`` doctor row from a reaper result."""
-    common = {
-        "name": "child_reaper",
-        "config_source": "runtime:process_tree",
-        "details": {"reason": reaper.reason, "mechanism": reaper.mechanism, **reaper.details},
-        "required": True,
+    details: dict[str, Any] = {
+        "reason": reaper.reason,
+        "mechanism": reaper.mechanism,
+        **reaper.details,
     }
     if reaper.mechanism == MECHANISM_WINDOWS_JOB and reaper.active:
         return IntegrationStatus(
+            name="child_reaper",
             state=IntegrationState.READY,
             summary=(
                 "Windows Job Object active (KILL_ON_JOB_CLOSE); the MCP + SDK child tree "
                 "is reaped with the server even on a hard kill. The shared clio-core "
                 "daemon breaks away and survives."
             ),
+            config_source="runtime:process_tree",
             next_action="No action required.",
             capabilities=["hard-kill-reap", "daemon-breakaway"],
-            **common,
+            details=details,
+            required=True,
         )
     if reaper.mechanism == MECHANISM_POSIX_DELEGATED:
         return IntegrationStatus(
+            name="child_reaper",
             state=IntegrationState.READY,
             summary=(
                 "Child-tree reaping is delegated to per-child pdeathsig (setpriv) + the "
                 "process-group teardown (POSIX); no process-wide Job Object is needed."
             ),
+            config_source="runtime:process_tree",
             next_action="No action required.",
             capabilities=["pdeathsig", "process-group-teardown"],
-            **common,
+            details=details,
+            required=True,
         )
     return IntegrationStatus(
+        name="child_reaper",
         state=IntegrationState.DEGRADED,
         summary=(
             "Child-tree reaper is NOT active: the Windows Job Object could not be "
             f"installed (reason={reaper.reason}). A hard kill of the server may orphan "
             "its MCP/SDK children."
         ),
+        config_source="runtime:process_tree",
         next_action=(
             "Check the Windows job-object privileges for the clio process; graceful "
             "`clio stop` still reaps the tree via the process walk."
         ),
         fallback="graceful-terminate-tree-only",
-        **common,
+        details=details,
+        required=True,
     )
 
 
-def _census_row(census: list[Mapping[str, Any]]) -> IntegrationStatus:
+def _census_row(census: Sequence[Mapping[str, Any]]) -> IntegrationStatus:
     """Build the ``child_processes`` census doctor row."""
     if not census:
         return IntegrationStatus(

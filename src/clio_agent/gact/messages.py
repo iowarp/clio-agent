@@ -72,7 +72,7 @@ class MessageStore:
         """
 
         if self._path is None or not self._path.exists():
-            return [fp.stem for fp in ()]
+            return []
         return [fp.stem for fp in self._path.glob("*.json")]
 
     def has_session(self, session_id: str) -> bool:

@@ -1046,7 +1046,7 @@ class LMProviderInfo(BaseModel):
     thinking_level: Optional[str] = None
     thinking_effective: str = ""
     thinking_budget: int = 0
-    transport: Optional[Literal["exec", "sdk"]] = None
+    transport: Optional[Literal["app_server", "exec", "sdk"]] = None
     state: Literal["idle", "configuring", "ready", "error"] = "idle"
     status_message: str = ""
     error: str = ""

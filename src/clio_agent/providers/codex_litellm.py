@@ -637,7 +637,7 @@ class CodexLLM(CustomLLM):
         )
         yield self._final_stream_chunk(text)
 
-    async def astreaming(  # type: ignore[override]
+    async def astreaming(  # type: ignore[override, misc]  # base annotates a coroutine-returning-iterator; this async generator satisfies litellm's runtime streaming contract
         self,
         model: str,
         messages: list,

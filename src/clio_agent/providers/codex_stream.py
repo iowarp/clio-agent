@@ -29,7 +29,7 @@ import contextlib
 import queue
 import threading
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Generator, Mapping
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.providers.codex_app_server import _APP_SERVER_POOL, CodexAppServerError
@@ -41,6 +41,8 @@ from clio_agent.providers.codex_audit import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from litellm.types.utils import ChatCompletionUsageBlock
+
     from clio_agent.providers.codex_stateful import CodexStatefulSend
 
 _CALL_COUNTER_LOCK = threading.Lock()
@@ -55,7 +57,7 @@ def _next_call_index() -> int:
         return _CALL_COUNTER
 
 
-def usage_chunk(usage: dict[str, int] | None) -> dict[str, int] | None:
+def usage_chunk(usage: dict[str, int] | None) -> ChatCompletionUsageBlock | None:
     """Map a normalized codex usage dict to the LiteLLM streaming-chunk usage."""
     if not usage:
         return None
@@ -70,7 +72,11 @@ def usage_chunk(usage: dict[str, int] | None) -> dict[str, int] | None:
 
 
 def _stream_chunk(
-    *, text: str, is_finished: bool, finish_reason: str | None = None, usage: dict | None = None
+    *,
+    text: str,
+    is_finished: bool,
+    finish_reason: str | None = None,
+    usage: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a LiteLLM-compatible streaming chunk (same shape as claude_code)."""
     return {
@@ -91,7 +97,7 @@ def _app_server_events(
     effort: str | None,
     timeout: float,
     send: CodexStatefulSend | None = None,
-) -> Iterator[Any]:
+) -> Generator[Any, None, None]:
     """Yield ``TurnEvent``s for one app-server turn on the warm pool.
 
     When ``send`` is engaged (#891 stateful delta), the turn CONTINUES the send's

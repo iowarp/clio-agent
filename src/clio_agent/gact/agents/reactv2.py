@@ -444,7 +444,7 @@ def reforce_submit_over_retained_history(program: Any, hint: str) -> Any:
     messages = retained.get("history") if isinstance(retained, dict) else None
     if not messages:
         return None
-    input_args = dict(retained.get("input_args") or {})
+    input_args = dict((retained or {}).get("input_args") or {})
     if input_args.get("question"):
         input_args["question"] = f"{input_args['question']}\n\n{hint}"
     # Re-drive over a FRESH History copy of the retained messages so each bounded re-ask is

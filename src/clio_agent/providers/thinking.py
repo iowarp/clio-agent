@@ -168,7 +168,7 @@ def resolve_thinking(provider: str, level: str | None, budget: int | None) -> Th
 
     if provider in _BUDGET_PROVIDERS:
         if provider == "claude_code":
-            sdk_thinking = (
+            sdk_thinking: dict[str, Any] = (
                 {"type": "disabled"}
                 if effective == "off"
                 else {"type": "enabled", "budget_tokens": budget_tokens}
