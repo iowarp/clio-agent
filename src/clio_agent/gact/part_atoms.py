@@ -57,17 +57,11 @@ the internals the S2 fold's ``FoldingSegmentStore._append_raw`` already uses.
 
 from __future__ import annotations
 
-import logging
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from clio_agent.arc.live import EVENTS_SCOPE
 from clio_agent.arc.schema import Segment, SegmentKind
 from clio_agent.gact.types import Message
-
-if TYPE_CHECKING:
-    from fastapi import FastAPI
-
-logger = logging.getLogger(__name__)
 
 # The atom kind (a new, additive ``SegmentKind`` member) and the reserved content
 # lane for the family: a partition UNDER ``_events`` (so ``is_events_scope`` is True —
@@ -80,10 +74,6 @@ MESSAGE_PART_SCOPE = f"{EVENTS_SCOPE}/m"
 # Bumped only on a breaking change to the atom ``content`` shape; stored per-atom so a
 # future reader can branch on it (design §2.3 ``schema_version``).
 PART_ATOM_SCHEMA_VERSION = 1
-
-# The typed reason surfaced when a mint fails during dual-write (no-silent-fallback,
-# §3.4; the ``stream_fallback`` reason-catalog style).
-_MINT_FAILED_REASON = "part_atom_mint_failed"
 
 
 # --------------------------------------------------------------------------- #
@@ -318,50 +308,8 @@ def load_message_part_atoms(arc: Any, session_id: str) -> dict[str, list[dict[st
         atoms.sort(key=lambda a: a.get("part_index", 0))
     return groups
 
-
-# --------------------------------------------------------------------------- #
-# The persist-seam hook (dual-write, best-effort-but-loud during S4)
-# --------------------------------------------------------------------------- #
-
-
-def record_message_parts_for_message(app: "FastAPI", session_id: str, message: Message) -> None:
-    """Dual-write a persisted message's ``message_part`` atoms (the persist-seam hook).
-
-    Called from ``session_store._append_session_message`` — the single append-one
-    persistence choke point every user-ingest, assistant-finalize, error-settle, and
-    ``/compact`` message flows through — so the atoms are minted at the SAME moment the
-    ``final_message`` / messages-store copy is written (design §4.2 step 4: dual-write,
-    no reader switch).
-
-    Best-effort-but-LOUD (§3.4): the atoms are invisible until S5 and ``final_message``
-    remains the authoritative copy, so a mint failure must not break the turn baseline
-    (RULE 2) — but it is never swallowed: it surfaces a typed ``part_atom_mint_failed``
-    reason on the logs/trace. When the app carries no ARC (app-less / minimal test
-    construction) there is no canonical log to provision, so the hook is a no-op with a
-    debug note (not a failure — there is nothing to write).
-
-    Args:
-        app: The FastAPI app (``app.state.arc`` is the canonical-log home).
-        session_id: Owning session.
-        message: The just-persisted gact message.
-    """
-    arc = getattr(getattr(app, "state", None), "arc", None)
-    if arc is None:
-        logger.debug(
-            "part_atoms: no ARC on app.state; skipping message_part mint "
-            "(session=%s message=%s) — nothing to provision",
-            session_id,
-            getattr(message, "id", ""),
-        )
-        return
-    try:
-        mint_message_part_atoms(arc, session_id, message)
-    except Exception:  # noqa: BLE001 - dual-write: loud, but never fatal (final_message survives)
-        logger.error(
-            "part_atoms: message_part mint FAILED reason=%s session=%s message=%s "
-            "(final_message copy is authoritative; atoms are invisible until S5)",
-            _MINT_FAILED_REASON,
-            session_id,
-            getattr(message, "id", ""),
-            exc_info=True,
-        )
+# NOTE (#737 S5): the persist-seam hook that dual-wrote atoms in S4
+# (``record_message_parts_for_message``) is superseded by
+# :func:`clio_agent.gact.transcript_projection.on_message_appended`, which pins the
+# session regime and applies the regime-aware must-succeed / best-effort mint policy.
+# ``mint_message_part_atoms`` above remains the low-level mint primitive it calls.

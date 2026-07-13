@@ -69,16 +69,16 @@ def _append_session_message(app: "FastAPI", session_id: str, message: "Message")
     store = getattr(app.state, "message_store", None)
     if store is not None:
         store.append(session_id, message)
-    # #737 S4: dual-write the message's ``message_part`` atoms onto the canonical ARC
-    # log alongside this messages-store write (the single append-one persist seam every
-    # user-ingest / assistant-finalize / error-settle / compaction message flows
-    # through). Provisioning for S5's assemble-by-reference; invisible on every served
-    # surface until then. Best-effort-but-loud (part_atoms.record_...).
-    from clio_agent.gact.part_atoms import (  # noqa: PLC0415 - lazy: keep session_store a leaf
-        record_message_parts_for_message,
+    # #737 S5: the single append-one persist seam pins the session's transcript regime
+    # (on message #1) and mints the message's ``message_part`` atoms onto the canonical
+    # ARC log. Under the atoms regime the atoms are the transcript's source of truth
+    # (must-succeed, §3.4); under the default legacy regime the messages-store copy above
+    # is authoritative and minting is best-effort-but-loud (as S4 landed it).
+    from clio_agent.gact.transcript_projection import (  # noqa: PLC0415 - lazy: keep leaf
+        on_message_appended,
     )
 
-    record_message_parts_for_message(app, session_id, message)
+    on_message_appended(app, session_id, message)
 
 
 def _extend_session_messages(
@@ -97,6 +97,12 @@ def _extend_session_messages(
     store = getattr(app.state, "message_store", None)
     if store is not None:
         store.extend(session_id, messages)
+    # #737 S5: mirror the extend onto the canonical atom lane (no-op under legacy).
+    from clio_agent.gact.transcript_projection import (  # noqa: PLC0415 - lazy: keep leaf
+        on_messages_extended,
+    )
+
+    on_messages_extended(app, session_id, messages)
 
 
 def _replace_session_messages(
@@ -113,6 +119,14 @@ def _replace_session_messages(
     store = getattr(app.state, "message_store", None)
     if store is not None:
         store.replace_session(session_id, list(messages))
+    # #737 S5: re-materialize the atom lane to the replaced ledger (undo/rewind/fork/
+    # compact/import). Transcript-projection-scoped only; ARC memory untouched. No-op
+    # under legacy.
+    from clio_agent.gact.transcript_projection import (  # noqa: PLC0415 - lazy: keep leaf
+        on_ledger_replaced,
+    )
+
+    on_ledger_replaced(app, session_id, list(messages))
 
 
 def _delete_session_messages(app: "FastAPI", session_id: str) -> None:
@@ -138,6 +152,13 @@ def _delete_session_messages(app: "FastAPI", session_id: str) -> None:
     store = getattr(app.state, "message_store", None)
     if store is not None:
         store.delete_session(session_id)
+    # #737 S5: drop the session's canonical atom lane (transcript projection erasure);
+    # ARC memory is untouched (gact_visible_transcript_only). Cheap when no atoms exist.
+    from clio_agent.gact.transcript_projection import (  # noqa: PLC0415 - lazy: keep leaf
+        on_ledger_deleted,
+    )
+
+    on_ledger_deleted(app, session_id)
 
 
 def _release_session_arc(app: "FastAPI", session_id: str) -> None:
