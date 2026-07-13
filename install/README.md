@@ -85,7 +85,7 @@ CLIO_REF=develop CLIO_GIT_PROTOCOL=ssh \
 
 ```sh
 # Pin the PyPI version and matching clio-agent GitHub release tag
-CLIO_VERSION=0.6.0 \
+CLIO_VERSION=0.6.1 \
   curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
 ```
 

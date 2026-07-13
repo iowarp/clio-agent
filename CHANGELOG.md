@@ -6,6 +6,14 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.6.1] — 2026-07-13
+
+### Fixed
+- Release container images actually publish: the Docker workflow now runs on
+  `v*` tags (its push-to-ghcr step was tag-gated but the workflow had no tag
+  trigger, so release images were silently never pushed). v0.6.0's images
+  ship under this tag.
+
 ## [0.6.0] — 2026-07-13
 
 The resource-usage campaign release. Pairs with gact-tui **v0.9.6**
