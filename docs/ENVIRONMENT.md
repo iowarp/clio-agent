@@ -104,6 +104,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_SSE_WIRE_TAP` | `debug.sse_wire_tap` | str | _(unset)_ | `src/clio_agent/gact/routes/misc.py` |
 | `CLIO_STREAM_AUDIT_LOG` | `debug.stream_audit_log` | str | _(unset)_ | `src/clio_agent/runtime/stream_audit.py` |
 | `CLIO_SUBMIT_REPAIR_ATTEMPTS` | `limits.submit_repair_attempts` | float | `3.0` | `src/clio_agent/gact/agents/reactv2.py` |
+| `CLIO_TRANSCRIPT_PROJECTION` | `gact.transcript_projection` | bool | `false` | `src/clio_agent/gact/transcript_projection.py` |
 | `CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS` | `limits.transient_provider_retry_delays` | list | _(unset)_ | `src/clio_agent/agent.py` |
 | `CLIO_WEB_DIR` | `paths.web_dir` | str | _(unset)_ | `src/clio_agent/gact/app.py` |
 | `CLIO_WINDOWS_SHELL_BACKEND` | `tools.shell.windows_backend` | str | `powershell` | `src/clio_agent/tools/servers/shell_server.py` |

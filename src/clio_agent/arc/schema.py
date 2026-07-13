@@ -79,6 +79,19 @@ SegmentKind = Literal[
     # applies it (e.g. ``delete`` tombstones its targets at the op's logical_time)
     "step_open",  # a pre-execution breadcrumb so a crash mid-step still leaves the
     # step's opening atoms on the log (caveat b); excluded from BOTH renders
+    "message_part",  # #737 S4: a wire-identity atom for one gact Message part (or a
+    # zero-part message envelope). Lives on the canonical ``_events/m`` lane, dual-written
+    # at message persist alongside final_message; NEITHER a working-set kind NOR modeled by
+    # segments_to_keys and NOT ``semantic_event``, so the live reader ignores it and it
+    # never reaches a prompt or a working-set render (see gact/part_atoms.py).
+    "state_merge",  # #737 S6: an append-only op record for a delegated turn's merged
+    # workflow_state RESULT ({inputs, produced, schema_version}). Lives on the canonical
+    # ``_events/s`` lane (sibling of ``_events/m``); like ``message_part`` it is NEITHER a
+    # working-set kind NOR modeled by segments_to_keys and NOT ``semantic_event``, so the
+    # live reader ignores it and it never reaches a prompt or a render (see
+    # gact/workflow_state/state_merge.py). The recorded result is materialized onto the
+    # transcript projection so workflow_state is never RE-FOLDED on read under a newer
+    # pack schema (design §2.5, §2.8.d).
 ]
 SegmentStatus = Literal["live", "tombstoned"]
 

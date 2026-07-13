@@ -297,6 +297,7 @@ class ResidentLedgerSet(MutableMapping[str, list["Message"]]):
         config: Optional[ResidentLedgerConfig] = None,
         is_active: Optional[Callable[[str], bool]] = None,
         audit: Optional[Callable[[dict[str, Any]], None]] = None,
+        materialize: Optional[Callable[[str], Optional[list["Message"]]]] = None,
         clock: Callable[[], float] = monotonic,
     ) -> None:
         """Wire the set to its durable store and its residency policy.
@@ -308,6 +309,13 @@ class ResidentLedgerSet(MutableMapping[str, list["Message"]]):
                 Active sessions are never evicted. Defaults to "nothing is active".
             audit: Sink for typed eviction/rehydration payloads (no silent fallback).
                 Defaults to a no-op (tests may inject ``list.append``).
+            materialize: The rehydration SOURCE (#737 S5): given a session id, return its
+                ``list[Message]`` (``None`` = never persisted, ``[]`` = empty,
+                :class:`~clio_agent.gact.messages.LedgerReadError` = propagate). Defaults
+                to ``store.load_session`` (today's legacy path); the app wires the
+                regime-aware transcript projection so an atoms-regime session rehydrates
+                from the canonical log. Only the SOURCE moves — the LRU/TTL/pin mechanics
+                are unchanged.
             clock: Monotonic time source (injectable for deterministic TTL tests).
         """
 
@@ -315,6 +323,7 @@ class ResidentLedgerSet(MutableMapping[str, list["Message"]]):
         self._cfg = config or ResidentLedgerConfig.from_conf()
         self._is_active = is_active or (lambda _sid: False)
         self._audit = audit or (lambda _payload: None)
+        self._materialize = materialize or store.load_session
         self._clock = clock
         self._resident: "OrderedDict[str, _Entry]" = OrderedDict()
         self._total_bytes = 0
@@ -328,7 +337,7 @@ class ResidentLedgerSet(MutableMapping[str, list["Message"]]):
             entry.last_access = self._clock()
             return entry.messages
         try:
-            rows = self._store.load_session(sid)
+            rows = self._materialize(sid)
         except LedgerReadError as exc:
             # The ledger exists on disk but could not be read/parsed. Emit a typed
             # reason and PROPAGATE — never cache an empty list as if the session were
@@ -675,9 +684,14 @@ def build_resident_ledger_set(app: "FastAPI") -> ResidentLedgerSet:
     the typed audit sink. Requires ``app.state.message_store`` to be set.
     """
 
+    from clio_agent.gact.transcript_projection import (  # noqa: PLC0415 - avoid import cycle
+        materialize_ledger,
+    )
+
     return ResidentLedgerSet(
         app.state.message_store,
         config=ResidentLedgerConfig.from_conf(),
         is_active=lambda sid: _session_is_active(app, sid),
         audit=lambda payload: _record_resident_audit(app, payload),
+        materialize=lambda sid: materialize_ledger(app, sid),
     )
