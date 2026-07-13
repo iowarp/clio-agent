@@ -6,6 +6,56 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Fixed
+- Desktop bundles ship their sidecar launcher again (#907): the CLIO branding
+  overlay now declares `bundle.externalBin`, and the bundle workflow asserts
+  the merged Tauri config + built launcher before packaging. Every desktop
+  installer since v0.5.18 (first post-de-clio gact-tui pin) was missing the
+  launcher and failed at boot with "sidecar launcher missing". Pairs with the
+  gact-tui lookup fix (iowarp/gact-tui#309) — the installed sidecar is
+  triple-stripped by the Tauri bundler. Known residual: the Windows-on-ARM
+  leg publishes a raw `--no-bundle` exe with no launcher beside it and
+  remains unfixed (noted in #907).
+
+## [0.6.1] — 2026-07-13
+
+### Fixed
+- Release container images actually publish: the Docker workflow now runs on
+  `v*` tags (its push-to-ghcr step was tag-gated but the workflow had no tag
+  trigger, so release images were silently never pushed). v0.6.0's images
+  ship under this tag.
+
+## [0.6.0] — 2026-07-13
+
+The resource-usage campaign release. Pairs with gact-tui **v0.9.6**
+(pinned submodule) and marketplace **v0.5.4**.
+
+### Added
+- `PUT /v1/providers/lm` accepts `thinking_level` (`off|low|medium|high`;
+  out-of-vocabulary values are a structured 422). `GET`/`PUT` responses
+  report `thinking_level` and the resolved `thinking_effective`
+  (including the typed `unsupported (<reason>)` form). SPEC §6.12 (#895).
+- `LMProviderInfo.transport` may now report `app_server` — the codex
+  warm app-server transport (#896).
+
+### Changed
+- The expert loop is dspy ReActV2 (append-only History; provider prompt
+  prefix byte-stable across iterations). The SSE wire, semantic-event
+  stream, and tree view are contract-identical (byte-equality suites on
+  both paths); `CLIO_REACTV2=0` selects the classic loop (#901).
+- Typed degradation reasons and doctor probe names that referred to the
+  clio-core system as "CTE" are renamed `clio_core_*` (`CTEStore` →
+  `ClioCoreStore`, `cte_daemon_not_listening` →
+  `clio_core_daemon_not_listening`, etc.). CTE now names only the
+  actual clio-core component (config artifacts unchanged).
+
+### Fixed
+- Blueprint install from `file:///C:/...` marketplace URIs works from
+  native Windows processes (#903).
+- The earthscope pack no longer misreports geo-filter tool failures as
+  "no coverage"; the no-coverage terminal requires structural filter
+  evidence (marketplace v0.5.4, #904).
+
 ## [0.5.18] — 2026-07-09
 
 The grounding-demo release. Pairs with gact-tui **v0.9.5** (pinned
