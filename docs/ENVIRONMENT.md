@@ -134,6 +134,7 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_LEDGER_TURN_ATTEMPTS_MAX` | unmigrated | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LM_API_KEY` | secret | `src/clio_agent/config.py`, `src/clio_agent/gact/routes/providers.py`, `src/clio_agent/runtime/status.py` |
 | `CLIO_LM_ROUTER_TEMPERATURE` | unmigrated | `src/clio_agent/config.py` |
+| `CLIO_RUNTIME_STATE_DIR` | unmigrated | `src/clio_agent/arc/clio_core_config.py` |
 | `CLIO_SEMANTIC_TRACE_DETAIL` | unmigrated | `src/clio_agent/gact/app.py` |
 | `CLIO_USER_DIR` | bootstrap | `src/clio_agent/paths.py` |
 

@@ -11,6 +11,100 @@ from pathlib import Path
 import pytest
 
 import clio_agent  # noqa: F401
+from tests._cte_isolation import (
+    cte_isolation_available,
+    eagerly_attach_private_daemon,
+    isolate_cte_env,
+    reap_private_daemon,
+)
+from tests._process_hygiene import (
+    SKIP_ENV,
+    ProcessHygieneAudit,
+    child_snapshot,
+    daemon_pid,
+    release_this_process_client,
+)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _clio_private_cte_daemon(tmp_path_factory):
+    """Point this suite run's cte-leg tests at a PRIVATE clio-core daemon.
+
+    The host-shared daemon (port 9413) serves live CLIO servers; suites attaching to it
+    both accrete state into it (the 12.3 GiB daemon) and flake on cross-instance writes
+    (BM25 corpus perturbation, size-then-read truncation). This fixture redirects the
+    runtime coordination state (``CLIO_RUNTIME_STATE_DIR``) and the CTE config/port to a
+    session-private topology BEFORE any test can attach, so the suite's daemon is its
+    own: spawned lazily by the first cte attach, stopped by the session-end release
+    (last one out), force-reaped here as belt-and-suspenders. A binding- or launcher-free
+    environment leaves the env untouched (the cte legs skip on their own importorskip).
+    See :mod:`tests._cte_isolation`.
+    """
+    if not cte_isolation_available():
+        yield None
+        return
+    isolation = isolate_cte_env(tmp_path_factory.mktemp("cte-private"), os.environ)
+    try:
+        # Eager spawn+attach: boot the private daemon deterministically at session
+        # start (not mid-suite under load) and hold a client so it stays up all
+        # session. A failure is already recorded loudly by the init-degradation path.
+        if not eagerly_attach_private_daemon():
+            import warnings  # noqa: PLC0415
+
+            warnings.warn(
+                "private clio-core daemon failed to come up at session start; "
+                "cte-leg tests will run degraded (see the ARC init-degradation log)",
+                stacklevel=1,
+            )
+        yield isolation
+    finally:
+        reap_private_daemon(isolation.state_dir)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _clio_process_hygiene_audit(request, _clio_private_cte_daemon):
+    """Guarantee the suite releases every clio-core client + helper child it attaches.
+
+    Tests that build ``make_arc_store(backend="cte")`` attach a clio-core client to the
+    suite's private daemon (see ``_clio_private_cte_daemon``); a hard-killed run skips
+    the ``atexit`` release and leaves a ghost registration whose daemon accretes state
+    (the 12.3 GiB the owner observed on the previously-shared daemon). This session
+    fixture (a) snapshots the client registry + this process's child tree at session
+    start, (b) deterministically releases THIS process's client at session end (not
+    relying on ``atexit``) — which, as the last client out, also stops the private
+    daemon — and (c) FAILS the run — naming culprit tests — if a client this process
+    family registered died without deregistering, or a helper child is left running.
+    See :mod:`tests._process_hygiene`. Opt out with ``CLIO_TEST_SKIP_CLIENT_AUDIT=1``
+    (emergencies only). Depends on the isolation fixture so setup/teardown order is
+    pinned: env first, audit second; audit (release/stop) first, daemon reap last.
+    """
+    audit = ProcessHygieneAudit(
+        root_pid=os.getpid(),
+        _snapshot_children=lambda root: child_snapshot(root, exclude_subtree=daemon_pid()),
+    )
+    request.session._clio_hygiene_audit = audit
+    yield
+    # Deterministic release first, THEN audit what remains.
+    release_this_process_client()
+    if os.environ.get(SKIP_ENV):
+        return
+    result = audit.finalize(own_pid=os.getpid())
+    if not result.clean:
+        raise AssertionError(result.format_failure())
+
+
+@pytest.fixture(autouse=True)
+def _attribute_process_leaks(request):
+    """Attribute freshly-appeared clio-core client registrations to the running test.
+
+    Runs a sub-millisecond registry ``listdir`` at each test teardown so the session-end
+    audit can name WHICH test introduced a leaked client (only descendants of this pytest
+    process are tracked, so a parallel CLIO instance is never blamed).
+    """
+    yield
+    audit = getattr(request.session, "_clio_hygiene_audit", None)
+    if audit is not None:
+        audit.observe_test(request.node.nodeid)
 
 
 @pytest.fixture(autouse=True)

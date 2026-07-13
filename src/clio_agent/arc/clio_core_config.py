@@ -41,12 +41,37 @@ back.
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
+
+
+def runtime_state_dir() -> Path:
+    """Return the directory holding the clio-core runtime's host bookkeeping.
+
+    This is where the connect-or-spawn lifecycle keeps its coordination state — the
+    spawn lock (``clio-runtime.lock``), the daemon pidfile (``clio-runtime.pid``), the
+    client refcount registry (``clio-runtime.clients/``), and the daemon log
+    (``clio-runtime.log``). Default: ``~/.clio`` — the host-global location that lets
+    every clio-agent process on the machine share ONE daemon.
+
+    ``CLIO_RUNTIME_STATE_DIR`` overrides it (explicit selection, not a degrade): a
+    process family that must NOT share the host daemon — the test suite's hermetic
+    private daemon (``tests/_cte_isolation.py``), or a sandboxed deployment — points
+    this at its own directory, and its spawn lock / pidfile / registry / last-one-out
+    stop all move coherently with it. The directory is created if absent.
+
+    Returns:
+        The state directory path (guaranteed to exist).
+    """
+    override = os.environ.get("CLIO_RUNTIME_STATE_DIR", "").strip()
+    state = Path(override).expanduser() if override else Path.home() / ".clio"
+    state.mkdir(parents=True, exist_ok=True)
+    return state
 
 # Default clio-core CTE config: a self-managed DRAM↔disk hierarchy on the OS data
 # dir. The DRAM tier (score 1.0) is the hot working set; the file tier (score 0.0)

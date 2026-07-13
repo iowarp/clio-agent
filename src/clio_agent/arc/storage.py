@@ -53,6 +53,7 @@ from clio_agent.arc.clio_core_config import (  # noqa: F401 - re-exported for ca
     _default_cte_file_capacity,
     _default_cte_ram_capacity,
     default_cte_config_path,
+    runtime_state_dir,
 )
 
 # The daemon port-resolution + socket-liveness helpers moved to the liveness owner
@@ -268,15 +269,14 @@ def _runtime_spawn_lock() -> "Iterator[None]":
     Without this, two clio-agent processes that both observe "no runtime" would both
     run ``clio_run start`` and the loser would FATAL on the already-bound port; it also
     serialises a client's release (last-one-out stop) against another client attaching.
-    The lock lives at a fixed host path (NOT per-workspace) so it coordinates every
-    clio-agent on the machine. ``filelock`` is cross-platform (fcntl on POSIX, msvcrt
-    on Windows) so the coordination holds on Linux, macOS, and Windows.
+    The lock lives at a fixed host path (:func:`runtime_state_dir`, NOT per-workspace)
+    so it coordinates every clio-agent on the machine sharing that state dir.
+    ``filelock`` is cross-platform (fcntl on POSIX, msvcrt on Windows) so the
+    coordination holds on Linux, macOS, and Windows.
     """
     from filelock import FileLock  # noqa: PLC0415
 
-    lock_dir = Path.home() / ".clio"
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    lock = FileLock(str(lock_dir / "clio-runtime.lock"))
+    lock = FileLock(str(runtime_state_dir() / "clio-runtime.lock"))
     with lock:
         yield
 
@@ -344,7 +344,7 @@ def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str)
     env.setdefault("CTP_LOG_LEVEL", log_level)
     if config_path:
         env["CLIO_SERVER_CONF"] = config_path
-    log_path = Path.home() / ".clio" / "clio-runtime.log"
+    log_path = runtime_state_dir() / "clio-runtime.log"
     log_fh = open(log_path, "ab")  # noqa: SIM115 - handed to the detached child
     try:
         proc = subprocess.Popen(  # type: ignore[call-overload]  # noqa: S603 - fixed launcher path
@@ -387,11 +387,11 @@ _active_log_level = "error"
 
 
 def _client_registry_dir() -> Path:
-    return Path.home() / ".clio" / "clio-runtime.clients"
+    return runtime_state_dir() / "clio-runtime.clients"
 
 
 def _daemon_pidfile() -> Path:
-    return Path.home() / ".clio" / "clio-runtime.pid"
+    return runtime_state_dir() / "clio-runtime.pid"
 
 
 def _proc_create_time(pid: int) -> Optional[float]:
@@ -603,7 +603,7 @@ def _ensure_runtime_daemon(iowarp_core: object, config_path: str, log_level: str
             time.sleep(0.25)
         raise RuntimeError(
             f"spawned the clio-core runtime daemon but it never bound port {port} within "
-            f"{_RUNTIME_START_TIMEOUT_S:.0f}s; see ~/.clio/clio-runtime.log."
+            f"{_RUNTIME_START_TIMEOUT_S:.0f}s; see {runtime_state_dir() / 'clio-runtime.log'}."
         )
 
 
