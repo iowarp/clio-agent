@@ -7,6 +7,16 @@ TUI/HTTP surface aren't tracked here.
 ## Unreleased
 
 ### Fixed
+- The bundled desktop runtime is machine-portable (#909): the embedded
+  clio-agent now ships its own interpreter (uv's standalone CPython copied
+  into the runtime, wheel installed directly — no venv) and self-describes
+  via a generic `runtime.json` manifest, invoked as `python -m
+  clio_agent.gact`. The previous venv-based runtime hard-pointed
+  `pyvenv.cfg home` at the CI runner's Python and could never start on a
+  user's machine. `install/build-gact-runtime.{sh,ps1}` build it (moved
+  here from gact-tui — the brand owns its runtime) and prove portability
+  by booting a relocated copy; the bundle workflow builds the runtime from
+  the released checkout and gates on the manifest being present.
 - Desktop bundles ship their sidecar launcher again (#907): the CLIO branding
   overlay now declares `bundle.externalBin`, and the bundle workflow asserts
   the merged Tauri config + built launcher before packaging. Every desktop
