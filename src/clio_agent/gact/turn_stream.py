@@ -57,6 +57,35 @@ def _latest_parent_resume_output(parts: list[Part], agent_id: str) -> str:
     return ""
 
 
+def _feed_live_edge(
+    state: "TurnState",
+    part_id: str,
+    agent_id: str,
+    field: str,
+    is_thinking: bool,
+    text: str,
+) -> None:
+    """Coalesce one streamed delta into the #737 S7 live-edge head slot (best-effort).
+
+    A no-op unless the live edge is engaged for the session (flag + atoms regime); it
+    reads the part id the transcript just opened and grows the identity-stable slot in
+    place. The overlay is a read-model view, never authoritative, so a failure here must
+    never fail a turn — ``feed_delta`` swallows-but-logs internally.
+    """
+
+    from clio_agent.gact.live_edge import feed_delta  # noqa: PLC0415 - avoid import cycle
+
+    feed_delta(
+        state.app,
+        state.sid,
+        part_id=part_id,
+        agent_id=agent_id,
+        field=field,
+        kind="thinking" if is_thinking else "text",
+        chunk=text,
+    )
+
+
 def settle_turn_transcript(state: "TurnState") -> None:
     """Retire the turn's ledger: freeze (no-op after finalize), close.
 
@@ -68,6 +97,11 @@ def settle_turn_transcript(state: "TurnState") -> None:
     """
 
     state.transcript.abandon()
+    # #737 S7: seal the live-edge slot against the finalized parts (the in-process
+    # byte-match check) and drop the ephemeral checkpoint lane. A no-op unless engaged.
+    from clio_agent.gact.live_edge import seal_and_settle  # noqa: PLC0415 - avoid import cycle
+
+    seal_and_settle(state.app, state.sid, state.transcript.snapshot())
     state.app.state.turn_transcripts.close(state.sid)
 
 
@@ -178,6 +212,10 @@ async def emit_chunk(
         return
     _mirror_transcript_state(state.app, state.sid, state.transcript)
     stream_part_id = state.transcript.current_stream_part_id or ""
+    # #737 S7: coalesce this delta into the mutable live-edge head slot so a mid-stream
+    # canonical-log read sees the growing edge (surface 1.3). A no-op unless the live
+    # edge is engaged (flag + atoms regime); the log gains no per-token atom (shape i).
+    _feed_live_edge(state, stream_part_id, chunk_agent, stream_field, is_provider_thinking, text)
     stream_audit(
         "sse.normalized_emit",
         session_id=state.sid,
