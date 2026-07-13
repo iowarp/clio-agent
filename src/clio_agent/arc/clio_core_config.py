@@ -83,10 +83,15 @@ def runtime_state_dir() -> Path:
 # when it lands upstream (today that recovery is WIP, so durability rides the file
 # trace + rebuild-on-reload — a permanent warm-up step, not a stopgap).
 #
-# The ram *tier* ``capacity_limit`` is ``{ram_capacity}`` (a bounded default, #890):
-# it is the field that triggers spill to the cold file tier. The ram *bdev*
-# ``capacity: "0g"`` stays as the device ceiling (max the ram bdev may grow to), which
-# matches the proven-safe topology of ``tests/test_arc/test_clio_core_offload_spill.py``.
+# MEMORY BUDGET (#906, owner ruling 2026-07-13 — release-gating): a desktop
+# clio-agent must NEVER be able to grow to clio-core's HPC default of 80% of
+# system DRAM. ONE user-facing budget (``arc.cte.ram_capacity``) derives the
+# whole memory shape: the ram *bdev* ``capacity`` = the budget (the HARD
+# allocation ceiling of the DRAM arena — the engine cannot allocate past it),
+# and the ram *tier* ``capacity_limit`` = budget/2 (the spill trigger, leaving
+# proven 2x eviction headroom inside the arena; the bdev-ceiling probe showed
+# spill works at 2x headroom and deadlocks rc=13 only at ceiling == tier).
+# Disk stays effectively unbounded at the user-designated dir (arc.cte.dir).
 _DEFAULT_CTE_CONFIG_TEMPLATE = """\
 runtime:
   num_threads: 4
@@ -97,7 +102,7 @@ compose:
     pool_query: local
     pool_id: "301.0"
     bdev_type: ram
-    capacity: "0g"
+    capacity: "{ram_budget}"
   - mod_name: clio_cte_core
     pool_name: cte_main
     pool_query: local
@@ -106,7 +111,7 @@ compose:
     storage:
       - path: "ram::cte_ram_tier"
         bdev_type: "ram"
-        capacity_limit: "{ram_capacity}"
+        capacity_limit: "{ram_tier_limit}"
         score: 1.0
       - path: "{file_tier}"
         bdev_type: "file"
@@ -119,12 +124,24 @@ compose:
       transaction_log_capacity: "32MB"
 """
 
-# The bounded default for the ram hot-tier ``capacity_limit`` (#890). Owner ruling
-# (2026-07-12): 1GB AT MOST by default, user-configurable. A small hot tier is safe
-# because capacity-forced offload to the clio-core file tier is proven byte-identical
-# (tests/test_arc/test_clio_core_offload_spill.py); 1GB still
-# comfortably holds a live context plane before spilling.
+# The default MEMORY BUDGET (#890/#906): the hard DRAM bound for the clio-core
+# storage arena. Owner ruling (2026-07-13): a desktop agent is told e.g. "use
+# 1GB of ram, and whatever you want of <disk>" — the budget IS the ceiling.
 _DEFAULT_CTE_RAM_CAPACITY = "1GB"
+
+
+def derive_ram_shape(budget: str) -> tuple[str, str]:
+    """Derive ``(bdev_ceiling, tier_limit)`` from the user's memory budget.
+
+    The ceiling is the budget itself (hard bound); the tier limit is half of
+    it, so eviction always has working headroom inside the arena (2x proven by
+    the bounded-ceiling probe; ceiling == tier is the proven rc=13 deadlock).
+    """
+    budget_bytes = parse_capacity_bytes(budget)
+    if budget_bytes <= 0:
+        raise ValueError(f"memory budget must be > 0, got {budget!r}")
+    tier_mb = max(1, budget_bytes // (2 * 1024 * 1024))
+    return budget, f"{tier_mb}MB"
 
 # The path suffix identifying the ram hot tier inside a clio-core ``compose`` block.
 _RAM_TIER_PATH_SUFFIX = "cte_ram_tier"
@@ -231,13 +248,13 @@ def _default_cte_file_capacity() -> str:
 
 
 def _default_cte_ram_capacity() -> str:
-    """Return the default (bounded) clio-core CTE ram hot-tier ``capacity_limit``.
+    """Return the MEMORY BUDGET — the hard DRAM bound of the storage arena.
 
     Resolves ``arc.cte.ram_capacity`` / env ``CLIO_ARC_CTE_RAM_CAPACITY`` (file → env
     → :data:`_DEFAULT_CTE_RAM_CAPACITY`) and format-validates it fail-loud so a typo
-    raises instead of silently becoming the ``0g`` = 80%-DRAM footgun (#890). An
-    explicitly-configured value (including ``"0g"`` if a user truly wants 80% of DRAM)
-    is respected; only the *generated* default changed from ``0g`` to a bounded cap.
+    raises instead of silently becoming the ``0g`` = 80%-DRAM footgun (#890/#906).
+    The generated config derives its whole memory shape from this ONE knob via
+    :func:`derive_ram_shape`: bdev ceiling = budget, tier limit = budget/2.
     """
     from clio_agent import conf  # noqa: PLC0415 - avoid import cycle
 
@@ -250,8 +267,9 @@ def _default_cte_ram_capacity() -> str:
         ).strip()
         or _DEFAULT_CTE_RAM_CAPACITY
     )
-    # FAIL LOUD: a misconfigured cap must not silently pass through into the generated
-    # config where clio-core would read a malformed value (or a bare ``0g``) as 80% DRAM.
+    # FAIL LOUD: a misconfigured budget must not silently pass through into the
+    # generated config where clio-core would read a malformed value (or a bare
+    # ``0g``) as 80% DRAM.
     parse_capacity_bytes(raw)
     return raw
 
@@ -272,12 +290,14 @@ def default_cte_config_path() -> str:
     cte_dir.mkdir(parents=True, exist_ok=True)
     cfg = cte_dir / "cte.yaml"
     if not cfg.is_file():
+        ram_budget, ram_tier_limit = derive_ram_shape(_default_cte_ram_capacity())
         cfg.write_text(
             _DEFAULT_CTE_CONFIG_TEMPLATE.format(
                 conf_dir=_cte_yaml_path(cte_dir / "conf"),
                 file_tier=_cte_yaml_path(cte_dir / "storage.bin"),
                 file_capacity=_default_cte_file_capacity(),
-                ram_capacity=_default_cte_ram_capacity(),
+                ram_budget=ram_budget,
+                ram_tier_limit=ram_tier_limit,
                 metadata_log=_cte_yaml_path(cte_dir / "metadata.log"),
             ),
             encoding="utf-8",
@@ -413,8 +433,7 @@ def effective_ram_cap(
         cap, bdev_cap, final_cap = _read_ram_caps_from_file(path)
         source = f"file:{path}"
     else:
-        cap = _default_cte_ram_capacity()
-        bdev_cap = "0g"  # the generated template's ram bdev device ceiling
+        bdev_cap, cap = derive_ram_shape(_default_cte_ram_capacity())
         final_cap = _default_cte_file_capacity()
         source = "generator-default"
 
@@ -495,20 +514,34 @@ def boot_check_ram_cap(config_path: str | Path, *, env: Mapping[str, str]) -> Ra
             _BOOT_REMEDIATION,
         )
 
-    # Topology rule (#893): the ram bdev device ceiling must be unbounded, and
-    # the FINAL tier must at least absorb one full hot-tier spill. (The intended
-    # rule is an unbounded final layer, but clio-core rejects capacity_limit=0
-    # on non-ram tiers — see _default_cte_file_capacity.)
+    # Topology rules (#893/#906, owner ruling — release-gating memory bound):
+    # the ram bdev CEILING must be BOUNDED (an unbounded ceiling lets a desktop
+    # agent grow to clio-core's HPC default of 80% of system DRAM) and must
+    # leave spill headroom above the tier limit (>= 2x proven by the
+    # bounded-ceiling probe; ceiling == tier is the proven rc=13 deadlock).
+    # The FINAL tier must at least absorb one full hot-tier spill. (The
+    # intended final-layer rule is unbounded, but clio-core rejects
+    # capacity_limit=0 on non-ram tiers — see _default_cte_file_capacity.)
     topology = []
-    if _is_bounded(cap.bdev_capacity):
+    tier_ok = cap.cap is not None and not cap.unbounded and cap.parse_error is None
+    if cap.bdev_capacity is not None and not _is_bounded(cap.bdev_capacity):
         topology.append(
-            f"ram bdev capacity {cap.bdev_capacity!r} is bounded (device ceiling must be 0g)"
+            f"ram bdev capacity {cap.bdev_capacity!r} is UNBOUNDED — clio-core reads it "
+            "as up to 80% of system DRAM; a desktop install must set the memory-budget "
+            "ceiling (arc.cte.ram_capacity derives it)"
+        )
+    elif (
+        _is_bounded(cap.bdev_capacity)
+        and tier_ok
+        and parse_capacity_bytes(cap.bdev_capacity or "0") < 2 * parse_capacity_bytes(cap.cap)
+    ):
+        topology.append(
+            f"ram bdev ceiling {cap.bdev_capacity!r} is < 2x the tier limit {cap.cap!r} — "
+            "insufficient spill headroom (ceiling == tier is the proven rc=13 deadlock)"
         )
     if (
         _is_bounded(cap.final_tier_capacity)
-        and cap.cap is not None
-        and not cap.unbounded
-        and cap.parse_error is None
+        and tier_ok
         and parse_capacity_bytes(cap.final_tier_capacity or "0")
         <= parse_capacity_bytes(cap.cap)
     ):

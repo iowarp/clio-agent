@@ -46,7 +46,7 @@ compose:
     pool_query: local
     pool_id: "301.0"
     bdev_type: ram
-    capacity: "0g"
+    capacity: "512MB"
   - mod_name: clio_cte_core
     pool_name: cte_main
     pool_query: local

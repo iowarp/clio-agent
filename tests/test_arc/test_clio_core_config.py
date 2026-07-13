@@ -106,7 +106,9 @@ def test_generator_writes_bounded_ram_cap(monkeypatch, tmp_path):
     text = (tmp_path / "cte" / "cte.yaml").read_text(encoding="utf-8")
     assert path == str(tmp_path / "cte" / "cte.yaml")
     # The regression this test guards: the ram tier is NEVER generated as "0g".
-    assert _ram_tier_cap(text) == "1GB"
+    # #906 budget shape: tier = budget/2, bdev ceiling = the budget (hard bound).
+    assert _ram_tier_cap(text) == "512MB"
+    assert 'capacity: "1GB"' in text.split("clio_bdev")[1].split("clio_cte_core")[0]
     assert '"0g"' not in text.split("cte_ram_tier")[1].split("score")[0]
 
 
@@ -118,7 +120,9 @@ def test_generator_respects_env_ram_cap(monkeypatch, tmp_path):
 
     clio_core_config.default_cte_config_path()
     text = (tmp_path / "cte" / "cte.yaml").read_text(encoding="utf-8")
-    assert _ram_tier_cap(text) == "4GB"
+    # budget 4GB -> tier 2GB (2048MB), ceiling 4GB
+    assert _ram_tier_cap(text) == "2048MB"
+    assert 'capacity: "4GB"' in text.split("clio_bdev")[1].split("clio_cte_core")[0]
 
 
 def test_generator_never_rewrites_existing_user_file(monkeypatch, tmp_path):
@@ -128,7 +132,8 @@ def test_generator_never_rewrites_existing_user_file(monkeypatch, tmp_path):
     cte_dir = tmp_path / "cte"
     cte_dir.mkdir(parents=True)
     stale = clio_core_config._DEFAULT_CTE_CONFIG_TEMPLATE.format(
-        conf_dir="c", file_tier="f", file_capacity="1GB", ram_capacity="0g", metadata_log="m"
+        conf_dir="c", file_tier="f", file_capacity="1GB", ram_budget="0g",
+        ram_tier_limit="0g", metadata_log="m"
     )
     (cte_dir / "cte.yaml").write_text(stale, encoding="utf-8")
 
@@ -154,7 +159,8 @@ def test_effective_ram_cap_reads_existing_file(tmp_path):
     cfg = tmp_path / "cte.yaml"
     cfg.write_text(
         clio_core_config._DEFAULT_CTE_CONFIG_TEMPLATE.format(
-            conf_dir="c", file_tier="f", file_capacity="50GB", ram_capacity="2GB", metadata_log="m"
+            conf_dir="c", file_tier="f", file_capacity="50GB", ram_budget="4GB",
+            ram_tier_limit="2GB", metadata_log="m"
         ),
         encoding="utf-8",
     )
@@ -169,7 +175,8 @@ def test_effective_ram_cap_flags_0g(tmp_path):
     cfg = tmp_path / "cte.yaml"
     cfg.write_text(
         clio_core_config._DEFAULT_CTE_CONFIG_TEMPLATE.format(
-            conf_dir="c", file_tier="f", file_capacity="1GB", ram_capacity="0g", metadata_log="m"
+            conf_dir="c", file_tier="f", file_capacity="1GB", ram_budget="0g",
+            ram_tier_limit="0g", metadata_log="m"
         ),
         encoding="utf-8",
     )
@@ -183,5 +190,6 @@ def test_effective_ram_cap_default_when_file_absent(monkeypatch, tmp_path):
     monkeypatch.setattr(clio_core_config, "_default_cte_dir", lambda: tmp_path / "cte")
     result = clio_core_config.effective_ram_cap(env={})
     assert result.file_exists is False
-    assert result.cap == "1GB"
+    assert result.cap == "512MB"  # tier = budget/2 (#906)
+    assert result.bdev_capacity == "1GB"  # ceiling = the budget (hard bound)
     assert result.source == "generator-default"

@@ -49,7 +49,13 @@ compose:
         score: 0.0
 """
 
-_BOUNDED_CONFIG = _INCIDENT_CONFIG.replace('capacity_limit: "0g"', 'capacity_limit: "1GB"')
+# The conformant DESKTOP shape (#906 memory budget): bounded ceiling with 2x
+# spill headroom above the tier limit, big final layer.
+_BOUNDED_CONFIG = (
+    _INCIDENT_CONFIG
+    .replace('capacity: "0g"', 'capacity: "2GB"')
+    .replace('capacity_limit: "0g"', 'capacity_limit: "1GB"')
+)
 
 
 def _write(tmp_path: Path, body: str) -> Path:
@@ -73,9 +79,8 @@ def test_bounded_config_is_conformant_with_bdev_visible(tmp_path: Path) -> None:
     cap = effective_ram_cap(env={}, config_path=cfg)
     assert cap.unbounded is False
     assert cap.cap == "1GB"
-    # bdev 0g stays the device ceiling of the proven-safe topology — visible,
-    # not judged.
-    assert cap.bdev_capacity == "0g"
+    # The desktop shape: a BOUNDED ceiling with 2x headroom (#906).
+    assert cap.bdev_capacity == "2GB"
 
 
 def test_boot_check_warns_typed_on_the_incident_shape(
@@ -154,7 +159,7 @@ def test_doctor_row_carries_bdev_capacity(tmp_path: Path) -> None:
 # The exact broken shape from the incident hand-fix: ALL THREE fields bounded.
 _ALL_BOUNDED_CONFIG = (
     _BOUNDED_CONFIG
-    .replace('capacity: "0g"', 'capacity: "1GB"')
+    .replace('capacity: "2GB"', 'capacity: "1GB"')
     .replace('capacity_limit: "50GB"', 'capacity_limit: "1GB"')
 )
 
@@ -170,9 +175,9 @@ def test_all_bounded_topology_warns_typed(
     assert cap.bdev_capacity == "1GB"
     assert cap.final_tier_capacity == "1GB"
     warned = [r for r in caplog.records if CLIO_CORE_TIER_TOPOLOGY in r.getMessage()]
-    assert warned, "bounded bdev + final<=ram must warn clio_core_tier_topology"
+    assert warned, "headroom-less ceiling + final<=ram must warn clio_core_tier_topology"
     msg = warned[0].getMessage()
-    assert "device ceiling" in msg
+    assert "insufficient spill headroom" in msg
     assert "cannot absorb one full hot-tier spill" in msg
     # The ram tier itself is correctly bounded — no ram_uncapped warning.
     assert not [
@@ -183,9 +188,9 @@ def test_all_bounded_topology_warns_typed(
 def test_correct_topology_is_silent(
     tmp_path: Path, caplog: "logging.LogCaptureFixture"
 ) -> None:
-    # Generator-shaped: bdev 0g, ram tier 1GB, final tier 50GB (>> ram; a
-    # LARGE bound stands in for "unbounded" until clio-core accepts 0 on
-    # non-ram tiers — core_config.cc rejects it today).
+    # Generator-shaped desktop budget: ceiling 2GB (bounded, 2x headroom),
+    # tier 1GB, final tier 50GB (a LARGE bound stands in for "unbounded"
+    # until clio-core accepts 0 on non-ram tiers).
     cfg = _write(tmp_path, _BOUNDED_CONFIG)
     with caplog.at_level(logging.WARNING, logger="clio_agent.arc.clio_core_config"):
         cap = boot_check_ram_cap(cfg, env={})
@@ -203,3 +208,53 @@ def test_generator_default_final_tier_far_exceeds_ram_tier() -> None:
     final = parse_capacity_bytes(_default_cte_file_capacity())
     ram = parse_capacity_bytes(_default_cte_ram_capacity())
     assert final >= 10 * ram, "final layer must dwarf the hot tier (engine forbids 0)"
+
+
+def test_memory_budget_derives_hard_ceiling_and_half_tier() -> None:
+    """#906 release gate: ONE budget knob -> ceiling = budget, tier = budget/2.
+
+    'use 1GB of ram, and whatever you want of <disk>' — the budget IS the hard
+    bound; the tier keeps 2x eviction headroom (bounded-ceiling probe: spill OK
+    at 2x, rc=13 deadlock at ceiling == tier).
+    """
+    from clio_agent.arc.clio_core_config import derive_ram_shape, parse_capacity_bytes
+
+    ceiling, tier = derive_ram_shape("1GB")
+    assert ceiling == "1GB"
+    assert parse_capacity_bytes(tier) * 2 == parse_capacity_bytes("1GB")
+
+    ceiling, tier = derive_ram_shape("512MB")
+    assert parse_capacity_bytes(tier) * 2 == parse_capacity_bytes("512MB")
+
+    import pytest
+
+    with pytest.raises(ValueError):
+        derive_ram_shape("0g")  # an unbounded budget is not a budget
+
+
+def test_generated_default_config_is_topology_conformant(tmp_path, monkeypatch) -> None:
+    """The config the generator writes must pass its own boot check silently."""
+
+    monkeypatch.setenv("CLIO_ARC_CTE_DIR", str(tmp_path / "cte"))
+    from clio_agent import conf
+    from clio_agent.arc.clio_core_config import default_cte_config_path
+
+    conf.reload()
+    try:
+        cfg = default_cte_config_path()
+        import logging as _l
+
+        caplog_records = []
+        handler = _l.Handler()
+        handler.emit = lambda r: caplog_records.append(r)
+        lg = _l.getLogger("clio_agent.arc.clio_core_config")
+        lg.addHandler(handler)
+        try:
+            cap = boot_check_ram_cap(cfg, env={})
+        finally:
+            lg.removeHandler(handler)
+        assert cap.bdev_capacity == "1GB"  # ceiling = the default 1GB budget
+        assert cap.cap == "512MB"  # tier = budget/2
+        assert not caplog_records, [r.getMessage() for r in caplog_records]
+    finally:
+        conf.reload()
