@@ -118,10 +118,15 @@ if [ -d "$SITE_PKGS" ]; then
 fi
 
 # Console-script shims embed the absolute build path — relocation traps.
-# Delete every non-interpreter regular file in bin/; -m is the only entry.
+# Delete every non-interpreter entry in bin/ (regular files AND symlinks:
+# deleting 2to3-3.12 while leaving the 2to3 symlink dangling broke Tauri's
+# resource walk on the v0.7.1 unix legs); -m is the only entry.
 # python*-config is a shell script embedding build prefixes — same trap.
-find "$OUT/python/bin" -maxdepth 1 -type f ! -name 'python*' -delete
+find "$OUT/python/bin" -maxdepth 1 \( -type f -o -type l \) ! -name 'python*' -delete
 find "$OUT/python/bin" -maxdepth 1 -type f -name 'python*-config' -delete
+# Sweep any dangling symlink left anywhere in the dist (resource walkers fail
+# on them; a dangling link is by definition dead weight).
+find "$OUT/python" -xtype l -delete 2>/dev/null || true
 
 SIZE_AFTER="$(dir_size_mb "$OUT")"
 echo "[build-gact-runtime] size after prune:  ${SIZE_AFTER} MB (was ${SIZE_BEFORE} MB)"

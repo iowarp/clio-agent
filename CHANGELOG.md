@@ -6,6 +6,15 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.7.2] — 2026-07-14
+
+### Fixed
+- Portable-runtime prune left dangling `bin/` symlinks (e.g. `2to3` after
+  its `2to3-3.12` target was deleted) that failed Tauri's resource walk on
+  the unix bundled legs; the prune now removes non-interpreter symlinks
+  and sweeps any dangling link. Validated end-to-end on Linux (WSL):
+  relocated boot + `/v1/capabilities` green before tagging.
+
 ## [0.7.1] — 2026-07-14
 
 ### Fixed
