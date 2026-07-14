@@ -49,11 +49,12 @@ def probe_clio_core_ram_cap(*, env: Mapping[str, str] | None = None) -> list[Int
     Returns a single-row list when the ARC backend is clio-core, and an empty list for the
     explicit ``local`` backend (the ram tier does not apply). The row is:
 
-    * MISCONFIGURED when the config file declares an unparseable cap (fail-loud) or no
-      ram tier at all;
-    * DEGRADED when the effective cap is ``0g`` (= 80% of system DRAM — the #890
-      footgun), with the exact remediation;
-    * READY otherwise, naming the bounded cap (raw string + human bytes).
+    * MISCONFIGURED when the config file declares an unparseable cap (fail-loud);
+    * DEGRADED when a PRESENT ram data tier is ``0g`` (= 80% of system DRAM — the
+      #890 footgun) or the working-memory arena is unbounded (#906), with the
+      exact remediation;
+    * READY otherwise: the disk-only default (no ram data tier, arena bounded —
+      the memory budget) or a bounded ram tier.
 
     Args:
         env: Environment mapping (defaults to the process environment). Drives the
@@ -98,18 +99,47 @@ def probe_clio_core_ram_cap(*, env: Mapping[str, str] | None = None) -> list[Int
         ]
 
     if cap.cap is None:
+        # Disk-only data topology (the #906 desktop default): no ram data tier;
+        # the memory bound is the working-memory arena (ram bdev capacity).
+        arena = cap.bdev_capacity
+        arena_bounded = False
+        if arena is not None:
+            try:
+                arena_bounded = parse_capacity_bytes(arena) > 0
+            except ValueError:
+                arena_bounded = False
+        if arena_bounded and arena is not None:
+            human = format_bytes(parse_capacity_bytes(arena))
+            return [
+                IntegrationStatus(
+                    name="clio_core_ram_cap",
+                    state=IntegrationState.READY,
+                    summary=(
+                        f"clio-core runs disk-only data with working memory bounded at "
+                        f"{arena} (~{human}); no ram data tier (#906 memory budget)."
+                    ),
+                    config_source=source,
+                    next_action="No action required.",
+                    endpoint=endpoint,
+                    capabilities=["memory-budget", "disk-only-data"],
+                    details={**details, "reason": "disk_only_arena_bounded"},
+                    required=True,
+                )
+            ]
         return [
             IntegrationStatus(
                 name="clio_core_ram_cap",
-                state=IntegrationState.MISCONFIGURED,
+                state=IntegrationState.DEGRADED,
                 summary=(
-                    "clio-core CTE config declares no ram hot tier (no cte_ram_tier "
-                    "capacity_limit); the memory↔disk hierarchy is not bounded."
+                    "clio-core CTE config has no ram data tier AND no bounded "
+                    "working-memory arena — clio-core may grow to 80% of system "
+                    "DRAM (#906)."
                 ),
                 config_source=source,
                 next_action=_REMEDIATION,
                 endpoint=endpoint,
-                details={**details, "reason": "ram_tier_missing"},
+                fallback="none",
+                details={**details, "reason": "arena_unbounded"},
                 required=True,
             )
         ]

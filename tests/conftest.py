@@ -5,6 +5,7 @@ Provides shared fixtures for all test modules, including synthetic
 HDF5 and Parquet test data for MCP server testing.
 """
 
+import contextlib
 import os
 from pathlib import Path
 
@@ -95,6 +96,33 @@ def _clio_process_hygiene_audit(request, _clio_private_cte_daemon):
     # safe, and the daemon fixture's later reap becomes a no-op.
     if _clio_private_cte_daemon is not None:
         reap_private_daemon(_clio_private_cte_daemon.state_dir)
+    # Census sweep: a spawn that failed BEFORE writing its pidfile leaves a
+    # clio_run child the pidfile reap above cannot see (the #913 flake-hunt
+    # recurrence). With the isolation env active every clio_run child of this
+    # process family is OURS (private state dir), so terminate residuals and
+    # WARN — daemon lifecycle is this fixture's responsibility, not a test
+    # leak; the audit below still fails on any OTHER leaked resource.
+    if _clio_private_cte_daemon is not None:
+        import psutil  # noqa: PLC0415
+
+        try:
+            for child in psutil.Process(os.getpid()).children(recursive=True):
+                try:
+                    if "clio_run" in (child.name() or ""):
+                        import warnings  # noqa: PLC0415
+
+                        warnings.warn(
+                            f"reaping orphan private clio_run pid={child.pid} "
+                            "(spawn failed before pidfile write)",
+                            stacklevel=1,
+                        )
+                        child.terminate()
+                        child.wait(timeout=5.0)
+                except (psutil.NoSuchProcess, psutil.TimeoutExpired):
+                    with contextlib.suppress(psutil.NoSuchProcess):
+                        child.kill()
+        except psutil.NoSuchProcess:
+            pass
     if os.environ.get(SKIP_ENV):
         return
     result = audit.finalize(own_pid=os.getpid())

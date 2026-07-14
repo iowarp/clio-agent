@@ -46,21 +46,17 @@ compose:
     pool_query: local
     pool_id: "301.0"
     bdev_type: ram
-    capacity: "0g"
+    capacity: "512MB"
   - mod_name: clio_cte_core
     pool_name: cte_main
     pool_query: local
     pool_id: "512.0"
     restart: true
     storage:
-      - path: "ram::cte_ram_tier"
-        bdev_type: "ram"
-        capacity_limit: "256MB"
-        score: 1.0
       - path: "{file_tier}"
         bdev_type: "file"
         capacity_limit: "4GB"
-        score: 0.0
+        score: 1.0
     dpe:
       dpe_type: "max_bw"
     performance:

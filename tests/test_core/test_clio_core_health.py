@@ -72,19 +72,60 @@ def test_init_degradation_sabotage_ready_would_go_red():
     assert row.details["reason"] == "clio_core_daemon_spawn_failed"
 
 
+# A LEGACY tier-present shape (pre-#906 files still in the wild): these probe
+# tests pin the READ semantics for ram-data-tier configs. The PRODUCTION
+# template is disk-only (no ram tier) — covered by the disk-only test below.
+_LEGACY_TIER_YAML = """\
+runtime:
+  conf_dir: "c"
+compose:
+  - mod_name: clio_bdev
+    pool_name: "ram::chi_default_bdev"
+    pool_query: local
+    pool_id: "301.0"
+    bdev_type: ram
+    capacity: "0g"
+  - mod_name: clio_cte_core
+    pool_name: cte_main
+    pool_query: local
+    pool_id: "512.0"
+    storage:
+      - path: "ram::cte_ram_tier"
+        bdev_type: "ram"
+        capacity_limit: "{ram_capacity}"
+        score: 1.0
+      - path: "f"
+        bdev_type: "file"
+        capacity_limit: "50GB"
+        score: 0.0
+"""
+
+
 def _write_cte_yaml(tmp_path, ram_cap: str):
+    cfg = tmp_path / "cte.yaml"
+    cfg.write_text(_LEGACY_TIER_YAML.format(ram_capacity=ram_cap), encoding="utf-8")
+    return cfg
+
+
+def test_probe_disk_only_default_is_ready(tmp_path):
+    """The #906 disk-only desktop default: no ram data tier, bounded arena -> READY."""
     cfg = tmp_path / "cte.yaml"
     cfg.write_text(
         clio_core_config._DEFAULT_CTE_CONFIG_TEMPLATE.format(
             conf_dir="c",
             file_tier="f",
             file_capacity="50GB",
-            ram_capacity=ram_cap,
+            ram_budget="1GB",
             metadata_log="m",
         ),
         encoding="utf-8",
     )
-    return cfg
+    rows = probe_clio_core_ram_cap(env={"CLIO_ARC_STORE": "cte", "CLIO_ARC_STORE_CONFIG": str(cfg)})
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.state is IntegrationState.READY
+    assert row.details["reason"] == "disk_only_arena_bounded"
+    assert "1GB" in row.summary
 
 
 def test_probe_healthy_bounded_cap(tmp_path):

@@ -523,15 +523,24 @@ def test_as_of_render_parity(tmp_path, clio_core_arc) -> None:
 
 
 def _scripted_lm() -> DummyLM:
-    """A 2-iteration ReAct script: search then finish."""
+    """A 2-iteration ReAct script: search then submit.
+
+    Speaks the ReActV2 contract (``next_thought`` + typed ``tool_calls``) —
+    the SHIPPED default loop since #901; ``make_react_agent`` builds whatever
+    ``app._retaining_react_cls()`` resolves, and the old classic-contract
+    script (``next_tool_name``/``next_tool_args``) failed the V2 adapter parse
+    so the loop never ran its tool (#914).
+    """
     return DummyLM(
         [
             {
                 "next_thought": "search first",
-                "next_tool_name": "search",
-                "next_tool_args": '{"q": "alpha"}',
+                "tool_calls": {"tool_calls": [{"name": "search", "args": {"q": "alpha"}}]},
             },
-            {"next_thought": "done", "next_tool_name": "finish", "next_tool_args": "{}"},
+            {
+                "next_thought": "done",
+                "tool_calls": {"tool_calls": [{"name": "submit", "args": {"answer": "FINAL_ANSWER"}}]},
+            },
             {"reasoning": "because", "answer": "FINAL_ANSWER"},
         ]
     )

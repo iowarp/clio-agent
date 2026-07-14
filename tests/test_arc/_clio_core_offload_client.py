@@ -30,11 +30,19 @@ Configuration is entirely via environment (set by the parent test):
 
 from __future__ import annotations
 
+import socket as _socket
+
+# Force process-wide Winsock initialization BEFORE the native clio-core
+# binding loads: its vendored ZeroMQ asserts "Successful WSASTARTUP not yet
+# performed" (signaler.cpp:163) when its first socketpair beats WSAStartup
+# in a fresh subprocess (#914; upstream-filed).
+_probe = _socket.socket()
+_probe.close()
+
 import base64
 import hashlib
 import json
 import os
-import sys
 import traceback
 from typing import Any
 
@@ -152,4 +160,12 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # os._exit, NOT sys.exit: after main() the op result is already emitted and
+    # the runtime client explicitly released (last-one-out stops the private
+    # daemon). Normal interpreter finalization then runs the clio-core binding's
+    # destructor storm, which trips the known upstream Windows ZeroMQ
+    # client-detach assertion (STATUS_FATAL_APP_EXIT, rc=0x40000015) and turned
+    # every green run red at the last instant (#914). Skipping finalizers HERE
+    # is safe (result flushed, client released) and keeps a non-zero rc
+    # meaningful for real crashes inside main().
+    os._exit(main())
