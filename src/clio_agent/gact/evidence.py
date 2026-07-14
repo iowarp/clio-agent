@@ -579,11 +579,25 @@ def _dynamic_agent_runtime_provenance(
         )
         if "system_prompt" in fields:
             payload["prompt"]["source"] = "session_agent_overlay"
+    # resolved_skills (#920): the RUNTIME-truth resolution the executing expert
+    # actually had (from the per-app build cache) — source-agnostic, and the
+    # only record that includes default-root workspace auto-declarations.
+    from clio_agent.gact.runtime.app_state import per_app_dict  # noqa: PLC0415
+
+    skill_rt = per_app_dict("skill_runtime_cache", app=app).get(agent_def.id)
+    resolutions = getattr(skill_rt, "resolutions", None)
+    if resolutions:
+        payload["resolved_skills"] = {
+            skill_id: res.to_metadata() for skill_id, res in resolutions.items()
+        }
     if agent_def.source == "expert_pack":
         payload.update(
             {
                 "parent_id": agent_def.parent_id,
                 "skills": list(agent_def.skills),
+                # Typed per-id resolution outcome (#920): resolved/missing/
+                # ambiguous/unreadable + path/scope/checksum, from row load (S1).
+                "skill_resolution": dict(agent_def.metadata.get("skill_resolution") or {}),
                 "commands": list(agent_def.commands),
                 "pack": {
                     "id": str(agent_def.metadata.get("pack_id") or ""),

@@ -93,6 +93,9 @@ SSE_UI_EVENT_TYPES: frozenset[str] = frozenset(
         # Memory search is an agent ACTION the user opts into (a retrieval step in
         # the trajectory), not lifecycle bookkeeping -- surface its result live.
         "memory.search.completed",
+        # A skill load is an agent ACTION with provenance the UI renders
+        # (#920; gact-tui#315): which procedure the expert pulled in, from where.
+        "skill.loaded",
     }
 )
 
