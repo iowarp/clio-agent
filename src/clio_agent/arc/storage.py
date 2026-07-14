@@ -857,6 +857,9 @@ def make_arc_store(
     )
     choice = resolved.strip().lower()
     if choice == "local":
+        from clio_agent.arc.init_degradation import warn_local_backend_selected  # noqa: PLC0415
+
+        warn_local_backend_selected()
         return LocalFSStore(data_dir)
     if choice == "cte":
         cfg = config_path or conf.resolve(

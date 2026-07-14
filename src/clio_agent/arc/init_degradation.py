@@ -163,3 +163,33 @@ def reset_arc_init_degradation() -> None:
     with _lock:
         global _last_degradation
         _last_degradation = None
+
+
+LOCAL_BACKEND_BANNER = (
+    "DEGRADED TO LOCAL BACKEND: CLIO_ARC_STORE=local selects an underperforming "
+    "fallback store with limited support for clio-agent semantics (no clio-core "
+    "tiering, no bounded arena, no disk offload). Unit-test convenience ONLY — "
+    "never a live run or release gate. Set CLIO_ARC_STORE=cte for the real substrate."
+)
+_local_banner_emitted = False
+
+
+def warn_local_backend_selected() -> None:
+    """Shout ONCE per process on explicit LocalFS selection (owner ruling
+    2026-07-14): even chosen deliberately it is a degradation — stdout + log +
+    trace, never tribal knowledge. (The cte-unavailable fallback path shouts
+    via :func:`record_arc_init_degradation`, #897.)"""
+
+    global _local_banner_emitted
+    if _local_banner_emitted:
+        return
+    _local_banner_emitted = True
+    bar = "=" * 78
+    print(f"\n{bar}\n⚑ {LOCAL_BACKEND_BANNER}\n{bar}\n", flush=True)
+    logger.warning(LOCAL_BACKEND_BANNER)
+    try:
+        from clio_agent.runtime import trace  # noqa: PLC0415
+
+        trace.event("ARC-STORE", "%s", LOCAL_BACKEND_BANNER)
+    except Exception as exc:  # noqa: BLE001 - banner must never break store construction
+        logger.warning("local-backend banner trace emit failed: reason=%s", exc)

@@ -110,7 +110,10 @@ def test_health_returns_probe_engine_rows_not_hand_rolled(
     assert "sessions" not in rows
     assert "agent" not in rows
     assert "memory" not in rows
-    assert body["overall_status"] == "ready"
+    # The fixture selects the LOCAL ARC backend, which is DEGRADED by policy
+    # (underperforming fallback, owner ruling 2026-07-14) — never fully ready.
+    assert rows["arc"]["status"] == "degraded"
+    assert body["overall_status"] == "degraded"
     assert body["healthy"] is True
 
 
