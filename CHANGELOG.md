@@ -6,7 +6,31 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.7.0] — 2026-07-13
+
+The second resource-usage campaign release (#893): the unified-ARC
+highway ships as the default, the desktop bundle works on a fresh
+computer end-to-end, and clio-agent's memory is hard-bounded. Pairs
+with gact-tui **v0.9.7** and marketplace **v0.5.4**.
+
 ### Changed
+- **Hard memory budget** (#906, release-gating): clio-core's storage
+  runs a disk-only desktop topology — ONE pre-created RAM arena bounded
+  at the user's memory budget (`arc.cte.ram_capacity` /
+  `CLIO_ARC_CTE_RAM_CAPACITY`, default 1GB) as working memory, and ONE
+  file tier at the user-designated dir (`arc.cte.dir`) holding all data.
+  "Use 1GB of RAM, and whatever you want of disk." clio-core's own `0g`
+  default (up to 80% of system DRAM — an HPC compute-node default) can
+  no longer be inherited silently: boot-time typed warnings
+  (`clio_core_ram_uncapped`, `clio_core_tier_topology`) and doctor rows
+  flag unbounded arenas, legacy two-arena shapes, and undersized final
+  layers. Live gate evidence: daemon peak 574MB under the 1GB bound
+  through three full EarthScope sessions.
+- clio-core blob writes ride a bounded, typed-loud retry
+  (`clio_core_put_retry`, 3 attempts): transient PutBlob refusals (an
+  eviction race, a post-restart container-restore gap, disk exhaustion —
+  all caught live on the #893 gate) no longer turn one failed write into
+  a failed turn under the atoms regime's must-succeed ingest.
 - The unified-ARC highway regimes are the shipped defaults (#737, #893):
   the working-set fold (`CLIO_ARC_WORKING_SET_FOLD`) and the transcript
   projection (`CLIO_TRANSCRIPT_PROJECTION`) default ON — new sessions run
