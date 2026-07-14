@@ -58,10 +58,11 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/arc/working_set_fold.py": 919,
     "src/clio_agent/gact/agent_blueprints.py": 1108,
     "src/clio_agent/gact/agents/builders.py": 2170,
-    "src/clio_agent/gact/agents/resolution.py": 803,
     # #900: +14 for the lifespan child-reaper install + clean-shutdown teardown wiring
     # (both delegate to the owner module runtime/process_tree.py).
-    "src/clio_agent/gact/app.py": 2538,
+    # #918: +7 for the SkillNotDelegatableError exception handler (app.py owns
+    # the handler cluster; see _validation_exception_handler precedent).
+    "src/clio_agent/gact/app.py": 2545,
     "src/clio_agent/gact/routes/agents.py": 921,
     "src/clio_agent/gact/routes/blueprints.py": 859,
     "src/clio_agent/gact/routes/catalog.py": 880,
@@ -76,8 +77,12 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/gact/streaming.py": 1024,
     "src/clio_agent/gact/tool_observer.py": 930,
     "src/clio_agent/gact/transcript.py": 986,
-    "src/clio_agent/gact/turn.py": 814,
-    "src/clio_agent/gact/turn_delegation.py": 913,
+    # #918: +17 for the typed SkillNotDelegatableError ladder arm (a skill-bound
+    # turn fails typed, never as generic agent_error).
+    "src/clio_agent/gact/turn.py": 831,
+    # #918: +17 for the typed skill_not_delegatable failed-handoff row (parent
+    # re-routes; the turn never dies on a skill-id handoff).
+    "src/clio_agent/gact/turn_delegation.py": 930,
     "src/clio_agent/gact/turn_finalize.py": 935,
     "src/clio_agent/gact/types.py": 1143,
     # -120 (#891): the SDK-session machinery moved out to sibling owner modules —

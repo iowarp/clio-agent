@@ -1,7 +1,7 @@
 """Dynamic-agent / Agent-Blueprint DSPy module builders for the GACT server (#714).
 
 This module owns the *expert builders* carved out of ``clio_agent.gact.app``: the
-factories that compile a registered dynamic agent (user/skill agent or Agent
+factories that compile a registered dynamic agent (user agent or Agent
 Blueprint expert) into the concrete DSPy module that actually runs it --
 
 * prompt-only user agents (:func:`_build_prompt_user_agent_module`),

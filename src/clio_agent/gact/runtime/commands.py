@@ -30,14 +30,15 @@ from clio_agent.gact.agents.resolution import (
 )
 from clio_agent.gact.catalog import (
     _load_command_files_from_disk,
-    _load_skills_from_disk,
     _truthy_command_field,
 )
+from clio_agent.gact.skills import SkillCatalog, SkillRef
 from clio_agent.gact.types import AgentDef
 from clio_agent.optimizer.stub import (
     OPTIMIZER_NOT_IMPLEMENTED_MESSAGE,
     OPTIMIZER_NOT_IMPLEMENTED_REASON,
 )
+from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -248,11 +249,65 @@ def user_command_rows(
     for command in _load_command_files_from_disk(cwd=cwd, extra_roots=extra_roots):
         rows.setdefault(command["id"], command)
     agents = [AgentDef(**row.to_wire()) for row in app.state.user_agents.list()]
-    agents.extend(_load_skills_from_disk())
     for agent_def in agents:
         for command in command_defs_from_agent(agent_def):
             rows.setdefault(command["id"], command)
+    catalog = SkillCatalog(cwd=cwd)
+    skill_refs: dict[str, Any] = {}
+    for ref in catalog.discover():
+        skill_refs[ref.id] = ref  # scan order = global first, workspace last: workspace WINS
+    for err in catalog.scan_errors:
+        # No-silent-fallback: a skill whose commands vanish must say why.
+        trace.event("SKILLS", "skill file skipped: %s (%s)", err.get("path"), err.get("error"))
+    for ref in skill_refs.values():
+        for command in command_defs_from_skill(ref):
+            rows.setdefault(command["id"], command)
     return sorted(rows.values(), key=lambda row: row["id"])
+
+
+_SKILL_COMMAND_KEYS = (
+    "command",
+    "slash_command",
+    "slash-command",
+    "commands",
+    "slash_commands",
+    "slash-commands",
+    "prompt_template",
+    "prompt-template",
+)
+
+
+def command_defs_from_skill(ref: SkillRef) -> list[dict[str, Any]]:
+    """Project a skill's frontmatter command declarations into wire rows (#918).
+
+    Skills no longer materialize as agents, so a skill-declared slash command
+    dispatches to ``main`` with the skill body as the prompt template when the
+    frontmatter does not provide one — invoking /<command> runs the skill's
+    procedure instead of routing to a deleted pseudo-agent.
+    """
+
+    stash = {key: ref.meta[key] for key in _SKILL_COMMAND_KEYS if key in ref.meta}
+    if not any("command" in key for key in stash):
+        return []
+    # The skill BODY is the procedure and must always reach the model (the old
+    # skill-agent carried it as its system prompt): a declared template is the
+    # invocation shape, composed WITH the body — never instead of it.
+    declared = str(stash.pop("prompt_template", "") or "").strip()
+    declared = declared or str(stash.pop("prompt-template", "") or "").strip()
+    stash.pop("prompt-template", None)
+    stash["prompt_template"] = (
+        f"{declared}\n\n## Skill procedure ({ref.id})\n{ref.body}"
+        if declared and ref.body.strip()
+        else (declared or ref.body)
+    )
+    shim = AgentDef(
+        id="main",
+        source="skill",
+        title=ref.title,
+        description=ref.description,
+        metadata=stash,
+    )
+    return command_defs_from_agent(shim)
 
 
 def all_command_rows(

@@ -783,15 +783,9 @@ from clio_agent.gact.catalog import (  # noqa: E402, F401
     _builtin_agents,
     _builtin_tools,
     _command_search_roots,
-    _default_skill_id,
-    _fallback_skill_keywords,
     _load_command_files_from_disk,
-    _load_skills_from_disk,
     _normalize_file_command_id,
     _parse_skill_frontmatter,
-    _skill_list_field,
-    _skill_markdown_files,
-    _skill_search_roots,
     _tool_owner_for_catalog,
     _tool_tags_for_catalog,
     _tool_visible_to_for_catalog,
@@ -823,6 +817,7 @@ from clio_agent.gact.permission_gate import (  # noqa: E402,F401
 )
 from clio_agent.gact.resident_ledgers import build_resident_ledger_set, seed_metrics_counters
 from clio_agent.gact.sessions import SessionStore, _default_store_path
+from clio_agent.gact.skills import SkillNotDelegatableError
 
 # Live-streaming + prediction-rendering cluster (#714 decomposition) moved to
 # gact/streaming.py: signature-compatible agent invocation, the DSPy streamify
@@ -2065,7 +2060,6 @@ def build_app(
         rows = (
             _builtin_agents()
             + [AgentDef(**row.to_wire()) for row in app.state.user_agents.list()]
-            + _load_skills_from_disk()
             + load_expert_packs(cwd=cwd, pack_id=active_pack_id)
             + explicit_session_rows
         )
@@ -2331,6 +2325,19 @@ def build_app(
         return JSONResponse(
             status_code=exc.status_code,
             content=envelope.model_dump(exclude_none=True),
+        )
+
+    @app.exception_handler(SkillNotDelegatableError)
+    async def _skill_not_delegatable(request, exc: SkillNotDelegatableError) -> JSONResponse:
+        """Typed 400 for a skill id used as an agent id (#918)."""
+        info = ErrorInfo(
+            error="skill_not_delegatable",
+            message=str(exc),
+            details={"skill_id": exc.skill_id, "skill_path": exc.path},
+            recoverable=True,
+        )
+        return JSONResponse(
+            status_code=400, content=ErrorEnvelope(error=info).model_dump(exclude_none=True)
         )
 
     @app.exception_handler(RequestValidationError)

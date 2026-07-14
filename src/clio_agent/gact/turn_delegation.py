@@ -81,6 +81,7 @@ from clio_agent.gact.runtime.globals import (
     _TurnTimedOut,
 )
 from clio_agent.gact.runtime.type_parsing import _blueprint_module_kind, answer_stream_visible
+from clio_agent.gact.skills import SkillNotDelegatableError
 from clio_agent.gact.streaming import _extract_tools_called, _run_dynamic_agent_compat
 from clio_agent.gact.tool_observer import (
     _append_live_assistant_part,
@@ -292,7 +293,23 @@ async def execute_delegated_experts(
                 }
             )
             continue
-        target = _resolve_runtime_dynamic_agent(state.app, target_id, session_id=state.sid)
+        try:
+            target = _resolve_runtime_dynamic_agent(state.app, target_id, session_id=state.sid)
+        except SkillNotDelegatableError as exc:
+            # A model-emitted handoff to a skill id is a FAILED ROW, not a dead
+            # turn: the parent gets the typed reason back and decides (⚑ #1).
+            executed.append(
+                {
+                    **row,
+                    "agent_id": target_id,
+                    "status": "failed",
+                    "error": "skill_not_delegatable",
+                    "error_message": str(exc),
+                    "parent_id": parent_agent.id,
+                    "depth": depth,
+                }
+            )
+            continue
         if target is None or target.source != "expert_pack" or not target.enabled:
             executed.append(
                 {

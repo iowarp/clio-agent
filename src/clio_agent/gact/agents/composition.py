@@ -29,7 +29,6 @@ from clio_agent.gact.catalog import (
     _builtin_agents,
     _builtin_tools,
     _load_command_files_from_disk,
-    _load_skills_from_disk,
 )
 from clio_agent.gact.expert_packs import load_expert_packs, validate_expert_hierarchy
 from clio_agent.gact.runtime.app_state import per_app_dict
@@ -174,7 +173,6 @@ def _prompt_render_context(app: "FastAPI") -> dict[str, str]:
             _resolution._merge_agent_def_rows(
                 _builtin_agents()
                 + [AgentDef(**row.to_wire()) for row in app.state.user_agents.list()]
-                + _load_skills_from_disk()
                 + load_expert_packs()
             )
         )
