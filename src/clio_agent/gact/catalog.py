@@ -17,18 +17,9 @@ from clio_agent.gact.agent_blueprints import (
     load_agent_blueprints,
 )
 
-# Discovery/parsing is owned by gact.skills (#917) — the names stay importable
-# here for existing call sites until the S2 (#918) removal lands.
-from clio_agent.gact.skills import (  # noqa: F401  (re-exported seams)
-    SkillCatalog,
-    _default_skill_id,
-    _fallback_skill_keywords,
-    _parse_skill_frontmatter,
-    _skill_list_field,
-    _skill_markdown_files,
-    _skill_search_roots,
-    read_skill_body,
-)
+# SKILL.md discovery/parsing is owned by gact.skills (#917); since #918 skills
+# no longer materialize as agents — only the frontmatter parser is shared here.
+from clio_agent.gact.skills import _parse_skill_frontmatter
 from clio_agent.gact.types import AgentDef, Tool
 
 
@@ -53,81 +44,6 @@ def _builtin_agents() -> list[AgentDef]:
             metadata.setdefault("parent", row.parent_id)
         builtin_rows.append(row.model_copy(update={"metadata": metadata}))
     return builtin_rows
-
-
-def _load_skills_from_disk() -> list[AgentDef]:
-    """Register each workspace/global skill as a ``source="skill"`` AgentDef.
-
-    Thin adapter over :class:`clio_agent.gact.skills.SkillCatalog` (the single
-    scanner, #917). Scan order is global roots first, workspace second, so a
-    project skill with the same id overrides a global skill. The body after
-    frontmatter is used as the skill's system prompt.
-
-    Scheduled for deletion in #918: skills stop materializing as delegatable
-    agents; the surviving consumers (slash commands, capability refs) read the
-    SkillCatalog directly.
-    """
-    from clio_agent.runtime import trace  # noqa: PLC0415
-
-    catalog = SkillCatalog()
-    rows: dict[str, AgentDef] = {}
-    refs = catalog.discover()
-    for err in catalog.scan_errors:
-        # Structured reason for every dropped file (no-silent-fallback rule):
-        # the skill is absent from the agent list and the trace says why.
-        trace.event(
-            "SKILLS", "skill file skipped: %s (%s)", err.get("path"), err.get("error")
-        )
-    for ref in refs:
-        if ref.layout == "unreadable":
-            continue  # already surfaced through scan_errors above
-        meta = ref.meta
-        body = ref.body  # scan-time read; consistent with title/description/meta
-        tools = _skill_list_field(meta, "allowed-tools", "allowed_tools")
-        keywords = _skill_list_field(meta, "keywords", "tags")
-        if not keywords:
-            keywords = _fallback_skill_keywords(ref.id)
-
-        metadata: dict[str, Any] = {
-            "skill_path": ref.path,
-            "skill_dir": ref.dir,
-            "skill_layout": ref.layout,
-            "skill_source": ref.source,
-        }
-        if meta.get("model"):
-            metadata["model"] = str(meta["model"]).strip()
-        for key in (
-            "command",
-            "slash_command",
-            "slash-command",
-            "commands",
-            "slash_commands",
-            "slash-commands",
-            "prompt_template",
-            "prompt-template",
-        ):
-            if key in meta:
-                metadata[key] = meta[key]
-        if body:
-            # Stash the system-prompt body so future /v1/agents/{id}
-            # can return the full prompt without re-reading the file.
-            metadata["system_prompt"] = body
-
-        rows[ref.id] = AgentDef(
-            id=ref.id,
-            source="skill",
-            title=ref.title,
-            description=ref.description,
-            system_prompt=body,
-            default_provider=str(meta.get("provider", "") or "").strip(),
-            default_model=str(meta.get("model", "") or "").strip(),
-            tools=tools,
-            tier=2,
-            specialization="skill",
-            keywords=keywords,
-            metadata=metadata,
-        )
-    return list(rows.values())
 
 
 def _load_command_files_from_disk(

@@ -297,6 +297,175 @@ def test_load_expert_packs_resolves_against_passed_cwd(
     assert resolution["scope"] == "workspace"
 
 
+# ---- skills are not delegatable (#918) -----------------------------------------
+
+
+def test_resolver_raises_typed_for_skill_id(
+    scopes: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A skill id used as an agent id raises the typed error, not None/404."""
+
+    from clio_agent.gact.agents.resolution import _resolve_dynamic_agent
+    from clio_agent.gact.app import build_app
+    from clio_agent.gact.skills import SkillNotDelegatableError
+
+    _write_skill(scopes["cwd"] / ".claude" / "skills", "review", body="R")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: scopes["home"]))
+    monkeypatch.chdir(scopes["cwd"])
+    app = build_app(sessions_path=scopes["cwd"] / "s.json")
+    with pytest.raises(SkillNotDelegatableError) as excinfo:
+        _resolve_dynamic_agent(app, "review")
+    assert excinfo.value.skill_id == "review"
+    assert "skills:" in str(excinfo.value)
+
+
+def test_expert_id_beats_stray_same_id_skill(
+    scopes: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The skill check is the LAST resort: a real expert whose id collides with
+    a stray skill file still resolves — skills never shadow the agent namespace."""
+
+    from clio_agent.gact.agents.resolution import _resolve_dynamic_agent
+    from clio_agent.gact.app import build_app
+
+    _write_skill(scopes["cwd"] / ".claude" / "skills", "collide", body="STRAY")
+    expert_dir = scopes["cwd"] / ".clio" / "experts"
+    expert_dir.mkdir(parents=True)
+    (expert_dir / "collide.md").write_text(
+        "---\nid: collide\ntitle: Real Expert\ntier: 1\n---\n\nBody.\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: scopes["home"]))
+    monkeypatch.chdir(scopes["cwd"])
+    app = build_app(sessions_path=scopes["cwd"] / "s.json")
+    resolved = _resolve_dynamic_agent(app, "collide")
+    assert resolved is not None and resolved.title == "Real Expert"
+
+
+def test_skill_handoff_is_failed_row_not_dead_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A model-emitted handoff to a skill id settles as a typed FAILED row so
+    the parent decides the next step — it must never kill the turn (⚑ #1)."""
+
+    import asyncio
+
+    from fastapi.testclient import TestClient
+
+    from clio_agent.gact.app import build_app
+    from clio_agent.gact.skills import SkillNotDelegatableError
+    from clio_agent.gact.turn_delegation import execute_delegated_experts
+    from clio_agent.gact.turn_state import TurnState
+    from clio_agent.gact.types import AgentDef
+    from clio_agent.gact.workflow_state.schema import WorkflowStateSchema
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        sess = app.state.sessions.get(sid)
+        state = TurnState(
+            app=app, sid=sid, user_text="", user_msg=sess, turn_agent_id="root",
+            sess=sess, bus=app.state.bus, turn_id="turn_918", trace_id="trace_918",
+            retry_attempt_id="", native_images=[],
+        )
+        state.workflow_schema = WorkflowStateSchema()
+        state.invocation_agent_id = "root"
+        state.active_agent_id = "root"
+        parent = AgentDef(id="root", source="expert_pack", title="Root")
+
+        def _raise(_app, agent_id, *, session_id="", **_kw):
+            raise SkillNotDelegatableError(agent_id, "/tmp/skill.md")
+
+        monkeypatch.setattr(
+            "clio_agent.gact.turn_delegation._resolve_runtime_dynamic_agent", _raise
+        )
+        rows = [{
+            "delegate_to": "some-skill", "agent_id": "some-skill",
+            "question": "do it", "thought": "route", "status": "requested",
+            "execute": True, "source": "agent_next_expert",
+        }]
+        executed = asyncio.run(
+            execute_delegated_experts(state, parent, rows, source_text="do it")
+        )
+    failed = [r for r in executed if r.get("status") == "failed"]
+    assert len(failed) == 1
+    assert failed[0]["error"] == "skill_not_delegatable"
+    assert "skills:" in failed[0]["error_message"]
+
+
+def test_skill_command_rows_derive_from_catalog(
+    scopes: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Skill frontmatter command declarations still surface as slash commands,
+    dispatching to `main` with the skill body as the template (#918); skills
+    without command declarations produce no rows (parity with the old agents)."""
+
+    from clio_agent.gact.runtime.commands import command_defs_from_skill
+    from clio_agent.gact.skills import SkillCatalog
+
+    root = scopes["cwd"] / ".claude" / "skills"
+    (root / "cmdskill").mkdir(parents=True)
+    (root / "cmdskill" / "SKILL.md").write_text(
+        "---\nname: cmdskill\ndescription: D\nslash_command: /run-review\n---\n\nDo the review.\n",
+        encoding="utf-8",
+    )
+    _write_skill(root, "plain-skill", body="No command keys here.")
+
+    refs = {r.id: r for r in SkillCatalog(home=scopes["home"], cwd=scopes["cwd"]).discover()}
+    rows = command_defs_from_skill(refs["cmdskill"])
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["id"] == "/run-review"
+    assert row["agent_id"] == "main"
+    assert row["agent_source"] == "skill"
+    assert row["prompt_template"] == "Do the review."
+    assert command_defs_from_skill(refs["plain-skill"]) == []
+
+
+def test_skill_command_template_composes_with_body(
+    scopes: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A declared template never REPLACES the skill body: the body is the
+    procedure and always reaches the model (composed after the template)."""
+
+    from clio_agent.gact.runtime.commands import command_defs_from_skill
+    from clio_agent.gact.skills import SkillCatalog
+
+    root = scopes["cwd"] / ".claude" / "skills" / "tpl"
+    root.mkdir(parents=True)
+    (root / "SKILL.md").write_text(
+        "---\nname: tpl\ndescription: D\ncommand: /tpl\n"
+        "prompt-template: Explain {{input}}\n---\n\nTHE PROCEDURE.\n",
+        encoding="utf-8",
+    )
+    refs = {r.id: r for r in SkillCatalog(home=scopes["home"], cwd=scopes["cwd"]).discover()}
+    row = command_defs_from_skill(refs["tpl"])[0]
+    assert row["prompt_template"].startswith("Explain {{input}}")
+    assert "THE PROCEDURE." in row["prompt_template"]
+
+
+def test_workspace_skill_command_shadows_global(
+    scopes: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same skill id in global and workspace: the WORKSPACE definition's command
+    wins (precedence parity with the deleted skills-as-agents fold)."""
+
+    from clio_agent.gact.app import build_app
+    from clio_agent.gact.runtime.commands import user_command_rows
+
+    for base, marker in ((scopes["home"], "GLOBAL BODY"), (scopes["cwd"], "WORKSPACE BODY")):
+        d = base / ".claude" / "skills" / "shared"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "SKILL.md").write_text(
+            f"---\nname: shared\ndescription: D\ncommand: /shared\n---\n\n{marker}\n",
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: scopes["home"]))
+    app = build_app(sessions_path=scopes["cwd"] / "s.json")
+    rows = {r["id"]: r for r in user_command_rows(app, cwd=scopes["cwd"])}
+    assert "WORKSPACE BODY" in rows["/shared"]["prompt_template"]
+    assert "GLOBAL BODY" not in rows["/shared"]["prompt_template"]
+
+
 # ---- the /skills/ scanner exclusion -------------------------------------------
 
 

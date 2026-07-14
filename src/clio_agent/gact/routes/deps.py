@@ -182,7 +182,7 @@ class _AgentRows(Protocol):
     """Callable seam resolving the effective agent catalog for a session/workspace.
 
     ``_agent_rows`` (in :mod:`clio_agent.gact.app`) merges the active Agent
-    Blueprint graph, expert packs, and the built-in/user/skill registry into the
+    Blueprint graph, expert packs, and the built-in/user registry into the
     rows ``GET /v1/agents`` renders, applying the session overlay + prompt
     registry. It is also reached by the prompt render-context builder that stays
     in ``build_app``, so it stays single-sourced there and travels here for the

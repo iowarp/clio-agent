@@ -42,6 +42,23 @@ SkillStatus = Literal["resolved", "missing", "ambiguous", "unreadable"]
 _SCOPE_ORDER: tuple[SkillScope, ...] = ("pack", "workspace", "global")
 
 
+class SkillNotDelegatableError(RuntimeError):
+    """A skill id was used where a delegatable agent id is required (#918).
+
+    Skills stopped materializing as agents in the #916 skill-semantics change:
+    a skill is procedural knowledge an expert loads, not an actor to route to.
+    """
+
+    def __init__(self, skill_id: str, path: str = "") -> None:
+        super().__init__(
+            f"{skill_id!r} is a skill, not a delegatable agent — declare it under "
+            "`skills:` on the expert that needs it, or invoke the slash command "
+            "its frontmatter declares (if any)"
+        )
+        self.skill_id = skill_id
+        self.path = path
+
+
 class SkillBodyUnreadableError(RuntimeError):
     """A resolved skill's SKILL.md could not be read back for loading."""
 
@@ -59,9 +76,9 @@ class SkillRef:
     """A discovered skill definition.
 
     ``body`` and ``checksum`` are captured in the same single read as the
-    frontmatter, so consumers that need scan-time consistency (the transitional
-    ``_load_skills_from_disk`` adapter) never race a second read. Consumers
-    that want load-time freshness (the #919 ``load_skill`` tool) use
+    frontmatter, so consumers that need scan-time consistency (e.g. skill
+    command derivation) never race a second read. Consumers that want
+    load-time freshness (the #919 ``load_skill`` tool) use
     :func:`read_skill_body` instead, which re-reads from disk.
     """
 

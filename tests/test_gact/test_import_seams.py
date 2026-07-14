@@ -40,7 +40,6 @@ SEAM_SYMBOLS: list[str] = [
     "_estimate_cost_usd",
     "_format_sse",
     "_gact_turn_timeout_s",
-    "_load_skills_from_disk",
     "_make_permission_gate",
     "_make_tool_observer",
     "_not_implemented",
@@ -110,10 +109,6 @@ def test_seam_format_sse_importable() -> None:
 
 def test_seam_gact_turn_timeout_s_importable() -> None:
     _assert_importable("_gact_turn_timeout_s")
-
-
-def test_seam_load_skills_from_disk_importable() -> None:
-    _assert_importable("_load_skills_from_disk")
 
 
 def test_seam_make_permission_gate_importable() -> None:

@@ -3,7 +3,7 @@
 This module owns the stateless *resolution* helpers carved out of
 ``clio_agent.gact.app``: given a session/workspace, resolve the runtime
 ``AgentDef`` rows that actually execute -- from the active Agent Blueprint graph,
-the expert-pack/builtin hierarchy, and the user/skill registry -- applying the
+the expert-pack/builtin hierarchy, and the user-agent registry -- applying the
 session agent-blueprint overlay and the prompt registry along the way.
 
 Every function here is a *query*: it reads ``app.state`` (sessions, workspaces,
@@ -27,6 +27,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from clio_agent.gact import skills as _skills
 from clio_agent.gact.agent_blueprints import (
     DEFAULT_AGENT_BLUEPRINT_ID,
     discover_agent_blueprints,
@@ -41,7 +42,7 @@ from clio_agent.gact.agents.composition import (
     _apply_prompt_registry_to_agent,
     _prompt_render_context,
 )
-from clio_agent.gact.catalog import _builtin_agents, _load_skills_from_disk
+from clio_agent.gact.catalog import _builtin_agents
 from clio_agent.gact.expert_packs import load_expert_packs, validate_expert_hierarchy
 from clio_agent.gact.runtime.app_state import per_app_dict
 from clio_agent.gact.types import AgentCapabilityRef, AgentDef
@@ -134,7 +135,7 @@ def _resolve_dynamic_agent(
     *,
     prompt_registry: "PromptRegistry | None" = None,
 ) -> "AgentDef | None":
-    """Return a registered user/skill/builtin/expert-pack agent definition by id."""
+    """Return a registered user/builtin/expert-pack agent definition by id."""
     if not agent_id:
         return None
     row = app.state.user_agents.get(agent_id)
@@ -144,15 +145,21 @@ def _resolve_dynamic_agent(
             AgentDef(**row.to_wire()),
             prompt_registry=prompt_registry,
         )
-    for skill in _load_skills_from_disk():
-        if skill.id == agent_id:
-            return _apply_prompt_registry_to_agent(app, skill, prompt_registry=prompt_registry)
     expert_rows = validate_expert_hierarchy(
         _merge_agent_def_rows(_builtin_agents() + load_expert_packs())
     )
     for expert in expert_rows:
         if expert.id == agent_id and expert.enabled:
             return _apply_prompt_registry_to_agent(app, expert, prompt_registry=prompt_registry)
+    # LAST resort, after every real agent namespace (#918): an id that matches a
+    # discovered skill gets the typed pointer error instead of a bare not-found.
+    # Skills no longer occupy the agent-id namespace, so they never shadow a
+    # real agent. Same process-cwd basis as the load_expert_packs() call above.
+    skill_hit = _skills.SkillCatalog().resolve(agent_id)
+    if skill_hit.status != "missing":
+        raise _skills.SkillNotDelegatableError(
+            agent_id, getattr(skill_hit.skill, "path", "") or ""
+        )
     return None
 
 
@@ -468,22 +475,6 @@ def _agent_with_capability_refs(app: "FastAPI", agent_def: "AgentDef") -> "Agent
             )
             command_ids.add(command_id)
         agent_def = agent_def.model_copy(update={"commands": sorted(command_ids)})
-
-    if agent_def.source == "skill" and agent_def.id not in agent_def.skills:
-        refs.append(
-            AgentCapabilityRef(
-                kind="skill",
-                id=agent_def.id,
-                title=agent_def.title,
-                description=agent_def.description,
-                source=str(agent_def.metadata.get("skill_source", "skill")),
-                metadata={
-                    "skill_path": agent_def.metadata.get("skill_path", ""),
-                    "skill_layout": agent_def.metadata.get("skill_layout", ""),
-                },
-            )
-        )
-        agent_def = agent_def.model_copy(update={"skills": [*agent_def.skills, agent_def.id]})
 
     deduped: list[AgentCapabilityRef] = []
     seen: set[tuple[str, str]] = set()
