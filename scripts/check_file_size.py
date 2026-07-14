@@ -57,7 +57,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # down with the #714/#767 decomposition.
     "src/clio_agent/arc/working_set_fold.py": 919,
     "src/clio_agent/gact/agent_blueprints.py": 1108,
-    "src/clio_agent/gact/agents/builders.py": 2170,
+    # #919: +35 to WIRE progressive-disclosure skills into all three module
+    # classes (block + load_skill tool; logic lives in agents/skill_runtime.py)
+    # and to document the deleted stale extract alias that crashed every
+    # tool-user-agent build under ReActV2.
+    "src/clio_agent/gact/agents/builders.py": 2205,
     # #900: +14 for the lifespan child-reaper install + clean-shutdown teardown wiring
     # (both delegate to the owner module runtime/process_tree.py).
     # #918: +7 for the SkillNotDelegatableError exception handler (app.py owns
