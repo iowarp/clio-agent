@@ -78,9 +78,11 @@ def test_runtime_report_ready_path(tmp_path):
 
     report = probe.collect(api_state=IntegrationState.READY)
 
-    assert report.overall_status == "ready"
+    # The local ARC backend is DEGRADED by policy (underperforming fallback,
+    # owner ruling 2026-07-14) — a report on it can never be fully "ready".
+    assert report.overall_status == "degraded"
     assert report.by_name("lm_provider").state == IntegrationState.READY
-    assert report.by_name("arc").state == IntegrationState.READY
+    assert report.by_name("arc").state == IntegrationState.DEGRADED
     assert report.by_name("arc").details["storage_mode"] == "local"
     assert report.by_name("file_policy").state == IntegrationState.READY
     assert report.by_name("gateway").state == IntegrationState.READY
@@ -374,7 +376,10 @@ def test_arc_local_backend_keeps_writability_check(tmp_path):
 
     status = probe.probe_arc()
 
-    assert status.state == IntegrationState.READY
+    # Writable local dir → the probe still succeeds, but local is DEGRADED by
+    # policy (underperforming fallback), never READY.
+    assert status.state == IntegrationState.DEGRADED
+    assert "DEGRADED TO LOCAL BACKEND" in status.summary
     assert status.details["storage_mode"] == "local"
     assert (tmp_path / "arc").is_dir()
 

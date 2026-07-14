@@ -48,7 +48,9 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/arc/memory.py": 1394,
     "src/clio_agent/arc/segments.py": 1117,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
-    "src/clio_agent/arc/storage.py": 883,
+    # owner ruling 2026-07-14: +3 to route explicit =local through the loud
+    # DEGRADED banner (owner module: arc/init_degradation.py).
+    "src/clio_agent/arc/storage.py": 886,
     # #737 S2 fold owner module. Crossed the 800 new-file cap restoring the FROZEN
     # arc.op reproducibility contract (§2 / GOAL.md DoD #4): the five working-set write
     # overrides now emit a per-op arc.op via _emit_op so arc.replay rebuilds the live
@@ -96,7 +98,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # further with the #714/#767 decomposition.
     "src/clio_agent/providers/claude_code_litellm.py": 848,
     # #900: +2 for wiring probe_process_tree into the doctor collect().
-    "src/clio_agent/runtime/status.py": 1185,
+    # owner ruling 2026-07-14: +3 for the DEGRADED-by-policy local-ARC doctor row.
+    "src/clio_agent/runtime/status.py": 1188,
     "src/clio_agent/tools/execution.py": 1187,
     "src/clio_agent/ui/cli.py": 1156,
 }
