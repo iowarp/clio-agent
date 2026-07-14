@@ -906,8 +906,8 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 # Per-provider transport (v0.8.0): only the bound provider's field
                 # reads req.transport — cross-feeding once let non-codex binds
                 # inherit the deleted codex "exec" default and 400 on validation.
-                codex_transport=(req.transport or "app_server") if is_codex else "app_server",
-                claude_code_transport=(req.transport or "sdk") if is_cc else "sdk",
+                codex_transport=(req.transport or "app_server") if is_codex else "app_server",  # type: ignore[arg-type]  # LMProviderConfig validates; deleted values 400 typed
+                claude_code_transport=(req.transport or "sdk") if is_cc else "sdk",  # type: ignore[arg-type]  # LMProviderConfig validates; deleted values 400 typed
             )
             # Per-provider handshake: discover connectivity + per-model config and
             # fold it into cfg — context-aware max_tokens (replacing the static ALCF
@@ -1106,7 +1106,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             max_tokens=req.max_tokens,
             context_length=req.context_length,
             thinking_budget=req.thinking_budget,
-            transport=transport,
+            transport=transport,  # type: ignore[arg-type]  # values are the narrowed config Literals
             presets=_lm_presets_with_status(),
         )
 
