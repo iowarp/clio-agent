@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from clio_agent.gact import context as _ctx
 from clio_agent.gact.skills import (
     SkillBodyUnreadableError,
     SkillCatalog,
@@ -219,6 +220,56 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
             )
         ref = res.skill
         skill_dir = Path(ref.dir)
+
+        def _emit_loaded(size: int, bundled_file: str = "") -> None:
+            # skill.loaded (#920): typed provenance for every load, on the
+            # highway (durable trace + ARC + the served UI wire). Correlated to
+            # the turn like every in-loop emitter, and GUARDED: capture must
+            # never fail a load that already succeeded (the react-step pattern).
+            from clio_agent.gact.runtime.globals import (  # noqa: PLC0415
+                _active_semantic_trace_id,
+                _active_semantic_turn_id,
+                _emit_semantic_event,
+            )
+
+            app = _ctx.active_app()
+            sid = _ctx.active_session_id()
+            if app is None or not sid:
+                trace.event(
+                    "SKILLS", "skill.loaded outside app/session: %s %s", skill_id, ref.path
+                )
+                return
+            payload: dict[str, Any] = {
+                "skill_id": skill_id,
+                "scope": ref.scope,
+                "path": ref.path,
+                "checksum": ref.checksum,
+                "size": size,
+                "agent_id": agent_id,
+            }
+            if bundled_file:
+                payload["file"] = bundled_file
+            try:
+                _emit_semantic_event(
+                    app,
+                    sid,
+                    "skill.loaded",
+                    turn_id=_active_semantic_turn_id(),
+                    trace_id=_active_semantic_trace_id(),
+                    status="completed",
+                    summary=(
+                        f"{agent_id} loaded skill {skill_id}"
+                        + (f" file {bundled_file}" if bundled_file else "")
+                    ),
+                    actor={"agent_id": agent_id, "role": "expert"},
+                    subject={"skill_id": skill_id, "scope": ref.scope},
+                    payload=payload,
+                )
+            except Exception as exc:  # noqa: BLE001 - capture never breaks the load
+                trace.event(
+                    "SKILLS", "skill.loaded emit failed for %s: %s", skill_id, exc
+                )
+
         if ref.layout != "skill_md":
             if file:
                 raise ValueError(
@@ -237,6 +288,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
             except (OSError, UnicodeDecodeError) as exc:
                 raise ValueError(f"bundled file {file!r} unreadable: {exc}") from exc
             trace.event("SKILLS", "agent %s loaded %s file %s", agent_id, skill_id, file)
+            _emit_loaded(len(content.encode("utf-8")), bundled_file=file)
             return content
         body = read_skill_body(ref)  # fresh read: edits since scan are honored
         bundled: list[str] = []
@@ -253,6 +305,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
                     bundled.append("... (listing capped at 50 files)")
                     break
         trace.event("SKILLS", "agent %s loaded skill %s (%s)", agent_id, skill_id, ref.path)
+        _emit_loaded(len(body.encode("utf-8")))
         listing = (
             "\n\nBundled files (load with load_skill(skill_id, file=...)):\n"
             + "\n".join(f"- {name}" for name in bundled)
