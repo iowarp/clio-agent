@@ -55,9 +55,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # plane byte-identically (the S2 slice had dropped these, breaking replay). Footprint
     # minimized to concise docstrings; the per-op payload passing is irreducible. Ratchet
     # down with the #714/#767 decomposition.
-    "src/clio_agent/arc/working_set_fold.py": 924,
-    "src/clio_agent/gact/agent_blueprints.py": 1100,
-    "src/clio_agent/gact/agents/builders.py": 2209,
+    "src/clio_agent/arc/working_set_fold.py": 919,
+    "src/clio_agent/gact/agent_blueprints.py": 1108,
+    "src/clio_agent/gact/agents/builders.py": 2170,
     "src/clio_agent/gact/agents/resolution.py": 803,
     # #900: +14 for the lifespan child-reaper install + clean-shutdown teardown wiring
     # (both delegate to the owner module runtime/process_tree.py).

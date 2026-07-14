@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from clio_agent import conf
+from clio_agent.gact import skills as _skills
 from clio_agent.gact.expert_packs import (
     ExpertPackDefinition,
     _fallback_expert_id,
@@ -379,10 +380,12 @@ def load_agent_blueprints(
     blueprint_id: str = "",
 ) -> list[AgentDef]:
     rows: list[AgentDef] = []
+    # ONE catalog per load (#917): same home/cwd as discovery, one scan per root.
+    skill_catalog = _skills.SkillCatalog(home=home, cwd=cwd)
     for blueprint in discover_agent_blueprints(home=home, cwd=cwd):
         if blueprint_id and blueprint.id != blueprint_id:
             continue
-        rows.extend(_load_blueprint_agents(blueprint))
+        rows.extend(_load_blueprint_agents(blueprint, skill_catalog=skill_catalog))
     return rows
 
 
@@ -1001,7 +1004,9 @@ def _tree_checksum(root: Path) -> str:
     return digest.hexdigest()
 
 
-def _load_blueprint_agents(blueprint: AgentBlueprintDefinition) -> list[AgentDef]:
+def _load_blueprint_agents(
+    blueprint: AgentBlueprintDefinition, *, skill_catalog: "_skills.SkillCatalog | None" = None
+) -> list[AgentDef]:
     expert_root = blueprint.root / "experts"
     search_roots = [expert_root if expert_root.is_dir() else blueprint.root]
     included_roots: dict[Path, str] = {}
@@ -1048,7 +1053,10 @@ def _load_blueprint_agents(blueprint: AgentBlueprintDefinition) -> list[AgentDef
         defaults=dict(blueprint.defaults),
         metadata={"default_root_expert": blueprint.root_expert, "layout": "agent_blueprint"},
     )
-    rows = [parse_expert_file(path, scope=blueprint.scope, pack=pack) for path in files]
+    rows = [
+        parse_expert_file(path, scope=blueprint.scope, pack=pack, skill_catalog=skill_catalog)
+        for path in files
+    ]
     out: list[AgentDef] = []
     for row in rows:
         row_path = Path(str(row.metadata.get("definition_path") or "")).resolve()
