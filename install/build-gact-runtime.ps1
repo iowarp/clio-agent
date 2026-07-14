@@ -172,6 +172,14 @@ if (Test-Path $scriptsDir) {
     Where-Object { $_.Name -notmatch '^python' } |
     ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
 }
+# distlib/setuptools launcher stubs under site-packages (t64.exe, w64-arm.exe,
+# ...) are dead weight (console scripts are deleted; -m is the entry) and the
+# release staging sweeps *.exe as installers. python.exe lives at the dist
+# root, untouched.
+if (Test-Path $sitePkgs) {
+  Get-ChildItem -LiteralPath $sitePkgs -Recurse -File -Filter '*.exe' -ErrorAction SilentlyContinue |
+    ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+}
 
 $sizeAfter = Get-DirSizeMB $Out
 Write-Host "[build-gact-runtime] size after prune:  $sizeAfter MB (was $sizeBefore MB)"

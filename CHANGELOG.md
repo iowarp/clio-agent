@@ -6,6 +6,19 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.7.3] — 2026-07-14
+
+### Fixed
+- Portable-runtime prune, final pass: `python*-config` symlinks removed
+  (the macOS leg died on a dangling `python3-config` after its target was
+  pruned — and the GNU-only `-xtype` sweep silently no-opped on BSD find,
+  our own silent-fallback class; the sweep is now portable), and
+  distlib/setuptools Windows launcher stubs are pruned from site-packages
+  (a 180KB `t64-arm.exe` inside the packed runtime masqueraded as the
+  bundled installer and failed the 60MB payload floor on the linux legs).
+  Linux validation in-tree before tagging: relocated boot green, zero
+  dangling links, zero stray exes.
+
 ## [0.7.2] — 2026-07-14
 
 ### Fixed
