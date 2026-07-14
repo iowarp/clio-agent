@@ -2,8 +2,9 @@
 
 The acceptance contract is observed at the LM boundary: a ``PromptRecorder``
 captures the exact ``messages`` dspy sends, and the live plane is exercised
-through the REAL ``_RetainingReAct`` machinery (not a stub) driven by a scripted
-``DummyLM`` so the loop is deterministic.
+through the REAL retaining react loop (``_RetainingReActV2`` — the only loop
+since v0.8.0; not a stub) driven by a scripted ``DummyLM`` so the loop is
+deterministic.
 """
 
 from __future__ import annotations
@@ -74,7 +75,7 @@ def live_plane_context(
 
 
 def make_react_agent(tools: list[Any] | None = None) -> Any:
-    """Build a real _RetainingReAct instance over a trivial signature."""
+    """Build a real retaining-react (V2) instance over a trivial signature."""
 
     def search(q: str) -> str:
         """A search tool."""
@@ -84,23 +85,6 @@ def make_react_agent(tools: list[Any] | None = None) -> Any:
     return react_cls("question -> answer", tools=tools or [dspy.Tool(search)])
 
 
-def stock_format_trajectory(agent: Any, keys: dict[str, Any]) -> str:
-    """Format a trajectory dict via dspy's *stock* formatter (the byte-equality
-    reference). Must be called inside a ``dspy.context`` with an adapter set."""
-    react_cls = app._retaining_react_cls()
-    return super(react_cls, agent)._format_trajectory(keys)
-
-
-def expected_trajectory_dict(steps: list[dict[str, Any]]) -> dict[str, Any]:
-    """Reconstruct the dict stock dspy would build for a fully-populated loop —
-    the byte-equality reference for an UNEDITED trajectory.
-
-    ``steps`` is a list of ``{thought, tool_name, tool_args, observation}``.
-    """
-    out: dict[str, Any] = {}
-    for i, s in enumerate(steps):
-        out[f"thought_{i}"] = s["thought"]
-        out[f"tool_name_{i}"] = s["tool_name"]
-        out[f"tool_args_{i}"] = s["tool_args"]
-        out[f"observation_{i}"] = s["observation"]
-    return out
+# (v0.8.0) The classic byte-equality helpers ``stock_format_trajectory`` /
+# ``expected_trajectory_dict`` died with the classic loop; the V2 references live
+# in tests/test_arc/test_reactv2_wire_byte_equality.py (expected_history_messages).

@@ -229,40 +229,12 @@ async def test_streamify_setup_failure_returns_none_for_sync_fallback(
     assert "ValueError" in fallback["message"]
 
 
-async def test_batch_transport_without_live_streaming_skips_streamify(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    def fail_streamify(*args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        raise AssertionError("streamify should not be called for non-streaming providers")
-
-    streamify_module = importlib.import_module("dspy.streaming.streamify")
-    monkeypatch.setattr(streamify_module, "streamify", fail_streamify)
-    agent = _DspyAgent("sync answer")
-    agent._provider_config = SimpleNamespace(provider="claude_code", claude_code_transport="exec")
-    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
-    chunks: list[str] = []
-
-    async def emit_chunk(text: str) -> None:
-        chunks.append(text)
-
-    result = await _try_streamed_forward(app, "visualize", "sid", emit_chunk)
-
-    assert result is None
-    assert chunks == []
-    assert agent.calls == []
-    fallback = _pop_stream_fallback(app, "sid")
-    assert fallback["reason"] == "provider_streaming_unsupported"
-    assert fallback["synthetic_posthoc"] is True
-    assert fallback["live_streaming"] is False
-
-
 def test_argonne_streaming_is_not_force_classified_as_batch() -> None:
     """iowarp/clio-agent#160: ALCF (Sophia + Metis) is a plain OpenAI-compatible
     SSE endpoint that streams at the provider AND through LiteLLM (verified with a
     live multi-chunk probe). CLIO must NOT force-classify it as batch -- doing so
     bypassed the streamify pump for every ALCF run. Only the CLI-backed custom
-    transports (codex JSON-RPC, claude_code exec) stay genuinely non-streaming."""
+    transport (codex JSON-RPC) stays force-classified as batch."""
 
     from clio_agent.gact.app import _agent_streaming_unsupported_reason
 
@@ -273,7 +245,7 @@ def test_argonne_streaming_is_not_force_classified_as_batch() -> None:
     for provider in ("argonne", "argonne_metis", "argonne_sophia"):
         assert _agent_streaming_unsupported_reason(_agent(provider)) == "", provider
 
-    # Claude Code SDK is streaming-capable; the explicit exec transport is not.
+    # Claude Code always streams (sdk is the only transport since v0.8.0).
     assert _agent_streaming_unsupported_reason(_agent("claude_code")) == ""
     assert (
         _agent_streaming_unsupported_reason(
@@ -285,17 +257,6 @@ def test_argonne_streaming_is_not_force_classified_as_batch() -> None:
             )
         )
         == ""
-    )
-    assert (
-        _agent_streaming_unsupported_reason(
-            SimpleNamespace(
-                _provider_config=SimpleNamespace(
-                    provider="claude_code",
-                    claude_code_transport="exec",
-                )
-            )
-        )
-        == "provider_streaming_unsupported"
     )
 
     # Codex JSON-RPC remains force-classified as batch.
@@ -318,10 +279,10 @@ async def test_dynamic_agent_module_carries_non_streaming_provider_config(
     base_agent = SimpleNamespace(
         _provider_config=LMProviderConfig(
             provider="codex",
-            api_base="codex://exec",
+            api_base="codex://app-server",
             model="gpt-5.5",
             api_key="x",
-            codex_transport="exec",
+            codex_transport="app_server",
         )
     )
     module = _build_prompt_user_agent_module(
@@ -354,10 +315,10 @@ def test_dynamic_agent_lm_config_preserves_claude_code_transport() -> None:
     base_agent = SimpleNamespace(
         _provider_config=LMProviderConfig(
             provider="claude_code",
-            api_base="claude-code://exec",
+            api_base="claude-code://sdk",
             model="haiku",
             api_key="x",
-            claude_code_transport="exec",
+            claude_code_transport="sdk",
         )
     )
 
@@ -373,7 +334,7 @@ def test_dynamic_agent_lm_config_preserves_claude_code_transport() -> None:
     ).materialize()
 
     assert cfg.provider == "claude_code"
-    assert cfg.claude_code_transport == "exec"
+    assert cfg.claude_code_transport == "sdk"
 
 
 def test_build_stream_listeners_binds_known_predictors_explicitly() -> None:

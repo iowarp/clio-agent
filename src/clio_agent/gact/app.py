@@ -365,7 +365,6 @@ from clio_agent.gact.agents.builders import (  # noqa: E402,F401
     _prompt_user_agent_signature,
     _recording_blueprint_tool,
     _recover_blueprint_react_tool_intent,
-    _reextract_over_retained_trajectory,
     _repair_temperature,
     _run_external_mcp_tool_sync,
     _tool_names,

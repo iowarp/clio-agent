@@ -1,17 +1,16 @@
 """Tests for the Codex LiteLLM CustomLLM provider
 (iowarp/clio-agent#51).
 
-The provider talks to a local ``codex`` binary via subprocess; tests
-mock ``subprocess.run`` and the binary lookup so they run anywhere
-without the Codex CLI installed.
+The provider drives the warm ``codex app-server`` pool; tests mock the
+app-server event stream so they run anywhere without the Codex CLI
+installed. v0.8.0: the legacy ``exec``/``sdk`` batch transports were
+deleted - the only transport is ``app_server`` and anything else raises.
 """
 
 from __future__ import annotations
 
 import json
-import subprocess
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -23,22 +22,12 @@ from clio_agent.providers.codex_litellm import (
     CodexUnsupportedMultimodalError,
     _build_model_response,
     _messages_to_codex_prompt,
-    _run_exec,
     ensure_registered,
 )
 
 # ---------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------
-
-
-def _stub_run(stdout: str = "", stderr: str = "", returncode: int = 0):
-    """Build a CompletedProcess-shaped MagicMock for subprocess.run."""
-    proc = MagicMock()
-    proc.returncode = returncode
-    proc.stdout = stdout
-    proc.stderr = stderr
-    return proc
 
 
 @pytest.fixture(autouse=True)
@@ -115,111 +104,6 @@ class TestMessagesToCodexPrompt:
         assert row == {"role": "user", "content": "hello"}
 
 
-# ---------------------------------------------------------------------
-# subprocess invocation
-# ---------------------------------------------------------------------
-
-
-class TestRunExec:
-    def test_writes_prompt_to_stdin(self, tmp_path: Path):
-        with (
-            patch(
-                "clio_agent.providers.codex_litellm._resolve_codex_binary",
-                return_value="/usr/local/bin/codex",
-            ),
-            patch("subprocess.run") as run_mock,
-            patch(
-                "clio_agent.providers.codex_litellm.tempfile.gettempdir",
-                return_value=str(tmp_path),
-            ),
-        ):
-            run_mock.return_value = _stub_run(returncode=0)
-            # Simulate Codex writing the last-message file. We don't
-            # know the uuid; intercept Path.read_text on the last
-            # created file.
-            target = tmp_path
-            (target / "preplaced.txt").write_text("hello back", encoding="utf-8")
-
-            # Patch Path.read_text so the helper sees our text no
-            # matter what filename it generated.
-            with patch.object(Path, "read_text", return_value="hello back"):
-                result = _run_exec(prompt="hi", model="gpt-5")
-
-        assert result == "hello back"
-        argv = run_mock.call_args[0][0]
-        assert argv[0].endswith("codex")
-        assert "exec" in argv
-        assert "--model" in argv and argv[argv.index("--model") + 1] == "gpt-5"
-        assert "--skip-git-repo-check" in argv
-        assert "--sandbox" in argv
-        # stdin contains the prompt.
-        assert run_mock.call_args.kwargs["input"] == "hi"
-
-    def test_non_zero_exit_raises(self, tmp_path: Path):
-        with (
-            patch(
-                "clio_agent.providers.codex_litellm._resolve_codex_binary",
-                return_value="/usr/local/bin/codex",
-            ),
-            patch("subprocess.run") as run_mock,
-            patch(
-                "clio_agent.providers.codex_litellm.tempfile.gettempdir",
-                return_value=str(tmp_path),
-            ),
-        ):
-            run_mock.return_value = _stub_run(returncode=1, stderr="boom")
-            with pytest.raises(CodexExecError, match="returned 1"):
-                _run_exec(prompt="hi", model="gpt-5")
-
-    def test_timeout_raises(self, tmp_path: Path):
-        """A timeout raises AND the last-message temp file is unlinked.
-
-        Regression guard for the #769 leak fix: the old ``finally: pass``
-        left ``codex-out-<uuid>.txt`` on disk when ``subprocess.run``
-        raised ``TimeoutExpired``. Pin the uuid so we can pre-create the
-        file (as a half-written codex would) and assert cleanup happened.
-        """
-        with (
-            patch(
-                "clio_agent.providers.codex_litellm._resolve_codex_binary",
-                return_value="/usr/local/bin/codex",
-            ),
-            patch("subprocess.run") as run_mock,
-            patch(
-                "clio_agent.providers.codex_litellm.tempfile.gettempdir",
-                return_value=str(tmp_path),
-            ),
-            patch(
-                "clio_agent.providers.codex_litellm.uuid.uuid4",
-                return_value=MagicMock(hex="deadbeef"),
-            ),
-        ):
-            run_mock.side_effect = subprocess.TimeoutExpired(cmd="codex", timeout=1.0)
-            last_msg_path = tmp_path / "codex-out-deadbeef.txt"
-            # Simulate codex having written partial output before timing out.
-            last_msg_path.write_text("partial", encoding="utf-8")
-            with pytest.raises(CodexExecError, match="timed out"):
-                _run_exec(prompt="hi", model="gpt-5", timeout=1.0)
-            assert not last_msg_path.exists()
-
-    def test_missing_output_file_raises(self, tmp_path: Path):
-        with (
-            patch(
-                "clio_agent.providers.codex_litellm._resolve_codex_binary",
-                return_value="/usr/local/bin/codex",
-            ),
-            patch("subprocess.run") as run_mock,
-            patch(
-                "clio_agent.providers.codex_litellm.tempfile.gettempdir",
-                return_value=str(tmp_path),
-            ),
-        ):
-            run_mock.return_value = _stub_run(returncode=0)
-            # Don't write the output file -> read_text raises FileNotFoundError.
-            with pytest.raises(CodexExecError, match="no output file"):
-                _run_exec(prompt="hi", model="gpt-5")
-
-
 class TestResolveBinary:
     def test_unavailable_raises(self):
         with (
@@ -253,12 +137,20 @@ class TestBuildModelResponse:
 
 
 class TestCodexLLM:
-    def test_completion_routes_through_run_exec(self):
+    def test_completion_routes_through_app_server(self):
         handler = CodexLLM()
+        seen: dict = {}
+
+        def _events(**kw):
+            seen.update(kw)
+            from clio_agent.providers.codex_app_server import TurnEvent
+
+            yield TurnEvent("final", text="answer text", usage=None, reason="completed")
+
         with patch(
-            "clio_agent.providers.codex_litellm._run_exec",
-            return_value="answer text",
-        ) as run_mock:
+            "clio_agent.providers.codex_stream._app_server_events",
+            side_effect=_events,
+        ):
             resp = handler.completion(
                 model="codex/gpt-5",
                 messages=[{"role": "user", "content": "hi"}],
@@ -271,30 +163,9 @@ class TestCodexLLM:
                 logging_obj=None,
                 optional_params={},
             )
-        run_mock.assert_called_once()
-        # The 'codex/' prefix gets stripped before invoking the CLI.
-        assert run_mock.call_args.kwargs["model"] == "gpt-5"
+        # The 'codex/' prefix gets stripped before the app-server turn.
+        assert seen["model"] == "gpt-5"
         assert resp.choices[0].message.content == "answer text"
-
-    def test_completion_passes_sandbox_override(self):
-        handler = CodexLLM()
-        with patch(
-            "clio_agent.providers.codex_litellm._run_exec",
-            return_value="ok",
-        ) as run_mock:
-            handler.completion(
-                model="codex/gpt-5",
-                messages=[{"role": "user", "content": "hi"}],
-                api_base="",
-                custom_prompt_dict={},
-                model_response=None,  # type: ignore[arg-type]
-                print_verbose=lambda *_: None,
-                encoding=None,
-                api_key=None,
-                logging_obj=None,
-                optional_params={"codex_sandbox": "workspace-write"},
-            )
-        assert run_mock.call_args.kwargs["sandbox"] == "workspace-write"
 
 
 # ---------------------------------------------------------------------
@@ -321,34 +192,46 @@ def _stream_kwargs(**overrides):
     return base
 
 
+def _final_only_events(seen: dict | None = None):
+    """One terminal app-server event; optionally record the call kwargs."""
+
+    def _events(**kw):
+        if seen is not None:
+            seen.update(kw)
+        from clio_agent.providers.codex_app_server import TurnEvent
+
+        yield TurnEvent("text", text="answer text")
+        yield TurnEvent("final", text="answer text", usage=None, reason="completed")
+
+    return _events
+
+
 class TestCodexStreaming:
     def test_streaming_returns_iterator_not_coroutine(self):
         import inspect
 
         handler = CodexLLM()
         with patch(
-            "clio_agent.providers.codex_litellm._run_exec",
-            return_value="answer text",
+            "clio_agent.providers.codex_stream._app_server_events",
+            side_effect=_final_only_events(),
         ):
             stream = handler.streaming(**_stream_kwargs())
             # The #708 regression: a real generator, NOT a coroutine.
             assert inspect.isgenerator(stream)
             assert not inspect.iscoroutine(stream)
             chunks = list(stream)
-        assert len(chunks) == 1
-        chunk = chunks[0]
-        assert chunk["text"] == "answer text"
-        assert chunk["is_finished"] is True
-        assert chunk["finish_reason"] == "stop"
-        assert chunk["index"] == 0
+        assert chunks, "expected at least a terminal chunk"
+        assert chunks[-1]["is_finished"] is True
+        assert chunks[-1]["finish_reason"] == "stop"
+        assert "".join(c["text"] for c in chunks) == "answer text"
 
     async def test_astreaming_is_async_generator_not_coroutine(self):
         import inspect
 
         handler = CodexLLM()
         with patch(
-            "clio_agent.providers.codex_litellm._run_exec",
-            return_value="async answer",
+            "clio_agent.providers.codex_stream._app_server_events",
+            side_effect=_final_only_events(),
         ):
             astream = handler.astreaming(**_stream_kwargs())
             # The #708 regression: a real async generator, NOT a coroutine
@@ -356,19 +239,19 @@ class TestCodexStreaming:
             assert inspect.isasyncgen(astream)
             assert not inspect.iscoroutine(astream)
             chunks = [c async for c in astream]
-        assert len(chunks) == 1
-        assert chunks[0]["text"] == "async answer"
-        assert chunks[0]["is_finished"] is True
-        assert chunks[0]["finish_reason"] == "stop"
+        assert chunks, "expected at least a terminal chunk"
+        assert chunks[-1]["is_finished"] is True
+        assert "".join(c["text"] for c in chunks) == "answer text"
 
     def test_streaming_strips_codex_prefix(self):
         handler = CodexLLM()
+        seen: dict = {}
         with patch(
-            "clio_agent.providers.codex_litellm._run_exec",
-            return_value="ok",
-        ) as run_mock:
+            "clio_agent.providers.codex_stream._app_server_events",
+            side_effect=_final_only_events(seen),
+        ):
             list(handler.streaming(**_stream_kwargs(model="codex/cdx-gpt-5.5")))
-        assert run_mock.call_args.kwargs["model"] == "gpt-5.5"
+        assert seen["model"] == "gpt-5.5"
 
 
 # ---------------------------------------------------------------------
@@ -376,56 +259,13 @@ class TestCodexStreaming:
 # ---------------------------------------------------------------------
 
 
-class TestSDKTransport:
-    """The `sdk` transport requires the optional [codex] extra; we test
-    via mocking so the suite runs without the SDK installed."""
+class TestRemovedTransports:
+    """v0.8.0: ``exec``/``sdk`` were deleted; only ``app_server`` remains."""
 
-    def test_sdk_path_routes_through_openai_codex(self, monkeypatch):
-        """When transport=sdk, the SDK is imported and thread.run is called."""
-        sdk_module = MagicMock()
-        codex_instance = MagicMock()
-        thread = MagicMock()
-        thread.run.return_value = MagicMock(final_response="sdk answer")
-        codex_instance.thread_start.return_value = thread
-        # Codex() is used as a context manager.
-        codex_instance.__enter__ = MagicMock(return_value=codex_instance)
-        codex_instance.__exit__ = MagicMock(return_value=False)
-        sdk_module.Codex = MagicMock(return_value=codex_instance)
-        monkeypatch.setitem(__import__("sys").modules, "openai_codex", sdk_module)
-
+    @pytest.mark.parametrize("transport", ["exec", "sdk", "telepathy"])
+    def test_removed_transport_raises_typed(self, transport: str):
         handler = CodexLLM()
-        resp = handler.completion(
-            model="codex/gpt-5",
-            messages=[{"role": "user", "content": "hi"}],
-            api_base="",
-            custom_prompt_dict={},
-            model_response=None,  # type: ignore[arg-type]
-            print_verbose=lambda *_: None,
-            encoding=None,
-            api_key=None,
-            logging_obj=None,
-            optional_params={"codex_transport": "sdk"},
-        )
-
-        assert resp.choices[0].message.content == "sdk answer"
-        codex_instance.thread_start.assert_called_once()
-        prompt = thread.run.call_args.args[0]
-        assert json.loads(prompt.splitlines()[-1]) == {
-            "role": "user",
-            "content": "hi",
-        }
-
-    def test_sdk_path_missing_extra_raises_actionable(self, monkeypatch):
-        """If neither openai_codex nor codex_app_server is importable, the
-        ImportError must point users at the [codex] extra."""
-        # Block the SDK imports.
-        import sys
-
-        monkeypatch.setitem(sys.modules, "openai_codex", None)
-        monkeypatch.setitem(sys.modules, "codex_app_server", None)
-
-        handler = CodexLLM()
-        with pytest.raises(CodexCLIUnavailableError, match=r"clio-agent\[codex\]"):
+        with pytest.raises(CodexExecError, match="removed in the v0.8.0 cleanup"):
             handler.completion(
                 model="codex/gpt-5",
                 messages=[{"role": "user", "content": "hi"}],
@@ -436,23 +276,20 @@ class TestSDKTransport:
                 encoding=None,
                 api_key=None,
                 logging_obj=None,
-                optional_params={"codex_transport": "sdk"},
+                optional_params={"codex_transport": transport},
             )
 
     def test_env_var_does_not_select_transport(self, monkeypatch):
         """CLIO_CODEX_TRANSPORT must be ignored (#818): transport is read purely
-        from the per-LM optional_params carried on the resolved config. With env
-        set to ``sdk`` but no override in optional_params, the DEFAULT_TRANSPORT
-        (``exec``) applies — the process-global env never leaks into a per-LM path."""
-        monkeypatch.setenv("CLIO_CODEX_TRANSPORT", "sdk")
-        # If the env leaked in, the SDK import would be attempted; make it explode
-        # so an accidental sdk route is loud rather than silent.
-        monkeypatch.setitem(__import__("sys").modules, "openai_codex", None)
+        from the per-LM optional_params carried on the resolved config. With the
+        env naming a deleted transport but no override in optional_params, the
+        DEFAULT_TRANSPORT (``app_server``) applies and the call succeeds."""
+        monkeypatch.setenv("CLIO_CODEX_TRANSPORT", "exec")
+        handler = CodexLLM()
         with patch(
-            "clio_agent.providers.codex_litellm._run_exec",
-            return_value="exec-routed",
-        ) as run_exec:
-            handler = CodexLLM()
+            "clio_agent.providers.codex_stream._app_server_events",
+            side_effect=_final_only_events(),
+        ):
             resp = handler.completion(
                 model="codex/gpt-5",
                 messages=[{"role": "user", "content": "hi"}],
@@ -465,41 +302,18 @@ class TestSDKTransport:
                 logging_obj=None,
                 optional_params={},
             )
-        run_exec.assert_called_once()
-        assert resp.choices[0].message.content == "exec-routed"
+        assert resp.choices[0].message.content == "answer text"
 
-    def test_optional_params_override_env(self, monkeypatch):
-        """optional_params is authoritative even when the (ignored) env disagrees."""
-        monkeypatch.setenv("CLIO_CODEX_TRANSPORT", "exec")
-        sdk_module = MagicMock()
-        codex_instance = MagicMock()
-        thread = MagicMock()
-        thread.run.return_value = MagicMock(final_response="config-routed sdk")
-        codex_instance.thread_start.return_value = thread
-        codex_instance.__enter__ = MagicMock(return_value=codex_instance)
-        codex_instance.__exit__ = MagicMock(return_value=False)
-        sdk_module.Codex = MagicMock(return_value=codex_instance)
-        monkeypatch.setitem(__import__("sys").modules, "openai_codex", sdk_module)
-
+    def test_deleted_kill_switch_env_is_inert(self, monkeypatch):
+        """SABOTAGE twin: CLIO_CODEX_APP_SERVER=0 (the deleted #896 kill-switch)
+        must no longer degrade anything - app_server runs regardless."""
+        monkeypatch.setenv("CLIO_CODEX_APP_SERVER", "0")
         handler = CodexLLM()
-        resp = handler.completion(
-            model="codex/gpt-5",
-            messages=[{"role": "user", "content": "hi"}],
-            api_base="",
-            custom_prompt_dict={},
-            model_response=None,  # type: ignore[arg-type]
-            print_verbose=lambda *_: None,
-            encoding=None,
-            api_key=None,
-            logging_obj=None,
-            optional_params={"codex_transport": "sdk"},
-        )
-        assert resp.choices[0].message.content == "config-routed sdk"
-
-    def test_unknown_transport_raises(self):
-        handler = CodexLLM()
-        with pytest.raises(CodexExecError, match="unknown codex transport"):
-            handler.completion(
+        with patch(
+            "clio_agent.providers.codex_stream._app_server_events",
+            side_effect=_final_only_events(),
+        ):
+            resp = handler.completion(
                 model="codex/gpt-5",
                 messages=[{"role": "user", "content": "hi"}],
                 api_base="",
@@ -509,8 +323,9 @@ class TestSDKTransport:
                 encoding=None,
                 api_key=None,
                 logging_obj=None,
-                optional_params={"codex_transport": "telepathy"},
+                optional_params={"codex_transport": "app_server"},
             )
+        assert resp.choices[0].message.content == "answer text"
 
 
 class TestAppServerTransport:
@@ -587,123 +402,6 @@ class TestAppServerTransport:
         assert chunks[-1]["is_finished"] is True
         assert chunks[-1]["usage"]["prompt_tokens"] == 18360
 
-    def test_kill_switch_off_restores_exec(self, monkeypatch):
-        """CLIO_CODEX_APP_SERVER=0: an app_server request degrades to exec byte-identically."""
-        monkeypatch.setenv("CLIO_CODEX_APP_SERVER", "0")
-        handler = CodexLLM()
-        with patch(
-            "clio_agent.providers.codex_litellm._run_exec", return_value="exec answer"
-        ) as run_exec:
-            resp = handler.completion(
-                model="codex/cdx-gpt-5.5",
-                messages=[{"role": "user", "content": "hi"}],
-                api_base="",
-                custom_prompt_dict={},
-                model_response=None,  # type: ignore[arg-type]
-                print_verbose=lambda *_: None,
-                encoding=None,
-                api_key=None,
-                logging_obj=None,
-                optional_params={"codex_transport": "app_server"},
-            )
-        run_exec.assert_called_once()
-        assert resp.choices[0].message.content == "exec answer"
-
-    def test_kill_switch_downgrade_emits_typed_reason(self, monkeypatch, caplog):
-        """The app_server→exec downgrade is LOUD: a typed catalog reason reaches
-        the log and (when the audit is on) a provider.transport_fallback row —
-        never a silent re-route (#775)."""
-        import logging
-
-        monkeypatch.setenv("CLIO_CODEX_APP_SERVER", "0")
-        audited: list[dict] = []
-        monkeypatch.setattr("clio_agent.providers.codex_litellm.stream_audit_enabled", lambda: True)
-        monkeypatch.setattr(
-            "clio_agent.providers.codex_litellm.stream_audit",
-            lambda stage, **f: audited.append({"stage": stage, **f}),
-        )
-        handler = CodexLLM()
-        with (
-            patch("clio_agent.providers.codex_litellm._run_exec", return_value="ok"),
-            caplog.at_level(logging.WARNING, logger="clio_agent.providers.codex_litellm"),
-        ):
-            handler.completion(
-                model="codex/cdx-gpt-5.5",
-                messages=[{"role": "user", "content": "hi"}],
-                api_base="",
-                custom_prompt_dict={},
-                model_response=None,  # type: ignore[arg-type]
-                print_verbose=lambda *_: None,
-                encoding=None,
-                api_key=None,
-                logging_obj=None,
-                optional_params={"codex_transport": "app_server"},
-            )
-        assert any("app_server_kill_switch" in rec.message for rec in caplog.records)
-        rows = [a for a in audited if a["stage"] == "provider.transport_fallback"]
-        assert rows and rows[0]["reason"] == "app_server_kill_switch"
-        assert rows[0]["category"] == "transport_downgrade"
-
-    def test_unknown_fallback_reason_raises(self):
-        """Catalog discipline: a typo'd reason raises, never an empty payload."""
-        from clio_agent.providers.codex_app_server import transport_fallback_payload
-
-        with pytest.raises(ValueError, match="Unknown transport fallback reason"):
-            transport_fallback_payload("no_such_reason")
-
-    def test_effort_knob_inactive_on_exec_is_logged_typed(self, monkeypatch, caplog):
-        """When the kill-switch forces exec while a reasoning effort is pinned,
-        the inactive knob is logged with a typed reason (no silent knob-drop)."""
-        import logging
-
-        monkeypatch.setenv("CLIO_CODEX_APP_SERVER", "0")
-        handler = CodexLLM()
-        with (
-            patch("clio_agent.providers.codex_litellm._run_exec", return_value="ok"),
-            caplog.at_level(logging.WARNING, logger="clio_agent.providers.codex_litellm"),
-        ):
-            handler.completion(
-                model="codex/cdx-gpt-5.5",
-                messages=[{"role": "user", "content": "hi"}],
-                api_base="",
-                custom_prompt_dict={},
-                model_response=None,  # type: ignore[arg-type]
-                print_verbose=lambda *_: None,
-                encoding=None,
-                api_key=None,
-                logging_obj=None,
-                optional_params={
-                    "codex_transport": "app_server",
-                    "codex_reasoning_effort": "high",
-                },
-            )
-        assert any("effort_knob_inactive_on_batch_path" in rec.message for rec in caplog.records)
-
-    def test_kill_switch_on_does_not_route_to_exec(self, monkeypatch):
-        """SABOTAGE twin: with the switch ON, app_server must NOT hit the exec path."""
-        monkeypatch.setenv("CLIO_CODEX_APP_SERVER", "1")
-        handler = CodexLLM()
-        with (
-            patch(
-                "clio_agent.providers.codex_stream._app_server_events",
-                side_effect=lambda **_kw: (e for e in self._events()),
-            ),
-            patch("clio_agent.providers.codex_litellm._run_exec") as run_exec,
-        ):
-            handler.completion(
-                model="codex/cdx-gpt-5.5",
-                messages=[{"role": "user", "content": "hi"}],
-                api_base="",
-                custom_prompt_dict={},
-                model_response=None,  # type: ignore[arg-type]
-                print_verbose=lambda *_: None,
-                encoding=None,
-                api_key=None,
-                logging_obj=None,
-                optional_params={"codex_transport": "app_server"},
-            )
-        run_exec.assert_not_called()
-
     def test_resolve_effort_reads_codex_reasoning_effort(self):
         from clio_agent.providers.codex_litellm import _resolve_effort
 
@@ -737,7 +435,7 @@ class TestAppServerTransport:
                 optional_params={"codex_transport": "app_server"},
             )
 
-    def test_build_model_response_zero_usage_for_exec(self):
+    def test_build_model_response_zero_usage_when_absent(self):
         resp = _build_model_response(text="x", model="gpt-5.5")
         assert resp.usage.total_tokens == 0
 

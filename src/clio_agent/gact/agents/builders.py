@@ -748,52 +748,6 @@ def _typed_output_repair_hint(exc: BaseException) -> str:
     )
 
 
-def _reextract_over_retained_trajectory(program: Any, hint: str) -> Any:
-    """Re-run ONLY the dspy.ReAct extract over the RETAINED trajectory.
-
-    The qwopus failure mode is a model that completes its tool loop but drops a
-    required output field at the final extract. Re-running the WHOLE program
-    repeats the (already-successful, expensive) tool loop and can loop forever.
-    Instead, re-run just ``program.extract`` over the trajectory _RetainingReAct
-    stashed before the failed extract (S4a), steering it with the repair hint.
-    The evidence is reused; only the typed-output format is re-emitted.
-
-    Returns a dspy.Prediction on success, or None if there is no retained
-    trajectory / the program is not a ReAct / the re-extract itself fails (the
-    caller then falls back to the bounded full re-ask).
-    """
-
-    retained = _ctx.active_trajectory()
-    _traj = retained.get("trajectory") if isinstance(retained, dict) else None
-    trace.event(
-        "REEXTRACT",
-        "retained=%s traj_keys=%d input_keys=%s",
-        "none" if retained is None else "present",
-        len(_traj) if isinstance(_traj, dict) else -1,
-        list(retained.get("input_args", {}).keys()) if isinstance(retained, dict) else [],
-    )
-    if not retained or not retained.get("trajectory"):
-        return None
-    extract = getattr(program, "extract", None)
-    format_trajectory = getattr(program, "_format_trajectory", None)
-    if extract is None or not callable(format_trajectory):
-        return None
-
-    import dspy  # noqa: PLC0415
-
-    trajectory = retained["trajectory"]
-    input_args = dict(retained.get("input_args") or {})
-    # Steer the re-extract with the repair hint via the question input field.
-    if input_args.get("question"):
-        input_args["question"] = f"{input_args['question']}\n\n{hint}"
-    try:
-        formatted = format_trajectory(trajectory)
-        extract_pred = extract(**input_args, trajectory=formatted)
-    except Exception:  # noqa: BLE001 - re-extract is best-effort; fall back to full re-ask
-        return None
-    return dspy.Prediction(trajectory=trajectory, **extract_pred)
-
-
 def _recover_blueprint_react_tool_intent(
     *,
     tools: Iterable[Any],
@@ -1884,12 +1838,19 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                             if self.kind == "react":
                                 retained = _ctx.active_trajectory()
                                 has_traj = isinstance(retained, dict) and bool(
-                                    retained.get("trajectory")
+                                    retained.get("history")
                                 )
                                 if has_traj:
-                                    # Extract-format miss: re-run ONLY the final extract
-                                    # over the retained trajectory, multiple times at
-                                    # increasing temperature (cheap; no tool-loop restart).
+                                    # Typed-output miss after a completed tool loop:
+                                    # re-drive ONLY a forced submit over the retained
+                                    # History (the V2 repair; the classic re-extract
+                                    # died with the classic loop in v0.8.0), multiple
+                                    # times at increasing temperature (cheap; no
+                                    # tool-loop restart).
+                                    from clio_agent.gact.agents.reactv2 import (  # noqa: PLC0415
+                                        reforce_submit_over_retained_history,
+                                    )
+
                                     reextracted = None
                                     for _re_i in range(1, _max_repairs + 1):
                                         _re_temp = _repair_temperature(_base_temp, _re_i)
@@ -1899,7 +1860,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                                             ),
                                             adapter=adapter,
                                         ):
-                                            reextracted = _reextract_over_retained_trajectory(
+                                            reextracted = reforce_submit_over_retained_history(
                                                 self.program, hint
                                             )
                                         if reextracted is not None:

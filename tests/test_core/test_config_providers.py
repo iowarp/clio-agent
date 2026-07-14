@@ -301,18 +301,32 @@ class TestLoadConfigFromEnv:
             assert config.api_key == "sk-native"
 
     def test_codex_transport_from_env(self):
-        """CLIO_CODEX_TRANSPORT should select the Codex transport mode."""
-        env = {"CLIO_LM_PROVIDER": "codex", "CLIO_CODEX_TRANSPORT": "sdk"}
+        """CLIO_CODEX_TRANSPORT accepts only app_server (v0.8.0 single transport)."""
+        env = {"CLIO_LM_PROVIDER": "codex", "CLIO_CODEX_TRANSPORT": "app_server"}
         with isolated_environ(env):
             config = load_config_from_env()
-            assert config.codex_transport == "sdk"
+            assert config.codex_transport == "app_server"
+
+    def test_codex_removed_transport_from_env_raises(self):
+        """A deleted transport in the env is a loud config error, not a downgrade."""
+        env = {"CLIO_LM_PROVIDER": "codex", "CLIO_CODEX_TRANSPORT": "exec"}
+        with isolated_environ(env):
+            with pytest.raises(ValueError, match="removed in the v0.8.0 cleanup"):
+                load_config_from_env()
 
     def test_claude_code_transport_from_env(self):
-        """CLIO_CLAUDE_CODE_TRANSPORT should select the Claude Code transport mode."""
-        env = {"CLIO_LM_PROVIDER": "claude_code", "CLIO_CLAUDE_CODE_TRANSPORT": "exec"}
+        """CLIO_CLAUDE_CODE_TRANSPORT accepts only sdk (v0.8.0 single transport)."""
+        env = {"CLIO_LM_PROVIDER": "claude_code", "CLIO_CLAUDE_CODE_TRANSPORT": "sdk"}
         with isolated_environ(env):
             config = load_config_from_env()
-            assert config.claude_code_transport == "exec"
+            assert config.claude_code_transport == "sdk"
+
+    def test_claude_code_removed_transport_from_env_raises(self):
+        """A deleted transport in the env is a loud config error, not a downgrade."""
+        env = {"CLIO_LM_PROVIDER": "claude_code", "CLIO_CLAUDE_CODE_TRANSPORT": "exec"}
+        with isolated_environ(env):
+            with pytest.raises(ValueError, match="removed in the v0.8.0 cleanup"):
+                load_config_from_env()
 
 
 class TestLoadConfigFileLayerWins:
@@ -522,15 +536,15 @@ class TestCreateLM:
         lm = create_lm(config)
         assert lm.model == "codex/cdx-gpt-5.5"
 
-    def test_codex_sdk_transport_passes_litellm_kwarg(self):
-        """Codex SDK transport should flow into dspy.LM kwargs."""
+    def test_codex_transport_passes_litellm_kwarg(self):
+        """The codex transport should flow into dspy.LM kwargs."""
         config = LMProviderConfig(
             provider="codex",
             model="gpt-5.5",
-            codex_transport="sdk",
+            codex_transport="app_server",
         )
         lm = create_lm(config)
-        assert lm.kwargs["codex_transport"] == "sdk"
+        assert lm.kwargs["codex_transport"] == "app_server"
 
     def test_codex_thinking_level_passes_codex_reasoning_effort_kwarg(self):
         """SEAM (#896): the #895 thinking level survives the factory into the LM

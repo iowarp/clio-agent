@@ -1,6 +1,6 @@
 """LIVE acceptance: the ARC live context plane against REAL ALCF/Argonne inference.
 
-Gated by ``CLIO_RUN_LIVE=1`` (skipped otherwise). Runs a real ``_RetainingReAct``
+Gated by ``CLIO_RUN_LIVE=1`` (skipped otherwise). Runs the real retaining react loop
 loop against a live Argonne model and asserts the contract on REAL data: the loop
 writes its trajectory to ARC, the prompt is rebuilt from ARC (byte-equal to stock),
 and an out-of-band edit propagates. Uses the Argonne provider only — never LM Studio.
@@ -22,7 +22,7 @@ import pytest
 from clio_agent.arc.prompt_recorder import PromptRecorder
 from clio_agent.arc.segments import segments_to_keys
 
-from .conftest import live_plane_context, make_react_agent, stock_format_trajectory
+from .conftest import live_plane_context, make_react_agent
 
 pytestmark = [
     pytest.mark.live,
@@ -67,13 +67,9 @@ def test_live_plane_on_real_alcf_inference(arc):
     kinds = {s.kind for s in live}
     assert "thought" in kinds  # at minimum the model reasoned
 
-    # 3. Byte-equality on REAL data: the override renders ARC identically to stock.
-    with live_plane_context(arc, session=SID, scope=SCOPE):
-        with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
-            keys = arc.render_segments_keys(SID, SCOPE)
-            override = agent._format_trajectory({})
-            stock = stock_format_trajectory(agent, keys)
-    assert override == stock
+    # 3. (v0.8.0) The classic single-string byte-equality died with the classic
+    # loop; the V2 wire byte-equality is proven in
+    # tests/test_arc/test_reactv2_wire_byte_equality.py.
 
     # 4. The prompt was built FROM ARC — every captured react call's trajectory span
     #    is a prefix-consistent subset of the final ARC render (the loop fed itself

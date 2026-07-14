@@ -572,16 +572,17 @@ def test_stray_notification_after_turn_is_dropped_typed(
 
 
 # --------------------------------------------------------------------------- #
-# Kill-switch.
+# Kill-switch deletion (v0.8.0).
 # --------------------------------------------------------------------------- #
-def test_app_server_enabled_default_on(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("CLIO_CODEX_APP_SERVER", raising=False)
-    assert cas.app_server_enabled() is True
+def test_kill_switch_machinery_is_deleted() -> None:
+    """v0.8.0: the #896 kill-switch and its downgrade catalog are gone for good.
 
-
-def test_app_server_kill_switch_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CLIO_CODEX_APP_SERVER", "0")
-    assert cas.app_server_enabled() is False
+    The module must not grow them back — a broken app-server is a typed hard
+    error, never a silent downgrade to a batch path (which no longer exists).
+    """
+    assert not hasattr(cas, "app_server_enabled")
+    assert not hasattr(cas, "transport_fallback_payload")
+    assert not hasattr(cas, "TRANSPORT_FALLBACK_REASONS")
 
 
 def test_spawn_failure_is_typed() -> None:

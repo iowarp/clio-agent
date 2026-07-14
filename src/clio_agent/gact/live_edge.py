@@ -85,7 +85,7 @@ from clio_agent.gact.part_atoms import (
     _append_segment_raw,
 )
 from clio_agent.gact.runtime.globals import _iso_from_epoch
-from clio_agent.gact.transcript_projection import REGIME_ATOMS, pinned_regime
+from clio_agent.gact.transcript_projection import atoms_active
 from clio_agent.gact.types import Part
 from clio_agent.runtime.stream_audit import stream_audit
 
@@ -419,7 +419,7 @@ def live_edge_enabled(app: "FastAPI", session_id: str) -> bool:
         return False
     if _arc(app) is None:
         return False
-    return pinned_regime(app, session_id) == REGIME_ATOMS
+    return atoms_active(app)
 
 
 def registry_for(app: "FastAPI") -> LiveEdgeRegistry:

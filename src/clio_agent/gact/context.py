@@ -29,7 +29,7 @@ from typing import Any
 class TrajectoryCell:
     """Mutable holder for the in-flight react trajectory.
 
-    ``_RetainingReAct.forward`` reassigns the retained trajectory twice within
+    the retaining react ``forward`` reassigns the retained trajectory twice within
     one call (clear -> publish-before-extract) WITHOUT a token reset. A mutable
     cell reproduces that exactly: ``forward`` mutates ``.value``; readers read
     ``.value``. Each ``forward`` MUST get a FRESH cell (see
@@ -401,7 +401,7 @@ def install_trajectory_cell() -> TrajectoryCell:
     """Install a FRESH ``TrajectoryCell`` (value=None) as a BARE set, NO token.
 
     Reproduces ``_ACTIVE_REACT_TRAJECTORY.set(None)`` at the top of
-    ``_RetainingReAct.forward`` (a clear with no reset). Each ``forward`` calls
+    the retaining react ``forward`` (a clear with no reset). Each ``forward`` calls
     this first so a delegated child -- running in its own copied context -- gets
     its OWN cell and cannot publish into the parent's retained trajectory.
     Returns the new cell so the caller may keep a direct handle if it wants.

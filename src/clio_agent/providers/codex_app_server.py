@@ -48,10 +48,7 @@ per turn (the schema documents it as "for this turn and subsequent turns"), so t
 thread/turn cycle (bounded wait, typed timeout) so concurrent experts sharing a
 process never interleave streams.
 
-**No silent fallback (#775).** A kill-switch (:func:`app_server_enabled`, default
-ON) restores the ``codex exec`` path byte-for-byte — the downgrade emits the typed
-:data:`TRANSPORT_FALLBACK_REASONS` payload, never a silent re-route. A mid-turn
-transport death or an ``error`` notification surfaces as a typed
+**No silent fallback (#775).** A mid-turn transport death or an ``error`` notification surfaces as a typed
 :class:`CodexAppServerError`, marks the process dead, and the pool **evicts the
 corpse and respawns on the next call** (one respawn attempt per call; a failed
 respawn is a typed error, never a hang — the self-healing parity with ``exec``).
@@ -59,6 +56,11 @@ Late notifications from an abandoned/completed turn are dropped with a typed
 audit reason and can never interleave into the next turn's stream (the drain
 filters by ``threadId``). The pool tears every subprocess down on clean shutdown
 (``atexit`` + the #900 teardown hook) so no ``codex`` child is orphaned.
+
+v0.8.0 cleanup: the ``app_server_enabled`` kill-switch (CLIO_CODEX_APP_SERVER)
+and its ``transport_fallback_payload`` downgrade catalog were deleted along
+with the legacy ``codex exec`` batch path they degraded to — app-server is the
+only transport, and a broken one is a typed hard error, not a downgrade.
 """
 
 from __future__ import annotations
@@ -79,14 +81,11 @@ from clio_agent.runtime.stream_audit import stream_audit, stream_audit_enabled
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "TRANSPORT_FALLBACK_REASONS",
     "CodexAppServerError",
     "CodexAppServerPool",
     "CodexAppServerProcess",
     "TurnEvent",
-    "app_server_enabled",
     "normalize_usage",
-    "transport_fallback_payload",
     "_APP_SERVER_POOL",
     "_reset_app_server_for_tests",
 ]
@@ -102,61 +101,6 @@ DEFAULT_SUMMARY = "detailed"
 
 class CodexAppServerError(RuntimeError):
     """Raised on an app-server transport failure (spawn, protocol, or turn error)."""
-
-
-# --------------------------------------------------------------------------- #
-# Typed transport-fallback reason catalog (no silent divergence — #775 ground
-# rule; same shape/discipline as claude_code_sessions.TRANSPORT_FAILURE_REASONS
-# and gact.streaming._stream_fallback_payload).
-# --------------------------------------------------------------------------- #
-TRANSPORT_FALLBACK_REASONS: dict[str, dict[str, Any]] = {
-    "app_server_kill_switch": {
-        "category": "transport_downgrade",
-        "description": (
-            "The codex app-server transport was requested but the kill-switch "
-            "(providers.codex.app_server / CLIO_CODEX_APP_SERVER) is off, so the "
-            "call degrades to the legacy `codex exec` batch path. Streaming "
-            "deltas, live usage, and the reasoning-effort pin are inactive on "
-            "that path."
-        ),
-    },
-}
-
-
-def transport_fallback_payload(reason: str, message: str = "") -> dict[str, Any]:
-    """Build a structured transport-fallback reason payload (catalog style).
-
-    Mirrors :func:`clio_agent.gact.streaming._stream_fallback_payload`: looks
-    ``reason`` up in :data:`TRANSPORT_FALLBACK_REASONS`, copies its audited
-    metadata, and appends an optional free-text ``message``. Raises ``ValueError``
-    on an unknown reason so a typo cannot silently produce an empty reason.
-    """
-    definition = TRANSPORT_FALLBACK_REASONS.get(reason)
-    if definition is None:
-        raise ValueError(f"Unknown transport fallback reason: {reason}")
-    payload: dict[str, Any] = {"reason": reason, **definition}
-    if message:
-        payload["message"] = message
-    return payload
-
-
-def app_server_enabled() -> bool:
-    """Whether the native app-server transport is on (default ON).
-
-    Resolved via ``providers.codex.app_server`` / ``CLIO_CODEX_APP_SERVER``
-    (file → env → default True). Set it false to restore the byte-identical
-    legacy ``codex exec`` path (the kill-switch required by #896).
-    """
-    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
-
-    return bool(
-        conf.resolve(
-            "providers.codex.app_server",
-            env="CLIO_CODEX_APP_SERVER",
-            default=True,
-            cast=conf.as_bool,
-        )
-    )
 
 
 def normalize_usage(last: dict[str, Any] | None) -> dict[str, int]:
