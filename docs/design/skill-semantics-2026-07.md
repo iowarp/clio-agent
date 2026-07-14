@@ -1,7 +1,21 @@
 # Skill-Based Semantics: Progressive Disclosure for Expert-Declared Skills
 
-Status: AGREED (owner sign-off 2026-07-14 on the keep/remove split and
-declaration-only injection); issue-tracked under umbrella #916
+Status: LANDED S1-S4 (PRs #923/#924/#925/#926, merged to develop
+2026-07-14); S5 (#921, benchmark + docs truth) in flight. Owner sign-off
+2026-07-14 on the keep/remove split and declaration-only injection;
+issue-tracked under umbrella #916.
+
+Implementation refinements (recorded as landed):
+- Tool-less predict/CoT experts get resolved skill BODIES compiled in (no
+  tool loop to load with); react experts get metadata + load_skill (§3.2-3.3).
+- The default-root auto-declaration keys on the metadata BOTH row seams carry
+  (agent_blueprint_id/root_expert on the executing seam, source_blueprint on
+  the listing seam).
+- Skill-declared slash commands dispatch to `main` with the declared template
+  COMPOSED with the skill body; workspace shadows global.
+- skill.loaded events are turn-correlated and guarded (capture never fails a
+  successful load); `resolved_skills` (runtime truth, per-app build cache) +
+  `skill_resolution` (row-load snapshot) both ride provenance.
 Date: 2026-07-14
 
 ## 0. Goal

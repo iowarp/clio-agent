@@ -176,7 +176,7 @@ Agent Entry:
   - tier: 2 (expert) or 3 (nanoagent)
   - capabilities: ["HDF5", "ADIOS", "Parquet", "compression", "chunking"]
   - tools: ["hdf5_analyze", "hdf5_optimize", "adios_convert"]
-  - source: "agent_blueprint" | "user_agent" | "skill" | "custom"
+  - source: "agent_blueprint" | "user_agent" | "custom"  (skills are not agents; see the skill-semantics design)
   - definition_path: registry or workspace blueprint path
 ```
 
