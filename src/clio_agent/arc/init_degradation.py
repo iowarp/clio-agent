@@ -191,5 +191,5 @@ def warn_local_backend_selected() -> None:
         from clio_agent.runtime import trace  # noqa: PLC0415
 
         trace.event("ARC-STORE", "%s", LOCAL_BACKEND_BANNER)
-    except Exception:  # noqa: BLE001 - banner must never break store construction
-        pass
+    except Exception as exc:  # noqa: BLE001 - banner must never break store construction
+        logger.warning("local-backend banner trace emit failed: reason=%s", exc)
