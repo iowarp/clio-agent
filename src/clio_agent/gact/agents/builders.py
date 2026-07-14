@@ -42,6 +42,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.agents import skill_runtime as _skill_runtime
 from clio_agent.gact.agents.composition import (
     _runtime_active_workspace_context,
     _runtime_dynamic_agent_children_context,
@@ -254,8 +255,13 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
                 if app is not None
                 else ""
             )
+            skill_rt = _skill_runtime.skill_runtime_for_agent(
+                app, agent_def, session_id=_ctx.active_session_id()
+            )
             self.system_prompt = "\n\n".join(
-                part for part in (runtime_text, agent_prompt, child_context) if part
+                part
+                for part in (runtime_text, agent_prompt, child_context, skill_rt.bodies_block)
+                if part
             )
             self.has_declared_children = bool(child_context.strip())
             self.answer_synthesizer = dspy.Predict(_prompt_user_agent_signature())
@@ -1590,6 +1596,9 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             self._provider_config = self.config
             self.signature = _blueprint_runtime_signature(agent_def)
             self.tools: list[Any] = []
+            skill_rt = _skill_runtime.skill_runtime_for_agent(
+                _ctx.active_app(), agent_def, session_id=_ctx.active_session_id()
+            )
             if self.kind == "predict":
                 self.program = dspy.Predict(self.signature)
             elif self.kind == "chain_of_thought":
@@ -1599,6 +1608,10 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     *_dynamic_agent_tools(base_agent, agent_def),
                     *_dynamic_child_expert_tools(base_agent, agent_def),
                 ]
+                if skill_rt.resolved:
+                    # Auto-attached infra (like child-delegation tools), not a
+                    # curated domain tool (#919).
+                    tools.append(_skill_runtime.build_load_skill_tool(agent_def, skill_rt))
                 self.tools = tools
                 self.program = _retaining_react_cls()(
                     self.signature,
@@ -1628,8 +1641,15 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 if active_app is not None and self.kind == "react"
                 else ""
             )
+            # Progressive disclosure (#919): react experts get metadata + the
+            # load_skill tool; tool-less predict/CoT experts get the bodies.
+            skills_context = (
+                skill_rt.prompt_block if self.kind == "react" else skill_rt.bodies_block
+            )
             self.system_prompt = "\n\n".join(
-                part for part in (agent_prompt, workspace_context, child_context) if part
+                part
+                for part in (agent_prompt, workspace_context, child_context, skills_context)
+                if part
             )
             self.has_declared_children = bool(child_context.strip())
             if trace.HF_ON:
@@ -2040,6 +2060,12 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             self.config = self._resolved_spec.materialize(self._cred_resolver)
             self._provider_config = self.config
             self.tools = _dynamic_agent_tools(base_agent, agent_def)
+            skill_rt = _skill_runtime.skill_runtime_for_agent(
+                _ctx.active_app(), agent_def, session_id=_ctx.active_session_id()
+            )
+            if skill_rt.resolved:
+                # Same react tier-1 + load_skill contract as blueprint experts (#919).
+                self.tools.append(_skill_runtime.build_load_skill_tool(agent_def, skill_rt))
             runtime = PromptRegistry().resolve("clio.runtime.tool_user_agent")
             runtime_text = str(getattr(runtime, "text", "") or "").strip()
             agent_prompt = agent_def.system_prompt.strip() or agent_def.description
@@ -2063,17 +2089,26 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             )
             self.system_prompt = "\n\n".join(
                 part
-                for part in (runtime_text, agent_prompt, workspace_context, child_context)
+                for part in (
+                    runtime_text,
+                    agent_prompt,
+                    workspace_context,
+                    child_context,
+                    skill_rt.prompt_block,
+                )
                 if part
             )
             # Use the retaining ReAct subclass so this path also runs the ARC
             # live-context plane (writes segments + reads its prompt from ARC).
+            # NOTE: no `answer_synthesizer` here — the classic loop's
+            # `react_agent.extract.predict` alias died with the v0.8.0 flip
+            # (ReActV2 has no `extract`), and forward() never used it: the
+            # stale assignment crashed EVERY tool-user-agent build under V2.
             self.react_agent = _retaining_react_cls()(
                 _tool_user_agent_signature(),
                 tools=self.tools,
                 max_iters=_tool_user_agent_max_iters(agent_def),
             )
-            self.answer_synthesizer = self.react_agent.extract.predict
 
         def forward(
             self,
