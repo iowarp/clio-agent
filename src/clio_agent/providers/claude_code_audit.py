@@ -81,7 +81,7 @@ def prompt_prefix_fingerprint(prompt: str) -> tuple[str, str]:
 def _provider_label(transport: str) -> str:
     """Map a transport name to the provider label used across audit rows."""
 
-    return "claude_code_sdk" if transport == "sdk" else "claude_code_exec"
+    return "claude_code_sdk"
 
 
 def emit_call_started(

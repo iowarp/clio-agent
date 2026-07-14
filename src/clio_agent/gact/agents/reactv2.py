@@ -1,11 +1,10 @@
-"""clio ReActV2 subclass — dormant infrastructure behind the kill-switch (#901).
+"""clio ReActV2 subclass — the production expert loop (#901; sole loop since v0.8.0).
 
-This is clio's subclass of dspy's (experimental) ``ReActV2`` plus the two seams
-that make its append-only ``dspy.History`` composition ride clio's ARC live plane
-and frozen wire contract. Everything here is reached only when the OFF-by-default
-kill-switch (``_reactv2_enabled`` in :mod:`clio_agent.gact.agents.runtime`) selects
-the V2 class; the classic ``_RetainingReAct`` stays the production path until parity
-is proven (design ``901_reactv2_design.md`` slices S2–S6).
+This is clio's subclass of dspy's ``ReActV2`` plus the two seams that make its
+append-only ``dspy.History`` composition ride clio's ARC live plane and frozen
+wire contract. The classic ``_RetainingReAct`` and its ``CLIO_REACTV2`` switch
+were deleted in the v0.8.0 cleanup; :mod:`clio_agent.gact.agents.runtime`
+selects this class unconditionally (design ``901_reactv2_design.md``).
 
 **Why V2 at all** (design §1–3): ReActV2 composes each turn as an append-only
 ``dspy.History`` of structured messages instead of one ever-growing re-rendered
@@ -256,7 +255,7 @@ class _RetainingReActV2(dspy.ReActV2):  # type: ignore[misc, name-defined]
     def _bounded_submit_repair(self, pred: Any, pending: dict[str, Any]) -> Any:
         """Bounded RE-ASK when the loop ended without every declared output field (#901 S4).
 
-        The V2 analog of ``builders._reextract_over_retained_trajectory``'s repair. When
+        The V2 analog of the deleted classic re-extract repair (v0.8.0). When
         every declared output is already present (the normal submit), this is a zero-cost
         pass-through. Otherwise it re-asks the parent up to :func:`_submit_repair_attempts`
         times — each a forced submit over the retained History carrying a schema-derived
@@ -415,9 +414,10 @@ def retaining_reactv2_cls() -> type[Any]:
 def reforce_submit_over_retained_history(program: Any, hint: str) -> Any:
     """Re-drive ONE forced ``submit`` over the RETAINED History, steered by ``hint`` (#901 S4).
 
-    The V2 analog of ``builders._reextract_over_retained_trajectory``. The classic path
-    re-runs only ``extract`` over the retained trajectory; V2 has no ``extract``, so the
-    analogous repair re-drives a forced ``submit`` over the retained ``History`` (design §7).
+    The submit-repair entry, wired from the builders repair ladder since v0.8.0
+    (the classic extract-only re-run died with the classic loop): V2 has no
+    ``extract``, so the repair re-drives a forced ``submit`` over the retained
+    ``History`` (design §7).
     Reads the retained ``{"history", "input_args"}`` published by
     :meth:`_RetainingReActV2._publish_retained_history` (via ``_ctx.active_trajectory()`` —
     the exact cell the classic re-extract reads), appends the schema-derived repair ``hint``

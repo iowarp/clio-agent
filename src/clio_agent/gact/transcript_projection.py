@@ -9,15 +9,13 @@ atoms — ``GET /messages`` and every ``app.state.messages`` reader materialize 
 ledger from the log, the ``final_message`` byte-copy in ``turn_finalize`` is no longer
 emitted, and the atom lane becomes the single source of truth for the transcript.
 
-The regime is **session-scoped and pinned at the session's FIRST message** (design
-§4.4b/c — never a mid-session flip): the process flag ``gact.transcript_projection``
-(env ``CLIO_TRANSCRIPT_PROJECTION``) is resolved ONCE, on message #1, and — when ON —
-stamped as ``metadata["transcript_regime"] = "atoms"`` on the session record. Every
-later read/write consults the *pinned* value, never the live flag, so a session is
-EITHER atoms-regime or legacy end-to-end. Under the legacy regime (flag =0) NOTHING is
-pinned and NOTHING changes — the legacy messages-store read path and the
-``final_message`` embed are byte-for-byte preserved (the shipped default; see the
-module-level "shipped default" note below).
+**Single regime (v0.8.0 cleanup):** the atoms ARE the transcript semantics on any
+app with a canonical-log substrate. The strangler flag
+(``CLIO_TRANSCRIPT_PROJECTION``) and the per-session regime pin were deleted with
+the legacy read branch; pre-atom sessions migrate transparently on first touch via
+the retained-ledger backfill (:func:`mint_atoms_from_ledger`, loud per-message).
+The messages-store read survives ONLY as the no-substrate degenerate case (an app
+without ARC has exactly one storage).
 
 Design decisions (each answering a named constraint):
 
@@ -47,18 +45,10 @@ Design decisions (each answering a named constraint):
   Under the legacy regime the messages-store copy is still authoritative, so minting
   stays best-effort-but-loud exactly as S4 landed it.
 
-Shipped default — **flag ON (atoms regime for NEW sessions)** since the whole-surface
-bar was met: the reload==live corpus sweep is green on the full real-session corpus
-(:mod:`tests.test_equivalence`), scripted live turns byte-match
-(:mod:`tests.test_gact.test_transcript_projection`), and the campaign's final live
-web gate runs the entire stack under this default before any release tag (release
-authority 2026-07-12, #893/#737). ``CLIO_TRANSCRIPT_PROJECTION=0`` /
-``gact.transcript_projection`` opts back into the legacy regime. Existing sessions
-are untouched either way — the regime is pinned per session at message #1, so a
-legacy session stays legacy for life and its wire stays byte-identical. If
-``reload == live`` could not be green under §4.1.A the switch would NOT ship at all
-(§5.2 Q4) — it is; a divergence, were there one, would name the exact field via the
-S0 field-path differ.
+Evidence trail for the switch (recorded, #893/#737): reload==live green on the
+full real-session corpus (:mod:`tests.test_equivalence`), scripted live turns
+byte-match (:mod:`tests.test_gact.test_transcript_projection`), and the final live
+web gate ran the whole stack on this path before the v0.7.x release train.
 """
 
 from __future__ import annotations
@@ -66,7 +56,6 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Optional
 
-from clio_agent import conf
 from clio_agent.gact.part_atoms import (
     MESSAGE_PART_SCOPE,
     build_message_part_atoms,
@@ -85,20 +74,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# The two session-scoped read regimes. ``atoms`` = assemble the transcript by reference
-# from the ``message_part`` log; ``legacy`` = read the messages-store ledger (today).
-REGIME_ATOMS = "atoms"
-REGIME_LEGACY = "legacy"
-
-# The session-metadata key the regime is pinned under (only ever written for the atoms
-# regime, so the default legacy path leaves the session wire byte-identical).
+# Historical session-metadata key: pre-v0.8.0 servers pinned a per-session
+# regime here. Single-regime now — the key is neither written nor read (stale
+# stamps on old sessions are inert wire metadata).
 REGIME_METADATA_KEY = "transcript_regime"
-
-# The process flag (file -> env -> default). Default True => atoms is the shipped
-# regime for NEW sessions (whole-surface proofs green; see the module docstring);
-# =0 opts back into legacy. Existing sessions keep their pinned regime either way.
-_FLAG_KEY = "gact.transcript_projection"
-_FLAG_ENV = "CLIO_TRANSCRIPT_PROJECTION"
 
 # The typed no-silent-fallback reasons (the ``stream_fallback`` catalog style, §3.4).
 INGEST_FAILED_REASON = "transcript_ingest_failed"
@@ -144,12 +123,6 @@ class TranscriptBackfillError(RuntimeError):
 # --------------------------------------------------------------------------- #
 
 
-def _flag_on() -> bool:
-    """Resolve the process transcript-projection flag (file -> env -> default True)."""
-
-    return conf.resolve(_FLAG_KEY, env=_FLAG_ENV, default=True, cast=conf.as_bool)
-
-
 def _sessions(app: "FastAPI") -> Any:
     """The session store, or ``None`` when the app carries none (minimal test wiring)."""
 
@@ -171,56 +144,13 @@ def _arc(app: "FastAPI") -> Any:
     return arc if getattr(arc, "_segments", None) is not None else None
 
 
-def pinned_regime(app: "FastAPI", session_id: str) -> str:
-    """Return a session's PINNED transcript regime (read-only; never resolves the flag).
-
-    Reads ``metadata[transcript_regime]`` off the session record; a session with no pin
-    (the default legacy path, or one predating S5) is :data:`REGIME_LEGACY`. The read
-    path uses this so a session's regime is fixed for its whole life — a live flag flip
-    can never change how an existing session is read (design §4.4b/c).
+def atoms_active(app: "FastAPI") -> bool:
+    """Whether the atom projection is in play for this app: a canonical-log
+    substrate exists. Single regime (v0.8.0): every session on an app with ARC
+    reads/writes through the atoms; the per-session pin + process flag are gone.
     """
 
-    sessions = _sessions(app)
-    if sessions is None:
-        return REGIME_LEGACY
-    record = sessions.get(session_id)
-    if record is None:
-        return REGIME_LEGACY
-    regime = (getattr(record, "metadata", None) or {}).get(REGIME_METADATA_KEY)
-    return REGIME_ATOMS if regime == REGIME_ATOMS else REGIME_LEGACY
-
-
-def _pin_regime_on_first_message(app: "FastAPI", session_id: str, is_session_start: bool) -> str:
-    """Resolve + pin the regime for a session, ONLY on its first message.
-
-    On message #1 the flag is resolved once; when ON the session is stamped
-    ``metadata[transcript_regime]="atoms"`` (persisted). On every LATER message the
-    already-pinned value is returned; an unpinned session (default legacy, or one whose
-    first message predated S5) stays :data:`REGIME_LEGACY` and is NEVER re-resolved — so
-    a mid-life flag flip cannot flip an in-progress session (design §4.4b/c). Legacy is
-    never written to metadata, so the default session wire is byte-identical.
-    """
-
-    current = pinned_regime(app, session_id)
-    if current == REGIME_ATOMS:
-        return REGIME_ATOMS
-    if not is_session_start:
-        return REGIME_LEGACY
-    if not _flag_on():
-        return REGIME_LEGACY
-    if _arc(app) is None:  # no canonical-log substrate -> the atoms regime cannot engage
-        return REGIME_LEGACY
-    sessions = _sessions(app)
-    if sessions is None:
-        return REGIME_LEGACY
-    updated = sessions.update(session_id, metadata_patch={REGIME_METADATA_KEY: REGIME_ATOMS})
-    if updated is None:  # session vanished between append and pin — stay legacy, loud
-        logger.warning(
-            "transcript_projection: could not pin atoms regime (session %s absent)", session_id
-        )
-        return REGIME_LEGACY
-    logger.debug("transcript_projection: pinned atoms regime session=%s", session_id)
-    return REGIME_ATOMS
+    return _arc(app) is not None
 
 
 # --------------------------------------------------------------------------- #
@@ -345,8 +275,9 @@ def materialize_ledger(app: "FastAPI", session_id: str) -> Optional[list[Message
 
     store = getattr(getattr(app, "state", None), "message_store", None)
     arc = _arc(app)
-    if pinned_regime(app, session_id) != REGIME_ATOMS or arc is None:
-        # Legacy regime (the default) OR no canonical log available: today's path.
+    if arc is None:
+        # No canonical-log substrate on this app: the retained store is the
+        # only storage (structural degenerate case, not a regime).
         return None if store is None else store.load_session(session_id)
 
     if has_atoms(arc, session_id):
@@ -392,42 +323,22 @@ def on_message_appended(app: "FastAPI", session_id: str, message: Message) -> No
             getattr(message, "id", ""),
         )
         return
-    messages_state = getattr(getattr(app, "state", None), "messages", None)
-    resident = messages_state.get(session_id, []) if messages_state is not None else []
-    is_session_start = len(resident) <= 1
-    regime = _pin_regime_on_first_message(app, session_id, is_session_start)
-
     try:
         mint_message_part_atoms(arc, session_id, message)
-    except Exception as exc:  # noqa: BLE001 - policy branches on the pinned regime
-        if regime == REGIME_ATOMS:
-            # The atoms are the ONE copy: fail loud, never a silent transcript gap.
-            logger.error(
-                "transcript_projection: mint FAILED reason=%s session=%s message=%s (atoms "
-                "regime — the turn fails; no half-committed transcript is served)",
-                INGEST_FAILED_REASON,
-                session_id,
-                getattr(message, "id", ""),
-                exc_info=True,
-            )
-            raise TranscriptIngestError(session_id, getattr(message, "id", ""), exc) from exc
-        # Legacy regime: final_message / the messages-store copy is authoritative.
+    except Exception as exc:  # noqa: BLE001 - the atoms are the ONE copy: fail loud
         logger.error(
-            "transcript_projection: mint FAILED reason=%s session=%s message=%s (legacy regime "
-            "— messages-store copy is authoritative; atoms invisible)",
+            "transcript_projection: mint FAILED reason=%s session=%s message=%s "
+            "(the turn fails; no half-committed transcript is served)",
             INGEST_FAILED_REASON,
             session_id,
             getattr(message, "id", ""),
             exc_info=True,
         )
-        return
+        raise TranscriptIngestError(session_id, getattr(message, "id", ""), exc) from exc
     # #737 S6: the mint landed — record the delegated-turn workflow_state as a
-    # state_merge op (atoms regime only; the legacy transcript is served from the
-    # messages-store ledger, which carries workflow_state verbatim and is never
-    # re-folded, so an op there is dead weight). Best-effort-but-loud: the verbatim
-    # message-part copy is the frozen fallback (§3.4).
-    if regime == REGIME_ATOMS:
-        record_state_merge_best_effort(arc, session_id, message)
+    # state_merge op. Best-effort-but-loud: the verbatim message-part copy is
+    # the frozen fallback (§3.4).
+    record_state_merge_best_effort(arc, session_id, message)
 
 
 def on_messages_extended(app: "FastAPI", session_id: str, messages: list[Message]) -> None:
@@ -438,7 +349,7 @@ def on_messages_extended(app: "FastAPI", session_id: str, messages: list[Message
     the atoms regime each message is minted so the assembled projection is complete.
     """
 
-    if not messages or pinned_regime(app, session_id) != REGIME_ATOMS:
+    if not messages:
         return
     arc = _arc(app)
     if arc is None:
@@ -463,8 +374,6 @@ def on_ledger_replaced(app: "FastAPI", session_id: str, messages: list[Message])
     sabotage-c guard). A no-op under the legacy regime.
     """
 
-    if pinned_regime(app, session_id) != REGIME_ATOMS:
-        return
     arc = _arc(app)
     if arc is None:
         return
@@ -515,16 +424,16 @@ def final_message_embed(app: "FastAPI", session_id: str, assistant_msg: Message)
     stays at its file-size ratchet (no net lines added).
     """
 
-    if pinned_regime(app, session_id) == REGIME_ATOMS:
+    if atoms_active(app):
         return {}
+    # No canonical-log substrate: the embed remains the only trace-derivable copy.
     return {"final_message": assistant_msg.model_dump(exclude_none=True)}
 
 
 # Kept importable for tests/tools that build atoms without a full app (pure helper).
 __all__ = [
-    "REGIME_ATOMS",
-    "REGIME_LEGACY",
     "REGIME_METADATA_KEY",
+    "atoms_active",
     "TranscriptBackfillError",
     "TranscriptIngestError",
     "assemble_session_messages",
@@ -537,5 +446,4 @@ __all__ = [
     "on_ledger_replaced",
     "on_message_appended",
     "on_messages_extended",
-    "pinned_regime",
 ]

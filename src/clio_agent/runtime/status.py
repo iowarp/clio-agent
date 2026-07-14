@@ -338,7 +338,7 @@ class RuntimeProbe:
             probe_cli_transport,
         )
 
-        # Transport-aware probe (#899): CLI/SDK pseudo-schemes (codex://exec,
+        # Transport-aware probe (#899): CLI/SDK pseudo-schemes (codex://app-server,
         # claude-code://sdk) have no HTTP /models endpoint — an HTTP GET yields
         # "No connection adapters were found" and reports the provider UNAVAILABLE
         # while turns run fine. Probe the local CLI the transport spawns instead of

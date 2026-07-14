@@ -61,7 +61,7 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/gact/agents/resolution.py": 803,
     # #900: +14 for the lifespan child-reaper install + clean-shutdown teardown wiring
     # (both delegate to the owner module runtime/process_tree.py).
-    "src/clio_agent/gact/app.py": 2539,
+    "src/clio_agent/gact/app.py": 2538,
     "src/clio_agent/gact/routes/agents.py": 921,
     "src/clio_agent/gact/routes/blueprints.py": 859,
     "src/clio_agent/gact/routes/catalog.py": 880,
@@ -73,7 +73,7 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/gact/routes/providers.py": 1320,
     "src/clio_agent/gact/routes/sessions.py": 1478,
     "src/clio_agent/gact/runtime/globals.py": 923,
-    "src/clio_agent/gact/streaming.py": 1027,
+    "src/clio_agent/gact/streaming.py": 1024,
     "src/clio_agent/gact/tool_observer.py": 930,
     "src/clio_agent/gact/transcript.py": 986,
     "src/clio_agent/gact/turn.py": 814,
@@ -85,7 +85,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # streaming session/delta transport to providers/claude_code_sessions.py; this
     # file keeps only the LiteLLM handler + exec/stream plumbing. Ratchet back down
     # further with the #714/#767 decomposition.
-    "src/clio_agent/providers/claude_code_litellm.py": 1025,
+    "src/clio_agent/providers/claude_code_litellm.py": 848,
     # #900: +2 for wiring probe_process_tree into the doctor collect().
     "src/clio_agent/runtime/status.py": 1185,
     "src/clio_agent/tools/execution.py": 1187,

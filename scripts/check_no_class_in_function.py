@@ -43,7 +43,6 @@ from typing import NamedTuple
 # relative to the repository root, forward slashes.
 RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/gact/agents/builders.py": 5,
-    "src/clio_agent/gact/agents/runtime.py": 1,
     "src/clio_agent/gact/app.py": 1,
     "src/clio_agent/lm/adapters.py": 2,
     "src/clio_agent/lm/io_logging.py": 1,

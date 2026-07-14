@@ -889,6 +889,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                         ).model_dump(exclude_none=True),
                     ) from auth_exc
 
+            is_codex, is_cc = req.provider == "codex", req.provider == "claude_code"
             cfg = LMProviderConfig(
                 provider=req.provider,  # type: ignore[arg-type]  # str validated at boundary
                 api_base=req.api_base,
@@ -902,8 +903,11 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 presence_penalty=req.presence_penalty,
                 thinking_budget=req.thinking_budget,
                 thinking_level=req.thinking_level,  # provider-generic level (#895)
-                codex_transport=req.transport or "exec",
-                claude_code_transport=req.transport or "sdk",
+                # Per-provider transport (v0.8.0): only the bound provider's field
+                # reads req.transport — cross-feeding once let non-codex binds
+                # inherit the deleted codex "exec" default and 400 on validation.
+                codex_transport=(req.transport or "app_server") if is_codex else "app_server",  # type: ignore[arg-type]  # LMProviderConfig validates; deleted values 400 typed
+                claude_code_transport=(req.transport or "sdk") if is_cc else "sdk",  # type: ignore[arg-type]  # LMProviderConfig validates; deleted values 400 typed
             )
             # Per-provider handshake: discover connectivity + per-model config and
             # fold it into cfg — context-aware max_tokens (replacing the static ALCF
@@ -1060,12 +1064,8 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         # path stays unobserved).
         _set_app_arc(app, agent.arc)
         deps.install_tool_runtime_hooks(app)
-        transport = (
-            cfg.codex_transport
-            if req.provider == "codex"
-            else cfg.claude_code_transport
-            if req.provider == "claude_code"
-            else None
+        transport = {"codex": cfg.codex_transport, "claude_code": cfg.claude_code_transport}.get(
+            req.provider
         )
         app.state.lm_config = {
             "provider": req.provider,
@@ -1106,7 +1106,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             max_tokens=req.max_tokens,
             context_length=req.context_length,
             thinking_budget=req.thinking_budget,
-            transport=transport,
+            transport=transport,  # type: ignore[arg-type]  # values are the narrowed config Literals
             presets=_lm_presets_with_status(),
         )
 

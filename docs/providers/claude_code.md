@@ -35,7 +35,6 @@ Run CLIO/GACT with Claude Code:
 ```powershell
 $env:CLIO_LM_PROVIDER='claude_code'
 $env:CLIO_LM_MODEL='sonnet'
-$env:CLIO_CLAUDE_CODE_TRANSPORT='exec'
 uv run clio-agent serve --host 127.0.0.1 --port 17920
 ```
 

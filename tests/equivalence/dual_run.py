@@ -59,8 +59,6 @@ EXOTIC_OBSERVATION: Any = {"rows": ("a", 1, 2.5), "flag": frozenset({"only"}), "
 class WriterConfig:
     """One writer configuration (the A or B of the A/B run).
 
-    ``reactv2`` selects the classic vs V2 expert loop (the genuine writer flag later
-    slices will diff across); ``None`` uses the production default (``_reactv2_enabled``).
     ``working_set_fold`` selects the #737 S2 regime: ``False`` = the old parallel
     working-set write, ``True`` = the working set as a FOLD of the canonical ``_events``
     log; ``None`` uses the production default. Diffing ``False`` vs ``True`` is the
@@ -68,7 +66,6 @@ class WriterConfig:
     """
 
     label: str = "baseline"
-    reactv2: Optional[bool] = None
     working_set_fold: Optional[bool] = None
     answer: str = "final answer from the equivalence turn"
 
@@ -107,7 +104,7 @@ class DualRunReport:
 # --------------------------------------------------------------------------- #
 
 
-def _script_loop(use_v2: bool) -> DummyLM:
+def _script_loop(use_v2: bool = True) -> DummyLM:
     """Scripted LM matching the active loop: one exotic-tool step, then finish.
 
     The ``probe`` tool returns the exotic observation (caveat a). V2 finishes via the
@@ -150,28 +147,21 @@ def _capture_arc_surfaces(config: WriterConfig, tmp_dir: Path) -> tuple[list[Any
         """A tool returning an exotic, non-JSON-native observation (caveat a)."""
         return EXOTIC_OBSERVATION
 
-    # Honor the optional writer flag override; else use the production default.
-    saved_flag = runtime._reactv2_enabled
-    if config.reactv2 is not None:
-        runtime._reactv2_enabled = lambda: bool(config.reactv2)
-    try:
-        use_v2 = runtime._reactv2_enabled()
-        arc = ARCMemory(
-            data_dir=str(tmp_dir / "arc_loop"),
-            store=_MemoryStore(),
-            working_set_fold=config.working_set_fold,
-        )
-        react_cls = runtime._retaining_react_cls()
-        agent = react_cls("question -> answer", tools=[dspy.Tool(probe, name="probe")])
-        lm = _script_loop(use_v2)
-        with live_plane_context(arc, session=_SESSION, scope=_SCOPE):
-            with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
-                try:
-                    agent(question="find alpha")
-                except Exception:  # noqa: BLE001 — a loop error still leaves partial ARC state
-                    pass
-    finally:
-        runtime._reactv2_enabled = saved_flag
+    # V2 is the only expert loop since the v0.8.0 cleanup.
+    arc = ARCMemory(
+        data_dir=str(tmp_dir / "arc_loop"),
+        store=_MemoryStore(),
+        working_set_fold=config.working_set_fold,
+    )
+    react_cls = runtime._retaining_react_cls()
+    agent = react_cls("question -> answer", tools=[dspy.Tool(probe, name="probe")])
+    lm = _script_loop(use_v2=True)
+    with live_plane_context(arc, session=_SESSION, scope=_SCOPE):
+        with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+            try:
+                agent(question="find alpha")
+            except Exception:  # noqa: BLE001 — a loop error still leaves partial ARC state
+                pass
 
     with live_plane_context(arc, session=_SESSION, scope=_SCOPE):
         context = list(arc.render_working_set(_SESSION, _SCOPE))

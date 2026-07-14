@@ -193,7 +193,7 @@ class LMProviderConfig:
         planner_temperature: Lower temperature for deterministic action planning
         planner_max_tokens: Maximum tokens for planner JSON generation
         environment: Deployment environment (dev/staging/production)
-        codex_transport: Codex transport: "app_server" (default), "exec", "sdk"
+        codex_transport: Codex transport: "app_server" (the only transport since v0.8.0)
     """
 
     provider: Literal[
@@ -241,15 +241,14 @@ class LMProviderConfig:
     min_p: float | None = None
     presence_penalty: float | None = None
     environment: str = "dev"
-    codex_transport: Literal["app_server", "exec", "sdk"] = "app_server"
-    # "sdk" (DEFAULT — the best config): the in-process Claude Agent SDK with a
-    #   persistent CLI session — no per-call spawn, streaming-capable, and
-    #   setting_sources=[] keeps the user's ~/.claude/CLAUDE.md out of the prompt
-    #   (faster + cleaner than exec). Needs the claude-agent-sdk package (the
-    #   `claude-code` extra).
-    # "exec": one `claude -p` subprocess per LM call — needs only the `claude` CLI on
-    #   PATH, but pays ~10-15s cold start every call (#715). Explicit opt-out.
-    claude_code_transport: Literal["exec", "sdk"] = "sdk"
+    codex_transport: Literal["app_server"] = "app_server"
+    # "sdk" (the only transport since v0.8.0): the in-process Claude Agent SDK
+    #   with a persistent CLI session — no per-call spawn, streaming-capable, and
+    #   setting_sources=[] keeps the user's ~/.claude/CLAUDE.md out of the prompt.
+    #   Needs the claude-agent-sdk package (the `claude-code` extra). The legacy
+    #   "exec" batch transport (one `claude -p` per call, ~10-15s cold start,
+    #   #715) was deleted in the v0.8.0 cleanup.
+    claude_code_transport: Literal["sdk"] = "sdk"
     # Reasoning/thinking budget (explicit token override). Mapped per-provider in
     # create_lm via providers.thinking.resolve_thinking:
     #   anthropic → thinking={"type":"enabled","budget_tokens":N}
@@ -317,14 +316,15 @@ class LMProviderConfig:
         # so re-reading on every config load is safe.
         self.strip_openai_prefix = bool(defaults.get("strip_openai_prefix", True))
         self.supports_vision = bool(defaults.get("supports_vision", False))
-        if self.codex_transport not in {"app_server", "exec", "sdk"}:
+        if self.codex_transport != "app_server":
             raise ValueError(
-                f"codex_transport must be 'app_server', 'exec' or 'sdk' (got {self.codex_transport!r})"
+                "codex_transport 'exec'/'sdk' were removed in the v0.8.0 cleanup — "
+                f"app_server is the only transport (got {self.codex_transport!r})"
             )
-        if self.claude_code_transport not in {"exec", "sdk"}:
+        if self.claude_code_transport != "sdk":
             raise ValueError(
-                f"claude_code_transport must be 'exec' or 'sdk' "
-                f"(got {self.claude_code_transport!r})"
+                "claude_code_transport 'exec' was removed in the v0.8.0 cleanup — "
+                f"sdk is the only transport (got {self.claude_code_transport!r})"
             )
         if self.thinking_level is not None:
             level = str(self.thinking_level).strip().lower()
@@ -464,7 +464,7 @@ def load_config_from_env() -> LMProviderConfig:
         ``lm.planner_max_tokens`` / CLIO_LM_PLANNER_MAX_TOKENS: planner token cap
         ``lm.max_tokens`` / CLIO_LM_MAX_TOKENS: Override max tokens
         ``lm.top_p`` / ``lm.top_k`` / ``lm.min_p`` / ``lm.presence_penalty``: sampling
-        ``lm.codex_transport`` / CLIO_CODEX_TRANSPORT: Codex transport (exec or sdk)
+        ``lm.codex_transport`` / CLIO_CODEX_TRANSPORT: Codex transport (app_server only)
         ``lm.claude_code_transport`` / CLIO_CLAUDE_CODE_TRANSPORT: Claude Code transport
         ``runtime.environment`` / CLIO_ENVIRONMENT: Deployment environment
 

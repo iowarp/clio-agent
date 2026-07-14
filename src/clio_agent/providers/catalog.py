@@ -324,9 +324,11 @@ PROVIDERS: tuple[Provider, ...] = (
             "process needed."
         ),
         provider_kind="codex",
-        # Codex doesn't use an HTTP base; the CustomLLM dispatches to a
-        # subprocess. Empty here is a registry marker, not a URL.
-        api_base="codex://exec",
+        # Codex doesn't use an HTTP base; the CustomLLM drives the warm
+        # app-server. A registry marker, not a URL (v0.8.0: single transport;
+        # the old codex://exec marker silently steered swaps onto the deleted
+        # batch path).
+        api_base="codex://app-server",
         suggested_model="gpt-5.5",
         requires_api_key=False,
         auth_method="none",

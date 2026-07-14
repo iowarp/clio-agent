@@ -47,7 +47,7 @@ Design decisions (each answering a named constraint):
 
 * **Session-scoped flag = the S5 regime pin (§4.4b/c).** The op write AND the read
   materialization both ride the **atoms** regime pinned by
-  :mod:`clio_agent.gact.transcript_projection` (``CLIO_TRANSCRIPT_PROJECTION``): under
+  :mod:`clio_agent.gact.transcript_projection` (single regime since v0.8.0): under
   the legacy regime the transcript is served from the messages-store ledger (which
   already carries ``workflow_state`` verbatim and is never re-folded), so recording or
   materializing a ``state_merge`` op there would be dead weight. A separate flag would

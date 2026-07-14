@@ -129,11 +129,7 @@ def test_transport_read_from_config_only_ignores_env(monkeypatch) -> None:
     def fake_sdk(*, prompt, model, timeout, cwd, thinking=None):
         return "sdk path", {"input_tokens": 1, "output_tokens": 1}
 
-    def fake_exec(**_kwargs):
-        raise AssertionError("exec transport must not be selected from env")
-
     monkeypatch.setattr(claude_code_litellm, "_run_sdk", fake_sdk)
-    monkeypatch.setattr(claude_code_litellm, "_run_exec", fake_exec)
 
     resp = ClaudeCodeLLM().completion(
         model="claude_code/cc-sonnet",
@@ -152,29 +148,31 @@ def test_transport_read_from_config_only_ignores_env(monkeypatch) -> None:
 
 
 def test_optional_params_transport_overrides_env(monkeypatch) -> None:
-    """The per-LM optional_params transport is authoritative over the (ignored) env."""
+    """The per-LM optional_params transport is authoritative over the (ignored) env.
+
+    v0.8.0: with the "exec" transport deleted, an explicit removed transport in
+    optional_params raises the typed error even when the env says "sdk" — the
+    env is never consulted on the per-LM path (#818).
+    """
     monkeypatch.setenv("CLIO_CLAUDE_CODE_TRANSPORT", "sdk")
 
     def fake_sdk(**_kwargs):
         raise AssertionError("sdk transport must not be selected from env")
 
-    def fake_exec(**_kwargs):
-        return "exec path", {"input_tokens": 1, "output_tokens": 1}
-
     monkeypatch.setattr(claude_code_litellm, "_run_sdk", fake_sdk)
-    monkeypatch.setattr(claude_code_litellm, "_run_exec", fake_exec)
 
-    resp = ClaudeCodeLLM().completion(
-        model="claude_code/cc-sonnet",
-        messages=[{"role": "user", "content": "hi"}],
-        api_base="",
-        custom_prompt_dict={},
-        model_response=MagicMock(),
-        print_verbose=None,
-        encoding=None,
-        api_key=None,
-        logging_obj=None,
-        optional_params={"claude_code_transport": "exec"},
-    )
+    from clio_agent.providers.claude_code_litellm import ClaudeCodeExecError
 
-    assert resp.choices[0].message.content == "exec path"
+    with pytest.raises(ClaudeCodeExecError, match="removed in the v0.8.0 cleanup"):
+        ClaudeCodeLLM().completion(
+            model="claude_code/cc-sonnet",
+            messages=[{"role": "user", "content": "hi"}],
+            api_base="",
+            custom_prompt_dict={},
+            model_response=MagicMock(),
+            print_verbose=None,
+            encoding=None,
+            api_key=None,
+            logging_obj=None,
+            optional_params={"claude_code_transport": "exec"},
+        )

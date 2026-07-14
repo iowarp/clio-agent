@@ -6,6 +6,33 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Removed
+- **v0.8.0 legacy-path deletion** (#775 no-accretion; the strangler flags
+  became the only semantics): the classic `_RetainingReAct` expert loop
+  (`CLIO_REACTV2`), the parallel working-set write (`CLIO_ARC_WORKING_SET_FOLD`),
+  the legacy transcript regime + per-session pin (`CLIO_TRANSCRIPT_PROJECTION`),
+  the stateful-delta kill-switches (`CLIO_CLAUDE_CODE_STATEFUL_DELTA`,
+  `CLIO_CODEX_STATEFUL_DELTA`), the claude_code `exec` batch transport
+  (one `claude -p` per call), the codex `exec`/`sdk` batch transports, and
+  the codex app-server kill-switch (`CLIO_CODEX_APP_SERVER`) with its
+  `app_server_kill_switch` downgrade reason. All six env knobs are gone
+  from `docs/ENVIRONMENT.md` / `.env.example`.
+
+### Changed
+- `PUT /v1/providers/lm`: `transport` accepts only `sdk` (claude_code) /
+  `app_server` (codex); a deleted transport value returns a typed 400
+  (`removed in the v0.8.0 cleanup`), never a silent downgrade. The route
+  no longer leaked the codex transport default into non-codex binds, and
+  the codex catalog preset's registry marker moved `codex://exec` →
+  `codex://app-server` (the stale marker silently steered provider swaps
+  onto the deleted batch path).
+- `turn.completed` durable payloads never embed `final_message` on an
+  ARC-backed server (atoms are the only transcript regime); the embed
+  survives only in the no-ARC structural case.
+- Typed-output repair for react experts now re-drives a forced `submit`
+  over the retained History (the V2 repair) from the builders repair
+  ladder; the classic extract-only re-run is gone.
+
 ## [0.7.2] — 2026-07-14
 
 ### Fixed

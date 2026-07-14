@@ -54,7 +54,6 @@ from clio_agent.gact.live_edge import (
     seal_and_settle,
 )
 from clio_agent.gact.part_atoms import MESSAGE_PART_SCOPE
-from clio_agent.gact.transcript_projection import REGIME_ATOMS, REGIME_LEGACY, REGIME_METADATA_KEY
 from clio_agent.gact.types import Part
 
 
@@ -82,20 +81,9 @@ def arc(request: Any, tmp_path: Path) -> Iterator[ARCMemory]:
 # --------------------------------------------------------------------------- #
 
 
-class _FakeSessions:
-    def __init__(self, regime: str | None) -> None:
-        meta = {REGIME_METADATA_KEY: regime} if regime else {}
-        self._rec = type("R", (), {"metadata": meta})()
-
-    def get(self, _sid: str) -> Any:
-        return self._rec
-
-
 class _FakeApp:
-    def __init__(self, arc: ARCMemory | None, regime: str | None) -> None:
-        self.state = type(
-            "S", (), {"arc": arc, "sessions": _FakeSessions(regime)}
-        )()
+    def __init__(self, arc: ARCMemory | None) -> None:
+        self.state = type("S", (), {"arc": arc})()
 
 
 # --------------------------------------------------------------------------- #
@@ -239,27 +227,29 @@ def test_seal_mismatch_raises(arc: ARCMemory) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_gate_requires_flag_and_atoms_regime(arc: ARCMemory, monkeypatch: Any) -> None:
-    """``live_edge_enabled`` needs BOTH the flag ON and the S5 atoms regime pinned."""
+def test_gate_requires_flag_and_atoms_substrate(arc: ARCMemory, monkeypatch: Any) -> None:
+    """``live_edge_enabled`` needs BOTH the flag ON and a canonical-log substrate.
 
-    # flag OFF -> disabled regardless of regime
+    Single regime (v0.8.0): the per-session regime pin is gone — the atoms leg of
+    the gate is purely the capability check (an ARC that can hold the log).
+    """
+
+    # flag OFF -> disabled regardless of substrate
     monkeypatch.delenv("CLIO_LIVE_EDGE_STREAMING", raising=False)
-    assert live_edge_enabled(_FakeApp(arc, REGIME_ATOMS), "s") is False
+    assert live_edge_enabled(_FakeApp(arc), "s") is False
 
     monkeypatch.setenv("CLIO_LIVE_EDGE_STREAMING", "1")
-    # flag ON + atoms regime -> enabled
-    assert live_edge_enabled(_FakeApp(arc, REGIME_ATOMS), "s") is True
-    # flag ON but LEGACY regime -> disabled (the seal is the S5 atom; nothing to attach to)
-    assert live_edge_enabled(_FakeApp(arc, REGIME_LEGACY), "s") is False
-    # flag ON, atoms regime, but NO canonical log (no ARC) -> disabled (capability gate)
-    assert live_edge_enabled(_FakeApp(None, REGIME_ATOMS), "s") is False
+    # flag ON + substrate -> enabled
+    assert live_edge_enabled(_FakeApp(arc), "s") is True
+    # flag ON but NO canonical log (no ARC) -> disabled (capability gate)
+    assert live_edge_enabled(_FakeApp(None), "s") is False
 
 
 def test_overlay_fills_open_part_in_place_when_enabled(arc: ARCMemory, monkeypatch: Any) -> None:
     """Under the live edge, the in-flight open part's empty text is coalesced in place."""
 
     monkeypatch.setenv("CLIO_LIVE_EDGE_STREAMING", "1")
-    app = _FakeApp(arc, REGIME_ATOMS)
+    app = _FakeApp(arc)
     reg = registry_for(app)
     reg.open_slot("s", part_id="p1", agent_id="main", field="answer", kind="text")
     reg.append_delta("s", "p1", "coalesced so far", store=arc._segments)
@@ -276,7 +266,7 @@ def test_overlay_is_noop_when_disabled(arc: ARCMemory, monkeypatch: Any) -> None
     """Flag OFF -> the overlay returns the parts unchanged (byte-identical default)."""
 
     monkeypatch.delenv("CLIO_LIVE_EDGE_STREAMING", raising=False)
-    app = _FakeApp(arc, REGIME_ATOMS)
+    app = _FakeApp(arc)
     reg = registry_for(app)
     reg.open_slot("s", part_id="p1", agent_id="main", field="answer", kind="text")
     reg.append_delta("s", "p1", "would-be edge", store=arc._segments)
@@ -290,7 +280,7 @@ def test_overlay_does_not_clobber_already_closed_part(arc: ARCMemory, monkeypatc
     """A part that already carries text (closed) is never overwritten by the edge."""
 
     monkeypatch.setenv("CLIO_LIVE_EDGE_STREAMING", "1")
-    app = _FakeApp(arc, REGIME_ATOMS)
+    app = _FakeApp(arc)
     reg = registry_for(app)
     reg.open_slot("s", part_id="p1", agent_id="main", field="answer", kind="text")
     reg.append_delta("s", "p1", "partial", store=arc._segments)
@@ -303,7 +293,7 @@ def test_seal_and_settle_pairs_finalized_part(arc: ARCMemory, monkeypatch: Any) 
     """``seal_and_settle`` seals the slot against the matching finalized part + cleans up."""
 
     monkeypatch.setenv("CLIO_LIVE_EDGE_STREAMING", "1")
-    app = _FakeApp(arc, REGIME_ATOMS)
+    app = _FakeApp(arc)
     reg = registry_for(app)
     reg.open_slot("s", part_id="p1", agent_id="main", field="answer", kind="text")
     reg.append_delta("s", "p1", "final answer", store=arc._segments)
@@ -344,7 +334,6 @@ def test_live_edge_integration_streamed_turn(tmp_path: Path, monkeypatch: Any) -
         return FakePrediction(answer="Los Angeles has dense seismic stations.")
 
     monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
-    monkeypatch.setenv("CLIO_TRANSCRIPT_PROJECTION", "1")  # S5 atoms regime
     monkeypatch.setenv("CLIO_LIVE_EDGE_STREAMING", "1")  # S7 live edge
 
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))

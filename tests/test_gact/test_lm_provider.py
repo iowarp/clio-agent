@@ -83,7 +83,7 @@ def test_effective_lm_config_reports_claude_code_transport() -> None:
                     api_base="claude-code://sdk",
                     model="haiku",
                     api_key="x",
-                    claude_code_transport="exec",
+                    claude_code_transport="sdk",
                 )
             ),
         )
@@ -92,7 +92,7 @@ def test_effective_lm_config_reports_claude_code_transport() -> None:
     cfg = _effective_lm_config(app)  # type: ignore[arg-type]
 
     assert cfg["provider"] == "claude_code"
-    assert cfg["transport"] == "exec"
+    assert cfg["transport"] == "sdk"
 
 
 def test_get_lm_provider_reports_argonne_auth_required(tmp_path: Path, monkeypatch) -> None:
@@ -353,7 +353,7 @@ def test_get_lm_provider_when_configured_from_boot_agent(tmp_path: Path) -> None
             max_tokens=4096,
             context_length=32768,
             thinking_budget=0,
-            codex_transport="exec",
+            codex_transport="app_server",
         )
     )
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
@@ -677,8 +677,9 @@ def test_argonne_runtime_refresh_updates_live_lm_kwargs(monkeypatch) -> None:
     assert planner_lm.kwargs["api_key"] == "runtime-token"
 
 
-def test_put_lm_provider_accepts_codex_sdk_transport(tmp_path: Path, monkeypatch) -> None:
-    """The TUI can select and read back Codex SDK transport without an API key."""
+def test_put_lm_provider_rejects_removed_codex_transport(tmp_path: Path, monkeypatch) -> None:
+    """v0.8.0: a codex bind naming a deleted transport 400s typed; the default
+    bind (no transport) lands on app_server — the only transport."""
     captured: dict[str, Any] = {}
     monkeypatch.delenv("CLIO_CODEX_TRANSPORT", raising=False)
 
@@ -710,33 +711,45 @@ def test_put_lm_provider_accepts_codex_sdk_transport(tmp_path: Path, monkeypatch
 
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
+        rejected = c.put(
+            "/v1/providers/lm",
+            json={
+                "provider": "codex",
+                "api_base": "codex://app-server",
+                "model": "gpt-5.5",
+                "transport": "sdk",
+            },
+        )
+        assert rejected.status_code == 400, rejected.text
+        assert "removed in the v0.8.0 cleanup" in rejected.json()["error"]["message"]
+
         resp = c.put(
             "/v1/providers/lm",
             json={
                 "provider": "codex",
-                "api_base": "codex://exec",
+                "api_base": "codex://app-server",
                 "model": "gpt-5.5",
-                "transport": "sdk",
             },
         )
         body = resp.json()
         get_body = c.get("/v1/providers/lm").json()
 
     assert resp.status_code == 200, resp.text
-    assert body["transport"] == "sdk"
-    assert get_body["transport"] == "sdk"
+    assert body["transport"] == "app_server"
+    assert get_body["transport"] == "app_server"
     assert captured["cfg"].provider == "codex"
     assert captured["cfg"].api_key == "x"
-    assert captured["cfg"].codex_transport == "sdk"
-    assert app.state.lm_config["transport"] == "sdk"
+    assert captured["cfg"].codex_transport == "app_server"
+    assert app.state.lm_config["transport"] == "app_server"
     # Demoted bind (design §5): transport travels on the config / store default,
     # NOT process-global env. The bind must not stamp CLIO_CODEX_TRANSPORT.
     assert "CLIO_CODEX_TRANSPORT" not in os.environ
-    assert app.state.provider_profiles.default.transport == "sdk"
+    assert app.state.provider_profiles.default.transport == "app_server"
 
 
-def test_put_lm_provider_accepts_claude_code_exec_transport(tmp_path: Path, monkeypatch) -> None:
-    """Claude Code runtime config must apply transport to claude_code_transport."""
+def test_put_lm_provider_rejects_removed_claude_code_transport(tmp_path: Path, monkeypatch) -> None:
+    """v0.8.0: a claude_code bind naming the deleted exec transport 400s typed;
+    an explicit sdk transport still applies to claude_code_transport."""
     monkeypatch.delenv("CLIO_CLAUDE_CODE_TRANSPORT", raising=False)
     captured: dict[str, Any] = {}
 
@@ -768,28 +781,40 @@ def test_put_lm_provider_accepts_claude_code_exec_transport(tmp_path: Path, monk
 
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
+        rejected = c.put(
+            "/v1/providers/lm",
+            json={
+                "provider": "claude_code",
+                "api_base": "claude-code://sdk",
+                "model": "haiku",
+                "transport": "exec",
+            },
+        )
+        assert rejected.status_code == 400, rejected.text
+        assert "removed in the v0.8.0 cleanup" in rejected.json()["error"]["message"]
+
         resp = c.put(
             "/v1/providers/lm",
             json={
                 "provider": "claude_code",
-                "api_base": "claude-code://exec",
+                "api_base": "claude-code://sdk",
                 "model": "haiku",
-                "transport": "exec",
+                "transport": "sdk",
             },
         )
         body = resp.json()
         get_body = c.get("/v1/providers/lm").json()
 
     assert resp.status_code == 200, resp.text
-    assert body["transport"] == "exec"
-    assert get_body["transport"] == "exec"
+    assert body["transport"] == "sdk"
+    assert get_body["transport"] == "sdk"
     assert captured["cfg"].provider == "claude_code"
     assert captured["cfg"].api_key == "x"
-    assert captured["cfg"].claude_code_transport == "exec"
-    assert app.state.lm_config["transport"] == "exec"
+    assert captured["cfg"].claude_code_transport == "sdk"
+    assert app.state.lm_config["transport"] == "sdk"
     # Demoted bind (design §5): no process-global env stamping.
     assert "CLIO_CLAUDE_CODE_TRANSPORT" not in os.environ
-    assert app.state.provider_profiles.default.transport == "exec"
+    assert app.state.provider_profiles.default.transport == "sdk"
 
 
 def test_put_lm_provider_defaults_claude_code_to_sdk_transport(tmp_path: Path, monkeypatch) -> None:
