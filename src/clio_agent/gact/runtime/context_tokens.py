@@ -25,17 +25,31 @@ from __future__ import annotations
 from typing import Any
 
 from clio_agent import conf
+from clio_agent.arc.segments import _encode_safe
 
 
 def _arc_obs_value(value: Any) -> Any:
     """Coerce a tool observation into a msgpack-serializable segment payload.
 
-    Preserves JSON-native types (so the ARC render matches what stock dspy would
-    have rendered) and stringifies anything exotic so a segment write never fails.
+    Delegates to the ONE shared ingest coercion
+    :func:`clio_agent.arc.segments._encode_safe` (#737 S2, caveat a). Before the
+    unification this had its own shallow rule — JSON-natives passed through and
+    ANYTHING exotic collapsed to ``str(value)`` — which DIVERGED from the log
+    encoder ``_encode_safe`` (which recursively coerces dicts/lists/tuples/sets/
+    pydantic/dataclass and only ``str()``s as a last resort). Two encoders over the
+    same observation meant a working-set segment and its ``_events`` log twin could
+    not be byte-identical, so the working-set could not be re-derived as a FOLD of
+    the log. Routing both through ``_encode_safe`` retires the split: the observation
+    a working-set atom stores is now byte-identical to the coercion every other
+    log write uses, and the ~4-chars/token heuristic over it does not drift.
+
+    Args:
+        value: A raw tool observation of any type.
+
+    Returns:
+        The value coerced to a plain msgpack/JSON-native form (never raises).
     """
-    if value is None or isinstance(value, (str, int, float, bool, dict, list)):
-        return value
-    return str(value)
+    return _encode_safe(value)
 
 
 def _autocompact_threshold() -> float:

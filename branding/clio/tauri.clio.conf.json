@@ -10,6 +10,7 @@
     ]
   },
   "bundle": {
+    "externalBin": ["binaries/clio-agent"],
     "shortDescription": "CLIO Desktop — scientific agent interface",
     "longDescription": "CLIO Desktop is the CLIO-branded GACT desktop client for scientific agent workflows, local workspaces, and live CLIO backends.",
     "icon": [

@@ -16,6 +16,9 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ALLOWED_ROOTS` | `tools.file_policy.allowed_roots` | str | `_default_allowed_roots()` _(computed)_ | `src/clio_agent/tools/file_policy.py` |
 | `CLIO_ALLOW_SYMLINKS` | `tools.file_policy.allow_symlinks` | bool | `false` | `src/clio_agent/tools/file_policy.py` |
 | `CLIO_ARC_CACHE_CAPACITY` | `arc.cache_capacity` | int | `1000` | `src/clio_agent/arc/memory.py` |
+| `CLIO_ARC_CLIO_CORE_DAEMON_RECYCLE` | `arc.clio_core.daemon_recycle_enabled` | bool | `false` | `src/clio_agent/arc/clio_core_daemon.py` |
+| `CLIO_ARC_CLIO_CORE_DAEMON_RSS_CRITICAL` | `arc.clio_core.daemon_rss_critical_bytes` | int | `4294967296` | `src/clio_agent/arc/clio_core_daemon.py` |
+| `CLIO_ARC_CLIO_CORE_DAEMON_RSS_WARN` | `arc.clio_core.daemon_rss_warn_bytes` | int | `1073741824` | `src/clio_agent/arc/clio_core_daemon.py` |
 | `CLIO_ARC_CLIO_CORE_LIVENESS_TTL_S` | `arc.clio_core.liveness_ttl_s` | float | `3.0` | `src/clio_agent/arc/clio_core_liveness.py` |
 | `CLIO_ARC_CTE_DIR` | `arc.cte.dir` | str | _(unset)_ | `src/clio_agent/arc/clio_core_config.py` |
 | `CLIO_ARC_CTE_FILE_CAPACITY` | `arc.cte.file_capacity` | str | `50GB` | `src/clio_agent/arc/clio_core_config.py` |
@@ -25,16 +28,17 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARC_LSM_MEMTABLE_SIZE` | `arc.lsm_memtable_size` | int | `1000` | `src/clio_agent/arc/memory.py` |
 | `CLIO_ARC_STORE` | `arc.store` | str | `cte` | `src/clio_agent/arc/storage.py` |
 | `CLIO_ARC_STORE_CONFIG` | `arc.store_config` | str | _(unset)_ | `src/clio_agent/arc/storage.py` |
+| `CLIO_ARC_WORKING_SET_FOLD` | `arc.working_set_fold` | bool | `true` | `src/clio_agent/arc/working_set_fold.py` |
 | `CLIO_AUTOCOMPACT_PCT` | `autocompact.pct` | str | `0.85` | `src/clio_agent/gact/runtime/context_tokens.py` |
 | `CLIO_BLUEPRINT_REGISTRY_URL` | `gact.blueprint_registry.url` | str | `https://github.com/iowarp/clio-agent-marketplace.git` | `src/clio_agent/gact/agent_blueprints.py` |
 | `CLIO_CAPTURE_REASONING` | `runtime.capture_reasoning` | bool | `true` | `src/clio_agent/gact/usage.py` |
 | `CLIO_CLAUDE_CODE_SESSION_REUSE` | `providers.claude_code.session_reuse` | bool | `true` | `src/clio_agent/providers/claude_code_sessions.py` |
 | `CLIO_CLAUDE_CODE_STATEFUL_CAPACITY` | `providers.claude_code.stateful_capacity` | float | `128.0` | `src/clio_agent/providers/claude_code_stateful.py` |
-| `CLIO_CLAUDE_CODE_STATEFUL_DELTA` | `providers.claude_code.stateful_delta` | bool | `false` | `src/clio_agent/providers/claude_code_stateful.py` |
+| `CLIO_CLAUDE_CODE_STATEFUL_DELTA` | `providers.claude_code.stateful_delta` | bool | `true` | `src/clio_agent/providers/claude_code_stateful.py` |
 | `CLIO_CLAUDE_CODE_TRANSPORT` | `lm.claude_code_transport` | str | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_CODEX_APP_SERVER` | `providers.codex.app_server` | bool | `true` | `src/clio_agent/providers/codex_app_server.py` |
 | `CLIO_CODEX_STATEFUL_CAPACITY` | `providers.codex.stateful_capacity` | float | `128.0` | `src/clio_agent/providers/codex_stateful.py` |
-| `CLIO_CODEX_STATEFUL_DELTA` | `providers.codex.stateful_delta` | bool | `false` | `src/clio_agent/providers/codex_stateful.py` |
+| `CLIO_CODEX_STATEFUL_DELTA` | `providers.codex.stateful_delta` | bool | `true` | `src/clio_agent/providers/codex_stateful.py` |
 | `CLIO_CODEX_TRANSPORT` | `lm.codex_transport` | str | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_CORE_PORT` | `arc.core_port` | str | _(unset)_ | `src/clio_agent/arc/clio_core_liveness.py` |
 | `CLIO_CTX_MAX_BYTES` | `limits.context_inline_bytes` | int | `32768` | `src/clio_agent/gact/runtime/constants.py` |
@@ -55,6 +59,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_HOOKS_DIR` | `hooks.dir` | str | _(unset)_ | `src/clio_agent/runtime/hooks.py` |
 | `CLIO_HOOKS_FACTORY` | `hooks.factory` | str | _(unset)_ | `src/clio_agent/runtime/hooks.py` |
 | `CLIO_HOOK_TIMEOUT_S` | `limits.hook_timeout_s` | float | `5.0` | `src/clio_agent/runtime/hooks.py` |
+| `CLIO_LIVE_EDGE_STREAMING` | `gact.live_edge_streaming` | bool | `false` | `src/clio_agent/gact/live_edge.py` |
 | `CLIO_LIVE_STREAMING` | `runtime.live_streaming` | bool | `true` | `src/clio_agent/lm/adapters.py` |
 | `CLIO_LMSTUDIO_FLASH_ATTENTION` | `lm.lmstudio_flash_attention` | bool | `true` | `src/clio_agent/gact/routes/providers.py` |
 | `CLIO_LM_API_BASE` | `lm.api_base` | str | _(unset)_ | `src/clio_agent/config.py` |
@@ -100,6 +105,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_SSE_WIRE_TAP` | `debug.sse_wire_tap` | str | _(unset)_ | `src/clio_agent/gact/routes/misc.py` |
 | `CLIO_STREAM_AUDIT_LOG` | `debug.stream_audit_log` | str | _(unset)_ | `src/clio_agent/runtime/stream_audit.py` |
 | `CLIO_SUBMIT_REPAIR_ATTEMPTS` | `limits.submit_repair_attempts` | float | `3.0` | `src/clio_agent/gact/agents/reactv2.py` |
+| `CLIO_TRANSCRIPT_PROJECTION` | `gact.transcript_projection` | bool | `true` | `src/clio_agent/gact/transcript_projection.py` |
 | `CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS` | `limits.transient_provider_retry_delays` | list | _(unset)_ | `src/clio_agent/agent.py` |
 | `CLIO_WEB_DIR` | `paths.web_dir` | str | _(unset)_ | `src/clio_agent/gact/app.py` |
 | `CLIO_WINDOWS_SHELL_BACKEND` | `tools.shell.windows_backend` | str | `powershell` | `src/clio_agent/tools/servers/shell_server.py` |
@@ -129,6 +135,7 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_LEDGER_TURN_ATTEMPTS_MAX` | unmigrated | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LM_API_KEY` | secret | `src/clio_agent/config.py`, `src/clio_agent/gact/routes/providers.py`, `src/clio_agent/runtime/status.py` |
 | `CLIO_LM_ROUTER_TEMPERATURE` | unmigrated | `src/clio_agent/config.py` |
+| `CLIO_RUNTIME_STATE_DIR` | unmigrated | `src/clio_agent/arc/clio_core_config.py` |
 | `CLIO_SEMANTIC_TRACE_DETAIL` | unmigrated | `src/clio_agent/gact/app.py` |
 | `CLIO_USER_DIR` | bootstrap | `src/clio_agent/paths.py` |
 

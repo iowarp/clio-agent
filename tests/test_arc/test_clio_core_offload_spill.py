@@ -79,7 +79,7 @@ compose:
     pool_query: local
     pool_id: "301.0"
     bdev_type: ram
-    capacity: "0g"
+    capacity: "256MB"
   - mod_name: clio_cte_core
     pool_name: cte_main
     pool_query: local
@@ -249,6 +249,11 @@ def test_clio_core_backend_offloads_to_disk_and_reloads(tmp_path: Path) -> None:
     env.update(
         USERPROFILE=str(private_home),  # Windows Path.home()
         HOME=str(private_home),  # POSIX Path.home()
+        # Pin the runtime coordination state (lock/pidfile/registry) to the private
+        # home explicitly: the suite-wide isolation (tests/_cte_isolation.py) exports
+        # CLIO_RUNTIME_STATE_DIR, which would otherwise leak into this child and put
+        # ITS pidfile in the SUITE's state dir (clobbering the suite daemon's record).
+        CLIO_RUNTIME_STATE_DIR=str(private_home / ".clio"),
         CLIO_ARC_STORE="cte",
         CLIO_ARC_STORE_CONFIG=str(config_path),
         CLIO_SERVER_CONF=str(config_path),

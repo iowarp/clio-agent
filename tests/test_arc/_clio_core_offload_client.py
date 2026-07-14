@@ -30,11 +30,19 @@ Configuration is entirely via environment (set by the parent test):
 
 from __future__ import annotations
 
+import socket as _socket
+
+# Force process-wide Winsock initialization BEFORE the native clio-core
+# binding loads: its vendored ZeroMQ asserts "Successful WSASTARTUP not yet
+# performed" (signaler.cpp:163) when its first socketpair beats WSAStartup
+# in a fresh subprocess (#914; upstream-filed).
+_probe = _socket.socket()
+_probe.close()
+
 import base64
 import hashlib
 import json
 import os
-import sys
 import traceback
 from typing import Any
 
@@ -96,7 +104,7 @@ def main() -> int:
     total_mb = int(os.environ.get("CLIO_OFFLOAD_TOTAL_MB", "30"))
     result: dict[str, Any] = {"run_id": run_id, "stage": "start"}
     try:
-        from clio_agent.arc.storage import ClioCoreStore, make_arc_store
+        from clio_agent.arc.storage import ClioCoreStore, make_arc_store, release_runtime_client
 
         store = make_arc_store(backend="cte")
         result["store_type"] = type(store).__name__
@@ -139,7 +147,25 @@ def main() -> int:
         except Exception:  # noqa: BLE001,S110 - out-path unwritable: fall through
             pass
         return 5
+    finally:
+        # Deterministically release this subprocess's clio-core client (last-one-out
+        # stops the PRIVATE daemon) instead of leaning on atexit, so a client is never
+        # left ghost-registered even if the interpreter is torn down abruptly. The parent
+        # test still force-reaps as belt-and-suspenders. Best-effort: a release failure
+        # must not mask the op result the parent asserts on.
+        try:
+            release_runtime_client()
+        except Exception:  # noqa: BLE001,S110 - import/release failure: parent reap covers it
+            pass
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # os._exit, NOT sys.exit: after main() the op result is already emitted and
+    # the runtime client explicitly released (last-one-out stops the private
+    # daemon). Normal interpreter finalization then runs the clio-core binding's
+    # destructor storm, which trips the known upstream Windows ZeroMQ
+    # client-detach assertion (STATUS_FATAL_APP_EXIT, rc=0x40000015) and turned
+    # every green run red at the last instant (#914). Skipping finalizers HERE
+    # is safe (result flushed, client released) and keeps a non-zero rc
+    # meaningful for real crashes inside main().
+    os._exit(main())

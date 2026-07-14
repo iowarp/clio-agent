@@ -6,6 +6,70 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.7.0] — 2026-07-13
+
+The second resource-usage campaign release (#893): the unified-ARC
+highway ships as the default, the desktop bundle works on a fresh
+computer end-to-end, and clio-agent's memory is hard-bounded. Pairs
+with gact-tui **v0.9.7** and marketplace **v0.5.4**.
+
+### Changed
+- **Hard memory budget** (#906, release-gating): clio-core's storage
+  runs a disk-only desktop topology — ONE pre-created RAM arena bounded
+  at the user's memory budget (`arc.cte.ram_capacity` /
+  `CLIO_ARC_CTE_RAM_CAPACITY`, default 1GB) as working memory, and ONE
+  file tier at the user-designated dir (`arc.cte.dir`) holding all data.
+  "Use 1GB of RAM, and whatever you want of disk." clio-core's own `0g`
+  default (up to 80% of system DRAM — an HPC compute-node default) can
+  no longer be inherited silently: boot-time typed warnings
+  (`clio_core_ram_uncapped`, `clio_core_tier_topology`) and doctor rows
+  flag unbounded arenas, legacy two-arena shapes, and undersized final
+  layers. Live gate evidence: daemon peak 574MB under the 1GB bound
+  through three full EarthScope sessions.
+- clio-core blob writes ride a bounded, typed-loud retry
+  (`clio_core_put_retry`, 3 attempts): transient PutBlob refusals (an
+  eviction race, a post-restart container-restore gap, disk exhaustion —
+  all caught live on the #893 gate) no longer turn one failed write into
+  a failed turn under the atoms regime's must-succeed ingest.
+- The unified-ARC highway regimes are the shipped defaults (#737, #893):
+  the working-set fold (`CLIO_ARC_WORKING_SET_FOLD`) and the transcript
+  projection (`CLIO_TRANSCRIPT_PROJECTION`) default ON — new sessions run
+  single-copy on the canonical `_events` log (byte-equality proven per
+  surface; reload==live green on the full real-session corpus). `=0` opts
+  back into the legacy regime; existing sessions keep their pinned regime
+  and their wire stays byte-identical.
+- Stateful session-delta transports default ON for `claude_code` (SDK
+  transport) and `codex` (app-server): `CLIO_CLAUDE_CODE_STATEFUL_DELTA` /
+  `CLIO_CODEX_STATEFUL_DELTA` `=0` opt out. Live acceptance: delta TTFT
+  1.79s vs 7+s cold (claude), 2.95s vs 7.37s (codex), 76.7% cached-input;
+  every fallback-to-full-send is a typed reset reason.
+- Boot-time environment conformance (#906): clio-core backend init inspects
+  the EFFECTIVE `cte.yaml` and emits a typed `clio_core_ram_uncapped`
+  warning when the ram cap is unbounded/unparseable/missing (the stale-0g
+  incident shape); the doctor ram-cap row also reports the ram bdev
+  capacity.
+
+### Fixed
+- The bundled desktop runtime is machine-portable (#909): the embedded
+  clio-agent now ships its own interpreter (uv's standalone CPython copied
+  into the runtime, wheel installed directly — no venv) and self-describes
+  via a generic `runtime.json` manifest, invoked as `python -m
+  clio_agent.gact`. The previous venv-based runtime hard-pointed
+  `pyvenv.cfg home` at the CI runner's Python and could never start on a
+  user's machine. `install/build-gact-runtime.{sh,ps1}` build it (moved
+  here from gact-tui — the brand owns its runtime) and prove portability
+  by booting a relocated copy; the bundle workflow builds the runtime from
+  the released checkout and gates on the manifest being present.
+- Desktop bundles ship their sidecar launcher again (#907): the CLIO branding
+  overlay now declares `bundle.externalBin`, and the bundle workflow asserts
+  the merged Tauri config + built launcher before packaging. Every desktop
+  installer since v0.5.18 (first post-de-clio gact-tui pin) was missing the
+  launcher and failed at boot with "sidecar launcher missing". Pairs with the
+  gact-tui lookup fix (iowarp/gact-tui#309) — the installed sidecar is
+  triple-stripped by the Tauri bundler. Known residual: the Windows-on-ARM
+  leg publishes a raw `--no-bundle` exe with no launcher beside it and
+  remains unfixed (noted in #907).
+
 ## [0.6.1] — 2026-07-13
 
 ### Fixed

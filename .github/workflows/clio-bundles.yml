@@ -209,19 +209,21 @@ jobs:
       - name: Build sidecar launcher
         shell: bash
         run: bash external/gact-tui/apps/desktop/scripts/fetch-sidecar.sh ${{ matrix.target }}
+      # Portable embedded runtime (#909): built by OUR scripts (the brand
+      # owns its runtime; gact-tui is generic infrastructure) from THIS
+      # checkout, so the bundle ships exactly the released tree. The script
+      # ships the interpreter inside the runtime (no venv) and proves
+      # portability by booting a relocated copy before returning.
       - name: Build embedded clio-agent runtime
         if: matrix.variant == 'bundled' && runner.os != 'Windows'
         shell: bash
-        run: bash external/gact-tui/apps/desktop/scripts/build-clio-runtime.sh
+        run: bash install/build-gact-runtime.sh external/gact-tui/apps/desktop/src-tauri/gact-runtime
         env:
-          CLIO_REF: ${{ github.ref_name }}
+          CLIO_AGENT_SOURCE: ${{ github.workspace }}
       - name: Build embedded clio-agent runtime (Windows)
         if: matrix.variant == 'bundled' && runner.os == 'Windows'
         shell: pwsh
-        working-directory: external/gact-tui/apps/desktop
-        run: ./scripts/build-clio-runtime.ps1 -Ref $env:CLIO_REF
-        env:
-          CLIO_REF: ${{ github.ref_name }}
+        run: ./install/build-gact-runtime.ps1 -Out external/gact-tui/apps/desktop/src-tauri/gact-runtime -Source $env:GITHUB_WORKSPACE
       - name: Select CLIO brand (gact-tui config-file mechanism)
         shell: bash
         run: |
@@ -304,6 +306,22 @@ jobs:
           }
           fs.writeFileSync(outputPath, `${JSON.stringify(config, null, 2)}\n`);
           NODE
+          # Sidecar guard (#907): every CLIO desktop bundle since the gact-tui
+          # de-clio refactor shipped WITHOUT its launcher because no config
+          # declared externalBin — release-check saw the installer asset and
+          # passed. Assert the merged config declares the sidecar and the
+          # launcher fetch-sidecar built actually exists before invoking the
+          # bundler (tauri also hard-fails on a declared-but-missing binary).
+          jq -e '.bundle.externalBin | index("binaries/clio-agent")' "$cfg" >/dev/null \
+            || { echo "::error::sidecar guard: merged tauri config lacks bundle.externalBin binaries/clio-agent (#907)"; exit 1; }
+          launcher="desktop/src-tauri/binaries/clio-agent-${{ matrix.target }}"
+          [ "${{ runner.os }}" = "Windows" ] && launcher="$launcher.exe"
+          [ -f "$launcher" ] \
+            || { echo "::error::sidecar guard: launcher $launcher missing (fetch-sidecar did not produce it)"; exit 1; }
+          if [ "${{ matrix.variant }}" = "bundled" ] && [ ! -f "desktop/src-tauri/gact-runtime/runtime.json" ]; then
+            echo "::error::runtime guard: gact-runtime/runtime.json missing (#909 - bundled variant would ship without its backend)"
+            exit 1
+          fi
           pnpm --filter @clio/desktop tauri build --config "$cfg" ${{ matrix.bundle-args }}
       - name: Stage artifacts
         shell: bash

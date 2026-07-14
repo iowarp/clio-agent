@@ -28,6 +28,17 @@ server even on a *hard* kill:
 It also owns the *clean-shutdown* teardown of the pooled Claude SDK transports
 (:func:`teardown_pooled_sdk_transports`) and a doctor probe that lists the live child
 processes so leakage is visible (:func:`probe_process_tree`).
+
+TWO ROOTS (the clean Task-Manager tree, #900 PART B). By design every CLIO process shows
+under exactly one of two roots: the **clio-agent server** (this process, which installs
+the Job Object above) or the **shared clio-core daemon** — the deliberate breakaway
+spawned with ``CREATE_BREAKAWAY_FROM_JOB`` in
+:func:`clio_agent.arc.storage._spawn_runtime_daemon`. The daemon breakaway is intentional
+and permanent: it is shared across clients and must outlive any single server, so it is
+the *second* root, not an orphan. :mod:`clio_agent.runtime.process_census` walks each
+CLIO process's parent chain and flags any that descends from neither root
+(``orphaned_from_tree``) — an intermediate launcher that exited and severed parentage;
+:func:`probe_process_tree` appends that parentage row in live (doctor) mode.
 """
 
 from __future__ import annotations
@@ -505,6 +516,14 @@ def probe_process_tree(
     if reaper is not None:
         rows.append(_reaper_row(reaper))
     rows.append(_census_row(census))
+    # Live mode only (no injected census): also report the parent-chain census, which
+    # flags any CLIO process orphaned from both roots (#900 PART B). Gated on
+    # ``children is None`` so the synthetic-census unit tests keep their exact row count.
+    # Imported lazily to avoid a module-load cycle (process_census imports this module).
+    if children is None:
+        from clio_agent.runtime.process_census import probe_process_parentage  # noqa: PLC0415
+
+        rows.append(probe_process_parentage())
     return rows
 
 

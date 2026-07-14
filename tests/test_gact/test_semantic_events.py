@@ -97,11 +97,20 @@ def test_semantic_events_stream_and_trace_file(tmp_path: Path, monkeypatch) -> N
     # The DURABLE canonical trace captures FULL (unredacted) bodies.
     request_row = next(row for row in rows if row["event_type"] == "llm.request.started")
     assert request_row["payload"]["input"] == "analyze this"
-    # turn.completed embeds the full final assistant message in the durable trace.
+    # turn.completed's durable payload is regime-aware (#737 S5): under the default
+    # LEGACY regime it embeds the full final assistant message (the byte-copy from which
+    # the messages store was historically derivable); under the ATOMS regime that
+    # byte-copy is DELETED because the message_part atoms carry the wire identity (design
+    # §4.2 step 5 — "kill final_message"). Assert the correct shape for the pinned regime.
+    from clio_agent.gact.transcript_projection import REGIME_ATOMS, pinned_regime
+
     completed_row = next(row for row in rows if row["event_type"] == "turn.completed")
-    assert isinstance(completed_row["payload"]["final_message"], dict)
-    assert completed_row["payload"]["final_message"]["id"]
-    assert "[redacted]" not in str(completed_row["payload"]["final_message"])
+    if pinned_regime(app, sid) == REGIME_ATOMS:
+        assert "final_message" not in completed_row["payload"]
+    else:
+        assert isinstance(completed_row["payload"]["final_message"], dict)
+        assert completed_row["payload"]["final_message"]["id"]
+        assert "[redacted]" not in str(completed_row["payload"]["final_message"])
 
 
 def test_full_debug_trace_includes_llm_payload(tmp_path: Path, monkeypatch) -> None:

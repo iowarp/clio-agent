@@ -36,7 +36,7 @@ compares it to the pool's current process and, on a mismatch, flags the scope
 ``session_evicted`` so the next send re-opens a thread on the live process.
 
 **Kill-switch / inertness.** Inert unless BOTH the ``stateful_delta`` flag is ON
-(:func:`codex_stateful_delta_enabled`, default OFF) AND a per-forward stateful scope
+(:func:`codex_stateful_delta_enabled`, default ON) AND a per-forward stateful scope
 is active (set only by the ReActV2 loop). Off either, :func:`resolve_codex_stateful_send`
 returns a plain full send that never touches the pool or registry — the pre-slice
 ephemeral-per-call path runs byte-for-byte unchanged.
@@ -71,11 +71,13 @@ __all__ = [
 # Kill-switch + bound config (codex-specific).
 # --------------------------------------------------------------------------- #
 def codex_stateful_delta_enabled() -> bool:
-    """Whether the codex stateful session-delta transport is enabled (default OFF).
+    """Whether the codex stateful session-delta transport is enabled (default ON).
 
     Resolved via ``providers.codex.stateful_delta`` / ``CLIO_CODEX_STATEFUL_DELTA``
-    (file → env → default False). A new optimisation rung on top of #896's warm
-    app-server pool: even when ON it only engages on the ReActV2 loop (an active
+    (file → env → default True; set ``=0`` to opt out). Default flipped ON on live
+    acceptance evidence (#893): persistent-thread TTFT 2.95s vs 7.37s ephemeral,
+    typed reset catalog covering every fallback-to-full-send path. Even when ON it
+    only engages on the ReActV2 loop (an active
     :func:`~clio_agent.providers.stateful_common.active_stateful_scope`); the classic
     path stays byte-identical ephemeral-per-call full sends.
     """
@@ -85,7 +87,7 @@ def codex_stateful_delta_enabled() -> bool:
         conf.resolve(
             "providers.codex.stateful_delta",
             env="CLIO_CODEX_STATEFUL_DELTA",
-            default=False,
+            default=True,
             cast=conf.as_bool,
         )
     )

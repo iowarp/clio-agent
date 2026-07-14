@@ -75,6 +75,7 @@ from clio_agent.gact.tool_observer import (
     _sanitize_handoff_tool_metadata,
     _sanitize_tools_called_metadata,
 )
+from clio_agent.gact.transcript_projection import final_message_embed
 from clio_agent.gact.turn_degradation import (
     assemble_stream_and_degradation_metadata,
     substitute_answer_from_delegation_evidence,
@@ -612,13 +613,12 @@ def finalize_turn(
         completed_payload["error_info"] = state.error_info.model_dump(exclude_none=True)
     if state.assistant_metadata:
         completed_payload["metadata"] = state.assistant_metadata
-    # Embed the full final assistant message in the DURABLE turn.completed so the
-    # messages store is derivable from the canonical trace (the trace is the
-    # source of truth). final_message is in SENSITIVE_KEYS, so the SSE projection
-    # strips it -- the message already streams to clients via message.* events.
+    # #737 S5: the final_message byte-copy rides the DURABLE turn.completed only under
+    # the LEGACY regime; the atoms regime derives it from the message_part atoms so the
+    # byte-copy dies (embed -> {}). SSE strips it either way (SENSITIVE_KEYS).
     semantic_completed_payload = {
         **completed_payload,
-        "final_message": assistant_msg.model_dump(exclude_none=True),
+        **final_message_embed(state.app, state.sid, assistant_msg),
     }
     _emit_semantic_event(
         state.app,
@@ -872,7 +872,7 @@ def settle_failed_finalize(
             subject={"message_id": assistant_msg.id},
             payload={
                 **completed_payload,
-                "final_message": assistant_msg.model_dump(exclude_none=True),
+                **final_message_embed(app, sid, assistant_msg),
             },
         )
     except Exception:  # noqa: BLE001 - the bus publishes below must still go out
