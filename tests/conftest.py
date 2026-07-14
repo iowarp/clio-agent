@@ -221,22 +221,22 @@ def allow_pytest_tmp_path(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_root))
     _write_test_default_registry_blueprint(xdg_root)
 
-    # Isolate on-disk skill discovery (catalog.py scans cwd/.claude/skills and
-    # home/.claude/skills). Without this, the repo's OWN .claude/skills (e.g.
+    # Isolate on-disk skill discovery (gact.skills owns the scanner, #917;
+    # catalog.py consumes it). Without this, the repo's OWN .claude/skills (e.g.
     # release-clio, grind-clio-case) and a developer's global skills leak into the
     # expert catalog and shift the deterministic agent list the tests assert.
     # Keep only roots under tmp_path, so discovery tests that create skills under
     # their tmp_path (and chdir there) still work, while ambient repo/home skills
     # are dropped. No cwd change (registry-snapshot tests need the repo cwd).
-    import clio_agent.gact.catalog as _catalog  # noqa: PLC0415
+    import clio_agent.gact.skills as _skills  # noqa: PLC0415
 
-    _orig_skill_roots = _catalog._skill_search_roots
+    _orig_skill_roots = _skills._skill_search_roots
 
-    def _isolated_skill_roots(home: Path, cwd: Path) -> list[tuple[Path, str]]:
+    def _isolated_skill_roots(home: Path, cwd: Path) -> list[tuple[Path, str, str]]:
         roots = _orig_skill_roots(home, cwd)
-        return [(r, s) for (r, s) in roots if _path_under(r, tmp_path)]
+        return [(r, s, scope) for (r, s, scope) in roots if _path_under(r, tmp_path)]
 
-    monkeypatch.setattr(_catalog, "_skill_search_roots", _isolated_skill_roots)
+    monkeypatch.setattr(_skills, "_skill_search_roots", _isolated_skill_roots)
 
 
 def _path_under(path: Path, base: Path) -> bool:

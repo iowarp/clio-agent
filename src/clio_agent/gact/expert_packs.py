@@ -32,6 +32,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from clio_agent.gact import skills as _skills
 from clio_agent.gact.types import AgentDef
 
 _EXPERT_ID_RE = re.compile(r"[A-Za-z0-9_.-]+")
@@ -96,10 +97,13 @@ def load_expert_packs(
 ) -> list[AgentDef]:
     rows: dict[str, AgentDef] = {}
     overrides: dict[str, list[dict[str, str]]] = {}
+    # ONE catalog per load: skill_resolution uses the SAME home/cwd (e.g. the
+    # session workspace) as pack discovery; each skill root is scanned once.
+    skill_catalog = _skills.SkillCatalog(home=home, cwd=cwd)
     for pack in discover_expert_packs(home=home, cwd=cwd):
         if pack_id and pack.id != pack_id:
             continue
-        for row in _load_pack_agents(pack):
+        for row in _load_pack_agents(pack, skill_catalog=skill_catalog):
             if row.id in rows:
                 chain = overrides.setdefault(row.id, [])
                 prior = rows[row.id]
@@ -207,6 +211,7 @@ def parse_expert_file(
     *,
     scope: str,
     pack: ExpertPackDefinition | None = None,
+    skill_catalog: "_skills.SkillCatalog | None" = None,
 ) -> AgentDef:
     try:
         text = path.read_text(encoding="utf-8")
@@ -242,8 +247,6 @@ def parse_expert_file(
     keywords = _list_field(meta, "keywords", "tags")
     module = _module_from_meta(meta)
     signature = _mapping_field(meta, "signature")
-    structured_outputs = _mapping_field(meta, "structured_outputs", "structured-outputs")
-    fanout = _mapping_field(meta, "fanout")
     module_kind = str(module.get("kind") or "predict").strip().lower()
     if module_kind not in {"predict", "chain_of_thought", "react"}:
         errors.append(f"unsupported module.kind: {module_kind}")
@@ -262,6 +265,11 @@ def parse_expert_file(
         "expert_layout": "expert_markdown",
         "definition_path": path.as_posix(),
     }
+    if skills:
+        # Resolution-checked (#917): typed per-id diagnostic on the row; never disables.
+        metadata["skill_resolution"] = (
+            skill_catalog or _skills.SkillCatalog()
+        ).resolve_declared_metadata(skills, pack_root=pack.root if pack is not None else None)
     if pack is not None:
         metadata.update(
             {
@@ -300,28 +308,12 @@ def parse_expert_file(
         parent_id=parent_id,
         system_prompt=system_prompt,
         prompt_id=prompt_id,
-        prompt_profile=str(
-            meta.get("prompt_profile")
-            or meta.get("profile")
-            or defaults.get("prompt_profile")
-            or ""
-        ).strip(),
-        default_provider=str(
-            meta.get("provider") or meta.get("default_provider") or defaults.get("provider") or ""
-        ).strip(),
-        default_model=str(
-            meta.get("model") or meta.get("default_model") or defaults.get("model") or ""
-        ).strip(),
-        api_base=str(
-            meta.get("api_base") or meta.get("api-base") or defaults.get("api_base") or ""
-        ).strip(),
-        credential_ref=str(
-            meta.get("credential_ref")
-            or meta.get("credential-ref")
-            or defaults.get("credential_ref")
-            or ""
-        ).strip(),
-        transport=str(meta.get("transport") or defaults.get("transport") or "").strip(),
+        prompt_profile=_pick(meta, defaults, ("prompt_profile", "profile"), "prompt_profile"),
+        default_provider=_pick(meta, defaults, ("provider", "default_provider"), "provider"),
+        default_model=_pick(meta, defaults, ("model", "default_model"), "model"),
+        api_base=_pick(meta, defaults, ("api_base", "api-base"), "api_base"),
+        credential_ref=_pick(meta, defaults, ("credential_ref", "credential-ref"), "credential_ref"),
+        transport=_pick(meta, defaults, ("transport",), "transport"),
         parameters=_parameters_from_meta(meta),
         module=module,
         signature=signature,
@@ -439,7 +431,9 @@ def _parse_pack_manifest(path: Path, *, scope: str) -> ExpertPackDefinition:
     )
 
 
-def _load_pack_agents(pack: ExpertPackDefinition) -> list[AgentDef]:
+def _load_pack_agents(
+    pack: ExpertPackDefinition, *, skill_catalog: "_skills.SkillCatalog | None" = None
+) -> list[AgentDef]:
     root = pack.root / "experts" if (pack.root / "experts").is_dir() else pack.root
     files = _expert_files(root)
     if not files and pack.manifest_path is not None:
@@ -461,7 +455,10 @@ def _load_pack_agents(pack: ExpertPackDefinition) -> list[AgentDef]:
                 tier=2,
             )
         ]
-    rows = [parse_expert_file(path, scope=pack.scope, pack=pack) for path in files]
+    rows = [
+        parse_expert_file(path, scope=pack.scope, pack=pack, skill_catalog=skill_catalog)
+        for path in files
+    ]
     seen: dict[str, int] = {}
     for row in rows:
         seen[row.id] = seen.get(row.id, 0) + 1
@@ -490,15 +487,29 @@ def _load_pack_agents(pack: ExpertPackDefinition) -> list[AgentDef]:
     return rows
 
 
+def _pick(
+    meta: dict[str, Any], defaults: dict[str, Any], keys: tuple[str, ...], default_key: str
+) -> str:
+    """First truthy of ``meta[keys...]``, else ``defaults[default_key]``, stripped."""
+    for key in keys:
+        if meta.get(key):
+            return str(meta[key]).strip()
+    return str(defaults.get(default_key) or "").strip()
+
+
 def _expert_files(root: Path) -> list[Path]:
+    # Exclusions test the ROOT-RELATIVE path (like the blueprint scanner), so a
+    # pack installed under a dir named prompts/commands/skills keeps its experts;
+    # skills/ holds SKILL.md bodies (owner: gact.skills, #917), not experts.
+    def _included(path: Path) -> bool:
+        try:
+            relative = "/" + path.resolve().relative_to(root.resolve()).as_posix()
+        except (ValueError, OSError):
+            relative = "/" + path.as_posix()
+        return not any(f"/{part}/" in relative for part in ("prompts", "commands", "skills"))
+
     return sorted(
-        [
-            path
-            for path in root.rglob("*.md")
-            if path.is_file()
-            and "/prompts/" not in path.as_posix()
-            and "/commands/" not in path.as_posix()
-        ],
+        [path for path in root.rglob("*.md") if path.is_file() and _included(path)],
         key=lambda path: str(path).lower(),
     )
 
@@ -608,8 +619,7 @@ def _coerce_tier(value: Any, errors: list[str]) -> int:
     try:
         tier = int(value or 2)
     except (TypeError, ValueError):
-        errors.append("invalid tier; expected positive integer")
-        return 2
+        tier = 0  # falls through to the invalid-tier diagnostic below
     if tier < 1:
         errors.append("invalid tier; expected positive integer")
         return 2
@@ -785,7 +795,5 @@ def _fallback_expert_id(path: Path) -> str:
     return path.stem.replace(" ", "_").lower()
 
 
-def _fallback_keywords(expert_id: str) -> list[str]:
-    return [
-        part for part in expert_id.replace("-", " ").replace("_", " ").split() if part.strip()
-    ] or [expert_id]
+# Same id→keywords derivation as skills; one owner (gact.skills, #917).
+_fallback_keywords = _skills._fallback_skill_keywords
