@@ -6,6 +6,16 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.7.1] — 2026-07-14
+
+### Fixed
+- Release engineering: v0.7.0's tag pinned gact-tui at v0.9.6 (a rejected
+  tag-fetch silently aborted the &&-chained pin checkout), so its bundled
+  desktop legs failed loudly on the retired `clio-runtime` resources glob
+  — the guard doing its job. v0.7.1 pins gact-tui **v0.9.7** (verified
+  gitlink) and re-ships the identical payload; PyPI 0.7.0 artifacts were
+  unaffected (wheel/sdist carry no submodule content).
+
 ## [0.7.0] — 2026-07-13
 
 The second resource-usage campaign release (#893): the unified-ARC
