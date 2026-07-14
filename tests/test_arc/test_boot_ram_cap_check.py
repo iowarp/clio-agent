@@ -177,9 +177,9 @@ def test_all_bounded_topology_warns_typed(
     assert cap.bdev_capacity == "1GB"
     assert cap.final_tier_capacity == "1GB"
     warned = [r for r in caplog.records if CLIO_CORE_TIER_TOPOLOGY in r.getMessage()]
-    assert warned, "headroom-less ceiling + final<=ram must warn clio_core_tier_topology"
+    assert warned, "two-arena tight shape + final<=ram must warn clio_core_tier_topology"
     msg = warned[0].getMessage()
-    assert "insufficient spill headroom" in msg
+    assert "TWO ram" in msg
     assert "cannot absorb one full hot-tier spill" in msg
     # The ram tier itself is correctly bounded — no ram_uncapped warning.
     assert not [
