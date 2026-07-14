@@ -204,6 +204,12 @@ def _run_exec(
                 input=prompt,
                 capture_output=True,
                 text=True,
+                # Explicit UTF-8: Windows text mode defaults to the locale
+                # code page (cp1252), so any non-ASCII prompt char reached
+                # codex as invalid UTF-8 and the CLI refused the whole
+                # prompt ("input is not valid UTF-8", caught live #893).
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout,
                 cwd=cwd,
                 check=False,
