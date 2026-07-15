@@ -46,7 +46,12 @@ RATCHET_BASELINE: dict[str, int] = {
     # logic lives in the new owner module runtime/process_tree.py, not here).
     # #932: +26 to wire the one boot listing pass + preloaded/namespace-routed
     # executors (the fleet logic itself lives in tools/execution.py+gateway.py).
-    "src/clio_agent/agent.py": 2732,
+    # #933: +58 for the workspace-fleet state accessor, turn leases, reaper
+    # wiring, and reaped-executor rebuild (the reaper itself is the owner
+    # module tools/reaper.py).
+    # #933 review hardening: shutdown snapshots the workspace registry under
+    # the shared lock; _workspace_state publishes the lock last (+8).
+    "src/clio_agent/agent.py": 2798,
     "src/clio_agent/arc/memory.py": 1394,
     "src/clio_agent/arc/segments.py": 1117,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
@@ -81,7 +86,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # module providers/thinking.py, not here.
     "src/clio_agent/gact/routes/providers.py": 1320,
     "src/clio_agent/gact/routes/sessions.py": 1478,
-    "src/clio_agent/gact/runtime/globals.py": 923,
+    # #933: +8 for the turn-scoped workspace-fleet lease in _tool_session_context.
+    # #933 review hardening: typed workspace_lease_unavailable degrade when a
+    # rooted turn has no leasable agent (+9).
+    "src/clio_agent/gact/runtime/globals.py": 940,
     "src/clio_agent/gact/streaming.py": 1024,
     "src/clio_agent/gact/tool_observer.py": 930,
     "src/clio_agent/gact/transcript.py": 986,
@@ -105,7 +113,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # #932: +62 for preloaded tool definitions (start() without the list_tools
     # fan-out) and namespace-direct call routing with lazy per-namespace
     # clients — the executor IS the owner module for this.
-    "src/clio_agent/tools/execution.py": 1259,
+    # #933: +23 for the reaper instrumentation: inflight refcount + idle clock,
+    # plus the busy/idle_for accessors the reaper's drain guard reads (their
+    # state lives on the executor, so the accessors are owned here too).
+    "src/clio_agent/tools/execution.py": 1282,
     "src/clio_agent/ui/cli.py": 1156,
 }
 

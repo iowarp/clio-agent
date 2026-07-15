@@ -23,6 +23,7 @@ import contextvars
 import json
 import logging
 import re
+import threading
 import time
 import uuid
 from collections.abc import Mapping
@@ -100,6 +101,7 @@ from clio_agent.tools.gateway import (
     namespace_proxies,
 )
 from clio_agent.tools.mcp_config import load_mcp_servers
+from clio_agent.tools.reaper import WorkspaceExecutorReaper
 
 logger = logging.getLogger(__name__)
 
@@ -216,6 +218,27 @@ class ClioAgent(dspy.Module):
 
     # Class default so partially-constructed instances (test stubs) resolve it.
     _tool_definitions: dict[str, Any] | None = None
+    # Guards first-touch creation of the per-instance workspace-fleet state.
+    _WS_STATE_INIT_LOCK = threading.Lock()
+
+    def _workspace_state(self) -> tuple[threading.Lock, dict[str, Any], dict[str, int]]:
+        """Per-instance (lock, executors, leases), lazily created — covers
+        partially-constructed test stubs that skip __init__ (#933)."""
+
+        lock = getattr(self, "_workspace_executor_lock", None)
+        if lock is None:
+            with ClioAgent._WS_STATE_INIT_LOCK:
+                lock = getattr(self, "_workspace_executor_lock", None)
+                if lock is None:
+                    if not hasattr(self, "_workspace_tool_executors"):
+                        self._workspace_tool_executors: dict[str, Any] = {}
+                    if not hasattr(self, "_workspace_leases"):
+                        self._workspace_leases: dict[str, int] = {}
+                    # The lock is the fast-path publish signal — it must be
+                    # assigned LAST so no reader sees it before the dicts.
+                    lock = threading.Lock()
+                    self._workspace_executor_lock = lock
+        return lock, self._workspace_tool_executors, self._workspace_leases
 
     def __init__(
         self,
@@ -334,7 +357,11 @@ class ClioAgent(dspy.Module):
             namespace_servers=namespace_proxies(self._tool_gateway),
         )
         # Cache of workspace root -> sync tool executor (lazy, one per workspace).
-        self._workspace_tool_executors: dict[str, Any] = {}
+        # Guarded by _workspace_executor_lock (shared with the #933 reaper);
+        # _workspace_leases counts LIVE TURNS pinning a root (never reaped).
+        lock, executors, leases = self._workspace_state()
+        self._workspace_reaper = WorkspaceExecutorReaper(executors, lock, leases=leases)
+        self._workspace_reaper.start()
 
         # Core no longer installs domain experts into the Python registry.
         # Default and baseline agents are blueprint programs loaded through
@@ -465,16 +492,46 @@ class ClioAgent(dspy.Module):
         root = get_active_tool_workspace_root().strip()
         if not root:
             return self.tool_executor
-        executor = self._workspace_tool_executors.get(root)
-        if executor is None:
-            gateway = self._build_tool_gateway(cwd=root)
-            executor = create_sync_tool_executor(
-                gateway,
-                preloaded_tools=self._tool_definitions,
-                namespace_servers=namespace_proxies(gateway),
-            )
-            self._workspace_tool_executors[root] = executor
-        return executor
+        lock, executors, _leases = self._workspace_state()
+        with lock:
+            executor = executors.get(root)
+            if executor is None or getattr(executor, "closed", False):
+                # First use for this root, or the #933 reaper reclaimed the
+                # fleet — rebuild lazily (spawns nothing until a tool call).
+                gateway = self._build_tool_gateway(cwd=root)
+                executor = create_sync_tool_executor(
+                    gateway,
+                    preloaded_tools=self._tool_definitions,
+                    namespace_servers=namespace_proxies(gateway),
+                )
+                executors[root] = executor
+            return executor
+
+    @contextmanager
+    def lease_workspace_fleet(self, root: str):
+        """Pin a workspace root against reaping for the caller's scope (#933).
+
+        Acquired per TURN (gact's ``_tool_session_context``): DSPy tools bind
+        the executor for the whole expert lifetime, so between-call idleness
+        inside a live turn must never count toward the reap TTL.
+        """
+
+        root = (root or "").strip()
+        if not root:
+            yield
+            return
+        lock, _executors, leases = self._workspace_state()
+        with lock:
+            leases[root] = leases.get(root, 0) + 1
+        try:
+            yield
+        finally:
+            with lock:
+                remaining = leases.get(root, 1) - 1
+                if remaining <= 0:
+                    leases.pop(root, None)
+                else:
+                    leases[root] = remaining
 
     def _discover_pack_experts(self) -> list[Any]:
         """Return loaded pack experts (for declared-tool visibility derivation)."""
@@ -2725,8 +2782,17 @@ class ClioAgent(dspy.Module):
         """Close the persistent MCP tool executors so their stdio children are reaped (#900)."""
         from clio_agent.runtime.process_tree import close_tool_executors
 
+        reaper = getattr(self, "_workspace_reaper", None)
+        if reaper is not None:
+            reaper.stop()
+
         if self.verbose:
             print("[ClioAgent] Shutting down...")
-        executors = [self.tool_executor, *self._workspace_tool_executors.values()]
-        self._workspace_tool_executors = {}
+        # Snapshot + clear under the shared registry lock: a reaper thread that
+        # outlived stop()'s bounded join must not mutate the dict mid-iteration,
+        # and clear() (not rebind) keeps every holder seeing the same registry.
+        lock, workspace_executors, _leases = self._workspace_state()
+        with lock:
+            executors = [self.tool_executor, *workspace_executors.values()]
+            workspace_executors.clear()
         close_tool_executors(executors)

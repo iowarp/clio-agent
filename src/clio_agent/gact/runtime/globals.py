@@ -136,9 +136,26 @@ def _tool_session_context(sid: str) -> Iterator[None]:
         ws = workspaces.get(workspace_id) if workspaces is not None and workspace_id else None
         workspace_root = str(getattr(ws, "root_path", "") or "")
     token = _ctx.set_tool_session_id(sid)
+    # #933: pin the workspace fleet for the WHOLE turn — between-call idleness
+    # inside a live turn must not count toward the reaper's TTL.
+    agent = getattr(app_state, "agent", None) if app_state is not None else None
+    lease = getattr(agent, "lease_workspace_fleet", None)
     try:
-        with tool_workspace_context(workspace_root):
-            yield
+        if workspace_root and callable(lease):
+            with lease(workspace_root), tool_workspace_context(workspace_root):
+                yield
+        else:
+            if workspace_root:
+                # A rooted turn without a leasable agent runs UNPROTECTED from
+                # the #933 reaper — degraded path, so the reason is typed.
+                trace.event(
+                    "TOOLS",
+                    "workspace_lease_unavailable session=%s root=%s reason=agent_has_no_lease_hook",
+                    sid,
+                    workspace_root,
+                )
+            with tool_workspace_context(workspace_root):
+                yield
     finally:
         _ctx.reset(token)
 

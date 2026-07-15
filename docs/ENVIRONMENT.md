@@ -84,6 +84,8 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_MAX_FILE_SIZE_BYTES` | `tools.file_policy.max_file_size_bytes` | str | `1073741824` | `src/clio_agent/tools/file_policy.py` |
 | `CLIO_MAX_LM_CALL_S` | `limits.lm_call_s` | float | `1800.0` | `src/clio_agent/runtime/lm_activity.py` |
 | `CLIO_MCP_SETUP_TIMEOUT_S` | `tools.mcp.setup_timeout_s` | float | `10.0` | `src/clio_agent/tools/execution.py` |
+| `CLIO_MCP_WORKSPACE_MAX_RESIDENT` | `tools.mcp.workspace_max_resident` | int | `2` | `src/clio_agent/tools/reaper.py` |
+| `CLIO_MCP_WORKSPACE_TTL_S` | `tools.mcp.workspace_ttl_s` | float | `120.0` | `src/clio_agent/tools/reaper.py` |
 | `CLIO_MODEL_DB` | `paths.model_db` | str | _(unset)_ | `src/clio_agent/providers/handshake/sources/db.py` |
 | `CLIO_SEMANTIC_TRACE_BACKEND` | `trace.backend` | str | `none` | `src/clio_agent/arc/memory.py` |
 | `CLIO_SEMANTIC_TRACE_CONFIG` | `trace.semantic_config` | str | _(unset)_ | `src/clio_agent/gact/semantic_events.py` |
