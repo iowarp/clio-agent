@@ -25,10 +25,13 @@ the user's ongoing session configuration.
 
 ## Execution Semantics
 
-If the requested id is a registered user or skill agent, CLIO runs that dynamic
-agent through the same execution path used by session-pinned user/skill agents.
-If the id is a built-in executable agent such as `main`, CLIO runs the built-in
-session path for that turn.
+If the requested id is a registered user agent, CLIO runs that dynamic agent
+through the same execution path used by session-pinned user agents. If the id
+is a built-in executable agent such as `main`, CLIO runs the built-in session
+path for that turn. A skill id is NOT an agent id (skills stopped
+materializing as agents in the #916 skill-semantics change): using one returns
+a typed `400 skill_not_delegatable` error pointing at the `skills:`
+declaration mechanism.
 
 If the requested id is unknown or not executable, CLIO still records the user
 message and then emits an assistant error turn with `error_info.error` set to

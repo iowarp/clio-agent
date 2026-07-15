@@ -17,7 +17,7 @@ jobs:
         with:
           version: "latest"
       - run: uv sync --extra dev --extra optimizers
-      - run: uv run ruff check src/ tests/ scripts/create_demo_data.py scripts/validate_marketplace_blueprints.py
+      - run: uv run ruff check src/ tests/ scripts/create_demo_data.py scripts/validate_marketplace_blueprints.py scripts/mcp_mem_attribution.py
       # Anti-re-accretion guardrails (iowarp/clio-agent#714, #774). BLOCKING:
       # now that the #767 gact decomposition has landed, these enforce per-file
       # ratchet baselines -- a new god-file or a baselined file that regrows

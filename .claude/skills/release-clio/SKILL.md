@@ -75,6 +75,26 @@ uv build && ls -lh dist/               # BOTH wheel AND sdist must be < 100 MB (
 python3 -c "import zipfile,glob; z=zipfile.ZipFile(glob.glob('dist/*.whl')[0]); m=[n for n in z.namelist() if n.endswith('METADATA')][0]; print('git+ in METADATA:', any('git+' in l for l in z.read(m).decode().splitlines()))"
 ```
 
+**Memory budget gate (release-gating, #930/#935).** Bounded memory is a release
+requirement: the 3-session claude-haiku acceptance load must hold the recorded
+budget in `scripts/mcp_mem_budget.json` (CI cannot run it — live LM + real CTE
+required — so it runs here):
+```sh
+uv run python scripts/mcp_mem_attribution.py \
+    --pack external/clio-agent-marketplace/data-semantics \
+    --workspace <dir with sensor_readings.csv> \
+    --sessions 3 --settle-s 180 --assert-budget    # must print GATE: PASS
+```
+`--pack` is a SOURCE directory (the script copies it into a fresh stamped gate
+XDG itself); the settle must stay ≥ 180s so the fleet reaper's TTL elapses
+before FINAL (the script enforces this under `--assert-budget`). `GATE: FAIL`
+(over budget, sessions not idle, or degraded substrate) blocks the tag. The
+budget only ratchets DOWN — peak is recorded at the honest COLD maximum
+(spawn-diet plans expire after 24h, so release runs boot undieted); the unit
+test `tests/test_scripts/test_mcp_mem_budget.py` pins the recorded values at
+or under the #930 campaign targets (1.8 GB peak / 1.3 GB post-idle) — any
+raise past that line fails plain CI.
+
 ### 6. Tag + push (triggers all CI)
 ```sh
 git tag -a vX.Y.Z HEAD -m "release: vX.Y.Z — <summary>"

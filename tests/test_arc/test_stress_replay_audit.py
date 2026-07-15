@@ -511,23 +511,16 @@ def _real_emit_logger(app, events_out: list[dict]):
     return logger
 
 
-def test_real_react_loop_trace_reconstructs_arc(tmp_path, monkeypatch):
-    """Run the genuine _RetainingReAct loop (scripted DummyLM, deterministic) so the
+def test_real_react_loop_trace_reconstructs_arc(tmp_path):
+    """Run the genuine production loop (V2, scripted DummyLM, deterministic) so the
     live plane is written by production code, then audit that the emitted arc.op
-    trace fully reconstructs it.
-
-    classic-path contract; the V2 loop writes the SAME arc.op stream through
-    ``reactv2_events.instrumented_forward`` (proven in
-    tests/test_arc/test_reactv2_highway.py). This test scripts a classic-shaped DummyLM
-    (next_tool_name/next_tool_args + extract), so force the classic loop (#901 rule 1)."""
+    trace fully reconstructs it."""
     import types
 
     import dspy
     from dspy.utils.dummies import DummyLM
 
     from .conftest import live_plane_context, make_react_agent
-
-    monkeypatch.setattr("clio_agent.gact.agents.runtime._reactv2_enabled", lambda: False)
 
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))
     events: list[dict] = []
@@ -540,16 +533,16 @@ def test_real_react_loop_trace_reconstructs_arc(tmp_path, monkeypatch):
         [
             {
                 "next_thought": "search first",
-                "next_tool_name": "search",
-                "next_tool_args": '{"q": "alpha"}',
+                "tool_calls": {"tool_calls": [{"name": "search", "args": {"q": "alpha"}}]},
             },
             {
                 "next_thought": "again",
-                "next_tool_name": "search",
-                "next_tool_args": '{"q": "beta"}',
+                "tool_calls": {"tool_calls": [{"name": "search", "args": {"q": "beta"}}]},
             },
-            {"next_thought": "done", "next_tool_name": "finish", "next_tool_args": "{}"},
-            {"reasoning": "because", "answer": "FINAL"},
+            {
+                "next_thought": "done",
+                "tool_calls": {"tool_calls": [{"name": "submit", "args": {"answer": "FINAL"}}]},
+            },
         ]
     )
     with live_plane_context(arc, session=sid, scope=scope):

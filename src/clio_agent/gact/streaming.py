@@ -76,8 +76,7 @@ def _select_accepted_kwargs(func: Any, candidate: dict[str, Any]) -> dict[str, A
     accepted = {
         p.name
         for p in params
-        if p.kind
-        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
     }
     return {name: value for name, value in candidate.items() if name in accepted}
 
@@ -497,11 +496,9 @@ def _agent_streaming_unsupported_reason(agent: Any) -> str:
     provider_config = getattr(agent, "_provider_config", None)
     provider = str(getattr(provider_config, "provider", "") or "")
     provider_kind = _provider_runtime_kind(provider)
-    if provider_kind == "claude_code":
-        transport = str(getattr(provider_config, "claude_code_transport", "sdk") or "sdk")
-        if transport == "exec":
-            return "provider_streaming_unsupported"
-    elif provider_kind == "codex":
+    # claude_code always streams: the sdk transport is the only one since the
+    # v0.8.0 cleanup (the batch `claude -p` exec transport was deleted).
+    if provider_kind == "codex":
         return "provider_streaming_unsupported"
     # iowarp/clio-agent#639: normalize the preset id (argonne_sophia/_metis) to
     # the provider kind (argonne) BEFORE the capability check. Reasoning models on

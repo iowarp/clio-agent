@@ -338,7 +338,7 @@ class RuntimeProbe:
             probe_cli_transport,
         )
 
-        # Transport-aware probe (#899): CLI/SDK pseudo-schemes (codex://exec,
+        # Transport-aware probe (#899): CLI/SDK pseudo-schemes (codex://app-server,
         # claude-code://sdk) have no HTTP /models endpoint — an HTTP GET yields
         # "No connection adapters were found" and reports the provider UNAVAILABLE
         # while turns run fine. Probe the local CLI the transport spawns instead of
@@ -706,14 +706,17 @@ class RuntimeProbe:
 
         return IntegrationStatus(
             name="arc",
-            state=IntegrationState.READY,
-            summary="ARC local persistence is writable.",
+            state=IntegrationState.DEGRADED,
+            summary=(
+                "DEGRADED TO LOCAL BACKEND: underperforming fallback store with "
+                "limited support for clio-agent semantics (unit tests only)."
+            ),
             config_source=source,
-            next_action="No action required for local mode; set CLIO_ARC_STORE=cte for clio-core.",
+            next_action="Set CLIO_ARC_STORE=cte (or unset it) for the real clio-core substrate.",
             endpoint=str(arc_dir),
             fallback="local",
             capabilities=["conversations", "invocations", "metrics", "variants"],
-            details={"storage_mode": "local"},
+            details={"storage_mode": "local", "reason": "local_backend_underperforming"},
             required=True,
         )
 

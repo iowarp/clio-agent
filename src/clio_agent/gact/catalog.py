@@ -10,12 +10,16 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from clio_agent.gact.agent_blueprints import (
     DEFAULT_AGENT_BLUEPRINT_ID,
     load_agent_blueprints,
 )
+
+# SKILL.md discovery/parsing is owned by gact.skills (#917); since #918 skills
+# no longer materialize as agents — only the frontmatter parser is shared here.
+from clio_agent.gact.skills import _parse_skill_frontmatter
 from clio_agent.gact.types import AgentDef, Tool
 
 
@@ -40,91 +44,6 @@ def _builtin_agents() -> list[AgentDef]:
             metadata.setdefault("parent", row.parent_id)
         builtin_rows.append(row.model_copy(update={"metadata": metadata}))
     return builtin_rows
-
-
-def _load_skills_from_disk() -> list[AgentDef]:
-    """Discover local skill files and register each as ``source="skill"``.
-
-    Supported layouts are intentionally bounded to known skill roots:
-    - Claude flat/project skills: ``.claude/skills/*.md``
-    - Directory skills: ``.claude/skills/**/SKILL.md``
-    - Codex skills: ``.codex/skills/**/SKILL.md``
-    - Agent skills: ``.agents/skills/**/SKILL.md``
-
-    User-global roots are scanned first and project-local roots second so a
-    project skill with the same id overrides a global skill. The body after
-    frontmatter is used as the skill's system prompt.
-    """
-    import os
-    from pathlib import Path
-
-    rows: dict[str, AgentDef] = {}
-    for root, source in _skill_search_roots(Path.home(), Path(os.getcwd())):
-        if not root.exists() or not root.is_dir():
-            continue
-        for md in _skill_markdown_files(root):
-            try:
-                text = md.read_text(encoding="utf-8")
-            except Exception:  # noqa: BLE001 - unreadable skill markdown skipped
-                continue
-            meta, body = _parse_skill_frontmatter(text)
-            sid = (meta.get("name") or _default_skill_id(md)).strip()
-            if not sid:
-                continue
-            description = str(meta.get("description") or "").strip()
-            if not description and body:
-                # Fall back to the first non-blank line of the body.
-                for line in body.splitlines():
-                    line = line.strip()
-                    if line:
-                        description = line[:240]
-                        break
-
-            tools = _skill_list_field(meta, "allowed-tools", "allowed_tools")
-            keywords = _skill_list_field(meta, "keywords", "tags")
-            if not keywords:
-                keywords = _fallback_skill_keywords(sid)
-
-            metadata = {
-                "skill_path": str(md),
-                "skill_dir": str(md.parent if md.name.upper() == "SKILL.MD" else root),
-                "skill_layout": "skill_md" if md.name.upper() == "SKILL.MD" else "flat_md",
-                "skill_source": source,
-            }
-            if meta.get("model"):
-                metadata["model"] = str(meta["model"]).strip()
-            for key in (
-                "command",
-                "slash_command",
-                "slash-command",
-                "commands",
-                "slash_commands",
-                "slash-commands",
-                "prompt_template",
-                "prompt-template",
-            ):
-                if key in meta:
-                    metadata[key] = meta[key]
-            if body:
-                # Stash the system-prompt body so future /v1/agents/{id}
-                # can return the full prompt without re-reading the file.
-                metadata["system_prompt"] = body
-
-            rows[sid] = AgentDef(
-                id=sid,
-                source="skill",
-                title=str(meta.get("title") or sid).strip(),
-                description=description,
-                system_prompt=body,
-                default_provider=str(meta.get("provider", "") or "").strip(),
-                default_model=str(meta.get("model", "") or "").strip(),
-                tools=tools,
-                tier=2,
-                specialization="skill",
-                keywords=keywords,
-                metadata=metadata,
-            )
-    return list(rows.values())
 
 
 def _load_command_files_from_disk(
@@ -226,18 +145,6 @@ def _load_command_files_from_disk(
     return list(rows.values())
 
 
-def _skill_search_roots(home: Path, cwd: Path) -> list[tuple[Path, str]]:
-    """Return skill roots in override order."""
-    return [
-        (home / ".claude" / "skills", "claude"),
-        (home / ".codex" / "skills", "codex"),
-        (home / ".agents" / "skills", "agents"),
-        (cwd / ".claude" / "skills", "claude"),
-        (cwd / ".codex" / "skills", "codex"),
-        (cwd / ".agents" / "skills", "agents"),
-    ]
-
-
 def _command_search_roots(home: Path, cwd: Path) -> list[tuple[Path, str]]:
     """Return command roots in precedence order; first matching id wins."""
     import os  # noqa: PLC0415
@@ -268,87 +175,6 @@ def _truthy_command_field(value: Any, default: bool) -> bool:
     if isinstance(value, str):
         return value.strip().lower() not in {"0", "false", "no", "off", "disabled"}
     return bool(value)
-
-
-def _skill_markdown_files(root: Path) -> list[Path]:
-    """Return candidate skill markdown files under a known skill root."""
-    candidates: dict[str, Path] = {}
-    for pattern in ("*.md", "**/SKILL.md"):
-        for path in root.glob(pattern):
-            if path.is_file():
-                candidates[str(path.resolve(strict=False)).lower()] = path
-    return sorted(candidates.values(), key=lambda path: str(path).lower())
-
-
-def _default_skill_id(path: Path) -> str:
-    """Return a stable skill id when frontmatter does not specify one."""
-    if path.name.upper() == "SKILL.MD":
-        return path.parent.name
-    return path.stem
-
-
-def _skill_list_field(meta: dict[str, Any], *keys: str) -> list[str]:
-    """Coerce comma-separated or frontmatter-list fields into strings."""
-    value: Any = None
-    for key in keys:
-        if key in meta:
-            value = meta[key]
-            break
-    if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    if isinstance(value, str):
-        return [item.strip() for item in value.split(",") if item.strip()]
-    return []
-
-
-def _fallback_skill_keywords(skill_id: str) -> list[str]:
-    """Return search keywords for minimal skill files without frontmatter tags."""
-    return [
-        part for part in skill_id.replace("-", " ").replace("_", " ").split() if part.strip()
-    ] or [skill_id]
-
-
-def _parse_skill_frontmatter(text: str) -> tuple[dict[str, Any], str]:
-    """Return (frontmatter_dict, body) for a SKILL.md.
-
-    Recognises the standard ``---``-delimited block at the head of the
-    file. Falls back to ({}, text) when no frontmatter is present.
-    Uses a tiny line-by-line parser instead of pulling PyYAML in as a
-    dependency: frontmatter shapes we care about are flat key:value plus
-    optional ``- item`` lists, well within hand-rolling distance.
-    """
-    lines = text.splitlines()
-    if not lines or lines[0].strip() != "---":
-        return {}, text
-    end = -1
-    for i in range(1, len(lines)):
-        if lines[i].strip() == "---":
-            end = i
-            break
-    if end < 0:
-        return {}, text
-    meta: dict[str, Any] = {}
-    cur_key: Optional[str] = None
-    for raw in lines[1:end]:
-        if raw.startswith("- "):
-            if cur_key and isinstance(meta.get(cur_key), list):
-                meta[cur_key].append(raw[2:].strip())
-            continue
-        if ":" not in raw:
-            continue
-        key, _, value = raw.partition(":")
-        key = key.strip()
-        value = value.strip()
-        if not key:
-            continue
-        if not value:
-            meta[key] = []
-            cur_key = key
-        else:
-            meta[key] = value.strip("\"'")
-            cur_key = None
-    body = "\n".join(lines[end + 1 :]).strip()
-    return meta, body
 
 
 def _builtin_tools() -> list[Tool]:

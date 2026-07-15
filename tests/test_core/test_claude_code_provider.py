@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 from types import ModuleType
 from typing import Any, AsyncIterator
@@ -13,13 +12,10 @@ import pytest
 
 from clio_agent.providers import claude_code_litellm
 from clio_agent.providers.claude_code_litellm import (
-    ClaudeCodeCLIUnavailableError,
     ClaudeCodeExecError,
     ClaudeCodeLLM,
     ClaudeCodeUnsupportedMultimodalError,
     _messages_to_claude_prompt,
-    _resolve_claude_binary,
-    _run_exec,
     ensure_registered,
 )
 from clio_agent.providers.claude_code_thinking_split import (
@@ -73,78 +69,8 @@ def test_messages_to_claude_prompt_rejects_image_parts() -> None:
         )
 
 
-def test_resolve_claude_binary_missing_raises_actionable(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("shutil.which", lambda _: None)
-
-    with pytest.raises(ClaudeCodeCLIUnavailableError, match="claude"):
-        _resolve_claude_binary()
-
-
-def test_run_exec_invokes_claude_with_tools_disabled() -> None:
-    payload = {
-        "is_error": False,
-        "result": "CLAUDE_OK",
-        "usage": {"input_tokens": 3, "output_tokens": 2},
-    }
-    completed = subprocess.CompletedProcess(
-        args=["claude"],
-        returncode=0,
-        stdout=json.dumps(payload),
-        stderr="",
-    )
-    with (
-        patch(
-            "clio_agent.providers.claude_code_litellm._resolve_claude_binary",
-            return_value="/usr/local/bin/claude",
-        ),
-        patch("clio_agent.providers.claude_code_litellm.subprocess.run") as run_mock,
-    ):
-        run_mock.return_value = completed
-        text, usage = _run_exec(prompt="hello", model="sonnet", cwd="/tmp")
-
-    assert text == "CLAUDE_OK"
-    assert usage == {"input_tokens": 3, "output_tokens": 2}
-    argv = run_mock.call_args.args[0]
-    assert argv[:7] == [
-        "/usr/local/bin/claude",
-        "-p",
-        "--output-format",
-        "json",
-        "--input-format",
-        "text",
-        "--model",
-    ]
-    assert "sonnet" in argv
-    assert "--session-id" in argv
-    assert argv[argv.index("--session-id") + 1]
-    assert "--tools" in argv
-    assert argv[argv.index("--tools") + 1] == ""
-    assert run_mock.call_args.kwargs["input"] == "hello"
-    assert run_mock.call_args.kwargs["encoding"] == "utf-8"
-    assert run_mock.call_args.kwargs["errors"] == "replace"
-    assert run_mock.call_args.kwargs["cwd"] == "/tmp"
-
-
-def test_run_exec_surfaces_cli_failure() -> None:
-    completed = subprocess.CompletedProcess(
-        args=["claude"],
-        returncode=1,
-        stdout="",
-        stderr="auth failed",
-    )
-    with (
-        patch(
-            "clio_agent.providers.claude_code_litellm._resolve_claude_binary",
-            return_value="/usr/local/bin/claude",
-        ),
-        patch("clio_agent.providers.claude_code_litellm.subprocess.run", return_value=completed),
-    ):
-        with pytest.raises(ClaudeCodeExecError, match="auth failed"):
-            _run_exec(prompt="hello", model="sonnet")
-
-
 def test_custom_llm_completion_strips_internal_model_marker() -> None:
-    with patch("clio_agent.providers.claude_code_litellm._run_exec") as run_mock:
+    with patch("clio_agent.providers.claude_code_litellm._run_sdk") as run_mock:
         run_mock.return_value = (
             "assistant text",
             {"input_tokens": 4, "cache_read_input_tokens": 6, "output_tokens": 3},
@@ -159,7 +85,7 @@ def test_custom_llm_completion_strips_internal_model_marker() -> None:
             encoding=None,
             api_key=None,
             logging_obj=None,
-            optional_params={"claude_code_transport": "exec"},
+            optional_params={},
         )
 
     run_mock.assert_called_once()
@@ -169,9 +95,11 @@ def test_custom_llm_completion_strips_internal_model_marker() -> None:
     assert resp.usage.completion_tokens == 3
 
 
-def test_custom_llm_rejects_unknown_transport() -> None:
-    # "exec" and "sdk" are both valid; only a genuinely unknown transport is rejected.
-    with pytest.raises(ClaudeCodeExecError, match="unknown claude_code transport"):
+@pytest.mark.parametrize("transport", ["exec", "bogus"])
+def test_custom_llm_rejects_removed_transport(transport: str) -> None:
+    # v0.8.0: "sdk" is the ONLY transport; the legacy "exec" batch path was
+    # deleted and must hard-error, not silently degrade.
+    with pytest.raises(ClaudeCodeExecError, match="removed in the v0.8.0 cleanup"):
         ClaudeCodeLLM().completion(
             model="claude_code/cc-sonnet",
             messages=[{"role": "user", "content": "hi"}],
@@ -182,7 +110,7 @@ def test_custom_llm_rejects_unknown_transport() -> None:
             encoding=None,
             api_key=None,
             logging_obj=None,
-            optional_params={"claude_code_transport": "bogus"},
+            optional_params={"claude_code_transport": transport},
         )
 
 
@@ -301,41 +229,9 @@ def test_custom_llm_streaming_fails_explicitly() -> None:
                 encoding=None,
                 api_key=None,
                 logging_obj=None,
-                optional_params={"claude_code_transport": "exec"},
+                optional_params={},
             )
         )
-
-
-async def test_custom_llm_astreaming_emits_single_terminal_chunk(monkeypatch) -> None:
-    # Claude Code (`claude -p`) has no token stream — astreaming must emit the
-    # completed exec result as ONE terminal chunk rather than raising, so litellm's
-    # streaming path completes instead of leaving the coroutine unawaited and the
-    # turn empty (regression #254/#715; behaviour set in fdeeeca).
-    monkeypatch.setattr(
-        claude_code_litellm,
-        "_run_exec",
-        lambda **_kwargs: ("hello from claude", {"input_tokens": 3, "output_tokens": 2}),
-    )
-    chunks = [
-        chunk
-        async for chunk in ClaudeCodeLLM().astreaming(
-            model="claude_code/cc-sonnet",
-            messages=[{"role": "user", "content": "hi"}],
-            api_base="",
-            custom_prompt_dict={},
-            model_response=MagicMock(),
-            print_verbose=None,
-            encoding=None,
-            api_key=None,
-            logging_obj=None,
-            optional_params={"claude_code_transport": "exec"},
-        )
-    ]
-
-    assert len(chunks) == 1
-    assert chunks[0]["text"] == "hello from claude"
-    assert chunks[0]["is_finished"] is True
-    assert chunks[0]["finish_reason"] == "stop"
 
 
 async def test_custom_llm_astreaming_sdk_emits_partial_chunks(monkeypatch) -> None:

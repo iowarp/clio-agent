@@ -57,7 +57,6 @@ def test_crash_leaves_step_open(monkeypatch: pytest.MonkeyPatch) -> None:
     """A hard crash mid-step (tool execution raising uncaught) still leaves the step's
     ``step_open`` breadcrumb on the canonical log, even though the V2 loop's
     post-execution working-set atoms never land — the fold's crash-recovery guarantee."""
-    monkeypatch.setattr(runtime, "_reactv2_enabled", lambda: True)
     session = "so_" + uuid.uuid4().hex[:12]
     arc = ARCMemory(store=_MemoryStore(), working_set_fold=True)
 

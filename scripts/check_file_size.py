@@ -44,24 +44,38 @@ DEFAULT_MAX_LINES = 800
 RATCHET_BASELINE: dict[str, int] = {
     # #900: +4 for ClioAgent.shutdown closing the MCP tool executors (heavy reaping
     # logic lives in the new owner module runtime/process_tree.py, not here).
-    "src/clio_agent/agent.py": 2693,
+    # #932: +26 to wire the one boot listing pass + preloaded/namespace-routed
+    # executors (the fleet logic itself lives in tools/execution.py+gateway.py).
+    # #933: +58 for the workspace-fleet state accessor, turn leases, reaper
+    # wiring, and reaped-executor rebuild (the reaper itself is the owner
+    # module tools/reaper.py).
+    # #933 review hardening: shutdown snapshots the workspace registry under
+    # the shared lock; _workspace_state publishes the lock last (+8).
+    "src/clio_agent/agent.py": 2798,
     "src/clio_agent/arc/memory.py": 1394,
     "src/clio_agent/arc/segments.py": 1117,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
-    "src/clio_agent/arc/storage.py": 883,
+    # owner ruling 2026-07-14: +3 to route explicit =local through the loud
+    # DEGRADED banner (owner module: arc/init_degradation.py).
+    "src/clio_agent/arc/storage.py": 886,
     # #737 S2 fold owner module. Crossed the 800 new-file cap restoring the FROZEN
     # arc.op reproducibility contract (§2 / GOAL.md DoD #4): the five working-set write
     # overrides now emit a per-op arc.op via _emit_op so arc.replay rebuilds the live
     # plane byte-identically (the S2 slice had dropped these, breaking replay). Footprint
     # minimized to concise docstrings; the per-op payload passing is irreducible. Ratchet
     # down with the #714/#767 decomposition.
-    "src/clio_agent/arc/working_set_fold.py": 924,
-    "src/clio_agent/gact/agent_blueprints.py": 1100,
-    "src/clio_agent/gact/agents/builders.py": 2209,
-    "src/clio_agent/gact/agents/resolution.py": 803,
+    "src/clio_agent/arc/working_set_fold.py": 919,
+    "src/clio_agent/gact/agent_blueprints.py": 1108,
+    # #919: +35 to WIRE progressive-disclosure skills into all three module
+    # classes (block + load_skill tool; logic lives in agents/skill_runtime.py)
+    # and to document the deleted stale extract alias that crashed every
+    # tool-user-agent build under ReActV2.
+    "src/clio_agent/gact/agents/builders.py": 2205,
     # #900: +14 for the lifespan child-reaper install + clean-shutdown teardown wiring
     # (both delegate to the owner module runtime/process_tree.py).
-    "src/clio_agent/gact/app.py": 2539,
+    # #918: +7 for the SkillNotDelegatableError exception handler (app.py owns
+    # the handler cluster; see _validation_exception_handler precedent).
+    "src/clio_agent/gact/app.py": 2545,
     "src/clio_agent/gact/routes/agents.py": 921,
     "src/clio_agent/gact/routes/blueprints.py": 859,
     "src/clio_agent/gact/routes/catalog.py": 880,
@@ -72,12 +86,19 @@ RATCHET_BASELINE: dict[str, int] = {
     # module providers/thinking.py, not here.
     "src/clio_agent/gact/routes/providers.py": 1320,
     "src/clio_agent/gact/routes/sessions.py": 1478,
-    "src/clio_agent/gact/runtime/globals.py": 923,
-    "src/clio_agent/gact/streaming.py": 1027,
+    # #933: +8 for the turn-scoped workspace-fleet lease in _tool_session_context.
+    # #933 review hardening: typed workspace_lease_unavailable degrade when a
+    # rooted turn has no leasable agent (+9).
+    "src/clio_agent/gact/runtime/globals.py": 940,
+    "src/clio_agent/gact/streaming.py": 1024,
     "src/clio_agent/gact/tool_observer.py": 930,
     "src/clio_agent/gact/transcript.py": 986,
-    "src/clio_agent/gact/turn.py": 814,
-    "src/clio_agent/gact/turn_delegation.py": 913,
+    # #918: +17 for the typed SkillNotDelegatableError ladder arm (a skill-bound
+    # turn fails typed, never as generic agent_error).
+    "src/clio_agent/gact/turn.py": 831,
+    # #918: +17 for the typed skill_not_delegatable failed-handoff row (parent
+    # re-routes; the turn never dies on a skill-id handoff).
+    "src/clio_agent/gact/turn_delegation.py": 930,
     "src/clio_agent/gact/turn_finalize.py": 935,
     "src/clio_agent/gact/types.py": 1143,
     # -120 (#891): the SDK-session machinery moved out to sibling owner modules —
@@ -85,10 +106,21 @@ RATCHET_BASELINE: dict[str, int] = {
     # streaming session/delta transport to providers/claude_code_sessions.py; this
     # file keeps only the LiteLLM handler + exec/stream plumbing. Ratchet back down
     # further with the #714/#767 decomposition.
-    "src/clio_agent/providers/claude_code_litellm.py": 1025,
+    "src/clio_agent/providers/claude_code_litellm.py": 848,
     # #900: +2 for wiring probe_process_tree into the doctor collect().
-    "src/clio_agent/runtime/status.py": 1185,
-    "src/clio_agent/tools/execution.py": 1187,
+    # owner ruling 2026-07-14: +3 for the DEGRADED-by-policy local-ARC doctor row.
+    "src/clio_agent/runtime/status.py": 1188,
+    # #932: +62 for preloaded tool definitions (start() without the list_tools
+    # fan-out) and namespace-direct call routing with lazy per-namespace
+    # clients — the executor IS the owner module for this.
+    # #933: +23 for the reaper instrumentation: inflight refcount + idle clock,
+    # plus the busy/idle_for accessors the reaper's drain guard reads (their
+    # state lives on the executor, so the accessors are owned here too).
+    # #934: +22 for the spawn-diet first-call hooks (the namespace backend
+    # spawns on its first FORWARDED CALL, not ctx-enter, so the learn /
+    # drop-plan-on-failure signals wrap the first routed call per namespace;
+    # incl. the timeout-vs-connect-health caveat comment).
+    "src/clio_agent/tools/execution.py": 1304,
     "src/clio_agent/ui/cli.py": 1156,
 }
 

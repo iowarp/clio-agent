@@ -295,9 +295,13 @@ def test_skill_frontmatter_command_is_listed(
     commands = c.get("/v1/commands").json()["commands"]
 
     command = next(row for row in commands if row["id"] == "/explain")
-    assert command["agent_id"] == "explain-skill"
+    # Since #918 skills are not agents: skill commands dispatch to `main`, and
+    # the declared template is COMPOSED with the skill body (the procedure the
+    # old skill-agent carried as its system prompt) — never instead of it.
+    assert command["agent_id"] == "main"
     assert command["agent_source"] == "skill"
-    assert command["prompt_template"] == "Explain {{input}}"
+    assert command["prompt_template"].startswith("Explain {{input}}")
+    assert "Use concise explanations." in command["prompt_template"]
 
 
 def test_workspace_command_file_is_listed_and_dispatches_to_builtin_agent(

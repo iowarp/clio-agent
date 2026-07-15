@@ -16,27 +16,26 @@ proves the fold reproduces the working set the old writer materialized.
 
 from __future__ import annotations
 
-import pytest
-
 from tests.equivalence.dual_run import WriterConfig, dual_run
 
 
-@pytest.mark.parametrize("reactv2", [False, True], ids=["classic", "v2"])
-def test_fold_matches_parallel_write_all_surfaces(reactv2: bool, tmp_path) -> None:
+def test_fold_matches_parallel_write_all_surfaces(tmp_path) -> None:
     """OFF (parallel write) vs ON (fold) agree on all four surfaces, including the
-    exotic tool output the happy-path captures never exercise (caveat a)."""
-    off = WriterConfig(label="fold_off", reactv2=reactv2, working_set_fold=False)
-    on = WriterConfig(label="fold_on", reactv2=reactv2, working_set_fold=True)
+    exotic tool output the happy-path captures never exercise (caveat a).
+
+    v0.8.0: the classic loop was deleted, so the dual run drives the V2 loop only
+    (the fold on/off axis is what this proof is about, not the loop)."""
+    off = WriterConfig(label="fold_off", working_set_fold=False)
+    on = WriterConfig(label="fold_on", working_set_fold=True)
     report = dual_run(off, on, tmp_path / "off", tmp_path / "on")
     assert report.all_empty, "fold diverged from the parallel write:\n" + report.pretty()
 
 
-@pytest.mark.parametrize("reactv2", [False, True], ids=["classic", "v2"])
-def test_fold_matches_parallel_write_crash_path(reactv2: bool, tmp_path) -> None:
+def test_fold_matches_parallel_write_crash_path(tmp_path) -> None:
     """OFF vs ON agree on the SSE + persistence error envelopes when a turn crashes
     mid-flight (caveat b)."""
-    off = WriterConfig(label="fold_off", reactv2=reactv2, working_set_fold=False)
-    on = WriterConfig(label="fold_on", reactv2=reactv2, working_set_fold=True)
+    off = WriterConfig(label="fold_off", working_set_fold=False)
+    on = WriterConfig(label="fold_on", working_set_fold=True)
     report = dual_run(off, on, tmp_path / "off", tmp_path / "on", crash=True)
     assert report.reports["sse"].empty, "SSE diverged on crash:\n" + report.reports["sse"].pretty()
     assert report.reports["persistence"].empty, (

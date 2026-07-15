@@ -106,8 +106,8 @@ def test_spec_from_config_drops_secret() -> None:
 
 def test_spec_from_config_transport() -> None:
     """Transport is projected from the provider-specific transport field."""
-    codex_cfg = LMProviderConfig(provider="codex", codex_transport="exec")
-    assert spec_from_config(codex_cfg).transport == "exec"
+    codex_cfg = LMProviderConfig(provider="codex", codex_transport="app_server")
+    assert spec_from_config(codex_cfg).transport == "app_server"
 
     cc_cfg = LMProviderConfig(provider="claude_code", claude_code_transport="sdk")
     assert spec_from_config(cc_cfg).transport == "sdk"

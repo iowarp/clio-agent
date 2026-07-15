@@ -1,0 +1,8 @@
+{
+  "_comment": "MCP fleet memory budget for the standard acceptance load (3 concurrent claude-haiku sessions, real CTE, data-semantics blueprint, settle >= 180s so the fleet reaper's 120s TTL elapses before FINAL). RATCHET: these numbers only go DOWN — record from >=3 runs, and the 5% runtime tolerance must cover HONEST variance including a COLD box: spawn-diet plans expire after 24h, so a release-cadence gate run boots with undieted declared chains at the listing pass — peak is recorded at the observed cold maximum, not the warm median. Never raise these to make a regression pass. Enforced live by scripts/mcp_mem_attribution.py --assert-budget (release-gating, see the release skill), and pinned at or under campaign_targets by tests/test_scripts/test_mcp_mem_budget.py so the budget can never regress above the #930 campaign line. Scope: the whole server process tree PLUS any pre-existing external clio-core daemon (sampled explicitly), INCLUDING provider-CLI processes (claude SDK CLI). History: 3.57 peak==final at campaign start (#929, 2026-07-14) -> after #931-#934 (2026-07-15): warm peaks 1.16/1.28/1.28 (median 1.28), cold-boot-listing peak observed 1.42 (recorded, cap 1.49), finals 0.72/0.74/0.72 (median 0.72 recorded — FINAL is post-reap where diet state is irrelevant).",
+  "load": "3 concurrent claude-haiku sessions, real CTE, data-semantics blueprint, --settle-s >= 180",
+  "peak_gb": 1.42,
+  "final_gb": 0.72,
+  "recorded": "2026-07-15",
+  "campaign_targets": {"peak_gb": 1.8, "final_gb": 1.3}
+}

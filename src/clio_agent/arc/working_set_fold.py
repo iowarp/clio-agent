@@ -63,7 +63,6 @@ from typing import Any, Callable
 
 import msgspec
 
-from clio_agent import conf
 from clio_agent.arc.live import EVENTS_SCOPE, is_events_scope
 from clio_agent.arc.schema import (
     WORKING_SET_KINDS,
@@ -172,12 +171,11 @@ def make_segment_store(
 ) -> SegmentStore:
     """Construct the live-plane segment store, folding or not per the S2 flag.
 
-    The working-set fold is a **session-scoped** capability (design §4.4b): the flag
-    is resolved once here at ARC construction and pinned for the store's life, so a
-    session is either wholly old-regime or wholly new-regime — never a mid-session
-    flip. Default ON since the S2 proofs went green (byte-equality dual-run,
-    reload==live on the real corpus); ``CLIO_ARC_WORKING_SET_FOLD=0`` opts out.
-    Callers (and the dual-run harness) pass ``working_set_fold`` to force a regime.
+    The fold is THE production working-set semantics (the S2 proofs went green —
+    byte-equality dual-run, reload==live on the real corpus — and the v0.8.0
+    cleanup deleted the ``CLIO_ARC_WORKING_SET_FOLD`` opt-out). The
+    ``working_set_fold=False`` parameter remains ONLY for the dual-run
+    equivalence harness, which proves the fold against the plain store.
 
     Args:
         store: The persistence backend.
@@ -190,16 +188,13 @@ def make_segment_store(
         :class:`SegmentStore`.
     """
     predicate = search_indexed or _default_search_indexed
-    if working_set_fold is None:
-        working_set_fold = conf.resolve(
-            "arc.working_set_fold",
-            env="CLIO_ARC_WORKING_SET_FOLD",
-            default=True,
-            cast=conf.as_bool,
-        )
-    if working_set_fold:
-        return FoldingSegmentStore(store, search_indexed=predicate)
-    return SegmentStore(store, search_indexed=predicate)
+    if working_set_fold is False:
+        # Explicit legacy request from the dual-run equivalence HARNESS only —
+        # the config flag was deleted in the v0.8.0 cleanup; production always
+        # folds. (The harness compares fold output against the plain store to
+        # prove byte-equality of the fold itself.)
+        return SegmentStore(store, search_indexed=predicate)
+    return FoldingSegmentStore(store, search_indexed=predicate)
 
 
 class FoldingSegmentStore(SegmentStore):

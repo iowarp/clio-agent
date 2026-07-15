@@ -1,22 +1,23 @@
-"""LiteLLM ``CustomLLM`` provider for the Claude Code CLI.
+"""LiteLLM ``CustomLLM`` provider for Claude Code.
 
-Routes ``dspy.LM(model="claude_code/<model>", ...)`` calls through
-``claude -p`` so CLIO can use the user's Claude Code subscription auth
-without bypassing the DSPy/LiteLLM provider contract.
+Routes ``dspy.LM(model="claude_code/<model>", ...)`` calls through the
+Claude Agent SDK (persistent pooled CLI session) so CLIO can use the user's
+Claude Code subscription auth without bypassing the DSPy/LiteLLM provider
+contract. One transport since the v0.8.0 cleanup: the legacy ``exec`` batch
+transport (one ``claude -p`` subprocess per call, no token stream) was
+deleted — #891 evidence showed the SDK path is strictly better (pooled
+session reuse, streaming TTFT, prompt-cache continuity).
 
 The Claude Code process is used as a bare model transport. Built-in tools
-are disabled with ``--tools ""``; CLIO's planner and MCP/tool gateway remain
-the only tool execution layer.
+are disabled; CLIO's planner and MCP/tool gateway remain the only tool
+execution layer.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
-import shutil
-import subprocess
 import threading
 import time
 import uuid
@@ -28,7 +29,6 @@ from clio_agent.providers._cli_provider import (
     register_custom_provider,
 )
 from clio_agent.providers.claude_code_audit import (
-    active_gact_ids,
     emit_call_started,
     emit_call_usage,
 )
@@ -68,9 +68,8 @@ except ImportError as e:  # pragma: no cover - litellm is a hard dep
 
 
 CLAUDE_BINARY_NAME = "claude"
-# Default to the Claude Agent SDK transport (persistent CLI session, no per-call
-# spawn, cleaner prompt isolation). "exec" (one `claude -p` per call) is the explicit
-# opt-out via claude_code_transport / CLIO_CLAUDE_CODE_TRANSPORT.
+# The Claude Agent SDK transport (persistent pooled CLI session) is the only
+# transport since v0.8.0; "exec" (one `claude -p` per call) was deleted.
 DEFAULT_TRANSPORT = "sdk"
 
 
@@ -120,123 +119,6 @@ def _messages_to_claude_prompt(messages: list[dict[str, Any]]) -> str:
         unsupported_multimodal_exc=ClaudeCodeUnsupportedMultimodalError,
         transport_label="Claude Code",
     )
-
-
-def _resolve_claude_binary() -> str:
-    """Return an executable Claude Code binary path or raise."""
-    if os.name == "nt":
-        cmd_path = shutil.which(f"{CLAUDE_BINARY_NAME}.cmd")
-        if cmd_path:
-            return cmd_path
-    path = shutil.which(CLAUDE_BINARY_NAME)
-    if not path:
-        raise ClaudeCodeCLIUnavailableError(
-            "`claude` not found on PATH. Install Claude Code and run "
-            "`claude login` once per machine."
-        )
-    return path
-
-
-def _run_exec(
-    *,
-    prompt: str,
-    model: str,
-    timeout: float | None = 180.0,
-    cwd: str | None = None,
-    extra_args: list[str] | None = None,
-    call_index: int = 0,
-) -> tuple[str, dict[str, Any]]:
-    """Run ``claude -p`` and return ``(text, usage)``."""
-    binary = _resolve_claude_binary()
-    argv = [
-        binary,
-        "-p",
-        "--output-format",
-        "json",
-        "--input-format",
-        "text",
-        "--model",
-        model,
-        "--session-id",
-        str(uuid.uuid4()),
-        "--tools",
-        "",
-    ]
-    if extra_args:
-        argv.extend(extra_args)
-
-    try:
-        proc = subprocess.run(
-            argv,
-            input=prompt,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            cwd=cwd,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as e:
-        raise ClaudeCodeExecError(f"claude -p timed out after {timeout}s (model={model})") from e
-
-    output = (proc.stdout or "").strip()
-    if proc.returncode != 0:
-        raise ClaudeCodeExecError(
-            f"claude -p returned {proc.returncode} for model={model}: "
-            f"{(proc.stderr or output).strip()[:500]}"
-        )
-    try:
-        payload = json.loads(output)
-    except json.JSONDecodeError as e:
-        raise ClaudeCodeExecError(
-            f"claude -p returned malformed JSON for model={model}: {output[:500]}"
-        ) from e
-
-    if payload.get("is_error"):
-        raise ClaudeCodeExecError(
-            f"claude -p returned an error for model={model}: "
-            f"{payload.get('api_error_status') or payload.get('subtype') or payload}"
-        )
-    text = str(payload.get("result") or "").strip()
-    if not text:
-        raise ClaudeCodeExecError(f"claude -p returned empty content (model={model})")
-    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
-    session_id, turn_id, trace_id = active_gact_ids()
-    stream_audit(
-        "provider.raw_event",
-        provider="claude_code_exec",
-        session_id=session_id,
-        turn_id=turn_id,
-        trace_id=trace_id,
-        call_index=call_index,
-        event_index=1,
-        raw_event_type="claude_exec_result",
-        source_channel="content",
-        model=f"claude_code/{model}",
-        transport="exec",
-        text_len=len(text),
-        chunk_len=len(text),
-        usage_keys=sorted(str(key) for key in usage),
-        head=text[:120],
-    )
-    stream_audit(
-        "provider.batch_response",
-        provider="claude_code_exec",
-        session_id=session_id,
-        turn_id=turn_id,
-        trace_id=trace_id,
-        call_index=call_index,
-        source_channel="content",
-        model=f"claude_code/{model}",
-        transport="exec",
-        content_len=len(text),
-        reasoning_len=0,
-        chunk_len=len(text),
-        finish_reason="stop",
-        head=text[:120],
-    )
-    return text, usage
 
 
 # The SDK transport machinery (the blocking-path pool in ``claude_code_sdk_pool`` and
@@ -312,7 +194,9 @@ async def _astream_sdk(
             "(install the 'claude-code' extra)."
         ) from exc
 
-    call_id = (send.call_id if send is not None else "") or uuid.uuid4().hex  # #901: join stateful↔TTFT on ONE id
+    call_id = (
+        send.call_id if send is not None else ""
+    ) or uuid.uuid4().hex  # #901: join stateful↔TTFT on ONE id
     emit_call_started(  # BEFORE connect: SDK spawn cold-start counts in the call, not the gap (#891)
         call_id=call_id,
         call_index=call_index,
@@ -668,9 +552,11 @@ class ClaudeCodeLLM(CustomLLM):
         # LMProviderConfig, #818); no process-global env fallback so concurrent
         # experts each get their own transport, not a shared ambient one.
         transport = params.get("claude_code_transport") or DEFAULT_TRANSPORT
-        if transport not in ("exec", "sdk"):
+        if transport != "sdk":
             raise ClaudeCodeExecError(
-                f"unknown claude_code transport {transport!r} (expected 'exec' or 'sdk')"
+                f"claude_code transport {transport!r} was removed in the v0.8.0 cleanup — "
+                "sdk (pooled Claude Agent SDK session) is the only transport; unset "
+                "CLIO_CLAUDE_CODE_TRANSPORT / lm.claude_code_transport"
             )
         timeout_s = float(timeout) if timeout else 180.0
         cwd = params.get("claude_code_cwd", os.getcwd())
@@ -722,22 +608,13 @@ class ClaudeCodeLLM(CustomLLM):
             prompt=prompt,
         )
         started = time.monotonic()
-        if transport == "sdk":
-            text, usage = _run_sdk(
-                prompt=prompt,
-                model=clean_model,
-                timeout=timeout_s,
-                cwd=cwd,
-                thinking=thinking,
-            )
-        else:
-            text, usage = _run_exec(
-                prompt=prompt,
-                model=clean_model,
-                timeout=timeout_s,
-                cwd=cwd,
-                call_index=call_index,
-            )
+        text, usage = _run_sdk(
+            prompt=prompt,
+            model=clean_model,
+            timeout=timeout_s,
+            cwd=cwd,
+            thinking=thinking,
+        )
         emit_call_usage(
             call_id=call_id,
             call_index=call_index,
@@ -854,20 +731,16 @@ class ClaudeCodeLLM(CustomLLM):
         timeout: Any = None,
         client: Any = None,
     ) -> AsyncIterator[Any]:
-        # Claude Code's ``claude -p`` has no token stream — it returns the full
-        # response at once. dspy/litellm drive turns through the streaming path,
-        # so emit the completed exec result as a single terminal chunk instead of
-        # refusing (refusing left this coroutine unawaited and the turn empty).
-        from litellm.types.utils import GenericStreamingChunk  # noqa: PLC0415
-
         call_index = _next_call_index()
         params = optional_params or {}
         # Transport travels per-LM in optional_params (carried on the resolved
         # LMProviderConfig, #818); no process-global env fallback.
         transport = params.get("claude_code_transport") or DEFAULT_TRANSPORT
-        if transport not in ("exec", "sdk"):
+        if transport != "sdk":
             raise ClaudeCodeExecError(
-                f"unknown claude_code transport {transport!r} (expected 'exec' or 'sdk')"
+                f"claude_code transport {transport!r} was removed in the v0.8.0 cleanup — "
+                "sdk (pooled Claude Agent SDK session) is the only transport; unset "
+                "CLIO_CLAUDE_CODE_TRANSPORT / lm.claude_code_transport"
             )
         clean_model = model.removeprefix("claude_code/").removeprefix("cc-")
         prompt = _messages_to_claude_prompt(messages)
@@ -894,7 +767,7 @@ class ClaudeCodeLLM(CustomLLM):
                         "allowed_tools": [],
                         "max_turns": 1,
                         "setting_sources": [],
-                        "include_partial_messages": transport == "sdk",
+                        "include_partial_messages": True,
                     },
                     "messages": messages,
                     "prompt": prompt,
@@ -915,93 +788,43 @@ class ClaudeCodeLLM(CustomLLM):
         )
         started = time.monotonic()
 
-        if transport == "sdk":
-            chunk_count = 0
-            text_chars = 0
-            # Full-vs-stateful-delta send plan (#901). Inert (fresh id, full prompt)
-            # unless the stateful flag is ON and a ReActV2 scope token is active; the
-            # classic path resolves to a byte-identical full send.
-            send = resolve_stateful_send(
-                messages=list(messages or []),
-                full_prompt=prompt,
+        chunk_count = 0
+        text_chars = 0
+        # Full-vs-stateful-delta send plan (#901). Inert (fresh id, full prompt)
+        # unless a ReActV2 scope token is active.
+        send = resolve_stateful_send(
+            messages=list(messages or []),
+            full_prompt=prompt,
+            model=clean_model,
+            cwd=cwd,
+            thinking=thinking,
+            serialize=_messages_to_claude_prompt,
+            call_index=call_index,
+        )
+        try:
+            async for chunk in _astream_sdk(
+                prompt=prompt,
                 model=clean_model,
+                timeout=timeout_s,
                 cwd=cwd,
-                thinking=thinking,
-                serialize=_messages_to_claude_prompt,
                 call_index=call_index,
+                thinking=thinking,
+                send=send,
+            ):
+                chunk_count += 1
+                text_chars += len(str(chunk.get("text") or ""))
+                yield chunk
+        finally:
+            trace.HF_ON and trace.hot(
+                "CLAUDE-CODE-CALL",
+                "astreaming_end call=%d model=%s transport=%s elapsed_ms=%.1f chunks=%d text_chars=%d",
+                call_index,
+                clean_model,
+                transport,
+                (time.monotonic() - started) * 1000.0,
+                chunk_count,
+                text_chars,
             )
-            try:
-                async for chunk in _astream_sdk(
-                    prompt=prompt,
-                    model=clean_model,
-                    timeout=timeout_s,
-                    cwd=cwd,
-                    call_index=call_index,
-                    thinking=thinking,
-                    send=send,
-                ):
-                    chunk_count += 1
-                    text_chars += len(str(chunk.get("text") or ""))
-                    yield chunk
-            finally:
-                trace.HF_ON and trace.hot(
-                    "CLAUDE-CODE-CALL",
-                    "astreaming_end call=%d model=%s transport=%s elapsed_ms=%.1f chunks=%d text_chars=%d",
-                    call_index,
-                    clean_model,
-                    transport,
-                    (time.monotonic() - started) * 1000.0,
-                    chunk_count,
-                    text_chars,
-                )
-            return
-
-        response = await asyncio.to_thread(
-            self.completion,
-            model=model,
-            messages=messages,
-            api_base=api_base,
-            custom_prompt_dict=custom_prompt_dict,
-            model_response=model_response,
-            print_verbose=print_verbose,
-            encoding=encoding,
-            api_key=api_key,
-            logging_obj=logging_obj,
-            optional_params=optional_params,
-            acompletion=acompletion,
-            litellm_params=litellm_params,
-            logger_fn=logger_fn,
-            headers=headers,
-            timeout=timeout,
-            client=client,
-        )
-        choice = response.choices[0]
-        usage = getattr(response, "usage", None)
-        # A completion (non-stream) choice carries ``.message``; guard defensively
-        # since the union also admits StreamingChoices (``.delta``) in the stubs.
-        message = getattr(choice, "message", None)
-        final_chunk: GenericStreamingChunk = {
-            "text": getattr(message, "content", "") or "",
-            "is_finished": True,
-            "finish_reason": choice.finish_reason or "stop",
-            "index": 0,
-            "tool_use": None,
-            "usage": {
-                "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
-                "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
-                "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
-            },
-        }
-        trace.HF_ON and trace.hot(
-            "CLAUDE-CODE-CALL",
-            "astreaming_end call=%d model=%s transport=%s elapsed_ms=%.1f chunks=1 text_chars=%d",
-            call_index,
-            clean_model,
-            transport,
-            (time.monotonic() - started) * 1000.0,
-            len(str(final_chunk.get("text") or "")),
-        )
-        yield final_chunk
 
 
 # The once-per-process LiteLLM registration guard is the shared CLI-provider

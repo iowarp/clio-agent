@@ -1,8 +1,8 @@
-"""S1 pins for the dormant clio ``ReActV2`` subclass + kill-switch (#901 S1).
+"""S1 pins for clio's ``ReActV2`` subclass — the ONLY expert loop since v0.8.0.
 
-These tests exercise the *minimal viable* V2 subclass
-(:mod:`clio_agent.gact.agents.reactv2`) that ships OFF by default behind the
-``_reactv2_enabled`` kill-switch. They pin four properties the design calls out:
+These tests exercise the V2 subclass (:mod:`clio_agent.gact.agents.reactv2`).
+The classic ``_RetainingReAct`` and the ``CLIO_REACTV2`` kill-switch were
+deleted in the v0.8.0 cleanup. They pin four properties the design calls out:
 
 1. **Append-only composition** (the whole point, design §3): across two scripted
    react steps the structured ``history.messages`` grows append-only (each turn's
@@ -16,8 +16,8 @@ These tests exercise the *minimal viable* V2 subclass
 3. **workflow_state on submit args** (design fact 4): a typed ``workflow_state``
    output field on the user signature rides the internal ``submit`` tool's
    ``arg_types`` unchanged (the load-bearing typed extract survives, relocated).
-4. **Kill-switch**: default OFF selects the classic ``_RetainingReAct`` (byte-for-
-   byte the production class); ON selects ``_RetainingReActV2``.
+4. **Single loop (v0.8.0)**: ``_retaining_react_cls`` unconditionally returns
+   ``_RetainingReActV2``, and the deleted ``CLIO_REACTV2`` env is inert.
 """
 
 from __future__ import annotations
@@ -195,37 +195,27 @@ def test_submit_returns_typed_workflow_state_value() -> None:
     assert pred.workflow_state == {"status": "complete"}
 
 
-# --- 4. kill-switch ------------------------------------------------------------
+# --- 4. single loop (v0.8.0) ----------------------------------------------------
 
 
-def test_kill_switch_off_selects_classic_class(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Default OFF: the classic ``_RetainingReAct`` (a ``dspy.ReAct`` subclass) is the
-    production class, unchanged by S1."""
-    monkeypatch.setattr(runtime, "_reactv2_enabled", lambda: False)
-    cls = runtime._retaining_react_cls()
-    assert cls.__name__ == "_RetainingReAct"
-    assert issubclass(cls, dspy.ReAct)
-    assert not issubclass(cls, dspy.ReActV2)
-
-
-def test_kill_switch_on_selects_v2_class(monkeypatch: pytest.MonkeyPatch) -> None:
-    """ON: clio's ``_RetainingReActV2`` (a ``dspy.ReActV2`` subclass) is selected."""
-    monkeypatch.setattr(runtime, "_reactv2_enabled", lambda: True)
+def test_production_class_is_v2() -> None:
+    """``_retaining_react_cls`` unconditionally selects ``_RetainingReActV2`` —
+    the classic ``_RetainingReAct`` was deleted in the v0.8.0 cleanup."""
     cls = runtime._retaining_react_cls()
     assert cls is _RetainingReActV2
     assert issubclass(cls, dspy.ReActV2)
+    assert not hasattr(runtime, "_reactv2_enabled")
 
 
-def test_kill_switch_defaults_on_via_config(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The switch resolves ON by default (#901 flip, 2026-07-12) and OFF via
-    ``CLIO_REACTV2=0`` — proving the config wiring, not just the monkeypatched
-    branch. The classic path stays reachable as the explicit fallback."""
+def test_deleted_kill_switch_env_is_inert(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SABOTAGE twin: CLIO_REACTV2=0 (the deleted #901 kill-switch) must not
+    resurrect the classic loop — V2 is selected regardless."""
     from clio_agent import conf
-
-    monkeypatch.delenv("CLIO_REACTV2", raising=False)
-    conf.reload()
-    assert runtime._reactv2_enabled() is True
 
     monkeypatch.setenv("CLIO_REACTV2", "0")
     conf.reload()
-    assert runtime._reactv2_enabled() is False
+    try:
+        assert runtime._retaining_react_cls() is _RetainingReActV2
+    finally:
+        monkeypatch.delenv("CLIO_REACTV2", raising=False)
+        conf.reload()

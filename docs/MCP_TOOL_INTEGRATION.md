@@ -36,6 +36,33 @@ def list_capabilities() -> dict:
     ...
 ```
 
+## Fleet Lifecycle (memory-bounded, #930)
+
+Mounting a server is free: a mount is a lazy proxy, and a namespace's stdio
+subprocess spawns only on the **first call** to one of its tools (boot runs a
+single transient listing pass to derive the tool catalog, then reaps it).
+From there the fleet is managed end to end:
+
+- **Per-workspace fleets, reclaimed.** Each workspace root gets its own
+  executor (cwd pinning + `CLIO_KIT_ARTIFACTS` isolation are semantics, not
+  overhead). A fleet idle past `CLIO_MCP_WORKSPACE_TTL_S` (default 120s) is
+  closed by a background reaper — drain-aware (never mid-call, never during a
+  live turn's lease) with a typed `workspace_fleet_reaped` trace reason —
+  and `CLIO_MCP_WORKSPACE_MAX_RESIDENT` (default 2) caps residency LRU-style.
+  A reaped fleet rebuilds lazily on the next tool call.
+- **Spawn diet.** For `clio-kit mcp-server <name>` launchers, the first spawn
+  runs the declared command and clio observes the live chain's leaf; later
+  spawns run the server's own venv interpreter directly, dropping the
+  resident wrapper chain (~90 MB/namespace). Plans are strictly validated and
+  expire after `CLIO_MCP_SPAWN_DIET_TTL_H` (default 24h) so upstream server
+  updates always reach users; every apply/fallback/drop is a typed
+  `mcp_spawn_diet*` trace event. Kill switch: `CLIO_MCP_SPAWN_DIET=0`.
+- **Budget-gated.** The 3-session acceptance load must hold the recorded
+  budget in `scripts/mcp_mem_budget.json` (`scripts/mcp_mem_attribution.py
+  --assert-budget`, wired into the release checklist); a CI test pins the
+  recorded values at or under the campaign targets (1.8 GB peak / 1.3 GB
+  post-idle).
+
 ---
 
 ## DSPy Tool Bridge

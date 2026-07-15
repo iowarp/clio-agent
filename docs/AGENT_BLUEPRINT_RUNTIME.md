@@ -127,7 +127,11 @@ Required validation:
 - every non-root Expert has a valid `parent_id`;
 - hierarchy cycles are rejected;
 - duplicate Expert ids are rejected within the active Agent;
-- prompt, tool, skill, command, model, and provider references are validated;
+- prompt, tool, command, model, and provider references are validated; skill
+  references are RESOLUTION-checked (pack → workspace → global) and the typed
+  per-id outcome (`resolved`/`missing`/`ambiguous`/`unreadable`) rides the
+  Expert row as the `skill_resolution` diagnostic — a missing skill never
+  silently no-ops and never disables the Expert;
 - invalid Experts stay visible as disabled rows with diagnostics.
 
 ## Agent Instantiation
@@ -222,7 +226,35 @@ Blueprint Experts may reference:
 - generated child-Expert tools;
 - installed MCP tools;
 - agent-invocable slash commands;
-- skills.
+- skills (see below).
+
+## Skills (progressive disclosure)
+
+A skill is a directory with a `SKILL.md` (Agent Skills open-standard shape:
+YAML frontmatter `name`/`description`, markdown body = the procedure), shipped
+pack-local under `<blueprint root>/skills/<id>/SKILL.md` or discovered from
+workspace/global roots (`.claude|.codex|.agents/skills/`). An Expert declares
+skills in frontmatter (`skills: [<id>, ...]`); resolution precedence is
+pack → workspace → global.
+
+At runtime (#916):
+
+- a **react** Expert gets a compiled metadata block (names + descriptions,
+  never bodies) plus the auto-attached `load_skill(skill_id, file="")` tool —
+  the model loads the full procedure on demand (fresh disk read; `file=` reads
+  a bundled file, path-locked to the skill directory);
+- a tool-less **predict / chain_of_thought** Expert gets the resolved skill
+  bodies compiled into its prompt (it has no tool loop to load with);
+- the ROOT Expert of the default registry Blueprint auto-declares
+  workspace-scope skills, so user-authored skills work in plain chat;
+- every load emits a `skill.loaded` semantic event (id, scope, path, checksum,
+  size, agent) on the turn; `resolved_skills` (runtime truth) and
+  `skill_resolution` (row-load snapshot) ride the turn provenance/evidence.
+
+Skills are NOT agents: a skill id used as an agent/delegation target is a
+typed `skill_not_delegatable` error. A skill whose frontmatter declares a
+slash command surfaces as that command (dispatching to `main`, with the
+declared template composed with the skill body).
 
 Blueprints may package MCP descriptors under `tools/` as Markdown/frontmatter.
 Installing a Blueprint records descriptors but does not enable them

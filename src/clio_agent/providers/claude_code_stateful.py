@@ -27,8 +27,8 @@ subprocess (``--input-format stream-json``); continuing that conversation with
 another :meth:`ClaudeSDKClient.query` under the SAME ``session_id`` sends ONLY the
 new content. The delta = the tail of newly-appended messages.
 
-**Scope / kill-switch.** This whole path is inert unless BOTH the ``stateful_delta``
-flag is ON (:func:`stateful_delta_enabled`, default ON) AND a per-forward stateful
+**Scope.** This whole path is inert unless
+a per-forward stateful
 scope token is active (:func:`active_stateful_scope`, set ONLY by the ReActV2 loop's
 ``forward``). The classic ReAct path never sets that token, so it is byte-for-byte
 unchanged: it resolves to a full send under a fresh ``session_id`` exactly as before
@@ -84,26 +84,16 @@ _DELTA_BENEATH_STATIC_TAIL = _delta_beneath_static_tail
 # Kill-switch + bound config (``claude_code``-specific).
 # --------------------------------------------------------------------------- #
 def stateful_delta_enabled() -> bool:
-    """Whether the stateful session-delta transport is enabled (default ON).
+    """The stateful session-delta transport is the ONLY send semantics.
 
-    Resolved via ``providers.claude_code.stateful_delta`` /
-    ``CLIO_CLAUDE_CODE_STATEFUL_DELTA`` (file → env → default True; set ``=0``
-    to opt out). Default flipped ON on live acceptance evidence (#893): delta
-    TTFT 1.79s vs 7+s cold, 76.7% cached-input, typed reset catalog covering
-    every fallback-to-full-send path. Even when ON it only engages on the
-    ReActV2 loop (an active :func:`active_stateful_scope`); the classic path
-    stays byte-identical full sends.
+    The ``CLIO_CLAUDE_CODE_STATEFUL_DELTA`` kill-switch was deleted in the
+    v0.8.0 cleanup (live acceptance evidence #893: delta TTFT 1.79s vs 7+s
+    cold, 76.7% cached-input, typed reset catalog for every
+    fallback-to-full-send). Structural gating remains: the path engages only
+    under an active per-forward scope (:func:`active_stateful_scope`, set by
+    the loop); everything else resolves to a plain full send.
     """
-    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
-
-    return bool(
-        conf.resolve(
-            "providers.claude_code.stateful_delta",
-            env="CLIO_CLAUDE_CODE_STATEFUL_DELTA",
-            default=True,
-            cast=conf.as_bool,
-        )
-    )
+    return True
 
 
 def _registry_capacity() -> int:

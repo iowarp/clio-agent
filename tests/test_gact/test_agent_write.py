@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from clio_agent.gact.app import _load_skills_from_disk, build_app
+from clio_agent.gact.app import build_app
 
 
 @pytest.fixture()
@@ -186,37 +186,35 @@ def test_builtin_agents_surface_prompts(client: TestClient) -> None:
     assert "CLIO Data Expert" in data["system_prompt"]
 
 
-def test_skill_agents_surface_prompt_and_model(monkeypatch, tmp_path: Path) -> None:
-    skill_dir = tmp_path / ".claude" / "skills"
+def test_skill_files_do_not_materialize_agents(monkeypatch, tmp_path: Path) -> None:
+    """Sabotage twin (#918): a SKILL.md on disk must not appear as an agent,
+    and using its id as an agent id is a typed 400, not a silent not-found."""
+
+    skill_dir = tmp_path / ".claude" / "skills" / "tui-test"
     skill_dir.mkdir(parents=True)
-    (skill_dir / "semantic-agent.md").write_text(
-        "\n".join(
-            [
-                "---",
-                "name: semantic-agent",
-                "description: Uses a custom external prompt",
-                "provider: lm_studio",
-                "model: qwopus3.5-9b-v3",
-                "allowed-tools: fs_read_file, parquet_analyze_schema",
-                "---",
-                "Act as the semantic agent.",
-            ]
-        ),
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: tui-test\ndescription: Tests TUI behavior\n---\nBody.",
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
+    local = TestClient(build_app(sessions_path=tmp_path / "s.json"))
 
-    rows = _load_skills_from_disk()
-    agent = next(a for a in rows if a.id == "semantic-agent")
+    listed = {a["id"] for a in local.get("/v1/agents").json()["agents"]}
+    assert "tui-test" not in listed
 
-    assert agent.system_prompt == "Act as the semantic agent."
-    assert agent.default_provider == "lm_studio"
-    assert agent.default_model == "qwopus3.5-9b-v3"
-    assert agent.tools == ["fs_read_file", "parquet_analyze_schema"]
-    assert agent.skills == []
+    resp = local.get("/v1/commands", params={"planner": "true", "agent_id": "tui-test"})
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["error"]["error"] == "skill_not_delegatable"
+    assert "skills:" in body["error"]["message"]
+    assert body["error"]["details"]["skill_id"] == "tui-test"
 
 
-def test_directory_skill_layouts_surface_as_skill_agents(monkeypatch, tmp_path: Path) -> None:
+def test_skill_frontmatter_parses_via_catalog(monkeypatch, tmp_path: Path) -> None:
+    """The parsing surface the old skill-agents carried now lives on SkillRef."""
+
+    from clio_agent.gact.skills import SkillCatalog, _skill_list_field
+
     codex_skill = tmp_path / ".codex" / "skills" / "tui-test"
     codex_skill.mkdir(parents=True)
     (codex_skill / "SKILL.md").write_text(
@@ -235,51 +233,20 @@ def test_directory_skill_layouts_surface_as_skill_agents(monkeypatch, tmp_path: 
         ),
         encoding="utf-8",
     )
-    nested_agent_skill = tmp_path / ".agents" / "skills" / "source-command" / "wtfp-help"
-    nested_agent_skill.mkdir(parents=True)
-    (nested_agent_skill / "SKILL.md").write_text(
-        "Help users with source-command workflows.",
-        encoding="utf-8",
+    nested = tmp_path / ".agents" / "skills" / "source-command" / "wtfp-help"
+    nested.mkdir(parents=True)
+    (nested / "SKILL.md").write_text(
+        "Help users with source-command workflows.", encoding="utf-8"
     )
-    monkeypatch.chdir(tmp_path)
 
-    rows = _load_skills_from_disk()
-    codex_agent = next(a for a in rows if a.id == "tui-test")
-    nested_agent = next(a for a in rows if a.id == "wtfp-help")
+    refs = {r.id: r for r in SkillCatalog(home=tmp_path / "no-home", cwd=tmp_path).discover()}
+    codex_ref = refs["tui-test"]
+    assert codex_ref.description == "Tests Bubbletea UI behavior"
+    assert _skill_list_field(codex_ref.meta, "allowed-tools") == ["fs_read_file", "shell_bash"]
+    assert _skill_list_field(codex_ref.meta, "keywords") == ["tui", "testing"]
+    assert codex_ref.layout == "skill_md"
+    assert codex_ref.source == "codex"
+    assert codex_ref.body == "Use deterministic TUI testing workflows."
+    assert refs["wtfp-help"].description == "Help users with source-command workflows."
+    assert refs["wtfp-help"].source == "agents"
 
-    assert codex_agent.source == "skill"
-    assert codex_agent.description == "Tests Bubbletea UI behavior"
-    assert codex_agent.tools == ["fs_read_file", "shell_bash"]
-    assert codex_agent.keywords == ["tui", "testing"]
-    assert codex_agent.metadata["skill_layout"] == "skill_md"
-    assert codex_agent.metadata["skill_source"] == "codex"
-    assert codex_agent.metadata["system_prompt"] == "Use deterministic TUI testing workflows."
-    assert nested_agent.description == "Help users with source-command workflows."
-    assert nested_agent.metadata["skill_source"] == "agents"
-
-
-def test_project_skill_overrides_global_skill(monkeypatch, tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    project = tmp_path / "project"
-    global_skill = home / ".codex" / "skills" / "shared"
-    project_skill = project / ".codex" / "skills" / "shared"
-    global_skill.mkdir(parents=True)
-    project_skill.mkdir(parents=True)
-    (global_skill / "SKILL.md").write_text(
-        "---\nname: shared\n---\nGlobal instructions.",
-        encoding="utf-8",
-    )
-    (project_skill / "SKILL.md").write_text(
-        "---\nname: shared\n---\nProject instructions.",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(Path, "home", lambda: home)
-    monkeypatch.chdir(project)
-
-    rows = _load_skills_from_disk()
-    agent = next(a for a in rows if a.id == "shared")
-
-    assert agent.system_prompt == "Project instructions."
-    assert agent.metadata["skill_path"].endswith(
-        r".codex\skills\shared\SKILL.md"
-    ) or agent.metadata["skill_path"].endswith(".codex/skills/shared/SKILL.md")

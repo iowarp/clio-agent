@@ -21,6 +21,7 @@ import asyncio
 import concurrent.futures
 import inspect
 import logging
+import time
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any, cast
 
@@ -147,6 +148,11 @@ def build_gateway(
     gw = base_gateway if base_gateway is not None else _new_base_gateway()
     make_proxy = proxy_factory or _proxy_for_spec
     accepts_cwd = _proxy_factory_accepts_cwd(make_proxy)
+    # Attached to the gateway object (not a module map keyed by id(gw)): it
+    # dies with the gateway, id-reuse cannot alias a stale registry, and a
+    # second build over the same base MERGES instead of overwriting.
+    registry: dict[str, Any] = getattr(gw, "_clio_namespace_proxies", {})
+    specs_registry: dict[str, MCPServerSpec] = getattr(gw, "_clio_namespace_specs", {})
 
     # Names already provided (built-ins / earlier mounts) must not be shadowed.
     existing = _mounted_namespaces(gw) | set(BUILTIN_SERVER_NAMES)
@@ -174,9 +180,24 @@ def build_gateway(
             )
             _mount_with_namespace(gw, proxy, name)
             existing.add(name)
+            registry[name] = proxy
+            specs_registry[name] = spec
         except Exception as exc:  # noqa: BLE001 - non-fatal: log + skip a bad server
             logger.warning("failed to mount declared MCP %r: %s", name, exc)
+    gw._clio_namespace_proxies = registry  # type: ignore[attr-defined]
+    gw._clio_namespace_specs = specs_registry  # type: ignore[attr-defined]
     return gw
+
+
+def namespace_proxies(gw: FastMCP) -> dict[str, Any]:
+    """The declared-server proxies mounted on ``gw``, keyed by namespace (#932).
+
+    Lets an executor route a namespaced call straight at ONE mounted proxy
+    instead of the composite (whose disabled-tool/hash fallbacks can list —
+    and therefore spawn — every mount).
+    """
+
+    return dict(getattr(gw, "_clio_namespace_proxies", {}))
 
 
 def _mounted_namespaces(gw: FastMCP) -> set[str]:
@@ -190,6 +211,129 @@ def _mounted_namespaces(gw: FastMCP) -> set[str]:
     except Exception:  # noqa: BLE001 - collision check is best-effort
         return set()
     return {_namespace_of(tool.name) for tool in tools}
+
+
+def list_tool_definitions(gw: FastMCP) -> dict[str, Any]:
+    """One transient SEQUENTIAL listing pass: ``{tool_name: MCPTool}``.
+
+    Each namespace lists in its OWN event loop, one at a time — the chain is
+    reaped (loop exit kills stdio children) before the next namespace spawns,
+    so at most ONE declared chain exists during boot. The previous composite
+    pass (one ``Client(gw)`` over every mount) held the WHOLE fleet alive at
+    once: the boot memory peak was the sum of all chains at the sampler's
+    unluckiest tick — high-variance and budget-breaking (#942; observed
+    1.27–1.50 GB across identical-code runs, caught by the v0.8.0 release
+    gate).
+
+    Coverage is complete by construction: the in-process built-ins list via
+    their server objects (no subprocess), and every declared mount is in the
+    ``_clio_namespace_proxies`` registry (``build_gateway`` is the only mount
+    site). A namespace whose listing fails degrades to no-tools with a typed
+    warning — the same semantics the composite's swallowed-mount aggregation
+    had, now with OUR reason attached. Feed the result to BOTH
+    ``build_tool_catalog(tools=...)`` and the executors' ``preloaded_tools``
+    so boot pays exactly one pass and executors never re-list (#932).
+    """
+
+    from clio_agent.tools import listing_cache  # noqa: PLC0415
+
+    specs = namespace_specs(gw)
+    tools: dict[str, Any] = {}
+    builtins: list[tuple[str, Any]] = [("fs", fs_server), ("shell", shell_server)]
+    declared = list(namespace_proxies(gw).items())
+    for namespace, server in (*builtins, *declared):
+        spec = specs.get(namespace)
+        cacheable = spec is not None and spec.transport == "stdio" and bool(spec.command)
+        listed: list[Any] | None = None
+        if cacheable and spec is not None:
+            listed = listing_cache.load_listing(
+                namespace, spec.command, tuple(spec.args), spec.env
+            )
+        live = listed is None
+        if live:
+            before = _descendant_pids()
+            try:
+                listed = _list_tools_sync(server)
+            except Exception as exc:  # noqa: BLE001 - typed namespace degrade, never a boot crash
+                logger.warning(
+                    "tool_listing_failed namespace=%s reason=%s (namespace degrades to no tools)",
+                    namespace,
+                    exc,
+                )
+                _await_spawned_exit(before)
+                continue
+            # The chain must be DEAD before the next namespace spawns — loop
+            # exit kills stdio children, but termination is asynchronous and
+            # an overlapping corpse still holds its RSS.
+            _await_spawned_exit(before)
+            if cacheable and spec is not None:
+                listing_cache.store_listing(
+                    namespace, spec.command, tuple(spec.args), listed, spec.env
+                )
+        assert listed is not None
+        for tool in listed:
+            prefixed = f"{namespace}_{tool.name}"
+            # Direct per-namespace listing yields BARE names; the composite
+            # prefixed them with the mount namespace. Consumers key on AND
+            # read ``tool.name`` (catalog rows), so the object is renamed too.
+            tools[prefixed] = tool.model_copy(update={"name": prefixed})
+    return tools
+
+
+def _descendant_pids() -> frozenset[int]:
+    """Snapshot of this process's recursive descendant pids."""
+
+    import psutil  # noqa: PLC0415
+
+    try:
+        return frozenset(p.pid for p in psutil.Process().children(recursive=True))
+    except Exception as exc:  # noqa: BLE001 - typed: a failed snapshot weakens the
+        # one-chain-at-a-time bound (pre-existing children look "spawned", or a
+        # mid-wait failure ends the wait early) — say so instead of silence.
+        logger.warning("descendant snapshot failed (%s); listing serialization weakened", exc)
+        return frozenset()
+
+
+def _await_spawned_exit(before: frozenset[int], timeout: float = 10.0) -> None:
+    """Block until descendants spawned since ``before`` have exited (#942).
+
+    Bounds the boot listing to one live chain at a time. On timeout the pass
+    continues with a typed warning — a wedged chain must not hang boot.
+    A provider rebind reconstructs the agent while sessions may run: a
+    concurrent shell command or lazy fleet spawn can land in the diff and
+    cause a bounded bogus wait (≤10s, nothing is killed) — accepted.
+    """
+
+    import psutil  # noqa: PLC0415
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        now = _descendant_pids()
+        lingering = now - before
+        if not lingering:
+            return
+        # conhost windows tear down on their own schedule; don't wait on them.
+        real = []
+        for pid in lingering:
+            try:
+                if psutil.Process(pid).name().lower() != "conhost.exe":
+                    real.append(pid)
+            except psutil.Error:
+                continue
+        if not real:
+            return
+        time.sleep(0.05)
+    logger.warning(
+        "boot listing chain did not exit within %.0fs; continuing (pids=%s)",
+        timeout,
+        sorted(lingering),
+    )
+
+
+def namespace_specs(gw: FastMCP) -> dict[str, MCPServerSpec]:
+    """The declared-server specs mounted on ``gw``, keyed by namespace (#942)."""
+
+    return dict(getattr(gw, "_clio_namespace_specs", {}))
 
 
 def _list_tools_sync(gw: FastMCP) -> list[Any]:
@@ -259,6 +403,7 @@ def build_tool_catalog(
     *,
     experts: Iterable[Any] | None = None,
     static_catalog: Mapping[str, ToolCatalogEntry] | None = None,
+    tools: list[Any] | None = None,
 ) -> dict[str, ToolCatalogEntry]:
     """Build the tool catalog from the static built-ins + connected MCP namespaces.
 
@@ -286,7 +431,8 @@ def build_tool_catalog(
         return merged
 
     visibility = _expert_visibility(experts)
-    for tool in _list_tools_sync(declared_gateway):
+    listed = tools if tools is not None else _list_tools_sync(declared_gateway)
+    for tool in listed:
         name = tool.name
         if name in merged:
             continue

@@ -482,6 +482,22 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
             uv_cache = _mcp_uv_cache_dir()
             uv_cache.mkdir(parents=True, exist_ok=True)
             env["UV_CACHE_DIR"] = str(uv_cache)
+        # Spawn diet (#934): a learned, validated plan spawns the server's own
+        # venv interpreter directly (dropping the resident launcher chain);
+        # otherwise the declared command spawns and — when eligible — a learn
+        # scan is scheduled against that live chain. Both outcomes are typed
+        # inside spawn_diet.
+        from clio_agent.tools import spawn_diet  # noqa: PLC0415
+
+        diet = spawn_diet.diet_transport_args(spec.name, resolved, tuple(spec.args), env)
+        if diet is not None:
+            diet_command, diet_args, env = diet
+            return StdioTransport(
+                command=diet_command,
+                args=diet_args,
+                env=env,
+                cwd=cwd,
+            )
         return StdioTransport(
             command=resolved,
             args=list(spec.args),

@@ -411,32 +411,6 @@ def test_canonical_flow_byte_equals_stock_dspy_shape(tmp_path, seed):
     assert list(keys.keys()) == list(expected.keys())
 
 
-def test_canonical_flow_format_trajectory_byte_equal_to_stock(arc, monkeypatch):
-    """The REAL _RetainingReAct._format_trajectory over a canonical ARC must be
-    byte-identical to dspy's stock formatter fed the same render_keys.
-
-    classic-path contract; V2 equivalent in
-    tests/test_arc/test_reactv2_wire_byte_equality.py (#901 rule 4)."""
-    import dspy
-
-    from .conftest import live_plane_context, make_react_agent, stock_format_trajectory
-
-    monkeypatch.setattr("clio_agent.gact.agents.runtime._reactv2_enabled", lambda: False)
-    agent = make_react_agent()
-    for i in range(4):
-        arc.append_segment(SID, SCOPE, "thought", {"text": f"T{i}"}, step=i)
-        arc.append_segment(SID, SCOPE, "tool_call", {"name": f"n{i}", "args": {"i": i}}, step=i)
-        arc.append_segment(SID, SCOPE, "observation", {"text": f"O{i}"}, step=i)
-
-    with live_plane_context(arc, session=SID, scope=SCOPE):
-        with dspy.context(adapter=dspy.ChatAdapter()):
-            keys = arc.render_segments_keys(SID, SCOPE)
-            override = agent._format_trajectory({})        # reads ARC
-            stock = stock_format_trajectory(agent, keys)   # stock formatter, same keys
-    assert override == stock
-    assert "O3" in override
-
-
 # --------------------------------------------------------------------------- #
 # 4. as-of-T monotonic visibility (fuzzed)
 # --------------------------------------------------------------------------- #

@@ -5,7 +5,7 @@ This concern owns two related surfaces:
 * **Agent registry CRUD + list + extract** under ``/v1/agents`` -- the
   capability-routed catalog the TUI sidebar renders. ``GET /v1/agents`` (with an
   optional ``?tier=`` filter) merges the built-in tier-1/2 experts, the active
-  Agent Blueprint graph, expert packs, and user/skill-registered agents;
+  Agent Blueprint graph, expert packs, and user-registered agents;
   ``GET /v1/agents/{id}`` resolves one row; ``POST/PUT/DELETE /v1/agents`` manage
   *user* agents only (built-in ids are reserved and immutable). ``POST
   /v1/agents/extract`` harvests the most-common tool pattern from past session
@@ -789,7 +789,7 @@ def register_agents_routes(app: FastAPI, deps: "GactDeps") -> None:
         session_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
     ) -> AgentDef:
-        """SPEC §6.5 detail endpoint for built-in/user/skill agents."""
+        """SPEC §6.5 detail endpoint for built-in/user agents."""
 
         for row in deps.agent_rows(session_id=session_id or "", workspace_id=workspace_id or ""):
             if row.id == agent_id:
