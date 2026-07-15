@@ -6,8 +6,18 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.7.4] — 2026-07-15
+
+### Added
+- Skill semantics with progressive disclosure (#916): experts get a tier-1
+  skill *metadata* block plus a model-invoked `load_skill` tool (full bodies
+  load on demand, never eagerly); `skill.loaded` provenance events stream on
+  the wire, and turn provenance carries `resolved_skills` /
+  `skill_resolution` so clients can render declared-skill status
+  (gact-tui#315 is the client half).
+
 ### Removed
-- **v0.8.0 legacy-path deletion** (#775 no-accretion; the strangler flags
+- **Legacy-path deletion** (#775 no-accretion; the strangler flags
   became the only semantics): the classic `_RetainingReAct` expert loop
   (`CLIO_REACTV2`), the parallel working-set write (`CLIO_ARC_WORKING_SET_FOLD`),
   the legacy transcript regime + per-session pin (`CLIO_TRANSCRIPT_PROJECTION`),
@@ -32,6 +42,27 @@ TUI/HTTP surface aren't tracked here.
 - Typed-output repair for react experts now re-drives a forced `submit`
   over the retained History (the V2 repair) from the builders repair
   ladder; the classic extract-only re-run is gone.
+- MCP fleets are memory-bounded (#930, #942; server-internal, no wire
+  change, noted for operators): namespaces spawn on first tool call, boot
+  reads tool definitions from a launcher-anchored cache (warm boots spawn
+  zero server processes; cold boots list one namespace at a time), idle
+  workspace fleets are reclaimed (TTL + LRU, typed reap reasons), stable
+  clio-kit launchers respawn as direct venv interpreters, and the
+  3-session acceptance load is budget-gated at release time
+  (3.57 GB → 1.42 GB cold peak / 0.72 GB settled).
+
+## [0.7.3] — 2026-07-14
+
+### Fixed
+- Portable-runtime prune, final pass: `python*-config` symlinks removed
+  (the macOS leg died on a dangling `python3-config` after its target was
+  pruned — and the GNU-only `-xtype` sweep silently no-opped on BSD find,
+  our own silent-fallback class; the sweep is now portable), and
+  distlib/setuptools Windows launcher stubs are pruned from site-packages
+  (a 180KB `t64-arm.exe` inside the packed runtime masqueraded as the
+  bundled installer and failed the 60MB payload floor on the linux legs).
+  Linux validation in-tree before tagging: relocated boot green, zero
+  dangling links, zero stray exes.
 
 ## [0.7.2] — 2026-07-14
 

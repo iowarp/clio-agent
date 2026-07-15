@@ -121,12 +121,19 @@ fi
 # Delete every non-interpreter entry in bin/ (regular files AND symlinks:
 # deleting 2to3-3.12 while leaving the 2to3 symlink dangling broke Tauri's
 # resource walk on the v0.7.1 unix legs); -m is the only entry.
-# python*-config is a shell script embedding build prefixes — same trap.
+# python*-config (file OR symlink) embeds build prefixes — same trap; the
+# v0.7.2 macOS leg died on the python3-config symlink left dangling.
 find "$OUT/python/bin" -maxdepth 1 \( -type f -o -type l \) ! -name 'python*' -delete
-find "$OUT/python/bin" -maxdepth 1 -type f -name 'python*-config' -delete
+find "$OUT/python/bin" -maxdepth 1 \( -type f -o -type l \) -name 'python*-config' -delete
+# Windows launcher stubs vendored by distlib/setuptools inside site-packages
+# (t64.exe, w64-arm.exe, ...): dead weight on unix, and the release staging
+# sweeps *.exe as installers — a 180KB t64-arm.exe masqueraded as the bundled
+# installer and failed the 60MB payload floor on the v0.7.2 linux legs.
+find "$OUT/python" -type f -name '*.exe' -delete
 # Sweep any dangling symlink left anywhere in the dist (resource walkers fail
-# on them; a dangling link is by definition dead weight).
-find "$OUT/python" -xtype l -delete 2>/dev/null || true
+# on them). PORTABLE: BSD find has no -xtype (the GNU-only sweep silently
+# no-opped on macOS — the exact silent-fallback class this repo bans).
+find "$OUT/python" -type l ! -exec test -e {} ';' -delete
 
 SIZE_AFTER="$(dir_size_mb "$OUT")"
 echo "[build-gact-runtime] size after prune:  ${SIZE_AFTER} MB (was ${SIZE_BEFORE} MB)"
