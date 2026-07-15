@@ -224,19 +224,21 @@ def test_chain_argv_matches_windows_direct_shape() -> None:
     """The Windows trampoline shape ([clio-kit.exe, mcp-server, name]) must
     match exactly — the live chain's root argv on this platform."""
 
+    # Forward slashes parse on both platforms (the live cmdline always uses
+    # the platform's native separators, so production sees parseable paths).
     args = ("mcp-server", "pandas")
     assert spawn_diet._chain_argv_matches(
-        ["C:\\Users\\x\\.local\\bin\\CLIO-KIT.EXE", "mcp-server", "pandas"], "clio-kit.exe", args
+        ["C:/Users/x/.local/bin/CLIO-KIT.EXE", "mcp-server", "pandas"], "clio-kit.exe", args
     )
     # Variant args, extra args, wrong name: never.
     assert not spawn_diet._chain_argv_matches(
-        ["C:\\x\\clio-kit.exe", "mcp-server", "pandas", "--branch", "dev"], "clio-kit.exe", args
+        ["C:/x/clio-kit.exe", "mcp-server", "pandas", "--branch", "dev"], "clio-kit.exe", args
     )
     assert not spawn_diet._chain_argv_matches(
-        ["C:\\x\\clio-kit.exe", "mcp-server"], "clio-kit.exe", args
+        ["C:/x/clio-kit.exe", "mcp-server"], "clio-kit.exe", args
     )
     assert not spawn_diet._chain_argv_matches(
-        ["C:\\x\\other.exe", "mcp-server", "pandas"], "clio-kit.exe", args
+        ["C:/x/other.exe", "mcp-server", "pandas"], "clio-kit.exe", args
     )
 
 
