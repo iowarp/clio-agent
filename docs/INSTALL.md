@@ -9,9 +9,9 @@ There are **4 install mechanisms** exposing **6 usage experiences** (a–f).
 | # | Experience | Mechanism | Status |
 |---|---|---|---|
 | a | CLI / TUI | pip-or-uv install (script) | ✅ |
-| b | No-install TUI | docker | ✅ |
+| b | No-install TUI | docker | ⚠️ not yet available (#944) |
 | c | Local web UI | install script + `clio --web` | ✅ |
-| d | Scaled / hosted web | docker (compose) | ✅ |
+| d | Scaled / hosted web | docker (compose) | ⚠️ not yet available (#944) |
 | e | Desktop app | native installer | ✅ |
 | f | From source | git clone | ✅ |
 
@@ -25,6 +25,11 @@ Installs `clio-agent` from PyPI + the `clio-tui` binary + the `clio` launcher. W
 `install.ps1`. Pin a version with `CLIO_VERSION=X.Y.Z`.
 
 ## b) No-install, Docker (TUI)
+
+> **Not yet available** — ghcr image publication has failed on every
+> release tag so far (org package-creation permission, #944). The commands
+> below describe the intended experience once the images publish.
+
 ```sh
 docker run -it --rm \
   -e CLIO_LM_API_BASE=http://host.docker.internal:1234/v1 \
@@ -42,6 +47,9 @@ script fetches the web bundle into `$CLIO_PREFIX/clio-agent/web`; override with
 `CLIO_WEB_DIR=/path/to/web/dist`.
 
 ## d) Scaled / hosted web (Docker Compose)
+
+> **Not yet available** — same ghcr publication gap as (b), tracked in #944.
+
 ```sh
 docker compose up clio-web          # self-contained web UI → http://localhost:8080
 docker compose --profile api up     # headless backend (API/SSE) → :8100 for scale-out
