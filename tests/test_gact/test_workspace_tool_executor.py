@@ -33,7 +33,9 @@ def test_active_workspace_builds_and_caches_per_root(monkeypatch) -> None:
         built.append((cwd, set_catalog))
         return f"gateway:{cwd}"
 
-    def fake_create(gateway):
+    def fake_create(gateway, **kwargs):
+        # #932 wiring pin: workspace executors must receive the preload seam.
+        assert "preloaded_tools" in kwargs and "namespace_servers" in kwargs
         return f"executor:{gateway}"
 
     monkeypatch.setattr(agent, "_build_tool_gateway", fake_build)

@@ -140,3 +140,112 @@ def _run_lifecycle(spec: MCPServerSpec, marker: Path) -> None:
 
     # 4. close() reaps the resident fleet.
     assert _wait_reaped(marker) == [], "executor close leaked the fleet"
+
+
+def test_preloaded_executor_is_lazy_per_namespace(stub_spec: tuple[MCPServerSpec, Path]) -> None:
+    """#932: an executor seeded with preloaded tool definitions spawns NOTHING
+    at start — the server spawns on the FIRST CALL routed to its namespace,
+    stays resident for subsequent calls, and close() still reaps it."""
+
+    spec, marker = stub_spec
+    try:
+        _run_lazy_lifecycle(spec, marker)
+    finally:
+        for pid in _alive(marker):
+            try:
+                psutil.Process(pid).kill()
+            except psutil.Error:
+                pass
+
+
+def test_uncalled_namespace_never_spawns(tmp_path: Path) -> None:
+    """THE #932 promise: with namespace-direct routing, calling one namespace
+    spawns ONLY that namespace's backend — a mounted-but-uncalled server costs
+    zero processes (the composite's own name resolution would list-and-spawn
+    every mount)."""
+
+    from clio_agent.tools.gateway import list_tool_definitions, namespace_proxies
+
+    specs: dict[str, MCPServerSpec] = {}
+    markers: dict[str, Path] = {}
+    for ns in ("alpha", "beta"):
+        script = tmp_path / f"stub_{ns}.py"
+        script.write_text(STUB, encoding="utf-8")
+        markers[ns] = tmp_path / f"{ns}-marker.txt"
+        specs[ns] = MCPServerSpec(
+            name=ns,
+            transport="stdio",
+            command=sys.executable,
+            args=(str(script), str(markers[ns])),
+        )
+
+    gateway = build_gateway(specs)
+    definitions = list_tool_definitions(gateway)  # one transient pass, both spawn+reap
+    assert {"alpha_echo", "beta_echo"} <= set(definitions)
+    assert _wait_reaped(markers["alpha"]) == [] and _wait_reaped(markers["beta"]) == []
+
+    executor = create_sync_tool_executor(
+        gateway,
+        preloaded_tools=definitions,
+        namespace_servers=namespace_proxies(gateway),
+    )
+    try:
+        # Composite-fallback pin (fastmcp Namespace gate, load-bearing): an
+        # unknown-namespace name errors WITHOUT connecting any declared mount.
+        try:
+            executor.call_tool("zeta_echo", {"text": "nope"})
+        except Exception:
+            pass  # the typed not-found error is expected; the assertion is below
+        assert len(_starts(markers["alpha"])) == 1, "composite fallback spawned alpha!"
+        assert len(_starts(markers["beta"])) == 1, "composite fallback spawned beta!"
+
+        result = executor.call_tool("alpha_echo", {"text": "only-a"})
+        assert "only-a" in str(result)
+        assert len(_starts(markers["alpha"])) == 2  # listing pass + the routed call
+        assert len(_starts(markers["beta"])) == 1, "uncalled namespace spawned!"
+    finally:
+        executor.close()
+        for marker in markers.values():
+            for pid in _alive(marker):
+                try:
+                    psutil.Process(pid).kill()
+                except psutil.Error:
+                    pass
+    assert _wait_reaped(markers["alpha"]) == [], "close leaked the routed namespace"
+
+
+def _run_lazy_lifecycle(spec: MCPServerSpec, marker: Path) -> None:
+    from clio_agent.tools.gateway import list_tool_definitions, namespace_proxies
+
+    gateway = build_gateway({"stub": spec})
+    definitions = list_tool_definitions(gateway)  # the ONE boot listing pass
+    assert "stub_echo" in definitions
+    assert _wait_reaped(marker) == [], "listing-pass fleet leaked"
+    assert len(_starts(marker)) == 1
+
+    executor = create_sync_tool_executor(
+        gateway,
+        preloaded_tools=definitions,
+        namespace_servers=namespace_proxies(gateway),
+    )
+    try:
+        # Start spawns NOTHING: definitions are preloaded, no list_tools fan-out.
+        time.sleep(2)
+        assert len(_starts(marker)) == 1, "preloaded executor start still spawned the fleet"
+        assert executor.get_tool_names() and "stub_echo" in executor.get_tool_names()
+        assert len(_starts(marker)) == 1, "metadata access spawned the fleet"
+
+        # First CALL spawns exactly one server for the namespace...
+        result = executor.call_tool("stub_echo", {"text": "ping"})
+        assert "ping" in str(result)
+        assert len(_starts(marker)) == 2
+        assert len(_alive(marker)) == 1
+
+        # ...and subsequent calls reuse the resident server (no respawn).
+        result = executor.call_tool("stub_echo", {"text": "pong"})
+        assert "pong" in str(result)
+        assert len(_starts(marker)) == 2
+    finally:
+        executor.close()
+
+    assert _wait_reaped(marker) == [], "executor close leaked the lazily-spawned fleet"
