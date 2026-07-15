@@ -683,6 +683,10 @@ class SyncMCPToolExecutor:
         self._consecutive_transient_failures: dict[str, tuple[int, str]] = {}
         self._closed = False
         self._close_lock = threading.Lock()
+        # Reaper instrumentation (#933): last-activity clock + in-flight count.
+        self._last_activity = time.monotonic()
+        self._inflight = 0
+        self._inflight_lock = threading.Lock()
 
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(
@@ -709,6 +713,17 @@ class SyncMCPToolExecutor:
     def closed(self) -> bool:
         """Return whether the executor has been closed."""
         return self._closed
+
+    @property
+    def busy(self) -> bool:
+        """Return whether a tool call is currently in flight (#933 drain guard)."""
+        with self._inflight_lock:
+            return self._inflight > 0
+
+    def idle_for(self) -> float:
+        """Seconds since the last call started or finished (#933 idle TTL clock)."""
+        with self._inflight_lock:
+            return time.monotonic() - self._last_activity
 
     @property
     def _mcp_tools(self) -> dict[str, Any]:
@@ -756,7 +771,17 @@ class SyncMCPToolExecutor:
 
         if self._closed:
             raise RuntimeError("SyncMCPToolExecutor is closed")
+        with self._inflight_lock:
+            self._inflight += 1
+            self._last_activity = time.monotonic()
+        try:
+            return self._call_tool_inner(name, args)
+        finally:
+            with self._inflight_lock:
+                self._inflight -= 1
+                self._last_activity = time.monotonic()
 
+    def _call_tool_inner(self, name: str, args: Mapping[str, Any]) -> str:
         hooks = current_tool_runtime()
         permission_gate = self._permission_gate or hooks.permission_gate
         tool_observer = self._tool_observer or hooks.tool_observer
