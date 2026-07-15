@@ -65,6 +65,19 @@ def test_recorded_budget_file_is_wellformed() -> None:
     budget = json.loads((REPO / "scripts" / "mcp_mem_budget.json").read_text(encoding="utf-8"))
     ok, _ = check_budget(budget["peak_gb"], budget["final_gb"], budget)
     assert ok, "the recorded baseline must pass its own gate"
+
+
+def test_recorded_budget_never_regresses_above_campaign_targets() -> None:
+    """The #930 campaign-done contract: the recorded budget landed UNDER the
+    campaign targets (<=1.8 GB peak / <=1.3 GB post-idle on the acceptance
+    load). Raising the recorded numbers past the targets — to make a memory
+    regression pass — must fail HERE, in plain CI, before any live gate runs."""
+
+    budget = json.loads((REPO / "scripts" / "mcp_mem_budget.json").read_text(encoding="utf-8"))
     targets = budget["campaign_targets"]
-    assert targets["peak_gb"] < budget["peak_gb"]
-    assert targets["final_gb"] < budget["final_gb"]
+    assert budget["peak_gb"] <= targets["peak_gb"], (
+        "recorded peak budget regressed above the campaign target"
+    )
+    assert budget["final_gb"] <= targets["final_gb"], (
+        "recorded final budget regressed above the campaign target"
+    )

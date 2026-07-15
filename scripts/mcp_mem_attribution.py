@@ -13,7 +13,7 @@ Usage (the #921/#929 acceptance shape — 3 concurrent claude-haiku sessions):
     uv run python scripts/mcp_mem_attribution.py \
         --pack external/clio-agent-marketplace/data-semantics \
         --workspace <dir with sensor_readings.csv> \
-        --sessions 3 --assert-budget
+        --sessions 3 --settle-s 180 --assert-budget
 
 The server is booted as a child of THIS process (claude_code/haiku + the real
 CTE substrate per the accepted gate config — never CLIO_ARC_STORE=local) and
@@ -272,6 +272,12 @@ def main() -> int:
         return 2
     if args.assert_budget and args.sessions != 3:
         print("FAIL: --assert-budget is defined for the recorded load (--sessions 3)")
+        return 2
+    if args.assert_budget and args.settle_s < 180:
+        # The recorded final_gb is post-reap: the workspace-fleet reaper's
+        # default 120s idle TTL must elapse before FINAL or fleets are still
+        # resident and an honest run fails spuriously (#935).
+        print("FAIL: --assert-budget requires --settle-s >= 180 (the recorded load's settle)")
         return 2
 
     xdg = args.xdg or Path(tempfile.mkdtemp(prefix="clio-mem-gate-xdg-"))
