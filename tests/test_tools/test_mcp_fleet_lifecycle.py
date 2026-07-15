@@ -36,7 +36,7 @@ with open(marker, "a", encoding="utf-8") as f:
 
 mcp = FastMCP("stub")
 
-@mcp.tool
+@mcp.tool(tags={"stub-tag"})
 def echo(text: str) -> str:
     return text
 
@@ -156,6 +156,136 @@ def test_preloaded_executor_is_lazy_per_namespace(stub_spec: tuple[MCPServerSpec
                 psutil.Process(pid).kill()
             except psutil.Error:
                 pass
+
+
+@pytest.fixture()
+def _isolated_listing_cache(tmp_path, monkeypatch):
+    """#942 tests must never touch the real user listing cache."""
+
+    from clio_agent.tools import listing_cache
+
+    monkeypatch.setattr(listing_cache, "_cache_path", lambda: tmp_path / "listing-cache.json")
+    yield
+
+
+def test_boot_listing_is_sequential_one_chain_at_a_time(
+    tmp_path: Path, _isolated_listing_cache
+) -> None:
+    """#942: the boot listing pass must hold at most ONE declared chain alive
+    at a time — the composite pass held the whole fleet at once and the boot
+    memory peak was the sum of every chain (broke the v0.8.0 release gate).
+    Sampled concurrently while the listing runs; also pins name-prefixing
+    equivalence with the composite (keys AND tool.name are namespaced), and
+    that a CACHED second boot spawns nothing at all."""
+
+    import threading
+
+    from clio_agent.tools.gateway import list_tool_definitions
+
+    specs: dict[str, MCPServerSpec] = {}
+    for ns in ("alpha", "beta", "gamma"):
+        script = tmp_path / f"stub_seq_{ns}.py"
+        script.write_text(STUB, encoding="utf-8")
+        specs[ns] = MCPServerSpec(
+            name=ns,
+            transport="stdio",
+            command=sys.executable,
+            args=(str(script), str(tmp_path / f"{ns}-marker.txt")),
+        )
+    gateway = build_gateway(specs)
+
+    def _stubs_alive() -> int:
+        """DISTINCT namespaces with a live chain (a venv python shim + its
+        base interpreter are two processes of ONE chain)."""
+
+        namespaces: set[str] = set()
+        for proc in psutil.process_iter(["cmdline"]):
+            try:
+                cmdline = " ".join(proc.info["cmdline"] or [])
+            except psutil.Error:
+                continue
+            for ns in ("alpha", "beta", "gamma"):
+                if f"stub_seq_{ns}.py" in cmdline:
+                    namespaces.add(ns)
+        return len(namespaces)
+
+    peak_concurrent = 0
+    stop = threading.Event()
+
+    def _sample() -> None:
+        nonlocal peak_concurrent
+        while not stop.is_set():
+            peak_concurrent = max(peak_concurrent, _stubs_alive())
+            time.sleep(0.025)
+
+    sampler = threading.Thread(target=_sample, daemon=True)
+    sampler.start()
+    try:
+        definitions = list_tool_definitions(gateway)
+    finally:
+        stop.set()
+        sampler.join(timeout=5)
+        for ns in ("alpha", "beta", "gamma"):
+            for pid in _starts(tmp_path / f"{ns}-marker.txt"):
+                try:
+                    if "stub_seq_" in " ".join(psutil.Process(pid).cmdline()):
+                        psutil.Process(pid).kill()
+                except psutil.Error:
+                    pass
+
+    assert peak_concurrent <= 1, (
+        f"boot listing held {peak_concurrent} stub chains alive simultaneously"
+    )
+    assert {"alpha_echo", "beta_echo", "gamma_echo"} <= set(definitions)
+    assert any(name.startswith("fs_") for name in definitions), "builtins missing"
+    assert any(name.startswith("shell_") for name in definitions), "builtins missing"
+    for name, tool in definitions.items():
+        assert tool.name == name, f"tool object not renamed: {tool.name} under key {name}"
+    # And the pass reaped everything it spawned.
+    for ns in ("alpha", "beta", "gamma"):
+        marker = tmp_path / f"{ns}-marker.txt"
+        assert len(_starts(marker)) == 1, f"{ns} spawned more than once during listing"
+
+    # A second boot rides the listing cache: identical definitions, ZERO spawns.
+    definitions_cached = list_tool_definitions(gateway)
+    assert set(definitions_cached) == set(definitions)
+    for name, tool in definitions.items():
+        # FULL object equality — a lossy round-trip (e.g. the aliased `meta`
+        # field silently dropping, with every MCP tag on it) forks cached-boot
+        # catalog behavior from first-boot. Key-set equality missed exactly that.
+        assert definitions_cached[name] == tool, f"cached round-trip lost data on {name}"
+    for ns in ("alpha", "beta", "gamma"):
+        marker = tmp_path / f"{ns}-marker.txt"
+        assert len(_starts(marker)) == 1, f"cached boot spawned {ns} again"
+
+
+def test_boot_listing_isolates_a_broken_namespace(tmp_path: Path, _isolated_listing_cache) -> None:
+    """#942: one unlistable namespace degrades to no-tools (typed warning);
+    every other namespace and the builtins still list."""
+
+    from clio_agent.tools.gateway import list_tool_definitions
+
+    script = tmp_path / "stub_ok.py"
+    script.write_text(STUB, encoding="utf-8")
+    specs = {
+        "ok": MCPServerSpec(
+            name="ok",
+            transport="stdio",
+            command=sys.executable,
+            args=(str(script), str(tmp_path / "ok-marker.txt")),
+        ),
+        "broken": MCPServerSpec(
+            name="broken",
+            transport="stdio",
+            command=sys.executable,
+            args=("-c", "import sys; sys.exit(3)"),
+        ),
+    }
+    gateway = build_gateway(specs)
+    definitions = list_tool_definitions(gateway)
+    assert "ok_echo" in definitions
+    assert not any(name.startswith("broken_") for name in definitions)
+    assert any(name.startswith("fs_") for name in definitions)
 
 
 def test_uncalled_namespace_never_spawns(tmp_path: Path) -> None:
