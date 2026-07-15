@@ -23,6 +23,7 @@ from fastmcp import Client
 from clio_agent import conf
 from clio_agent.errors import CancellationError
 from clio_agent.runtime.stream_audit import stream_audit
+from clio_agent.tools import spawn_diet
 from clio_agent.tools.file_policy import FileAccessPolicy
 
 logger = logging.getLogger(__name__)
@@ -473,6 +474,8 @@ class AsyncMCPToolExecutor:
         self._namespace_servers = dict(namespace_servers) if namespace_servers else {}
         self._namespace_clients: dict[str, Any] = {}
         self._namespace_ctxs: dict[str, Any] = {}
+        # Namespaces whose FIRST routed call succeeded (#934 spawn-diet hooks).
+        self._connected_namespaces: set[str] = set()
         self._timeout = timeout
         self._tool_timeouts = cleaned_tool_timeouts
         self._client_factory = client_factory or Client
@@ -546,24 +549,43 @@ class AsyncMCPToolExecutor:
 
         async with self._call_lock:
             timeout = self._timeout_for_tool(name)
-            client, on_server_name = await self._route(name)
+            client, on_server_name, namespace = await self._route(name)
+            # #934: the namespace backend SPAWNS on its first forwarded call
+            # (proxy ctx-enter spawns nothing), so first-call success/failure
+            # is the spawn-diet learn/drop-plan signal.
+            first_call = namespace is not None and namespace not in self._connected_namespaces
             try:
                 result = await asyncio.wait_for(
                     client.call_tool(on_server_name, dict(args)),
                     timeout=timeout,
                 )
             except TimeoutError as exc:
+                # Conservative: a first-call timeout may be tool latency, not
+                # spawn health — the dropped plan self-heals (declared respawn
+                # + relearn). Distinguishing connect-failure from post-connect
+                # errors needs an initialize-level signal (future refinement).
+                if first_call and namespace is not None:
+                    spawn_diet.spawn_failed(namespace)
                 raise TimeoutError(f"MCP tool {name!r} timed out after {timeout:g}s") from exc
+            except Exception:
+                if first_call and namespace is not None:
+                    spawn_diet.spawn_failed(namespace)
+                raise
+            if first_call and namespace is not None:
+                self._connected_namespaces.add(namespace)
+                spawn_diet.namespace_connected(namespace)
         return _result_to_text(result)
 
-    async def _route(self, name: str) -> tuple[Any, str]:
-        """Resolve the client + on-server tool name for a namespaced call.
+    async def _route(self, name: str) -> tuple[Any, str, str | None]:
+        """Resolve (client, on-server tool name, namespace|None) for a call.
 
         Namespaced tools route straight at their mounted proxy (#932): the
         composite gateway resolves names by listing EVERY mount, spawning the
         whole fleet; direct routing spawns only the called namespace backend.
         A failed proxy connect raises out of the CALL (the executor error
-        path types it), never a silent missing tool.
+        path types it), never a silent missing tool. The namespace element is
+        ``None`` for composite-routed names (the #934 first-call hooks only
+        apply to namespace-direct backends).
         """
 
         namespace, _, bare = name.partition("_")
@@ -578,14 +600,14 @@ class AsyncMCPToolExecutor:
                     f"unknown tool {name!r}: not in the preloaded tool catalog"
                 )
             assert self._client is not None
-            return self._client, name
+            return self._client, name, None
         client = self._namespace_clients.get(namespace)
         if client is None:
             ctx = self._client_factory(proxy)
             client = await ctx.__aenter__()
             self._namespace_ctxs[namespace] = ctx
             self._namespace_clients[namespace] = client
-        return client, bare
+        return client, bare, namespace
 
     def _timeout_for_tool(self, name: str) -> float:
         """Return the effective timeout for a single tool invocation."""

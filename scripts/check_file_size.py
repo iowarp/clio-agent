@@ -116,7 +116,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # #933: +23 for the reaper instrumentation: inflight refcount + idle clock,
     # plus the busy/idle_for accessors the reaper's drain guard reads (their
     # state lives on the executor, so the accessors are owned here too).
-    "src/clio_agent/tools/execution.py": 1282,
+    # #934: +22 for the spawn-diet first-call hooks (the namespace backend
+    # spawns on its first FORWARDED CALL, not ctx-enter, so the learn /
+    # drop-plan-on-failure signals wrap the first routed call per namespace;
+    # incl. the timeout-vs-connect-health caveat comment).
+    "src/clio_agent/tools/execution.py": 1304,
     "src/clio_agent/ui/cli.py": 1156,
 }
 
