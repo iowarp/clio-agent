@@ -1,6 +1,18 @@
 # MCP Fleet Memory: O(1) Servers for N Sessions on an 8 GB Desktop
 
-Status: DRAFT (planned with the owner 2026-07-14; grounds issue #929)
+Status: LANDED S1–S5 (2026-07-15). Grounds issue #929; umbrella #930.
+
+| Slice | Issue | PR | Landed result (accepted 3-session haiku gate, real CTE) |
+| --- | --- | --- | --- |
+| S1 measurement + budget gate | #931 | #937 | `scripts/mcp_mem_attribution.py` + ratchet file; baseline 3.57 GB peak==final |
+| S2 spawn-once + lazy per-namespace | #932 | #938 | idle 0.35 GB; only CALLED namespaces spawn; typed unknown-name guard (fastmcp ≥3.4 composite pin) |
+| S3 idle-TTL + LRU reaper | #933 | #939 | final 0.67 GB after settle, ALL fleets reclaimed via typed `workspace_fleet_reaped`; drain guard + turn leases |
+| S4 spawn diet | #934 | #940 | called fleet 2 procs / 0.11 GB (was 6 + launcher + resident uv.exe); learned plans, TTL-bounded 24h; upstream resolve-probe ask iowarp/clio-kit#296 |
+| S5 ratchet + enforce | #935 | close-out PR on this doc | budget 3.57/3.57 → 1.42/0.72 (peak = honest cold-boot maximum, finals = median of 0.72/0.74/0.72); CI test pins recorded ≤ campaign targets; release-skill gate wired; fleet-lifecycle docs |
+
+Measured trajectory: 3.57 GB peak==final → 1.42 GB cold peak / 1.16–1.28 GB
+warm peak (the transient boot listing pass) / 0.72 GB settled. Both campaign
+targets (≤1.8 peak, ≤1.3 post-idle) met with margin.
 Date: 2026-07-14
 
 ## 0. Goal
