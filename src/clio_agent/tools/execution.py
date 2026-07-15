@@ -420,6 +420,8 @@ def create_sync_tool_executor(
     setup_timeout: float | None = None,
     tool_timeouts: Mapping[str, float] | None = None,
     client_factory: ClientFactory | None = None,
+    preloaded_tools: Mapping[str, Any] | None = None,
+    namespace_servers: Mapping[str, Any] | None = None,
 ) -> SyncToolExecutor:
     """Create a sync executor for CLI and deterministic expert call sites."""
     effective_setup_timeout = (
@@ -438,6 +440,8 @@ def create_sync_tool_executor(
         setup_timeout=effective_setup_timeout,
         tool_timeouts=tool_timeouts,
         client_factory=client_factory,
+        preloaded_tools=preloaded_tools,
+        namespace_servers=namespace_servers,
     )
 
 
@@ -454,17 +458,27 @@ class AsyncMCPToolExecutor:
         timeout: float = 30.0,
         tool_timeouts: Mapping[str, float] | None = None,
         client_factory: ClientFactory | None = None,
+        preloaded_tools: Mapping[str, Any] | None = None,
+        namespace_servers: Mapping[str, Any] | None = None,
     ) -> None:
         if timeout <= 0:
             raise ValueError("timeout must be positive")
         cleaned_tool_timeouts = _clean_tool_timeouts(tool_timeouts)
 
         self._server = server
+        # #932: namespace -> mounted proxy. A namespaced call routes straight
+        # at ONE proxy (lazy client per namespace), so only the called
+        # namespace backend ever spawns. The composite client remains the
+        # fallback for names outside the map.
+        self._namespace_servers = dict(namespace_servers) if namespace_servers else {}
+        self._namespace_clients: dict[str, Any] = {}
+        self._namespace_ctxs: dict[str, Any] = {}
         self._timeout = timeout
         self._tool_timeouts = cleaned_tool_timeouts
         self._client_factory = client_factory or Client
         self._client_ctx: MCPClientProtocol | None = None
         self._client: MCPClientProtocol | None = None
+        self._preloaded_tools = dict(preloaded_tools) if preloaded_tools is not None else None
         self._mcp_tools: dict[str, Any] = {}
         self._call_lock: asyncio.Lock | None = None
         self._started = False
@@ -497,6 +511,18 @@ class AsyncMCPToolExecutor:
 
         client_ctx = self._client_factory(self._server)
         client = await client_ctx.__aenter__()
+        if self._preloaded_tools is not None:
+            # #932: tool definitions were preloaded (the boot listing pass) —
+            # skip the list_tools fan-out that would eagerly spawn EVERY
+            # mounted stdio server. Backends connect lazily per namespace on
+            # the first call routed to them; a failed lazy connect surfaces as
+            # that call's typed error, never a silent missing tool.
+            self._client_ctx = client_ctx
+            self._client = client
+            self._mcp_tools = dict(self._preloaded_tools)
+            self._call_lock = asyncio.Lock()
+            self._started = True
+            return self
         try:
             tools = await client.list_tools()
         except BaseException:
@@ -520,14 +546,46 @@ class AsyncMCPToolExecutor:
 
         async with self._call_lock:
             timeout = self._timeout_for_tool(name)
+            client, on_server_name = await self._route(name)
             try:
                 result = await asyncio.wait_for(
-                    self._client.call_tool(name, dict(args)),
+                    client.call_tool(on_server_name, dict(args)),
                     timeout=timeout,
                 )
             except TimeoutError as exc:
                 raise TimeoutError(f"MCP tool {name!r} timed out after {timeout:g}s") from exc
         return _result_to_text(result)
+
+    async def _route(self, name: str) -> tuple[Any, str]:
+        """Resolve the client + on-server tool name for a namespaced call.
+
+        Namespaced tools route straight at their mounted proxy (#932): the
+        composite gateway resolves names by listing EVERY mount, spawning the
+        whole fleet; direct routing spawns only the called namespace backend.
+        A failed proxy connect raises out of the CALL (the executor error
+        path types it), never a silent missing tool.
+        """
+
+        namespace, _, bare = name.partition("_")
+        proxy = self._namespace_servers.get(namespace)
+        if proxy is None or not bare:
+            if self._namespace_servers and name not in self._mcp_tools:
+                # A name outside every known tool must NEVER reach the
+                # composite: its resolution fallback (fastmcp >= 3.4) can list
+                # — and therefore spawn — every mounted backend. Typed error
+                # instead (the model hallucinated a tool name).
+                raise ValueError(
+                    f"unknown tool {name!r}: not in the preloaded tool catalog"
+                )
+            assert self._client is not None
+            return self._client, name
+        client = self._namespace_clients.get(namespace)
+        if client is None:
+            ctx = self._client_factory(proxy)
+            client = await ctx.__aenter__()
+            self._namespace_ctxs[namespace] = ctx
+            self._namespace_clients[namespace] = client
+        return client, bare
 
     def _timeout_for_tool(self, name: str) -> float:
         """Return the effective timeout for a single tool invocation."""
@@ -547,6 +605,14 @@ class AsyncMCPToolExecutor:
         if self._closed:
             return
         self._closed = True
+
+        for namespace, ctx in list(self._namespace_ctxs.items()):
+            try:
+                await asyncio.wait_for(ctx.__aexit__(None, None, None), timeout=5.0)
+            except Exception as exc:  # noqa: BLE001 - teardown continues; reason logged
+                logger.debug("Error closing namespace client %r: %s", namespace, exc)
+        self._namespace_ctxs.clear()
+        self._namespace_clients.clear()
 
         if self._client_ctx is not None:
             close_timeout = min(5.0, max(0.1, self._timeout))
@@ -580,6 +646,8 @@ class SyncMCPToolExecutor:
         client_factory: ClientFactory | None = None,
         permission_gate: Optional[Callable[[str, Mapping[str, Any]], str]] = None,
         tool_observer: Optional[ToolObserver | LegacyToolObserver] = None,
+        preloaded_tools: Mapping[str, Any] | None = None,
+        namespace_servers: Mapping[str, Any] | None = None,
     ):
         if timeout <= 0:
             raise ValueError("timeout must be positive")
@@ -593,6 +661,8 @@ class SyncMCPToolExecutor:
         self._async_executor = AsyncMCPToolExecutor(
             server,
             timeout=timeout,
+            preloaded_tools=preloaded_tools,
+            namespace_servers=namespace_servers,
             tool_timeouts=cleaned_tool_timeouts,
             client_factory=client_factory,
         )

@@ -147,6 +147,10 @@ def build_gateway(
     gw = base_gateway if base_gateway is not None else _new_base_gateway()
     make_proxy = proxy_factory or _proxy_for_spec
     accepts_cwd = _proxy_factory_accepts_cwd(make_proxy)
+    # Attached to the gateway object (not a module map keyed by id(gw)): it
+    # dies with the gateway, id-reuse cannot alias a stale registry, and a
+    # second build over the same base MERGES instead of overwriting.
+    registry: dict[str, Any] = getattr(gw, "_clio_namespace_proxies", {})
 
     # Names already provided (built-ins / earlier mounts) must not be shadowed.
     existing = _mounted_namespaces(gw) | set(BUILTIN_SERVER_NAMES)
@@ -174,9 +178,22 @@ def build_gateway(
             )
             _mount_with_namespace(gw, proxy, name)
             existing.add(name)
+            registry[name] = proxy
         except Exception as exc:  # noqa: BLE001 - non-fatal: log + skip a bad server
             logger.warning("failed to mount declared MCP %r: %s", name, exc)
+    gw._clio_namespace_proxies = registry  # type: ignore[attr-defined]
     return gw
+
+
+def namespace_proxies(gw: FastMCP) -> dict[str, Any]:
+    """The declared-server proxies mounted on ``gw``, keyed by namespace (#932).
+
+    Lets an executor route a namespaced call straight at ONE mounted proxy
+    instead of the composite (whose disabled-tool/hash fallbacks can list —
+    and therefore spawn — every mount).
+    """
+
+    return dict(getattr(gw, "_clio_namespace_proxies", {}))
 
 
 def _mounted_namespaces(gw: FastMCP) -> set[str]:
@@ -190,6 +207,18 @@ def _mounted_namespaces(gw: FastMCP) -> set[str]:
     except Exception:  # noqa: BLE001 - collision check is best-effort
         return set()
     return {_namespace_of(tool.name) for tool in tools}
+
+
+def list_tool_definitions(gw: FastMCP) -> dict[str, Any]:
+    """One transient full listing pass: ``{tool_name: MCPTool}``.
+
+    Connects every mounted proxy, lists, and CLOSES (the fleet is reaped —
+    pinned by test_mcp_fleet_lifecycle). Feed the result to BOTH
+    ``build_tool_catalog(tools=...)`` and the executors' ``preloaded_tools`` so
+    boot pays exactly one fan-out and executors never re-list (#932).
+    """
+
+    return {tool.name: tool for tool in _list_tools_sync(gw)}
 
 
 def _list_tools_sync(gw: FastMCP) -> list[Any]:
@@ -259,6 +288,7 @@ def build_tool_catalog(
     *,
     experts: Iterable[Any] | None = None,
     static_catalog: Mapping[str, ToolCatalogEntry] | None = None,
+    tools: list[Any] | None = None,
 ) -> dict[str, ToolCatalogEntry]:
     """Build the tool catalog from the static built-ins + connected MCP namespaces.
 
@@ -286,7 +316,8 @@ def build_tool_catalog(
         return merged
 
     visibility = _expert_visibility(experts)
-    for tool in _list_tools_sync(declared_gateway):
+    listed = tools if tools is not None else _list_tools_sync(declared_gateway)
+    for tool in listed:
         name = tool.name
         if name in merged:
             continue

@@ -93,7 +93,12 @@ from clio_agent.tools.execution import (
     create_sync_tool_executor,
     get_active_tool_workspace_root,
 )
-from clio_agent.tools.gateway import build_gateway, build_tool_catalog
+from clio_agent.tools.gateway import (
+    build_gateway,
+    build_tool_catalog,
+    list_tool_definitions,
+    namespace_proxies,
+)
 from clio_agent.tools.mcp_config import load_mcp_servers
 
 logger = logging.getLogger(__name__)
@@ -198,6 +203,8 @@ class ClioAgent(dspy.Module):
         chat_agent: DSPy Predict module with ChatAgentSignature
         arc: ARC Memory instance
         context_retriever: Context retrieval module
+        _tool_definitions: preloaded tool defs from the boot listing pass
+            (#932); None -> executors fall back to eager list_tools
         registry: Agent registry for discovery
 
     Example:
@@ -206,6 +213,9 @@ class ClioAgent(dspy.Module):
         >>> print(result.answer)
         >>> print(result.selected_expert)  # "chat", "utility", or tool-owner metadata
     """
+
+    # Class default so partially-constructed instances (test stubs) resolve it.
+    _tool_definitions: dict[str, Any] | None = None
 
     def __init__(
         self,
@@ -318,7 +328,11 @@ class ClioAgent(dspy.Module):
         # workspace spawns its stdio MCPs at most once. No active workspace falls
         # back to this default executor (current behavior).
         self._tool_gateway = self._build_tool_gateway(set_catalog=True)
-        self.tool_executor = create_sync_tool_executor(self._tool_gateway)
+        self.tool_executor = create_sync_tool_executor(
+            self._tool_gateway,
+            preloaded_tools=self._tool_definitions,
+            namespace_servers=namespace_proxies(self._tool_gateway),
+        )
         # Cache of workspace root -> sync tool executor (lazy, one per workspace).
         self._workspace_tool_executors: dict[str, Any] = {}
 
@@ -408,11 +422,32 @@ class ClioAgent(dspy.Module):
             return tool_gateway
         experts = self._discover_pack_experts()
         try:
-            catalog = build_tool_catalog(tool_gateway, experts=experts)
+            # ONE transient listing pass (#932/#702): the fleet spawns once,
+            # lists, and is reaped; the definitions feed BOTH the catalog and
+            # every executor's preloaded_tools so no executor ever re-lists
+            # (executor start stops fanning the fleet; servers spawn lazily
+            # per namespace on first call).
+            self._tool_definitions = list_tool_definitions(tool_gateway)
+            catalog = build_tool_catalog(
+                tool_gateway, experts=experts, tools=list(self._tool_definitions.values())
+            )
             set_active_catalog(catalog)
         except Exception as exc:  # noqa: BLE001 - degrade to static built-ins
+            # LOUD degrade (no-silent-fallback): losing the preloaded
+            # definitions flips every executor back to eager list_tools — the
+            # resident-fleet memory behavior #932 exists to kill. The reason
+            # must reach the trace, not just a verbose print.
+            from clio_agent.runtime import trace  # noqa: PLC0415
+
+            trace.event(
+                "TOOLS",
+                "tool_preload_failed reason=%s — catalog degraded to static "
+                "built-ins; executors fall back to eager list_tools (#932)",
+                exc,
+            )
             if self.verbose:
                 print(f"[ClioAgent] tool catalog derivation failed: {exc}")
+            self._tool_definitions = None
             set_active_catalog(None)
         return tool_gateway
 
@@ -433,7 +468,11 @@ class ClioAgent(dspy.Module):
         executor = self._workspace_tool_executors.get(root)
         if executor is None:
             gateway = self._build_tool_gateway(cwd=root)
-            executor = create_sync_tool_executor(gateway)
+            executor = create_sync_tool_executor(
+                gateway,
+                preloaded_tools=self._tool_definitions,
+                namespace_servers=namespace_proxies(gateway),
+            )
             self._workspace_tool_executors[root] = executor
         return executor
 

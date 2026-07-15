@@ -44,7 +44,9 @@ DEFAULT_MAX_LINES = 800
 RATCHET_BASELINE: dict[str, int] = {
     # #900: +4 for ClioAgent.shutdown closing the MCP tool executors (heavy reaping
     # logic lives in the new owner module runtime/process_tree.py, not here).
-    "src/clio_agent/agent.py": 2693,
+    # #932: +26 to wire the one boot listing pass + preloaded/namespace-routed
+    # executors (the fleet logic itself lives in tools/execution.py+gateway.py).
+    "src/clio_agent/agent.py": 2732,
     "src/clio_agent/arc/memory.py": 1394,
     "src/clio_agent/arc/segments.py": 1117,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
@@ -100,7 +102,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # #900: +2 for wiring probe_process_tree into the doctor collect().
     # owner ruling 2026-07-14: +3 for the DEGRADED-by-policy local-ARC doctor row.
     "src/clio_agent/runtime/status.py": 1188,
-    "src/clio_agent/tools/execution.py": 1187,
+    # #932: +62 for preloaded tool definitions (start() without the list_tools
+    # fan-out) and namespace-direct call routing with lazy per-namespace
+    # clients — the executor IS the owner module for this.
+    "src/clio_agent/tools/execution.py": 1259,
     "src/clio_agent/ui/cli.py": 1156,
 }
 
