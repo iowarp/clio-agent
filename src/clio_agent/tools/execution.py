@@ -6,6 +6,7 @@ import asyncio
 import concurrent.futures
 import contextvars
 import hashlib
+import inspect
 import json
 import logging
 import math
@@ -72,6 +73,10 @@ ToolObserver = Callable[
 ]
 LegacyToolObserver = Callable[[str, Mapping[str, Any], Optional[str], Optional[str]], None]
 MCPAppObserver = Callable[[str, Mapping[str, Any], Any, Any, str | None], None]
+PermissionGate = (
+    Callable[[str, Mapping[str, Any]], str]
+    | Callable[[str, Mapping[str, Any], Mapping[str, Any]], str]
+)
 
 # The active session workspace root rides its own ContextVar (kept: it is read on
 # the app-less CLI grounding path where no app resolves — see ``agent.py`` /
@@ -122,7 +127,7 @@ class ToolRuntimeHooks:
     field means "no such hook" (a no-op), never "look elsewhere".
     """
 
-    permission_gate: Optional[Callable[[str, Mapping[str, Any]], str]] = None
+    permission_gate: PermissionGate | None = None
     tool_observer: Optional[ToolObserver | LegacyToolObserver] = None
     tool_interceptor: Optional[Callable[[str, Mapping[str, Any]], Any | None]] = None
     cancellation_checker: Optional[Callable[[], bool]] = None
@@ -445,6 +450,54 @@ def _tool_annotations(tool: Any) -> Mapping[str, Any]:
     if annotations is None and isinstance(tool, Mapping):
         annotations = tool.get("annotations")
     return _mapping_value(annotations) or {}
+
+
+def _invoke_permission_gate(
+    gate: PermissionGate,
+    name: str,
+    args: Mapping[str, Any],
+    context: Mapping[str, Any] | None,
+) -> str:
+    """Invoke a permission gate with MCP context when its signature accepts it.
+
+    Two-argument permission hooks are a public compatibility seam. Signature
+    binding selects the legacy form before invocation instead of catching a
+    ``TypeError`` from inside the hook and accidentally executing it twice.
+    """
+
+    if context is None:
+        return gate(name, args)  # type: ignore[call-arg]
+    try:
+        gate_signature = inspect.signature(gate)
+    except (TypeError, ValueError):
+        return gate(name, args, context)  # type: ignore[call-arg]
+    try:
+        gate_signature.bind(name, args, context)
+    except TypeError:
+        return gate(name, args)  # type: ignore[call-arg]
+    return gate(name, args, context)  # type: ignore[call-arg]
+
+
+def _declared_mcp_permission_context(
+    name: str,
+    tool: Any,
+    namespace_servers: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Return annotation context for a tool owned by a declared MCP server.
+
+    Built-in ``fs``/``shell`` tools retain their existing explicit semantics.
+    Every configured server in ``namespace_servers`` is an external MCP
+    capability, so missing or malformed annotations remain visible to the GACT
+    gate and fail closed there.
+    """
+
+    namespace, separator, _bare_name = name.partition("_")
+    if not separator or namespace not in namespace_servers:
+        return None
+    return {
+        "kind": "external_mcp",
+        "annotations": dict(_tool_annotations(tool)),
+    }
 
 
 def _explicit_tool_timeout_seconds(tool: Any, args: Mapping[str, Any]) -> float | None:
@@ -920,7 +973,7 @@ class SyncMCPToolExecutor:
         setup_timeout: float = 10.0,
         tool_timeouts: Mapping[str, float] | None = None,
         client_factory: ClientFactory | None = None,
-        permission_gate: Optional[Callable[[str, Mapping[str, Any]], str]] = None,
+        permission_gate: PermissionGate | None = None,
         tool_observer: Optional[ToolObserver | LegacyToolObserver] = None,
         preloaded_tools: Mapping[str, Any] | None = None,
         namespace_servers: Mapping[str, Any] | None = None,
@@ -1109,8 +1162,18 @@ class SyncMCPToolExecutor:
         )
 
         if permission_gate is not None:
+            permission_context = _declared_mcp_permission_context(
+                name,
+                self._mcp_tools.get(name),
+                self._async_executor._namespace_servers,
+            )
             try:
-                decision = permission_gate(name, dict(effective_args))
+                decision = _invoke_permission_gate(
+                    permission_gate,
+                    name,
+                    dict(effective_args),
+                    permission_context,
+                )
             except Exception as exc:  # noqa: BLE001
                 raise PermissionError(f"permission gate raised: {exc!r}") from exc
             if decision != "allow":

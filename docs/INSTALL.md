@@ -70,7 +70,7 @@ prereleases. For a persistent backend-only installation, use `uv tool` (not the
 ephemeral `uvx` / `uv tool run` path):
 
 ```sh
-uv tool install clio-agent==0.7.7
+uv tool install clio-agent==0.7.8
 clio-agent serve
 ```
 

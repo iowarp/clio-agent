@@ -56,7 +56,7 @@ source-build mode with `CLIO_REF` or `GACT_REF`.
 
 CLIO pins its intentional DSPy 3.3 prerelease and the tested stable LiteLLM release,
 so installation does not enable prereleases globally. For a persistent backend-only
-install, use `uv tool install clio-agent==0.7.7`; reserve `uvx` / `uv tool run` for
+install, use `uv tool install clio-agent==0.7.8`; reserve `uvx` / `uv tool run` for
 disposable checks. See [install/README.md](install/README.md) for the full contract.
 
 ### More ways to get CLIO
