@@ -22,6 +22,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import (
+    _gact_app_context,
     _make_permission_gate,
     _make_tool_observer,
     _tool_session_context,
@@ -32,6 +33,7 @@ from clio_agent.gact.permission_gate import (
     _normalize_mcp_tool_annotations,
 )
 from clio_agent.gact.types import Message, Part
+from clio_agent.tools.execution import SyncMCPToolExecutor
 from tests.test_gact.conftest import complete_turn
 
 
@@ -150,6 +152,79 @@ def test_external_mcp_non_read_only_hint_registers_pending_permission(tmp_path: 
         thread.join(timeout=2.0)
         assert not thread.is_alive()
         assert result["decision"] == "deny"
+
+
+def test_declared_mcp_mutation_blocks_before_transport_until_ui_resolution(
+    tmp_path: Path,
+) -> None:
+    """Blueprint/workspace MCP tools must not bypass GACT annotation semantics."""
+
+    class DeclaredClient:
+        called = False
+
+        async def __aenter__(self) -> "DeclaredClient":
+            return self
+
+        async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+            return None
+
+        async def list_tools(self) -> list[Any]:
+            return []
+
+        async def call_tool(self, name: str, args: dict[str, Any]) -> Any:
+            DeclaredClient.called = True
+            return SimpleNamespace(data={"name": name, "args": args})
+
+        async def read_resource(self, uri: str) -> Any:
+            return SimpleNamespace(uri=uri)
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        session_id = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        executor = SyncMCPToolExecutor(
+            object(),
+            timeout=1.0,
+            client_factory=lambda _server: DeclaredClient(),
+            preloaded_tools={
+                "relay_jarvis_run": SimpleNamespace(
+                    name="relay_jarvis_run",
+                    inputSchema={"properties": {"pipeline_id": {"type": "string"}}},
+                    annotations={"readOnlyHint": False, "destructiveHint": False},
+                )
+            },
+            namespace_servers={"relay": object()},
+        )
+        result: dict[str, str] = {}
+
+        def call_tool() -> None:
+            with _gact_app_context(app), _tool_session_context(session_id):
+                result["value"] = executor.call_tool(
+                    "relay_jarvis_run",
+                    {"pipeline_id": "pipeline-1"},
+                )
+
+        thread = threading.Thread(target=call_tool)
+        thread.start()
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not app.state.permissions:
+            time.sleep(0.01)
+
+        assert DeclaredClient.called is False
+        pending = next(iter(app.state.permissions.values()))
+        assert pending["status"] == "pending"
+        assert pending["tool_call"] == {
+            "tool_name": "relay_jarvis_run",
+            "input": {"pipeline_id": "pipeline-1"},
+        }
+
+        response = client.post(f"/v1/permissions/{pending['id']}", json={"action": "allow"})
+        assert response.status_code == 204
+        thread.join(timeout=2.0)
+        executor.close()
+
+        assert not thread.is_alive()
+        assert DeclaredClient.called is True
+        assert '"name": "jarvis_run"' in result["value"]
 
 
 @pytest.mark.parametrize(
