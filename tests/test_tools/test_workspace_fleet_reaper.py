@@ -8,6 +8,10 @@ expirees and LRU overflow with typed reasons, and survive close failures.
 from __future__ import annotations
 
 import threading
+from pathlib import Path
+from typing import Any
+
+import pytest
 
 from clio_agent.tools.reaper import WorkspaceExecutorReaper
 
@@ -156,6 +160,7 @@ def test_agent_getter_rebuilds_reaped_executor(monkeypatch) -> None:
     built: list[str] = []
 
     def fake_build(*, cwd=None, set_catalog=False):
+        assert cwd is not None
         built.append(cwd)
         return f"gateway:{cwd}"
 
@@ -263,3 +268,233 @@ def test_turn_lease_wiring_pins_root_during_context(monkeypatch, tmp_path) -> No
     assert observed == {str(tmp_path): 1}, "lease not held during the turn context"
     _lock, _executors, leases = agent._workspace_state()
     assert leases == {}, "lease not released after the turn"
+
+
+def test_delegated_expert_holds_workspace_lease_until_worker_finishes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A delegated expert must remain leased while its worker uses bound tools."""
+
+    import asyncio
+    from types import SimpleNamespace
+
+    from clio_agent.gact import context as _ctx
+    from clio_agent.gact import turn_delegation
+    from tests.test_gact.test_workspace_tool_executor import (
+        _bare_agent,  # type: ignore[attr-defined]
+    )
+
+    root = str(tmp_path)
+    executor = FakeExecutor(idle_s=10_000)
+    agent = _bare_agent()
+    _lock, executors, leases = agent._workspace_state()
+    executors[root] = executor
+    session = SimpleNamespace(workspace_id="workspace-1")
+    workspace = SimpleNamespace(root_path=root)
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            agent=agent,
+            sessions=SimpleNamespace(get=lambda _sid: session),
+            workspaces=SimpleNamespace(get=lambda _wid: workspace),
+        )
+    )
+    state: Any = SimpleNamespace(
+        app=app,
+        sid="session-1",
+        turn_id="turn-1",
+        trace_id="trace-1",
+        workflow_schema=None,
+        invocation_agent_id="orchestrator",
+    )
+    agent_def: Any = SimpleNamespace(
+        id="catalog",
+        metadata={},
+        parent_id="orchestrator",
+        default_provider="",
+        default_model="",
+    )
+    observed: dict[str, object] = {}
+
+    def run_child(*_args: Any, **_kwargs: Any) -> Any:
+        observed["leases"] = dict(leases)
+        observed["reaped"] = _reaper(
+            executors,
+            leases=leases,
+            ttl=0.0,
+        ).reap_once()
+        return SimpleNamespace(
+            answer="",
+            reasoning="",
+            next_expert="finish",
+            next_task="",
+            workflow_state={},
+        )
+
+    async def await_work(_state: Any, work: Any) -> Any:
+        return await work
+
+    monkeypatch.setattr(
+        "clio_agent.gact.app._blueprint_runner_for_agent",
+        lambda _agent_def: object(),
+    )
+    monkeypatch.setattr(turn_delegation, "_run_dynamic_agent_compat", run_child)
+    monkeypatch.setattr(turn_delegation, "await_turn_work", await_work)
+    monkeypatch.setattr(turn_delegation, "_emit_semantic_event", lambda *_a, **_k: None)
+    monkeypatch.setattr(turn_delegation, "_prediction_workflow_state", lambda *_a, **_k: {})
+    monkeypatch.setattr(turn_delegation, "_runtime_declared_child_ids", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        turn_delegation,
+        "_agent_definition_uses_blueprint_runtime",
+        lambda _agent_def: False,
+    )
+
+    token = _ctx.set_app(app)
+    try:
+        asyncio.run(turn_delegation.run_dynamic_agent_sync(state, agent_def, "search"))
+    finally:
+        _ctx.reset(token)
+
+    assert observed["leases"] == {root: 1}
+    assert observed["reaped"] == []
+    assert executor.closed is False
+    assert leases == {}, "lease must be released after the delegated worker settles"
+
+
+def test_forward_turn_pins_workspace_across_sequential_delegations(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Catalog-to-runtime gaps remain pinned until the whole turn settles."""
+
+    import asyncio
+    from types import SimpleNamespace
+
+    from clio_agent.gact import context as _ctx
+    from clio_agent.gact import turn_forward
+    from tests.test_gact.test_workspace_tool_executor import (
+        _bare_agent,  # type: ignore[attr-defined]
+    )
+
+    root = str(tmp_path)
+    executor = FakeExecutor(idle_s=10_000)
+    agent = _bare_agent()
+    _lock, executors, leases = agent._workspace_state()
+    executors[root] = executor
+    session = SimpleNamespace(workspace_id="workspace-1")
+    workspace = SimpleNamespace(root_path=root)
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            agent=agent,
+            sessions=SimpleNamespace(get=lambda _sid: session),
+            workspaces=SimpleNamespace(get=lambda _wid: workspace),
+        )
+    )
+    state: Any = SimpleNamespace(app=app, sid="session-1")
+    observed: list[tuple[str, dict[str, int], list[str]]] = []
+
+    async def run_catalog_then_runtime(_state: Any) -> object:
+        for stage in ("catalog", "runtime"):
+            reaped = _reaper(
+                executors,
+                leases=leases,
+                ttl=0.0,
+            ).reap_once()
+            observed.append((stage, dict(leases), reaped))
+            await asyncio.sleep(0)
+        return object()
+
+    monkeypatch.setattr(turn_forward, "_forward_turn_leased", run_catalog_then_runtime)
+    token = _ctx.set_app(app)
+    try:
+        asyncio.run(turn_forward.forward_turn(state))
+    finally:
+        _ctx.reset(token)
+
+    assert observed == [
+        ("catalog", {root: 1}, []),
+        ("runtime", {root: 1}, []),
+    ]
+    assert executor.closed is False
+    assert leases == {}
+    assert _reaper(executors, leases=leases, ttl=0.0).reap_once() == [root]
+    assert executor.closed is True
+
+
+def test_cancelled_waiter_keeps_delegated_worker_workspace_leased(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Cancelling the asyncio waiter must not unpin a live sync worker."""
+
+    import asyncio
+    from types import SimpleNamespace
+
+    from clio_agent.gact import context as _ctx
+    from clio_agent.gact import turn_delegation
+    from tests.test_gact.test_workspace_tool_executor import (
+        _bare_agent,  # type: ignore[attr-defined]
+    )
+
+    root = str(tmp_path)
+    executor = FakeExecutor(idle_s=10_000)
+    agent = _bare_agent()
+    _lock, executors, leases = agent._workspace_state()
+    executors[root] = executor
+    session = SimpleNamespace(workspace_id="workspace-1")
+    workspace = SimpleNamespace(root_path=root)
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            agent=agent,
+            sessions=SimpleNamespace(get=lambda _sid: session),
+            workspaces=SimpleNamespace(get=lambda _wid: workspace),
+        )
+    )
+    state: Any = SimpleNamespace(app=app, sid="session-1")
+    agent_def: Any = SimpleNamespace(id="runtime")
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    worker_finished = threading.Event()
+
+    def run_child(*_args: Any, **_kwargs: Any) -> Any:
+        worker_started.set()
+        try:
+            assert release_worker.wait(timeout=10), "test did not release delegated worker"
+            return SimpleNamespace(answer="")
+        finally:
+            worker_finished.set()
+
+    async def await_work(_state: Any, work: Any) -> Any:
+        return await work
+
+    monkeypatch.setattr(
+        "clio_agent.gact.app._blueprint_runner_for_agent",
+        lambda _agent_def: object(),
+    )
+    monkeypatch.setattr(turn_delegation, "_run_dynamic_agent_compat", run_child)
+    monkeypatch.setattr(turn_delegation, "await_turn_work", await_work)
+
+    async def drive() -> None:
+        task = asyncio.create_task(turn_delegation.run_dynamic_agent_sync(state, agent_def, "run"))
+        assert await asyncio.to_thread(worker_started.wait, 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert leases == {root: 1}
+        assert _reaper(executors, leases=leases, ttl=0.0).reap_once() == []
+        assert executor.closed is False
+
+        release_worker.set()
+        assert await asyncio.to_thread(worker_finished.wait, 5)
+        for _ in range(100):
+            if not leases:
+                break
+            await asyncio.sleep(0.01)
+        assert leases == {}
+
+    token = _ctx.set_app(app)
+    try:
+        asyncio.run(drive())
+    finally:
+        release_worker.set()
+        _ctx.reset(token)
+
+    assert _reaper(executors, leases=leases, ttl=0.0).reap_once() == [root]
+    assert executor.closed is True
