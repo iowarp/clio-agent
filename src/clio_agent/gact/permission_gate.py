@@ -43,6 +43,7 @@ Responsibilities:
 from __future__ import annotations
 
 import fnmatch
+import inspect
 import re
 import threading
 import uuid
@@ -81,6 +82,114 @@ _DESTRUCTIVE_TOOL_SUBSTRINGS: tuple[str, ...] = (
 def _is_destructive(tool_name: str) -> bool:
     n = tool_name.lower()
     return any(needle in n for needle in _DESTRUCTIVE_TOOL_SUBSTRINGS)
+
+
+_EXTERNAL_MCP_PERMISSION_CONTEXT_KIND = "external_mcp"
+_MCP_BOOLEAN_HINTS: tuple[str, ...] = (
+    "readOnlyHint",
+    "destructiveHint",
+    "idempotentHint",
+    "openWorldHint",
+)
+
+
+def _normalize_mcp_tool_annotations(tool: Any) -> dict[str, Any] | None:
+    """Return a JSON-compatible MCP annotation mapping from a listed tool.
+
+    FastMCP currently exposes ``annotations`` as an MCP Pydantic model, while
+    tests and persisted descriptor rows commonly use plain mappings. Unknown
+    shapes normalize to ``None``; external-MCP classification treats that as
+    missing evidence and therefore requires permission.
+    """
+
+    raw = getattr(tool, "annotations", None)
+    if raw is None:
+        return None
+    if isinstance(raw, Mapping):
+        return dict(raw)
+    model_dump = getattr(raw, "model_dump", None)
+    if not callable(model_dump):
+        return None
+    try:
+        dumped = model_dump(mode="json", by_alias=True)
+    except TypeError:
+        dumped = model_dump()
+    if not isinstance(dumped, Mapping):
+        return None
+    return dict(dumped)
+
+
+def _external_mcp_permission_context(annotations: Any) -> dict[str, Any]:
+    """Build the explicit gate context for one external MCP tool call."""
+
+    return {
+        "kind": _EXTERNAL_MCP_PERMISSION_CONTEXT_KIND,
+        "annotations": annotations,
+    }
+
+
+def _invoke_permission_gate(
+    gate: Any,
+    name: str,
+    args: Mapping[str, Any],
+    context: Mapping[str, Any],
+) -> str:
+    """Invoke a gate with context while retaining legacy two-argument hooks.
+
+    The built-in gate accepts the structured third argument. Existing custom
+    hooks are a documented two-argument seam; signature binding selects that
+    form before invocation, avoiding a catch-and-retry that could accidentally
+    run a gate twice when its own body raises ``TypeError``.
+    """
+
+    try:
+        gate_signature = inspect.signature(gate)
+    except (TypeError, ValueError):
+        return gate(name, args, context)
+    try:
+        gate_signature.bind(name, args, context)
+    except TypeError:
+        return gate(name, args)
+    return gate(name, args, context)
+
+
+def _is_external_mcp_permission_context(context: Mapping[str, Any] | None) -> bool:
+    return bool(
+        isinstance(context, Mapping)
+        and context.get("kind") == _EXTERNAL_MCP_PERMISSION_CONTEXT_KIND
+    )
+
+
+def _external_mcp_annotations_are_read_only(annotations: Any) -> bool:
+    """Return whether annotations explicitly and consistently declare read-only.
+
+    MCP annotations are optional hints. The permission boundary therefore uses
+    the one safe positive case only: a real boolean ``readOnlyHint=true`` with
+    well-typed standard boolean hints and no contradictory
+    ``destructiveHint=true``. Everything else asks for permission.
+    """
+
+    if not isinstance(annotations, Mapping):
+        return False
+    for name in _MCP_BOOLEAN_HINTS:
+        value = annotations.get(name)
+        if value is not None and type(value) is not bool:
+            return False
+    return (
+        annotations.get("readOnlyHint") is True and annotations.get("destructiveHint") is not True
+    )
+
+
+def _tool_requires_permission(
+    tool_name: str,
+    context: Mapping[str, Any] | None,
+) -> bool:
+    """Classify a call without changing legacy non-external behavior."""
+
+    if _is_external_mcp_permission_context(context):
+        assert context is not None
+        return not _external_mcp_annotations_are_read_only(context.get("annotations"))
+    return _is_destructive(tool_name)
 
 
 def _is_safe_shell_diagnostic(tool_name: str, args: Mapping[str, Any]) -> bool:
@@ -480,7 +589,11 @@ def _make_permission_gate(app: "FastAPI"):
 
     DEFAULT_TIMEOUT_S = 600.0
 
-    def gate(name: str, args: Mapping[str, Any]) -> str:
+    def gate(
+        name: str,
+        args: Mapping[str, Any],
+        context: Mapping[str, Any] | None = None,
+    ) -> str:
         # iowarp/clio-agent#20: user-defined pre_tool hook can veto
         # the call by raising PermissionError. Returns ignored;
         # only the raise/no-raise distinction matters.
@@ -490,8 +603,13 @@ def _make_permission_gate(app: "FastAPI"):
             _fire_hook("pre_tool", name, dict(args))
         except PermissionError:
             return "deny"
-        if not _is_destructive(name):
+        if not _tool_requires_permission(name, context):
             return "allow"
+        subject = (
+            "external MCP tool"
+            if _is_external_mcp_permission_context(context)
+            else "destructive tool"
+        )
         # Prefer the session currently driving the turn. Recency is
         # only a fallback for truly out-of-band tool calls.
         sid, current = _resolve_tool_session(app)
@@ -507,9 +625,7 @@ def _make_permission_gate(app: "FastAPI"):
                         "tool_name": name,
                         "input": dict(args),
                     },
-                    "summary": (
-                        f"destructive tool {name!r} blocked by session.mode={current.mode!r}"
-                    ),
+                    "summary": (f"{subject} {name!r} blocked by session.mode={current.mode!r}"),
                     "created_at": datetime.now(timezone.utc).isoformat(),
                     "status": "auto_denied",
                     "action": "deny",
@@ -545,7 +661,7 @@ def _make_permission_gate(app: "FastAPI"):
                 args=args,
                 status="auto_denied",
                 action="deny",
-                summary=f"destructive tool {name!r} blocked by permission policy",
+                summary=f"{subject} {name!r} blocked by permission policy",
                 reason="policy_deny",
             )
             return "deny"
@@ -557,7 +673,7 @@ def _make_permission_gate(app: "FastAPI"):
                 args=args,
                 status="auto_approved",
                 action="allow",
-                summary=f"destructive tool {name!r} allowed by permission policy",
+                summary=f"{subject} {name!r} allowed by permission policy",
                 reason=f"policy_{policy_action}",
             )
             return "allow"
@@ -574,7 +690,7 @@ def _make_permission_gate(app: "FastAPI"):
                 "tool_name": name,
                 "input": dict(args),
             },
-            "summary": f"destructive tool call: {name}",
+            "summary": f"{subject} call: {name}",
             "created_at": datetime.now(timezone.utc).isoformat(),
             "status": "pending",
         }

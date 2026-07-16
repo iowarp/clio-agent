@@ -58,6 +58,10 @@ from clio_agent.gact.agents.runtime import (
     _retaining_react_cls,
 )
 from clio_agent.gact.events import Event
+from clio_agent.gact.permission_gate import (
+    _external_mcp_permission_context,
+    _invoke_permission_gate,
+)
 from clio_agent.gact.runtime.app_state import per_app_dict
 from clio_agent.gact.runtime.context_tokens import _resolve_expert_context_window
 from clio_agent.gact.runtime.globals import (
@@ -359,6 +363,7 @@ async def _call_enabled_external_mcp_tool(
     info: Mapping[str, Any],
     tool_name: str,
     tool_args: Mapping[str, Any],
+    tool_annotations: Any = None,
 ) -> str:
     """Call an explicitly enabled external MCP tool for a dynamic agent."""
 
@@ -370,7 +375,12 @@ async def _call_enabled_external_mcp_tool(
     gate = getattr(app.state, "pending_permission_gate", None)
     if gate is None:
         gate = app.state.make_permission_gate()
-    decision = gate(observer_name, dict(tool_args))
+    decision = _invoke_permission_gate(
+        gate,
+        observer_name,
+        dict(tool_args),
+        _external_mcp_permission_context(tool_annotations),
+    )
     if decision != "allow":
         raise PermissionError(f"tool call {observer_name!r} denied by permission gate")
 
@@ -432,12 +442,20 @@ def _run_external_mcp_tool_sync(
     info: Mapping[str, Any],
     tool_name: str,
     tool_args: Mapping[str, Any],
+    tool_annotations: Any = None,
 ) -> str:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(
-            _call_enabled_external_mcp_tool(app, server_id, info, tool_name, tool_args)
+            _call_enabled_external_mcp_tool(
+                app,
+                server_id,
+                info,
+                tool_name,
+                tool_args,
+                tool_annotations,
+            )
         )
 
     result: dict[str, Any] = {}
@@ -445,7 +463,14 @@ def _run_external_mcp_tool_sync(
     def _runner() -> None:
         try:
             result["value"] = asyncio.run(
-                _call_enabled_external_mcp_tool(app, server_id, info, tool_name, tool_args)
+                _call_enabled_external_mcp_tool(
+                    app,
+                    server_id,
+                    info,
+                    tool_name,
+                    tool_args,
+                    tool_annotations,
+                )
             )
         except BaseException as exc:  # noqa: BLE001
             result["error"] = exc
@@ -484,14 +509,23 @@ def _enabled_external_mcp_dspy_tools(app: Any, requested_tools: list[str]) -> di
             properties = schema.get("properties", {}) if isinstance(schema, Mapping) else {}
             if not isinstance(properties, dict):
                 properties = {}
+            tool_annotations = tool_row.get("annotations")
 
             def tool_fn(
                 _tool_name: str = tool_name,
                 _server_id: str = str(server_id),
                 _info: Mapping[str, Any] = info,
+                _tool_annotations: Any = tool_annotations,
                 **kwargs: Any,
             ) -> str:
-                return _run_external_mcp_tool_sync(app, _server_id, _info, _tool_name, kwargs)
+                return _run_external_mcp_tool_sync(
+                    app,
+                    _server_id,
+                    _info,
+                    _tool_name,
+                    kwargs,
+                    _tool_annotations,
+                )
 
             tool_fn.__name__ = tool_name
             tool_fn.__doc__ = description
