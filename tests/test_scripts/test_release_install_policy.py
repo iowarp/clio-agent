@@ -1,10 +1,9 @@
-"""Release-install policy tests for CLIO's intentional DSPy prerelease.
+"""Release-install policy tests for CLIO's pinned provider dependency boundary.
 
-DSPy 3.3.0b1 is a transitive dependency of a published clio-agent wheel.
-uv deliberately ignores transitive prereleases unless the consuming command
-opts in, which made the v0.7.5 wheel unsatisfiable through the documented uv
-installer. These tests keep every supported install path and the release smoke
-on the same explicit policy.
+CLIO intentionally uses DSPy 3.3.0b1, but enabling prereleases globally also
+admits unrelated development releases. The project declares DSPy directly and
+exactly, and pins the tested stable LiteLLM wheel, so every supported uv path can
+use its normal stable-resolution policy.
 """
 
 from __future__ import annotations
@@ -14,7 +13,9 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_VERSION = "0.7.6"
+EXPECTED_VERSION = "0.7.7"
+EXPECTED_DSPY = "dspy==3.3.0b1"
+EXPECTED_LITELLM = "litellm==1.91.3"
 
 
 def _text(relative_path: str) -> str:
@@ -23,33 +24,37 @@ def _text(relative_path: str) -> str:
     return (ROOT / relative_path).read_text(encoding="utf-8")
 
 
-def test_release_installers_explicitly_allow_transitive_prereleases() -> None:
-    """Every official uv path that installs CLIO opts into DSPy 3.3.0b1."""
+def test_release_installers_keep_uv_stable_only() -> None:
+    """Every official uv path installs CLIO without a global prerelease policy."""
 
     expected_commands = {
         "install/install.sh": (
-            "uv sync --prerelease allow --extra argonne",
-            'uv pip install --prerelease allow --quiet --python "$VENV/bin/python"',
+            "uv sync --extra argonne",
+            'uv pip install --quiet --python "$VENV/bin/python"',
         ),
         "install/install.ps1": (
-            "RunNative uv @('sync', '--prerelease', 'allow')",
-            "RunNative uv @('pip', 'install', '--prerelease', 'allow'",
+            "RunNative uv @('sync')",
+            "RunNative uv @('pip', 'install', '--quiet'",
         ),
-        "install/clio": (
-            'pip install --prerelease allow --python "$CLIO_VENV/bin/python" -U clio-agent',
-        ),
-        "install/build-gact-runtime.sh": (
-            'uv pip install --prerelease allow --python "$OUT/$PYBIN_REL" "$SPEC"',
-        ),
-        "install/build-gact-runtime.ps1": (
-            "@('pip', 'install', '--prerelease', 'allow', '--python', $pyBin, $spec)",
-        ),
+        "install/clio": ('pip install --python "$CLIO_VENV/bin/python" -U clio-agent',),
+        "install/build-gact-runtime.sh": ('uv pip install --python "$OUT/$PYBIN_REL" "$SPEC"',),
+        "install/build-gact-runtime.ps1": ("@('pip', 'install', '--python', $pyBin, $spec)",),
     }
 
     for relative_path, commands in expected_commands.items():
         contents = _text(relative_path)
+        assert "--prerelease" not in contents, relative_path
         for command in commands:
-            assert command in contents, f"{relative_path} lacks prerelease opt-in: {command}"
+            assert command in contents, f"{relative_path} lacks stable install path: {command}"
+
+
+def test_project_pins_dspy_prerelease_and_stable_litellm() -> None:
+    """The package pins only its intentional prerelease and tested provider wheel."""
+
+    pyproject = tomllib.loads(_text("pyproject.toml"))
+    dependencies = pyproject["project"]["dependencies"]
+    assert EXPECTED_DSPY in dependencies
+    assert EXPECTED_LITELLM in dependencies
 
 
 def test_release_workflow_smokes_the_built_wheel_before_publish() -> None:
@@ -57,28 +62,30 @@ def test_release_workflow_smokes_the_built_wheel_before_publish() -> None:
 
     workflow = _text(".github/workflows/release.yml")
     build = workflow.index("uv build")
-    smoke = workflow.index('uv tool install --python 3.12 --no-cache --prerelease allow "$wheel"')
-    import_check = workflow.index('"$UV_TOOL_BIN_DIR/clio-agent" --help')
-    publish = workflow.index("run: uv publish", import_check)
+    smoke = workflow.index('uv tool install --python 3.12 --no-cache "$wheel"')
+    version_check = workflow.index('"$UV_TOOL_BIN_DIR/clio-agent" --version')
+    publish = workflow.index("run: uv publish", version_check)
 
-    assert build < smoke < import_check < publish
+    assert build < smoke < version_check < publish
+    assert "--prerelease" not in workflow
     assert 'export UV_TOOL_DIR="$smoke_root/tools"' in workflow
     assert 'export UV_TOOL_BIN_DIR="$smoke_root/bin"' in workflow
     assert "-name 'clio_agent-*.whl'" in workflow
 
 
 def test_documented_persistent_uv_tool_install_has_the_same_policy() -> None:
-    """User-facing docs prefer persistent uv tools and include the beta opt-in."""
+    """User-facing docs prefer persistent uv tools without global prereleases."""
 
-    command = f"uv tool install --prerelease allow clio-agent=={EXPECTED_VERSION}"
+    command = f"uv tool install clio-agent=={EXPECTED_VERSION}"
     for relative_path in ("README.md", "docs/INSTALL.md", "install/README.md"):
         contents = _text(relative_path)
         assert command in contents
+        assert "--prerelease" not in contents
         assert "uvx" in contents or "uv tool run" in contents
 
 
 def test_package_init_and_lock_share_the_release_version() -> None:
-    """The package metadata, import surface, and lock all identify v0.7.6."""
+    """The package metadata, import surface, and lock all identify v0.7.7."""
 
     pyproject = tomllib.loads(_text("pyproject.toml"))
     assert pyproject["project"]["version"] == EXPECTED_VERSION
@@ -101,7 +108,7 @@ def test_package_init_and_lock_share_the_release_version() -> None:
     assert package_record in lock
 
 
-def test_source_and_ci_sync_commands_are_explicit_about_prereleases() -> None:
+def test_source_and_ci_sync_commands_keep_uv_stable_only() -> None:
     """Contributor and CI source installs preserve the same dependency policy."""
 
     for relative_path in (
@@ -111,6 +118,7 @@ def test_source_and_ci_sync_commands_are_explicit_about_prereleases() -> None:
         ".github/workflows/mutation.yml",
     ):
         contents = _text(relative_path)
+        assert "--prerelease" not in contents, relative_path
         for line in contents.splitlines():
             if "uv sync" in line:
-                assert "--prerelease allow" in line, relative_path
+                assert "--prerelease" not in line, relative_path

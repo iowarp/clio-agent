@@ -105,9 +105,9 @@ if ($ClioRef) {
     Say "Cloning clio-agent at $ClioRef (source-build mode)"
     RemoveTree (Join-Path $Prefix 'clio-agent')
     RunNative git @('clone', '--quiet', '--recurse-submodules', '--shallow-submodules', '--branch', $ClioRef, '--depth', '1', $ClioRepo, (Join-Path $Prefix 'clio-agent'))
-    Say "Installing clio-agent deps (uv sync --prerelease allow)"
+    Say "Installing clio-agent deps (uv sync)"
     Push-Location (Join-Path $Prefix 'clio-agent')
-    RunNative uv @('sync', '--prerelease', 'allow')
+    RunNative uv @('sync')
     Pop-Location
 } else {
     $pkgSpec = if ($ClioVersion) { "clio-agent==$ClioVersion" } else { 'clio-agent' }
@@ -116,7 +116,7 @@ if ($ClioRef) {
     New-Item -ItemType Directory -Force -Path (Join-Path $Prefix 'clio-agent') | Out-Null
     if ($PyInstall -eq 'uv') {
         RunNative uv @('venv', '--python', '>=3.12', $Venv)
-        RunNative uv @('pip', 'install', '--prerelease', 'allow', '--quiet', '--python', (Join-Path $Venv 'Scripts\python.exe'), $pkgSpec)
+        RunNative uv @('pip', 'install', '--quiet', '--python', (Join-Path $Venv 'Scripts\python.exe'), $pkgSpec)
     } else {
         RunNative python @('-m', 'venv', $Venv)
         $PipExe = Join-Path $Venv "Scripts\$PyInstall.exe"

@@ -418,7 +418,7 @@ main() {
       say "updating clio-agent to the latest PyPI release"
       if health; then say "stopping the running server first"; stop_server; fi
       if [[ -n "$uv_bin" ]]; then
-        "$uv_bin" pip install --prerelease allow --python "$CLIO_VENV/bin/python" -U clio-agent || { err "update failed"; return 1; }
+        "$uv_bin" pip install --python "$CLIO_VENV/bin/python" -U clio-agent || { err "update failed"; return 1; }
       else
         "$CLIO_VENV/bin/python" -m pip install -U clio-agent || { err "update failed (no uv; pip fallback also failed)"; return 1; }
       fi
