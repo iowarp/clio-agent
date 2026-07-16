@@ -1,9 +1,8 @@
 """Release-install policy tests for CLIO's pinned provider dependency boundary.
 
-CLIO intentionally uses DSPy 3.3.0b1, but enabling prereleases globally also
-admits unrelated development releases. The project declares DSPy directly and
-exactly, and pins the tested stable LiteLLM wheel, so every supported uv path can
-use its normal stable-resolution policy.
+CLIO intentionally uses DSPy 3.3.0b1. Locked source installs and direct wheel
+installs resolve that exact dependency, while uv's registry-backed resolver needs
+DSPy declared as an explicit root. The tested LiteLLM wheel stays exact.
 """
 
 from __future__ import annotations
@@ -13,7 +12,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_VERSION = "0.7.8"
+EXPECTED_VERSION = "0.7.9"
 EXPECTED_DSPY = "dspy==3.3.0b1"
 EXPECTED_LITELLM = "litellm==1.91.3"
 
@@ -24,28 +23,35 @@ def _text(relative_path: str) -> str:
     return (ROOT / relative_path).read_text(encoding="utf-8")
 
 
-def test_release_installers_keep_uv_stable_only() -> None:
-    """Every official uv path installs CLIO without a global prerelease policy."""
+def test_release_installers_explicitly_root_only_the_dspy_prerelease() -> None:
+    """Every official uv path admits DSPy without a global prerelease policy."""
 
     expected_commands = {
         "install/install.sh": (
             "uv sync --extra argonne",
-            'uv pip install --quiet --python "$VENV/bin/python"',
+            'uv pip install --quiet --python "$VENV/bin/python" "$pkg_spec" "dspy==3.3.0b1"',
         ),
         "install/install.ps1": (
             "RunNative uv @('sync')",
-            "RunNative uv @('pip', 'install', '--quiet'",
+            "RunNative uv @('pip', 'install', '--quiet', '--python', "
+            "(Join-Path $Venv 'Scripts\\python.exe'), $pkgSpec, 'dspy==3.3.0b1')",
         ),
-        "install/clio": ('pip install --python "$CLIO_VENV/bin/python" -U clio-agent',),
-        "install/build-gact-runtime.sh": ('uv pip install --python "$OUT/$PYBIN_REL" "$SPEC"',),
-        "install/build-gact-runtime.ps1": ("@('pip', 'install', '--python', $pyBin, $spec)",),
+        "install/clio": (
+            'pip install --python "$CLIO_VENV/bin/python" -U clio-agent "dspy==3.3.0b1"',
+        ),
+        "install/build-gact-runtime.sh": (
+            'uv pip install --python "$OUT/$PYBIN_REL" "$SPEC" "dspy==3.3.0b1"',
+        ),
+        "install/build-gact-runtime.ps1": (
+            "@('pip', 'install', '--python', $pyBin, $spec, 'dspy==3.3.0b1')",
+        ),
     }
 
     for relative_path, commands in expected_commands.items():
         contents = _text(relative_path)
         assert "--prerelease" not in contents, relative_path
         for command in commands:
-            assert command in contents, f"{relative_path} lacks stable install path: {command}"
+            assert command in contents, f"{relative_path} lacks narrow DSPy install: {command}"
 
 
 def test_project_pins_dspy_prerelease_and_stable_litellm() -> None:
@@ -67,16 +73,32 @@ def test_release_workflow_smokes_the_built_wheel_before_publish() -> None:
     publish = workflow.index("run: uv publish", version_check)
 
     assert build < smoke < version_check < publish
-    assert "--prerelease" not in workflow
     assert 'export UV_TOOL_DIR="$smoke_root/tools"' in workflow
     assert 'export UV_TOOL_BIN_DIR="$smoke_root/bin"' in workflow
     assert "-name 'clio_agent-*.whl'" in workflow
 
 
-def test_documented_persistent_uv_tool_install_has_the_same_policy() -> None:
-    """User-facing docs prefer persistent uv tools without global prereleases."""
+def test_release_workflow_smokes_the_published_registry_tool() -> None:
+    """After publish, CI proves the documented narrow registry install."""
 
-    command = f"uv tool install clio-agent=={EXPECTED_VERSION}"
+    workflow = _text(".github/workflows/release.yml")
+    publish = workflow.index("run: uv publish")
+    registry_job = workflow.index("registry-smoke:")
+    registry_install = workflow.index(
+        'uv tool install --python 3.12 --no-cache --with dspy==3.3.0b1 "clio-agent==$version"'
+    )
+
+    assert publish < registry_job < registry_install
+    assert "needs: pypi" in workflow[registry_job:registry_install]
+    assert "--prerelease" not in workflow
+    assert "assert dspy.__version__ == '3.3.0b1'" in workflow
+    assert "assert hasattr(dspy, 'ReActV2')" in workflow
+
+
+def test_documented_persistent_uv_tool_install_has_the_same_policy() -> None:
+    """User-facing registry installs explicitly root only the DSPy prerelease."""
+
+    command = f"uv tool install --with dspy==3.3.0b1 clio-agent=={EXPECTED_VERSION}"
     for relative_path in ("README.md", "docs/INSTALL.md", "install/README.md"):
         contents = _text(relative_path)
         assert command in contents
@@ -85,7 +107,7 @@ def test_documented_persistent_uv_tool_install_has_the_same_policy() -> None:
 
 
 def test_package_init_and_lock_share_the_release_version() -> None:
-    """The package metadata, import surface, and lock all identify v0.7.8."""
+    """The package metadata, import surface, and lock all identify v0.7.9."""
 
     pyproject = tomllib.loads(_text("pyproject.toml"))
     assert pyproject["project"]["version"] == EXPECTED_VERSION

@@ -65,12 +65,13 @@ uv run src/clio_agent/ui/cli.py        # or: uv run clio-agent serve
 ```
 
 CLIO intentionally pins DSPy 3.3.0b1 for its retained ReActV2 runtime and pins the
-tested stable LiteLLM release. The exact direct pins resolve without admitting all
+tested stable LiteLLM release. Registry-backed uv tool resolution requires the exact
+DSPy dependency as an explicit root, which avoids globally admitting unrelated
 prereleases. For a persistent backend-only installation, use `uv tool` (not the
 ephemeral `uvx` / `uv tool run` path):
 
 ```sh
-uv tool install clio-agent==0.7.8
+uv tool install --with dspy==3.3.0b1 clio-agent==0.7.9
 clio-agent serve
 ```
 
