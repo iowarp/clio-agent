@@ -21,6 +21,10 @@ def _make_fake_client(tool_names: list[str], *, fail: bool = False):
     class _Tool:
         def __init__(self, name: str) -> None:
             self.name = name
+            self.annotations = {
+                "readOnlyHint": True,
+                "destructiveHint": False,
+            }
 
     class _FakeClient:
         def __init__(self, transport: object) -> None:
@@ -118,6 +122,10 @@ def test_reconnect_success_updates_tools_and_status(
     row = client.app.state.external_mcp_servers[sid]
     assert row["status"] == "ready"
     assert row["tools"] == ["alpha", "beta"]
+    assert row["tool_annotations"] == {
+        "alpha": {"readOnlyHint": True, "destructiveHint": False},
+        "beta": {"readOnlyHint": True, "destructiveHint": False},
+    }
     assert "error" not in row
 
 

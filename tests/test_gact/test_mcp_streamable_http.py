@@ -84,6 +84,7 @@ def _seed_streamable_http(client: TestClient, sid: str = "mcp_ext_sh01") -> str:
             # tools left empty so the LIVE-listing transport branch is what is
             # exercised (not the declared-descriptor rows).
             "tools": [],
+            "tool_annotations": {"sh_tool": {"readOnlyHint": True}},
             "spec": {"transport": "streamable-http", "url": "https://mcp.example.com/mcp"},
         }
     }

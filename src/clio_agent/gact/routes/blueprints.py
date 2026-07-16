@@ -64,6 +64,7 @@ from clio_agent.gact.agents.resolution import (
     _runtime_session_agent_overlay,
     _runtime_workspace_catalog_cwd,
 )
+from clio_agent.gact.permission_gate import _normalize_mcp_tool_annotations
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Session
 
 if TYPE_CHECKING:
@@ -654,6 +655,7 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                             or getattr(live_tool, "output_schema", None)
                             or declared.get("output_schema")
                             or {},
+                            "annotations": _normalize_mcp_tool_annotations(live_tool),
                         }
                     )
                 declared_names = {

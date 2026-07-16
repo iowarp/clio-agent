@@ -10,6 +10,7 @@ Drives the bridge directly (no FastMCP server needed) and asserts:
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from datetime import datetime, timezone
@@ -26,6 +27,10 @@ from clio_agent.gact.app import (
     _tool_session_context,
     build_app,
 )
+from clio_agent.gact.permission_gate import (
+    _external_mcp_permission_context,
+    _normalize_mcp_tool_annotations,
+)
 from clio_agent.gact.types import Message, Part
 from tests.test_gact.conftest import complete_turn
 
@@ -34,6 +39,258 @@ def test_non_destructive_tool_fast_allows(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "s.json")
     gate = _make_permission_gate(app)
     assert gate("hdf5_list_datasets", {}) == "allow"
+
+
+def test_external_mcp_explicit_read_only_hint_fast_allows(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    gate = _make_permission_gate(app)
+
+    decision = gate(
+        "remote.lookup",
+        {"resource_id": "resource-1"},
+        _external_mcp_permission_context(
+            {
+                "readOnlyHint": True,
+                "destructiveHint": False,
+                "idempotentHint": True,
+            }
+        ),
+    )
+
+    assert decision == "allow"
+    assert app.state.permissions == {}
+
+
+def test_real_mcp_tool_annotations_normalize_with_protocol_aliases() -> None:
+    from mcp.types import ToolAnnotations
+
+    tool = SimpleNamespace(
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+        )
+    )
+
+    assert _normalize_mcp_tool_annotations(tool) == {
+        "title": None,
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": None,
+        "openWorldHint": None,
+    }
+
+
+@pytest.mark.parametrize(
+    "annotations",
+    [
+        None,
+        {},
+        {"readOnlyHint": False},
+        {"readOnlyHint": "true"},
+        {"readOnlyHint": True, "destructiveHint": True},
+        {"readOnlyHint": True, "idempotentHint": "true"},
+    ],
+    ids=[
+        "missing",
+        "empty",
+        "false",
+        "non_boolean",
+        "contradictory",
+        "malformed_sibling_hint",
+    ],
+)
+def test_external_mcp_without_valid_read_only_hint_requires_permission(
+    tmp_path: Path,
+    annotations: Any,
+) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    gate = _make_permission_gate(app)
+
+    decision = gate(
+        "remote.submit",
+        {"request_id": "request-1"},
+        _external_mcp_permission_context(annotations),
+    )
+
+    # No session exists to receive an interactive decision, so reaching the
+    # permission path fails closed immediately instead of invoking the tool.
+    assert decision == "deny"
+
+
+def test_external_mcp_non_read_only_hint_registers_pending_permission(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        session_id = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        gate = _make_permission_gate(app)
+        result: dict[str, str] = {}
+
+        def call_gate() -> None:
+            with _tool_session_context(session_id):
+                result["decision"] = gate(
+                    "remote.submit",
+                    {"request_id": "request-1"},
+                    _external_mcp_permission_context({"readOnlyHint": False}),
+                )
+
+        thread = threading.Thread(target=call_gate)
+        thread.start()
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not app.state.permissions:
+            time.sleep(0.01)
+
+        assert app.state.permissions
+        pending = next(iter(app.state.permissions.values()))
+        assert pending["session_id"] == session_id
+        assert pending["status"] == "pending"
+        assert pending["tool_call"]["tool_name"] == "remote.submit"
+        assert pending["summary"] == "external MCP tool call: remote.submit"
+
+        response = client.post(f"/v1/permissions/{pending['id']}", json={"action": "deny"})
+        assert response.status_code == 204
+        thread.join(timeout=2.0)
+        assert not thread.is_alive()
+        assert result["decision"] == "deny"
+
+
+@pytest.mark.parametrize(
+    "annotations",
+    [None, {"readOnlyHint": False}, {"readOnlyHint": "true"}],
+    ids=["missing", "false", "invalid"],
+)
+def test_dynamic_external_mcp_requires_permission_before_client_invocation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    annotations: Any,
+) -> None:
+    from clio_agent.gact.agents import builders
+
+    class MustNotStartClient:
+        constructed = False
+
+        def __init__(self, transport: Any) -> None:
+            MustNotStartClient.constructed = True
+
+    import fastmcp
+
+    monkeypatch.setattr(fastmcp, "Client", MustNotStartClient)
+    app = build_app(sessions_path=tmp_path / "s.json")
+    info = {
+        "name": "remote",
+        "spec": {"transport": "stdio", "command": "must-not-run", "args": []},
+    }
+
+    with pytest.raises(PermissionError, match="denied by permission gate"):
+        asyncio.run(
+            builders._call_enabled_external_mcp_tool(
+                app,
+                "srv",
+                info,
+                "submit",
+                {"request_id": "request-1"},
+                annotations,
+            )
+        )
+
+    assert MustNotStartClient.constructed is False
+
+
+def test_dynamic_external_mcp_read_only_hint_invokes_client(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.gact.agents import builders
+
+    class FakeClient:
+        called = False
+
+        def __init__(self, transport: Any) -> None:
+            self.transport = transport
+
+        async def __aenter__(self) -> "FakeClient":
+            return self
+
+        async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+            return None
+
+        async def call_tool(self, name: str, args: dict[str, Any]) -> Any:
+            FakeClient.called = True
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="text", text=f"{name}:ok")],
+                isError=False,
+            )
+
+    import fastmcp
+
+    monkeypatch.setattr(fastmcp, "Client", FakeClient)
+    monkeypatch.setattr(
+        "clio_agent.tools.mcp_config.transport_from_spec",
+        lambda spec: spec,
+    )
+    app = build_app(sessions_path=tmp_path / "s.json")
+    info = {
+        "name": "remote",
+        "spec": {"transport": "stdio", "command": "fake", "args": []},
+    }
+
+    result = asyncio.run(
+        builders._call_enabled_external_mcp_tool(
+            app,
+            "srv",
+            info,
+            "lookup",
+            {"resource_id": "resource-1"},
+            {"readOnlyHint": True},
+        )
+    )
+
+    assert FakeClient.called is True
+    assert result == "lookup:ok"
+
+
+@pytest.mark.parametrize(
+    "tool_annotations",
+    [
+        {},
+        {"submit": {"readOnlyHint": False}},
+        {"submit": {"readOnlyHint": "true"}},
+    ],
+    ids=["missing", "false", "invalid"],
+)
+def test_external_mcp_route_requires_permission_before_client_invocation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tool_annotations: dict[str, Any],
+) -> None:
+    class MustNotStartClient:
+        constructed = False
+
+        def __init__(self, transport: Any) -> None:
+            MustNotStartClient.constructed = True
+
+    import fastmcp
+
+    monkeypatch.setattr(fastmcp, "Client", MustNotStartClient)
+    app = build_app(sessions_path=tmp_path / "s.json")
+    app.state.external_mcp_servers = {
+        "mcp_ext_test": {
+            "id": "mcp_ext_test",
+            "name": "remote",
+            "status": "ready",
+            "tools": ["submit"],
+            "tool_annotations": tool_annotations,
+            "spec": {"transport": "stdio", "command": "must-not-run", "args": []},
+        }
+    }
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/mcp/servers/mcp_ext_test/call",
+            json={"tool": "submit", "args": {"request_id": "request-1"}},
+        )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["error"] == "permission_error"
+    assert MustNotStartClient.constructed is False
 
 
 def test_builtin_shell_tool_allows_safe_diagnostic_command(tmp_path: Path) -> None:
