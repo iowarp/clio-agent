@@ -87,7 +87,7 @@ else
   SPEC="clio-agent @ ${REPO_URL}@${REF}"
 fi
 echo "[build-gact-runtime] installing: $SPEC (no extras)"
-uv pip install --prerelease allow --python "$OUT/$PYBIN_REL" "$SPEC"
+uv pip install --python "$OUT/$PYBIN_REL" "$SPEC"
 
 SIZE_BEFORE="$(dir_size_mb "$OUT")"
 echo "[build-gact-runtime] size before prune: ${SIZE_BEFORE} MB"

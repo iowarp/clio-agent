@@ -53,8 +53,9 @@ jobs:
           export UV_TOOL_BIN_DIR="$smoke_root/bin"
           wheel="$(find dist -maxdepth 1 -type f -name 'clio_agent-*.whl' -print -quit)"
           test -n "$wheel"
-          uv tool install --python 3.12 --no-cache --prerelease allow "$wheel"
-          "$UV_TOOL_BIN_DIR/clio-agent" --help >/dev/null
+          uv tool install --python 3.12 --no-cache "$wheel"
+          version="${GITHUB_REF_NAME#v}"
+          "$UV_TOOL_BIN_DIR/clio-agent" --version | grep -Fx "clio-agent $version" >/dev/null
 
       - name: Publish to PyPI
         run: uv publish

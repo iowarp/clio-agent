@@ -49,19 +49,19 @@ That's it — no `git`, no `go`.
 
 ### Persistent backend-only install with uv
 
-CLIO intentionally uses `dspy>=3.3.0b1` for the retained ReActV2 runtime. Because
-DSPy 3.3 is currently a prerelease and is transitive when installing the published
-CLIO wheel, uv requires an explicit opt-in. The one-line installers above supply it.
+CLIO intentionally pins `dspy==3.3.0b1` for the retained ReActV2 runtime and
+`litellm==1.91.3` as its tested stable provider boundary. These direct pins let uv
+resolve the published wheel without globally admitting prerelease dependencies.
 
 If you only need the long-running `clio-agent` backend, install it as a persistent uv
 tool rather than using the ephemeral `uvx` / `uv tool run` environment:
 
 ```sh
-uv tool install --prerelease allow clio-agent==0.7.6
+uv tool install clio-agent==0.7.7
 clio-agent serve
 ```
 
-Use `uv tool upgrade --prerelease allow clio-agent` for later upgrades. The full
+Use `uv tool upgrade clio-agent` for later upgrades. The full
 one-line installer remains the supported path when you also want the CLIO-branded TUI.
 
 ## Source-build mode (track unreleased work)
@@ -102,7 +102,7 @@ CLIO_REF=develop CLIO_GIT_PROTOCOL=ssh \
 
 ```sh
 # Pin the PyPI version and matching clio-agent GitHub release tag
-CLIO_VERSION=0.7.6 \
+CLIO_VERSION=0.7.7 \
   curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
 ```
 

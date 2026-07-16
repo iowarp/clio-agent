@@ -60,16 +60,17 @@ clio-agent — nothing else to install.
 ## f) From source (contributors)
 ```sh
 git clone --recurse-submodules https://github.com/iowarp/clio-agent
-cd clio-agent && uv sync --prerelease allow --extra optimizers --extra argonne
+cd clio-agent && uv sync --extra optimizers --extra argonne
 uv run src/clio_agent/ui/cli.py        # or: uv run clio-agent serve
 ```
 
-CLIO intentionally depends on the DSPy 3.3 prerelease for its retained ReActV2
-runtime. The installer handles uv's prerelease opt-in. For a persistent backend-only
-installation, use `uv tool` (not the ephemeral `uvx` / `uv tool run` path):
+CLIO intentionally pins DSPy 3.3.0b1 for its retained ReActV2 runtime and pins the
+tested stable LiteLLM release. The exact direct pins resolve without admitting all
+prereleases. For a persistent backend-only installation, use `uv tool` (not the
+ephemeral `uvx` / `uv tool run` path):
 
 ```sh
-uv tool install --prerelease allow clio-agent==0.7.6
+uv tool install clio-agent==0.7.7
 clio-agent serve
 ```
 
