@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextvars
+import hashlib
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -15,7 +17,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Optional, Protocol
+from typing import Any, Iterator, Optional, Protocol, cast
 from urllib.parse import urlsplit
 
 import dspy
@@ -380,10 +382,123 @@ ToolExecutor = SyncToolExecutor
 # not from a hardcoded core table. Core ships no default overrides.
 DEFAULT_TOOL_TIMEOUTS: dict[str, float] = {}
 REPEATED_TRANSIENT_FAILURE_LIMIT = 2
+SYNC_TOOL_RESULT_GRACE_SECONDS = 1.0
+
+
+@dataclass(frozen=True)
+class _ToolTimeoutBudget:
+    """One invocation's executor timeout and whether the tool explicitly declared it."""
+
+    seconds: float
+    explicitly_declared: bool
 
 
 class RepeatedToolFailureError(RuntimeError):
     """Raised when a tool keeps failing with transient infrastructure errors."""
+
+
+class UncertainMutatingToolOutcomeError(RuntimeError):
+    """Raised when a mutating, non-idempotent tool times out with unknown outcome.
+
+    The remote operation may have crossed its side-effect boundary even though no
+    result reached the agent. Retrying such a call can duplicate the mutation, so
+    the executor blocks an identical later call until a fresh executor is built.
+    """
+
+    def __init__(self, tool: str, timeout_seconds: float, *, retry_blocked: bool) -> None:
+        phase = "prior uncertain timeout blocks this retry" if retry_blocked else "call timed out"
+        super().__init__(
+            "UncertainMutatingToolOutcomeError("
+            f"tool={tool!r}, status='outcome_unknown', timeout_seconds={timeout_seconds:g}, "
+            "retry_safe=False, executor_work_may_continue=True, action='do_not_retry', "
+            f"message={phase!r}; no durable result was received; query durable status or "
+            "reconcile the remote system before any new mutation)"
+        )
+
+
+def _mapping_value(value: Any) -> Mapping[str, Any] | None:
+    """Return a mapping projection for MCP/Pydantic metadata values."""
+
+    if isinstance(value, Mapping):
+        return value
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        projected = dump(by_alias=True, exclude_none=True)
+        if isinstance(projected, Mapping):
+            return projected
+    return None
+
+
+def _tool_input_schema(tool: Any) -> Mapping[str, Any]:
+    """Return one MCP tool's input schema without guessing from call arguments."""
+
+    schema = getattr(tool, "inputSchema", None)
+    if schema is None and isinstance(tool, Mapping):
+        schema = tool.get("inputSchema") or tool.get("input_schema")
+    return _mapping_value(schema) or {}
+
+
+def _tool_annotations(tool: Any) -> Mapping[str, Any]:
+    """Return protocol-alias MCP annotations for retry-safety decisions."""
+
+    annotations = getattr(tool, "annotations", None)
+    if annotations is None and isinstance(tool, Mapping):
+        annotations = tool.get("annotations")
+    return _mapping_value(annotations) or {}
+
+
+def _explicit_tool_timeout_seconds(tool: Any, args: Mapping[str, Any]) -> float | None:
+    """Read standard, explicitly supplied timeout arguments declared by the tool schema.
+
+    Only arguments present in both the MCP input schema and this invocation count.
+    Schema defaults are deliberately ignored, preserving the executor's existing
+    default for callers that did not explicitly request a longer operation. An
+    active ``wait_timeout_seconds`` participates only when ``wait_for_terminal`` is
+    true; otherwise it does not describe this call's wall-clock lifetime.
+
+    Explicit budgets are additive rather than alternatives. A tool may spend one
+    budget executing remote work and another waiting or collecting its result;
+    summing them is the only generic derivation that cannot undercut a valid
+    sequential implementation. The executor's base timeout is added separately as
+    transport/protocol overhead around those declared phases.
+    """
+
+    properties = _mapping_value(_tool_input_schema(tool).get("properties")) or {}
+    candidates: list[float] = []
+    for field in ("timeout_seconds", "wait_timeout_seconds"):
+        if field not in properties or field not in args:
+            continue
+        if field == "wait_timeout_seconds" and args.get("wait_for_terminal") is not True:
+            continue
+        raw = args[field]
+        if isinstance(raw, bool):
+            continue
+        try:
+            seconds = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(seconds) and seconds > 0:
+            candidates.append(seconds)
+    return sum(candidates) if candidates else None
+
+
+def _tool_timeout_is_retry_safe(tool: Any) -> bool:
+    """Return whether MCP annotations make a timed-out call safe to repeat."""
+
+    annotations = _tool_annotations(tool)
+    return annotations.get("readOnlyHint") is True or annotations.get("idempotentHint") is True
+
+
+def _tool_call_fingerprint(name: str, args: Mapping[str, Any]) -> str:
+    """Return a stable, non-secret-bearing identity for one attempted tool call."""
+
+    encoded = json.dumps(
+        {"tool": name, "args": dict(args)},
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _clean_tool_timeouts(tool_timeouts: Mapping[str, float] | None) -> dict[str, float]:
@@ -508,7 +623,9 @@ class AsyncMCPToolExecutor:
         self._connected_namespaces: set[str] = set()
         self._timeout = timeout
         self._tool_timeouts = cleaned_tool_timeouts
-        self._client_factory = client_factory or Client
+        self._uncertain_mutating_timeouts: dict[str, float] = {}
+        self._uncertain_mutating_timeouts_lock = threading.Lock()
+        self._client_factory = cast(ClientFactory, client_factory or Client)
         self._client_ctx: MCPClientProtocol | None = None
         self._client: MCPClientProtocol | None = None
         self._preloaded_tools = dict(preloaded_tools) if preloaded_tools is not None else None
@@ -576,9 +693,7 @@ class AsyncMCPToolExecutor:
         outcome = await self.call_tool_result(name, args)
         return outcome.model_text
 
-    async def call_tool_result(
-        self, name: str, args: Mapping[str, Any]
-    ) -> _MCPCallOutcome:
+    async def call_tool_result(self, name: str, args: Mapping[str, Any]) -> _MCPCallOutcome:
         """Call an MCP tool and preserve its private raw result projection."""
         if self._closed:
             raise RuntimeError("AsyncMCPToolExecutor is closed")
@@ -586,7 +701,15 @@ class AsyncMCPToolExecutor:
             raise RuntimeError("AsyncMCPToolExecutor is not started")
 
         async with self._call_lock:
-            timeout = self._timeout_for_tool(name)
+            prior_uncertain = self._prior_uncertain_mutating_timeout(name, args)
+            if prior_uncertain is not None:
+                raise UncertainMutatingToolOutcomeError(
+                    name,
+                    prior_uncertain,
+                    retry_blocked=True,
+                )
+            budget = self._timeout_budget_for_call(name, args)
+            timeout = budget.seconds
             client, on_server_name, namespace = await self._route(name)
             # #934: the namespace backend SPAWNS on its first forwarded call
             # (proxy ctx-enter spawns nothing), so first-call success/failure
@@ -604,6 +727,8 @@ class AsyncMCPToolExecutor:
                 # errors needs an initialize-level signal (future refinement).
                 if first_call and namespace is not None:
                     spawn_diet.spawn_failed(namespace)
+                if not self._tool_timeout_is_retry_safe(name):
+                    raise self.mark_uncertain_mutating_timeout(name, args, timeout) from exc
                 raise TimeoutError(f"MCP tool {name!r} timed out after {timeout:g}s") from exc
             except Exception:
                 if first_call and namespace is not None:
@@ -669,9 +794,7 @@ class AsyncMCPToolExecutor:
                 # composite: its resolution fallback (fastmcp >= 3.4) can list
                 # — and therefore spawn — every mounted backend. Typed error
                 # instead (the model hallucinated a tool name).
-                raise ValueError(
-                    f"unknown tool {name!r}: not in the preloaded tool catalog"
-                )
+                raise ValueError(f"unknown tool {name!r}: not in the preloaded tool catalog")
             assert self._client is not None
             return self._client, name, None
         client = self._namespace_clients.get(namespace)
@@ -687,6 +810,51 @@ class AsyncMCPToolExecutor:
 
         return self._tool_timeouts.get(name, self._timeout)
 
+    def _timeout_budget_for_call(
+        self,
+        name: str,
+        args: Mapping[str, Any],
+    ) -> _ToolTimeoutBudget:
+        """Return a timeout that cannot expire before an explicit tool-call budget."""
+
+        base = self._timeout_for_tool(name)
+        configured_explicitly = name in self._tool_timeouts
+        declared = _explicit_tool_timeout_seconds(self._mcp_tools.get(name), args)
+        if declared is None:
+            return _ToolTimeoutBudget(base, explicitly_declared=configured_explicitly)
+        return _ToolTimeoutBudget(base + declared, explicitly_declared=True)
+
+    def _tool_timeout_is_retry_safe(self, name: str) -> bool:
+        """Return whether protocol annotations permit retry after an unknown timeout."""
+
+        return _tool_timeout_is_retry_safe(self._mcp_tools.get(name))
+
+    def _prior_uncertain_mutating_timeout(
+        self,
+        name: str,
+        args: Mapping[str, Any],
+    ) -> float | None:
+        """Return a prior uncertain timeout that fences an identical mutation."""
+
+        with self._uncertain_mutating_timeouts_lock:
+            return self._uncertain_mutating_timeouts.get(_tool_call_fingerprint(name, args))
+
+    def mark_uncertain_mutating_timeout(
+        self,
+        name: str,
+        args: Mapping[str, Any],
+        timeout_seconds: float,
+    ) -> UncertainMutatingToolOutcomeError:
+        """Fence a non-idempotent call after a timeout with no durable result."""
+
+        with self._uncertain_mutating_timeouts_lock:
+            self._uncertain_mutating_timeouts[_tool_call_fingerprint(name, args)] = timeout_seconds
+        return UncertainMutatingToolOutcomeError(
+            name,
+            timeout_seconds,
+            retry_blocked=False,
+        )
+
     def get_tool_names(self) -> list[str]:
         """Return model-visible discovered tool names.
 
@@ -700,9 +868,7 @@ class AsyncMCPToolExecutor:
         """Return model-visible MCP tool definitions keyed by stable name."""
 
         return {
-            name: tool
-            for name, tool in self._mcp_tools.items()
-            if _tool_visible_to_model(tool)
+            name: tool for name, tool in self._mcp_tools.items() if _tool_visible_to_model(tool)
         }
 
     def get_all_tool_definitions(self) -> dict[str, Any]:
@@ -970,17 +1136,36 @@ class SyncMCPToolExecutor:
 
         notify_tool_observer(tool_observer, name, effective_args, "started", None)
 
+        budget = self._async_executor._timeout_budget_for_call(name, effective_args)
+        timeout = budget.seconds
         try:
-            timeout = self._timeout_for_tool(name)
             outcome = self._run_coroutine(
                 self._async_executor.call_tool_result(name, effective_args),
-                timeout=timeout,
+                timeout=timeout + SYNC_TOOL_RESULT_GRACE_SECONDS,
                 action=f"MCP tool {name!r}",
             )
             raise_if_cancelled("tool_call_after")
         except Exception as exc:
+            if isinstance(
+                exc, TimeoutError
+            ) and not self._async_executor._tool_timeout_is_retry_safe(name):
+                uncertain = self._async_executor.mark_uncertain_mutating_timeout(
+                    name,
+                    effective_args,
+                    timeout,
+                )
+                error_text = repr(uncertain)
+                notify_tool_observer(
+                    tool_observer,
+                    name,
+                    effective_args,
+                    "completed",
+                    error_text,
+                )
+                raise uncertain from exc
             error_text = repr(exc)
-            self._record_tool_failure(name, error_text)
+            if not isinstance(exc, UncertainMutatingToolOutcomeError):
+                self._record_tool_failure(name, error_text)
             notify_tool_observer(tool_observer, name, effective_args, "completed", error_text)
             raise
         result = outcome.model_text
@@ -1477,6 +1662,7 @@ __all__ = [
     "SyncToolExecutor",
     "ToolExecutor",
     "ToolRuntimeHooks",
+    "UncertainMutatingToolOutcomeError",
     "create_async_tool_executor",
     "create_sync_tool_executor",
     "current_tool_runtime",
