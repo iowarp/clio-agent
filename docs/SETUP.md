@@ -59,7 +59,7 @@ git clone https://github.com/iowarp/gact-tui.git
 
 # Install CLIO (FastAPI + uvicorn are core deps).
 cd clio-agent
-uv pip install -e .
+uv pip install --prerelease allow -e .
 
 # Build the TUI.
 cd ../gact-tui/tui

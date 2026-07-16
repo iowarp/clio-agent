@@ -114,8 +114,8 @@ if [ -n "$CLIO_REF" ]; then
   say "Cloning clio-agent at $CLIO_REF (source-build mode)"
   rm -rf "$PREFIX/clio-agent"
   git clone --quiet --recurse-submodules --shallow-submodules --branch "$CLIO_REF" --depth 1 "$CLIO_REPO" "$PREFIX/clio-agent"
-  say "Installing clio-agent deps (uv sync --extra argonne)"
-  ( cd "$PREFIX/clio-agent" && uv sync --extra argonne )
+  say "Installing clio-agent deps (uv sync --prerelease allow --extra argonne)"
+  ( cd "$PREFIX/clio-agent" && uv sync --prerelease allow --extra argonne )
 else
   pkg_spec="clio-agent[argonne]${CLIO_VERSION:+==$CLIO_VERSION}"
   say "Installing $pkg_spec from PyPI"
@@ -123,7 +123,7 @@ else
   mkdir -p "$PREFIX/clio-agent"
   if [ "$PYINSTALL" = "uv" ]; then
     uv venv --python ">=3.12" "$VENV" >/dev/null
-    uv pip install --quiet --python "$VENV/bin/python" "$pkg_spec"
+    uv pip install --prerelease allow --quiet --python "$VENV/bin/python" "$pkg_spec"
   else
     python3 -m venv "$VENV"
     "$VENV/bin/$PYINSTALL" install --quiet --upgrade pip
