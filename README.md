@@ -54,10 +54,12 @@ Prerequisites for the default release install: [`uv`](https://astral.sh/uv)
 or Python 3.12+ with `pip`. `git` and Go are only needed when you opt into
 source-build mode with `CLIO_REF` or `GACT_REF`.
 
-CLIO pins its intentional DSPy 3.3 prerelease and the tested stable LiteLLM release,
-so installation does not enable prereleases globally. For a persistent backend-only
-install, use `uv tool install clio-agent==0.7.8`; reserve `uvx` / `uv tool run` for
-disposable checks. See [install/README.md](install/README.md) for the full contract.
+CLIO pins its intentional DSPy 3.3 prerelease and the tested stable LiteLLM release.
+Registry-backed `uv tool install` needs that exact DSPy dependency declared as an
+explicit root: use `uv tool install --with dspy==3.3.0b1 clio-agent==0.7.9` for a
+persistent backend-only install. This keeps unrelated dependencies on stable releases.
+Reserve `uvx` / `uv tool run` for disposable checks. See
+[install/README.md](install/README.md) for the full contract.
 
 ### More ways to get CLIO
 

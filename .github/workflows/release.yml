@@ -59,3 +59,31 @@ jobs:
 
       - name: Publish to PyPI
         run: uv publish
+
+  registry-smoke:
+    needs: pypi
+    runs-on: ubuntu-latest
+    steps:
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Smoke the published persistent uv tool
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          export UV_TOOL_DIR="$RUNNER_TEMP/clio-agent-registry-smoke/tools"
+          export UV_TOOL_BIN_DIR="$RUNNER_TEMP/clio-agent-registry-smoke/bin"
+          for attempt in $(seq 1 12); do
+            if uv tool install --python 3.12 --no-cache --with dspy==3.3.0b1 "clio-agent==$version"; then
+              "$UV_TOOL_BIN_DIR/clio-agent" --version | grep -Fx "clio-agent $version" >/dev/null
+              "$UV_TOOL_DIR/clio-agent/bin/python" -c \
+                "import dspy; assert dspy.__version__ == '3.3.0b1'; assert hasattr(dspy, 'ReActV2')"
+              exit 0
+            fi
+            if [ "$attempt" -eq 12 ]; then
+              echo "published clio-agent $version did not become installable from PyPI" >&2
+              exit 1
+            fi
+            sleep 10
+          done
