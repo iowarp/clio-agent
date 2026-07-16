@@ -16,6 +16,7 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Optional, Protocol
+from urllib.parse import urlsplit
 
 import dspy
 from fastmcp import Client
@@ -48,6 +49,10 @@ class MCPClientProtocol(Protocol):
         """Call a named tool on the backing server."""
         ...
 
+    async def read_resource(self, uri: str) -> Any:
+        """Read a resource from the backing server."""
+        ...
+
 
 ClientFactory = Callable[[Any], MCPClientProtocol]
 
@@ -64,6 +69,7 @@ ToolObserver = Callable[
     None,
 ]
 LegacyToolObserver = Callable[[str, Mapping[str, Any], Optional[str], Optional[str]], None]
+MCPAppObserver = Callable[[str, Mapping[str, Any], Any, Any, str | None], None]
 
 # The active session workspace root rides its own ContextVar (kept: it is read on
 # the app-less CLI grounding path where no app resolves — see ``agent.py`` /
@@ -110,7 +116,7 @@ def get_active_tool_workspace_root() -> str:
 class ToolRuntimeHooks:
     """The per-tool-call hook bundle resolved for the live turn (#735).
 
-    A frozen value object carrying the four tool-runtime hooks. ``None`` on any
+    A frozen value object carrying the tool-runtime hooks. ``None`` on any
     field means "no such hook" (a no-op), never "look elsewhere".
     """
 
@@ -118,6 +124,26 @@ class ToolRuntimeHooks:
     tool_observer: Optional[ToolObserver | LegacyToolObserver] = None
     tool_interceptor: Optional[Callable[[str, Mapping[str, Any]], Any | None]] = None
     cancellation_checker: Optional[Callable[[], bool]] = None
+    # Raw FastMCP results are intentionally isolated from ``tool_observer``:
+    # that observer writes durable traces. MCP Apps need the full CallToolResult
+    # (including private ``_meta``), but it must stay in a capability-bound,
+    # session-local store rather than entering the model result or transcript.
+    mcp_app_observer: Optional[MCPAppObserver] = None
+
+
+@dataclass(frozen=True, repr=False)
+class _MCPCallOutcome:
+    """Private dual projection of one MCP call.
+
+    ``model_text`` is the legacy, trace-safe result consumed by the agent and
+    telemetry observer. ``raw_result`` is retained only long enough for the
+    private MCP Apps observer. ``repr=False`` prevents accidental diagnostic
+    logging from serializing private result metadata.
+    """
+
+    model_text: str
+    raw_result: Any
+    source_namespace: str | None
 
 
 # One installed resolver slot (gact fills it once) + one retained fallback bundle
@@ -398,6 +424,8 @@ def create_async_tool_executor(
     timeout: float = 30.0,
     tool_timeouts: Mapping[str, float] | None = None,
     client_factory: ClientFactory | None = None,
+    preloaded_tools: Mapping[str, Any] | None = None,
+    namespace_servers: Mapping[str, Any] | None = None,
 ) -> "AsyncMCPToolExecutor":
     """Create an async FastMCP-backed tool executor.
 
@@ -411,6 +439,8 @@ def create_async_tool_executor(
         timeout=timeout,
         tool_timeouts=tool_timeouts,
         client_factory=client_factory,
+        preloaded_tools=preloaded_tools,
+        namespace_servers=namespace_servers,
     )
 
 
@@ -542,6 +572,14 @@ class AsyncMCPToolExecutor:
 
     async def call_tool(self, name: str, args: Mapping[str, Any]) -> str:
         """Call an MCP tool on the caller's event loop."""
+
+        outcome = await self.call_tool_result(name, args)
+        return outcome.model_text
+
+    async def call_tool_result(
+        self, name: str, args: Mapping[str, Any]
+    ) -> _MCPCallOutcome:
+        """Call an MCP tool and preserve its private raw result projection."""
         if self._closed:
             raise RuntimeError("AsyncMCPToolExecutor is closed")
         if self._client is None or self._call_lock is None:
@@ -574,7 +612,42 @@ class AsyncMCPToolExecutor:
             if first_call and namespace is not None:
                 self._connected_namespaces.add(namespace)
                 spawn_diet.namespace_connected(namespace)
-        return _result_to_text(result)
+        return _MCPCallOutcome(
+            model_text=_result_to_text(result),
+            raw_result=result,
+            source_namespace=namespace,
+        )
+
+    async def read_resource(self, namespace: str | None, uri: str) -> Any:
+        """Read ``uri`` from exactly ``namespace`` (or the composite gateway).
+
+        MCP App resources are capability-bound to the server that produced the
+        originating tool result. The caller supplies that recorded namespace;
+        this method never searches or fans out across mounted servers.
+        """
+
+        if self._closed:
+            raise RuntimeError("AsyncMCPToolExecutor is closed")
+        if self._client is None or self._call_lock is None:
+            raise RuntimeError("AsyncMCPToolExecutor is not started")
+        parsed_uri = urlsplit(uri)
+        if not parsed_uri.scheme:
+            raise ValueError("MCP resource URI must be absolute")
+
+        async with self._call_lock:
+            if namespace:
+                proxy = self._namespace_servers.get(namespace)
+                if proxy is None:
+                    raise ValueError(f"unknown MCP namespace {namespace!r}")
+                client = self._namespace_clients.get(namespace)
+                if client is None:
+                    ctx = self._client_factory(proxy)
+                    client = await ctx.__aenter__()
+                    self._namespace_ctxs[namespace] = ctx
+                    self._namespace_clients[namespace] = client
+            else:
+                client = self._client
+            return await asyncio.wait_for(client.read_resource(uri), timeout=self._timeout)
 
     async def _route(self, name: str) -> tuple[Any, str, str | None]:
         """Resolve (client, on-server tool name, namespace|None) for a call.
@@ -615,11 +688,26 @@ class AsyncMCPToolExecutor:
         return self._tool_timeouts.get(name, self._timeout)
 
     def get_tool_names(self) -> list[str]:
-        """Return names of all discovered tools."""
-        return list(self._mcp_tools.keys())
+        """Return model-visible discovered tool names.
+
+        MCP Apps may declare app-only tools. Those remain available through the
+        capability-bound app bridge but must not enlarge the model tool surface.
+        """
+
+        return [name for name, tool in self._mcp_tools.items() if _tool_visible_to_model(tool)]
 
     def get_tool_definitions(self) -> dict[str, Any]:
-        """Return discovered MCP tool definitions keyed by stable tool name."""
+        """Return model-visible MCP tool definitions keyed by stable name."""
+
+        return {
+            name: tool
+            for name, tool in self._mcp_tools.items()
+            if _tool_visible_to_model(tool)
+        }
+
+    def get_all_tool_definitions(self) -> dict[str, Any]:
+        """Return all definitions, including capability-bound app-only tools."""
+
         return dict(self._mcp_tools)
 
     async def aclose(self) -> None:
@@ -797,16 +885,42 @@ class SyncMCPToolExecutor:
             self._inflight += 1
             self._last_activity = time.monotonic()
         try:
-            return self._call_tool_inner(name, args)
+            return self._call_tool_inner(name, args, return_raw=False)
         finally:
             with self._inflight_lock:
                 self._inflight -= 1
                 self._last_activity = time.monotonic()
 
-    def _call_tool_inner(self, name: str, args: Mapping[str, Any]) -> str:
+    def call_tool_result(self, name: str, args: Mapping[str, Any]) -> Any:
+        """Call a tool through the normal gate/observers and return CallToolResult.
+
+        This is reserved for the MCP Apps bridge. Agent-facing callers must use
+        :meth:`call_tool`, whose result is the legacy trace-safe text projection.
+        """
+
+        if self._closed:
+            raise RuntimeError("SyncMCPToolExecutor is closed")
+        with self._inflight_lock:
+            self._inflight += 1
+            self._last_activity = time.monotonic()
+        try:
+            return self._call_tool_inner(name, args, return_raw=True)
+        finally:
+            with self._inflight_lock:
+                self._inflight -= 1
+                self._last_activity = time.monotonic()
+
+    def _call_tool_inner(
+        self,
+        name: str,
+        args: Mapping[str, Any],
+        *,
+        return_raw: bool,
+    ) -> Any:
         hooks = current_tool_runtime()
         permission_gate = self._permission_gate or hooks.permission_gate
         tool_observer = self._tool_observer or hooks.tool_observer
+        mcp_app_observer = hooks.mcp_app_observer
         cancellation_checker = hooks.cancellation_checker
 
         def raise_if_cancelled(stage: str) -> None:
@@ -858,8 +972,8 @@ class SyncMCPToolExecutor:
 
         try:
             timeout = self._timeout_for_tool(name)
-            result = self._run_coroutine(
-                self._async_executor.call_tool(name, effective_args),
+            outcome = self._run_coroutine(
+                self._async_executor.call_tool_result(name, effective_args),
                 timeout=timeout,
                 action=f"MCP tool {name!r}",
             )
@@ -869,6 +983,7 @@ class SyncMCPToolExecutor:
             self._record_tool_failure(name, error_text)
             notify_tool_observer(tool_observer, name, effective_args, "completed", error_text)
             raise
+        result = outcome.model_text
         structured_error = _structured_tool_result_error(result)
         if structured_error:
             self._record_tool_failure(name, structured_error)
@@ -883,10 +998,38 @@ class SyncMCPToolExecutor:
         else:
             self._record_tool_success(name)
             notify_tool_observer(tool_observer, name, effective_args, "completed", None, result)
+            if mcp_app_observer is not None:
+                try:
+                    mcp_app_observer(
+                        name,
+                        effective_args,
+                        self._mcp_tools.get(name),
+                        outcome.raw_result,
+                        outcome.source_namespace,
+                    )
+                except Exception as exc:  # noqa: BLE001 - the tool itself succeeded
+                    logger.exception(
+                        "MCP App result admission failed tool=%r reason=mcp_app_admission_failed: %s",
+                        name,
+                        exc,
+                    )
 
+        if return_raw:
+            return outcome.raw_result
         if repair_records:
             return _prepend_repair_notes(repair_records, result)
         return result
+
+    def read_resource(self, namespace: str | None, uri: str) -> Any:
+        """Read one resource from the exact originating MCP namespace."""
+
+        if self._closed:
+            raise RuntimeError("SyncMCPToolExecutor is closed")
+        return self._run_coroutine(
+            self._async_executor.read_resource(namespace, uri),
+            timeout=self._timeout,
+            action=f"MCP resource {uri!r}",
+        )
 
     def _repeated_transient_failure_error(self, name: str) -> str | None:
         """Return a structured error when the tool circuit should stay open."""
@@ -926,6 +1069,11 @@ class SyncMCPToolExecutor:
     def get_tool_names(self) -> list[str]:
         """Return names of all available tools."""
         return self._async_executor.get_tool_names()
+
+    def get_all_tool_definitions(self) -> dict[str, Any]:
+        """Return all definitions, including app-only tools."""
+
+        return self._async_executor.get_all_tool_definitions()
 
     def to_dspy_tools(self) -> list[dspy.Tool]:
         """Convert MCP tools to DSPy Tool objects."""
@@ -978,6 +1126,40 @@ def _result_to_text(result: Any) -> str:
     if isinstance(data, dict):
         return json.dumps(data)
     return str(data)
+
+
+def _tool_ui_metadata(tool: Any) -> Mapping[str, Any]:
+    """Return normalized MCP Apps metadata from a FastMCP tool definition."""
+
+    if tool is None:
+        return {}
+    meta = getattr(tool, "meta", None) or getattr(tool, "_meta", None)
+    if meta is None and isinstance(tool, Mapping):
+        meta = tool.get("_meta") or tool.get("meta")
+    meta_dump = getattr(meta, "model_dump", None)
+    if callable(meta_dump):
+        meta = meta_dump(by_alias=True, exclude_none=True)
+    if not isinstance(meta, Mapping):
+        return {}
+    ui = meta.get("ui")
+    ui_dump = getattr(ui, "model_dump", None)
+    if callable(ui_dump):
+        ui = ui_dump(by_alias=True, exclude_none=True)
+    if isinstance(ui, Mapping):
+        return ui
+    # Deprecated flat metadata remains readable for interoperability, while
+    # new servers should emit the stable nested ``_meta.ui`` shape.
+    flat_uri = meta.get("ui/resourceUri")
+    return {"resourceUri": flat_uri} if isinstance(flat_uri, str) else {}
+
+
+def _tool_visible_to_model(tool: Any) -> bool:
+    """Return whether a tool belongs on the model-facing tool surface."""
+
+    visibility = _tool_ui_metadata(tool).get("visibility")
+    if not isinstance(visibility, Sequence) or isinstance(visibility, (str, bytes)):
+        return True
+    return "model" in {str(item) for item in visibility}
 
 
 _FILE_ARGUMENT_NAMES = {
@@ -1252,7 +1434,11 @@ def _make_dspy_tools(
     call_tool: Callable[[str, Mapping[str, Any]], str],
 ) -> list[dspy.Tool]:
     """Convert discovered MCP tool definitions to DSPy Tool objects."""
-    return [_make_dspy_tool(name, mcp_tool, call_tool) for name, mcp_tool in mcp_tools.items()]
+    return [
+        _make_dspy_tool(name, mcp_tool, call_tool)
+        for name, mcp_tool in mcp_tools.items()
+        if _tool_visible_to_model(mcp_tool)
+    ]
 
 
 def _make_dspy_tool(

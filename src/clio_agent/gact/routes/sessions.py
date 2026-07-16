@@ -48,6 +48,7 @@ from fastapi.responses import JSONResponse
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.events import Event
+from clio_agent.gact.mcp_apps import cleanup_session_mcp_apps
 from clio_agent.gact.routes._body import NonObjectBodyError, json_body
 from clio_agent.gact.routes.compaction import build_compact_summary_message
 from clio_agent.gact.routes.session_filters import filter_session_rows
@@ -243,6 +244,20 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             summary=f"delete session {sid}",
             reason="user_requested_session_delete",
         )
+        try:
+            await cleanup_session_mcp_apps(app, sid)
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="mcp_app_cleanup_failed",
+                        message="session retained because an owned MCP App failed to close",
+                        details={"session_id": sid, "reason": str(exc)},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
         existed = app.state.sessions.delete(sid)
         if not existed:
             raise HTTPException(

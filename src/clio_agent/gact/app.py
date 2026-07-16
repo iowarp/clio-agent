@@ -452,6 +452,11 @@ from clio_agent.gact.evidence import (  # noqa: E402,F401
     _tool_result_preview,
     _verified_local_artifact_paths_by_ext,
 )
+from clio_agent.gact.mcp_apps import (  # noqa: E402
+    cleanup_all_mcp_apps,
+    install_mcp_app_runtime,
+    register_mcp_app_routes,
+)
 
 # gact/messaging.py -- message / multimodal + ask-user + trace-summary helpers.
 from clio_agent.gact.messaging import (  # noqa: E402,F401
@@ -935,6 +940,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """
 
     app.state.started_at = time.time()
+    app.state.mcp_app_loop = asyncio.get_running_loop()
     # #900: bind CLIO's child tree (MCP stdio + pooled SDK CLI) to this server so a HARD
     # kill reaps it (Windows Job Object / POSIX pdeathsig). Typed result → doctor probe.
     from clio_agent.runtime.process_tree import install_child_reaper  # noqa: PLC0415
@@ -964,6 +970,17 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             await t
         except (asyncio.CancelledError, Exception):  # noqa: BLE001,S110 - shutdown task drain; cancellation/errors ignored on teardown
             pass
+    # MCP Apps may own browser attachments or other remote resources. Close
+    # every retained record while the exact originating MCP transports are
+    # still alive. A failure is logged and retained; the child server's own
+    # close_all lifespan remains the final process-level backstop below.
+    try:
+        await cleanup_all_mcp_apps(app)
+    except RuntimeError:
+        logger.exception(
+            "one or more MCP Apps failed explicit host cleanup; "
+            "child transport shutdown will run the server cleanup backstop"
+        )
     try:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
@@ -1409,6 +1426,10 @@ def build_app(
     # and fall back to these factories — mirroring _call_enabled_external_mcp_tool.
     app.state.make_permission_gate = lambda: _make_permission_gate(app)
     app.state.make_tool_observer = lambda: _make_tool_observer(app)
+    # MCP Apps receives the full FastMCP result through a separate private
+    # observer. It is intentionally not folded into ``tool_observer`` because
+    # that observer writes result evidence into durable traces.
+    install_mcp_app_runtime(app)
     # #735 unified-concurrency seam: install the STATELESS tool-runtime resolver
     # once (idempotent). It dispatches on the live turn's ``active_app()`` so N
     # apps in one process each read THEIR OWN ``app.state.pending_*`` hooks — no
@@ -2205,6 +2226,12 @@ def build_app(
     # routes/mcp.py; the uninstall route reaches the destructive-action guard
     # through ``deps``.
     register_mcp_routes(app, deps)
+
+    # ---- MCP Apps 2026-01-26 -----------------------------------------
+    # Capability-bound app instance/resource/tool/message routes. Resource
+    # reads and app-originated tool calls remain pinned to the exact MCP
+    # namespace that produced the originating result.
+    register_mcp_app_routes(app, deps)
 
     # ---- /v1/prompts (CLIO prompt-management vendor surface) ---------
     # Prompt registry browse/render/validate/save/reload are owned by

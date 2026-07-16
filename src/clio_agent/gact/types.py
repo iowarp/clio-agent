@@ -645,6 +645,17 @@ class Part(BaseModel):
     cached: bool = False
     duration_ms: float = 0.0
 
+    # mcp_app (MCP Apps 2026-01-26). This is a public capability reference,
+    # never the tool result's private ``_meta``. The host resolves ``data_ref``
+    # from its session-local registry and reads ``resource_uri`` only from the
+    # exact ``source_server`` that produced the originating tool result.
+    app_instance_id: str = ""
+    resource_uri: str = ""
+    source_server: str = ""
+    data_ref: str = ""
+    mime_type: str = ""
+    height: int = 0
+
     # file_diff (BBB21 + #4): a proposed edit awaiting apply/reject.
     # ``new_content`` (when present) is what the apply path writes
     # to disk — re-applying a unified diff is fragile so we ship
