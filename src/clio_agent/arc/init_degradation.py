@@ -8,8 +8,8 @@ module owns the machinery for all of them so ``storage.make_arc_store`` stays a
 thin call site under its size ratchet:
 
 * a **typed degradation reason** (one of :data:`ARC_INIT_DEGRADE_REASONS`)
-  attributing the cause -- clio-core binding absent vs daemon spawn failure vs a
-  generic init error -- reusing the #892 liveness/quarantine vocabulary;
+  attributing the cause -- clio-core binding absent, daemon spawn failure, file-tier
+  capacity unavailable, or a generic init error -- reusing the #892 vocabulary;
 * a **startup log line** at WARNING;
 * a **process-local record** other in-process code can read -- the doctor
   surfaces it as a DEGRADED row
@@ -30,11 +30,14 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
+CLIO_CORE_FILE_CAPACITY_UNAVAILABLE = "clio_core_file_capacity_unavailable"
+
 # Typed reason codes for an init-time degrade to LocalFS. The vocabulary mirrors
 # the #892 liveness/quarantine reasons so operators read one consistent language.
 ARC_INIT_DEGRADE_REASONS = (
     "clio_core_binding_absent",  # iowarp_core / clio_cte_core_ext not importable
     "clio_core_daemon_spawn_failed",  # launcher missing or the daemon never bound its port
+    CLIO_CORE_FILE_CAPACITY_UNAVAILABLE,  # configured file bdev cannot fit safely
     "clio_core_init_error",  # any other clio-core initialization failure
 )
 
@@ -47,11 +50,14 @@ def classify_init_failure(error: BaseException) -> str:
 
     Returns:
         ``"clio_core_binding_absent"`` for a missing clio-core Python binding,
-        ``"clio_core_daemon_spawn_failed"`` for a launcher/port-bind failure, else
-        ``"clio_core_init_error"``.
+        ``"clio_core_daemon_spawn_failed"`` for a launcher/port-bind failure,
+        ``"clio_core_file_capacity_unavailable"`` for a file-tier preflight failure,
+        else ``"clio_core_init_error"``.
     """
     if isinstance(error, (ImportError, ModuleNotFoundError)):
         return "clio_core_binding_absent"
+    if getattr(error, "degradation_reason", None) == CLIO_CORE_FILE_CAPACITY_UNAVAILABLE:
+        return CLIO_CORE_FILE_CAPACITY_UNAVAILABLE
     message = str(error).lower()
     if isinstance(error, RuntimeError) and (
         "launcher" in message or "never bound port" in message or "clio_run" in message
