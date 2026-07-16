@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -98,20 +99,14 @@ def test_agents_expose_normalized_capability_refs(client: TestClient) -> None:
     assert resp.status_code == 200
     by_id = {row["id"]: row for row in resp.json()["agents"]}
 
-    main_refs = {
-        (ref["kind"], ref["id"]): ref
-        for ref in by_id["main"]["capability_refs"]
-    }
+    main_refs = {(ref["kind"], ref["id"]): ref for ref in by_id["main"]["capability_refs"]}
     assert ("command", "/clear") in main_refs
     assert main_refs[("command", "/optimize")]["status"] == "unavailable"
     # #801: uniform structured not-implemented reason code across surfaces.
     assert main_refs[("command", "/optimize")]["metadata"]["error"] == "optimizer_not_implemented"
     assert "/cache-stats" in by_id["main"]["commands"]
 
-    data_refs = {
-        (ref["kind"], ref["id"]): ref
-        for ref in by_id["data"]["capability_refs"]
-    }
+    data_refs = {(ref["kind"], ref["id"]): ref for ref in by_id["data"]["capability_refs"]}
     assert ("tool", "hdf5_analyze_dataset") in data_refs
     assert data_refs[("tool", "hdf5_analyze_dataset")]["status"] == "available"
 
@@ -174,3 +169,47 @@ def test_unified_tools_endpoint_exposes_inspector_metadata(client: TestClient) -
     assert body["owner"] == "utility"
     assert "chat" in body["visible_to"]
     assert body["input_schema"]
+
+
+def test_unified_tools_endpoint_includes_preloaded_agent_runtime_mcps(
+    client: TestClient,
+) -> None:
+    """Workspace MCP tools advertised to the model also appear in the live catalog."""
+
+    relay_tool = SimpleNamespace(
+        name="relay_jarvis_run",
+        description="Run a durable JARVIS pipeline.",
+        inputSchema={"type": "object", "required": ["pipeline_id"]},
+        outputSchema={"type": "object"},
+    )
+
+    class RuntimeExecutor:
+        def get_all_tool_definitions(self) -> dict[str, object]:
+            return {
+                "relay_jarvis_run": relay_tool,
+                # A duplicate runtime definition must not duplicate a row that
+                # the bundled gateway already advertised.
+                "shell_bash": SimpleNamespace(name="shell_bash"),
+            }
+
+    client.app.state.agent = SimpleNamespace(tool_executor=RuntimeExecutor())
+
+    response = client.get("/v1/tools")
+    assert response.status_code == 200
+    tools = response.json()["tools"]
+    runtime = next(row for row in tools if row["name"] == "relay_jarvis_run")
+    assert runtime["id"] == "relay_jarvis_run"
+    assert runtime["description"] == "Run a durable JARVIS pipeline."
+    assert runtime["server_id"] == "mcp_relay"
+    assert runtime["source"] == "agent_runtime_mcp"
+    assert runtime["input_schema"] == {
+        "type": "object",
+        "required": ["pipeline_id"],
+    }
+    assert runtime["output_schema"] == {"type": "object"}
+    assert runtime["permission_default"] == "ask"
+    assert sum(row["name"] == "shell_bash" for row in tools) == 1
+
+    detail = client.get("/v1/tools/relay_jarvis_run")
+    assert detail.status_code == 200
+    assert detail.json() == runtime

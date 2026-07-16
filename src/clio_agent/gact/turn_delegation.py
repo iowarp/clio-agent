@@ -114,32 +114,39 @@ async def run_dynamic_agent_sync(state: "TurnState", agent_def: "AgentDef", prom
 
     runner = _blueprint_runner_for_agent(agent_def)
     loop = asyncio.get_running_loop()
-    with _tool_session_context(state.sid):
-        # The signature is rebuilt inside the executor (via _build_blueprint_dspy_module);
-        # its routing Literal[children, "finish"] resolves children from the active
-        # blueprint keyed on _ACTIVE_GACT_SESSION_ID. Set it here so the copied context
-        # carries it -- otherwise children resolve empty and next_expert collapses to
-        # Literal["finish"], forcing the agent to finish immediately. The keystone
-        # (set_turn_identity) already binds active_app() for the whole turn, so no
-        # _gact_app_context wrapper is needed here.
-        _sid_tok = _ctx.set_session_id(state.sid)
-        try:
-            turn_context = contextvars.copy_context()
-        finally:
-            _ctx.reset(_sid_tok)
-    _pred = await await_turn_work(
-        state,
-        loop.run_in_executor(
-            None,
-            lambda: turn_context.run(
-                _run_dynamic_agent_compat,
+    # The signature is rebuilt inside the executor (via _build_blueprint_dspy_module);
+    # its routing Literal[children, "finish"] resolves children from the active
+    # blueprint keyed on _ACTIVE_GACT_SESSION_ID. Set it here so the copied context
+    # carries it -- otherwise children resolve empty and next_expert collapses to
+    # Literal["finish"], forcing the agent to finish immediately. The keystone
+    # (set_turn_identity) already binds active_app() for the whole turn, so no
+    # _gact_app_context wrapper is needed here.
+    _sid_tok = _ctx.set_session_id(state.sid)
+    try:
+        turn_context = contextvars.copy_context()
+    finally:
+        _ctx.reset(_sid_tok)
+
+    def _invoke_delegated_agent() -> Any:
+        # The workspace-fleet lease belongs to the actual worker lifetime, not
+        # merely the asyncio waiter. A timeout can cancel the wrapper Future
+        # while this synchronous worker is still unwinding; keeping the lease
+        # here prevents the idle reaper from closing its bound MCP executor.
+        with _tool_session_context(state.sid):
+            return _run_dynamic_agent_compat(
                 runner,
                 state.app.state.agent,
                 agent_def,
                 prompt,
                 state.sid,
                 partial(cancel_requested, state),
-            ),
+            )
+
+    _pred = await await_turn_work(
+        state,
+        loop.run_in_executor(
+            None,
+            lambda: turn_context.run(_invoke_delegated_agent),
         ),
     )
     # RAW-ROUTE instrumentation: what did THIS agent's LM actually emit as
@@ -156,16 +163,17 @@ async def run_dynamic_agent_sync(state: "TurnState", agent_def: "AgentDef", prom
         len(str(getattr(_pred, "next_task", "") or "")),
         len(str(getattr(_pred, "answer", "") or "")),
     )
-    trace.HF_ON and trace.hot(
-        "TURN-SEMANTICS",
-        "agent=%s reasoning=%r answer=%r next_expert=%r next_task=%r workflow_state_type=%s",
-        getattr(agent_def, "id", "?"),
-        str(getattr(_pred, "reasoning", "") or "")[:500],
-        str(getattr(_pred, "answer", "") or "")[:300],
-        str(getattr(_pred, "next_expert", "") or ""),
-        str(getattr(_pred, "next_task", "") or "")[:300],
-        type(getattr(_pred, "workflow_state", None)).__name__,
-    )
+    if trace.HF_ON:
+        trace.hot(
+            "TURN-SEMANTICS",
+            "agent=%s reasoning=%r answer=%r next_expert=%r next_task=%r workflow_state_type=%s",
+            getattr(agent_def, "id", "?"),
+            str(getattr(_pred, "reasoning", "") or "")[:500],
+            str(getattr(_pred, "answer", "") or "")[:300],
+            str(getattr(_pred, "next_expert", "") or ""),
+            str(getattr(_pred, "next_task", "") or "")[:300],
+            type(getattr(_pred, "workflow_state", None)).__name__,
+        )
     # Per-expert capture: one expert.response.completed per dynamic-agent run
     # (child or parent-resume), carrying that expert's full reasoning +
     # trajectory via _prediction_summary. Closes the nested-expert capture

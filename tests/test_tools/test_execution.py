@@ -58,6 +58,9 @@ class FakeClient:
             await asyncio.sleep(self.delay)
         return SimpleNamespace(data={"name": name, "args": args})
 
+    async def read_resource(self, uri: str):
+        return [SimpleNamespace(uri=uri, mimeType="text/plain", text="resource")]
+
 
 class FailingClient(FakeClient):
     """Fake client that raises configured errors from call_tool."""
@@ -140,6 +143,121 @@ async def test_async_mcp_tool_executor_uses_explicit_async_lifecycle():
         assert not hasattr(executor, "_thread")
 
     assert fake_client.exited is True
+
+
+@pytest.mark.asyncio
+async def test_resource_read_is_pinned_to_exact_namespace_client() -> None:
+    """An App resource read must not search or fan out through the composite."""
+
+    composite_server = object()
+    vigil_server = object()
+    composite_client = FakeClient()
+    vigil_client = FakeClient()
+    seen: list[object] = []
+
+    def factory(server: object) -> FakeClient:
+        seen.append(server)
+        return vigil_client if server is vigil_server else composite_client
+
+    executor = create_async_tool_executor(
+        composite_server,
+        timeout=1.0,
+        client_factory=factory,
+        preloaded_tools={
+            "vigil_open": SimpleNamespace(
+                name="vigil_open",
+                inputSchema={},
+                meta={"ui": {"resourceUri": "ui://vigil/view"}},
+            )
+        },
+        namespace_servers={"vigil": vigil_server},
+    )
+    await executor.start()
+    result = await executor.read_resource("vigil", "ui://vigil/view")
+    await executor.aclose()
+
+    assert seen == [composite_server, vigil_server]
+    assert result[0].text == "resource"
+
+
+def test_raw_app_result_is_isolated_from_durable_tool_observer() -> None:
+    """Private result metadata reaches only the dedicated MCP App observer."""
+
+    private_result = SimpleNamespace(
+        data={"public": "ok"},
+        content=[SimpleNamespace(type="text", text="opened")],
+        meta={"private": {"capability": "secret"}},
+    )
+
+    class AppClient(FakeClient):
+        async def list_tools(self):
+            return [
+                SimpleNamespace(
+                    name="vigil_open",
+                    description="Open a view.",
+                    inputSchema={"properties": {}},
+                    meta={"ui": {"resourceUri": "ui://vigil/view"}},
+                )
+            ]
+
+        async def call_tool(self, name: str, args: dict[str, Any]):
+            return private_result
+
+    telemetry: list[Any] = []
+    app_results: list[Any] = []
+    set_tool_runtime_fallback(
+        ToolRuntimeHooks(
+            tool_observer=lambda *_args: telemetry.append(_args),
+            mcp_app_observer=lambda *_args: app_results.append(_args),
+        )
+    )
+    try:
+        with create_sync_tool_executor(
+            object(),
+            timeout=1.0,
+            client_factory=lambda _server: AppClient(),
+        ) as executor:
+            result = executor.call_tool("vigil_open", {})
+    finally:
+        set_tool_runtime_fallback(ToolRuntimeHooks())
+
+    assert result == '{"public": "ok"}'
+    completed = [row for row in telemetry if row[2] == "completed"]
+    assert len(completed) == 1
+    assert completed[0][4] == '{"public": "ok"}'
+    assert "secret" not in str(completed)
+    assert len(app_results) == 1
+    assert app_results[0][3] is private_result
+
+
+def test_app_only_tools_are_hidden_from_model_tool_surface() -> None:
+    """App-only controls stay callable by the bridge without becoming LM tools."""
+
+    class VisibilityClient(FakeClient):
+        async def list_tools(self):
+            return [
+                SimpleNamespace(
+                    name="vigil_open",
+                    description="Open.",
+                    inputSchema={"properties": {}},
+                    meta={"ui": {"visibility": ["model", "app"]}},
+                ),
+                SimpleNamespace(
+                    name="vigil_update",
+                    description="Update.",
+                    inputSchema={"properties": {}},
+                    meta={"ui": {"visibility": ["app"]}},
+                ),
+            ]
+
+    with create_sync_tool_executor(
+        object(),
+        timeout=1.0,
+        client_factory=lambda _server: VisibilityClient(),
+    ) as executor:
+        assert executor.get_tool_names() == ["vigil_open"]
+        assert [tool.name for tool in executor.to_dspy_tools()] == ["vigil_open"]
+        assert set(executor.get_all_tool_definitions()) == {"vigil_open", "vigil_update"}
     assert executor.closed is True
 
 

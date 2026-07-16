@@ -36,7 +36,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 from functools import partial
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents.resolution import (
@@ -67,9 +67,21 @@ from clio_agent.gact.turn_watchdog import await_turn_work, cancel_requested
 
 if TYPE_CHECKING:
     from clio_agent.gact.turn_state import TurnState
+    from clio_agent.prompts import PromptRegistry
 
 
 async def forward_turn(state: "TurnState") -> Any:
+    """Run one complete forward/delegation turn under its workspace lease."""
+
+    # Tool wrappers bind a concrete workspace executor while modules are built.
+    # Pin that fleet across initial construction, every delegated child, parent
+    # resumes, and the gaps between them; otherwise the idle reaper can close a
+    # still-referenced executor during a long multi-expert turn.
+    with _tool_session_context(state.sid):
+        return await _forward_turn_leased(state)
+
+
+async def _forward_turn_leased(state: "TurnState") -> Any:
     """Resolve the turn's agent, run its forward, settle delegations; return pred.
 
     Sets ``state.invocation_agent_id`` / ``state.active_agent_id`` /
@@ -138,10 +150,13 @@ async def forward_turn(state: "TurnState") -> Any:
         or state.active_agent_id in active_blueprint_agent_ids
     ):
         prompt_registry_factory = getattr(state.app.state, "prompt_registry_for_request", None)
-        prompt_registry = (
-            prompt_registry_factory(session_id=state.sid)
-            if callable(prompt_registry_factory)
-            else None
+        prompt_registry = cast(
+            "PromptRegistry | None",
+            (
+                prompt_registry_factory(session_id=state.sid)
+                if callable(prompt_registry_factory)
+                else None
+            ),
         )
         dynamic_agent = _resolve_runtime_dynamic_agent(
             state.app,

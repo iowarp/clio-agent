@@ -233,6 +233,15 @@ class Part(_WireModel):
     cached: bool = False
     duration_ms: float = 0.0
 
+    # MCP Apps 2026-01-26 public capability reference. Private result metadata
+    # remains host-side and is intentionally absent from this wire model.
+    app_instance_id: str = ""
+    resource_uri: str = ""
+    source_server: str = ""
+    data_ref: str = ""
+    mime_type: str = ""
+    height: int = 0
+
     # routing_decision
     selected_agent: str = ""
     rationale: str = ""

@@ -40,7 +40,7 @@ import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Dict, Optional, Protocol, runtime_checkable
+from typing import Any, Dict, Optional, Protocol, runtime_checkable
 
 # The clio-core CTE config generation + capacity policy lives in its own owner module
 # (iowarp/clio-agent#774/#890). Re-exported here so existing callers/tests that reach
@@ -301,7 +301,7 @@ def _runtime_launcher_path(iowarp_core: object) -> Optional[str]:
     return None
 
 
-def _detached_popen_kwargs() -> "dict[str, object]":
+def _detached_popen_kwargs() -> "dict[str, Any]":
     """Popen kwargs that detach the daemon so it outlives the spawning process.
 
     POSIX: ``setsid``. Windows: ``CREATE_NO_WINDOW`` in a new process group, NOT
@@ -871,10 +871,10 @@ def make_arc_store(
 
             ws_cfg = paths.workspace_core_dir() / "cte.yaml"
             cfg = str(ws_cfg) if ws_cfg.is_file() else default_cte_config_path()
-        from clio_agent.arc.clio_core_config import boot_check_ram_cap  # noqa: PLC0415
-
-        boot_check_ram_cap(cfg, env=os.environ)  # #906: typed warn on unbounded cap
         try:
+            from clio_agent.arc import clio_core_file_capacity  # noqa: PLC0415
+
+            clio_core_file_capacity.preflight_clio_core_config(cfg, env=os.environ)
             return ClioCoreStore(config_path=cfg)
         except Exception as exc:  # noqa: BLE001 - LOUD degrade to LocalFS, recorded below
             from clio_agent.arc.init_degradation import record_arc_init_degradation  # noqa: PLC0415

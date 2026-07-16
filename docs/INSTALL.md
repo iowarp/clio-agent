@@ -25,6 +25,7 @@ Installs `clio-agent` from PyPI + the `clio-tui` binary + the `clio` launcher. W
 `install.ps1`. Pin a version with `CLIO_VERSION=X.Y.Z`.
 
 ## b) No-install, Docker (TUI)
+
 ```sh
 docker run -it --rm \
   -e CLIO_LM_API_BASE=http://host.docker.internal:1234/v1 \
@@ -42,6 +43,7 @@ script fetches the web bundle into `$CLIO_PREFIX/clio-agent/web`; override with
 `CLIO_WEB_DIR=/path/to/web/dist`.
 
 ## d) Scaled / hosted web (Docker Compose)
+
 ```sh
 docker compose up clio-web          # self-contained web UI → http://localhost:8080
 docker compose --profile api up     # headless backend (API/SSE) → :8100 for scale-out
