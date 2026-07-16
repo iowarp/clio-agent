@@ -20,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - run: uv sync --extra dev --extra optimizers
+      - run: uv sync --prerelease allow --extra dev --extra optimizers
       - run: uv pip install mutmut
       # The editable install's .pth would shadow mutmut's mutated copy (every
       # mutant would falsely "survive") — remove it and resolve via PYTHONPATH.

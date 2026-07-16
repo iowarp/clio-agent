@@ -5,7 +5,7 @@ This is the shortest path to make safe, reviewable changes.
 ## 1) Set up local environment
 
 ```bash
-uv sync --extra dev --extra optimizers
+uv sync --prerelease allow --extra dev --extra optimizers
 ```
 
 ## 2) Run quality checks before every PR

@@ -119,7 +119,7 @@ if ($Source) {
   $spec = "clio-agent @ git+https://github.com/iowarp/clio-agent.git@$Ref"
 }
 Write-Host "[build-gact-runtime] installing: $spec (no extras)"
-Invoke-Native -Exe $uv.Source -Args @('pip', 'install', '--python', $pyBin, $spec)
+Invoke-Native -Exe $uv.Source -Args @('pip', 'install', '--prerelease', 'allow', '--python', $pyBin, $spec)
 
 $sizeBefore = Get-DirSizeMB $Out
 Write-Host "[build-gact-runtime] size before prune: $sizeBefore MB"

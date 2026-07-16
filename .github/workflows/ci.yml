@@ -16,7 +16,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
-      - run: uv sync --extra dev --extra optimizers
+      - run: uv sync --prerelease allow --extra dev --extra optimizers
       - run: uv run ruff check src/ tests/ scripts/create_demo_data.py scripts/validate_marketplace_blueprints.py scripts/mcp_mem_attribution.py
       # Anti-re-accretion guardrails (iowarp/clio-agent#714, #774). BLOCKING:
       # now that the #767 gact decomposition has landed, these enforce per-file
@@ -72,5 +72,5 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
-      - run: uv sync --extra dev --extra optimizers
+      - run: uv sync --prerelease allow --extra dev --extra optimizers
       - run: uv run pytest -m concurrency -n 4 --dist loadfile --count 3 -p no:cacheprovider
