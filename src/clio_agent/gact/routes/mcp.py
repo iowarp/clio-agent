@@ -53,6 +53,7 @@ from clio_agent.gact.agent_blueprints import (
 )
 from clio_agent.gact.agents.resolution import _runtime_workspace_catalog_cwd
 from clio_agent.gact.events import Event
+from clio_agent.gact.mcp_apps import call_tool_result_to_observer
 from clio_agent.gact.permission_gate import (
     _external_mcp_permission_context,
     _invoke_permission_gate,
@@ -588,7 +589,11 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                     else str(data if data is not None else result)
                 )
             notify_tool_observer(
-                tool_observer, observer_name, tool_args, "completed", result=tool_result_text
+                tool_observer,
+                observer_name,
+                tool_args,
+                "completed",
+                result=call_tool_result_to_observer(result),
             )
             return {
                 "server_id": sid,

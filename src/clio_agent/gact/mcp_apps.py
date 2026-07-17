@@ -134,6 +134,23 @@ def call_tool_result_to_wire(result: Any) -> dict[str, Any]:
     return wire
 
 
+def call_tool_result_to_observer(result: Any) -> dict[str, Any]:
+    """Return the public MCP result fields safe for ordinary tool telemetry.
+
+    MCP Apps may carry private ``_meta`` capability data.  The ordinary tool
+    observer needs exact public ``structuredContent`` for durable execution
+    evidence, but must never receive that private metadata.
+    """
+
+    wire = call_tool_result_to_wire(result)
+    observer: dict[str, Any] = {"content": wire.get("content", [])}
+    if "structuredContent" in wire:
+        observer["structuredContent"] = wire["structuredContent"]
+    if wire.get("isError") is True:
+        observer["isError"] = True
+    return observer
+
+
 def read_resource_result_to_wire(result: Any) -> dict[str, Any]:
     """Serialize FastMCP's list-or-result resource response shape."""
 
@@ -883,6 +900,7 @@ __all__ = [
     "MCP_APP_MIME_TYPE",
     "MCPAppAdmissionError",
     "MCPAppRegistry",
+    "call_tool_result_to_observer",
     "call_tool_result_to_wire",
     "cleanup_all_mcp_apps",
     "cleanup_session_mcp_apps",
