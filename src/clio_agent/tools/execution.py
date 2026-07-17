@@ -29,6 +29,7 @@ from clio_agent.errors import CancellationError
 from clio_agent.runtime.stream_audit import stream_audit
 from clio_agent.tools import spawn_diet
 from clio_agent.tools.file_policy import FileAccessPolicy
+from clio_agent.tools.mcp_results import call_tool_result_to_observer
 
 logger = logging.getLogger(__name__)
 
@@ -131,10 +132,9 @@ class ToolRuntimeHooks:
     tool_observer: Optional[ToolObserver | LegacyToolObserver] = None
     tool_interceptor: Optional[Callable[[str, Mapping[str, Any]], Any | None]] = None
     cancellation_checker: Optional[Callable[[], bool]] = None
-    # Raw FastMCP results are intentionally isolated from ``tool_observer``:
-    # that observer writes durable traces. MCP Apps need the full CallToolResult
-    # (including private ``_meta``), but it must stay in a capability-bound,
-    # session-local store rather than entering the model result or transcript.
+    # The ordinary observer receives only the sanitized public MCP projection.
+    # MCP Apps additionally need the full CallToolResult (including private
+    # ``_meta``), which stays in a capability-bound, session-local store.
     mcp_app_observer: Optional[MCPAppObserver] = None
 
 
@@ -142,10 +142,10 @@ class ToolRuntimeHooks:
 class _MCPCallOutcome:
     """Private dual projection of one MCP call.
 
-    ``model_text`` is the legacy, trace-safe result consumed by the agent and
-    telemetry observer. ``raw_result`` is retained only long enough for the
-    private MCP Apps observer. ``repr=False`` prevents accidental diagnostic
-    logging from serializing private result metadata.
+    ``model_text`` is the legacy result consumed by the agent. ``raw_result`` is
+    retained long enough to derive a sanitized public telemetry projection and
+    to feed the private MCP Apps observer. ``repr=False`` prevents accidental
+    diagnostic logging from serializing private result metadata.
     """
 
     model_text: str
@@ -1232,6 +1232,7 @@ class SyncMCPToolExecutor:
             notify_tool_observer(tool_observer, name, effective_args, "completed", error_text)
             raise
         result = outcome.model_text
+        observer_result = call_tool_result_to_observer(outcome.raw_result)
         structured_error = _structured_tool_result_error(result)
         if structured_error:
             self._record_tool_failure(name, structured_error)
@@ -1241,11 +1242,18 @@ class SyncMCPToolExecutor:
                 effective_args,
                 "completed",
                 structured_error,
-                result,
+                observer_result,
             )
         else:
             self._record_tool_success(name)
-            notify_tool_observer(tool_observer, name, effective_args, "completed", None, result)
+            notify_tool_observer(
+                tool_observer,
+                name,
+                effective_args,
+                "completed",
+                None,
+                observer_result,
+            )
             if mcp_app_observer is not None:
                 try:
                     mcp_app_observer(

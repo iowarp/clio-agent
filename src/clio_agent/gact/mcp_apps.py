@@ -31,6 +31,9 @@ from clio_agent.gact.runtime.globals import (
     _tool_session_context,
 )
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Part
+from clio_agent.tools.mcp_results import (
+    call_tool_result_to_observer as _call_tool_result_to_observer,
+)
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -142,13 +145,7 @@ def call_tool_result_to_observer(result: Any) -> dict[str, Any]:
     evidence, but must never receive that private metadata.
     """
 
-    wire = call_tool_result_to_wire(result)
-    observer: dict[str, Any] = {"content": wire.get("content", [])}
-    if "structuredContent" in wire:
-        observer["structuredContent"] = wire["structuredContent"]
-    if wire.get("isError") is True:
-        observer["isError"] = True
-    return observer
+    return _call_tool_result_to_observer(result)
 
 
 def read_resource_result_to_wire(result: Any) -> dict[str, Any]:
