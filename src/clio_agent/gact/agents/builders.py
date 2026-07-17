@@ -392,6 +392,7 @@ async def _call_enabled_external_mcp_tool(
     # Single canonical construction site. pdeathsig-wrapping (Linux-only, no-op
     # elsewhere) now lives INSIDE the helper, so this external MCP child is reaped
     # when the clio server dies hard -- identically to every other stdio spawn.
+    from clio_agent.gact.mcp_apps import call_tool_result_to_observer  # noqa: PLC0415
     from clio_agent.tools.execution import notify_tool_observer  # noqa: PLC0415
     from clio_agent.tools.mcp_config import (  # noqa: PLC0415
         MCPTransportError,
@@ -425,8 +426,16 @@ async def _call_enabled_external_mcp_tool(
             if isinstance(data, Mapping)
             else str(data if data is not None else result)
         )
+    observer_result = call_tool_result_to_observer(result)
     notify_tool_observer(
-        tool_observer, observer_name, dict(tool_args), "completed", result=result_text
+        tool_observer,
+        observer_name,
+        dict(tool_args),
+        "completed",
+        # Keep the legacy text projection for the model while giving the durable
+        # observer the server's machine-readable public MCP result.  Private
+        # `_meta` remains excluded from ordinary tool telemetry.
+        result=observer_result,
     )
     if content:
         return result_text

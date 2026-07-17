@@ -215,6 +215,32 @@ class _LiveObservedResultAgent:
         return _Pred()
 
 
+class _LiveObservedLargeMcpResultAgent:
+    def forward(self, question: str, session_id: str) -> object:
+        from clio_agent.tools.execution import current_tool_runtime, notify_global_tool_observer
+
+        assert current_tool_runtime().tool_observer is not None
+        args = {"execution_id": "execution-structured"}
+        structured = {
+            "schema_version": "jarvis.execution.v1",
+            "execution_id": "execution-structured",
+            "payload": "x" * 13_000,
+        }
+        result = {
+            "content": [{"type": "text", "text": "display projection"}],
+            "structuredContent": structured,
+        }
+        notify_global_tool_observer("jarvis_get_execution", args, "started", None)
+        notify_global_tool_observer(
+            "jarvis_get_execution",
+            args,
+            "completed",
+            None,
+            result,
+        )
+        return _Pred()
+
+
 class _LiveObservedStructuredErrorResultAgent:
     def forward(self, question: str, session_id: str):
         from clio_agent.tools.execution import current_tool_runtime, notify_global_tool_observer
@@ -420,6 +446,35 @@ def test_live_observer_records_completed_tool_result_evidence(tmp_path: Path) ->
         assert tool_results[0]["metadata"]["result"] == {
             "datasets": ["safe_float"],
             "checksum": "abc123",
+        }
+
+
+def test_live_observer_keeps_exact_large_mcp_structured_content(tmp_path: Path) -> None:
+    """The public structured result remains exact when the display preview is bounded."""
+
+    from .conftest import complete_turn
+
+    app = build_app(
+        sessions_path=tmp_path / "s.json",
+        agent=_LiveObservedLargeMcpResultAgent(),
+    )
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        complete_turn(client, sid, "analyze")
+
+        history = _settled_history(app, sid)
+        tool_result = next(
+            event.payload["part"]
+            for event in history
+            if event.type == "message.part.added"
+            and event.payload.get("part", {}).get("type") == "tool_result"
+        )
+
+        assert tool_result["metadata"]["result"]["truncated"] is True
+        assert tool_result["metadata"]["structured_content"] == {
+            "schema_version": "jarvis.execution.v1",
+            "execution_id": "execution-structured",
+            "payload": "x" * 13_000,
         }
 
 
