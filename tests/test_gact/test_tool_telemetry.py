@@ -13,9 +13,13 @@ import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from mcp.types import TextContent
+from pydantic import BaseModel, ConfigDict, Field
 
 # #735: run under the xdist-load flake-hunt CI job — this file is the one that
 # flaked on cross-app tool-observer contamination.
@@ -238,6 +242,82 @@ class _LiveObservedLargeMcpResultAgent:
             None,
             result,
         )
+        return _Pred()
+
+
+class _RootExecutionResult(BaseModel):
+    """Production-shaped FastMCP ``data`` object named like the live result."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    schema_version: str
+    execution_id: str
+    scheduler_native_id: str | None = Field(alias="schedulerNativeId")
+    payload: str
+
+
+class _RootDataClient:
+    """Return a parsed FastMCP result whose public JSON is available via data."""
+
+    def __init__(self, root: _RootExecutionResult) -> None:
+        self.root = root
+
+    async def __aenter__(self) -> "_RootDataClient":
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        return None
+
+    async def list_tools(self) -> list[Any]:
+        return [
+            SimpleNamespace(
+                name="relay_jarvis_get_execution",
+                description="Query one durable JARVIS execution.",
+                inputSchema={"properties": {"execution_id": {"type": "string"}}},
+            )
+        ]
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        return SimpleNamespace(
+            content=[TextContent(type="text", text=f"Root({self.root!s})")],
+            structured_content=None,
+            data=self.root,
+            is_error=False,
+            meta={"private": {"capability": "must-not-enter-telemetry"}},
+        )
+
+    async def read_resource(self, uri: str) -> list[Any]:
+        """Satisfy the workspace bridge client protocol for this tool-only test."""
+
+        raise AssertionError(f"unexpected resource read: {uri}")
+
+
+class _LiveWorkspaceMcpRootDataAgent:
+    """Drive the same workspace MCP bridge used by blueprint tools in production."""
+
+    def __init__(self) -> None:
+        self.root = _RootExecutionResult(
+            schema_version="jarvis.execution.v1",
+            execution_id="execution-live-root",
+            schedulerNativeId=None,
+            payload="x" * 13_000,
+        )
+        self.model_text = ""
+
+    def forward(self, question: str, session_id: str) -> object:
+        from clio_agent.tools.execution import SyncMCPToolExecutor
+
+        client = _RootDataClient(self.root)
+        with SyncMCPToolExecutor(
+            object(),
+            timeout=2.0,
+            client_factory=lambda _server: client,
+            permission_gate=lambda _name, _args: "allow",
+        ) as executor:
+            self.model_text = executor.call_tool(
+                "relay_jarvis_get_execution",
+                {"execution_id": self.root.execution_id},
+            )
         return _Pred()
 
 
@@ -476,6 +556,36 @@ def test_live_observer_keeps_exact_large_mcp_structured_content(tmp_path: Path) 
             "execution_id": "execution-structured",
             "payload": "x" * 13_000,
         }
+
+
+def test_workspace_mcp_root_data_reaches_exact_gact_structured_content(tmp_path: Path) -> None:
+    """The real workspace bridge retains Root/data JSON beyond the bounded preview."""
+
+    from .conftest import complete_turn
+
+    agent = _LiveWorkspaceMcpRootDataAgent()
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        complete_turn(client, sid, "query the execution")
+
+        history = _settled_history(app, sid)
+        tool_result = next(
+            event.payload["part"]
+            for event in history
+            if event.type == "message.part.added"
+            and event.payload.get("part", {}).get("type") == "tool_result"
+        )
+
+        assert agent.model_text == str(agent.root)
+        assert tool_result["metadata"]["result"]["truncated"] is True
+        assert tool_result["metadata"]["structured_content"] == {
+            "schema_version": "jarvis.execution.v1",
+            "execution_id": "execution-live-root",
+            "schedulerNativeId": None,
+            "payload": "x" * 13_000,
+        }
+        assert "must-not-enter-telemetry" not in json.dumps(tool_result)
 
 
 def test_live_observer_preserves_failed_structured_tool_result_evidence(tmp_path: Path) -> None:

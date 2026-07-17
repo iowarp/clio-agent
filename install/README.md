@@ -58,7 +58,7 @@ If you only need the long-running `clio-agent` backend, install it as a persiste
 tool rather than using the ephemeral `uvx` / `uv tool run` environment:
 
 ```sh
-uv tool install --with dspy==3.3.0b1 clio-agent==0.7.10
+uv tool install --with dspy==3.3.0b1 clio-agent==0.7.11
 clio-agent serve
 ```
 
@@ -103,7 +103,7 @@ CLIO_REF=develop CLIO_GIT_PROTOCOL=ssh \
 
 ```sh
 # Pin the PyPI version and matching clio-agent GitHub release tag
-CLIO_VERSION=0.7.10 \
+CLIO_VERSION=0.7.11 \
   curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
 ```
 

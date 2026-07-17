@@ -8,6 +8,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from mcp.types import TextContent
+from pydantic import BaseModel, ConfigDict, Field
 
 from clio_agent import conf
 from clio_agent.errors import CancellationError
@@ -181,12 +183,29 @@ async def test_resource_read_is_pinned_to_exact_namespace_client() -> None:
     assert result[0].text == "resource"
 
 
-def test_raw_app_result_is_isolated_from_durable_tool_observer() -> None:
-    """Private result metadata reaches only the dedicated MCP App observer."""
+def test_root_data_result_is_publicly_projected_without_private_metadata() -> None:
+    """A bridge Root/data result reaches telemetry without its private metadata."""
+
+    class Root(BaseModel):
+        """Production-shaped validated FastMCP output-schema result."""
+
+        model_config = ConfigDict(populate_by_name=True)
+
+        schema_version: str
+        execution_id: str
+        scheduler_native_id: str | None = Field(alias="schedulerNativeId")
+
+    root = Root(
+        schema_version="jarvis.execution.v1",
+        execution_id="execution-live-root",
+        schedulerNativeId=None,
+    )
 
     private_result = SimpleNamespace(
-        data={"public": "ok"},
-        content=[SimpleNamespace(type="text", text="opened")],
+        data=root,
+        content=[TextContent(type="text", text=f"Root({root!s})")],
+        structured_content=None,
+        is_error=False,
         meta={"private": {"capability": "secret"}},
     )
 
@@ -201,7 +220,7 @@ def test_raw_app_result_is_isolated_from_durable_tool_observer() -> None:
                 )
             ]
 
-        async def call_tool(self, name: str, args: dict[str, Any]):
+        async def call_tool(self, name: str, arguments: dict[str, Any]):
             return private_result
 
     telemetry: list[Any] = []
@@ -213,7 +232,7 @@ def test_raw_app_result_is_isolated_from_durable_tool_observer() -> None:
         )
     )
     try:
-        with create_sync_tool_executor(
+        with SyncMCPToolExecutor(
             object(),
             timeout=1.0,
             client_factory=lambda _server: AppClient(),
@@ -222,10 +241,17 @@ def test_raw_app_result_is_isolated_from_durable_tool_observer() -> None:
     finally:
         set_tool_runtime_fallback(ToolRuntimeHooks())
 
-    assert result == '{"public": "ok"}'
+    assert result == str(root)
     completed = [row for row in telemetry if row[2] == "completed"]
     assert len(completed) == 1
-    assert completed[0][4] == '{"public": "ok"}'
+    assert completed[0][4] == {
+        "content": [{"type": "text", "text": f"Root({root!s})"}],
+        "structuredContent": {
+            "schema_version": "jarvis.execution.v1",
+            "execution_id": "execution-live-root",
+            "schedulerNativeId": None,
+        },
+    }
     assert "secret" not in str(completed)
     assert len(app_results) == 1
     assert app_results[0][3] is private_result
