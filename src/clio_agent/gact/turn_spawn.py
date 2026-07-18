@@ -1,9 +1,9 @@
 """Child-turn substrate (#948 S3, #951): spawn a declared child expert as a REAL
 turn in a REAL child session, projected as an :class:`AgentTask`.
 
-``spawn_child_turn(app, TaskSpec) -> AgentTask`` mints a child session (the
-``turn_nanoagents`` pattern, upgraded: created BEFORE the run, ``parent_session_id``
-lineage, ``agent={"id": <child expert>}``, ``session_type=="agent_task"`` metadata),
+``spawn_child_turn(app, TaskSpec) -> AgentTask`` mints a child session (created
+BEFORE the run, with ``parent_session_id`` lineage,
+``agent={"id": <child expert>}``, ``session_type=="agent_task"`` metadata),
 stages a real turn through the same ``_start_background_user_turn`` a user POST uses
 (so status / SSE / cancellation behave identically), and drives the task lifecycle
 to a terminal record via a completion hook on the child turn task.

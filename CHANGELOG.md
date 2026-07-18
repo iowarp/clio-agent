@@ -34,6 +34,14 @@ TUI/HTTP surface aren't tracked here.
 - Session agent-overlay export now round-trips the `module:` declaration
   (previously dropped, so an exported react parent re-loaded as `predict` and
   failed validation).
+- An empty blueprint/prompt-agent `answer` is now a typed failure (raises into
+  the `agent_error` ladder like the tool-agent path) instead of returning a
+  silent empty deliverable with a "runtime settlement / declared-child handoff
+  repair" rationale — the settle layer that consumed those empty answers is gone.
+- The `subagents` capability flag is re-keyed to the spawn substrate: it still
+  advertises child-agent support, now provided by real agent-task child sessions
+  (`session_type=agent_task`) + `blueprint.delegation.*` events rather than the
+  retired nanoagent subsessions / `subagent.*` events.
 
 ### Removed
 - The settle/synthesis orchestration internals (#948 S4 / #952): the settle
@@ -57,6 +65,20 @@ TUI/HTTP surface aren't tracked here.
   `session_type: agent_task` in place of `subagent.*`. Clients that reloaded the
   session list or raised a notification on `subagent.started` should key on
   `agent.task.started` / `blueprint.delegation.started` instead.
+- Deletion closure for the settle removal (#948 S4 / #952): the orphaned
+  answer-substitution machinery (`substitute_answer_from_delegation_evidence`,
+  `_fallback_answer_from_delegation`, the `answer_substituted_from_delegation_evidence`
+  turn-degradation reason and its now-unused per-session ledger), the stream-only
+  parent-resume duplicate suppressor (its `parent.resumed` Part producer died with
+  the settle loop), the dead sync-delegate prompt/state helpers
+  (`_delegated_expert_prompt`, `_delegated_expert_public_prompt`,
+  `_should_execute_delegated_handoff`, `_delegated_expert_agent_id`,
+  `_failed_child_delegation_workflow_state`, `_append_session_workflow_state_context`,
+  `_delegate_started_row`, `_public_task_from_composed_prompt`, and their app.py
+  re-exports), and the orphaned Tier-3 nanoagent spawn primitive
+  (`runtime/nanoagent.py`). The finalize-time stream-provenance assembler
+  (formerly `turn_degradation.assemble_stream_and_degradation_metadata`) is
+  retained as `turn_stream.assemble_stream_metadata`.
 
 ### Added
 - Child-turn substrate (#948 S3 / #951): `spawn_child_turn` spawns a declared child

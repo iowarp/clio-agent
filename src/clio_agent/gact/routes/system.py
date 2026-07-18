@@ -452,7 +452,11 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 files=True,  # BBB22 — /v1/sessions/{sid}/context/files CRUD
                 diffs=True,  # BBB21 — file_diff parts + /diffs/apply,reject
                 permissions=True,  # BBB23 — /v1/permissions + permission.* events
-                subagents=True,  # BBB25 — nanoagent subsessions + subagent.* events
+                # BBB25 — child agents. #948 S4 retired the nanoagent subsessions +
+                # subagent.* events; the capability is now provided by the spawn
+                # substrate: children run as real agent-task sessions
+                # (session_type=agent_task) surfaced via blueprint.delegation.* events.
+                subagents=True,
                 session_export=True,  # #16 — /v1/sessions/{sid}/export + import
                 # #760: no /summarize or /attachments routes exist — advertising
                 # them made the TUI 404 (paired gact-tui issue #224). Flip back

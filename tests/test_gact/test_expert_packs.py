@@ -274,152 +274,6 @@ UNIQUE_PACK_FALLBACK_POLICY: use IU.ANMO.00.BHZ when no better bounds are availa
     assert prompt_resolution["composed_with_agent_body"] is True
 
 
-def test_delegated_expert_prompt_appends_parent_evidence() -> None:
-    from clio_agent.gact.app import _delegated_expert_prompt
-
-    prompt = _delegated_expert_prompt(
-        {
-            "delegate_to": "variant_impact",
-            "question": "Assess high-impact variants and verification steps.",
-        },
-        (
-            "VCF evidence: file=/tmp/clio-benchmark-data/pathogen_sample_variants.vcf; "
-            "effects=frameshift, stop_gained."
-        ),
-    )
-
-    assert prompt.startswith("Assess high-impact variants")
-    assert "Parent evidence available for this delegated task" in prompt
-    assert "/tmp/clio-benchmark-data/pathogen_sample_variants.vcf" in prompt
-    assert "stop_gained" in prompt
-
-
-def test_delegated_expert_public_prompt_returns_parent_question_verbatim() -> None:
-    """#881: the call(agent) task text is the PARENT MODEL's own instruction,
-    rendered VERBATIM -- even when the model's sentence names a typed
-    workflow_state field. The server no longer scrubs contract vocabulary out of
-    a model's visible prose (epic #880: client renders verbatim, root-fixed)."""
-    from clio_agent.gact.app import _delegated_expert_public_prompt
-
-    question = (
-        "Discover stations and stage a real CSV. Return the staged CSV file path "
-        "and resource metadata in workflow_state, and set acquisition.metadata_path "
-        "so ranking can proceed."
-    )
-    public_prompt = _delegated_expert_public_prompt(
-        {"delegate_to": "data", "question": question}, ""
-    )
-    assert public_prompt == question
-
-
-def test_delegated_expert_public_prompt_prefers_parent_instruction_over_fallback() -> None:
-    """The parent's own instruction wins over the fallback and is returned
-    untouched; the fallback is only consulted when no instruction key is set."""
-    from clio_agent.gact.app import _delegated_expert_public_prompt
-
-    row = {"input": "Rank the nearest stations to the resolved region."}
-    public_prompt = _delegated_expert_public_prompt(row, "some parent evidence blob")
-    assert public_prompt == "Rank the nearest stations to the resolved region."
-
-
-def test_delegated_expert_public_prompt_splits_composed_fallback_at_owned_constants() -> None:
-    """#881: with no parent-instruction key the fallback may be a prompt the SERVER
-    composed by appending its own execution context. Pinned against a prompt built
-    by the REAL composer (``_delegated_expert_prompt`` +
-    ``_append_accumulated_workflow_state_context``): the public task is recovered by
-    splitting at the server's OWN marker constants (structural, not a prose scrub)."""
-    from clio_agent.gact.app import (
-        _append_accumulated_workflow_state_context,
-        _delegated_expert_prompt,
-        _delegated_expert_public_prompt,
-    )
-
-    public_task = "Stage a real EarthScope GNSS station CSV for Los Angeles."
-    composed = _append_accumulated_workflow_state_context(
-        _delegated_expert_prompt(
-            {"delegate_to": "data", "question": public_task},
-            "VCF evidence: file=/tmp/data/pathogen.vcf; effects=stop_gained.",
-        ),
-        {"geospatial": {"status": "resolved", "region_name": "Los Angeles"}},
-    )
-    # The composed CHILD prompt genuinely carries the server-appended context...
-    assert "Parent evidence available for this delegated task" in composed
-    assert "workflow_state" in composed
-    # ...but the PUBLIC transcript task recovered from it is only the public half,
-    # split off at the server's owned constants -- no model prose was matched.
-    public_prompt = _delegated_expert_public_prompt({}, composed)
-    assert public_prompt == public_task
-    assert "Parent evidence available for this delegated task" not in public_prompt
-    assert "workflow_state" not in public_prompt
-
-
-def test_public_task_split_covers_every_owned_boundary_not_just_the_first() -> None:
-    """#881: ``_public_task_from_composed_prompt`` recovers the public half at EVERY
-    server-owned join boundary, not merely the first (``Parent evidence``) marker that
-    the happy-path pin exercises. Each branch below is driven by the REAL composer that
-    emits that boundary, so deleting any split branch turns a pin RED (sabotage-checked).
-
-    Boundaries under test:
-      * ``Accumulated typed workflow state ...`` -> ``_append_accumulated_workflow_state_context``
-      * ``Authoritative typed workflow_state accumulated from the completed`` -> the
-        server-owned constant a former parent-resume composer appended (its emitter was
-        removed with the settle engine; the defensive split at the constant survives).
-      * the bare ``{"workflow_state"`` json block -> ``_workflow_state_payload`` with no
-        preceding marker (the defensive secondary split).
-    """
-    from clio_agent.gact.app import (
-        _append_accumulated_workflow_state_context,
-        _workflow_state_payload,
-    )
-    from clio_agent.gact.delegation import (
-        _SERVER_APPENDED_CONTEXT_MARKERS,
-        _public_task_from_composed_prompt,
-    )
-
-    public_task = "Stage a real EarthScope GNSS station CSV for Los Angeles."
-    state = {"geospatial": {"status": "resolved", "region_name": "Los Angeles"}}
-
-    # (2) 'Accumulated typed workflow state ...' marker branch. NO 'Parent evidence'
-    # marker is present, so the SECOND owned constant is the operative split (dead in
-    # the happy-path pin, which always splits at the first).
-    accumulated = _append_accumulated_workflow_state_context(public_task, state)
-    assert "Accumulated typed workflow state from prior CLIO tool evidence" in accumulated
-    assert "Parent evidence available" not in accumulated
-    assert '{"workflow_state"' in accumulated
-    recovered = _public_task_from_composed_prompt(accumulated)
-    assert recovered == public_task
-    assert "Accumulated typed workflow state" not in recovered
-    assert '{"workflow_state"' not in recovered
-
-    # (3) 'Authoritative typed workflow_state accumulated from the completed' marker
-    # branch — the server-owned constant built directly (its former composer was removed
-    # with the settle engine). The defensive split at this owned constant must still
-    # strip the marker + json block and recover the leading request head.
-    resume = (
-        "Original user request:\nRecover waveform evidence and produce a PNG artifact.\n\n"
-        "Authoritative typed workflow_state accumulated from the completed children:\n"
-        + _workflow_state_payload(state)
-    )
-    assert "Authoritative typed workflow_state accumulated from the completed" in resume
-    assert '{"workflow_state"' in resume
-    recovered_resume = _public_task_from_composed_prompt(resume)
-    assert "Original user request" in recovered_resume
-    assert (
-        "Authoritative typed workflow_state accumulated from the completed" not in recovered_resume
-    )
-    assert '{"workflow_state"' not in recovered_resume
-
-    # (4) The bare '{"workflow_state"' json block with NO preceding owned marker: the
-    # defensive secondary json split (never shadowed by a marker here). Uses the REAL
-    # payload builder that every state block appends.
-    bare_json = f"{public_task}\n\n{_workflow_state_payload(state)}"
-    assert not any(marker in bare_json for marker in _SERVER_APPENDED_CONTEXT_MARKERS)
-    assert '{"workflow_state"' in bare_json
-    recovered_bare = _public_task_from_composed_prompt(bare_json)
-    assert recovered_bare == public_task
-    assert '{"workflow_state"' not in recovered_bare
-
-
 def test_manifest_pack_loads_nested_experts_with_pack_metadata(isolated_env: Path) -> None:
     pack = isolated_env / ".clio" / "expert-packs" / "data-semantics"
     (pack / "experts" / "data").mkdir(parents=True)
@@ -993,9 +847,13 @@ Check CSV schemas and quality.
     assert assistant["metadata"]["stream_fallback"]["reason"] == "dynamic_prompt_stream_unavailable"
 
 
-def test_prompt_agent_empty_answer_with_children_enters_repair_path(
+def test_prompt_agent_empty_answer_raises_typed_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # #948 S4: the settle/handoff-repair layer that once consumed an empty prompt-
+    # agent answer is deleted. An empty answer is a typed failure -- forward raises
+    # so the turn records ``agent_error`` (turn.py) instead of a silent empty
+    # deliverable, even when the agent declares children.
     import dspy
 
     from clio_agent.gact import context as ctx
@@ -1028,13 +886,9 @@ def test_prompt_agent_empty_answer_with_children_enters_repair_path(
     session_token = ctx.set_session_id("sess_test")
     try:
         module = _build_prompt_user_agent_module(object(), agent_def)
-        pred = module.forward(question="review mzML", session_id="sess_test")
+        with pytest.raises(RuntimeError, match="returned an empty answer"):
+            module.forward(question="review mzML", session_id="sess_test")
     finally:
         ctx.reset(session_token)
         ctx.reset(app_token)
-
-    assert pred.selected_expert == "main"
-    assert pred.answer == ""
-    assert pred.expert_handoffs == []
-    assert "handoff repair" in pred.routing_rationale
 

@@ -406,20 +406,12 @@ from clio_agent.gact.agents.runtime import (  # noqa: E402,F401
 
 # gact/delegation.py -- delegation + workflow-state derivation cluster.
 from clio_agent.gact.delegation import (  # noqa: E402,F401
-    _append_accumulated_workflow_state_context,
-    _append_session_workflow_state_context,
     _coerce_expert_handoff_rows,
     _compact_exact_evidence_index,
-    _delegated_expert_agent_id,
-    _delegated_expert_prompt,
-    _delegated_expert_public_prompt,
     _expert_handoff_fields,
-    _failed_child_delegation_workflow_state,
-    _fallback_answer_from_delegation,
     _json_objects_from_text,
     _merge_workflow_state_from_value,
     _prediction_workflow_state,
-    _should_execute_delegated_handoff,
     _workflow_state_from_handoff_rows,
     _workflow_state_from_outputs,
     _workflow_state_payload,

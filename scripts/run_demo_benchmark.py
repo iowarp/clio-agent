@@ -300,16 +300,6 @@ class DemoResult:
         return row if isinstance(row, dict) else {}
 
     @property
-    def turn_degradations(self) -> list[dict[str, Any]]:
-        """Return the unified turn-degradation payloads for the message (a LIST).
-
-        Unlike :attr:`stream_fallback` (a single-slot dict), the #736 unify ledger
-        is a LIST of typed content/config degradations drained onto the assistant
-        message at finalize; readers iterate it.
-        """
-        return (self.message.get("metadata") or {}).get("turn_degradations") or []
-
-    @property
     def route_source(self) -> str:
         """Return the recorded routing source, if present."""
         metadata = _routing_decision(self.message).get("metadata") or {}

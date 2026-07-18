@@ -424,7 +424,6 @@ async def _run_turn_in_background(
     # seam and carry it on ``state`` for every delegation/grounding/scrub site.
     state.workflow_schema = _active_workflow_state_schema(state.app, state.sid)
     state.transcript = _open_turn_transcript(state.app, state.sid, state.turn_id)
-    state.suppressed_parent_resume_offsets = {}
     # TRICKY #1 (Phase B spec): bind the emitter over ``state`` so its LATE reads
     # of state.active_agent_id / state.invocation_agent_id see the forward seam's
     # IN-PLACE mutations. ``forward_turn`` reconstructs the same

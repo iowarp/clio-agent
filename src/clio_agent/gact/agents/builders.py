@@ -297,20 +297,12 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
                 )
             answer = str(getattr(result, "answer", "") or "").strip()
             if not answer:
-                if not self.has_declared_children:
-                    raise RuntimeError(f"user agent {self.agent_def.id!r} returned an empty answer")
-                return dspy.Prediction(
-                    answer="",
-                    selected_expert=self.agent_def.id,
-                    routing_rationale=(
-                        "Prompt agent returned an empty answer; CLIO will attempt "
-                        "declared-child handoff repair."
-                    ),
-                    route_source="user_agent",
-                    session_id=session_id,
-                    expert_handoffs=[],
-                    error_info=None,
-                )
+                # #948 S4: an empty answer is a typed failure, never a legitimate
+                # deliverable. The settle/handoff-repair layer that once consumed an
+                # empty root answer is deleted, so an empty-STRING answer is routed
+                # into the typed ``agent_error`` ladder (turn.py) exactly like the
+                # tool-agent path -- not returned as a silent empty deliverable.
+                raise RuntimeError(f"user agent {self.agent_def.id!r} returned an empty answer")
             return dspy.Prediction(
                 answer=answer,
                 selected_expert=self.agent_def.id,
@@ -1597,28 +1589,16 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             # The typed workflow_state output rides the Prediction's structured
             # ``workflow_state`` field below -- it is NOT serialized into ``answer``
             # text (that polluted the user-facing answer; consumers read the field).
-            handoff_rows = _coerce_expert_handoff_rows(getattr(result, "expert_handoffs", None))
-            if not answer and not handoff_rows:
-                return dspy.Prediction(
-                    answer="",
-                    selected_expert=self.agent_def.id,
-                    routing_rationale=(
-                        "Blueprint expert returned an empty answer; CLIO will attempt "
-                        "runtime settlement or declared-child handoff repair."
-                    ),
-                    route_source="agent_blueprint",
-                    session_id=session_id,
-                    expert_handoffs=[],
-                    workflow_state=getattr(result, "workflow_state", ""),
-                    evidence=getattr(result, "evidence", ""),
-                    artifacts=getattr(result, "artifacts", ""),
-                    errors=getattr(result, "errors", ""),
-                    delegation=getattr(result, "delegation", ""),
-                    trajectory=getattr(result, "trajectory", None),
-                    reasoning=getattr(result, "reasoning", ""),
-                    tools_called=tools_called,
-                    error_info=None,
+            if not answer:
+                # #948 S4: an empty answer is a typed failure (see the required
+                # ``answer`` field on the runtime signature). The settle/synthesis
+                # layer that once consumed an empty orchestrator answer is deleted;
+                # raise into the typed ``agent_error`` ladder (turn.py) like the
+                # tool-agent path instead of returning a silent empty deliverable.
+                raise RuntimeError(
+                    f"blueprint expert {self.agent_def.id!r} returned an empty answer"
                 )
+            handoff_rows = _coerce_expert_handoff_rows(getattr(result, "expert_handoffs", None))
             return dspy.Prediction(
                 answer=answer,
                 selected_expert=self.agent_def.id,

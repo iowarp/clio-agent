@@ -29,15 +29,12 @@ from clio_agent.gact.agent_blueprints import (
 )
 from clio_agent.gact.app import (
     _active_base_agent_tool_executor,
-    _append_session_workflow_state_context,
     _blueprint_module_kind,
     _blueprint_runtime_signature,
     _build_blueprint_dspy_module,
     _builtin_agents,
     _dynamic_agent_tools,
     _extract_tools_called_from_trajectory,
-    _failed_child_delegation_workflow_state,
-    _fallback_answer_from_delegation,
     _gact_app_context,
     _gact_turn_timeout_s,
     _ground_fabricated_local_artifact_paths,
@@ -47,7 +44,6 @@ from clio_agent.gact.app import (
     _recording_blueprint_tool,
     _run_blueprint_dspy_agent,
     _runtime_dynamic_agent_children_context,
-    _should_execute_delegated_handoff,
     _tool_calls_from_handoff_rows,
     _user_agent_bool_param,
     _workflow_state_from_handoff_rows,
@@ -976,16 +972,6 @@ def test_workflow_state_reclassifies_data_available_without_staged_local_path() 
     assert state["resource_candidate"]["status"] == "ready"
 
 
-def test_skipped_delegated_handoff_does_not_execute_even_with_delegate_target() -> None:
-    assert not _should_execute_delegated_handoff(
-        {
-            "delegate_to": "analysis",
-            "status": "skipped",
-            "skip_reason": "completed_sync_child_already_returned",
-        }
-    )
-
-
 def test_blueprint_runner_uses_dspy_module_call_path(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[dict[str, Any]] = []
 
@@ -1019,7 +1005,46 @@ def test_blueprint_runner_uses_dspy_module_call_path(monkeypatch: pytest.MonkeyP
     ]
 
 
-def test_blueprint_module_allows_handoff_only_root_output(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_blueprint_module_empty_answer_raises_typed_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #948 S4: the settle/synthesis layer that once tolerated an empty root answer
+    # is deleted. An empty answer is now a typed failure -- the module raises so the
+    # turn records ``agent_error`` (turn.py) instead of a silent empty deliverable.
+    class FakeProgram:
+        def __call__(self, **kwargs: Any) -> Any:
+            return SimpleNamespace(answer="", expert_handoffs="")
+
+    class FakePredict:
+        def __init__(self, signature: Any) -> None:
+            self.signature = signature
+
+        def __call__(self, **kwargs: Any) -> Any:
+            return FakeProgram()(**kwargs)
+
+    monkeypatch.setattr(dspy, "Predict", FakePredict)
+    monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object())
+    monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
+        lambda base_agent, agent_def: _fake_resolved_spec("argonne", "gpt-oss-120b"),
+    )
+
+    module = _build_blueprint_dspy_module(
+        SimpleNamespace(),
+        AgentDef(id="main", source="expert_pack", title="Main", module={"kind": "predict"}),
+    )
+
+    with pytest.raises(RuntimeError, match="returned an empty answer"):
+        module(question="deliver", session_id="session-123")
+
+
+def test_blueprint_module_empty_answer_with_handoffs_still_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The retired "handoff-only root output" shape (empty answer + handoff rows) no
+    # longer excuses an empty deliverable: routing is via the spawn-runtime tools,
+    # so an empty answer raises regardless of any residual expert_handoffs value.
     class FakeProgram:
         def __call__(self, **kwargs: Any) -> Any:
             return SimpleNamespace(
@@ -1047,59 +1072,8 @@ def test_blueprint_module_allows_handoff_only_root_output(monkeypatch: pytest.Mo
         AgentDef(id="main", source="expert_pack", title="Main", module={"kind": "predict"}),
     )
 
-    result = module(question="delegate", session_id="session-123")
-
-    assert result.answer == ""
-    assert result.selected_expert == "main"
-    assert result.route_source == "agent_blueprint"
-    assert result.expert_handoffs == [
-        {"agent_id": "reference", "parent_id": "main", "task": "inspect fasta"}
-    ]
-
-
-def test_blueprint_module_empty_answer_with_children_enters_repair_path(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class FakeProgram:
-        def __call__(self, **kwargs: Any) -> Any:
-            return SimpleNamespace(answer="", expert_handoffs="")
-
-    class FakePredict:
-        def __init__(self, signature: Any) -> None:
-            self.signature = signature
-
-        def __call__(self, **kwargs: Any) -> Any:
-            return FakeProgram()(**kwargs)
-
-    monkeypatch.setattr(dspy, "Predict", FakePredict)
-    monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object())
-    monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
-    monkeypatch.setattr(
-        "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
-        lambda base_agent, agent_def: _fake_resolved_spec("argonne", "gpt-oss-120b"),
-    )
-    monkeypatch.setattr(
-        "clio_agent.gact.agents.builders._runtime_dynamic_agent_children_context",
-        lambda app, agent_def, session_id="": "Declared child experts available:\n- reference",
-    )
-
-    module = _build_blueprint_dspy_module(
-        SimpleNamespace(),
-        AgentDef(id="main", source="expert_pack", title="Main", module={"kind": "predict"}),
-    )
-
-    token = ctx.set_session_id("session-123")
-    try:
-        with _gact_app_context(SimpleNamespace()):
-            result = module(question="inspect", session_id="session-123")
-    finally:
-        ctx.reset(token)
-
-    assert result.answer == ""
-    assert result.selected_expert == "main"
-    assert result.route_source == "agent_blueprint"
-    assert result.expert_handoffs == []
-    assert "declared-child handoff repair" in result.routing_rationale
+    with pytest.raises(RuntimeError, match="returned an empty answer"):
+        module(question="delegate", session_id="session-123")
 
 
 def test_extract_tools_called_from_indexed_react_trajectory() -> None:
@@ -1170,32 +1144,6 @@ def test_merge_tool_call_rows_deduplicates_matching_call_id_with_result_evidence
     assert rows[0]["call_id"] == "call_same"
 
 
-def test_failed_child_delegation_state_rides_structured_row() -> None:
-    # The structural twin: the typed failure state is built by
-    # _failed_child_delegation_workflow_state and stored on the failed row's
-    # ``workflow_state`` field, where the parent reads it for continuation routing.
-    state = _failed_child_delegation_workflow_state(
-        prompt="acquire GNSS data near 32.7,-117.1",
-        child_agent_id="earthscope_station_catalog",
-        parent_agent_id="ndp_dataset_discovery",
-        error="AuthenticationError",
-        message="token inactive",
-        tools_called=[],
-        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
-    )
-
-    assert state["delegation"]["status"] == "failed"
-    assert state["delegation"]["failed_child"] == "earthscope_station_catalog"
-    # The parent reads this structured field via _workflow_state_from_handoff_rows.
-    failed_row = {"stage": "delegate.failed", "workflow_state": state}
-    assert (
-        _workflow_state_from_handoff_rows([failed_row], schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)[
-            "delegation"
-        ]["status"]
-        == "failed"
-    )
-
-
 def test_completed_child_state_is_structural_not_prose_in_continuation() -> None:
     # End-to-end answer-cleanliness invariant for UI issue #1: after a child
     # completes with a non-empty typed workflow_state, (a) the user-/parent-facing
@@ -1236,29 +1184,6 @@ def test_completed_child_state_is_structural_not_prose_in_continuation() -> None
     )
     assert recovered["acquisition"]["status"] == "staged"
     assert recovered["station_catalog"]["station_ids"] == ["P472", "SIO5"]
-
-
-def test_session_workflow_state_context_injects_ledger_state_structurally() -> None:
-    # _append_session_workflow_state_context (the structured ledger -> parent
-    # prompt injection) is the KEEP path: it reads tool_call_ledger rows'
-    # structured ``workflow_state`` fields and injects them into a child prompt.
-    ledger_rows = [
-        {"name": "stage_csv", "workflow_state": {"acquisition": {"status": "staged"}}},
-    ]
-    app = SimpleNamespace(state=SimpleNamespace(tool_call_ledger={"sess-1": ledger_rows}))
-
-    enriched = _append_session_workflow_state_context(
-        app, "sess-1", "find more stations", schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA
-    )
-
-    assert "find more stations" in enriched
-    assert '"status": "staged"' in enriched
-    assert (
-        _workflow_state_from_outputs([enriched], schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)[
-            "acquisition"
-        ]["status"]
-        == "staged"
-    )
 
 
 def test_nested_handoff_tool_calls_preserve_child_result_evidence() -> None:
@@ -1773,20 +1698,6 @@ def test_prediction_workflow_state_accepts_json_string_and_wrapped_mapping() -> 
     )
 
 
-def test_fallback_answer_from_delegation_uses_latest_completed_parent_resume() -> None:
-    assert (
-        _fallback_answer_from_delegation(
-            [
-                {"stage": "parent.resumed", "status": "completed", "output": "first"},
-                {"stage": "delegate.completed", "status": "completed", "output": "child"},
-                {"stage": "parent.resumed", "status": "failed", "output": "bad"},
-                {"stage": "parent.resumed", "status": "completed", "output": "final"},
-            ]
-        )
-        == "final"
-    )
-
-
 def test_native_domain_expert_modules_are_not_runtime_importable(tmp_path: Path) -> None:
     retired_modules = [
         "clio_agent.experts.data_expert",
@@ -2018,6 +1929,36 @@ def test_session_agent_overlay_rejects_invalid_contracts(tmp_path: Path) -> None
     assert "unknown expert" in unknown_agent.text
     assert overlay_state["agent_overlay"] == {}
     assert overlay_state["validation"]["enabled"] is True
+
+
+def test_agent_blueprint_expert_markdown_round_trips_module_kind(tmp_path: Path) -> None:
+    # #948 S4 failing-first regression: a react parent exported WITHOUT its
+    # ``module.kind`` re-loads as the ``predict`` default and fails hierarchy
+    # validation (children unreachable). Deleting the module block in
+    # routes/agents.py::_agent_blueprint_expert_markdown MUST turn this red.
+    from clio_agent.gact.expert_packs import parse_expert_file
+    from clio_agent.gact.routes.agents import _agent_blueprint_expert_markdown
+
+    row = AgentDef(
+        id="root",
+        source="expert_pack",
+        title="Root",
+        tier=1,
+        module={"kind": "react"},
+        system_prompt="Orchestrate the declared children.",
+    )
+
+    md = _agent_blueprint_expert_markdown(row)
+    # Direct sabotage check: the serializer emits the module block.
+    assert 'module:\n  kind: "react"' in md
+
+    # Round-trip: the exported markdown re-parses to a react module. The loader
+    # defaults an ABSENT module to ``predict`` (parse_expert_file -> _module_from_meta),
+    # so a dropped serializer block would flip ``kind`` to predict and fail here.
+    exported = tmp_path / "root.md"
+    exported.write_text(md, encoding="utf-8")
+    reparsed = parse_expert_file(exported, scope="workspace")
+    assert reparsed.module["kind"] == "react"
 
 
 def test_session_agent_overlay_can_export_workspace_blueprint(tmp_path: Path) -> None:

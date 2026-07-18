@@ -3,7 +3,7 @@
 ``_run_turn_in_background`` in :mod:`clio_agent.gact.turn` used to carry its whole
 working set as ~40 function-scope locals threaded through a stack of nested
 closures. Phase B decomposes that god-function into free-function seam modules
-(``turn_stream``/``turn_delegation``/``turn_forward``/``turn_finalize``/...); the
+(``turn_stream``/``turn_forward``/``turn_finalize``/``turn_spawn``/...); the
 :class:`TurnState` dataclass is the shared carrier those seams read and mutate.
 
 The refactor is behavior-preserving because ``turn.py`` has *zero* ``nonlocal``:
@@ -82,7 +82,6 @@ class TurnState:
     context_file_provenance: Any = None
     enriched_text: str = ""
     memory_search_metadata: dict[str, Any] = field(default_factory=dict)
-    suppressed_parent_resume_offsets: dict[str, int] = field(default_factory=dict)
 
     # --- Mutable accumulators (reassigned as the turn progresses) ---
     error_info: "Optional[ErrorInfo]" = None
