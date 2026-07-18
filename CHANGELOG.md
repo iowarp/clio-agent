@@ -7,6 +7,12 @@ TUI/HTTP surface aren't tracked here.
 ## Unreleased
 
 ### Added
+- Child-turn substrate (#948 S3 / #951): `spawn_child_turn` spawns a declared child
+  expert as a REAL turn in a REAL child session (projected as an `AgentTask`), on a
+  dedicated executor pool (never the default), with depth/declared-child guards,
+  FIFO queue admission at the concurrency cap, a completion hook that records the
+  child's result, HITL-in-child typed failure, and a parent→children cancel cascade.
+  The `#671` federation seam (`TaskSpec` serializable in/out).
 - Agent-task API + event family (#948 S2 / #950): `GET /v1/sessions/{sid}/tasks`,
   `GET /v1/tasks/{task_id}`, `POST /v1/tasks/{task_id}/cancel`, and the
   `agent.task.{queued,started,completed,failed,cancelled,consumed}` events

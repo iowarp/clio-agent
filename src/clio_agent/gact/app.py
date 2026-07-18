@@ -767,6 +767,9 @@ from clio_agent.gact.turn_runner import (  # noqa: E402
     drain_app_turns,
     install_turn_runner,
 )
+from clio_agent.gact.turn_spawn import (  # noqa: E402
+    install_agent_task_executor,
+)
 
 # Alias kept so the thin ``build_app`` closure wrapper (which shadows the
 # ``_start_background_user_turn`` name locally) can still reach the explicit-``app``
@@ -1513,6 +1516,10 @@ def build_app(
     # session store, rebuilt at boot by folding session_type=="agent_task" sessions
     # (no fifth store). Feeds agent.task.* events + the task API; S3+ spawn into it.
     install_agent_task_registry(app)
+    # #948 S3 (#951): dedicated child-forward pool (never the default executor) so a
+    # parent blocked in a future wait can't starve its children. Sized to the
+    # concurrency cap (agent_tasks.max_concurrent / CLIO_MAX_CONCURRENT_AGENT_TASKS).
+    install_agent_task_executor(app)
     # #948 S1: schedule ids deferred because their session was busy at the cron
     # minute; _scheduler_tick_once retries them until the session frees (a coarse
     # cron can't be retried via due_now, which only re-yields on a cron match).
