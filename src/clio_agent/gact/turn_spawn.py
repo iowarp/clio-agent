@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
@@ -57,6 +58,39 @@ def _err_code(error_info: Any) -> str:
 # runaway self-spawning (and, per the per-depth pools below, the number of pools).
 MAX_SPAWN_DEPTH = 8
 _ANSWER_EXCERPT_MAX = 2000
+
+# Session-scoped activation keys a spawned child MUST inherit from its parent so it
+# resolves its declared expert against the SAME blueprint / expert-pack the parent
+# activated (session-scoped, possibly NOT installed globally) — never the global /
+# default catalog. ``active_agent_blueprint_*`` are stamped by the blueprint
+# activation route (see routes/blueprints.py) and read by resolution.py
+# (``_runtime_active_agent_blueprint_id`` / ``_runtime_active_agent_blueprint_path``);
+# ``active_expert_pack_*`` / ``expert_pack_id`` mirror them for expert packs
+# (``_runtime_active_session_expert_pack_id`` / ``_runtime_active_session_expert_pack_path``).
+_INHERITED_SESSION_SCOPE_PREFIXES = ("active_agent_blueprint_", "active_expert_pack_")
+_INHERITED_SESSION_SCOPE_KEYS = ("expert_pack_id",)
+
+
+def _inherited_session_scope_metadata(parent: Any) -> dict[str, Any]:
+    """Return the parent session's session-scoped blueprint / expert-pack activation
+    keys, copied VERBATIM for a spawned child.
+
+    Without this a child session created with only ``agent={"id": <expert>}``
+    resolves that expert through the GLOBAL catalog: on the live gate a child
+    accidentally resolved from a STALE global install while another failed typed
+    (``not_implemented``) because its global copy was disabled. Copying the
+    activation keys pins the child to the parent's active blueprint/pack. Tolerates
+    a missing / non-mapping parent metadata block (nothing to inherit → ``{}``)."""
+
+    metadata = getattr(parent, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return {}
+    return {
+        key: value
+        for key, value in metadata.items()
+        if key.startswith(_INHERITED_SESSION_SCOPE_PREFIXES)
+        or key in _INHERITED_SESSION_SCOPE_KEYS
+    }
 
 
 @dataclass(frozen=True)
@@ -215,15 +249,19 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
     )
     persist_agent_task(app, task)
     # Persist the launch data on the child session so a queued task can be launched
-    # faithfully later (the AgentTask record deliberately carries no task_text).
+    # faithfully later (the AgentTask record deliberately carries no task_text), AND
+    # inherit the parent's session-scoped blueprint / expert-pack activation keys so
+    # the child resolves its expert against the parent's active blueprint (not the
+    # global/default catalog — see ``_inherited_session_scope_metadata``).
     app.state.sessions.update(
         child.id,
         metadata_patch={
+            **_inherited_session_scope_metadata(parent),
             "pending_spawn": {
                 "task_text": spec.task_text,
                 "workflow_state": spec.workflow_state or {},
                 "mode": spec.mode,
-            }
+            },
         },
     )
     publish_agent_task_event(app, task, AGENT_TASK_EVENTS[STATUS_QUEUED])

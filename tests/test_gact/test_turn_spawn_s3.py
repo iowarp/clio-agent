@@ -323,3 +323,138 @@ def test_nested_sync_wait_completes_without_deadlock(tmp_path: Path, monkeypatch
         all_tasks = app.state.agent_task_registry.snapshot()
         depths = {t.depth for t in all_tasks if t.status == "completed"}
         assert depths == {1, 2, 3}, sorted(depths)
+
+
+# ---------------------------------------------------------------------------
+# Live-gate bug (#948 S4): a spawned child must INHERIT the parent's session-scoped
+# active blueprint so its declared expert resolves against THAT blueprint — not the
+# global/default catalog. On the live gate a child accidentally resolved from a
+# STALE global install while another failed typed (not_implemented) because its
+# global copy was disabled. spawn_child_turn copies the parent's
+# active_agent_blueprint_* / active_expert_pack_* activation keys onto the child.
+# ---------------------------------------------------------------------------
+
+
+def _write_session_scoped_blueprint(root: Path, blueprint_id: str = "inherit-scope-bp") -> None:
+    """A minimal, valid Agent Blueprint on disk (NOT installed globally): a react
+    root orchestrator with one declared child worker. Per the S4 rule an expert with
+    declared children must be ``module.kind: react``; the leaf worker needs none."""
+
+    (root / "experts").mkdir(parents=True)
+    root.joinpath("AGENT.md").write_text(
+        f"""---
+id: {blueprint_id}
+version: 0.1.0
+title: Inherit Scope Agent
+root_expert: orchestrator
+---
+Session-scoped agent proving spawn inheritance.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("experts", "orchestrator.md").write_text(
+        """---
+id: orchestrator
+title: Orchestrator
+tier: 1
+module:
+  kind: react
+---
+Coordinate the work by spawning the worker.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("experts", "worker.md").write_text(
+        """---
+id: worker
+title: Worker
+parent_id: orchestrator
+tier: 2
+---
+Do the delegated work.
+""",
+        encoding="utf-8",
+    )
+
+
+def test_spawn_inherits_session_scoped_blueprint_so_child_resolves(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A parent with a SESSION-SCOPED blueprint (activated by path, not installed
+    globally) spawns its declared child; the child session inherits the parent's
+    ``active_agent_blueprint_*`` keys, so the child's declared expert RESOLVES
+    against the parent's blueprint instead of failing typed ``not_implemented``.
+
+    Sabotage-check: drop the inheritance copy in ``spawn_child_turn`` and this fails
+    exactly like the live bug — the child session carries no blueprint keys, so
+    ``_resolve_runtime_dynamic_agent`` falls back to the global catalog (where
+    ``worker`` does not exist) and returns ``None`` (the ``not_implemented`` cause).
+    """
+
+    from clio_agent.gact.agents.resolution import (
+        _resolve_runtime_dynamic_agent,
+        _runtime_declared_child_ids,
+    )
+
+    # Do NOT run a real background LM turn for the resolved blueprint expert: the
+    # fix (metadata inheritance) is applied BEFORE _launch, and resolution is
+    # asserted at the exact seam turn_forward uses. Stub the turn launcher to keep
+    # the test hermetic (no provider/LM config in a bare build_app).
+    monkeypatch.setattr(
+        "clio_agent.gact.turn._start_background_user_turn",
+        lambda *a, **k: None,
+    )
+
+    blueprint = tmp_path / "inherit-scope-bp"
+    _write_session_scoped_blueprint(blueprint)
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+
+        # Activate the blueprint SESSION-SCOPED by path (not globally installed).
+        resp = client.post(
+            f"/v1/sessions/{parent}/agent-blueprint", json={"path": str(blueprint)}
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["active_agent_blueprint_id"] == "inherit-scope-bp"
+
+        # The child expert is a real DECLARED child of the parent's blueprint root,
+        # but is NOT resolvable globally (the blueprint is not installed).
+        assert "worker" in _runtime_declared_child_ids(
+            app, "orchestrator", session_id=parent
+        )
+        assert _resolve_runtime_dynamic_agent(app, "worker") is None, (
+            "worker must not exist in the global catalog for this test to be meaningful"
+        )
+
+        task = spawn_child_turn_threadsafe(
+            app,
+            TaskSpec(
+                child_expert_id="worker",
+                task_text="do the work",
+                parent_session_id=parent,
+                requesting_expert_id="orchestrator",
+            ),
+        )
+        child_sid = task.child_session_id
+
+        # (1) The child session inherited the parent's active_agent_blueprint_* keys.
+        parent_meta = app.state.sessions.get(parent).metadata
+        child_meta = app.state.sessions.get(child_sid).metadata
+        blueprint_keys = {
+            k: v for k, v in parent_meta.items() if k.startswith("active_agent_blueprint_")
+        }
+        assert blueprint_keys, "parent activation stamped no active_agent_blueprint_* keys"
+        assert child_meta.get("active_agent_blueprint_id") == "inherit-scope-bp"
+        assert child_meta.get("active_agent_blueprint_path")
+        for key, value in blueprint_keys.items():
+            assert child_meta.get(key) == value, f"child did not inherit {key} verbatim"
+
+        # (2) The child's declared expert RESOLVES against the inherited blueprint at
+        # the exact seam turn_forward uses — so the child turn does NOT fail
+        # not_implemented (the live bug).
+        resolved = _resolve_runtime_dynamic_agent(app, "worker", session_id=child_sid)
+        assert resolved is not None and resolved.id == "worker", (
+            "child expert failed to resolve → would fail typed not_implemented"
+        )
