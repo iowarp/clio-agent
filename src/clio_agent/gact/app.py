@@ -1007,6 +1007,20 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # they persist into are still alive (owner module does the cooperative-cancel +
     # bounded-grace + typed-reason drain).
     await drain_app_turns(app, logger)
+
+    # #948 S3: shut down the dedicated agent-task executor (child forwards) off the
+    # loop, symmetric to its install. Without this its non-daemon workers leak
+    # across app lifecycles and a worker still in a slow child forward blocks
+    # process exit (concurrent.futures' atexit joins all workers).
+    _agent_task_executor = getattr(app.state, "agent_task_executor", None)
+    if _agent_task_executor is not None:
+        try:
+            await asyncio.get_running_loop().run_in_executor(
+                None, lambda: _agent_task_executor.shutdown(wait=False, cancel_futures=True)
+            )
+        except Exception:  # noqa: BLE001,S110 - defensive shutdown cleanup
+            pass
+
     # MCP Apps may own browser attachments or other remote resources. Close
     # every retained record while the exact originating MCP transports are
     # still alive. A failure is logged and retained; the child server's own

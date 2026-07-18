@@ -240,6 +240,12 @@ def cancel_children_of(app: "FastAPI", parent_session_id: str) -> int:
         persist_agent_task(app, updated)
         publish_agent_task_event(app, updated, AGENT_TASK_EVENTS[STATUS_CANCELLED])
         n += 1
+    # Cancelling running children frees concurrency slots — admit queued tasks
+    # (possibly of OTHER parents) into them, else they strand forever (the
+    # completion hook won't: a cancelled task is already terminal when its
+    # done-callback fires, so it early-returns before the admission).
+    if n:
+        _admit_next_queued(app)
     return n
 
 
@@ -371,33 +377,34 @@ def _child_workflow_state(app: "FastAPI", child_sid: str, final: Any) -> dict[st
 
 
 def _admit_next_queued(app: "FastAPI") -> None:
-    """FIFO: when a running task frees a slot, launch the oldest queued task."""
+    """FIFO: launch queued tasks into every currently-free slot (a cancel can free
+    several at once, so admit up to the free-slot count, not just one)."""
+
+    from dataclasses import replace  # noqa: PLC0415
 
     reg = app.state.agent_task_registry
     cap = getattr(app.state, "max_concurrent_agent_tasks", 3)
-    running = sum(1 for t in reg.snapshot() if t.status == STATUS_RUNNING)
-    if running >= cap:
-        return
-    queued = sorted(
-        (t for t in reg.snapshot() if t.status == STATUS_QUEUED), key=lambda t: t.created_at
-    )
-    if not queued:
-        return
-    task = queued[0]
-    child = app.state.sessions.get(task.child_session_id)
-    pending = (getattr(child, "metadata", {}) or {}).get("pending_spawn", {}) if child else {}
-    spec = TaskSpec(
-        child_expert_id=task.agent_ref.get("expert_id", ""),
-        task_text=pending.get("task_text", ""),
-        parent_session_id=task.parent_session_id,
-        requesting_expert_id=task.agent_ref.get("requesting_expert_id", "main"),
-        parent_turn_id=task.parent_turn_id,
-        depth=task.depth,
-        mode=pending.get("mode", "async"),
-        workflow_state=pending.get("workflow_state") or None,
-    )
-    # Clear the queued_reason as it launches.
-    from dataclasses import replace  # noqa: PLC0415
-
-    reg.register(replace(task, queued_reason=""))
-    _launch(app, reg.get(task.task_id), spec)
+    while True:
+        running = sum(1 for t in reg.snapshot() if t.status == STATUS_RUNNING)
+        if running >= cap:
+            return
+        queued = sorted(
+            (t for t in reg.snapshot() if t.status == STATUS_QUEUED), key=lambda t: t.created_at
+        )
+        if not queued:
+            return
+        task = queued[0]
+        child = app.state.sessions.get(task.child_session_id)
+        pending = (getattr(child, "metadata", {}) or {}).get("pending_spawn", {}) if child else {}
+        spec = TaskSpec(
+            child_expert_id=task.agent_ref.get("expert_id", ""),
+            task_text=pending.get("task_text", ""),
+            parent_session_id=task.parent_session_id,
+            requesting_expert_id=task.agent_ref.get("requesting_expert_id", "main"),
+            parent_turn_id=task.parent_turn_id,
+            depth=task.depth,
+            mode=pending.get("mode", "async"),
+            workflow_state=pending.get("workflow_state") or None,
+        )
+        reg.register(replace(task, queued_reason=""))  # clear queued_reason as it launches
+        _launch(app, reg.get(task.task_id), spec)

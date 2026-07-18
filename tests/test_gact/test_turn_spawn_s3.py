@@ -149,6 +149,33 @@ def test_cancel_cascade_from_parent(tmp_path: Path, monkeypatch) -> None:
         assert _bus(app, parent, "agent.task.cancelled"), "no cascade cancel event on parent"
 
 
+def test_cancel_frees_slot_and_admits_queued(tmp_path: Path, monkeypatch) -> None:
+    """Cancelling a parent frees its child's concurrency slot and admits a QUEUED
+    task of ANOTHER parent — it must not strand forever (the completion hook won't
+    admit a cascade-cancelled task, which is already terminal when its callback runs)."""
+
+    _declare(monkeypatch, "main")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent(sleep_s=3.0))
+    with TestClient(app) as client:
+        app.state.max_concurrent_agent_tasks = 1
+        pa = client.post("/v1/sessions", json={"title": "A"}).json()["id"]
+        pb = client.post("/v1/sessions", json={"title": "B"}).json()["id"]
+        ta = spawn_child_turn_threadsafe(
+            app, TaskSpec(child_expert_id="main", task_text="a", parent_session_id=pa)
+        )
+        tb = spawn_child_turn_threadsafe(
+            app, TaskSpec(child_expert_id="main", task_text="b", parent_session_id=pb)
+        )
+        assert ta.status == STATUS_RUNNING
+        assert tb.status == "queued"
+        # Cancel parent A -> frees the only slot -> B's queued child is admitted.
+        assert client.post(f"/v1/sessions/{pa}/cancel").status_code == 204
+        settled_b = _wait_terminal(app, tb.task_id, timeout=8.0)
+        assert settled_b.status == "completed", (
+            f"queued task of another parent stranded: {settled_b.status}"
+        )
+
+
 def test_hitl_in_child_fails_typed(tmp_path: Path, monkeypatch) -> None:
     """An unattended child whose turn paused for user input fails with a typed
     reason (child_requires_user_input), never hangs."""
