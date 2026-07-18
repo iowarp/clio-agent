@@ -1685,35 +1685,6 @@ def test_earthscope_analysis_prompt_forbids_rows_scanned_cadence_inference(
         "earthscope-gnss-region",
     ],
 )
-def test_earthscope_synthesis_prompt_filters_scan_limited_cadence_claims(
-    blueprint_id: str,
-) -> None:
-    prompt_path = (
-        Path(__file__).resolve().parents[2]
-        / "external"
-        / "clio-agent-marketplace"
-        / blueprint_id
-        / "experts"
-        / "synthesis.md"
-    )
-    prompt = prompt_path.read_text(encoding="utf-8")
-    normalized_prompt = " ".join(prompt.split())
-
-    assert "Don't convert `rows_scanned`/`rows_profiled` into" in normalized_prompt
-    assert "cadence, duration, Hz, completeness" in normalized_prompt
-    assert "a scan-limited profile is coverage evidence only" in normalized_prompt
-    assert "Preserve uncertainty units" in normalized_prompt
-    assert "not sub-cm" in normalized_prompt
-    assert "Don't cite external sources (USGS/UNAVCO" in normalized_prompt
-    assert "`model_geographic_prior`" in normalized_prompt
-
-
-@pytest.mark.parametrize(
-    "blueprint_id",
-    [
-        "earthscope-gnss-region",
-    ],
-)
 def test_earthscope_station_network_prompt_preserves_uncertainty_units(
     blueprint_id: str,
 ) -> None:
@@ -1976,10 +1947,9 @@ def test_earthscope_final_prompts_guard_scan_limited_profile_scope(
     blueprint_id: str,
 ) -> None:
     root = Path(__file__).resolve().parents[2] / "external" / "clio-agent-marketplace"
+    # #948 S4: the react main now writes the final answer itself (no synthesis child),
+    # so the answer-quality scan-limited guardrails moved into main.md.
     main_prompt = (root / blueprint_id / "experts" / "main.md").read_text(encoding="utf-8")
-    synthesis_prompt = (root / blueprint_id / "experts" / "synthesis.md").read_text(
-        encoding="utf-8"
-    )
     analysis_prompt = (root / blueprint_id / "experts" / "gnss_timeseries_analysis.md").read_text(
         encoding="utf-8"
     )
@@ -1987,7 +1957,7 @@ def test_earthscope_final_prompts_guard_scan_limited_profile_scope(
         encoding="utf-8"
     )
     combined = " ".join(
-        "\n".join([main_prompt, synthesis_prompt, analysis_prompt, visualization_prompt]).split()
+        "\n".join([main_prompt, analysis_prompt, visualization_prompt]).split()
     )
 
     assert "rows_profiled`/`numeric_summary_rows" in combined
