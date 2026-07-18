@@ -6,6 +6,28 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.7.12] — 2026-07-17
+
+### Fixed
+- **Diagnosable desktop boot failures** (gact-tui#317, pinned via gact-tui
+  v0.9.8). A bundled-MSI boot could fail with "sidecar did not report ready
+  within 30s" and leave *zero* backend output in `backend-boot.log`, making
+  the cause impossible to see. Now the sidecar launcher logs which backend it
+  resolved before exec and forces `PYTHONUNBUFFERED` so the backend's boot
+  transcript is captured in real time, and the supervisor records *why* the
+  probe gave up (launcher exited early vs. never bound) instead of silently
+  killing.
+
+### Added
+- **Inline, copyable boot log on the failure card** (gact-tui#317): a new
+  `read_logs` desktop command surfaces the boot-log transcript inline with a
+  Copy button, so a failed boot can be captured without leaving the app (the
+  OS "Open logs" reveal stays as a secondary action).
+
+### Changed
+- The desktop splash renders the CLIO brand's real logo image instead of the
+  placeholder "C" glyph (gact-tui#317). Desktop app 0.7.1 → 0.7.2.
+
 ## [0.7.4] — 2026-07-15
 
 ### Added
