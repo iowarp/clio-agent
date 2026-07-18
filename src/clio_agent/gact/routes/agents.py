@@ -397,6 +397,16 @@ def _agent_blueprint_expert_markdown(row: AgentDef) -> str:
         if value:
             lines.append(f"{key}: {_frontmatter_scalar(value)}")
     lines.append(f"tier: {int(row.tier or 1)}")
+    # #948 S4: the module declaration must round-trip — a react parent exported
+    # without its ``module.kind`` would re-load as the predict default and fail
+    # hierarchy validation (children unreachable without the spawn tools).
+    module = {
+        key: value for key, value in (row.module or {}).items() if value not in (None, "", {}, [])
+    }
+    if module:
+        lines.append("module:")
+        for key in sorted(module):
+            lines.append(f"  {key}: {_frontmatter_scalar(module[key])}")
     if row.enabled is False:
         lines.append("enabled: false")
     lines.extend(_frontmatter_list_lines("tools", list(row.tools or [])))

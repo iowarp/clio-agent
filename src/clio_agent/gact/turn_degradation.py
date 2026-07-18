@@ -1,11 +1,9 @@
 """Unified turn-degradation ledger + finalize drain (#736 no-silent-fallback unify).
 
-#736 introduced the record-half of a no-silent-fallback mechanism as TWO
-write-only sibling ledgers that no ``src/`` code ever read
-(``app.state.delegation_fallbacks`` in ``turn_terminal.py`` and
-``app.state.final_responder_migrations`` in ``agents/migration_signals.py``). A
-ledger that is written but never drained satisfies the no-silent-fallback rule in
-LETTER ONLY — the degradation never reaches the trace/API, so it is still silent.
+#736 introduced the record-half of a no-silent-fallback mechanism as write-only
+sibling ledgers that no ``src/`` code ever read. A ledger that is written but never
+drained satisfies the no-silent-fallback rule in LETTER ONLY — the degradation
+never reaches the trace/API, so it is still silent.
 
 This owner module unifies the MECHANISM (not the reason-set): ONE always-on,
 typed-catalog-validated, per-session LIST ledger — ``app.state.turn_degradations``
@@ -50,41 +48,10 @@ logger = logging.getLogger(__name__)
 # closed ``_STREAM_FALLBACK_REASON_DEFINITIONS`` capability set — they live on a
 # different (content/config) axis and must not contaminate that contract.
 _TURN_DEGRADATION_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
-    "final_responder_empty_answer": {
-        "category": "delegation_degradation",
-        "recovery_actions": [
-            "inspect_final_responder_expert_output",
-            "surface_delegation_evidence_as_answer",
-        ],
-        "description": (
-            "The declared final responder (structured_outputs.final_responder) "
-            "completed with no answer on any output channel, so the turn's "
-            "user-facing deliverable is empty. Finalize substitutes the child's "
-            "delegation evidence as the answer; recorded so the substituted "
-            "downgrade the user sees is queryable rather than silent."
-        ),
-    },
-    "tool_agent_evidence_substituted_for_empty_answer": {
-        "category": "delegation_degradation",
-        "recovery_actions": [
-            "inspect_child_tool_agent_final_answer",
-            "review_substituted_tool_trajectory_evidence",
-        ],
-        "description": (
-            "A tool-backed child expert returned with an EMPTY prose answer but a "
-            "non-empty ReAct tool trajectory, so the delegation ``output`` was "
-            "substituted with bounded tool-observation evidence recovered from that "
-            "trajectory (evidence._tool_agent_empty_answer_fallback) instead of the "
-            "child's own answer. Recorded so the substituted, server-composed "
-            "``output`` the parent (and UI 'show more') sees is queryable rather than "
-            "a silent content swap — the analogue of final_responder_empty_answer for "
-            "a delegated tool agent."
-        ),
-    },
     "answer_substituted_from_delegation_evidence": {
         "category": "delegation_degradation",
         "recovery_actions": [
-            "inspect_final_responder_expert_output",
+            "inspect_child_expert_output",
             "review_substituted_delegation_evidence",
         ],
         "description": (
@@ -92,18 +59,6 @@ _TURN_DEGRADATION_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
             "substituted the latest completed parent-resume delegation evidence "
             "as the user-facing answer. Recorded so the substituted answer the "
             "user actually sees is queryable rather than a silent content swap."
-        ),
-    },
-    "final_responder_flag_absent": {
-        "category": "config_migration",
-        "recovery_actions": ["add_final_responder_true_to_structured_outputs"],
-        "description": (
-            "An expert named 'synthesis' declares workflow_state but not "
-            "final_responder. Before #736 the name 'synthesis' forced its answer "
-            "to live-stream; #736 keys that on the declarative final_responder "
-            "flag instead, so without it this expert's answer stream silently "
-            "flips from visible to hidden. Add 'final_responder: true' to the "
-            "expert's structured_outputs block to restore visible streaming."
         ),
     },
 }
@@ -222,9 +177,8 @@ def record_turn_degradation(
             # No-silent-swallow: the record has no live per-session ledger to land
             # on (app-less / state-less / session-less construction -- e.g. an
             # out-of-turn catalog preview). It cannot persist, but it must not
-            # vanish, so surface it at WARNING (the unconditional logging.warning
-            # precedent from migration_signals) so the dropped downgrade reaches the
-            # logs/trace instead of a silent ``return``.
+            # vanish, so surface it at WARNING (an unconditional logging.warning) so
+            # the dropped downgrade reaches the logs/trace instead of a silent ``return``.
             logger.warning(
                 "turn degradation not persisted (no per-session ledger: "
                 "app=%s state=%s sid=%r): reason=%s message=%s",

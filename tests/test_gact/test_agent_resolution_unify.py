@@ -69,6 +69,8 @@ Test blueprint.
 id: root
 title: Root
 tier: 1
+module:
+  kind: react
 ---
 Coordinate.
 """,

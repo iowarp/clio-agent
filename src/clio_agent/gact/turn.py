@@ -8,13 +8,12 @@ one agent turn end to end:
   ``message.created`` events, and schedules the turn as a tracked ``asyncio``
   task (so cancellation can reach it via ``app.state.in_flight_turns``).
 * :func:`_run_turn_in_background` is the body of that task: it invokes
-  ``agent.forward`` in an executor, streams/slices the result into Parts,
-  settles dynamic-agent delegations (via the
-  :mod:`clio_agent.gact.turn_delegation` settle engine —
-  ``settle_dynamic_agent_delegations`` / ``execute_delegated_experts`` /
-  ``run_dynamic_agent_sync``), publishes every SSE event the TUI consumes,
-  persists the assistant message, records the context frame + token/cost usage,
-  and returns the session to ``idle`` (or ``error``).
+  ``agent.forward`` in an executor, streams/slices the result into Parts
+  (a react main routes to its declared children by CALLING the spawn-runtime
+  tools, so its ``answer`` is already the deliverable — no post-forward settle
+  pass), publishes every SSE event the TUI consumes, persists the assistant
+  message, records the context frame + token/cost usage, and returns the session
+  to ``idle`` (or ``error``).
 
 It was carved verbatim out of ``clio_agent.gact.app.build_app`` so the route
 factories (post-message, question-answer, retry-attempt, schedules) and the

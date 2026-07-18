@@ -10,7 +10,6 @@ engine imports these), and reuses the pure merge/normalize primitives in
 Responsibilities grouped here:
 
 * Expert-handoff coercion + summary (parsing model output into dict rows).
-* Delegation continuation: the parent resume prompt + nested return-row walks.
 * Child-output compaction that retains exact evidence (paths/identifiers/state).
 * Workflow-state derivation: extracting typed state from outputs/handoff rows and
   building the parent-consumable payloads.
@@ -30,7 +29,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.runtime.globals import _jsonish
@@ -101,187 +100,6 @@ def _expert_handoff_fields(handoff: Mapping[str, Any]) -> dict[str, str]:
         "stage": stage,
         "status": status,
     }
-
-
-# ------------------------------------------------------------------------- #
-# Delegation continuation: parent resume + nested return-row walks #
-# ------------------------------------------------------------------------- #
-
-
-def _dynamic_parent_resume_prompt(
-    original_request: str,
-    parent_agent: "AgentDef",
-    executed_handoffs: list[dict[str, Any]],
-    declared_child_ids: set[str] | None = None,
-    *,
-    schema: "WorkflowStateSchema",
-) -> str:
-    """Build the compact continuation prompt given back to a dynamic parent."""
-
-    rows: list[str] = []
-    merged_state: dict[str, Any] = {}
-    completed_ids: list[str] = []
-    for row in executed_handoffs:
-        stage = str(row.get("stage") or "")
-        if stage not in ("delegate.completed", "delegate.failed"):
-            continue
-        agent_id = str(row.get("agent_id") or row.get("delegate_to") or "")
-        status = str(row.get("status") or "")
-        if agent_id and status != "failed" and agent_id not in completed_ids:
-            completed_ids.append(agent_id)
-        # #880: the result line renders the child's answer VERBATIM from the typed
-        # ``output`` field (no server-authored summary). A FAILED child carries an
-        # EMPTY ``output`` (CONFIRMED) and surfaces the failure from its typed
-        # ``error``/``message`` fields — rendering typed state into a prompt is
-        # allowed grounding; authoring text into ``output`` is not.
-        summary = str(row.get("output") or "").strip()
-        if not summary and status == "failed":
-            summary = f"failed: {row.get('error') or ''} {row.get('message') or ''}".strip()
-        children = row.get("children")
-        child_note = ""
-        if isinstance(children, list) and children:
-            child_note = f"; nested_child_events={len(children)}"
-        rows.append(f"- {agent_id}: status={status}{child_note}; result={summary}")
-        child_state = row.get("workflow_state")
-        if isinstance(child_state, Mapping):
-            _merge_workflow_state_mapping(merged_state, child_state, schema=schema)
-    result_block = "\n".join(rows) or "- No completed child delegation results were returned."
-    # Surface the MERGED typed workflow_state from the completed children, not just the
-    # prose summaries. A child may put its key result ONLY in the typed field (in the
-    # structured workflow_state but not in its prose answer); without this the parent
-    # cannot see the child already delivered, and re-delegates to it in a loop. The
-    # example field names shown to the model are declared by the pack schema.
-    state_block = ""
-    if merged_state:
-        example_fields = ", ".join(schema.resume_example_fields)
-        example_clause = f" (e.g. {example_fields})" if example_fields else ""
-        state_block = (
-            "\n\nAuthoritative typed workflow_state accumulated from the completed "
-            "children — read these typed fields" + example_clause + " to decide "
-            "the next step. A child whose result already appears here is DONE; do NOT "
-            "re-delegate to it:\n" + _workflow_state_payload(merged_state)
-        )
-    # Show the orchestrator its own progress as a visible to-do list, so it does not
-    # have to track "which of my children have run" mentally across re-invocations
-    # (small models lose that thread and finish early). This is reactive grounding
-    # (showing state), not forced routing — the agent still decides the next hop, and
-    # a child being "not yet run" is informational, not an order to run it.
-    progress_block = ""
-    if declared_child_ids:
-        remaining = [c for c in sorted(declared_child_ids) if c not in completed_ids]
-        progress_block = (
-            "\n\nYour delegation progress this turn — "
-            f"your child experts: {sorted(declared_child_ids)}; "
-            f"already run: {completed_ids or '[]'}; "
-            f"not yet run: {remaining or '[]'}. "
-            "You are the orchestrator: keep delegating to the children this task still "
-            "needs, and finish only when the work is genuinely complete. Not every child "
-            "is needed for every request — use judgment: skip the ones the evidence makes "
-            "unnecessary (e.g. analysis/visualization when there is no data staged), but "
-            "do not finish prematurely while a needed step has not run."
-        )
-    return (
-        f"Original user request:\n{original_request}\n\n"
-        f"Returned child expert results for parent expert {parent_agent.id!r}:\n"
-        f"{result_block}{state_block}{progress_block}\n\n"
-        "Continue from these results. Decide the next step via your next_expert / "
-        "next_task output: route to the next child the task still needs, or set "
-        "next_expert='finish' and write the final answer when the work is genuinely "
-        "complete. You MAY go back and re-invoke a child you already ran when you need "
-        "MORE or DIFFERENT results from it (e.g. more candidates, a wider search, the "
-        "next-ranked item, a retry with corrected arguments) — give it a NEW, specific "
-        "sub-task that says what additional result you need. Only restriction: do NOT "
-        "re-delegate to repeat work that is ALREADY captured in the typed workflow_state "
-        "above (same task, same result already present) — that is a loop, not progress."
-    )
-
-
-def _iter_delegation_return_rows(rows: list[dict[str, Any]]) -> Iterator[dict[str, Any]]:
-    """Yield completed delegation rows, including nested child return rows."""
-
-    for row in rows:
-        if row.get("stage") == "delegate.completed":
-            yield row
-        children = row.get("children")
-        if isinstance(children, list):
-            child_rows = [child for child in children if isinstance(child, dict)]
-            yield from _iter_delegation_return_rows(child_rows)
-
-
-def _latest_parent_resumed_output(
-    rows: list[dict[str, Any]],
-    parent_id: str,
-) -> str:
-    """Return the latest ``output`` (the child's answer, verbatim) from a resumed parent."""
-
-    latest = ""
-    stack = list(rows)
-    while stack:
-        row = stack.pop(0)
-        if (
-            str(row.get("agent_id") or "") == parent_id
-            and str(row.get("stage") or "") == "parent.resumed"
-        ):
-            output = str(row.get("output") or "").strip()
-            if output:
-                latest = output
-        children = row.get("children")
-        if isinstance(children, list):
-            stack.extend(child for child in children if isinstance(child, dict))
-    return latest
-
-
-def _latest_delegation_output(rows: list[dict[str, Any]]) -> str:
-    """Return the latest completed delegated child ``output`` (verbatim) from nested rows."""
-
-    latest = ""
-    for row in _iter_delegation_return_rows(rows):
-        output = str(row.get("output") or "").strip()
-        if output:
-            latest = output
-    return latest
-
-
-def _latest_completed_child_output(
-    rows: list[dict[str, Any]],
-    child_ids: Iterable[str],
-) -> str:
-    """Return the latest completed ``output`` (verbatim) from one of the named children."""
-
-    target_ids = {str(child_id).strip() for child_id in child_ids if str(child_id).strip()}
-    if not target_ids:
-        return ""
-    latest = ""
-    for row in _iter_delegation_return_rows(rows):
-        if (
-            str(row.get("stage") or "") == "delegate.completed"
-            and str(row.get("status") or "") in {"", "completed"}
-            and str(row.get("agent_id") or row.get("delegate_to") or "").strip() in target_ids
-        ):
-            output = str(row.get("output") or "").strip()
-            if output:
-                latest = output
-    return latest
-
-
-def _latest_final_child_output(rows: list[dict[str, Any]], final_ids: Iterable[str] = ()) -> str:
-    """Latest completed DECLARATIVELY-flagged final-responder child ``output`` (``final_ids``
-    via ``final_responder_ids``, never child NAMES — principle #1); ``""`` if none flagged."""
-    ids = {str(c).strip() for c in final_ids if str(c).strip()}
-    return _latest_completed_child_output(rows, ids) if ids else ""
-
-
-def _bubbled_child_evidence_output(
-    rows: list[dict[str, Any]],
-    parent_id: str,
-    declared_child_ids: Iterable[str],
-) -> str:
-    """Return the best child-subtree ``output`` for strict-depth parent completion."""
-
-    return _latest_parent_resumed_output(
-        rows,
-        parent_id,
-    ) or _latest_completed_child_output(rows, declared_child_ids)
 
 
 # ------------------------------------------------------------------------- #
@@ -560,9 +378,9 @@ def _delegate_started_row(
 
 
 # The server's OWN marker constants: the fixed strings that
-# ``_delegated_expert_prompt`` / ``_append_accumulated_workflow_state_context`` /
-# ``_dynamic_parent_resume_prompt`` APPEND when they compose a child execution
-# prompt by JOINING the public task with server-supplied execution context.
+# ``_delegated_expert_prompt`` / ``_append_accumulated_workflow_state_context``
+# APPEND when they compose a child execution prompt by JOINING the public task
+# with server-supplied execution context.
 # Splitting a SERVER-COMPOSED prompt back at the SERVER's OWN constant recovers
 # the public-task half — structural string handling of a string clio authored,
 # split at a boundary clio authored — never a heuristic match against arbitrary

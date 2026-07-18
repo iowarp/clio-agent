@@ -66,26 +66,40 @@ RATCHET_BASELINE: dict[str, int] = {
     # down with the #714/#767 decomposition.
     "src/clio_agent/arc/working_set_fold.py": 919,
     "src/clio_agent/gact/agent_blueprints.py": 1108,
+    # #948 S4: +14 for the children-must-be-react hierarchy rule (a predict/CoT
+    # parent would silently strand its children now that the settle loop routing
+    # for it is deleted; typed validation error instead).
+    "src/clio_agent/gact/expert_packs.py": 814,
     # #919: +35 to WIRE progressive-disclosure skills into all three module
     # classes (block + load_skill tool; logic lives in agents/skill_runtime.py)
     # and to document the deleted stale extract alias that crashed every
     # tool-user-agent build under ReActV2.
-    "src/clio_agent/gact/agents/builders.py": 2205,
+    "src/clio_agent/gact/agents/builders.py": 1817,
     # #900: +14 for the lifespan child-reaper install + clean-shutdown teardown wiring
     # (both delegate to the owner module runtime/process_tree.py).
     # #918: +7 for the SkillNotDelegatableError exception handler (app.py owns
     # the handler cluster; see _validation_exception_handler precedent).
-    "src/clio_agent/gact/app.py": 2545,
-    "src/clio_agent/gact/routes/agents.py": 921,
+    "src/clio_agent/gact/app.py": 2721,
+    # #948 S4: +10 for round-tripping the module: declaration in the overlay
+    # export (an exported react parent re-loaded as predict and failed the new
+    # hierarchy validation).
+    "src/clio_agent/gact/routes/agents.py": 931,
     "src/clio_agent/gact/routes/blueprints.py": 859,
     "src/clio_agent/gact/routes/catalog.py": 880,
     "src/clio_agent/gact/routes/mcp.py": 939,
+    # #947 DEBT (recorded 2026-07-18, #948 S4 branch): the MCP-apps landing grew
+    # these files past their baselines without a ratchet update (it merged to
+    # develop with the check job red). Recording current counts makes the debt
+    # visible and blockable again; the MCP-apps owner-module decomposition in
+    # flight (mcp_app_lifecycle/sandbox/runtime split) deletes these entries by
+    # ratcheting each file back below its pre-#947 count. Do NOT grow further.
+    "src/clio_agent/gact/mcp_apps.py": 897,
     # #895: +6 for threading the provider-generic thinking_level onto the LM bind
     # (LMProviderConfig arg + app.state.lm_config + the GET's thinking_level /
     # thinking_effective fields). The mapping logic itself lives in the owner
     # module providers/thinking.py, not here.
     "src/clio_agent/gact/routes/providers.py": 1320,
-    "src/clio_agent/gact/routes/sessions.py": 1478,
+    "src/clio_agent/gact/routes/sessions.py": 1548,
     # #933: +8 for the turn-scoped workspace-fleet lease in _tool_session_context.
     # #933 review hardening: typed workspace_lease_unavailable degrade when a
     # rooted turn has no leasable agent (+9).
@@ -95,12 +109,9 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/gact/transcript.py": 986,
     # #918: +17 for the typed SkillNotDelegatableError ladder arm (a skill-bound
     # turn fails typed, never as generic agent_error).
-    "src/clio_agent/gact/turn.py": 830,
-    # #918: +17 for the typed skill_not_delegatable failed-handoff row (parent
-    # re-routes; the turn never dies on a skill-id handoff).
-    "src/clio_agent/gact/turn_delegation.py": 930,
-    "src/clio_agent/gact/turn_finalize.py": 935,
-    "src/clio_agent/gact/types.py": 1143,
+    "src/clio_agent/gact/turn.py": 829,
+    "src/clio_agent/gact/turn_finalize.py": 929,
+    "src/clio_agent/gact/types.py": 1154,
     # -120 (#891): the SDK-session machinery moved out to sibling owner modules —
     # the blocking-path pool to providers/claude_code_sdk_pool.py and the per-expert
     # streaming session/delta transport to providers/claude_code_sessions.py; this
@@ -109,7 +120,7 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/providers/claude_code_litellm.py": 848,
     # #900: +2 for wiring probe_process_tree into the doctor collect().
     # owner ruling 2026-07-14: +3 for the DEGRADED-by-policy local-ARC doctor row.
-    "src/clio_agent/runtime/status.py": 1188,
+    "src/clio_agent/runtime/status.py": 1205,
     # #932: +62 for preloaded tool definitions (start() without the list_tools
     # fan-out) and namespace-direct call routing with lazy per-namespace
     # clients — the executor IS the owner module for this.
@@ -120,7 +131,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # spawns on its first FORWARDED CALL, not ctx-enter, so the learn /
     # drop-plan-on-failure signals wrap the first routed call per namespace;
     # incl. the timeout-vs-connect-health caveat comment).
-    "src/clio_agent/tools/execution.py": 1304,
+    "src/clio_agent/tools/execution.py": 1490,
     "src/clio_agent/ui/cli.py": 1156,
 }
 

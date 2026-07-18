@@ -1,9 +1,9 @@
 """Spawn-runtime tools for react mains (#948 S4).
 
-The routing surface that REPLACES the settle/synthesis orchestration + the inline
-``delegate_to_<child>`` / ``fanout_to_children`` tools. A tier-1 main is now a react
-agent whose answer IS the user deliverable; instead of emitting a ``next_expert``
-route consumed by a settle loop, it CALLS these tools:
+The routing surface that REPLACES the deleted settle/synthesis orchestration and
+the deleted inline per-child delegate/fan-out tools. A tier-1 main is now a react
+agent whose answer IS the user deliverable; instead of emitting a typed routing
+field consumed by a settle loop, it CALLS these tools:
 
 * ``spawn_agent_task(agent, task)`` — spawn a declared child as a REAL child turn
   (S3 ``spawn_child_turn``, on the dedicated executor) and return its ``task_id``.
@@ -13,12 +13,12 @@ route consumed by a settle loop, it CALLS these tools:
   never starve it).
 * ``check_agent_tasks()`` — the parent's spawned tasks + their status.
 * ``spawn_agents_parallel(spawns)`` — fan out several children at once (replaces
-  ``fanout_to_children``).
+  the deleted inline fan-out tool).
 
 Each tool re-emits the wire-facing ``blueprint.delegation.*`` / ``blueprint.fanout.*``
 events the old tools emitted, so TUI handoff rendering stays lit (wire parity).
 The child sessions + AgentTask records are the real substrate underneath — no
-inline in-thread child forward, no ``next_expert`` vocabulary.
+inline in-thread child forward, no settle-loop routing vocabulary.
 """
 
 from __future__ import annotations

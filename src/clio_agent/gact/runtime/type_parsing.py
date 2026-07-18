@@ -35,9 +35,9 @@ if TYPE_CHECKING:
 def _structured_output_enabled(value: Any) -> bool:
     """Truthiness for a declarative ``structured_outputs`` flag value (#736).
 
-    The single reader for every structured-output flag (workflow_state injection and the
-    ``final_responder`` reads in the signature builder and in
-    :mod:`clio_agent.gact.turn_terminal`). It treats the QUOTED author-error strings
+    The single reader for every structured-output flag (workflow_state injection and
+    the per-expert answer-visibility read in the signature builder). It treats the
+    QUOTED author-error strings
     ``false``/``0``/``no``/``off``/``disabled`` as DISABLED — a plain ``bool("no")`` is
     ``True``, so routing flag reads through this stops a quoted string silently enabling a
     flag. Absent-key defaulting stays with the caller (e.g. ``get(name, True)`` for the
@@ -48,30 +48,6 @@ def _structured_output_enabled(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() not in {"false", "0", "no", "off", "disabled"}
     return value is not False
-
-
-def answer_stream_visible(agent_def: "AgentDef | None") -> bool:
-    """Whether ``agent_def``'s ``answer`` is a VISIBLE deliverable (structural, #880).
-
-    Mirrors the signature builder's ``_answer_stream_visible`` computation
-    (``agents/builders.py``): an expert's ``answer`` is the user-facing visible
-    deliverable when it declares itself the ``final_responder`` OR does NOT declare
-    a typed ``workflow_state`` output. A ``workflow_state`` expert that is not the
-    final responder produces a typed ``dspy.extract`` deliverable whose value flows
-    to the delegation return contract behind *show more*, never into the visible
-    answer lane.
-
-    This is the STRUCTURAL replacement for the deleted ``_looks_like_structured_answer``
-    content sniff (#880): visibility is decided from the expert's DECLARED
-    ``structured_outputs``, never by inspecting whether the answer text looks like
-    JSON. ``None`` (an unresolved / built-in responder) is visible by default.
-    """
-    so = getattr(agent_def, "structured_outputs", None)
-    if not isinstance(so, Mapping):
-        so = {}
-    return _structured_output_enabled(so.get("final_responder") or False) or (
-        not _structured_output_enabled(so.get("workflow_state") or False)
-    )
 
 
 def _blueprint_module_kind(agent_def: "AgentDef") -> str:

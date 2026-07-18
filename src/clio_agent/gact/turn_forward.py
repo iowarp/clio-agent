@@ -18,11 +18,10 @@ The orchestration is byte-for-byte behavior-preserving. :func:`forward_turn`:
 * runs the dynamic-agent (blueprint/prompt/tool) OR the CLIO-orchestrator forward,
   streamed-first with the synchronous executor path as the fallback, setting
   ``state.prompt_resolution`` / ``state.dynamic_agent_used`` / ``state.agent_runtime``
-  / ``state.pred`` as the original body did.
-* settles expert-pack delegations via
-  :func:`~clio_agent.gact.turn_delegation.settle_dynamic_agent_delegations`
-  (``state.pred, state.expert_handoffs = ...`` — the seam return values, TRICKY #2,
-  never an internal pred mutation) and returns ``state.pred``.
+  / ``state.pred`` as the original body did, and returns ``state.pred``. A react
+  main routes to its declared children by CALLING the spawn-runtime tools
+  (``spawn_agent_task`` / ``wait_agent_tasks``), so ``state.pred`` is already the
+  main's own answer — there is no post-forward settle/synthesis pass.
 
 The #714 danger set (the agent-builder + blueprint-runner seams and the executable
 session-agent constant) is resolved through ``app`` via a *function-local* import
@@ -55,13 +54,12 @@ from clio_agent.gact.runtime.globals import (
     _tool_session_context,
     _UnsupportedSessionAgent,
 )
-from clio_agent.gact.runtime.type_parsing import _blueprint_module_kind, answer_stream_visible
+from clio_agent.gact.runtime.type_parsing import _blueprint_module_kind
 from clio_agent.gact.streaming import (
     _agent_forward_compat,
     _run_dynamic_agent_compat,
     _try_streamed_forward_compat,
 )
-from clio_agent.gact.turn_delegation import settle_dynamic_agent_delegations
 from clio_agent.gact.turn_stream import emit_chunk
 from clio_agent.gact.turn_watchdog import await_turn_work, cancel_requested
 
@@ -165,12 +163,6 @@ async def forward_turn(state: "TurnState") -> Any:
             raise _UnsupportedSessionAgent(state.active_agent_id)
         state.prompt_resolution = dict(dynamic_agent.metadata.get("prompt_resolution") or {})
         state.dynamic_agent_used = dynamic_agent
-        # #880: capture, at the source, whether this responder's typed ``answer`` is
-        # a VISIBLE deliverable — decided STRUCTURALLY from its declared
-        # structured_outputs (final_responder OR no workflow_state). finalize reads
-        # this to blank a workflow_state extract expert's batch answer fallback,
-        # never re-deriving it by sniffing whether the answer text looks like JSON.
-        state.answer_stream_visible = answer_stream_visible(dynamic_agent)
         runner = _blueprint_runner_for_agent(dynamic_agent)
         dynamic_kind = (
             _blueprint_module_kind(dynamic_agent)
@@ -436,13 +428,6 @@ async def forward_turn(state: "TurnState") -> Any:
                         ),
                         payload=_prediction_summary(state.pred),
                     )
-    if state.dynamic_agent_used is not None and state.dynamic_agent_used.source == "expert_pack":
-        state.pred, state.expert_handoffs = await settle_dynamic_agent_delegations(
-            state,
-            state.dynamic_agent_used,
-            state.pred,
-            source_text=state.enriched_text,
-        )
     _emit_semantic_event(
         state.app,
         state.sid,

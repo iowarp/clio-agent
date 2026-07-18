@@ -3,10 +3,16 @@
 Three routes over :class:`~clio_agent.gact.agent_tasks.AgentTaskRegistry` — the
 projection the model tools (S5/S6), the UI redo, and mcpui/a2ui all consume:
 
-* ``GET  /v1/sessions/{sid}/tasks`` — every task spawned by a parent session.
-* ``GET  /v1/tasks/{task_id}``       — one task record.
-* ``POST /v1/tasks/{task_id}/cancel`` — cancel the child's in-flight turn + a
-  typed ``cancelled`` transition (idempotent on an already-terminal task).
+* ``GET  /v1/sessions/{sid}/agent-tasks`` — every task spawned by a parent session.
+* ``GET  /v1/agent-tasks/{task_id}``       — one task record.
+* ``POST /v1/agent-tasks/{task_id}/cancel`` — cancel the child's in-flight turn +
+  a typed ``cancelled`` transition (idempotent on an already-terminal task).
+
+The paths are ``agent-tasks``, NOT ``tasks``: ``/v1/sessions/{sid}/tasks`` +
+``/v1/tasks/{tid}`` are the #18 per-session manual task CRUD (a shipped TUI
+Inspector surface over ``app.state.session_tasks``), and S2's original claim of
+the same paths silently shadowed its GET by registration order while splitting
+``/v1/tasks/{id}`` across two unrelated stores by HTTP method.
 """
 
 from __future__ import annotations
@@ -48,21 +54,21 @@ def register_agent_task_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     del deps  # symmetry with the other register_*_routes; state is on app.state
 
-    @app.get("/v1/sessions/{sid}/tasks")
-    async def list_session_tasks(sid: str) -> dict[str, Any]:
+    @app.get("/v1/sessions/{sid}/agent-tasks")
+    async def list_session_agent_tasks(sid: str) -> dict[str, Any]:
         if app.state.sessions.get(sid) is None:
             raise _not_found("session", sid)
         tasks = app.state.agent_task_registry.for_parent(sid)
         return {"tasks": [asdict(t) for t in tasks]}
 
-    @app.get("/v1/tasks/{task_id}")
-    async def get_task(task_id: str) -> dict[str, Any]:
+    @app.get("/v1/agent-tasks/{task_id}")
+    async def get_agent_task(task_id: str) -> dict[str, Any]:
         task = app.state.agent_task_registry.get(task_id)
         if task is None:
             raise _not_found("task", task_id)
         return asdict(task)
 
-    @app.post("/v1/tasks/{task_id}/cancel")
+    @app.post("/v1/agent-tasks/{task_id}/cancel")
     async def cancel_task(task_id: str) -> dict[str, Any]:
         registry = app.state.agent_task_registry
         task = registry.get(task_id)

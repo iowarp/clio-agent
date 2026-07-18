@@ -277,6 +277,8 @@ id: main
 title: Main Agent
 description: Tier-1 orchestrator.
 tier: 1
+module:
+  kind: react
 specialization: orchestrator
 prompt_id: clio.main.planner
 ---
@@ -288,6 +290,8 @@ title: Data Expert
 description: Specializes in scientific data files and discovery.
 parent_id: main
 tier: 2
+module:
+  kind: react
 specialization: data_analysis
 keywords:
   - hdf5
@@ -313,6 +317,8 @@ title: Analysis Expert
 description: Specializes in statistical analysis and data quality.
 parent_id: main
 tier: 2
+module:
+  kind: react
 specialization: data_analysis
 keywords:
   - parquet

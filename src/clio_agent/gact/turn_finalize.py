@@ -80,7 +80,6 @@ from clio_agent.gact.turn_degradation import (
     assemble_stream_and_degradation_metadata,
     substitute_answer_from_delegation_evidence,
 )
-from clio_agent.gact.turn_nanoagents import spawn_nanoagents
 from clio_agent.gact.turn_stream import settle_turn_transcript
 from clio_agent.gact.types import (
     ErrorInfo,
@@ -409,10 +408,8 @@ def finalize_turn(
     # burst), the fallback is audited + ignored BY OP IDENTITY; otherwise ONE
     # batch added+completed burst lands now. Never both; never a text swap
     # (the streamed part's close already carried the cleaned buffer as
-    # final_text — there is nothing to swap). A responder whose typed ``answer``
-    # is NOT a visible deliverable (a ``workflow_state`` extract expert, not the
-    # final_responder) stays out of the visible transcript — decided STRUCTURALLY
-    # from ``state.answer_stream_visible`` (set in turn_forward), not by sniffing (#880).
+    # final_text — there is nothing to swap). The turn responder is a react main
+    # whose ``answer`` IS the user deliverable, so its batch fallback always lands.
     stream_fallback = _pop_stream_fallback(state.app, state.sid)
     batch_turn_text = current_stream_part_id is None
     if (
@@ -422,7 +419,7 @@ def finalize_turn(
     ):
         stream_fallback = _stream_fallback_payload("sync_execution_path")
     answer_channel.finish(
-        fallback_text=(str(state.answer_text or "") if state.answer_stream_visible else ""),
+        fallback_text=str(state.answer_text or ""),
         fallback_metadata=(
             {"stream_fallback": stream_fallback} if stream_fallback and batch_turn_text else {}
         ),
@@ -589,9 +586,6 @@ def finalize_turn(
             }
         )
     enforce_list_bound(state.app, bucket, "pending_diffs", session_id=state.sid)
-
-    # Materialise nanoagent spawns + publish their lifecycle events.
-    spawn_nanoagents(state, state.nanoagents, assistant_msg, state.sess)
 
     # #767 PR3: finalize re-publishes NOTHING — every part's message.created /
     # part.added / part.delta / part.completed already went out at append

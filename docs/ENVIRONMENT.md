@@ -81,6 +81,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_LM_TRANSIENT_BACKOFF_S` | `limits.lm_transient_backoff_s` | float | `8.0` | `src/clio_agent/lm/io_logging.py` |
 | `CLIO_LM_TRANSIENT_RETRIES` | `limits.lm_transient_retries` | float | `2.0` | `src/clio_agent/lm/io_logging.py` |
 | `CLIO_LOG_LM_RESPONSE` | `debug.lm_response` | bool | `false` | `src/clio_agent/runtime/trace.py` |
+| `CLIO_MAX_CONCURRENT_AGENT_TASKS` | `agent_tasks.max_concurrent` | int | `3` | `src/clio_agent/gact/turn_spawn.py` |
 | `CLIO_MAX_FILE_SIZE_BYTES` | `tools.file_policy.max_file_size_bytes` | str | `1073741824` | `src/clio_agent/tools/file_policy.py` |
 | `CLIO_MAX_LM_CALL_S` | `limits.lm_call_s` | float | `1800.0` | `src/clio_agent/runtime/lm_activity.py` |
 | `CLIO_MCP_LISTING_TTL_H` | `tools.mcp.listing_ttl_h` | float | `24.0` | `src/clio_agent/tools/listing_cache.py` |

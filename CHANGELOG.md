@@ -6,6 +6,40 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Changed
+- **Mains are react agents; the settle/synthesis layer is deleted** (#948 S4 /
+  #952). A tier-1 main runs the retained ReAct loop and its `answer` IS the
+  user deliverable; it routes by CALLING the spawn-runtime tools
+  (`spawn_agent_task` / `wait_agent_tasks` / `check_agent_tasks` /
+  `spawn_agents_parallel`) over real child turns. The wire-facing
+  `blueprint.delegation.{started,completed,failed}` / `blueprint.fanout.started`
+  events are re-emitted by the spawn runtime (event types unchanged); the
+  completed payload now carries `task_id` / `message_ref` / `error_reason`
+  alongside `output` / `workflow_state` / `stage` and no longer carries
+  `return_to` / `tools_called` / `structured` (those live on the AgentTask
+  record and the `agent.task.*` events).
+- Typed blueprint validation: an expert with declared children must declare
+  `module.kind: react` (children are reachable only via the spawn-runtime
+  tools); `predict` / `chain_of_thought` remain valid for leaf experts only.
+- Blueprint expert `answer` output is REQUIRED again — the optional-answer
+  default existed so an orchestrator could defer its deliverable to a
+  synthesis child; that pathway is deleted.
+- Session agent-overlay export now round-trips the `module:` declaration
+  (previously dropped, so an exported react parent re-loaded as `predict` and
+  failed validation).
+
+### Removed
+- The settle/synthesis orchestration internals (#948 S4 / #952): the settle
+  loop + parent re-invoke resume prompts (`turn_delegation.py`,
+  `turn_delegation_arc.py`), the `final_responder` synthesis-child adoption
+  (`turn_terminal.py`) and its degradation reasons, `answer_stream_visible`,
+  the nanoagent post-hoc materialization (`turn_nanoagents.py`), the
+  `next_expert`/`next_task` typed routing signature fields (internal, never
+  wire fields), and the inline per-child delegate / fan-out tools. Marketplace
+  packs are migrated (mains → react, synthesis children deleted) and the
+  submodule pin updated. A baseline-0 CI guard
+  (`scripts/check_no_settle_vocabulary.py`) keeps the vocabulary out.
+
 ### Added
 - Child-turn substrate (#948 S3 / #951): `spawn_child_turn` spawns a declared child
   expert as a REAL turn in a REAL child session (projected as an `AgentTask`), on a
@@ -13,12 +47,15 @@ TUI/HTTP surface aren't tracked here.
   FIFO queue admission at the concurrency cap, a completion hook that records the
   child's result, HITL-in-child typed failure, and a parent→children cancel cascade.
   The `#671` federation seam (`TaskSpec` serializable in/out).
-- Agent-task API + event family (#948 S2 / #950): `GET /v1/sessions/{sid}/tasks`,
-  `GET /v1/tasks/{task_id}`, `POST /v1/tasks/{task_id}/cancel`, and the
+- Agent-task API + event family (#948 S2 / #950): `GET /v1/sessions/{sid}/agent-tasks`,
+  `GET /v1/agent-tasks/{task_id}`, `POST /v1/agent-tasks/{task_id}/cancel`, and the
   `agent.task.{queued,started,completed,failed,cancelled,consumed}` events
   (published on both the parent and child session channels). The `AgentTask`
   record projects over a child session's metadata (`session_type=="agent_task"`)
   — no new store — and its registry is rebuilt at boot from `sessions.json`.
+  The paths are `agent-tasks`: `/v1/sessions/{sid}/tasks` + `/v1/tasks/{tid}`
+  remain the #18 per-session manual task CRUD; S2's original same-path claim
+  shadowed that GET by registration order (fixed in S4).
 
 ## [0.7.4] — 2026-07-15
 

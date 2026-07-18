@@ -103,8 +103,8 @@ _ACTIVE_BLUEPRINT_TOOL_ROWS = _CompatVar(
     _ctx.active_blueprint_tool_rows, _ctx.set_blueprint_tool_rows
 )
 
-# The resolve-once expert caches (declared child ids for the next_expert Literal;
-# the orchestrator-identity briefing) no longer live here as process-global dicts
+# The resolve-once expert caches (declared child ids for the spawn-tool routing
+# surface; the orchestrator-identity briefing) no longer live here as process-global dicts
 # (#770 unified-concurrency §4 Site 2). They are keyed on the live turn's
 # ``app.state`` via ``gact.runtime.app_state.per_app_dict`` so one app's build can
 # never leak its value into a sibling app's (first/last-writer-wins), and an

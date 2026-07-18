@@ -11,12 +11,10 @@ call inside :func:`assemble_stream_and_degradation_metadata` is removed.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from types import SimpleNamespace
 from typing import Any
 
-import dspy
 import pytest
 
 from clio_agent.gact.runtime.capabilities import _stream_fallback_reason_capabilities
@@ -29,7 +27,6 @@ from clio_agent.gact.turn_degradation import (
     substitute_answer_from_delegation_evidence,
 )
 from clio_agent.gact.types import Message
-from clio_agent.gact.workflow_state.schema import WorkflowStateSchema
 
 
 def _app() -> Any:
@@ -53,18 +50,6 @@ def _finalize_state(app: Any, sid: str, **overrides: Any) -> SimpleNamespace:
     return SimpleNamespace(**base)
 
 
-def _completed_row(agent_id: str, **overrides: Any) -> dict[str, Any]:
-    row = {
-        "agent_id": agent_id,
-        "status": "completed",
-        "stage": "delegate.completed",
-        "output": "",
-        "workflow_state": {},
-    }
-    row.update(overrides)
-    return row
-
-
 def _parent_resumed_row(text: str) -> dict[str, Any]:
     return {
         "agent_id": "main",
@@ -81,16 +66,20 @@ def _parent_resumed_row(text: str) -> dict[str, Any]:
 
 
 def test_drain_lands_on_persisted_message_metadata() -> None:
-    """Both a delegation and a config-migration reason, seeded on the unified ledger,
-    drain onto ``state.assistant_metadata`` (which finalize hands VERBATIM to the
-    persisted ``Message(metadata=...)`` + ``turn.completed`` payload) and the ledger
-    is emptied. Deleting the drain inside ``assemble_stream_and_degradation_metadata``
-    MUST make this fail — the ledger becomes write-only again."""
+    """Degradation records seeded on the unified ledger drain onto
+    ``state.assistant_metadata`` (which finalize hands VERBATIM to the persisted
+    ``Message(metadata=...)`` + ``turn.completed`` payload) and the ledger is emptied.
+    Deleting the drain inside ``assemble_stream_and_degradation_metadata`` MUST make
+    this fail — the ledger becomes write-only again."""
 
     app = _app()
     sid = "sess_a"
-    record_turn_degradation(app, sid, "final_responder_empty_answer", "parent=main child=synthesis")
-    record_turn_degradation(app, sid, "final_responder_flag_absent", "expert 'synthesis'")
+    record_turn_degradation(
+        app, sid, "answer_substituted_from_delegation_evidence", "parent=main child=analysis"
+    )
+    record_turn_degradation(
+        app, sid, "answer_substituted_from_delegation_evidence", "parent=main child=synthesis"
+    )
 
     state = _finalize_state(app, sid)
     assemble_stream_and_degradation_metadata(
@@ -98,8 +87,10 @@ def test_drain_lands_on_persisted_message_metadata() -> None:
     )
 
     reasons = [d["reason"] for d in state.assistant_metadata["turn_degradations"]]
-    assert "final_responder_empty_answer" in reasons
-    assert "final_responder_flag_absent" in reasons
+    assert reasons == [
+        "answer_substituted_from_delegation_evidence",
+        "answer_substituted_from_delegation_evidence",
+    ]
     # The ledger is drained (destructive pop) so a later turn cannot re-emit them.
     assert pop_turn_degradations(app, sid) == []
 
@@ -179,104 +170,6 @@ def test_substitution_empty_evidence_records_nothing() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# (c) empty final responder records the typed payload on the always-on ledger  #
-# --------------------------------------------------------------------------- #
-
-
-def test_final_responder_empty_answer_records_turn_degradations(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """With ``CLIO_STREAM_AUDIT_LOG`` UNSET (so ``stream_audit`` writes nothing in a
-    default deployment), settling an EMPTY final responder still lands a typed payload
-    on ``app.state.turn_degradations`` — category + recovery_actions, not a bare string."""
-
-    from clio_agent.gact.turn_terminal import settle_parent_next_pred
-    from clio_agent.gact.types import AgentDef
-
-    monkeypatch.delenv("CLIO_STREAM_AUDIT_LOG", raising=False)
-
-    async def _spy_resume(state: Any, parent: Any, prompt: str) -> Any:  # pragma: no cover
-        raise AssertionError("parent must not be re-invoked for an empty final responder")
-
-    monkeypatch.setattr(
-        "clio_agent.gact.turn_delegation.run_dynamic_agent_sync", _spy_resume, raising=True
-    )
-
-    app = _app()
-    state = SimpleNamespace(sid="sess_c", turn_id="turn_1", app=app)
-    schema = WorkflowStateSchema()
-    latest_pred = dspy.Prediction(answer="", selected_expert="main", next_expert="synthesis")
-    completed = [_completed_row("synthesis")]
-
-    _pred, stop = asyncio.run(
-        settle_parent_next_pred(
-            state,
-            AgentDef(id="main", title="main"),
-            "source",
-            list(completed),
-            completed,
-            {"synthesis"},
-            frozenset({"synthesis"}),
-            latest_pred,
-            schema=schema,
-        )
-    )
-
-    assert stop is True
-    entries = app.state.turn_degradations["sess_c"]
-    payload = next(p for p in entries if p["reason"] == "final_responder_empty_answer")
-    assert payload["category"] == "delegation_degradation"
-    assert payload["recovery_actions"]
-    assert "main" in payload.get("message", "")
-
-
-# --------------------------------------------------------------------------- #
-# (d) migration signal reaches the unified ledger; app-less logs + returns      #
-# --------------------------------------------------------------------------- #
-
-
-def _agent_def(agent_id: str, **structured: Any) -> Any:
-    from clio_agent.gact.types import AgentDef
-
-    return AgentDef(
-        id=agent_id, source="expert_pack", title=agent_id, structured_outputs=dict(structured)
-    )
-
-
-def test_migration_signal_reaches_turn_degradations() -> None:
-    """The un-migrated synthesis shape records ``final_responder_flag_absent`` on the
-    unified ``turn_degradations`` ledger (config_migration category)."""
-
-    from clio_agent.gact.agents.migration_signals import check_final_responder_migration
-
-    app = _app()
-    payload = check_final_responder_migration(
-        app, "sess_d", _agent_def("synthesis", workflow_state=True)
-    )
-    assert payload is not None
-    assert payload["reason"] == "final_responder_flag_absent"
-    assert payload["category"] == "config_migration"
-    entries = app.state.turn_degradations["sess_d"]
-    assert entries[0]["reason"] == "final_responder_flag_absent"
-
-
-def test_migration_signal_appless_logs_and_returns_without_ledger(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """App-less construction (no turn message to attach to) still fires the always-on
-    ``logging.warning`` and returns the payload without writing any ledger."""
-
-    from clio_agent.gact.agents.migration_signals import check_final_responder_migration
-
-    with caplog.at_level(logging.WARNING):
-        payload = check_final_responder_migration(
-            None, "sess_d", _agent_def("synthesis", workflow_state=True)
-        )
-    assert payload is not None
-    assert any("final_responder migration required" in rec.message for rec in caplog.records)
-
-
-# --------------------------------------------------------------------------- #
 # (d2) a record that cannot be attributed is SURFACED, never silently dropped   #
 # --------------------------------------------------------------------------- #
 
@@ -288,13 +181,15 @@ def test_record_appless_warns_not_silent(caplog: pytest.LogCaptureFixture) -> No
     that WARNING (reverting to the bare return) makes this fail."""
 
     with caplog.at_level(logging.WARNING, logger="clio_agent.gact.turn_degradation"):
-        record_turn_degradation(None, "sess_appless", "final_responder_empty_answer", "p=main")
+        record_turn_degradation(
+            None, "sess_appless", "answer_substituted_from_delegation_evidence", "p=main"
+        )
 
     hits = [
         r
         for r in caplog.records
         if "turn degradation not persisted" in r.message
-        and "final_responder_empty_answer" in r.message
+        and "answer_substituted_from_delegation_evidence" in r.message
     ]
     assert hits, "app-less record was silently dropped (no WARNING emitted)"
     assert hits[0].levelno == logging.WARNING
@@ -309,7 +204,7 @@ def test_record_stateless_app_warns_not_silent(caplog: pytest.LogCaptureFixture)
 
     with caplog.at_level(logging.WARNING, logger="clio_agent.gact.turn_degradation"):
         record_turn_degradation(
-            stateless_app, "sess_stateless", "final_responder_empty_answer", "p=main"
+            stateless_app, "sess_stateless", "answer_substituted_from_delegation_evidence", "p=main"
         )
 
     assert any("turn degradation not persisted" in r.message for r in caplog.records), (
@@ -325,7 +220,7 @@ def test_record_empty_sid_warns_not_silent(caplog: pytest.LogCaptureFixture) -> 
 
     app = _app()
     with caplog.at_level(logging.WARNING, logger="clio_agent.gact.turn_degradation"):
-        record_turn_degradation(app, "", "final_responder_empty_answer", "p=main")
+        record_turn_degradation(app, "", "answer_substituted_from_delegation_evidence", "p=main")
 
     assert any("turn degradation not persisted" in r.message for r in caplog.records)
     assert getattr(app.state, "turn_degradations", None) in (None, {})
@@ -346,7 +241,9 @@ def test_concurrent_sessions_never_orphan_a_ledger() -> None:
 
     def _record(i: int) -> None:
         ready.wait()  # release all threads at once to maximize first-touch collision
-        record_turn_degradation(app, f"sess_{i}", "final_responder_empty_answer", f"m{i}")
+        record_turn_degradation(
+            app, f"sess_{i}", "answer_substituted_from_delegation_evidence", f"m{i}"
+        )
 
     threads = [threading.Thread(target=_record, args=(i,)) for i in range(n)]
     for t in threads:
@@ -386,21 +283,3 @@ def test_degradation_reasons_absent_from_streaming_capability_set() -> None:
         assert reason not in streaming
 
 
-# --------------------------------------------------------------------------- #
-# (g) the old sibling ledgers are gone                                         #
-# --------------------------------------------------------------------------- #
-
-
-def test_old_sibling_ledgers_are_gone() -> None:
-    """After recording via the two former sites, the app carries NO 'delegation_fallbacks'
-    and NO 'final_responder_migrations' attributes — only the unified ledger."""
-
-    from clio_agent.gact.agents.migration_signals import check_final_responder_migration
-
-    app = _app()
-    record_turn_degradation(app, "sess_g", "final_responder_empty_answer", "parent=main child=x")
-    check_final_responder_migration(app, "sess_g", _agent_def("synthesis", workflow_state=True))
-
-    assert getattr(app.state, "delegation_fallbacks", None) is None
-    assert getattr(app.state, "final_responder_migrations", None) is None
-    assert "sess_g" in app.state.turn_degradations
