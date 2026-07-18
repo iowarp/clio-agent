@@ -116,7 +116,7 @@ def _orphan_scan_placeholder() -> IntegrationStatus:
         state=IntegrationState.READY,
         summary="Orphan scan collecting in the background (first poll after boot).",
         config_source="runtime:process_census",
-        next_action=None,
+        next_action="No action required.",
     )
 
 

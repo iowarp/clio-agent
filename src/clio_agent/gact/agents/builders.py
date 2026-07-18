@@ -1234,14 +1234,15 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 # The iteration default scales with the declared children — an
                 # orchestrator pays spawn+wait per child inside this loop (#948 S4).
                 _n_children = 0
-                if _ctx.active_app() is not None:
+                _children_app = _ctx.active_app()
+                if _children_app is not None:
                     from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
                         _runtime_declared_child_ids,
                     )
 
                     _n_children = len(
                         _runtime_declared_child_ids(
-                            _ctx.active_app(),
+                            _children_app,
                             agent_def.id,
                             session_id=_ctx.active_session_id(),
                         )
