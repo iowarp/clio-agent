@@ -115,7 +115,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # #933: +8 for the turn-scoped workspace-fleet lease in _tool_session_context.
     # #933 review hardening: typed workspace_lease_unavailable degrade when a
     # rooted turn has no leasable agent (+9).
-    "src/clio_agent/gact/runtime/globals.py": 940,
+    # #948 S4 live-gate fix: +22 for _BlueprintRootDisabled (typed disabled-root
+    # failure; lives with its sibling turn exceptions).
+    "src/clio_agent/gact/runtime/globals.py": 962,
     "src/clio_agent/gact/streaming.py": 1024,
     "src/clio_agent/gact/tool_observer.py": 930,
     "src/clio_agent/gact/transcript.py": 986,
@@ -123,7 +125,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # turn fails typed, never as generic agent_error).
     # #952 S4 Pass C: -1 (the suppressed_parent_resume_offsets init was removed
     # with the dead parent-resume duplicate suppressor).
-    "src/clio_agent/gact/turn.py": 828,
+    # #948 S4 live-gate fix: +27 for the blueprint_root_disabled catch arm (typed
+    # error envelope with the root's validation errors; the except-ladder is
+    # owned here).
+    "src/clio_agent/gact/turn.py": 855,
     # #952 S4 Pass C: -9 (the answer-substitution finalize call + import were
     # removed with the settle layer's degradation ledger).
     "src/clio_agent/gact/turn_finalize.py": 920,

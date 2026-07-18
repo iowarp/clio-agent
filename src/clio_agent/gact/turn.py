@@ -66,6 +66,7 @@ from clio_agent.gact.messaging import (
     _user_message_parts,
 )
 from clio_agent.gact.runtime.globals import (
+    _BlueprintRootDisabled,
     _cancelled_error_info,
     _coerce_error_info,
     _ContextFileAccessError,
@@ -646,6 +647,32 @@ async def _run_turn_in_background(
             recoverable=True,
         )
         state.answer_text = partial_answer
+        state.tools_called = []
+    except _BlueprintRootDisabled as exc:
+        # #948 S4: the active blueprint's declared root is disabled by validation.
+        # Typed failure carrying the exact errors — never a substitute root,
+        # never the legacy planner.
+        state.selected_agent = exc.root_id
+        state.rationale = "The active Agent Blueprint's root expert is disabled by validation."
+        state.error_info = ErrorInfo(
+            error="blueprint_root_disabled",
+            message=(
+                f"Active Agent Blueprint root expert {exc.root_id!r} is disabled "
+                "by validation; the turn cannot run."
+            ),
+            details={
+                "root_id": exc.root_id,
+                "agent_blueprint_id": exc.blueprint_id,
+                "validation_errors": exc.validation_errors,
+                "recovery_actions": [
+                    "update_agent_blueprint_install",
+                    "fix_blueprint_declaration",
+                    "activate_another_blueprint",
+                ],
+            },
+            recoverable=True,
+        )
+        state.answer_text = ""
         state.tools_called = []
     except _UnsupportedSessionAgent as exc:
         state.selected_agent = exc.agent_id

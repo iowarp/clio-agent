@@ -43,11 +43,13 @@ from clio_agent.gact.agents.resolution import (
     _resolve_runtime_dynamic_agent,
     _runtime_active_agent_blueprint_agent_ids,
     _runtime_active_agent_blueprint_root_id,
+    _runtime_active_agent_blueprint_rows,
 )
 from clio_agent.gact.evidence import _dynamic_agent_runtime_provenance
 from clio_agent.gact.messaging import _prediction_summary
 from clio_agent.gact.providers.auth import _refresh_argonne_lm_token
 from clio_agent.gact.runtime.globals import (
+    _BlueprintRootDisabled,
     _emit_semantic_event,
     _llm_provider_payload,
     _session_agent_id,
@@ -126,6 +128,32 @@ async def forward_turn(state: "TurnState") -> Any:
         and state.active_agent_id in {"", "main", "default"}
     ):
         state.active_agent_id = active_blueprint_root_id
+    if (
+        active_blueprint_root_id
+        and state.active_agent_id == active_blueprint_root_id
+        and state.active_agent_id not in active_blueprint_agent_ids
+    ):
+        # #948 S4: the active blueprint's DECLARED root exists but is disabled
+        # (validation errors — e.g. a pre-migration pack whose chain_of_thought
+        # main declares children). Fail TYPED here: no silent substitute root,
+        # no fall-through to the legacy planner (both observed on the live gate).
+        rows = _runtime_active_agent_blueprint_rows(state.app, session_id=state.sid)
+        root_errors = next(
+            (
+                list(row.validation_errors)
+                for row in rows
+                if row.id == active_blueprint_root_id
+            ),
+            [],
+        )
+        blueprint_id = str(
+            rows[0].metadata.get("agent_blueprint_id") or "" if rows else ""
+        )
+        raise _BlueprintRootDisabled(
+            active_blueprint_root_id,
+            blueprint_id=blueprint_id,
+            validation_errors=root_errors,
+        )
     routing_mode = getattr(state.sess, "routing_mode", "auto") or "auto"
     state.invocation_agent_id = state.active_agent_id or "orchestrator"
     _emit_semantic_event(

@@ -860,6 +860,28 @@ class _UnsupportedSessionAgent(RuntimeError):
         self.tools = tools or []
 
 
+class _BlueprintRootDisabled(RuntimeError):
+    """Raised when the active Agent Blueprint's declared root expert is disabled.
+
+    #948 S4: a disabled root (validation errors — e.g. a pre-migration pack whose
+    chain_of_thought main declares children) must fail the turn TYPED. It must
+    never silently substitute another enabled expert as the root, and never fall
+    through to the legacy planner pathway (both observed live before this guard).
+    """
+
+    def __init__(
+        self,
+        root_id: str,
+        *,
+        blueprint_id: str = "",
+        validation_errors: list[str] | None = None,
+    ) -> None:
+        super().__init__(root_id)
+        self.root_id = root_id
+        self.blueprint_id = blueprint_id
+        self.validation_errors = validation_errors or []
+
+
 class _ContextFileAccessError(RuntimeError):
     """Raised when a requested session context file cannot be prepared."""
 
