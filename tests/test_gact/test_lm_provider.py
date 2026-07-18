@@ -23,9 +23,16 @@ def _patch_doctor(monkeypatch: Any, probe: RuntimeProbe) -> None:
     """Swap the unified doctor engine into /v1/health for a deterministic probe."""
 
     def _fake(
-        *, api_state: Any = None, api_error: Any = None, env: Any = None, lm_timeout: float = 1.0
+        *,
+        api_state: Any = None,
+        api_error: Any = None,
+        env: Any = None,
+        lm_timeout: float = 1.0,
+        include_process_census: bool = True,
     ):
-        return probe.collect(api_state=api_state, api_error=api_error)
+        return probe.collect(
+            api_state=api_state, api_error=api_error, include_process_census=include_process_census
+        )
 
     monkeypatch.setattr("clio_agent.gact.routes.system.collect_runtime_status", _fake)
 

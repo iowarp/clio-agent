@@ -95,7 +95,7 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/gact/transcript.py": 986,
     # #918: +17 for the typed SkillNotDelegatableError ladder arm (a skill-bound
     # turn fails typed, never as generic agent_error).
-    "src/clio_agent/gact/turn.py": 831,
+    "src/clio_agent/gact/turn.py": 830,
     # #918: +17 for the typed skill_not_delegatable failed-handoff row (parent
     # re-routes; the turn never dies on a skill-id handoff).
     "src/clio_agent/gact/turn_delegation.py": 930,

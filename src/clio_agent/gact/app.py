@@ -757,6 +757,10 @@ from clio_agent.gact.turn import (  # noqa: E402,F401
     _run_turn_in_background,
     _start_background_user_turn,
 )
+from clio_agent.gact.turn_runner import (  # noqa: E402
+    drain_app_turns,
+    install_turn_runner,
+)
 
 # Alias kept so the thin ``build_app`` closure wrapper (which shadows the
 # ``_start_background_user_turn`` name locally) can still reach the explicit-``app``
@@ -796,7 +800,7 @@ from clio_agent.gact.catalog import (  # noqa: E402, F401
     _tool_visible_to_for_catalog,
     _truthy_command_field,
 )
-from clio_agent.gact.events import EventBus
+from clio_agent.gact.events import Event, EventBus
 from clio_agent.gact.expert_packs import (
     discover_expert_packs,
     load_expert_pack_path,
@@ -941,6 +945,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.started_at = time.time()
     app.state.mcp_app_loop = asyncio.get_running_loop()
+    # #948 S1 (#662): anchor turn tasks to THIS app-lifetime loop, not whatever
+    # transient request/portal loop submits them.
+    app.state.turn_runner.bind_loop(app.state.mcp_app_loop)
     # #900: bind CLIO's child tree (MCP stdio + pooled SDK CLI) to this server so a HARD
     # kill reaps it (Windows Job Object / POSIX pdeathsig). Typed result → doctor probe.
     from clio_agent.runtime.process_tree import install_child_reaper  # noqa: PLC0415
@@ -959,6 +966,22 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     yield
 
+    # #948 S1: the turn-runner idle hook is ALSO a turn producer — a draining
+    # turn's completion would otherwise re-drive a deferred resume, staging a fresh
+    # turn whose task the drain hard-cancels but whose SIDE EFFECTS (a persisted
+    # user message, the session flipped to 'running', a misleading
+    # ``user_question.resumed`` event) survive. Unregister it before draining so no
+    # completion during teardown stages new work. The deferred resume is simply
+    # not run (honest: no false 'resumed' claim), consistent with shutdown losing
+    # other in-memory in-flight state.
+    app.state.turn_runner.set_idle_hook(None)
+
+    # #948 S1 (#662): quiesce the internal turn-PRODUCERS (the scheduler tick, the
+    # agent-construction and lm-config tasks) BEFORE draining turns, so nothing can
+    # spawn a fresh turn into the drain window. The scheduler is the one live
+    # producer post-yield (request callers are gone once uvicorn stops serving);
+    # left running it could fire a due schedule mid-drain and leave a zombie turn
+    # the drain never saw. (drain() also re-snapshots to catch any stray late spawn.)
     lm_config_task = getattr(app.state, "lm_config_task", None)
     for t in (task, agent_task, lm_config_task):
         if t is None:
@@ -970,6 +993,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             await t
         except (asyncio.CancelledError, Exception):  # noqa: BLE001,S110 - shutdown task drain; cancellation/errors ignored on teardown
             pass
+
+    # Now deterministically settle in-flight turns, while the bus / sessions / ARC
+    # they persist into are still alive (owner module does the cooperative-cancel +
+    # bounded-grace + typed-reason drain).
+    await drain_app_turns(app, logger)
     # MCP Apps may own browser attachments or other remote resources. Close
     # every retained record while the exact originating MCP transports are
     # still alive. A failure is logged and retained; the child server's own
@@ -1151,6 +1179,26 @@ def _fire_schedule(app: "FastAPI", sch: Any) -> None:
             sch.session_id,
         )
         return
+    # #948 S1: the within-session busy gate applies to EVERY turn producer, not
+    # just POST /messages. A due schedule whose session already has a turn in
+    # flight must NOT double-stage a concurrent turn (which would orphan the
+    # running one — both writing the same session + ARC, only the last reachable
+    # via /cancel). Leave the schedule UNMARKED so the next tick retries once the
+    # session is free; the skip is logged with a structured reason (never silent).
+    if app.state.turn_runner.busy(sch.session_id):
+        # DEFER (do not drop). A coarse cron ('0 9 * * *') won't re-match the next
+        # minute, so relying on due_now to re-yield would silently lose the
+        # occurrence. Record the id in the deferred set; _scheduler_tick_once
+        # retries it every tick until the session frees. Left unmarked
+        # (mark_fired not called) so the schedule state stays truthful.
+        app.state.deferred_schedules.add(sch.id)
+        logger.info(
+            "scheduler tick deferred reason=schedule_session_busy schedule_id=%s session_id=%s",
+            sch.id,
+            sch.session_id,
+        )
+        return
+    app.state.deferred_schedules.discard(sch.id)
     app.state.schedules.mark_fired(sch.id)
     _turn_start_background_user_turn(
         app,
@@ -1162,6 +1210,46 @@ def _fire_schedule(app: "FastAPI", sch: Any) -> None:
     )
 
 
+def _redrive_deferred_resume(app: "FastAPI", sid: str) -> None:
+    """Stage an ask-user resume that was deferred because the session was busy when
+    its answer arrived (#948 S1). Fired by the turn-runner idle hook the moment the
+    session's turn slot clears, so the resume runs promptly — the user's answer is
+    never dropped. Idempotent + self-re-deferring if the session busied again."""
+
+    deferred = getattr(app.state, "deferred_resumes", None)
+    if not deferred:
+        return
+    payload = deferred.pop(sid, None)
+    if payload is None:
+        return
+    sess = app.state.sessions.get(sid)
+    if sess is None:
+        return  # session gone; nothing to resume into
+    if app.state.agent is None or app.state.turn_runner.busy(sid):
+        deferred[sid] = payload  # not ready — re-defer for the next idle transition
+        return
+    resumed_msg = _turn_start_background_user_turn(
+        app,
+        sid,
+        sess,
+        payload["text"],
+        metadata=payload["metadata"],
+        prev_status=str(getattr(sess, "status", "idle") or "idle"),
+    )
+    app.state.bus.publish(
+        Event(
+            type="user_question.resumed",
+            session_id=sid,
+            payload={
+                "question_id": payload.get("question_id", ""),
+                "session_id": sid,
+                "queued_user_message_id": resumed_msg.id,
+                "deferred": True,
+            },
+        )
+    )
+
+
 def _scheduler_tick_once(app: "FastAPI") -> None:
     """Process one scheduler tick: fire every currently-due schedule.
 
@@ -1170,6 +1258,30 @@ def _scheduler_tick_once(app: "FastAPI") -> None:
     ``schedule_fire_failed``) so failed schedules are visible instead of
     silently swallowed (#766), and one bad schedule cannot starve the rest.
     """
+
+    # #948 S1: retry any schedule deferred because its session was busy at its cron
+    # minute (a coarse cron won't re-match, so due_now can't retry it). Fire each
+    # whose session has since freed; keep the rest deferred. Runs before the due
+    # scan so a freed session fires its pending occurrence promptly.
+    deferred = getattr(app.state, "deferred_schedules", None)
+    if deferred:
+        for sched_id in list(deferred):
+            sch = app.state.schedules.get(sched_id)
+            if sch is None:
+                deferred.discard(sched_id)
+                continue
+            if app.state.turn_runner.busy(sch.session_id):
+                continue  # still busy — keep deferred, retry next tick
+            deferred.discard(sched_id)
+            try:
+                _fire_schedule(app, sch)
+            except Exception:  # noqa: BLE001 - one bad schedule must not kill the loop
+                logger.warning(
+                    "scheduler tick error reason=schedule_fire_failed schedule_id=%s session_id=%s",
+                    sched_id,
+                    sch.session_id,
+                    exc_info=True,
+                )
 
     try:
         now = datetime.now(timezone.utc)
@@ -1387,6 +1499,20 @@ def build_app(
     # /messages tracks the asyncio.Task here so /cancel can
     # hard-abort instead of waiting for the cooperative flag check.
     app.state.in_flight_turns = {}
+    # #948 S1 (#662): the single owner of in-flight turn-task lifetime (master
+    # strong-ref set → no GC-cancellation; app-loop anchored; busy gate; typed
+    # shutdown drain). ``in_flight_turns`` stays its per-session view.
+    install_turn_runner(app)
+    # #948 S1: schedule ids deferred because their session was busy at the cron
+    # minute; _scheduler_tick_once retries them until the session frees (a coarse
+    # cron can't be retried via due_now, which only re-yields on a cron match).
+    app.state.deferred_schedules = set()
+    # #948 S1: ask-user resumes deferred because an intervening turn was running
+    # when the answer arrived. Keyed by session_id -> {text, metadata, question_id};
+    # the turn-runner idle hook re-drives them the instant the session frees (never
+    # dropped — losing a user's answer is a silent-fallback bug).
+    app.state.deferred_resumes = {}
+    app.state.turn_runner.set_idle_hook(lambda sid: _redrive_deferred_resume(app, sid))
     # iowarp/clio-agent#2: per-session ledger of tool calls observed
     # during the in-flight turn. The global tool_observer appends
     # here; _run_turn_in_background drains it post-forward to attach

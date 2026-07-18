@@ -43,6 +43,7 @@ from clio_agent.gact.providers.config import (
     _model_ref_is_empty,
     _model_ref_matches_active,
 )
+from clio_agent.gact.turn_runner import session_busy_error_payload
 from clio_agent.gact.types import (
     ErrorEnvelope,
     ErrorInfo,
@@ -308,6 +309,17 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
+
+        # #948 S1 (#662): within-session busy gate. A second POST while a turn is
+        # already in flight for this session is refused with a typed 409 rather
+        # than silently overwriting the first turn's slot (which orphaned it,
+        # uncancellable, with both turns writing the same session + ARC). The
+        # client renders the reason and retries after the running turn completes.
+        # (Deliberate concurrency of turns is a background-child mechanism — #948
+        # S3 — spawned on child sessions, not a second turn on this one.)
+        busy_payload = session_busy_error_payload(getattr(app.state, "turn_runner", None), sid)
+        if busy_payload is not None:
+            raise HTTPException(status_code=409, detail=busy_payload)
 
         # Persist + publish the user message synchronously so by the
         # time the ack returns, GET /messages reflects it. Then mark
