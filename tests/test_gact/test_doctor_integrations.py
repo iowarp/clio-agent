@@ -60,8 +60,11 @@ def _patch_engine(monkeypatch: pytest.MonkeyPatch, probe: RuntimeProbe) -> None:
         api_error: str | None = None,
         env: Any = None,
         lm_timeout: float = 1.0,
+        include_process_census: bool = True,
     ):
-        return probe.collect(api_state=api_state, api_error=api_error)
+        return probe.collect(
+            api_state=api_state, api_error=api_error, include_process_census=include_process_census
+        )
 
     monkeypatch.setattr("clio_agent.gact.routes.system.collect_runtime_status", _fake)
 

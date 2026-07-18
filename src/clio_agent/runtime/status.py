@@ -223,8 +223,15 @@ class RuntimeProbe:
         *,
         api_state: IntegrationState | str | None = None,
         api_error: str | None = None,
+        include_process_census: bool = True,
     ) -> RuntimeReport:
-        """Collect all currently supported integration statuses."""
+        """Collect all currently supported integration statuses.
+
+        ``include_process_census=False`` skips the expensive live process-census
+        rows (``child_processes`` + ``child_parentage``, a ~10s cold psutil walk),
+        keeping only the cheap ``child_reaper`` row — for polled callers that serve
+        the census from a background cache instead (routes/system.py /v1/health).
+        """
         from clio_agent.runtime.clio_core_health import probe_clio_core_health  # noqa: PLC0415
         from clio_agent.runtime.mcp_launcher import probe_mcp_launchers  # noqa: PLC0415
         from clio_agent.runtime.process_tree import probe_process_tree  # noqa: PLC0415
@@ -240,7 +247,7 @@ class RuntimeProbe:
             self.probe_api(api_state=api_state, api_error=api_error),
             self.probe_clio_core(),
             *probe_mcp_launchers(env=self.env),
-            *probe_process_tree(),
+            *probe_process_tree(include_live_census=include_process_census),
         ]
         return RuntimeReport(integrations=integrations)
 
@@ -1143,10 +1150,20 @@ def collect_runtime_status(
     api_error: str | None = None,
     env: Mapping[str, str] | None = None,
     lm_timeout: float = 1.0,
+    include_process_census: bool = True,
 ) -> RuntimeReport:
-    """Collect a runtime status report using default probes."""
+    """Collect a runtime status report using default probes.
+
+    ``include_process_census=False`` skips the expensive live process-census rows
+    (the ~10s cold psutil walk) for polled callers that serve them from a cache;
+    see :meth:`RuntimeProbe.collect`.
+    """
     probe = RuntimeProbe(env=env, lm_timeout=lm_timeout)
-    return probe.collect(api_state=api_state, api_error=api_error)
+    return probe.collect(
+        api_state=api_state,
+        api_error=api_error,
+        include_process_census=include_process_census,
+    )
 
 
 def _module_available(module_name: str) -> bool:

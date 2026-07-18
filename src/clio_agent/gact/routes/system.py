@@ -89,6 +89,111 @@ _PROBE_STATE_TO_WIRE: dict[str, Literal["ready", "degraded", "unavailable"]] = {
 }
 
 
+# --------------------------------------------------------------------------- #
+# Orphan-scan fold (polled-endpoint latency).                                 #
+#                                                                             #
+# The ``child_parentage`` row is a full-box orphan scan: a psutil enumeration #
+# of EVERY process on the host (~9s COLD on Windows, sub-50ms warm) to flag a #
+# CLIO process orphaned from both roots (#900 PART B). /v1/health is POLLED    #
+# (the TUI doctor modal hits it on a timer), so it MUST NOT pay that cold walk #
+# inline. We serve that one row the same way this handler already serves the   #
+# LM handshake: from a cache, refreshed in the background (stale-while-        #
+# revalidate), and — before any scan has run — a typed "collecting" placeholder#
+# instead of a blocking wait. The cheap reaper + child_processes rows stay     #
+# synchronous; the CLI doctor still collects the orphan scan fresh             #
+# (collect_runtime_status defaults include_process_census=True).              #
+# --------------------------------------------------------------------------- #
+
+_ORPHAN_SCAN_TTL_S = 15.0
+
+
+def _orphan_scan_placeholder() -> IntegrationStatus:
+    """A non-required 'collecting' row returned while the orphan-scan cache is cold
+    — honest not-yet-run (mirrors the omitted-handshake pattern), never a block."""
+
+    return IntegrationStatus(
+        name="child_parentage",
+        state=IntegrationState.READY,
+        summary="Orphan scan collecting in the background (first poll after boot).",
+        config_source="runtime:process_census",
+        next_action=None,
+    )
+
+
+def _kick_orphan_scan_refresh(app: "FastAPI") -> None:
+    """Start ONE background daemon thread that fills the orphan-scan cache on
+    ``app.state`` from :func:`live_orphan_scan_rows`. Guarded so concurrent polls
+    never spawn more than one refresher. The full-box psutil walk runs off the
+    event loop; a failure is recorded as a typed degraded row, never silent."""
+
+    import threading  # noqa: PLC0415 - only the health poller needs it
+
+    lock = getattr(app.state, "_orphan_scan_lock", None)
+    if lock is None:
+        lock = threading.Lock()
+        app.state._orphan_scan_lock = lock
+    with lock:
+        if getattr(app.state, "orphan_scan_refreshing", False):
+            return
+        app.state.orphan_scan_refreshing = True
+
+    def _fill() -> None:
+        # The flag MUST be cleared no matter what (a stuck True permanently freezes
+        # the cache and silently kills orphan detection — the guard above would
+        # early-return forever). ``finally`` guarantees it even on an unexpected
+        # error inside the fill.
+        try:
+            from clio_agent.runtime.process_tree import (  # noqa: PLC0415
+                live_orphan_scan_rows,
+            )
+
+            try:
+                rows = live_orphan_scan_rows()
+            except Exception as exc:  # noqa: BLE001 - surfaced as a degraded row, not silent
+                rows = [
+                    IntegrationStatus(
+                        name="child_parentage",
+                        state=IntegrationState.DEGRADED,
+                        summary=f"orphan scan collection failed: {exc!r}",
+                        config_source="runtime:process_census",
+                        next_action=(
+                            "Inspect the gact server logs for the orphan-scan probe failure."
+                        ),
+                    )
+                ]
+            app.state.orphan_scan_rows = rows
+            app.state.orphan_scan_at = time.time()
+        finally:
+            app.state.orphan_scan_refreshing = False
+
+    try:
+        threading.Thread(target=_fill, name="clio-orphan-scan", daemon=True).start()
+    except RuntimeError:
+        # Thread-start can fail under handle/thread exhaustion. Clear the flag so a
+        # later poll retries (never wedge the guard True), and let the cache serve
+        # its existing/placeholder rows.
+        app.state.orphan_scan_refreshing = False
+
+
+def _folded_orphan_scan_rows(app: "FastAPI") -> list[IntegrationStatus]:
+    """Cached orphan-scan row(s) for the polled /v1/health, stale-while-revalidate.
+
+    Returns the last cached rows immediately (kicking a background refresh when
+    they are older than the TTL); before any scan has run, returns a single typed
+    'collecting' placeholder and kicks the first fill. Never blocks the request on
+    the cold psutil walk.
+    """
+
+    cached = getattr(app.state, "orphan_scan_rows", None)
+    collected_at = getattr(app.state, "orphan_scan_at", 0.0)
+    if cached is None:
+        _kick_orphan_scan_refresh(app)
+        return [_orphan_scan_placeholder()]
+    if time.time() - collected_at > _ORPHAN_SCAN_TTL_S:
+        _kick_orphan_scan_refresh(app)  # refresh in background; serve stale now
+    return list(cached)
+
+
 def _integration_to_wire(item: IntegrationStatus) -> Integration:
     """Project one probe :class:`IntegrationStatus` to the health wire row.
 
@@ -256,6 +361,9 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 collect_runtime_status,
                 api_state=IntegrationState.READY,
                 lm_timeout=0.5,
+                # The full-box process census is served from a background cache
+                # below — a polled endpoint must not pay the ~10s cold psutil walk.
+                include_process_census=False,
             )
             integrations = list(report.integrations)
         except Exception as exc:  # noqa: BLE001 - surfaced as a degraded doctor row (see comment)
@@ -292,6 +400,13 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                     for item in integrations
                 ]
                 report = RuntimeReport(integrations=integrations)
+
+        # Fold the background-refreshed orphan scan (child_parentage) that the
+        # synchronous collect above deliberately skipped, so the polled endpoint
+        # stays fast even on a cold psutil box (the cheap reaper + child_processes
+        # rows were already collected inline).
+        integrations = integrations + _folded_orphan_scan_rows(app)
+        report = RuntimeReport(integrations=integrations)
 
         overall = _health_overall(report)
         rows = [_integration_to_wire(item) for item in integrations]
