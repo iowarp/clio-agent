@@ -799,3 +799,23 @@ def test_parent_resumed_event_re_pins_parent_after_terminal(monkeypatch) -> None
     assert ev["subject"] == {"agent_id": "data_expert", "role": "child_expert"}
     assert ev["payload"]["stage"] == "parent.resumed"
     assert ev["payload"]["resumed_from"] == "data_expert"
+
+
+def test_orchestrator_max_iters_scales_with_declared_children() -> None:
+    """#948 S4: the react iteration default pays spawn+wait per child — the old
+    flat 5 starved every orchestrator into a forced no-evidence extract (live)."""
+
+    from types import SimpleNamespace
+
+    from clio_agent.gact.agents.builders import _tool_user_agent_max_iters
+
+    leaf = SimpleNamespace(parameters={})
+    assert _tool_user_agent_max_iters(leaf) == 5
+    assert _tool_user_agent_max_iters(leaf, declared_children=0) == 5
+    four_children = SimpleNamespace(parameters={})
+    assert _tool_user_agent_max_iters(four_children, declared_children=4) == 22
+    many = SimpleNamespace(parameters={})
+    assert _tool_user_agent_max_iters(many, declared_children=10) == 24  # capped
+    # An explicit blueprint param always wins, both directions.
+    pinned = SimpleNamespace(parameters={"max_iters": 7})
+    assert _tool_user_agent_max_iters(pinned, declared_children=4) == 7

@@ -904,10 +904,22 @@ def _emit_invalid_tool_selection_event(
     )
 
 
-def _tool_user_agent_max_iters(agent_def: "AgentDef") -> int:
+def _tool_user_agent_max_iters(agent_def: "AgentDef", *, declared_children: int = 0) -> int:
+    """The react loop's iteration budget for this expert.
+
+    #948 S4: an orchestrator's react loop IS the delegation flow now — each child
+    costs a spawn call plus a wait call, and the model legitimately re-spawns a
+    failed child. The old flat default of 5 (tuned for the deleted inline-tool
+    world) starved every orchestrator into a forced extract with no evidence,
+    which correctly failed typed (observed live). The default therefore scales
+    with the declared children; a blueprint's explicit ``max_iters`` param always
+    wins.
+    """
+
     from clio_agent.gact.app import _user_agent_int_param  # noqa: PLC0415
 
-    max_iters = _user_agent_int_param(agent_def, "max_iters", 5)
+    default = 5 if declared_children <= 0 else min(24, 6 + 4 * declared_children)
+    max_iters = _user_agent_int_param(agent_def, "max_iters", default)
     if max_iters <= 0:
         raise ValueError("user agent parameter 'max_iters' must be positive")
     return max_iters
@@ -1219,10 +1231,27 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     # curated domain tool (#919).
                     tools.append(_skill_runtime.build_load_skill_tool(agent_def, skill_rt))
                 self.tools = tools
+                # The iteration default scales with the declared children — an
+                # orchestrator pays spawn+wait per child inside this loop (#948 S4).
+                _n_children = 0
+                if _ctx.active_app() is not None:
+                    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+                        _runtime_declared_child_ids,
+                    )
+
+                    _n_children = len(
+                        _runtime_declared_child_ids(
+                            _ctx.active_app(),
+                            agent_def.id,
+                            session_id=_ctx.active_session_id(),
+                        )
+                    )
                 self.program = _retaining_react_cls()(
                     self.signature,
                     tools=tools,
-                    max_iters=_tool_user_agent_max_iters(agent_def),
+                    max_iters=_tool_user_agent_max_iters(
+                        agent_def, declared_children=_n_children
+                    ),
                 )
                 # Tag the program so its ReAct loop attributes each step to this
                 # expert on the highway (see _emit_react_step_event).
