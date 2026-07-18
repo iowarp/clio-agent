@@ -1604,9 +1604,18 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             elif self.kind == "chain_of_thought":
                 self.program = dspy.ChainOfThought(self.signature)
             else:
+                # #948 S4: react mains route by SPAWNING declared children as real
+                # child turns (spawn_agent_task / wait_agent_tasks / fanout), not by
+                # the old inline delegate_to_<child> / fanout_to_children tools + the
+                # next_expert settle loop. The spawn runtime re-emits the wire
+                # blueprint.delegation.* events for TUI parity.
+                from clio_agent.gact.agents.spawn_runtime import (  # noqa: PLC0415
+                    build_spawn_runtime_tools,
+                )
+
                 tools = [
                     *_dynamic_agent_tools(base_agent, agent_def),
-                    *_dynamic_child_expert_tools(base_agent, agent_def),
+                    *build_spawn_runtime_tools(base_agent, agent_def),
                 ]
                 if skill_rt.resolved:
                     # Auto-attached infra (like child-delegation tools), not a
