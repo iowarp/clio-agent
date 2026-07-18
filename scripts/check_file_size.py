@@ -76,7 +76,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # tool-user-agent build under ReActV2.
     # #952 S4 Pass C: -20 (the empty-answer settle/handoff-repair branches were
     # deleted; an empty blueprint/prompt-agent answer is now a typed failure).
-    "src/clio_agent/gact/agents/builders.py": 1797,
+    # #948 S4 live-gate fix: +29 for the child-scaled react iteration budget (the
+    # declared-children resolution at the react build site + the scaling default).
+    "src/clio_agent/gact/agents/builders.py": 1826,
     # #900: +14 for the lifespan child-reaper install + clean-shutdown teardown wiring
     # (both delegate to the owner module runtime/process_tree.py).
     # #918: +7 for the SkillNotDelegatableError exception handler (app.py owns
