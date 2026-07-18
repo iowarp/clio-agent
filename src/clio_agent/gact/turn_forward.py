@@ -69,14 +69,21 @@ if TYPE_CHECKING:
 
 def _forward_executor(state: "TurnState") -> Any:
     """The executor a turn's forward should run in: the DEDICATED agent-task pool
-    for a CHILD turn (a ``session_type=="agent_task"`` session, #948 S3), else
-    ``None`` (the default pool). Routing children off the default pool keeps a
-    parent blocked in a future wait (#948 S6) from starving its own children."""
+    for the CHILD turn's DEPTH (a ``session_type=="agent_task"`` session, #948 S3),
+    else ``None`` (the default pool). Routing children onto a PER-DEPTH pool keeps a
+    parent blocked in a wait on ``pool[d]`` from starving its own children on
+    ``pool[d+1]`` — a single shared pool deadlocks nested orchestrators (#948 S4
+    adversarial review)."""
 
     sess = state.app.state.sessions.get(state.sid)
-    if sess is not None and (getattr(sess, "metadata", {}) or {}).get("session_type") == "agent_task":
-        return getattr(state.app.state, "agent_task_executor", None)
-    return None
+    meta = (getattr(sess, "metadata", {}) or {}) if sess is not None else {}
+    if meta.get("session_type") != "agent_task":
+        return None
+    block = meta.get("agent_task")
+    depth = block.get("depth", 1) if isinstance(block, dict) else 1
+    from clio_agent.gact.turn_spawn import agent_task_executor_for_depth  # noqa: PLC0415
+
+    return agent_task_executor_for_depth(state.app, depth)
 
 
 async def forward_turn(state: "TurnState") -> Any:

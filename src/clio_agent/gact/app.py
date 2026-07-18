@@ -756,6 +756,7 @@ from clio_agent.gact.turn_runner import (  # noqa: E402
 )
 from clio_agent.gact.turn_spawn import (  # noqa: E402
     install_agent_task_executor,
+    shutdown_agent_task_executors,
 )
 
 # Alias kept so the thin ``build_app`` closure wrapper (which shadows the
@@ -995,18 +996,16 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # bounded-grace + typed-reason drain).
     await drain_app_turns(app, logger)
 
-    # #948 S3: shut down the dedicated agent-task executor (child forwards) off the
-    # loop, symmetric to its install. Without this its non-daemon workers leak
-    # across app lifecycles and a worker still in a slow child forward blocks
+    # #948 S3/S4: shut down every per-depth agent-task pool (child forwards) off the
+    # loop, symmetric to their lazy install. Without this their non-daemon workers
+    # leak across app lifecycles and a worker still in a slow child forward blocks
     # process exit (concurrent.futures' atexit joins all workers).
-    _agent_task_executor = getattr(app.state, "agent_task_executor", None)
-    if _agent_task_executor is not None:
-        try:
-            await asyncio.get_running_loop().run_in_executor(
-                None, lambda: _agent_task_executor.shutdown(wait=False, cancel_futures=True)
-            )
-        except Exception:  # noqa: BLE001,S110 - defensive shutdown cleanup
-            pass
+    try:
+        await asyncio.get_running_loop().run_in_executor(
+            None, lambda: shutdown_agent_task_executors(app)
+        )
+    except Exception:  # noqa: BLE001,S110 - defensive shutdown cleanup
+        pass
 
     # MCP Apps may own browser attachments or other remote resources. Close
     # every retained record while the exact originating MCP transports are

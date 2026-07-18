@@ -9,6 +9,7 @@ a leaf (no children) gets none.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -21,7 +22,8 @@ from clio_agent.gact import context as ctx
 from clio_agent.gact.agent_tasks import AgentTask, AgentTaskRegistry
 from clio_agent.gact.app import build_app
 from clio_agent.gact.runtime.globals import _gact_app_context, _tool_session_context
-from clio_agent.gact.turn_spawn import SpawnError
+from clio_agent.gact.turn_spawn import MAX_SPAWN_DEPTH, SpawnError
+from clio_agent.gact.types import Message, Part
 
 
 @contextmanager
@@ -94,11 +96,60 @@ def test_leaf_expert_without_children_gets_no_spawn_tools(tmp_path: Path, monkey
 # ---------------------------------------------------------------------------
 
 
-def _fake_app(registry: AgentTaskRegistry | None = None) -> SimpleNamespace:
-    """A minimal app carrying only the AgentTaskRegistry the tools reach for."""
+class _StubSessions:
+    """Minimal session store for the bare-app spawn-runtime tests.
+
+    Records metadata patches (so ``persist_agent_task`` succeeds — it refuses when
+    ``update`` returns ``None``) and resolves sessions seeded via :meth:`seed` (so
+    ``_current_session_depth`` can read a child session's agent-task depth)."""
+
+    def __init__(self) -> None:
+        self._sessions: dict[str, SimpleNamespace] = {}
+        self.updates: list[tuple[str, dict]] = []
+
+    def seed(self, sid: str, metadata: dict | None = None) -> SimpleNamespace:
+        sess = SimpleNamespace(id=sid, metadata=dict(metadata or {}))
+        self._sessions[sid] = sess
+        return sess
+
+    def get(self, sid: str) -> Any:
+        return self._sessions.get(sid)
+
+    def update(self, sid: str, *, metadata_patch: dict | None = None, **_kw: Any) -> Any:
+        self.updates.append((sid, dict(metadata_patch or {})))
+        sess = self._sessions.get(sid) or self.seed(sid)
+        sess.metadata.update(metadata_patch or {})
+        return sess  # non-None → persist_agent_task succeeds
+
+
+def _fake_app(
+    registry: AgentTaskRegistry | None = None,
+    messages: dict[str, list[Message]] | None = None,
+) -> SimpleNamespace:
+    """A minimal app carrying the AgentTaskRegistry + a session/message store stub
+    the spawn tools reach for (depth computation, verbatim-output resolution,
+    report-flag persistence)."""
 
     return SimpleNamespace(
-        state=SimpleNamespace(agent_task_registry=registry or AgentTaskRegistry())
+        state=SimpleNamespace(
+            agent_task_registry=registry or AgentTaskRegistry(),
+            sessions=_StubSessions(),
+            messages=dict(messages or {}),
+        )
+    )
+
+
+def _assistant_message(msg_id: str, session_id: str, text: str) -> Message:
+    """A real persisted assistant message whose full text is ``text`` (the #880
+    verbatim-output source resolved at wait-time via message_ref)."""
+
+    return Message(
+        id=msg_id,
+        session_id=session_id,
+        role="assistant",
+        created_at="2026-07-18T00:00:00+00:00",
+        updated_at="2026-07-18T00:00:00+00:00",
+        parts=[Part(type="text", text=text)],
     )
 
 
@@ -195,7 +246,13 @@ def test_spawn_agent_task_spawn_error_returns_reason_and_emits_nothing(monkeypat
 def test_wait_agent_tasks_completed_returns_wire_payload_and_emits_completed(monkeypatch) -> None:
     registry = AgentTaskRegistry()
     registry.register(_completed_task())
-    app = _fake_app(registry)
+    # The full child answer lives in the child session's message store, keyed by the
+    # result's message_ref — the tool re-reads it verbatim (the excerpt is only the
+    # registry's bounded copy).
+    app = _fake_app(
+        registry,
+        messages={"child_1": [_assistant_message("msg_1", "child_1", "child produced the staged CSV")]},
+    )
     emitted = _capture_emits(monkeypatch)
 
     with _active_turn(app):
@@ -207,6 +264,8 @@ def test_wait_agent_tasks_completed_returns_wire_payload_and_emits_completed(mon
     assert payload["status"] == "completed"
     assert payload["stage"] == "delegate.completed"
     assert payload["output"] == "child produced the staged CSV"
+    # Resolved from the real message (not the fallback path) → no degradation marker.
+    assert "output_source" not in payload
     assert payload["workflow_state"] == {"profile": {"status": "ready", "rows": 1024}}
     assert payload["agent_id"] == "data_expert"
     assert payload["parent_id"] == "main"
@@ -313,3 +372,230 @@ def test_spawn_agents_parallel_emits_fanout_started_and_spawns_each(monkeypatch)
         "parent_expert": "main",
         "child_expert": "",
     }
+
+
+# ---------------------------------------------------------------------------
+# Fix 1 (#880 verbatim output): the delegation ``output`` is the child's FULL
+# answer byte-for-byte, re-read at wait-time — NOT the registry's bounded excerpt.
+# ---------------------------------------------------------------------------
+
+
+def test_wait_returns_child_answer_verbatim_past_the_excerpt_bound(monkeypatch) -> None:
+    # No leading/trailing whitespace: _message_text strips (as it does when minting
+    # the excerpt), so the verbatim contract is byte-for-byte on the stripped body.
+    big = " | ".join(f"line-{i:04d} the child's deliverable" for i in range(400))
+    assert len(big) > 2000, "fixture must exceed the 2000-char excerpt bound"
+    registry = AgentTaskRegistry()
+    registry.register(
+        AgentTask(
+            task_id="task_big",
+            parent_session_id="sess_x",
+            child_session_id="child_big",
+            agent_ref={"expert_id": "data_expert", "requesting_expert_id": "main"},
+            status="completed",
+            result={"answer_excerpt": big[:2000], "workflow_state": {}, "message_ref": "msg_big"},
+        )
+    )
+    app = _fake_app(registry, messages={"child_big": [_assistant_message("msg_big", "child_big", big)]})
+    _capture_emits(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_big"], timeout_s=1.0))
+
+    (payload,) = result["results"]
+    # Byte-identical, FULL length — the truncated excerpt would be 2000 chars.
+    assert payload["output"] == big
+    assert len(payload["output"]) == len(big) > 2000
+    assert "output_source" not in payload
+
+
+def test_wait_falls_back_to_excerpt_with_typed_marker_when_message_gone(monkeypatch) -> None:
+    registry = AgentTaskRegistry()
+    registry.register(
+        AgentTask(
+            task_id="task_gone",
+            parent_session_id="sess_x",
+            child_session_id="child_gone",
+            agent_ref={"expert_id": "data_expert", "requesting_expert_id": "main"},
+            status="completed",
+            result={
+                "answer_excerpt": "bounded excerpt only",
+                "workflow_state": {},
+                "message_ref": "msg_absent",
+            },
+        )
+    )
+    # message_ref points at a message that is not in the store (child pruned).
+    app = _fake_app(registry, messages={})
+    _capture_emits(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_gone"], timeout_s=1.0))
+
+    (payload,) = result["results"]
+    # Never silent: the excerpt is served WITH a typed degradation marker.
+    assert payload["output"] == "bounded excerpt only"
+    assert payload["output_source"] == "excerpt_fallback"
+    assert payload["output_fallback_reason"] == "child_message_gone"
+
+
+# ---------------------------------------------------------------------------
+# Fix 2 (unknown task id): an unknown/typo id returns immediately — it must NOT
+# block on a phantom never-set Event for the full timeout budget.
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_task_id_returns_immediately_not_after_timeout(monkeypatch) -> None:
+    app = _fake_app()
+    _capture_emits(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        start = time.monotonic()
+        # A LARGE timeout: the old code (event().wait BEFORE get) would block the
+        # full 30s on an unknown id's freshly-minted, never-set Event.
+        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["ghost"], timeout_s=30.0))
+        elapsed = time.monotonic() - start
+
+    assert result["results"] == [{"task_id": "ghost", "error": "unknown_task"}]
+    assert elapsed < 1.0, f"unknown id blocked {elapsed:.1f}s (should be instant)"
+    # And it never leaked a phantom Event into the registry.
+    assert "ghost" not in app.state.agent_task_registry._events
+
+
+# ---------------------------------------------------------------------------
+# Fix 3 (once-per-task terminal event): the RESULT ROW is returned on every wait,
+# but the terminal wire EVENT fires exactly once (server owns the de-duped stream).
+# ---------------------------------------------------------------------------
+
+
+def test_double_wait_emits_terminal_event_once_but_returns_row_each_time(monkeypatch) -> None:
+    registry = AgentTaskRegistry()
+    registry.register(_completed_task())
+    app = _fake_app(
+        registry,
+        messages={"child_1": [_assistant_message("msg_1", "child_1", "child produced the staged CSV")]},
+    )
+    emitted = _capture_emits(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        first = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_done"], timeout_s=1.0))
+        second = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_done"], timeout_s=1.0))
+
+    # The row is RETURNED both times (the model may legitimately re-collect).
+    assert first["results"][0]["output"] == "child produced the staged CSV"
+    assert second["results"][0]["output"] == "child produced the staged CSV"
+    # The terminal EVENT is emitted exactly ONCE across the two waits.
+    assert [e["event_type"] for e in emitted] == ["blueprint.delegation.completed"]
+
+
+def test_same_terminal_id_twice_in_one_batch_emits_event_once(monkeypatch) -> None:
+    registry = AgentTaskRegistry()
+    registry.register(_completed_task())
+    app = _fake_app(
+        registry,
+        messages={"child_1": [_assistant_message("msg_1", "child_1", "child produced the staged CSV")]},
+    )
+    emitted = _capture_emits(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        result = json.loads(
+            tools["wait_agent_tasks"].func(task_ids=["task_done", "task_done"], timeout_s=1.0)
+        )
+
+    # Two rows returned (once per requested id), but exactly one wire event.
+    assert len(result["results"]) == 2
+    assert [e["event_type"] for e in emitted] == ["blueprint.delegation.completed"]
+
+
+# ---------------------------------------------------------------------------
+# Fix 4 (computed depth): the spawn tools compute depth from the CURRENT session,
+# so nesting increments through the real tool path and the backstop is reachable.
+# ---------------------------------------------------------------------------
+
+
+def _seed_child_depth(app: Any, sid: str, depth: int) -> None:
+    task = AgentTask(
+        task_id=f"seed_{depth}",
+        parent_session_id="root",
+        child_session_id=sid,
+        agent_ref={"expert_id": "main", "requesting_expert_id": "main"},
+        depth=depth,
+        status="running",
+    )
+    app.state.sessions.seed(sid, task.to_metadata())
+
+
+def test_spawn_depth_computed_and_increments_through_tool_path(monkeypatch) -> None:
+    captured: list[Any] = []
+
+    def _capture_spawn(a: Any, spec: Any) -> Any:
+        captured.append(spec)
+        return SimpleNamespace(task_id=f"task_d{spec.depth}", status="running")
+
+    monkeypatch.setattr("clio_agent.gact.turn_spawn.spawn_child_turn_threadsafe", _capture_spawn)
+
+    app = _fake_app()
+    _seed_child_depth(app, "child_d1", 1)
+    _seed_child_depth(app, "child_d2", 2)
+
+    # A ROOT session (no agent-task projection) spawns at depth 1.
+    with _active_turn(app, session_id="root_sess"):
+        tools = _tools_by_name(app, "main", {"main"}, monkeypatch)
+        tools["spawn_agent_task"].func(agent="main", task="go")
+    assert captured[-1].depth == 1
+
+    # A depth-1 child spawns at depth 2.
+    with _active_turn(app, session_id="child_d1"):
+        tools = _tools_by_name(app, "main", {"main"}, monkeypatch)
+        tools["spawn_agent_task"].func(agent="main", task="go")
+    assert captured[-1].depth == 2
+
+    # A depth-2 child spawns at depth 3.
+    with _active_turn(app, session_id="child_d2"):
+        tools = _tools_by_name(app, "main", {"main"}, monkeypatch)
+        tools["spawn_agent_task"].func(agent="main", task="go")
+    assert captured[-1].depth == 3
+
+
+def test_spawn_at_backstop_depth_rejected_through_tool_path(tmp_path: Path, monkeypatch) -> None:
+    """The runaway backstop is reachable through the REAL tool path: a child already
+    at MAX_SPAWN_DEPTH computes depth+1 and its spawn is refused typed (the old code
+    always passed depth=1, so the guard was dead)."""
+
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.resolution._runtime_declared_child_ids",
+        lambda a, pid, session_id="": {"main"},
+    )
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app):
+        parent = app.state.sessions.create(workspace_id="ws_default", title="p")
+        child = app.state.sessions.create(
+            workspace_id="ws_default", title="c", parent_session_id=parent.id
+        )
+        seed = AgentTask(
+            task_id="task_deep",
+            parent_session_id=parent.id,
+            child_session_id=child.id,
+            agent_ref={"expert_id": "main", "requesting_expert_id": "main"},
+            depth=MAX_SPAWN_DEPTH,
+            status="running",
+            created_at="2026-07-18T00:00:00+00:00",
+            updated_at="2026-07-18T00:00:00+00:00",
+        )
+        app.state.sessions.update(child.id, metadata_patch=seed.to_metadata())
+
+        with _active_turn(app, session_id=child.id):
+            from clio_agent.gact.agents import spawn_runtime
+
+            tools = {
+                t.name: t
+                for t in spawn_runtime.build_spawn_runtime_tools(_Agent(), _Def("main"))
+            }
+            result = json.loads(tools["spawn_agent_task"].func(agent="main", task="go"))
+
+    assert result["error"] == "spawn_depth_exceeded"

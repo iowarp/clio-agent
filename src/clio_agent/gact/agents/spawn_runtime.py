@@ -24,6 +24,7 @@ inline in-thread child forward, no settle-loop routing vocabulary.
 from __future__ import annotations
 
 import json
+import logging
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact import context as _ctx
@@ -35,6 +36,8 @@ from clio_agent.gact.runtime.globals import (
 
 if TYPE_CHECKING:
     from clio_agent.gact.agents.types import AgentDef
+
+logger = logging.getLogger(__name__)
 
 # Bounded wait so a stuck child never wedges the parent's react loop forever; the
 # model passes its own timeout and decides how to proceed on a partial result.
@@ -49,21 +52,101 @@ def _blueprint_block(parent: "AgentDef", child_id: str) -> dict[str, str]:
     }
 
 
-def _completion_payload(task: Any) -> dict[str, Any]:
-    """The delegate.completed payload shape (wire parity with the old tool)."""
+def _current_session_depth(app: Any, session_id: str) -> int:
+    """The agent-task depth of the CURRENT session (0 for a root / non-child session).
+
+    A child session carries the ``session_type=='agent_task'`` projection; its depth
+    lives on the AgentTask record. The next spawn is this depth + 1, so nested spawns
+    increment (a root spawns at depth 1) and the runaway backstop
+    (``MAX_SPAWN_DEPTH``) is reachable through the real tool path — not only via a
+    hand-built TaskSpec (#948 S4 adversarial review)."""
+
+    from clio_agent.gact.agent_tasks import AgentTask  # noqa: PLC0415
+
+    sess = app.state.sessions.get(session_id)
+    if sess is None:
+        return 0
+    task = AgentTask.from_session(sess)
+    return task.depth if task is not None else 0
+
+
+def _resolve_verbatim_output(app: Any, task: Any) -> tuple[str, dict[str, str]]:
+    """Resolve the child's FULL final message text — the #880 verbatim contract:
+    the delegation ``output`` IS the child's answer, byte-for-byte, ALWAYS.
+
+    The AgentTask record deliberately keeps only a BOUNDED excerpt (registry memory
+    stays bounded), so the full text is re-read at wait-time from the child session's
+    message store via the result's ``message_ref``.
+
+    Returns ``(output, markers)``. On success ``markers`` is empty and ``output`` is
+    the byte-identical child answer. If the child session/message is gone, falls back
+    to the bounded excerpt WITH a typed marker (never silently):
+    ``output_source='excerpt_fallback'`` + ``output_fallback_reason='child_message_gone'``.
+    """
+
+    from clio_agent.gact.turn_spawn import _message_text  # noqa: PLC0415
 
     result = task.result or {}
-    return {
+    excerpt = result.get("answer_excerpt", "")
+    message_ref = result.get("message_ref", "")
+    child_sid = getattr(task, "child_session_id", "")
+    if not message_ref or not child_sid:
+        # No message to resolve (a failed/empty child carries no ref): the excerpt IS
+        # the authoritative (empty) output — no degradation occurred, no marker.
+        return excerpt, {}
+    messages = app.state.messages.get(child_sid, []) or []
+    for msg in messages:
+        if getattr(msg, "id", "") == message_ref:
+            return _message_text(msg), {}
+    return excerpt, {
+        "output_source": "excerpt_fallback",
+        "output_fallback_reason": "child_message_gone",
+    }
+
+
+def _persist_delegation_reported(app: Any, task: Any) -> None:
+    """Persist the once-per-task report flag to the child-session metadata so a
+    boot-rebuilt registry does not re-emit the terminal event.
+
+    Best-effort: if the child session is already gone the flag cannot be durably
+    written, but the task will not survive a reboot either (the boot fold folds only
+    existing sessions), so there is no re-emit risk — surface the typed reason,
+    never crash the wait (no-silent-fallback)."""
+
+    from clio_agent.gact.agent_tasks import AgentTaskError, persist_agent_task  # noqa: PLC0415
+
+    try:
+        persist_agent_task(app, task)
+    except AgentTaskError as exc:
+        logger.warning(
+            "delegation_reported not persisted reason=%s task=%s",
+            getattr(exc, "reason", "unknown"),
+            getattr(task, "task_id", "?"),
+        )
+
+
+def _completion_payload(app: Any, task: Any) -> dict[str, Any]:
+    """The delegate.completed payload shape (wire parity with the old tool).
+
+    ``output`` is the child's FULL answer byte-for-byte (#880), re-read from the
+    child session at wait-time; a typed marker is added if it must fall back to the
+    bounded excerpt (see :func:`_resolve_verbatim_output`)."""
+
+    result = task.result or {}
+    output, markers = _resolve_verbatim_output(app, task)
+    payload = {
         "agent_id": task.agent_ref.get("expert_id", ""),
         "parent_id": task.agent_ref.get("requesting_expert_id", ""),
         "task_id": task.task_id,
         "status": task.status,
         "stage": "delegate.completed" if task.status == "completed" else f"delegate.{task.status}",
-        "output": result.get("answer_excerpt", ""),
+        "output": output,
         "workflow_state": result.get("workflow_state", {}),
         "message_ref": result.get("message_ref", ""),
         "error_reason": task.error_reason,
     }
+    payload.update(markers)
+    return payload
 
 
 def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[Any]:
@@ -98,6 +181,10 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
         task_id (use wait_agent_tasks to collect its result)."""
 
         app, session_id = _ctx_app_session()
+        # Computed depth: a child spawns at (its own depth) + 1, so nesting
+        # increments through the real tool path and the runaway backstop is
+        # reachable (a root session spawns at depth 1) (#948 S4 adversarial review).
+        depth = _current_session_depth(app, session_id) + 1
         try:
             spawned = spawn_child_turn_threadsafe(
                 app,
@@ -106,6 +193,7 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
                     task_text=task,
                     parent_session_id=session_id,
                     requesting_expert_id=agent_def.id,
+                    depth=depth,
                     mode="sync",
                 ),
             )
@@ -137,15 +225,31 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
         deadline = _time.monotonic() + max(0.0, float(timeout_s or 0.0))
         results = []
         for tid in task_ids or []:
+            # Validate the id BEFORE waiting: registry.event() would setdefault a
+            # fresh never-set Event for an unknown/typo id and block the FULL budget
+            # (starving every real id after it via the shared deadline). An unknown
+            # id returns immediately with a typed row and emits nothing.
+            if registry.get(tid) is None:
+                results.append({"task_id": tid, "error": "unknown_task"})
+                continue
             remaining = max(0.0, deadline - _time.monotonic())
             registry.event(tid).wait(timeout=remaining)
             task = registry.get(tid)
-            if task is None:
+            if task is None:  # pragma: no cover - retained records are never removed
                 results.append({"task_id": tid, "error": "unknown_task"})
                 continue
-            payload = _completion_payload(task)
+            payload = _completion_payload(app, task)
             results.append(payload)
             if task.is_terminal:
+                # Once-per-task wire emission: the ROW above is returned on EVERY wait
+                # (the model may legitimately re-collect), but the terminal EVENT fires
+                # exactly once — the server owns the de-duplicated stream. A re-wait
+                # (partial-timeout re-collect, id repeated in a batch) gets None here
+                # and emits nothing.
+                reported = registry.mark_delegation_reported(task.task_id)
+                if reported is None:
+                    continue
+                _persist_delegation_reported(app, reported)
                 event_type = (
                     "blueprint.delegation.completed"
                     if task.status == "completed"

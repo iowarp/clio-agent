@@ -51,8 +51,11 @@ def _err_code(error_info: Any) -> str:
     return str(getattr(error_info, "error", "") or "")
 
 
-# 3-tier rule, enforced structurally: a task deeper than this is refused.
-MAX_SPAWN_DEPTH = 3
+# Runaway backstop (NOT a 3-tier rule): ``tier`` is semantic weight, not depth —
+# deep chains (tier-1 → tier-2 → tier-2 → tier-2 → tier-3s) are legitimate. This
+# only refuses a spawn whose computed depth would exceed the backstop, bounding
+# runaway self-spawning (and, per the per-depth pools below, the number of pools).
+MAX_SPAWN_DEPTH = 8
 _ANSWER_EXCERPT_MAX = 2000
 
 
@@ -78,9 +81,16 @@ class SpawnError(Exception):
         self.reason = reason
 
 
-def install_agent_task_executor(app: "FastAPI") -> concurrent.futures.ThreadPoolExecutor:
-    """Create the DEDICATED child-forward pool (never the default executor) sized to
-    the concurrency cap. A parent blocked in wait (S6) must not starve its children."""
+def install_agent_task_executor(app: "FastAPI") -> None:
+    """Install the DEDICATED child-forward pool machinery (never the default
+    executor). Pools are created lazily PER DEPTH by
+    :func:`agent_task_executor_for_depth`: a child turn at depth ``d`` runs on
+    ``pool[d]``, so a waiter blocked on ``pool[d]`` can never starve its own
+    children on ``pool[d+1]`` (a single shared pool deadlocks nested orchestrators
+    — see #948 S4 adversarial review). Each pool is sized to the concurrency cap;
+    the depth backstop (:data:`MAX_SPAWN_DEPTH`) bounds the number of pools."""
+
+    import threading  # noqa: PLC0415
 
     from clio_agent import conf  # noqa: PLC0415
 
@@ -92,10 +102,39 @@ def install_agent_task_executor(app: "FastAPI") -> concurrent.futures.ThreadPool
     )
     cap = max(1, int(cap or 3))
     app.state.max_concurrent_agent_tasks = cap
-    app.state.agent_task_executor = concurrent.futures.ThreadPoolExecutor(
-        max_workers=cap, thread_name_prefix="clio-agent-task"
-    )
-    return app.state.agent_task_executor
+    app.state.agent_task_executors = {}
+    app.state.agent_task_executor_lock = threading.Lock()
+
+
+def agent_task_executor_for_depth(
+    app: "FastAPI", depth: int
+) -> concurrent.futures.ThreadPoolExecutor:
+    """Return the dedicated child-forward pool for turns at ``depth`` (lazily
+    created, one per depth). Same ``max_concurrent`` cap and shutdown semantics as
+    every other depth's pool; thread-safe against concurrent child launches."""
+
+    depth = max(1, int(depth or 1))
+    pools: dict[int, concurrent.futures.ThreadPoolExecutor] = app.state.agent_task_executors
+    lock = app.state.agent_task_executor_lock
+    with lock:
+        pool = pools.get(depth)
+        if pool is None:
+            cap = getattr(app.state, "max_concurrent_agent_tasks", 3)
+            pool = concurrent.futures.ThreadPoolExecutor(
+                max_workers=cap, thread_name_prefix=f"clio-agent-task-d{depth}"
+            )
+            pools[depth] = pool
+        return pool
+
+
+def shutdown_agent_task_executors(app: "FastAPI") -> None:
+    """Shut down every per-depth child-forward pool (symmetric to their lazy
+    install). Non-daemon workers otherwise leak across app lifecycles and a worker
+    still in a slow child forward blocks process exit."""
+
+    pools = getattr(app.state, "agent_task_executors", None) or {}
+    for pool in list(pools.values()):
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def _now() -> str:
@@ -140,10 +179,13 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
             reason="undeclared_child",
         )
 
-    # ---- backpressure: queue (never fail) at the cap -----------------------
+    # ---- backpressure: queue (never fail) at the cap ----------------------
+    # PER-DEPTH admission: each depth has its own pool, so the cap is counted
+    # against RUNNING tasks at the SAME depth. A depth-2 fan-out never queues
+    # behind depth-1 siblings on a different pool (#948 S4 adversarial review).
     reg = app.state.agent_task_registry
     cap = getattr(app.state, "max_concurrent_agent_tasks", 3)
-    running = sum(1 for t in reg.snapshot() if t.status == STATUS_RUNNING)
+    running = sum(1 for t in reg.snapshot() if t.status == STATUS_RUNNING and t.depth == spec.depth)
     at_cap = running >= cap
 
     # ---- mint the child session (authoritative store) ----------------------
@@ -161,7 +203,10 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
         parent_session_id=spec.parent_session_id,
         child_session_id=child.id,
         parent_turn_id=spec.parent_turn_id,
-        agent_ref={"expert_id": spec.child_expert_id, "requesting_expert_id": spec.requesting_expert_id},
+        agent_ref={
+            "expert_id": spec.child_expert_id,
+            "requesting_expert_id": spec.requesting_expert_id,
+        },
         depth=spec.depth,
         status=STATUS_QUEUED,
         queued_reason="concurrency_cap" if at_cap else "",
@@ -323,7 +368,8 @@ def _on_child_done(app: "FastAPI", task_id: str, child_sid: str, mode: str) -> N
     finals = [
         m
         for m in msgs
-        if getattr(m, "role", "") == "assistant" and not (getattr(m, "metadata", {}) or {}).get("live")
+        if getattr(m, "role", "") == "assistant"
+        and not (getattr(m, "metadata", {}) or {}).get("live")
     ]
     final = finals[-1] if finals else None
     code = _err_code(getattr(final, "error_info", None) if final is not None else None)
@@ -353,9 +399,7 @@ def _on_child_done(app: "FastAPI", task_id: str, child_sid: str, mode: str) -> N
                 updated_at=now,
             )
     except Exception:  # noqa: BLE001 - a hook error must not vanish (no-silent-fallback)
-        logger.exception(
-            "agent_task completion hook failed task=%s child=%s", task_id, child_sid
-        )
+        logger.exception("agent_task completion hook failed task=%s child=%s", task_id, child_sid)
         updated = reg.get(task_id) or task
 
     persist_agent_task(app, updated)
@@ -377,23 +421,27 @@ def _child_workflow_state(app: "FastAPI", child_sid: str, final: Any) -> dict[st
 
 
 def _admit_next_queued(app: "FastAPI") -> None:
-    """FIFO: launch queued tasks into every currently-free slot (a cancel can free
-    several at once, so admit up to the free-slot count, not just one)."""
+    """FIFO PER DEPTH: launch queued tasks into every currently-free slot (a cancel
+    can free several at once, so admit up to the free-slot count, not just one).
+
+    Each depth has its own pool + its own cap, so admission is counted per depth: a
+    freed depth-``d`` slot admits the oldest queued depth-``d`` task, never a
+    deeper/shallower one waiting on a different pool (#948 S4 adversarial review)."""
 
     from dataclasses import replace  # noqa: PLC0415
 
     reg = app.state.agent_task_registry
     cap = getattr(app.state, "max_concurrent_agent_tasks", 3)
     while True:
-        running = sum(1 for t in reg.snapshot() if t.status == STATUS_RUNNING)
-        if running >= cap:
+        snap = reg.snapshot()
+        running_by_depth: dict[int, int] = {}
+        for t in snap:
+            if t.status == STATUS_RUNNING:
+                running_by_depth[t.depth] = running_by_depth.get(t.depth, 0) + 1
+        queued = sorted((t for t in snap if t.status == STATUS_QUEUED), key=lambda t: t.created_at)
+        task = next((t for t in queued if running_by_depth.get(t.depth, 0) < cap), None)
+        if task is None:
             return
-        queued = sorted(
-            (t for t in reg.snapshot() if t.status == STATUS_QUEUED), key=lambda t: t.created_at
-        )
-        if not queued:
-            return
-        task = queued[0]
         child = app.state.sessions.get(task.child_session_id)
         pending = (getattr(child, "metadata", {}) or {}).get("pending_spawn", {}) if child else {}
         spec = TaskSpec(

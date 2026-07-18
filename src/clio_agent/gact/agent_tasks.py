@@ -116,6 +116,13 @@ class AgentTask:
     # ``notify_pending``; the parent's next turn consumes them (``consumed_at``).
     notify_pending: bool = False
     consumed_at: str = ""
+    # Once-per-task terminal-event guard (#948 S4 adversarial-review fix): set the
+    # first time a waiter emits this task's ``blueprint.delegation.completed``/
+    # ``.failed`` wire event, so a re-wait (partial-timeout re-collect, id repeated
+    # in a batch) never re-emits it (the server owns the de-duplicated stream). The
+    # RESULT ROW is still returned on every wait; only the EVENT is once. Persisted
+    # to the child-session metadata so a boot-rebuilt registry does not re-emit.
+    delegation_reported: bool = False
 
     def to_metadata(self) -> dict[str, Any]:
         """The child-session metadata block that is the authoritative store."""
@@ -277,6 +284,26 @@ class AgentTaskRegistry:
             self._index(updated)
             return updated
 
+    def mark_delegation_reported(self, task_id: str) -> Optional[AgentTask]:
+        """Atomically claim a task's once-per-task terminal-event emission.
+
+        Returns the updated record the FIRST time it is called for ``task_id`` (the
+        caller emits the ``blueprint.delegation.*`` wire event and persists the
+        record so the flag survives a boot rebuild); returns ``None`` on every
+        subsequent call — the event was already emitted and must NOT be re-emitted
+        (the server owns the de-duplicated stream). Returns ``None`` for an unknown
+        id. The check-and-set is under the registry lock so two concurrent waiters
+        on the same terminal task race to emit exactly once.
+        """
+
+        with self._lock:
+            current = self._tasks.get(task_id)
+            if current is None or current.delegation_reported:
+                return None
+            updated = replace(current, delegation_reported=True)
+            self._index(updated)
+            return updated
+
     def rebuild_from_sessions(self, sessions: Iterable["Session"]) -> int:
         """Fold every ``session_type == "agent_task"`` session into the projection
         (boot recovery). Returns the number of tasks folded."""
@@ -343,7 +370,9 @@ def seed_agent_task(
     now = datetime.now(timezone.utc).isoformat()
     tid = task_id or ("task_" + uuid.uuid4().hex[:12])
     parent = app.state.sessions.get(parent_session_id)
-    workspace_id = getattr(parent, "workspace_id", "ws_default") if parent is not None else "ws_default"
+    workspace_id = (
+        getattr(parent, "workspace_id", "ws_default") if parent is not None else "ws_default"
+    )
     child = app.state.sessions.create(
         workspace_id=workspace_id,
         title=f"agent-task {tid[-6:]}",
