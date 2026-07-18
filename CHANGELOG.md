@@ -6,6 +6,14 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Added
+- Agent-task API + event family (#948 S2 / #950): `GET /v1/sessions/{sid}/tasks`,
+  `GET /v1/tasks/{task_id}`, `POST /v1/tasks/{task_id}/cancel`, and the
+  `agent.task.{queued,started,completed,failed,cancelled,consumed}` events
+  (published on both the parent and child session channels). The `AgentTask`
+  record projects over a child session's metadata (`session_type=="agent_task"`)
+  — no new store — and its registry is rebuilt at boot from `sessions.json`.
+
 ## [0.7.4] — 2026-07-15
 
 ### Added

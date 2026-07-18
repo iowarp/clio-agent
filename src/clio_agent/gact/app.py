@@ -498,6 +498,9 @@ from clio_agent.gact.providers.lmstudio import (  # noqa: E402,F401
     _lm_studio_headers,
     _release_owned_lm_studio_instance,
 )
+from clio_agent.gact.routes.agent_tasks import (  # noqa: E402
+    register_agent_task_routes,
+)
 from clio_agent.gact.routes.agents import (  # noqa: E402
     register_agents_routes,
 )
@@ -753,6 +756,9 @@ def _clear_session_model_refs(app: "FastAPI") -> None:
 # stay green; ``_start_background_user_turn`` is the explicit-``app`` engine the  #
 # thin ``build_app`` closure wrapper (and ``GactDeps``) delegate to.             #
 # --------------------------------------------------------------------------- #
+from clio_agent.gact.agent_tasks import (  # noqa: E402
+    install_agent_task_registry,
+)
 from clio_agent.gact.turn import (  # noqa: E402,F401
     _run_turn_in_background,
     _start_background_user_turn,
@@ -1503,6 +1509,10 @@ def build_app(
     # strong-ref set → no GC-cancellation; app-loop anchored; busy gate; typed
     # shutdown drain). ``in_flight_turns`` stays its per-session view.
     install_turn_runner(app)
+    # #948 S2 (#950): the AgentTask registry — an in-memory projection over the
+    # session store, rebuilt at boot by folding session_type=="agent_task" sessions
+    # (no fifth store). Feeds agent.task.* events + the task API; S3+ spawn into it.
+    install_agent_task_registry(app)
     # #948 S1: schedule ids deferred because their session was busy at the cron
     # minute; _scheduler_tick_once retries them until the session frees (a coarse
     # cron can't be retried via due_now, which only re-yields on a cron match).
@@ -2320,6 +2330,11 @@ def build_app(
     # replace, active-model ref + override error and the agent-not-available
     # error travel on ``deps``.
     register_messages_routes(app, deps)
+
+    # ---- /v1/tasks + /v1/sessions/{sid}/tasks (#948 S2 / #950) ----------
+    # The AgentTask projection read + cancel routes, over
+    # ``app.state.agent_task_registry`` (rebuilt at boot from agent-task sessions).
+    register_agent_task_routes(app, deps)
 
     # ---- /v1/workspaces -------------------------
     # Workspace store CRUD + file listing/reading are owned by
