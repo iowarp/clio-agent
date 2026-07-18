@@ -12,8 +12,15 @@ TUI/HTTP surface aren't tracked here.
   user deliverable; it routes by CALLING the spawn-runtime tools
   (`spawn_agent_task` / `wait_agent_tasks` / `check_agent_tasks` /
   `spawn_agents_parallel`) over real child turns. The wire-facing
-  `blueprint.delegation.{started,completed,failed}` / `blueprint.fanout.started`
-  events are re-emitted by the spawn runtime (event types unchanged); the
+  `blueprint.delegation.{started,completed,failed,parent_resumed}` /
+  `blueprint.fanout.started` events are re-emitted by the spawn runtime (event
+  types unchanged); `parent_resumed` fires once per terminal child so the TUI
+  active-agent indicator re-pins to the parent. The spawn runtime also appends
+  the `expert_handoff` Parts the deleted sync-delegate path appended — one
+  `delegate.started` header Part per spawn and one terminal return Part per
+  child (success AND failure conclude on `stage: delegate.completed` with the
+  outcome on `status`, #882) — so the canonical transcript renderer shows the
+  delegation header / nesting / return row instead of a bare tool row. The
   completed payload now carries `task_id` / `message_ref` / `error_reason`
   alongside `output` / `workflow_state` / `stage` and no longer carries
   `return_to` / `tools_called` / `structured` (those live on the AgentTask
@@ -39,6 +46,17 @@ TUI/HTTP surface aren't tracked here.
   packs are migrated (mains → react, synthesis children deleted) and the
   submodule pin updated. A baseline-0 CI guard
   (`scripts/check_no_settle_vocabulary.py`) keeps the vocabulary out.
+- Fan-out terminal + nanoagent events retired (#948 S4 / #952, no silent
+  retirement): the deleted inline fan-out tool emitted both
+  `blueprint.fanout.started` AND `blueprint.fanout.completed`, and the deleted
+  nanoagent path emitted `subagent.{started,completed}` (with
+  `session_type: nanoagent`). The spawn runtime re-emits only
+  `blueprint.fanout.started`; the per-child `blueprint.delegation.*` events are
+  now the terminal signal for a fan-out batch (`fanout.completed`/`failed` had
+  no wire consumer), and the delegation path uses `agent.task.*` with
+  `session_type: agent_task` in place of `subagent.*`. Clients that reloaded the
+  session list or raised a notification on `subagent.started` should key on
+  `agent.task.started` / `blueprint.delegation.started` instead.
 
 ### Added
 - Child-turn substrate (#948 S3 / #951): `spawn_child_turn` spawns a declared child

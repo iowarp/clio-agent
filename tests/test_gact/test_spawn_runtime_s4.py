@@ -168,7 +168,28 @@ def _capture_emits(monkeypatch) -> list[dict[str, Any]]:
         return {}
 
     monkeypatch.setattr("clio_agent.gact.agents.spawn_runtime._emit_semantic_event", _capture)
+    # The spawn/wait tools also append expert_handoff Parts to the PARENT transcript
+    # (#948 S4 finding [7]); the bare test app has no transcript/bus, so stub the append
+    # to a no-op here. Tests that ASSERT on the Parts call _capture_parts to override
+    # this with a capturing stub (last monkeypatch.setattr wins).
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.spawn_runtime._append_live_assistant_part",
+        lambda app, sid, part: None,
+    )
     return emitted
+
+
+def _capture_parts(monkeypatch) -> list[tuple[str, Part]]:
+    """Capture the ``expert_handoff`` Parts the spawn/wait tools append to the PARENT
+    transcript (#948 S4 finding [7]). Overrides the _capture_emits no-op stub; each
+    append is recorded as ``(session_id, Part)`` so tests assert on the real Part."""
+
+    parts: list[tuple[str, Part]] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.spawn_runtime._append_live_assistant_part",
+        lambda app, sid, part: parts.append((sid, part)),
+    )
+    return parts
 
 
 def _tools_by_name(app: Any, agent_id: str, declared: set[str], monkeypatch) -> dict[str, Any]:
@@ -251,7 +272,9 @@ def test_wait_agent_tasks_completed_returns_wire_payload_and_emits_completed(mon
     # registry's bounded copy).
     app = _fake_app(
         registry,
-        messages={"child_1": [_assistant_message("msg_1", "child_1", "child produced the staged CSV")]},
+        messages={
+            "child_1": [_assistant_message("msg_1", "child_1", "child produced the staged CSV")]
+        },
     )
     emitted = _capture_emits(monkeypatch)
 
@@ -270,8 +293,12 @@ def test_wait_agent_tasks_completed_returns_wire_payload_and_emits_completed(mon
     assert payload["agent_id"] == "data_expert"
     assert payload["parent_id"] == "main"
 
-    # One completed event, flowing the completion payload + the return-direction block.
-    assert [e["event_type"] for e in emitted] == ["blueprint.delegation.completed"]
+    # One completed event (flowing the completion payload + return-direction block),
+    # then the parent_resumed event that re-pins the active-agent indicator (finding [6]).
+    assert [e["event_type"] for e in emitted] == [
+        "blueprint.delegation.completed",
+        "blueprint.delegation.parent_resumed",
+    ]
     completed = emitted[0]
     assert completed["status"] == "completed"
     assert completed["actor"] == {"agent_id": "data_expert", "role": "child_expert"}
@@ -310,7 +337,11 @@ def test_wait_agent_tasks_failed_emits_delegation_failed_with_status(monkeypatch
     assert payload["status"] == "failed"
     assert payload["stage"] == "delegate.failed"
     assert payload["error_reason"] == "agent_error"
-    assert [e["event_type"] for e in emitted] == ["blueprint.delegation.failed"]
+    # A FAILED child still re-pins the parent (finding [6]): failed + parent_resumed.
+    assert [e["event_type"] for e in emitted] == [
+        "blueprint.delegation.failed",
+        "blueprint.delegation.parent_resumed",
+    ]
     assert emitted[0]["status"] == "failed"
 
 
@@ -396,7 +427,9 @@ def test_wait_returns_child_answer_verbatim_past_the_excerpt_bound(monkeypatch) 
             result={"answer_excerpt": big[:2000], "workflow_state": {}, "message_ref": "msg_big"},
         )
     )
-    app = _fake_app(registry, messages={"child_big": [_assistant_message("msg_big", "child_big", big)]})
+    app = _fake_app(
+        registry, messages={"child_big": [_assistant_message("msg_big", "child_big", big)]}
+    )
     _capture_emits(monkeypatch)
 
     with _active_turn(app):
@@ -476,7 +509,9 @@ def test_double_wait_emits_terminal_event_once_but_returns_row_each_time(monkeyp
     registry.register(_completed_task())
     app = _fake_app(
         registry,
-        messages={"child_1": [_assistant_message("msg_1", "child_1", "child produced the staged CSV")]},
+        messages={
+            "child_1": [_assistant_message("msg_1", "child_1", "child produced the staged CSV")]
+        },
     )
     emitted = _capture_emits(monkeypatch)
 
@@ -488,8 +523,12 @@ def test_double_wait_emits_terminal_event_once_but_returns_row_each_time(monkeyp
     # The row is RETURNED both times (the model may legitimately re-collect).
     assert first["results"][0]["output"] == "child produced the staged CSV"
     assert second["results"][0]["output"] == "child produced the staged CSV"
-    # The terminal EVENT is emitted exactly ONCE across the two waits.
-    assert [e["event_type"] for e in emitted] == ["blueprint.delegation.completed"]
+    # The terminal EVENTS (completed + parent_resumed) are emitted exactly ONCE across
+    # the two waits — the re-wait claims nothing from the once-per-task gate.
+    assert [e["event_type"] for e in emitted] == [
+        "blueprint.delegation.completed",
+        "blueprint.delegation.parent_resumed",
+    ]
 
 
 def test_same_terminal_id_twice_in_one_batch_emits_event_once(monkeypatch) -> None:
@@ -497,7 +536,9 @@ def test_same_terminal_id_twice_in_one_batch_emits_event_once(monkeypatch) -> No
     registry.register(_completed_task())
     app = _fake_app(
         registry,
-        messages={"child_1": [_assistant_message("msg_1", "child_1", "child produced the staged CSV")]},
+        messages={
+            "child_1": [_assistant_message("msg_1", "child_1", "child produced the staged CSV")]
+        },
     )
     emitted = _capture_emits(monkeypatch)
 
@@ -507,9 +548,13 @@ def test_same_terminal_id_twice_in_one_batch_emits_event_once(monkeypatch) -> No
             tools["wait_agent_tasks"].func(task_ids=["task_done", "task_done"], timeout_s=1.0)
         )
 
-    # Two rows returned (once per requested id), but exactly one wire event.
+    # Two rows returned (once per requested id), but exactly one terminal + one
+    # parent_resumed wire event.
     assert len(result["results"]) == 2
-    assert [e["event_type"] for e in emitted] == ["blueprint.delegation.completed"]
+    assert [e["event_type"] for e in emitted] == [
+        "blueprint.delegation.completed",
+        "blueprint.delegation.parent_resumed",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -538,6 +583,9 @@ def test_spawn_depth_computed_and_increments_through_tool_path(monkeypatch) -> N
         return SimpleNamespace(task_id=f"task_d{spec.depth}", status="running")
 
     monkeypatch.setattr("clio_agent.gact.turn_spawn.spawn_child_turn_threadsafe", _capture_spawn)
+    # Stub the started-Part append (the bare app has no transcript/bus); this test
+    # asserts on computed depth, not on the Part.
+    _capture_parts(monkeypatch)
 
     app = _fake_app()
     _seed_child_depth(app, "child_d1", 1)
@@ -593,9 +641,161 @@ def test_spawn_at_backstop_depth_rejected_through_tool_path(tmp_path: Path, monk
             from clio_agent.gact.agents import spawn_runtime
 
             tools = {
-                t.name: t
-                for t in spawn_runtime.build_spawn_runtime_tools(_Agent(), _Def("main"))
+                t.name: t for t in spawn_runtime.build_spawn_runtime_tools(_Agent(), _Def("main"))
             }
             result = json.loads(tools["spawn_agent_task"].func(agent="main", task="go"))
 
     assert result["error"] == "spawn_depth_exceeded"
+
+
+# ---------------------------------------------------------------------------
+# Finding [7] (transcript render parity): spawned-child delegations render in the
+# PARENT transcript via expert_handoff Parts (the canonical transcriptDelegationModel.ts
+# keys the header / nesting / return row off Parts, NOT the semantic events). Without
+# these Parts a spawned child renders NOTHING (a failed child is invisible outside raw
+# tool JSON). Sabotage: reverting the append seam makes every assertion here go red.
+# ---------------------------------------------------------------------------
+
+
+def test_spawn_appends_started_expert_handoff_part(monkeypatch) -> None:
+    app = _fake_app()
+    _capture_emits(monkeypatch)
+    parts = _capture_parts(monkeypatch)
+    monkeypatch.setattr(
+        "clio_agent.gact.turn_spawn.spawn_child_turn_threadsafe",
+        lambda a, spec: SimpleNamespace(task_id="task_abc", status="running"),
+    )
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        tools["spawn_agent_task"].func(agent="data_expert", task="profile the CSV")
+
+    # Exactly one started Part, in the parent session, with the shape the pinned TUI
+    # consumes (child/parent links for the depth graph, stage, task on metadata.question).
+    assert len(parts) == 1
+    sid, part = parts[0]
+    assert sid == "sess_x"
+    assert part.type == "expert_handoff"
+    assert part.stage == "delegate.started"
+    assert part.status == "running"
+    assert part.parent_agent == "main"
+    assert part.child_agent == "data_expert"
+    assert part.agent_id == "main"
+    assert part.metadata["question"] == "profile the CSV"
+    assert part.metadata["stream_source"] == "live"
+
+
+def test_wait_completed_appends_return_part_with_verbatim_output(monkeypatch) -> None:
+    registry = AgentTaskRegistry()
+    registry.register(_completed_task())
+    app = _fake_app(
+        registry,
+        messages={
+            "child_1": [_assistant_message("msg_1", "child_1", "child produced the staged CSV")]
+        },
+    )
+    _capture_emits(monkeypatch)
+    parts = _capture_parts(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        tools["wait_agent_tasks"].func(task_ids=["task_done"], timeout_s=1.0)
+
+    assert len(parts) == 1
+    _sid, part = parts[0]
+    assert part.type == "expert_handoff"
+    # #882: success concludes on the terminal lane (stage delegate.completed).
+    assert part.stage == "delegate.completed"
+    assert part.status == "completed"
+    assert part.parent_agent == "main"
+    assert part.child_agent == "data_expert"
+    # #880: metadata.output is the child's FULL answer byte-for-byte (behind show more).
+    assert part.metadata["output"] == "child produced the staged CSV"
+    assert part.metadata["workflow_state"] == {"profile": {"status": "ready", "rows": 1024}}
+
+
+def test_wait_failed_appends_return_part_on_terminal_lane_visible(monkeypatch) -> None:
+    registry = AgentTaskRegistry()
+    registry.register(
+        AgentTask(
+            task_id="task_bad",
+            parent_session_id="sess_x",
+            child_session_id="child_2",
+            agent_ref={"expert_id": "data_expert", "requesting_expert_id": "main"},
+            status="failed",
+            error_reason="agent_error",
+            result={"answer_excerpt": "", "workflow_state": {}, "message_ref": ""},
+        )
+    )
+    app = _fake_app(registry)
+    _capture_emits(monkeypatch)
+    parts = _capture_parts(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        tools["wait_agent_tasks"].func(task_ids=["task_bad"], timeout_s=1.0)
+
+    # A FAILED child is NOT invisible: it still gets a return Part, on the SAME terminal
+    # lane (stage delegate.completed, #882) with status=failed and the typed reason.
+    assert len(parts) == 1
+    _sid, part = parts[0]
+    assert part.stage == "delegate.completed"
+    assert part.status == "failed"
+    assert part.child_agent == "data_expert"
+    assert part.metadata["output"] == ""
+    assert part.metadata["error"] == "agent_error"
+
+
+def test_return_part_appended_once_on_double_wait(monkeypatch) -> None:
+    registry = AgentTaskRegistry()
+    registry.register(_completed_task())
+    app = _fake_app(
+        registry,
+        messages={
+            "child_1": [_assistant_message("msg_1", "child_1", "child produced the staged CSV")]
+        },
+    )
+    _capture_emits(monkeypatch)
+    parts = _capture_parts(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        tools["wait_agent_tasks"].func(task_ids=["task_done"], timeout_s=1.0)
+        tools["wait_agent_tasks"].func(task_ids=["task_done"], timeout_s=1.0)
+
+    # The return Part shares the once-per-task gate with the terminal event: exactly one
+    # across both waits (no duplicate return row on a re-collect).
+    assert len(parts) == 1
+    assert parts[0][1].stage == "delegate.completed"
+
+
+# ---------------------------------------------------------------------------
+# Finding [6] (active-agent indicator): after a spawned child reaches a terminal
+# state, blueprint.delegation.parent_resumed re-pins the executing agent to the parent.
+# The TUI resets ONLY on parent_resumed (completed/failed fall through to the child).
+# ---------------------------------------------------------------------------
+
+
+def test_parent_resumed_event_re_pins_parent_after_terminal(monkeypatch) -> None:
+    registry = AgentTaskRegistry()
+    registry.register(_completed_task())
+    app = _fake_app(
+        registry,
+        messages={
+            "child_1": [_assistant_message("msg_1", "child_1", "child produced the staged CSV")]
+        },
+    )
+    emitted = _capture_emits(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        tools["wait_agent_tasks"].func(task_ids=["task_done"], timeout_s=1.0)
+
+    resumed = [e for e in emitted if e["event_type"] == "blueprint.delegation.parent_resumed"]
+    assert len(resumed) == 1
+    ev = resumed[0]
+    # Re-pins to the PARENT: the parent is the actor, the child the subject.
+    assert ev["actor"] == {"agent_id": "main", "role": "parent_expert"}
+    assert ev["subject"] == {"agent_id": "data_expert", "role": "child_expert"}
+    assert ev["payload"]["stage"] == "parent.resumed"
+    assert ev["payload"]["resumed_from"] == "data_expert"

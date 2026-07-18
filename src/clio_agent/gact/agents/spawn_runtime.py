@@ -16,7 +16,11 @@ field consumed by a settle loop, it CALLS these tools:
   the deleted inline fan-out tool).
 
 Each tool re-emits the wire-facing ``blueprint.delegation.*`` / ``blueprint.fanout.*``
-events the old tools emitted, so TUI handoff rendering stays lit (wire parity).
+events the old tools emitted AND appends the ``expert_handoff`` Parts the deleted
+sync-delegate path appended, so TUI handoff rendering stays lit (wire parity): the
+semantic events feed the activity label / execution trace / active-agent indicator,
+while the canonical transcript renderer keys the delegation header / nesting / return
+row exclusively off ``type=='expert_handoff'`` Parts (#948 S4 findings [6]/[7]).
 The child sessions + AgentTask records are the real substrate underneath — no
 inline in-thread child forward, no settle-loop routing vocabulary.
 """
@@ -25,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact import context as _ctx
@@ -33,6 +38,8 @@ from clio_agent.gact.runtime.globals import (
     _active_semantic_turn_id,
     _emit_semantic_event,
 )
+from clio_agent.gact.tool_observer import _append_live_assistant_part, _handoff_part_metadata
+from clio_agent.gact.types import Part
 
 if TYPE_CHECKING:
     from clio_agent.gact.agents.types import AgentDef
@@ -149,6 +156,77 @@ def _completion_payload(app: Any, task: Any) -> dict[str, Any]:
     return payload
 
 
+def _started_handoff_part(agent_def: "AgentDef", child_id: str, task_text: str, depth: int) -> Part:
+    """The ``delegate.started`` expert_handoff Part appended to the PARENT transcript
+    when a child is spawned (#948 S4 finding [7]).
+
+    The canonical transcript renderer (transcriptDelegationModel.ts) drives the
+    delegation header, depth/indentation (from ``child_agent``/``parent_agent`` links)
+    and nested rows off ``type=='expert_handoff'`` Parts — NOT the semantic events — so
+    without this Part a spawned child renders nothing in the main transcript. Field
+    shape matches the pinned TUI: ``child_agent``/``parent_agent`` links, ``stage``
+    lifecycle, and ``metadata.question`` (the task the header shows)."""
+
+    started_row = {
+        "agent_id": child_id,
+        "parent_id": agent_def.id,
+        "status": "running",
+        "stage": "delegate.started",
+        "question": task_text,
+        "depth": depth,
+    }
+    return Part(
+        id=f"live_handoff_{uuid.uuid4().hex[:12]}",
+        type="expert_handoff",
+        agent_id=agent_def.id,
+        parent_agent=agent_def.id,
+        child_agent=child_id,
+        stage="delegate.started",
+        status="running",
+        text=f"{agent_def.id} -> {child_id}",
+        metadata={**_handoff_part_metadata(started_row), "stream_source": "live"},
+    )
+
+
+def _return_handoff_part(agent_def: "AgentDef", task: Any, payload: dict[str, Any]) -> Part:
+    """The terminal RETURN expert_handoff Part appended to the PARENT transcript when a
+    spawned child reaches a terminal state (#948 S4 finding [7]).
+
+    Both success AND failure conclude on the SAME terminal lane —
+    ``stage='delegate.completed'`` with the outcome riding ``status`` (#882) — so a
+    verbatim (dedup-free) client renders one return row per child, never a second
+    header, and a FAILED child is visible (not buried in raw tool JSON).
+    ``metadata.output`` is the child's FULL answer byte-for-byte (#880, resolved in
+    ``payload``); a failure carries empty output with the typed reason on
+    ``status``/``error`` and any verbatim-output degradation marker."""
+
+    child_id = task.agent_ref.get("expert_id", "")
+    return_row = {
+        "agent_id": child_id,
+        "parent_id": agent_def.id,
+        "status": task.status,
+        "stage": "delegate.completed",
+        "output": payload.get("output", ""),
+        "workflow_state": payload.get("workflow_state", {}),
+        "error": task.error_reason or "",
+    }
+    # Surface the verbatim-output degradation markers (never silent) onto the Part too.
+    for marker in ("output_source", "output_fallback_reason"):
+        if marker in payload:
+            return_row[marker] = payload[marker]
+    return Part(
+        id=f"live_handoff_{uuid.uuid4().hex[:12]}",
+        type="expert_handoff",
+        agent_id=agent_def.id,
+        parent_agent=agent_def.id,
+        child_agent=child_id,
+        stage="delegate.completed",
+        status=task.status,
+        text=f"{agent_def.id} <- {child_id}",
+        metadata={**_handoff_part_metadata(return_row), "stream_source": "live"},
+    )
+
+
 def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[Any]:
     """Build the react-main spawn tools bound to ``agent_def`` as the requesting
     (parent) expert. Resolved lazily against the active app/session at call time."""
@@ -211,6 +289,12 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
             subject={"agent_id": agent, "role": "child_expert"},
             blueprint=_blueprint_block(agent_def, agent),
         )
+        # Transcript render parity (#948 S4 finding [7]): the delegation header /
+        # nesting is driven off the expert_handoff Part, not the semantic event.
+        # Spawn happens once per task, so the started Part is inherently once-per-task.
+        _append_live_assistant_part(
+            app, session_id, _started_handoff_part(agent_def, agent, task, depth)
+        )
         return json.dumps({"task_id": spawned.task_id, "status": spawned.status}, sort_keys=True)
 
     def wait_agent_tasks(task_ids: list[str], timeout_s: float = _DEFAULT_WAIT_TIMEOUT_S) -> str:
@@ -267,6 +351,41 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
                     subject={"agent_id": agent_def.id, "role": "parent_expert"},
                     blueprint=_blueprint_block(agent_def, task.agent_ref.get("expert_id", "")),
                     payload=dict(payload),
+                )
+                # Transcript render parity (#948 S4 finding [7]): a spawned child
+                # renders in the PARENT transcript ONLY via an expert_handoff Part —
+                # the events above feed the activity label / execution trace, not the
+                # transcript. Gated by the SAME once-per-task claim as the event, so a
+                # re-wait / repeated id never appends a second return row.
+                _append_live_assistant_part(
+                    app, session_id, _return_handoff_part(agent_def, task, payload)
+                )
+                # Re-pin the active-agent indicator to the parent (#948 S4 finding [6]):
+                # the TUI resets the executing agent to the parent ONLY on
+                # ``*.delegation.parent_resumed`` (a terminal ``completed``/``failed``
+                # falls through to the child in the indicator switch), so without this
+                # the header stays stuck on the last-spawned child for the rest of the
+                # turn. Once per terminal task (same dedup gate), for BOTH outcomes.
+                child_id = task.agent_ref.get("expert_id", "")
+                _emit_semantic_event(
+                    app,
+                    session_id,
+                    "blueprint.delegation.parent_resumed",
+                    turn_id=_active_semantic_turn_id(),
+                    trace_id=_active_semantic_trace_id(),
+                    status="completed",
+                    summary=f"{agent_def.id} resumed after {child_id}",
+                    actor={"agent_id": agent_def.id, "role": "parent_expert"},
+                    subject={"agent_id": child_id, "role": "child_expert"},
+                    blueprint=_blueprint_block(agent_def, child_id),
+                    payload={
+                        "agent_id": agent_def.id,
+                        "resumed_from": child_id,
+                        "status": "completed",
+                        "stage": "parent.resumed",
+                        "output": payload.get("output", ""),
+                        "workflow_state": payload.get("workflow_state", {}),
+                    },
                 )
         return json.dumps({"results": results}, sort_keys=True, default=str)
 
