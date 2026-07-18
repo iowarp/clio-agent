@@ -30,6 +30,7 @@ from clio_agent.gact.runtime.globals import (
     _resolve_tool_session,
     _tool_session_context,
 )
+from clio_agent.gact.turn_runner import session_busy_error_payload
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Part
 
 if TYPE_CHECKING:
@@ -840,8 +841,12 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
         session = app.state.sessions.get(sid)
         if session is None:
             raise _not_found()
-        if str(getattr(session, "status", "idle")) == "running":
-            raise HTTPException(status_code=409, detail="session already has a running turn")
+        # #948 S1: the MCP App is a turn producer too — gate it through the canonical
+        # within-session busy check (the actual in-flight task), not a status
+        # projection, so every producer refuses a concurrent turn identically.
+        busy_payload = session_busy_error_payload(getattr(app.state, "turn_runner", None), sid)
+        if busy_payload is not None:
+            raise HTTPException(status_code=409, detail=busy_payload)
 
         model_context = record.model_context
         effective_text = text

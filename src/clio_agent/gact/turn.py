@@ -817,15 +817,14 @@ def _start_background_user_turn(
         )
     )
 
-    task = asyncio.create_task(
-        _run_turn_in_background(app, sid, user_text, user_msg, turn_agent_id)
+    # #948 S1 (#662): route through the TurnRunner, the single owner of turn-task
+    # lifetime. It holds a master strong ref (no GC-cancellation), anchors the
+    # task to the app loop, records the busy-gate handle, and drops the
+    # per-session slot on completion — replacing the raw create_task + manual
+    # in_flight_turns bookkeeping that lived here.
+    app.state.turn_runner.spawn(
+        _run_turn_in_background(app, sid, user_text, user_msg, turn_agent_id),
+        sid=sid,
+        turn_id=user_msg_id,
     )
-    app.state.in_flight_turns[sid] = task
-
-    def _drop_task(_t, _sid=sid) -> None:
-        cur = app.state.in_flight_turns.get(_sid)
-        if cur is _t:
-            app.state.in_flight_turns.pop(_sid, None)
-
-    task.add_done_callback(_drop_task)
     return user_msg
