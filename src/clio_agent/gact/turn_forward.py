@@ -69,6 +69,18 @@ if TYPE_CHECKING:
     from clio_agent.gact.turn_state import TurnState
 
 
+def _forward_executor(state: "TurnState") -> Any:
+    """The executor a turn's forward should run in: the DEDICATED agent-task pool
+    for a CHILD turn (a ``session_type=="agent_task"`` session, #948 S3), else
+    ``None`` (the default pool). Routing children off the default pool keeps a
+    parent blocked in a future wait (#948 S6) from starving its own children."""
+
+    sess = state.app.state.sessions.get(state.sid)
+    if sess is not None and (getattr(sess, "metadata", {}) or {}).get("session_type") == "agent_task":
+        return getattr(state.app.state, "agent_task_executor", None)
+    return None
+
+
 async def forward_turn(state: "TurnState") -> Any:
     """Resolve the turn's agent, run its forward, settle delegations; return pred.
 
@@ -277,7 +289,7 @@ async def forward_turn(state: "TurnState") -> Any:
                 state.pred = await await_turn_work(
                     state,
                     loop.run_in_executor(
-                        None,
+                        _forward_executor(state),
                         lambda: turn_context.run(
                             _run_dynamic_agent_compat,
                             runner,
@@ -397,7 +409,7 @@ async def forward_turn(state: "TurnState") -> Any:
                     state.pred = await await_turn_work(
                         state,
                         loop.run_in_executor(
-                            None,
+                            _forward_executor(state),
                             lambda: turn_context.run(
                                 _agent_forward_compat,
                                 state.app.state.agent,

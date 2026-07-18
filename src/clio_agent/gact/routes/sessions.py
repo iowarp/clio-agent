@@ -1492,6 +1492,11 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         event = app.state.cancel_events.get(sid)
         if event is not None:
             event.set()
+        # #948 S3: cancel cascade — a cancelled parent cancels its spawned children
+        # so no child turn outlives the parent that spawned it.
+        from clio_agent.gact.turn_spawn import cancel_children_of  # noqa: PLC0415
+
+        cancel_children_of(app, sid)
         in_flight = app.state.in_flight_turns.get(sid)
         cancellation_pending = False
         if in_flight is not None and not in_flight.done():

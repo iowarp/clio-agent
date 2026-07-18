@@ -175,6 +175,12 @@ class AgentTaskRegistry:
         with self._lock:
             return self._tasks.get(task_id)
 
+    def snapshot(self) -> list[AgentTask]:
+        """A consistent point-in-time list of every task (for cap/queue scans)."""
+
+        with self._lock:
+            return list(self._tasks.values())
+
     def for_parent(self, parent_session_id: str) -> list[AgentTask]:
         """All tasks spawned by ``parent_session_id``, newest-created first."""
 
