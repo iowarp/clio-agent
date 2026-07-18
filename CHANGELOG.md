@@ -6,6 +6,80 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Changed
+- **Mains are react agents; the settle/synthesis layer is deleted** (#948 S4 /
+  #952). A tier-1 main runs the retained ReAct loop and its `answer` IS the
+  user deliverable; it routes by CALLING the spawn-runtime tools
+  (`spawn_agent_task` / `wait_agent_tasks` / `check_agent_tasks` /
+  `spawn_agents_parallel`) over real child turns. The wire-facing
+  `blueprint.delegation.{started,completed,failed,parent_resumed}` /
+  `blueprint.fanout.started` events are re-emitted by the spawn runtime (event
+  types unchanged); `parent_resumed` fires once per terminal child so the TUI
+  active-agent indicator re-pins to the parent. The spawn runtime also appends
+  the `expert_handoff` Parts the deleted sync-delegate path appended — one
+  `delegate.started` header Part per spawn and one terminal return Part per
+  child (success AND failure conclude on `stage: delegate.completed` with the
+  outcome on `status`, #882) — so the canonical transcript renderer shows the
+  delegation header / nesting / return row instead of a bare tool row. The
+  completed payload now carries `task_id` / `message_ref` / `error_reason`
+  alongside `output` / `workflow_state` / `stage` and no longer carries
+  `return_to` / `tools_called` / `structured` (those live on the AgentTask
+  record and the `agent.task.*` events).
+- Typed blueprint validation: an expert with declared children must declare
+  `module.kind: react` (children are reachable only via the spawn-runtime
+  tools); `predict` / `chain_of_thought` remain valid for leaf experts only.
+- Blueprint expert `answer` output is REQUIRED again — the optional-answer
+  default existed so an orchestrator could defer its deliverable to a
+  synthesis child; that pathway is deleted.
+- Session agent-overlay export now round-trips the `module:` declaration
+  (previously dropped, so an exported react parent re-loaded as `predict` and
+  failed validation).
+- An empty blueprint/prompt-agent `answer` is now a typed failure (raises into
+  the `agent_error` ladder like the tool-agent path) instead of returning a
+  silent empty deliverable with a "runtime settlement / declared-child handoff
+  repair" rationale — the settle layer that consumed those empty answers is gone.
+- The `subagents` capability flag is re-keyed to the spawn substrate: it still
+  advertises child-agent support, now provided by real agent-task child sessions
+  (`session_type=agent_task`) + `blueprint.delegation.*` events rather than the
+  retired nanoagent subsessions / `subagent.*` events.
+
+### Removed
+- The settle/synthesis orchestration internals (#948 S4 / #952): the settle
+  loop + parent re-invoke resume prompts (`turn_delegation.py`,
+  `turn_delegation_arc.py`), the `final_responder` synthesis-child adoption
+  (`turn_terminal.py`) and its degradation reasons, `answer_stream_visible`,
+  the nanoagent post-hoc materialization (`turn_nanoagents.py`), the
+  `next_expert`/`next_task` typed routing signature fields (internal, never
+  wire fields), and the inline per-child delegate / fan-out tools. Marketplace
+  packs are migrated (mains → react, synthesis children deleted) and the
+  submodule pin updated. A baseline-0 CI guard
+  (`scripts/check_no_settle_vocabulary.py`) keeps the vocabulary out.
+- Fan-out terminal + nanoagent events retired (#948 S4 / #952, no silent
+  retirement): the deleted inline fan-out tool emitted both
+  `blueprint.fanout.started` AND `blueprint.fanout.completed`, and the deleted
+  nanoagent path emitted `subagent.{started,completed}` (with
+  `session_type: nanoagent`). The spawn runtime re-emits only
+  `blueprint.fanout.started`; the per-child `blueprint.delegation.*` events are
+  now the terminal signal for a fan-out batch (`fanout.completed`/`failed` had
+  no wire consumer), and the delegation path uses `agent.task.*` with
+  `session_type: agent_task` in place of `subagent.*`. Clients that reloaded the
+  session list or raised a notification on `subagent.started` should key on
+  `agent.task.started` / `blueprint.delegation.started` instead.
+- Deletion closure for the settle removal (#948 S4 / #952): the orphaned
+  answer-substitution machinery (`substitute_answer_from_delegation_evidence`,
+  `_fallback_answer_from_delegation`, the `answer_substituted_from_delegation_evidence`
+  turn-degradation reason and its now-unused per-session ledger), the stream-only
+  parent-resume duplicate suppressor (its `parent.resumed` Part producer died with
+  the settle loop), the dead sync-delegate prompt/state helpers
+  (`_delegated_expert_prompt`, `_delegated_expert_public_prompt`,
+  `_should_execute_delegated_handoff`, `_delegated_expert_agent_id`,
+  `_failed_child_delegation_workflow_state`, `_append_session_workflow_state_context`,
+  `_delegate_started_row`, `_public_task_from_composed_prompt`, and their app.py
+  re-exports), and the orphaned Tier-3 nanoagent spawn primitive
+  (`runtime/nanoagent.py`). The finalize-time stream-provenance assembler
+  (formerly `turn_degradation.assemble_stream_and_degradation_metadata`) is
+  retained as `turn_stream.assemble_stream_metadata`.
+
 ### Added
 - Child-turn substrate (#948 S3 / #951): `spawn_child_turn` spawns a declared child
   expert as a REAL turn in a REAL child session (projected as an `AgentTask`), on a
@@ -13,12 +87,15 @@ TUI/HTTP surface aren't tracked here.
   FIFO queue admission at the concurrency cap, a completion hook that records the
   child's result, HITL-in-child typed failure, and a parent→children cancel cascade.
   The `#671` federation seam (`TaskSpec` serializable in/out).
-- Agent-task API + event family (#948 S2 / #950): `GET /v1/sessions/{sid}/tasks`,
-  `GET /v1/tasks/{task_id}`, `POST /v1/tasks/{task_id}/cancel`, and the
+- Agent-task API + event family (#948 S2 / #950): `GET /v1/sessions/{sid}/agent-tasks`,
+  `GET /v1/agent-tasks/{task_id}`, `POST /v1/agent-tasks/{task_id}/cancel`, and the
   `agent.task.{queued,started,completed,failed,cancelled,consumed}` events
   (published on both the parent and child session channels). The `AgentTask`
   record projects over a child session's metadata (`session_type=="agent_task"`)
   — no new store — and its registry is rebuilt at boot from `sessions.json`.
+  The paths are `agent-tasks`: `/v1/sessions/{sid}/tasks` + `/v1/tasks/{tid}`
+  remain the #18 per-session manual task CRUD; S2's original same-path claim
+  shadowed that GET by registration order (fixed in S4).
 
 ## [0.7.4] — 2026-07-15
 

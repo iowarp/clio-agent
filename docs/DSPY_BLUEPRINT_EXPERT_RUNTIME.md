@@ -35,9 +35,6 @@ structured_outputs:
   evidence: true
   artifacts: true
   errors: true
-  delegation: true
-fanout:
-  max_workers: 4
 ```
 
 `module.kind` selects the DSPy module:
@@ -46,19 +43,34 @@ fanout:
 - `chain_of_thought` compiles to `dspy.ChainOfThought`.
 - `react` compiles to `dspy.ReAct`.
 
-`tools` scopes tool access only. It does not select the module kind. A ReAct
-expert receives only its declared tools plus generated internal child-expert
-tools from the active Blueprint graph.
+`answer` is a REQUIRED output on every expert. A leaf expert's answer is its
+whole return contract, and an orchestrator's answer IS the user deliverable —
+there is no post-forward synthesis pass that could supply it later. An omitted or
+empty answer is a typed failure, never a legitimate state.
+
+An expert that declares children (an orchestrator) MUST declare `module.kind:
+react`: it routes by CALLING the spawn-runtime tools over real child turns (see
+[Child Experts](#child-experts)), not by emitting a typed routing field for a
+settle loop to consume. `predict` / `chain_of_thought` are valid for leaf experts
+only; declaring children on a non-react expert fails Blueprint validation with a
+`declare module.kind: react` error.
+
+`tools` scopes tool access only. It does not select the module kind. A react
+orchestrator receives its declared tools plus the spawn-runtime tools for its
+declared children.
 
 ## Structured Workflow State
 
 DSPy provides the module, signature, and ReAct/Predict/ChainOfThought substrate.
-CLIO's runtime orchestration is separate. Deterministic routing is allowed only
-when it operates over declared semantic state produced by Blueprint outputs or
-tool results, not arbitrary model prose.
+CLIO's runtime orchestration is separate. Routing is the MODEL's decision: a react
+orchestrator inspects its children's returned evidence and DECIDES which child to
+spawn next by CALLING a spawn tool. CLIO does not route on model prose, and there
+is no deterministic settle loop matching keywords or typed routing fields — the
+settle/synthesis layer and its `next_expert` / continuation-contract vocabulary
+were deleted (#948 S4). A baseline-0 guard keeps that vocabulary out of the tree.
 
-Blueprint children should return compact structured evidence that can include
-state such as:
+Blueprint children return their prose deliverable as `answer` and carry compact
+structured evidence on the first-class typed `workflow_state` output, for example:
 
 ```json
 {
@@ -77,98 +89,42 @@ state such as:
 }
 ```
 
-Continuation predicates may inspect state fields, for example:
+The typed `workflow_state` field is the STRUCTURED carrier: it rides the
+`AgentTask` record and the `blueprint.delegation.*` / `agent.task.*` events back
+to the parent, never serialized into the user-facing `answer` text. The parent
+react loop reads a completed child's `output` (the child's verbatim `answer`) and
+`workflow_state` from the tool result of `wait_agent_tasks`, and decides its next
+spawn from that typed evidence plus the child's prose.
 
-```yaml
-parameters:
-  continuation_contracts:
-    - id: resource_to_analysis
-      when_state:
-        geospatial.status: resolved
-        resource.status: selected
-      match: all
-      next_expert: analysis
-```
-
-Continuation predicates may also inspect workflow progress using completed
-declared child ids. Use this for required branch order when the next step should
-run after a child has produced evidence, even if the child's domain state is
-partial:
-
-```yaml
-parameters:
-  enforce_child_contract_order: true
-  continuation_contracts:
-    - id: start_with_discovery
-      next_expert: ndp_dataset_discovery
-      next_action: discover candidate resources
-    - id: discovery_to_station_catalog
-      when_child_completed: ndp_dataset_discovery
-      next_expert: earthscope_station_catalog
-      next_action: rank candidate stations
-```
-
-`when_child_completed` is a CLIO workflow-state predicate over declared child
-completion metadata. It is not a DSPy primitive and it is not free-text matching.
-It can be combined with `when_state` when both execution progress and typed
-domain state are required.
-
-Typed continuation contracts are not a substitute for agent judgment. They
-should encode semantic prerequisites and evidence-integrity gates, such as
-"profile only after a concrete CSV is staged" or "plot only after a profile
-exists." They should not force optional scientific branches merely because a
-field is absent. For example, an event-catalog expert may be available to a
-seismic workflow, but the normal NDP/EarthScope GNSS CSV path should not route
-through it unless the parent expert asks for event-catalog evidence or prior
-typed tool results make that layer necessary.
-
-The acceptable deterministic branch is over typed evidence produced by a module
-or tool:
-
-```yaml
-when_state:
-  acquisition.status: staged
-  acquisition.analysis_ready: true
-next_expert: gnss_timeseries_analysis
-```
-
-The unacceptable pattern is a hidden benchmark script:
-
-```yaml
-when_state:
-  event_context.status:
-    exists: false
-next_expert: seismic_event_catalog
-```
-
-That second pattern makes the workflow brittle even though it uses typed state:
-it converts an optional capability into mandatory execution outside the model's
-semantic decision. If the desired behavior is "call the child when event
-context is needed," express that in the parent expert prompt/signature and let
-the parent request the child; reserve contracts for verifying that the requested
-handoff is legal and evidence-grounded.
-
-Legacy `when_request_contains`, `when_output_contains`, and `NEXT_EXPERT`
-markers are compatibility scaffolding for old packs and tests. They must not be
-the reliability mechanism for new benchmark or marketplace agents. New packs
-should route from typed state such as `status`, `bbox`, `dataset_id`,
-`local_path`, `profile.status`, and `artifact.status`, plus structured workflow
-progress such as `when_child_completed`.
-
-Agent Blueprint validation rejects continuation contracts that use
-`when_request_contains` or `when_output_contains` unless the individual contract
-sets `allow_text_routing: true`. That opt-in is for temporary migration or
-debug scaffolding only; production benchmark packs should validate without it.
-When the opt-in is present, validation emits a warning so release and benchmark
-review can distinguish a clean typed-state pack from quarantined legacy routing.
+Typed evidence is for the model to REASON over, not for CLIO to branch on
+mechanically. Encode semantic prerequisites and evidence-integrity gates —
+"profile only after a concrete CSV is staged", "plot only after a profile exists"
+— in the orchestrator's prompt so the model spawns the next child when its own
+judgment says the evidence is ready. Reserve deterministic checks for surfacing
+reality (a file/path exists, an auth/HITL gate, a schema-validate), never for
+deciding the route (see the superseding principles in `.claude/CLAUDE.md`).
 
 ## Child Experts
 
-For every declared parent-child edge in the active Blueprint, CLIO can expose a
-generated internal tool such as `delegate_to_sac_format`. The tool runs the
-child synchronously, enforces the declared parent edge, and returns compact
-evidence to the parent. Provenance is recorded as semantic delegation events and
-assistant `expert_handoff` metadata.
+An orchestrator routes to its declared children by CALLING the spawn-runtime
+tools, attached automatically to a react expert with declared children:
+
+- `spawn_agent_task(agent, task)` starts a declared child as a REAL child turn in
+  a REAL child session (projected as an `AgentTask`, `session_type=agent_task`)
+  and returns a `task_id`.
+- `wait_agent_tasks([task_id], timeout_s=...)` blocks until the named child turns
+  reach a terminal state and returns each child's `output` (its verbatim `answer`)
+  and typed `workflow_state`.
+- `spawn_agents_parallel([...])` fans a batch of declared children out at once.
+- `check_agent_tasks()` lists the tasks this session has spawned and their status.
+
+Each spawn/return is recorded as `blueprint.delegation.{started,completed,failed,
+parent_resumed}` semantic events and `expert_handoff` transcript Parts (a
+`delegate.started` header and a terminal return row), so the canonical transcript
+renders the delegation header, nesting, and return row. The declared parent→child
+edge is enforced (a spawn target must be a declared child of the spawning expert)
+and the 3-tier hierarchy is bounded structurally. There are no generated in-thread
+`delegate_to_<child>` tools; children run as real, independently-persisted turns.
 
 ## Workspace Artifacts
 
@@ -188,9 +144,11 @@ input references, not verified artifacts.
 
 ## Fanout
 
-`fanout` is a bounded runtime primitive for future model-callable worker
-creation. It is declarative metadata in this pass; worker execution must enforce
-the declared limits and emit live plus durable semantic events when enabled.
+Concurrent children are spawned with `spawn_agents_parallel`, which admits a batch
+of declared children onto a dedicated child-turn executor pool (never the default)
+under a global concurrency cap — queueing at the cap and admitting queued tasks as
+running ones reach a terminal state. Each child runs as a real child turn and
+emits live plus durable `agent.task.*` / `blueprint.delegation.*` semantic events.
 
 ## Native Expert Removal
 

@@ -18,11 +18,10 @@ The orchestration is byte-for-byte behavior-preserving. :func:`forward_turn`:
 * runs the dynamic-agent (blueprint/prompt/tool) OR the CLIO-orchestrator forward,
   streamed-first with the synchronous executor path as the fallback, setting
   ``state.prompt_resolution`` / ``state.dynamic_agent_used`` / ``state.agent_runtime``
-  / ``state.pred`` as the original body did.
-* settles expert-pack delegations via
-  :func:`~clio_agent.gact.turn_delegation.settle_dynamic_agent_delegations`
-  (``state.pred, state.expert_handoffs = ...`` — the seam return values, TRICKY #2,
-  never an internal pred mutation) and returns ``state.pred``.
+  / ``state.pred`` as the original body did, and returns ``state.pred``. A react
+  main routes to its declared children by CALLING the spawn-runtime tools
+  (``spawn_agent_task`` / ``wait_agent_tasks``), so ``state.pred`` is already the
+  main's own answer — there is no post-forward settle/synthesis pass.
 
 The #714 danger set (the agent-builder + blueprint-runner seams and the executable
 session-agent constant) is resolved through ``app`` via a *function-local* import
@@ -44,24 +43,25 @@ from clio_agent.gact.agents.resolution import (
     _resolve_runtime_dynamic_agent,
     _runtime_active_agent_blueprint_agent_ids,
     _runtime_active_agent_blueprint_root_id,
+    _runtime_active_agent_blueprint_rows,
 )
 from clio_agent.gact.evidence import _dynamic_agent_runtime_provenance
 from clio_agent.gact.messaging import _prediction_summary
 from clio_agent.gact.providers.auth import _refresh_argonne_lm_token
 from clio_agent.gact.runtime.globals import (
+    _BlueprintRootDisabled,
     _emit_semantic_event,
     _llm_provider_payload,
     _session_agent_id,
     _tool_session_context,
     _UnsupportedSessionAgent,
 )
-from clio_agent.gact.runtime.type_parsing import _blueprint_module_kind, answer_stream_visible
+from clio_agent.gact.runtime.type_parsing import _blueprint_module_kind
 from clio_agent.gact.streaming import (
     _agent_forward_compat,
     _run_dynamic_agent_compat,
     _try_streamed_forward_compat,
 )
-from clio_agent.gact.turn_delegation import settle_dynamic_agent_delegations
 from clio_agent.gact.turn_stream import emit_chunk
 from clio_agent.gact.turn_watchdog import await_turn_work, cancel_requested
 
@@ -71,14 +71,21 @@ if TYPE_CHECKING:
 
 def _forward_executor(state: "TurnState") -> Any:
     """The executor a turn's forward should run in: the DEDICATED agent-task pool
-    for a CHILD turn (a ``session_type=="agent_task"`` session, #948 S3), else
-    ``None`` (the default pool). Routing children off the default pool keeps a
-    parent blocked in a future wait (#948 S6) from starving its own children."""
+    for the CHILD turn's DEPTH (a ``session_type=="agent_task"`` session, #948 S3),
+    else ``None`` (the default pool). Routing children onto a PER-DEPTH pool keeps a
+    parent blocked in a wait on ``pool[d]`` from starving its own children on
+    ``pool[d+1]`` — a single shared pool deadlocks nested orchestrators (#948 S4
+    adversarial review)."""
 
     sess = state.app.state.sessions.get(state.sid)
-    if sess is not None and (getattr(sess, "metadata", {}) or {}).get("session_type") == "agent_task":
-        return getattr(state.app.state, "agent_task_executor", None)
-    return None
+    meta = (getattr(sess, "metadata", {}) or {}) if sess is not None else {}
+    if meta.get("session_type") != "agent_task":
+        return None
+    block = meta.get("agent_task")
+    depth = block.get("depth", 1) if isinstance(block, dict) else 1
+    from clio_agent.gact.turn_spawn import agent_task_executor_for_depth  # noqa: PLC0415
+
+    return agent_task_executor_for_depth(state.app, depth)
 
 
 async def forward_turn(state: "TurnState") -> Any:
@@ -121,6 +128,32 @@ async def forward_turn(state: "TurnState") -> Any:
         and state.active_agent_id in {"", "main", "default"}
     ):
         state.active_agent_id = active_blueprint_root_id
+    if (
+        active_blueprint_root_id
+        and state.active_agent_id == active_blueprint_root_id
+        and state.active_agent_id not in active_blueprint_agent_ids
+    ):
+        # #948 S4: the active blueprint's DECLARED root exists but is disabled
+        # (validation errors — e.g. a pre-migration pack whose chain_of_thought
+        # main declares children). Fail TYPED here: no silent substitute root,
+        # no fall-through to the legacy planner (both observed on the live gate).
+        rows = _runtime_active_agent_blueprint_rows(state.app, session_id=state.sid)
+        root_errors = next(
+            (
+                list(row.validation_errors)
+                for row in rows
+                if row.id == active_blueprint_root_id
+            ),
+            [],
+        )
+        blueprint_id = str(
+            rows[0].metadata.get("agent_blueprint_id") or "" if rows else ""
+        )
+        raise _BlueprintRootDisabled(
+            active_blueprint_root_id,
+            blueprint_id=blueprint_id,
+            validation_errors=root_errors,
+        )
     routing_mode = getattr(state.sess, "routing_mode", "auto") or "auto"
     state.invocation_agent_id = state.active_agent_id or "orchestrator"
     _emit_semantic_event(
@@ -165,12 +198,6 @@ async def forward_turn(state: "TurnState") -> Any:
             raise _UnsupportedSessionAgent(state.active_agent_id)
         state.prompt_resolution = dict(dynamic_agent.metadata.get("prompt_resolution") or {})
         state.dynamic_agent_used = dynamic_agent
-        # #880: capture, at the source, whether this responder's typed ``answer`` is
-        # a VISIBLE deliverable — decided STRUCTURALLY from its declared
-        # structured_outputs (final_responder OR no workflow_state). finalize reads
-        # this to blank a workflow_state extract expert's batch answer fallback,
-        # never re-deriving it by sniffing whether the answer text looks like JSON.
-        state.answer_stream_visible = answer_stream_visible(dynamic_agent)
         runner = _blueprint_runner_for_agent(dynamic_agent)
         dynamic_kind = (
             _blueprint_module_kind(dynamic_agent)
@@ -436,13 +463,6 @@ async def forward_turn(state: "TurnState") -> Any:
                         ),
                         payload=_prediction_summary(state.pred),
                     )
-    if state.dynamic_agent_used is not None and state.dynamic_agent_used.source == "expert_pack":
-        state.pred, state.expert_handoffs = await settle_dynamic_agent_delegations(
-            state,
-            state.dynamic_agent_used,
-            state.pred,
-            source_text=state.enriched_text,
-        )
     _emit_semantic_event(
         state.app,
         state.sid,

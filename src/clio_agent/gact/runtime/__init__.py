@@ -6,7 +6,7 @@ This package holds the cross-concern *runtime* foundation carved out of the
 the leaf token/type helpers added in later steps.
 
 It is DISTINCT from the top-level :mod:`clio_agent.runtime` package (doctor /
-status / nanoagent spawn). Modules here import ONLY gact *leaves*
+status / hooks). Modules here import ONLY gact *leaves*
 (``gact.context``, ``gact.semantic_events``, ``gact.events``, ``gact.types``)
 plus stdlib -- never ``gact.app`` -- so the dependency graph stays acyclic.
 """

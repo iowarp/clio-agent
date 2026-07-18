@@ -344,6 +344,12 @@ def validate_expert_hierarchy(
     }
     child_parent = {row.id: row.parent_id for row in rows if row.parent_id}
     cycle_ids = _cycle_ids(child_parent)
+    # #948 S4: children are reachable ONLY via the spawn-runtime tools, and only
+    # react modules carry tools — a predict/chain_of_thought expert with declared
+    # children would silently strand them (the settle loop that used to route for
+    # it is deleted). Typed validation error; no legacy pathway survives under
+    # any configuration.
+    parent_ids_in_use = {row.parent_id for row in rows if row.parent_id}
     out: list[AgentDef] = []
     for row in rows:
         errors = list(row.validation_errors)
@@ -353,6 +359,15 @@ def validate_expert_hierarchy(
             errors.append(f"parent_id not found: {row.parent_id}")
         if row.id in cycle_ids:
             errors.append(f"hierarchy cycle includes: {row.id}")
+        if row.id in parent_ids_in_use:
+            module_kind = str((row.module or {}).get("kind") or "predict").strip().lower()
+            if module_kind != "react":
+                errors.append(
+                    f"expert {row.id} has declared children but module.kind "
+                    f"'{module_kind}' cannot reach them; declare module.kind: react "
+                    "(children are spawned via the spawn-runtime tools, which only "
+                    "react experts carry)"
+                )
         enabled = row.enabled and not errors
         out.append(row.model_copy(update={"enabled": enabled, "validation_errors": errors}))
     return out

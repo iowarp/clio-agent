@@ -343,19 +343,14 @@ from clio_agent.gact.agents import resolution as _resolution  # noqa: E402, F401
 from clio_agent.gact.agents.builders import (  # noqa: E402,F401
     _active_base_agent_tool_executor,
     _adapter_tool_intent_from_exception,
-    _blueprint_fanout_config,
     _blueprint_runtime_signature,
     _build_blueprint_dspy_module,
-    _build_child_expert_tool,
-    _build_fanout_tool,
     _build_prompt_user_agent_module,
     _build_tool_user_agent_module,
     _call_enabled_external_mcp_tool,
     _call_recovered_dspy_tool,
-    _coerce_fanout_child_ids,
     _dynamic_agent_lm_config,
     _dynamic_agent_tools,
-    _dynamic_child_expert_tools,
     _emit_blueprint_llm_failure,
     _emit_invalid_tool_selection_event,
     _enabled_external_mcp_dspy_tools,
@@ -411,27 +406,12 @@ from clio_agent.gact.agents.runtime import (  # noqa: E402,F401
 
 # gact/delegation.py -- delegation + workflow-state derivation cluster.
 from clio_agent.gact.delegation import (  # noqa: E402,F401
-    _append_accumulated_workflow_state_context,
-    _append_session_workflow_state_context,
-    _bubbled_child_evidence_output,
     _coerce_expert_handoff_rows,
     _compact_exact_evidence_index,
-    _delegated_expert_agent_id,
-    _delegated_expert_prompt,
-    _delegated_expert_public_prompt,
-    _dynamic_parent_resume_prompt,
     _expert_handoff_fields,
-    _failed_child_delegation_workflow_state,
-    _fallback_answer_from_delegation,
-    _iter_delegation_return_rows,
     _json_objects_from_text,
-    _latest_completed_child_output,
-    _latest_delegation_output,
-    _latest_final_child_output,
-    _latest_parent_resumed_output,
     _merge_workflow_state_from_value,
     _prediction_workflow_state,
-    _should_execute_delegated_handoff,
     _workflow_state_from_handoff_rows,
     _workflow_state_from_outputs,
     _workflow_state_payload,
@@ -746,9 +726,8 @@ def _clear_session_model_refs(app: "FastAPI") -> None:
 # --------------------------------------------------------------------------- #
 # Turn-orchestration engine extracted to gact/turn.py (#714 decomposition).      #
 #                                                                               #
-# ``_run_turn_in_background`` (the off-thread turn loop, with its nested         #
-# ``_settle_dynamic_agent_delegations`` / ``_execute_delegated_experts``         #
-# delegation settlers) and ``_start_background_user_turn`` (the staging          #
+# ``_run_turn_in_background`` (the off-thread turn loop) and                     #
+# ``_start_background_user_turn`` (the staging                                   #
 # entrypoint) were carved out verbatim into ``clio_agent.gact.turn`` so the      #
 # route factories + the scheduler tick can share the entrypoint without          #
 # importing back into this module. They are re-exported here so existing         #
@@ -769,6 +748,7 @@ from clio_agent.gact.turn_runner import (  # noqa: E402
 )
 from clio_agent.gact.turn_spawn import (  # noqa: E402
     install_agent_task_executor,
+    shutdown_agent_task_executors,
 )
 
 # Alias kept so the thin ``build_app`` closure wrapper (which shadows the
@@ -1008,18 +988,16 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # bounded-grace + typed-reason drain).
     await drain_app_turns(app, logger)
 
-    # #948 S3: shut down the dedicated agent-task executor (child forwards) off the
-    # loop, symmetric to its install. Without this its non-daemon workers leak
-    # across app lifecycles and a worker still in a slow child forward blocks
+    # #948 S3/S4: shut down every per-depth agent-task pool (child forwards) off the
+    # loop, symmetric to their lazy install. Without this their non-daemon workers
+    # leak across app lifecycles and a worker still in a slow child forward blocks
     # process exit (concurrent.futures' atexit joins all workers).
-    _agent_task_executor = getattr(app.state, "agent_task_executor", None)
-    if _agent_task_executor is not None:
-        try:
-            await asyncio.get_running_loop().run_in_executor(
-                None, lambda: _agent_task_executor.shutdown(wait=False, cancel_futures=True)
-            )
-        except Exception:  # noqa: BLE001,S110 - defensive shutdown cleanup
-            pass
+    try:
+        await asyncio.get_running_loop().run_in_executor(
+            None, lambda: shutdown_agent_task_executors(app)
+        )
+    except Exception:  # noqa: BLE001,S110 - defensive shutdown cleanup
+        pass
 
     # MCP Apps may own browser attachments or other remote resources. Close
     # every retained record while the exact originating MCP transports are
@@ -2352,7 +2330,7 @@ def build_app(
     # error travel on ``deps``.
     register_messages_routes(app, deps)
 
-    # ---- /v1/tasks + /v1/sessions/{sid}/tasks (#948 S2 / #950) ----------
+    # ---- /v1/agent-tasks + /v1/sessions/{sid}/agent-tasks (#948 S2 / #950) ----
     # The AgentTask projection read + cancel routes, over
     # ``app.state.agent_task_registry`` (rebuilt at boot from agent-task sessions).
     register_agent_task_routes(app, deps)

@@ -128,8 +128,8 @@ def _atom_content(
         The atom ``content`` dict (JSON-native; msgpack-safe after ``_coerce_content``).
     """
     # ``stream_source`` is the MESSAGE-level provenance the finalize seam stamps onto
-    # ``assistant_metadata`` before the Message is built (turn_degradation.
-    # assemble_stream_and_degradation_metadata); it is part of ``final_message``'s
+    # ``assistant_metadata`` before the Message is built (turn_stream.
+    # assemble_stream_metadata); it is part of ``final_message``'s
     # ``metadata`` and thus reproducible. Denormalized here for queryability.
     stream_source = str((message.metadata or {}).get("stream_source", "") or "")
     content: dict[str, Any] = {

@@ -216,9 +216,9 @@ def test_task_api_events_both_channels_and_cancel(tmp_path: Path) -> None:
         child = task.child_session_id
 
         # GET one + list-by-parent.
-        got = client.get(f"/v1/tasks/{task.task_id}")
+        got = client.get(f"/v1/agent-tasks/{task.task_id}")
         assert got.status_code == 200 and got.json()["task_id"] == task.task_id
-        listed = client.get(f"/v1/sessions/{parent}/tasks").json()["tasks"]
+        listed = client.get(f"/v1/sessions/{parent}/agent-tasks").json()["tasks"]
         assert [t["task_id"] for t in listed] == [task.task_id]
 
         # agent.task.queued observed on BOTH parent and child SSE channels.
@@ -226,16 +226,16 @@ def test_task_api_events_both_channels_and_cancel(tmp_path: Path) -> None:
         assert _bus(app, child, "agent.task.queued"), "no queued event on child channel"
 
         # Cancel -> cancelled (+ event on both channels), then idempotent.
-        c1 = client.post(f"/v1/tasks/{task.task_id}/cancel")
+        c1 = client.post(f"/v1/agent-tasks/{task.task_id}/cancel")
         assert c1.status_code == 200 and c1.json()["status"] == STATUS_CANCELLED
         assert _bus(app, parent, "agent.task.cancelled")
         assert _bus(app, child, "agent.task.cancelled")
-        c2 = client.post(f"/v1/tasks/{task.task_id}/cancel")  # idempotent
+        c2 = client.post(f"/v1/agent-tasks/{task.task_id}/cancel")  # idempotent
         assert c2.status_code == 200 and c2.json()["status"] == STATUS_CANCELLED
 
         # Unknown ids -> 404.
-        assert client.get("/v1/tasks/task_nope").status_code == 404
-        assert client.get("/v1/sessions/sess_nope/tasks").status_code == 404
+        assert client.get("/v1/agent-tasks/task_nope").status_code == 404
+        assert client.get("/v1/sessions/sess_nope/agent-tasks").status_code == 404
 
 
 def test_projection_rebuilt_from_sessions_json_across_restart(tmp_path: Path) -> None:
@@ -250,9 +250,9 @@ def test_projection_rebuilt_from_sessions_json_across_restart(tmp_path: Path) ->
     # (no fifth store) — the persisted child-session metadata IS the source.
     app2 = build_app(sessions_path=path, agent=_Agent())
     with TestClient(app2) as c2:
-        got = c2.get(f"/v1/tasks/{task_id}")
+        got = c2.get(f"/v1/agent-tasks/{task_id}")
         assert got.status_code == 200, "task projection not rebuilt from sessions.json"
         assert got.json()["agent_ref"] == {"expert_id": "hpc"}
-        assert [t["task_id"] for t in c2.get(f"/v1/sessions/{parent}/tasks").json()["tasks"]] == [
+        assert [t["task_id"] for t in c2.get(f"/v1/sessions/{parent}/agent-tasks").json()["tasks"]] == [
             task_id
         ]

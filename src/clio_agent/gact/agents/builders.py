@@ -47,18 +47,13 @@ from clio_agent.gact.agents.composition import (
     _runtime_active_workspace_context,
     _runtime_dynamic_agent_children_context,
 )
-from clio_agent.gact.agents.migration_signals import check_final_responder_migration
 from clio_agent.gact.agents.resolution import (
     _active_workflow_state_schema,
-    _runtime_child_agent_rows,
-    _runtime_declared_child_ids,
 )
 from clio_agent.gact.agents.runtime import (
-    _prediction_structured_metadata,
     _retaining_react_cls,
 )
 from clio_agent.gact.events import Event
-from clio_agent.gact.runtime.app_state import per_app_dict
 from clio_agent.gact.runtime.context_tokens import _resolve_expert_context_window
 from clio_agent.gact.runtime.globals import (
     _active_semantic_trace_id,
@@ -67,7 +62,6 @@ from clio_agent.gact.runtime.globals import (
     _emit_semantic_event,
     _jsonish,
     _llm_provider_payload,
-    _tool_session_context,
     _TurnCancelled,
     _UnsupportedSessionAgent,
 )
@@ -76,7 +70,6 @@ from clio_agent.gact.runtime.type_parsing import (
     _parse_field_annotation,
     _structured_output_enabled,
 )
-from clio_agent.gact.workflow_state.merge import _merge_workflow_state_mapping
 from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
@@ -304,20 +297,12 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
                 )
             answer = str(getattr(result, "answer", "") or "").strip()
             if not answer:
-                if not self.has_declared_children:
-                    raise RuntimeError(f"user agent {self.agent_def.id!r} returned an empty answer")
-                return dspy.Prediction(
-                    answer="",
-                    selected_expert=self.agent_def.id,
-                    routing_rationale=(
-                        "Prompt agent returned an empty answer; CLIO will attempt "
-                        "declared-child handoff repair."
-                    ),
-                    route_source="user_agent",
-                    session_id=session_id,
-                    expert_handoffs=[],
-                    error_info=None,
-                )
+                # #948 S4: an empty answer is a typed failure, never a legitimate
+                # deliverable. The settle/handoff-repair layer that once consumed an
+                # empty root answer is deleted, so an empty-STRING answer is routed
+                # into the typed ``agent_error`` ladder (turn.py) exactly like the
+                # tool-agent path -- not returned as a silent empty deliverable.
+                raise RuntimeError(f"user agent {self.agent_def.id!r} returned an empty answer")
             return dspy.Prediction(
                 answer=answer,
                 selected_expert=self.agent_def.id,
@@ -919,10 +904,22 @@ def _emit_invalid_tool_selection_event(
     )
 
 
-def _tool_user_agent_max_iters(agent_def: "AgentDef") -> int:
+def _tool_user_agent_max_iters(agent_def: "AgentDef", *, declared_children: int = 0) -> int:
+    """The react loop's iteration budget for this expert.
+
+    #948 S4: an orchestrator's react loop IS the delegation flow now — each child
+    costs a spawn call plus a wait call, and the model legitimately re-spawns a
+    failed child. The old flat default of 5 (tuned for the deleted inline-tool
+    world) starved every orchestrator into a forced extract with no evidence,
+    which correctly failed typed (observed live). The default therefore scales
+    with the declared children; a blueprint's explicit ``max_iters`` param always
+    wins.
+    """
+
     from clio_agent.gact.app import _user_agent_int_param  # noqa: PLC0415
 
-    max_iters = _user_agent_int_param(agent_def, "max_iters", 5)
+    default = 5 if declared_children <= 0 else min(24, 6 + 4 * declared_children)
+    max_iters = _user_agent_int_param(agent_def, "max_iters", default)
     if max_iters <= 0:
         raise ValueError("user agent parameter 'max_iters' must be positive")
     return max_iters
@@ -1057,8 +1054,7 @@ def _blueprint_runtime_signature(agent_def: "AgentDef", *, app: Any = None) -> A
     # model to satisfy -- so we no longer auto-inject them. (A blueprint that
     # genuinely needs one can still declare it explicitly in its signature
     # `outputs:`.)
-    # Resolve the session's active workflow_state schema once (also reused for the
-    # next_expert routing Literal below). Consumer A (#648): the injected
+    # Resolve the session's active workflow_state schema once. Consumer A (#648): the injected
     # workflow_state field is TYPED FROM THE PACK SCHEMA -- a GENERIC (no declared
     # sections) schema keeps the historical free ``dict[str, Any]`` byte-identically,
     # while a pack that declares its vocabulary gets a nested pydantic model whose
@@ -1084,64 +1080,12 @@ def _blueprint_runtime_signature(agent_def: "AgentDef", *, app: Any = None) -> A
         if _structured_output_enabled(structured.get(name, True)) and name not in _declared:
             outputs.append((name, desc, field_type))
 
-    # Agent-driven routing (replaces the deterministic continuation_contracts state
-    # machine + prose heuristics). EVERY expert emits, at the end of its run, a typed
-    # routing decision the settle traversal reads: the id of the ONE next child to
-    # descend into, or "finish" to return to its parent. main's parent is the user, so
-    # main's `answer` on "finish" is the final deliverable. This mirrors dspy.ReAct's
-    # `next_tool_name: Literal[tools + "finish"]` -- a typed Literal is exactly what
-    # makes a model fill it reliably (the old free-string `expert_handoffs` was always
-    # emitted empty, so 100% of routing fell through to the contracts). The Literal is
-    # built per-expert from its OWN declared children (a leaf gets Literal["finish"]).
+    # #948 S4: an orchestrator (an expert with declared children) routes by CALLING
+    # the spawn-runtime tools (spawn_agent_task / wait_agent_tasks), not by emitting a
+    # typed routing field consumed by a settle loop. The signature therefore carries
+    # NO routing field — its children are reachable as real child turns via the spawn
+    # tools attached in the react branch below.
     # (_route_app / _route_sid resolved above with the workflow_state schema.)
-    _agent_id = getattr(agent_def, "id", "")
-    _child_ids: list[str] = []
-    if _route_app is not None and _route_sid:
-        try:
-            _child_ids = sorted(
-                _runtime_declared_child_ids(_route_app, _agent_id, session_id=_route_sid)
-            )
-        except Exception:  # noqa: BLE001 - routing field is best-effort at sig-build
-            _child_ids = []
-    # Resolve-once-then-reuse via a PER-APP cache on the live app's ``app.state``
-    # (#770 Site 2): some signature-build paths carry the app but not the session, so
-    # resolve children live when we can and fall back to this app's own cache
-    # otherwise -- keeps next_expert's Literal correct instead of collapsing to
-    # Literal["finish"]. When genuinely app-less, per_app_dict returns a fresh empty
-    # dict, so the Literal deterministically collapses to "finish" rather than leaking
-    # a sibling app's children through a process-global cache.
-    _children_cache = per_app_dict("expert_children", app=_route_app)
-    if _agent_id:
-        if _child_ids:
-            _children_cache[_agent_id] = _child_ids
-        elif _agent_id in _children_cache:
-            _child_ids = list(_children_cache[_agent_id])
-    if "next_expert" not in _declared:
-        _route_values = tuple(_child_ids) + ("finish",)
-        _next_expert_type = Literal[_route_values]  # type: ignore[valid-type]
-        outputs.append(
-            (
-                "next_expert",
-                (
-                    "Routing decision emitted when THIS expert's own work is complete: the "
-                    "id of the ONE next child expert to run, or 'finish' to return control "
-                    "to your parent (when you choose 'finish', put the final result in "
-                    "`answer`). Must be EXACTLY one of: " + ", ".join(_route_values) + "."
-                ),
-                _next_expert_type,
-            )
-        )
-    if "next_task" not in _declared:
-        outputs.append(
-            (
-                "next_task",
-                (
-                    "The concrete task/question to hand to the child named in next_expert "
-                    "(leave empty when next_expert='finish')."
-                ),
-                str,
-            )
-        )
 
     # KEEP workflow_state TYPED (do not flatten to dict[str, Any]). The typed
     # pydantic field names are what ENFORCE the exact workflow_state keys the
@@ -1157,10 +1101,9 @@ def _blueprint_runtime_signature(agent_def: "AgentDef", *, app: Any = None) -> A
     if trace.HF_ON:
         trace.hot(
             "SIG-BUILD",
-            "%s :: workflow_state type=%s :: next_expert=%s",
+            "%s :: workflow_state type=%s",
             getattr(agent_def, "id", "?"),
             next((str(t) for n, d, t in outputs if n == "workflow_state"), "<none>"),
-            next((str(t) for n, d, t in outputs if n == "next_expert"), "<none>"),
         )
 
     namespace: dict[str, Any] = {
@@ -1172,353 +1115,19 @@ def _blueprint_runtime_signature(agent_def: "AgentDef", *, app: Any = None) -> A
         namespace[name] = dspy.InputField(desc=desc)
     for name, desc, field_type in outputs:
         annotations[name] = field_type
-        if name == "answer":
-            # WS4: `answer` is OPTIONAL. On a routing turn the deliverable is the
-            # reasoning + the typed next_expert/next_task decision, not a prose
-            # answer -- forcing a required `answer` made models emit a content-free
-            # placeholder ("(Awaiting child expert evidence…)") just to satisfy the
-            # schema, which then leaked to the UI. A Pydantic field default ("") lets
-            # a model legitimately omit it (the lenient adapter honors field defaults
-            # per .claude/CLAUDE.md) instead of hard-failing or fabricating filler.
-            # The finish-round deliverable still flows: the synthesizing expert writes
-            # a real answer, and downstream readers already tolerate an empty one.
-            namespace[name] = dspy.OutputField(desc=desc, default="")
-        else:
-            namespace[name] = dspy.OutputField(desc=desc)
+        # #948 S4: `answer` is REQUIRED again. The optional-with-default escape
+        # hatch existed so a multi-round orchestrator could defer its deliverable
+        # to a synthesis child; that world is deleted. A react main produces its
+        # answer at extract (the finish deliverable IS the user answer), and a
+        # leaf expert's answer is its whole return contract — an omitted answer
+        # is a typed failure, never a legitimate state.
+        namespace[name] = dspy.OutputField(desc=desc)
     namespace["__annotations__"] = annotations
     return type(
         f"{agent_def.id.title().replace('-', '').replace('_', '')}BlueprintSignature",
         (dspy.Signature,),
         namespace,
     )
-
-
-def _blueprint_fanout_config(agent_def: "AgentDef") -> dict[str, Any]:
-    """Normalize the Agent Blueprint fanout declaration."""
-
-    raw = agent_def.fanout if isinstance(agent_def.fanout, Mapping) else {}
-    enabled = raw.get("enabled", bool(raw)) if raw else False
-    if isinstance(enabled, str):
-        enabled = enabled.strip().lower() not in {"", "false", "0", "no", "off", "disabled"}
-    try:
-        max_workers = int(raw.get("max_workers") or raw.get("workers") or raw.get("limit") or 1)
-    except (TypeError, ValueError):
-        max_workers = 1
-    return {
-        "enabled": bool(enabled),
-        "max_workers": max(1, max_workers),
-        "strategy": str(raw.get("strategy") or raw.get("mode") or "declared_children").strip()
-        or "declared_children",
-    }
-
-
-def _coerce_fanout_child_ids(value: Any) -> list[str]:
-    """Coerce a model-supplied child id selection into ordered ids."""
-
-    if value in (None, "", [], ()):
-        return []
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return []
-        if text.startswith("["):
-            try:
-                decoded = json.loads(text)
-            except json.JSONDecodeError:
-                decoded = None
-            if isinstance(decoded, list):
-                return [str(item).strip() for item in decoded if str(item).strip()]
-        return [part.strip() for part in text.split(",") if part.strip()]
-    if isinstance(value, list | tuple):
-        return [str(item).strip() for item in value if str(item).strip()]
-    return [str(value).strip()] if str(value).strip() else []
-
-
-def _build_child_expert_tool(base_agent: Any, parent: "AgentDef", child: "AgentDef") -> Any:
-    """Generate a synchronous child-expert DSPy tool for ReAct blueprint experts."""
-
-    import dspy  # noqa: PLC0415
-
-    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
-        _active_workflow_state_schema,
-    )
-    from clio_agent.gact.app import (  # noqa: PLC0415
-        _append_session_workflow_state_context,
-        _blueprint_runner_for_agent,
-        _extract_tools_called,
-        _merge_tool_call_rows,
-        _prediction_workflow_state,
-        _run_dynamic_agent_compat,
-    )
-
-    def delegate_child(question: str) -> str:
-        app = _ctx.active_app()
-        session_id = _ctx.active_session_id()
-        if app is None or not session_id:
-            raise RuntimeError("child expert tool requires an active CLIO app/session context")
-        if child.parent_id != parent.id:
-            raise RuntimeError(f"{child.id!r} is not a declared child of {parent.id!r}")
-        app_state = getattr(app, "state", None)
-        schema = _active_workflow_state_schema(app, session_id)
-
-        _emit_semantic_event(
-            app,
-            session_id,
-            "blueprint.delegation.started",
-            turn_id=_active_semantic_turn_id(),
-            trace_id=_active_semantic_trace_id(),
-            status="running",
-            summary=f"{parent.id} delegated to {child.id}",
-            actor={"agent_id": parent.id, "role": "parent_expert"},
-            subject={"agent_id": child.id, "role": "child_expert"},
-            blueprint={
-                "agent_blueprint_id": parent.metadata.get("agent_blueprint_id") or "",
-                "parent_expert": parent.id,
-                "child_expert": child.id,
-            },
-        )
-        ledger_start = 0
-        ledger = getattr(app_state, "tool_call_ledger", None)
-        if isinstance(ledger, dict):
-            session_rows = ledger.get(session_id)
-            if isinstance(session_rows, list):
-                ledger_start = len(session_rows)
-        runner = _blueprint_runner_for_agent(child)
-        delegated_question = _append_session_workflow_state_context(
-            app,
-            session_id,
-            question,
-            schema=schema,
-        )
-        try:
-            with _tool_session_context(session_id):
-                pred = _run_dynamic_agent_compat(
-                    runner,
-                    base_agent,
-                    child,
-                    delegated_question,
-                    session_id,
-                    None,
-                )
-        except Exception:
-            _emit_semantic_event(
-                app,
-                session_id,
-                "blueprint.delegation.failed",
-                turn_id=_active_semantic_turn_id(),
-                trace_id=_active_semantic_trace_id(),
-                status="failed",
-                summary=f"{parent.id} delegation to {child.id} failed",
-                actor={"agent_id": parent.id, "role": "parent_expert"},
-                subject={"agent_id": child.id, "role": "child_expert"},
-                blueprint={
-                    "agent_blueprint_id": parent.metadata.get("agent_blueprint_id") or "",
-                    "parent_expert": parent.id,
-                    "child_expert": child.id,
-                },
-            )
-            raise
-        output = str(getattr(pred, "answer", "") or "").strip()
-        tools_called = _extract_tools_called(pred)
-        if isinstance(ledger, dict):
-            session_rows = ledger.get(session_id)
-            if isinstance(session_rows, list) and len(session_rows) > ledger_start:
-                tools_called = _merge_tool_call_rows(
-                    tools_called,
-                    [dict(row) for row in session_rows[ledger_start:] if isinstance(row, Mapping)],
-                )
-        # Seed from the child's typed workflow_state output field (structural twin
-        # of the removed prose append); merge tool-row state. State rides the
-        # payload's ``workflow_state`` Mapping below, NOT the output text.
-        workflow_state = _prediction_workflow_state(pred, schema=schema)
-        for tool_row in tools_called:
-            row_state = tool_row.get("workflow_state")
-            if isinstance(row_state, Mapping):
-                _merge_workflow_state_mapping(workflow_state, row_state, schema=schema)
-        payload = {
-            "agent_id": child.id,
-            "parent_id": parent.id,
-            "status": "completed",
-            "stage": "delegate.completed",
-            "return_to": parent.id,
-            "output": output,
-            "workflow_state": workflow_state,
-            "tools_called": tools_called,
-            "structured": _prediction_structured_metadata(pred),
-        }
-        _emit_semantic_event(
-            app,
-            session_id,
-            "blueprint.delegation.completed",
-            turn_id=_active_semantic_turn_id(),
-            trace_id=_active_semantic_trace_id(),
-            summary=f"{child.id} returned compact evidence to {parent.id}",
-            actor={"agent_id": child.id, "role": "child_expert"},
-            subject={"agent_id": parent.id, "role": "parent_expert"},
-            blueprint={
-                "agent_blueprint_id": parent.metadata.get("agent_blueprint_id") or "",
-                "parent_expert": parent.id,
-                "child_expert": child.id,
-            },
-            # The child's GENUINE output (the typed dspy.extract deliverable)
-            # flows verbatim to the parent and to the canonical trace — no
-            # heuristic compaction.
-            payload=dict(payload),
-        )
-        return json.dumps(payload, sort_keys=True, default=str)
-
-    safe_child_id = re.sub(r"[^A-Za-z0-9_]+", "_", child.id).strip("_") or "child"
-    delegate_child.__name__ = f"delegate_to_{safe_child_id}"
-    delegate_child.__doc__ = (
-        f"Run declared child expert {child.id} synchronously and return compact evidence."
-    )
-    return dspy.Tool(
-        func=delegate_child,
-        name=delegate_child.__name__,
-        desc=delegate_child.__doc__,
-        args={
-            "question": {
-                "type": "string",
-                "description": f"Specific task for child expert {child.id}.",
-            }
-        },
-    )
-
-
-def _build_fanout_tool(base_agent: Any, parent: "AgentDef", children: list["AgentDef"]) -> Any:
-    """Generate a bounded fanout runtime primitive for blueprint ReAct experts."""
-
-    import dspy  # noqa: PLC0415
-
-    from clio_agent.gact.app import (  # noqa: PLC0415
-        _blueprint_runner_for_agent,
-        _run_dynamic_agent_compat,
-    )
-
-    config = _blueprint_fanout_config(parent)
-    max_workers = int(config["max_workers"])
-    children_by_id = {child.id: child for child in children}
-
-    def fanout_to_children(question: str, child_ids: Any = None) -> str:
-        app = _ctx.active_app()
-        session_id = _ctx.active_session_id()
-        if app is None or not session_id:
-            raise RuntimeError("fanout tool requires an active CLIO app/session context")
-        requested = _coerce_fanout_child_ids(child_ids) or [child.id for child in children]
-        unknown = [child_id for child_id in requested if child_id not in children_by_id]
-        if unknown:
-            raise RuntimeError(f"fanout requested undeclared child experts: {', '.join(unknown)}")
-        selected = [children_by_id[child_id] for child_id in requested[:max_workers]]
-        skipped = requested[max_workers:]
-        _emit_semantic_event(
-            app,
-            session_id,
-            "blueprint.fanout.started",
-            turn_id=_active_semantic_turn_id(),
-            trace_id=_active_semantic_trace_id(),
-            status="running",
-            summary=f"{parent.id} fanout started with {len(selected)} worker(s)",
-            actor={"agent_id": parent.id, "role": "fanout_parent"},
-            subject={"child_agent_ids": [child.id for child in selected]},
-            blueprint={
-                "agent_blueprint_id": parent.metadata.get("agent_blueprint_id") or "",
-                "parent_expert": parent.id,
-                "fanout": config,
-            },
-            payload={"requested_child_agent_ids": requested, "skipped_child_agent_ids": skipped},
-        )
-        results: list[dict[str, Any]] = []
-        status = "completed"
-        for child in selected:
-            try:
-                runner = _blueprint_runner_for_agent(child)
-                pred = _run_dynamic_agent_compat(
-                    runner, base_agent, child, question, session_id, None
-                )
-                results.append(
-                    {
-                        "agent_id": child.id,
-                        "status": "completed",
-                        # The child's GENUINE output flows verbatim to the parent
-                        # and the canonical trace — no heuristic compaction.
-                        "output": str(getattr(pred, "answer", "") or ""),
-                        "structured": _prediction_structured_metadata(pred),
-                    }
-                )
-            except Exception as exc:  # pragma: no cover - exercised by state-space tests  # noqa: BLE001 - failure surfaced as status=partial_failure in results
-                status = "partial_failure"
-                results.append(
-                    {
-                        "agent_id": child.id,
-                        "status": "failed",
-                        "error": str(exc),
-                    }
-                )
-        payload = {
-            "agent_id": parent.id,
-            "status": status,
-            "stage": "fanout.completed",
-            "max_workers": max_workers,
-            "requested_child_agent_ids": requested,
-            "executed_child_agent_ids": [row["agent_id"] for row in results],
-            "skipped_child_agent_ids": skipped,
-            "return_payload": "compact_results",
-            "results": results,
-        }
-        _emit_semantic_event(
-            app,
-            session_id,
-            "blueprint.fanout.completed",
-            turn_id=_active_semantic_turn_id(),
-            trace_id=_active_semantic_trace_id(),
-            status=status,
-            summary=f"{parent.id} fanout completed with {len(results)} result(s)",
-            actor={"agent_id": parent.id, "role": "fanout_parent"},
-            subject={"child_agent_ids": [row["agent_id"] for row in results]},
-            blueprint={
-                "agent_blueprint_id": parent.metadata.get("agent_blueprint_id") or "",
-                "parent_expert": parent.id,
-                "fanout": config,
-            },
-            payload={
-                "executed_child_agent_ids": payload["executed_child_agent_ids"],
-                "skipped_child_agent_ids": skipped,
-                "result_count": len(results),
-            },
-        )
-        return json.dumps(payload, sort_keys=True, default=str)
-
-    fanout_to_children.__name__ = "fanout_to_children"
-    fanout_to_children.__doc__ = (
-        "Run a bounded set of declared child experts and return compact evidence from each."
-    )
-    return dspy.Tool(
-        func=fanout_to_children,
-        name="fanout_to_children",
-        desc=fanout_to_children.__doc__,
-        args={
-            "question": {
-                "type": "string",
-                "description": "Task to run across selected child experts.",
-            },
-            "child_ids": {
-                "type": "string",
-                "description": "Optional JSON array or comma-separated declared child expert ids.",
-            },
-        },
-    )
-
-
-def _dynamic_child_expert_tools(base_agent: Any, agent_def: "AgentDef") -> list[Any]:
-    app = _ctx.active_app()
-    session_id = _ctx.active_session_id()
-    if app is None or not session_id:
-        return []
-    rows = _runtime_child_agent_rows(app, agent_def.id, session_id=session_id)
-    tools = [_build_child_expert_tool(base_agent, agent_def, child) for child in rows]
-    if rows and _blueprint_fanout_config(agent_def)["enabled"]:
-        tools.append(_build_fanout_tool(base_agent, agent_def, rows))
-    return tools
 
 
 def _emit_blueprint_llm_failure(agent_def: "AgentDef", kind: str, exc: BaseException) -> None:
@@ -1604,30 +1213,56 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             elif self.kind == "chain_of_thought":
                 self.program = dspy.ChainOfThought(self.signature)
             else:
+                # #948 S4: react mains route by SPAWNING declared children as real
+                # child turns (spawn_agent_task / wait_agent_tasks / fanout); the
+                # old inline per-child delegate/fan-out tools and the settle loop
+                # are deleted. The spawn runtime re-emits the wire
+                # blueprint.delegation.* events for TUI parity.
+                from clio_agent.gact.agents.spawn_runtime import (  # noqa: PLC0415
+                    build_spawn_runtime_tools,
+                )
+
                 tools = [
                     *_dynamic_agent_tools(base_agent, agent_def),
-                    *_dynamic_child_expert_tools(base_agent, agent_def),
+                    *build_spawn_runtime_tools(base_agent, agent_def),
                 ]
                 if skill_rt.resolved:
                     # Auto-attached infra (like child-delegation tools), not a
                     # curated domain tool (#919).
                     tools.append(_skill_runtime.build_load_skill_tool(agent_def, skill_rt))
                 self.tools = tools
+                # The iteration default scales with the declared children — an
+                # orchestrator pays spawn+wait per child inside this loop (#948 S4).
+                _n_children = 0
+                _children_app = _ctx.active_app()
+                if _children_app is not None:
+                    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+                        _runtime_declared_child_ids,
+                    )
+
+                    _n_children = len(
+                        _runtime_declared_child_ids(
+                            _children_app,
+                            agent_def.id,
+                            session_id=_ctx.active_session_id(),
+                        )
+                    )
                 self.program = _retaining_react_cls()(
                     self.signature,
                     tools=tools,
-                    max_iters=_tool_user_agent_max_iters(agent_def),
+                    max_iters=_tool_user_agent_max_iters(
+                        agent_def, declared_children=_n_children
+                    ),
                 )
                 # Tag the program so its ReAct loop attributes each step to this
                 # expert on the highway (see _emit_react_step_event).
                 self.program._clio_expert_id = agent_def.id
             agent_prompt = agent_def.system_prompt.strip() or agent_def.description
             active_app = _ctx.active_app()
-            check_final_responder_migration(active_app, _ctx.active_session_id(), agent_def)
-            # Always call it (do not short-circuit on active_app is None): the streamed
-            # forward falls back to the sync _run_blueprint_dspy_agent build, which has
-            # the session but NOT _ACTIVE_GACT_APP -- the function returns the cached
-            # briefing on that path so the orchestrator grounding never drops.
+            # Do not short-circuit on active_app is None: the streamed forward falls
+            # back to the sync _run_blueprint_dspy_agent build, which has the session
+            # but NOT _ACTIVE_GACT_APP -- the function returns the cached briefing on
+            # that path so the orchestrator grounding never drops.
             child_context = _runtime_dynamic_agent_children_context(
                 active_app,
                 agent_def,
@@ -1764,14 +1399,17 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 if isinstance(self.agent_def.structured_outputs, Mapping)
                 else {}
             )
-            # DECLARATIVE flags via the shared truthiness helper (#736/C): a quoted
-            # author error (final_responder/workflow_state: "no"/"false") must NOT flip
-            # the gate — bool("no") is True. ``or False`` coalesces the off-by-default
-            # falsy values (absent/None/""/0) so only a real truthy value reaches it.
-            _answer_stream_visible = _structured_output_enabled(
-                _structured_outputs.get("final_responder") or False
-            ) or not _structured_output_enabled(_structured_outputs.get("workflow_state") or False)
-            _visible_answer_token = _ctx.set_visible_answer_stream(_answer_stream_visible)
+            # An expert's typed ``answer`` streams live as a visible deliverable
+            # unless it declares a typed ``workflow_state`` extract (whose value flows
+            # to the return contract behind *show more*, not the visible answer lane).
+            # DECLARATIVE via the shared truthiness helper (#736/C): a quoted author
+            # error (workflow_state: "no"/"false") must NOT flip the gate — bool("no")
+            # is True. ``or False`` coalesces the off-by-default falsy values
+            # (absent/None/""/0) so only a real truthy value reaches it.
+            _answer_visible = not _structured_output_enabled(
+                _structured_outputs.get("workflow_state") or False
+            )
+            _visible_answer_token = _ctx.set_visible_answer_stream(_answer_visible)
             if trace.HF_ON:
                 _ck_sp = kwargs.get("system_prompt", "")
                 _ck_q = str(kwargs.get("question", ""))
@@ -1981,30 +1619,16 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             # The typed workflow_state output rides the Prediction's structured
             # ``workflow_state`` field below -- it is NOT serialized into ``answer``
             # text (that polluted the user-facing answer; consumers read the field).
-            handoff_rows = _coerce_expert_handoff_rows(getattr(result, "expert_handoffs", None))
-            if not answer and not handoff_rows:
-                return dspy.Prediction(
-                    answer="",
-                    selected_expert=self.agent_def.id,
-                    routing_rationale=(
-                        "Blueprint expert returned an empty answer; CLIO will attempt "
-                        "runtime settlement or declared-child handoff repair."
-                    ),
-                    route_source="agent_blueprint",
-                    session_id=session_id,
-                    expert_handoffs=[],
-                    next_expert=getattr(result, "next_expert", ""),
-                    next_task=getattr(result, "next_task", ""),
-                    workflow_state=getattr(result, "workflow_state", ""),
-                    evidence=getattr(result, "evidence", ""),
-                    artifacts=getattr(result, "artifacts", ""),
-                    errors=getattr(result, "errors", ""),
-                    delegation=getattr(result, "delegation", ""),
-                    trajectory=getattr(result, "trajectory", None),
-                    reasoning=getattr(result, "reasoning", ""),
-                    tools_called=tools_called,
-                    error_info=None,
+            if not answer:
+                # #948 S4: an empty answer is a typed failure (see the required
+                # ``answer`` field on the runtime signature). The settle/synthesis
+                # layer that once consumed an empty orchestrator answer is deleted;
+                # raise into the typed ``agent_error`` ladder (turn.py) like the
+                # tool-agent path instead of returning a silent empty deliverable.
+                raise RuntimeError(
+                    f"blueprint expert {self.agent_def.id!r} returned an empty answer"
                 )
+            handoff_rows = _coerce_expert_handoff_rows(getattr(result, "expert_handoffs", None))
             return dspy.Prediction(
                 answer=answer,
                 selected_expert=self.agent_def.id,
@@ -2012,8 +1636,6 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 route_source="agent_blueprint",
                 session_id=session_id,
                 expert_handoffs=handoff_rows,
-                next_expert=getattr(result, "next_expert", ""),
-                next_task=getattr(result, "next_task", ""),
                 workflow_state=getattr(result, "workflow_state", ""),
                 evidence=getattr(result, "evidence", ""),
                 artifacts=getattr(result, "artifacts", ""),

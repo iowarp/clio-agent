@@ -29,6 +29,8 @@ jobs:
         run: uv run python scripts/check_no_class_in_function.py
       - name: "guard: no delegation-summary vocabulary (baseline 0) (#880)"
         run: uv run python scripts/check_no_summaries.py
+      - name: "guard: no settle/synthesis routing vocabulary (baseline 0) (#948)"
+        run: uv run python scripts/check_no_settle_vocabulary.py
       - name: "warn: ruff complexity (C901, PLR0915) (#714)"
         run: uv run ruff check --select C901,PLR0915 src/
         continue-on-error: true

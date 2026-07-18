@@ -37,6 +37,8 @@ Root prompt.
 id: main
 title: Main
 tier: 1
+module:
+  kind: react
 children:
   - data
 ---
@@ -46,12 +48,15 @@ Main prompt.
     )
     data_tool = "missing_tool" if unknown_tool else "fs_read_file"
     children = "\nchildren:\n  - format" if nested else ""
+    # A nested `data` becomes `format`'s parent, so it must be a react orchestrator
+    # (#948 S4); an un-nested `data` is a leaf and stays a plain predict expert.
+    data_module = "\nmodule:\n  kind: react" if nested else ""
     experts.joinpath("data.md").write_text(
         f"""---
 id: data
 title: Data
 tier: 2
-parent_id: main{children}
+parent_id: main{children}{data_module}
 tools:
   - {data_tool}
 ---
@@ -186,6 +191,8 @@ Root prompt.
 id: main
 title: Main
 tier: 1
+module:
+  kind: react
 ---
 Main prompt.
 """,
@@ -197,6 +204,8 @@ id: data
 title: Data
 tier: 2
 parent_id: main
+module:
+  kind: react
 ---
 Data prompt.
 """,

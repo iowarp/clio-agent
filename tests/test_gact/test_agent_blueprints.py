@@ -29,33 +29,21 @@ from clio_agent.gact.agent_blueprints import (
 )
 from clio_agent.gact.app import (
     _active_base_agent_tool_executor,
-    _append_session_workflow_state_context,
-    _blueprint_fanout_config,
     _blueprint_module_kind,
     _blueprint_runtime_signature,
-    _bubbled_child_evidence_output,
     _build_blueprint_dspy_module,
-    _build_child_expert_tool,
-    _build_fanout_tool,
     _builtin_agents,
-    _coerce_fanout_child_ids,
     _dynamic_agent_tools,
-    _dynamic_child_expert_tools,
-    _dynamic_parent_resume_prompt,
     _extract_tools_called_from_trajectory,
-    _failed_child_delegation_workflow_state,
-    _fallback_answer_from_delegation,
     _gact_app_context,
     _gact_turn_timeout_s,
     _ground_fabricated_local_artifact_paths,
-    _latest_final_child_output,
     _merge_tool_call_rows,
     _prediction_structured_metadata,
     _prediction_workflow_state,
     _recording_blueprint_tool,
     _run_blueprint_dspy_agent,
     _runtime_dynamic_agent_children_context,
-    _should_execute_delegated_handoff,
     _tool_calls_from_handoff_rows,
     _user_agent_bool_param,
     _workflow_state_from_handoff_rows,
@@ -82,24 +70,6 @@ def _fake_resolved_spec(provider: str, model: str) -> Any:
     return SimpleNamespace(materialize=_materialize)
 
 
-class _SinkArc:
-    """Minimal ARC-as-source stub for fake-app emit tests.
-
-    ARC is the source of the highway: ``_emit_semantic_event`` routes every event
-    through ``arc.record_semantic_event``, which (in production) records ARC's view and
-    then DERIVES the highway via the sink wired in ``_set_app_arc``. These tests build a
-    bare ``SimpleNamespace`` app to assert events reach a ``FakeSink``; this stub stands
-    in for ARC and forwards each recorded event to that sink, so the fail-loud
-    ARC-reachability check is satisfied without bypassing ARC.
-    """
-
-    def __init__(self, sink: Any) -> None:
-        self._sink = sink
-
-    def record_semantic_event(self, event: Any) -> Any:
-        return self._sink.emit(event)
-
-
 def _write_blueprint(root: Path, blueprint_id: str = "genomics") -> None:
     (root / "experts").mkdir(parents=True)
     root.joinpath("AGENT.md").write_text(
@@ -120,6 +90,8 @@ Genomics domain agent.
 id: root
 title: Genomics Root
 tier: 1
+module:
+  kind: react
 prompt_id: genomics.root
 ---
 Coordinate genomics work.
@@ -480,15 +452,14 @@ def test_blueprint_runtime_signature_preserves_fields_and_normalizes_structured_
     # reaches the model (see _blueprint_runtime_signature). Declared inputs follow.
     assert list(signature.input_fields) == ["system_prompt", "question", "dataset_summary"]
     # CLEAN CONTRACT: the only auto-injected structured output is ``workflow_state``
-    # (default-enabled); the agent-driven routing fields ``next_expert``/``next_task``
-    # are always appended. The legacy companions (evidence/artifacts/errors/delegation/
+    # (default-enabled). #948 S4 removed the settle-loop routing fields — an
+    # orchestrator now routes by CALLING its spawn tools, so the signature carries no
+    # routing field. The legacy companions (evidence/artifacts/errors/delegation/
     # expert_handoffs) are no longer injected regardless of structured_outputs.
     assert list(signature.output_fields) == [
         "answer",
         "artifact_plan",
         "workflow_state",
-        "next_expert",
-        "next_task",
     ]
     for legacy in ("evidence", "artifacts", "errors", "delegation", "expert_handoffs"):
         assert legacy not in signature.output_fields
@@ -541,8 +512,6 @@ def test_blueprint_runtime_signature_defaults_empty_declarations_to_question_and
     assert list(signature.output_fields) == [
         "answer",
         "workflow_state",
-        "next_expert",
-        "next_task",
     ]
 
 
@@ -592,9 +561,9 @@ def test_blueprint_runtime_signature_field_declaration_matrix(
     )
 
     assert list(signature.input_fields) == expected_inputs
-    # workflow_state is disabled here; the agent-driven routing fields are always
-    # appended (a leaf with no children still gets next_expert=Literal["finish"]).
-    assert list(signature.output_fields) == [*expected_outputs, "next_expert", "next_task"]
+    # workflow_state is disabled here and #948 S4 removed the settle-loop routing
+    # fields, so the outputs are exactly the declared ones.
+    assert list(signature.output_fields) == expected_outputs
 
 
 @pytest.mark.parametrize(
@@ -636,48 +605,6 @@ def test_blueprint_module_kind_rejects_unsupported_values() -> None:
                 module={"kind": "native_python"},
             )
         )
-
-
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [
-        (None, []),
-        ("", []),
-        ("analysis, visualization", ["analysis", "visualization"]),
-        ('["analysis", "visualization"]', ["analysis", "visualization"]),
-        (["analysis", "visualization"], ["analysis", "visualization"]),
-        (("analysis", 7), ["analysis", "7"]),
-    ],
-)
-def test_blueprint_fanout_child_id_coercion_matrix(value: Any, expected: list[str]) -> None:
-    assert _coerce_fanout_child_ids(value) == expected
-
-
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [
-        ({}, {"enabled": False, "max_workers": 1, "strategy": "declared_children"}),
-        (
-            {"enabled": True, "max_workers": 3},
-            {"enabled": True, "max_workers": 3, "strategy": "declared_children"},
-        ),
-        (
-            {"enabled": "false", "max_workers": 0},
-            {"enabled": False, "max_workers": 1, "strategy": "declared_children"},
-        ),
-        (
-            {"enabled": "yes", "workers": "2", "strategy": "map_reduce"},
-            {"enabled": True, "max_workers": 2, "strategy": "map_reduce"},
-        ),
-    ],
-)
-def test_blueprint_fanout_config_matrix(raw: dict[str, Any], expected: dict[str, Any]) -> None:
-    assert (
-        _blueprint_fanout_config(
-            AgentDef(id="root", source="expert_pack", title="Root", fanout=raw)
-        )
-        == expected
-    )
 
 
 def test_gact_turn_timeout_default_and_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1045,107 +972,6 @@ def test_workflow_state_reclassifies_data_available_without_staged_local_path() 
     assert state["resource_candidate"]["status"] == "ready"
 
 
-def test_strict_depth_bubble_prefers_resumed_child_subtree_over_parent_draft() -> None:
-    rows = [
-        {
-            "agent_id": "geospatial",
-            "parent_id": "main",
-            "status": "completed",
-            "stage": "delegate.completed",
-            "output": '{"workflow_state":{"geospatial":{"status":"resolved"}}}',
-            "children": [
-                {
-                    "agent_id": "ndp_dataset_discovery",
-                    "parent_id": "geospatial",
-                    "status": "completed",
-                    "stage": "delegate.completed",
-                    "output": (
-                        '{"workflow_state":{"acquisition":{"status":"metadata_only",'
-                        '"analysis_ready":false,"blocker":"station metadata only"}}}'
-                    ),
-                },
-                {
-                    "agent_id": "geospatial",
-                    "parent_id": "main",
-                    "status": "completed",
-                    "stage": "parent.resumed",
-                    "output": ("No station-specific GNSS time-series CSV has been staged yet."),
-                },
-            ],
-        },
-        {
-            "agent_id": "main",
-            "status": "completed",
-            "stage": "parent.resumed",
-            "output": '{"workflow_state":{"geospatial":{"status":"resolved"}}}',
-        },
-    ]
-
-    assert (
-        _bubbled_child_evidence_output(
-            rows[0]["children"],
-            "geospatial",
-            {"ndp_dataset_discovery"},
-        )
-        == "No station-specific GNSS time-series CSV has been staged yet."
-    )
-
-
-def test_skipped_delegated_handoff_does_not_execute_even_with_delegate_target() -> None:
-    assert not _should_execute_delegated_handoff(
-        {
-            "delegate_to": "analysis",
-            "status": "skipped",
-            "skip_reason": "completed_sync_child_already_returned",
-        }
-    )
-
-
-def test_latest_final_child_output_keys_on_declarative_flag() -> None:
-    """(#736/principle-1) The terminal-child fallback selects by the DECLARATIVE
-    ``final_responder`` ids the caller resolves, NOT by child NAMES. A child literally
-    named ``synthesis`` that is NOT flagged is ignored; the flagged child (any name) is
-    chosen — the former ``("synthesis","final","report","summary")`` name tuple is gone."""
-
-    rows = [
-        {
-            "agent_id": "synthesis",
-            "stage": "delegate.completed",
-            "status": "completed",
-            "output": "name-matched synthesis output (must NOT be chosen)",
-        },
-        {
-            "agent_id": "narrator",
-            "stage": "delegate.completed",
-            "status": "completed",
-            "output": "the declared final responder's answer",
-        },
-    ]
-
-    assert _latest_final_child_output(rows, {"narrator"}) == "the declared final responder's answer"
-
-
-def test_latest_final_child_output_no_declared_responder_declines() -> None:
-    """(#736/principle-1, no-silent-fallback) When the pack declares NO final responder
-    (``final_ids`` empty) there is no structural terminal child. Rather than silently
-    name-matching a child that merely LOOKS like a summariser, the selector returns "" —
-    an explicit decline. A child literally named ``synthesis`` is NOT auto-picked; the
-    caller owns the generic ordering fallback."""
-
-    rows = [
-        {
-            "agent_id": "synthesis",
-            "stage": "delegate.completed",
-            "status": "completed",
-            "output": "name-matched output the OLD tuple would have returned",
-        },
-    ]
-
-    assert _latest_final_child_output(rows, frozenset()) == ""
-    # Default arg (no final_ids at all) declines identically.
-    assert _latest_final_child_output(rows) == ""
-
-
 def test_blueprint_runner_uses_dspy_module_call_path(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[dict[str, Any]] = []
 
@@ -1179,7 +1005,46 @@ def test_blueprint_runner_uses_dspy_module_call_path(monkeypatch: pytest.MonkeyP
     ]
 
 
-def test_blueprint_module_allows_handoff_only_root_output(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_blueprint_module_empty_answer_raises_typed_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #948 S4: the settle/synthesis layer that once tolerated an empty root answer
+    # is deleted. An empty answer is now a typed failure -- the module raises so the
+    # turn records ``agent_error`` (turn.py) instead of a silent empty deliverable.
+    class FakeProgram:
+        def __call__(self, **kwargs: Any) -> Any:
+            return SimpleNamespace(answer="", expert_handoffs="")
+
+    class FakePredict:
+        def __init__(self, signature: Any) -> None:
+            self.signature = signature
+
+        def __call__(self, **kwargs: Any) -> Any:
+            return FakeProgram()(**kwargs)
+
+    monkeypatch.setattr(dspy, "Predict", FakePredict)
+    monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object())
+    monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
+        lambda base_agent, agent_def: _fake_resolved_spec("argonne", "gpt-oss-120b"),
+    )
+
+    module = _build_blueprint_dspy_module(
+        SimpleNamespace(),
+        AgentDef(id="main", source="expert_pack", title="Main", module={"kind": "predict"}),
+    )
+
+    with pytest.raises(RuntimeError, match="returned an empty answer"):
+        module(question="deliver", session_id="session-123")
+
+
+def test_blueprint_module_empty_answer_with_handoffs_still_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The retired "handoff-only root output" shape (empty answer + handoff rows) no
+    # longer excuses an empty deliverable: routing is via the spawn-runtime tools,
+    # so an empty answer raises regardless of any residual expert_handoffs value.
     class FakeProgram:
         def __call__(self, **kwargs: Any) -> Any:
             return SimpleNamespace(
@@ -1207,59 +1072,8 @@ def test_blueprint_module_allows_handoff_only_root_output(monkeypatch: pytest.Mo
         AgentDef(id="main", source="expert_pack", title="Main", module={"kind": "predict"}),
     )
 
-    result = module(question="delegate", session_id="session-123")
-
-    assert result.answer == ""
-    assert result.selected_expert == "main"
-    assert result.route_source == "agent_blueprint"
-    assert result.expert_handoffs == [
-        {"agent_id": "reference", "parent_id": "main", "task": "inspect fasta"}
-    ]
-
-
-def test_blueprint_module_empty_answer_with_children_enters_repair_path(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class FakeProgram:
-        def __call__(self, **kwargs: Any) -> Any:
-            return SimpleNamespace(answer="", expert_handoffs="")
-
-    class FakePredict:
-        def __init__(self, signature: Any) -> None:
-            self.signature = signature
-
-        def __call__(self, **kwargs: Any) -> Any:
-            return FakeProgram()(**kwargs)
-
-    monkeypatch.setattr(dspy, "Predict", FakePredict)
-    monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object())
-    monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
-    monkeypatch.setattr(
-        "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
-        lambda base_agent, agent_def: _fake_resolved_spec("argonne", "gpt-oss-120b"),
-    )
-    monkeypatch.setattr(
-        "clio_agent.gact.agents.builders._runtime_dynamic_agent_children_context",
-        lambda app, agent_def, session_id="": "Declared child experts available:\n- reference",
-    )
-
-    module = _build_blueprint_dspy_module(
-        SimpleNamespace(),
-        AgentDef(id="main", source="expert_pack", title="Main", module={"kind": "predict"}),
-    )
-
-    token = ctx.set_session_id("session-123")
-    try:
-        with _gact_app_context(SimpleNamespace()):
-            result = module(question="inspect", session_id="session-123")
-    finally:
-        ctx.reset(token)
-
-    assert result.answer == ""
-    assert result.selected_expert == "main"
-    assert result.route_source == "agent_blueprint"
-    assert result.expert_handoffs == []
-    assert "declared-child handoff repair" in result.routing_rationale
+    with pytest.raises(RuntimeError, match="returned an empty answer"):
+        module(question="delegate", session_id="session-123")
 
 
 def test_extract_tools_called_from_indexed_react_trajectory() -> None:
@@ -1330,59 +1144,6 @@ def test_merge_tool_call_rows_deduplicates_matching_call_id_with_result_evidence
     assert rows[0]["call_id"] == "call_same"
 
 
-def test_failed_child_delegation_output_is_empty_and_state_rides_typed_fields() -> None:
-    # #880 (CONFIRMED): a failed child's ``output`` is EMPTY — no server-authored
-    # failure sentence. The failure rides the typed ``status``/``error``/``message``
-    # fields on the row (and the failure ``workflow_state``); the parent's resume
-    # prompt renders it from those typed fields, never from authored prose.
-    failed_row = {
-        "agent_id": "earthscope_station_catalog",
-        "parent_id": "ndp_dataset_discovery",
-        "stage": "delegate.failed",
-        "status": "failed",
-        "error": "AuthenticationError",
-        "message": "token inactive",
-        "output": "",
-    }
-    resume = _dynamic_parent_resume_prompt(
-        "acquire GNSS data",
-        AgentDef(id="ndp_dataset_discovery", source="expert_pack", title="NDP"),
-        [failed_row],
-        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
-    )
-    # The failure surfaces from typed fields (allowed grounding), byte-authored by
-    # neither the model's ``output`` nor a server summary.
-    assert "AuthenticationError" in resume
-    assert "token inactive" in resume
-    assert "status=failed" in resume
-
-
-def test_failed_child_delegation_state_rides_structured_row() -> None:
-    # The structural twin: the typed failure state is built by
-    # _failed_child_delegation_workflow_state and stored on the failed row's
-    # ``workflow_state`` field, where the parent reads it for continuation routing.
-    state = _failed_child_delegation_workflow_state(
-        prompt="acquire GNSS data near 32.7,-117.1",
-        child_agent_id="earthscope_station_catalog",
-        parent_agent_id="ndp_dataset_discovery",
-        error="AuthenticationError",
-        message="token inactive",
-        tools_called=[],
-        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
-    )
-
-    assert state["delegation"]["status"] == "failed"
-    assert state["delegation"]["failed_child"] == "earthscope_station_catalog"
-    # The parent reads this structured field via _workflow_state_from_handoff_rows.
-    failed_row = {"stage": "delegate.failed", "workflow_state": state}
-    assert (
-        _workflow_state_from_handoff_rows([failed_row], schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)[
-            "delegation"
-        ]["status"]
-        == "failed"
-    )
-
-
 def test_completed_child_state_is_structural_not_prose_in_continuation() -> None:
     # End-to-end answer-cleanliness invariant for UI issue #1: after a child
     # completes with a non-empty typed workflow_state, (a) the user-/parent-facing
@@ -1423,42 +1184,6 @@ def test_completed_child_state_is_structural_not_prose_in_continuation() -> None
     )
     assert recovered["acquisition"]["status"] == "staged"
     assert recovered["station_catalog"]["station_ids"] == ["P472", "SIO5"]
-
-    # (b2) The parent's continuation PROMPT injects that state structurally (read
-    # from the row's typed field, NOT re-parsed from prose).
-    resume_prompt = _dynamic_parent_resume_prompt(
-        "acquire GNSS data near San Diego",
-        SimpleNamespace(id="ndp_dataset_discovery"),
-        [completed_row],
-        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
-    )
-    assert '"status": "staged"' in resume_prompt
-    assert "P472" in resume_prompt
-    # The clean human result still appears for the orchestrator's grounding.
-    assert "Staged GNSS CSV for station P472" in resume_prompt
-
-
-def test_session_workflow_state_context_injects_ledger_state_structurally() -> None:
-    # _append_session_workflow_state_context (the structured ledger -> parent
-    # prompt injection) is the KEEP path: it reads tool_call_ledger rows'
-    # structured ``workflow_state`` fields and injects them into a child prompt.
-    ledger_rows = [
-        {"name": "stage_csv", "workflow_state": {"acquisition": {"status": "staged"}}},
-    ]
-    app = SimpleNamespace(state=SimpleNamespace(tool_call_ledger={"sess-1": ledger_rows}))
-
-    enriched = _append_session_workflow_state_context(
-        app, "sess-1", "find more stations", schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA
-    )
-
-    assert "find more stations" in enriched
-    assert '"status": "staged"' in enriched
-    assert (
-        _workflow_state_from_outputs([enriched], schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)[
-            "acquisition"
-        ]["status"]
-        == "staged"
-    )
 
 
 def test_nested_handoff_tool_calls_preserve_child_result_evidence() -> None:
@@ -1505,77 +1230,6 @@ def test_nested_handoff_tool_calls_preserve_child_result_evidence() -> None:
             },
         }
     ]
-
-
-def test_generated_child_expert_tool_runs_declared_child_and_returns_compact_evidence(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    app = SimpleNamespace()
-    parent = AgentDef(id="root", source="expert_pack", title="Root")
-    child = AgentDef(id="analysis", source="expert_pack", title="Analysis", parent_id="root")
-    calls: list[dict[str, Any]] = []
-
-    def fake_run_dynamic_agent_compat(
-        runner, base_agent, agent_def, question, session_id, cancel_requested
-    ):
-        calls.append(
-            {
-                "runner": runner,
-                "agent_id": agent_def.id,
-                "question": question,
-                "session_id": session_id,
-                "cancel_requested": cancel_requested,
-            }
-        )
-        return SimpleNamespace(
-            answer="This is a long child analysis answer with enough detail to summarize.",
-            evidence='[{"claim":"supported"}]',
-            artifacts="",
-            errors="",
-            delegation='{"return_to":"root"}',
-            workflow_state={"profile": {"status": "ready", "rows": 1024}},
-        )
-
-    monkeypatch.setattr(
-        "clio_agent.gact.app._blueprint_runner_for_agent", lambda agent_def: "child-runner"
-    )
-    monkeypatch.setattr(
-        "clio_agent.gact.app._run_dynamic_agent_compat", fake_run_dynamic_agent_compat
-    )
-
-    token = ctx.set_session_id("session-123")
-    try:
-        with _gact_app_context(app):
-            tool = _build_child_expert_tool(SimpleNamespace(), parent, child)
-            payload = json.loads(tool(question="inspect the evidence"))
-    finally:
-        ctx.reset(token)
-
-    assert tool.name == "delegate_to_analysis"
-    assert calls == [
-        {
-            "runner": "child-runner",
-            "agent_id": "analysis",
-            "question": "inspect the evidence",
-            "session_id": "session-123",
-            "cancel_requested": None,
-        }
-    ]
-    assert payload["agent_id"] == "analysis"
-    assert payload["parent_id"] == "root"
-    assert payload["status"] == "completed"
-    assert payload["structured"] == {
-        "evidence": '[{"claim":"supported"}]',
-        "delegation": '{"return_to":"root"}',
-        "workflow_state": {"profile": {"status": "ready", "rows": 1024}},
-    }
-    # The child's GENUINE output flows verbatim under ``output`` (no compaction).
-    assert "child analysis answer" in payload["output"]
-    # The child's typed workflow_state rides the structured payload field, NOT the
-    # output text (answer-cleanliness): no prose state block in output.
-    assert payload["workflow_state"] == {"profile": {"status": "ready", "rows": 1024}}
-    assert "typed workflow state" not in payload["output"].casefold()
-    assert "workflow_state" not in payload["output"]
 
 
 def test_recording_blueprint_tool_captures_context_local_tool_result() -> None:
@@ -1677,35 +1331,6 @@ def test_earthscope_analysis_prompt_forbids_rows_scanned_cadence_inference(
     assert "visible sample rows suggest that local spacing" in normalized_prompt
     assert "do not generalize" in prompt
     assert "file-wide `Hz`, days-long duration, or sampling-rate claim" in normalized_prompt
-
-
-@pytest.mark.parametrize(
-    "blueprint_id",
-    [
-        "earthscope-gnss-region",
-    ],
-)
-def test_earthscope_synthesis_prompt_filters_scan_limited_cadence_claims(
-    blueprint_id: str,
-) -> None:
-    prompt_path = (
-        Path(__file__).resolve().parents[2]
-        / "external"
-        / "clio-agent-marketplace"
-        / blueprint_id
-        / "experts"
-        / "synthesis.md"
-    )
-    prompt = prompt_path.read_text(encoding="utf-8")
-    normalized_prompt = " ".join(prompt.split())
-
-    assert "Don't convert `rows_scanned`/`rows_profiled` into" in normalized_prompt
-    assert "cadence, duration, Hz, completeness" in normalized_prompt
-    assert "a scan-limited profile is coverage evidence only" in normalized_prompt
-    assert "Preserve uncertainty units" in normalized_prompt
-    assert "not sub-cm" in normalized_prompt
-    assert "Don't cite external sources (USGS/UNAVCO" in normalized_prompt
-    assert "`model_geographic_prior`" in normalized_prompt
 
 
 @pytest.mark.parametrize(
@@ -1956,7 +1581,10 @@ def test_earthscope_data_prompt_requires_staged_metadata_before_station_filter(
     # the cleaned workspace CSV is the station ranker's required input, and the run
     # is explicitly incomplete until that staging pipeline finishes.
     assert "The downstream ranker needs the CLEANED workspace file" in normalized_discovery
-    assert "your run is INCOMPLETE until the `pandas_filter_data` clean has run" in normalized_discovery
+    assert (
+        "your run is INCOMPLETE until the `pandas_filter_data` clean has run"
+        in normalized_discovery
+    )
     # The station ranker filters the staged metadata path, never a guessed name
     # (tool renamed: ndp_filter_earthscope_station_catalog -> geo_filter_points_by_radius).
     assert "never filter the raw catalog or a guessed filename" in normalized_station
@@ -1976,19 +1604,16 @@ def test_earthscope_final_prompts_guard_scan_limited_profile_scope(
     blueprint_id: str,
 ) -> None:
     root = Path(__file__).resolve().parents[2] / "external" / "clio-agent-marketplace"
+    # #948 S4: the react main now writes the final answer itself (no synthesis child),
+    # so the answer-quality scan-limited guardrails moved into main.md.
     main_prompt = (root / blueprint_id / "experts" / "main.md").read_text(encoding="utf-8")
-    synthesis_prompt = (root / blueprint_id / "experts" / "synthesis.md").read_text(
-        encoding="utf-8"
-    )
     analysis_prompt = (root / blueprint_id / "experts" / "gnss_timeseries_analysis.md").read_text(
         encoding="utf-8"
     )
     visualization_prompt = (root / blueprint_id / "experts" / "visualization.md").read_text(
         encoding="utf-8"
     )
-    combined = " ".join(
-        "\n".join([main_prompt, synthesis_prompt, analysis_prompt, visualization_prompt]).split()
-    )
+    combined = " ".join("\n".join([main_prompt, analysis_prompt, visualization_prompt]).split())
 
     assert "rows_profiled`/`numeric_summary_rows" in combined
     assert "appears in `numeric_summary`" in combined
@@ -2006,190 +1631,6 @@ def test_earthscope_final_prompts_guard_scan_limited_profile_scope(
     assert "provenance=model_geographic_prior" in combined
     assert "do not cite USGS, UNAVCO" in combined
     assert "Named source provenance is allowed only when a tool result" in combined
-
-
-def test_generated_child_expert_tool_emits_semantic_delegation_events(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    emitted: list[dict[str, Any]] = []
-
-    class FakeSink:
-        def emit(self, event: Any) -> dict[str, Any]:
-            row = event.to_dict()
-            emitted.append(row)
-            return row
-
-    sink = FakeSink()
-    app = SimpleNamespace(
-        state=SimpleNamespace(
-            semantic_event_sink=sink,
-            arc=_SinkArc(sink),
-            sessions=SimpleNamespace(get=lambda sid: SimpleNamespace(workspace_id="ws_default")),
-            semantic_trace_detail_level="semantic",
-        )
-    )
-    parent = AgentDef(
-        id="root",
-        source="expert_pack",
-        title="Root",
-        metadata={"agent_blueprint_id": "genomics"},
-    )
-    child = AgentDef(id="analysis", source="expert_pack", title="Analysis", parent_id="root")
-
-    monkeypatch.setattr(
-        "clio_agent.gact.app._blueprint_runner_for_agent", lambda agent_def: "child-runner"
-    )
-    monkeypatch.setattr(
-        "clio_agent.gact.app._run_dynamic_agent_compat",
-        lambda runner,
-        base_agent,
-        agent_def,
-        question,
-        session_id,
-        cancel_requested: SimpleNamespace(
-            answer="delegated answer",
-            evidence="support",
-        ),
-    )
-
-    token = ctx.set_session_id("session-123")
-    try:
-        with _gact_app_context(app):
-            payload = json.loads(
-                _build_child_expert_tool(SimpleNamespace(), parent, child)(question="inspect")
-            )
-    finally:
-        ctx.reset(token)
-
-    assert payload["status"] == "completed"
-    assert [row["event_type"] for row in emitted] == [
-        "blueprint.delegation.started",
-        "blueprint.delegation.completed",
-    ]
-    assert emitted[0]["blueprint"]["agent_blueprint_id"] == "genomics"
-    assert emitted[1]["payload"]["output"] == "delegated answer"
-
-
-def test_blueprint_fanout_tool_enforces_bounds_and_emits_events(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    emitted: list[dict[str, Any]] = []
-
-    class FakeSink:
-        def emit(self, event: Any) -> dict[str, Any]:
-            row = event.to_dict()
-            emitted.append(row)
-            return row
-
-    sink = FakeSink()
-    app = SimpleNamespace(
-        state=SimpleNamespace(
-            semantic_event_sink=sink,
-            arc=_SinkArc(sink),
-            sessions=SimpleNamespace(get=lambda sid: SimpleNamespace(workspace_id="ws_default")),
-            semantic_trace_detail_level="semantic",
-        )
-    )
-    parent = AgentDef(
-        id="root",
-        source="expert_pack",
-        title="Root",
-        fanout={"enabled": True, "max_workers": 2},
-        metadata={"agent_blueprint_id": "genomics"},
-    )
-    children = [
-        AgentDef(id="analysis", source="expert_pack", title="Analysis", parent_id="root"),
-        AgentDef(id="visualization", source="expert_pack", title="Visualization", parent_id="root"),
-        AgentDef(id="quality", source="expert_pack", title="Quality", parent_id="root"),
-    ]
-    calls: list[str] = []
-
-    def fake_run_dynamic_agent_compat(
-        runner, base_agent, agent_def, question, session_id, cancel_requested
-    ):
-        calls.append(agent_def.id)
-        return SimpleNamespace(
-            answer=f"{agent_def.id} compact evidence", evidence=f"{agent_def.id}:evidence"
-        )
-
-    monkeypatch.setattr(
-        "clio_agent.gact.app._blueprint_runner_for_agent", lambda agent_def: "child-runner"
-    )
-    monkeypatch.setattr(
-        "clio_agent.gact.app._run_dynamic_agent_compat", fake_run_dynamic_agent_compat
-    )
-
-    token = ctx.set_session_id("session-123")
-    try:
-        with _gact_app_context(app):
-            tool = _build_fanout_tool(SimpleNamespace(), parent, children)
-            payload = json.loads(
-                tool(question="inspect", child_ids="analysis,visualization,quality")
-            )
-    finally:
-        ctx.reset(token)
-
-    assert calls == ["analysis", "visualization"]
-    assert payload["status"] == "completed"
-    assert payload["executed_child_agent_ids"] == ["analysis", "visualization"]
-    assert payload["skipped_child_agent_ids"] == ["quality"]
-    assert [row["event_type"] for row in emitted] == [
-        "blueprint.fanout.started",
-        "blueprint.fanout.completed",
-    ]
-    assert emitted[0]["payload"]["skipped_child_agent_ids"] == ["quality"]
-    assert emitted[1]["payload"]["result_count"] == 2
-
-
-def test_blueprint_fanout_tool_rejects_undeclared_children() -> None:
-    app = SimpleNamespace(
-        state=SimpleNamespace(
-            semantic_event_sink=None,
-            sessions=SimpleNamespace(get=lambda sid: SimpleNamespace(workspace_id="ws_default")),
-        )
-    )
-    parent = AgentDef(
-        id="root",
-        source="expert_pack",
-        title="Root",
-        fanout={"enabled": True, "max_workers": 2},
-    )
-    child = AgentDef(id="analysis", source="expert_pack", title="Analysis", parent_id="root")
-
-    token = ctx.set_session_id("session-123")
-    try:
-        with _gact_app_context(app):
-            tool = _build_fanout_tool(SimpleNamespace(), parent, [child])
-            with pytest.raises(RuntimeError, match="undeclared child"):
-                tool(question="inspect", child_ids='["analysis", "missing"]')
-    finally:
-        ctx.reset(token)
-
-
-def test_dynamic_child_expert_tools_adds_fanout_only_when_declared(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    app = SimpleNamespace()
-    parent = AgentDef(
-        id="root",
-        source="expert_pack",
-        title="Root",
-        fanout={"enabled": True, "max_workers": 2},
-    )
-    child = AgentDef(id="analysis", source="expert_pack", title="Analysis", parent_id="root")
-    monkeypatch.setattr(
-        "clio_agent.gact.agents.resolution._runtime_active_agent_blueprint_rows",
-        lambda app, session_id="": [parent, child],
-    )
-
-    token = ctx.set_session_id("session-123")
-    try:
-        with _gact_app_context(app):
-            tools = _dynamic_child_expert_tools(SimpleNamespace(), parent)
-    finally:
-        ctx.reset(token)
-
-    assert [tool.name for tool in tools] == ["delegate_to_analysis", "fanout_to_children"]
 
 
 def test_prediction_structured_metadata_omits_empty_values() -> None:
@@ -2254,20 +1695,6 @@ def test_prediction_workflow_state_accepts_json_string_and_wrapped_mapping() -> 
             SimpleNamespace(workflow_state=None), schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA
         )
         == {}
-    )
-
-
-def test_fallback_answer_from_delegation_uses_latest_completed_parent_resume() -> None:
-    assert (
-        _fallback_answer_from_delegation(
-            [
-                {"stage": "parent.resumed", "status": "completed", "output": "first"},
-                {"stage": "delegate.completed", "status": "completed", "output": "child"},
-                {"stage": "parent.resumed", "status": "failed", "output": "bad"},
-                {"stage": "parent.resumed", "status": "completed", "output": "final"},
-            ]
-        )
-        == "final"
     )
 
 
@@ -2396,8 +1823,8 @@ Coordinate genomics work.
     assert "Your child experts (delegate to these — you may route to no one else):" in context
     assert "- `variant`: Variant Expert" in context
     assert "memory_search_sessions" in context
-    assert "set `next_expert` to the id of the ONE child to run next" in context
-    assert "`next_task`" in context
+    assert "`spawn_agent_task(agent, task)`" in context
+    assert "`wait_agent_tasks(" in context
     # The child listing moved out of the static system_prompt into the runtime
     # children context (asserted above); the system_prompt must still have no
     # unresolved template markers.
@@ -2502,6 +1929,36 @@ def test_session_agent_overlay_rejects_invalid_contracts(tmp_path: Path) -> None
     assert "unknown expert" in unknown_agent.text
     assert overlay_state["agent_overlay"] == {}
     assert overlay_state["validation"]["enabled"] is True
+
+
+def test_agent_blueprint_expert_markdown_round_trips_module_kind(tmp_path: Path) -> None:
+    # #948 S4 failing-first regression: a react parent exported WITHOUT its
+    # ``module.kind`` re-loads as the ``predict`` default and fails hierarchy
+    # validation (children unreachable). Deleting the module block in
+    # routes/agents.py::_agent_blueprint_expert_markdown MUST turn this red.
+    from clio_agent.gact.expert_packs import parse_expert_file
+    from clio_agent.gact.routes.agents import _agent_blueprint_expert_markdown
+
+    row = AgentDef(
+        id="root",
+        source="expert_pack",
+        title="Root",
+        tier=1,
+        module={"kind": "react"},
+        system_prompt="Orchestrate the declared children.",
+    )
+
+    md = _agent_blueprint_expert_markdown(row)
+    # Direct sabotage check: the serializer emits the module block.
+    assert 'module:\n  kind: "react"' in md
+
+    # Round-trip: the exported markdown re-parses to a react module. The loader
+    # defaults an ABSENT module to ``predict`` (parse_expert_file -> _module_from_meta),
+    # so a dropped serializer block would flip ``kind`` to predict and fail here.
+    exported = tmp_path / "root.md"
+    exported.write_text(md, encoding="utf-8")
+    reparsed = parse_expert_file(exported, scope="workspace")
+    assert reparsed.module["kind"] == "react"
 
 
 def test_session_agent_overlay_can_export_workspace_blueprint(tmp_path: Path) -> None:

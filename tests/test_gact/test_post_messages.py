@@ -695,6 +695,95 @@ def test_post_message_unsupported_session_agent_sets_error_turn(
     assert sess["status"] == "error"
 
 
+def test_post_message_disabled_blueprint_root_fails_typed(
+    tmp_path: Path,
+) -> None:
+    """#948 S4: an active blueprint whose declared root is DISABLED by validation
+    (e.g. a pre-migration pack: chain_of_thought main with children) fails the
+    turn typed — never a silently substituted root, never the legacy planner."""
+
+    from .conftest import complete_turn
+
+    source = tmp_path / "stale-pack"
+    (source / "experts").mkdir(parents=True)
+    source.joinpath("AGENT.md").write_text(
+        """---
+id: stale-pack
+version: 0.1.0
+title: Stale Pack
+root_expert: root
+---
+Pre-migration pack.
+""",
+        encoding="utf-8",
+    )
+    # Activation-time validation rejects a broken pack outright, so reproduce the
+    # STALE-INSTALL shape observed live: the pack is VALID when activated, then
+    # the on-disk root loses its react declaration (an old install re-validated
+    # under the new S4 hierarchy rules) — runtime resolution re-validates rows
+    # each turn and disables the root.
+    source.joinpath("experts", "root.md").write_text(
+        """---
+id: root
+title: Valid Root
+tier: 1
+module:
+  kind: react
+---
+Coordinate work.
+""",
+        encoding="utf-8",
+    )
+    source.joinpath("experts", "leaf.md").write_text(
+        """---
+id: leaf
+title: Enabled Leaf
+parent_id: root
+tier: 2
+module:
+  kind: react
+---
+Do leaf work.
+""",
+        encoding="utf-8",
+    )
+
+    agent = FakeClioAgent(answer="legacy planner must not run")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
+        assert (
+            c.post(
+                f"/v1/sessions/{sid}/agent-blueprint",
+                json={"path": str(source)},
+            ).status_code
+            == 200
+        )
+        # The stale-install mutation: the declared root is no longer react while
+        # it still has a declared child — disabled at the next runtime resolve.
+        source.joinpath("experts", "root.md").write_text(
+            """---
+id: root
+title: Stale Root
+tier: 1
+---
+Coordinate work.
+""",
+            encoding="utf-8",
+        )
+        assistant = complete_turn(c, sid, "hello")
+        sess = c.get(f"/v1/sessions/{sid}").json()
+
+    # The legacy ClioAgent planner NEVER ran (the observed live fall-through).
+    assert agent.calls == []
+    assert assistant["stop_reason"] == "error"
+    assert assistant["error_info"]["error"] == "blueprint_root_disabled"
+    details = assistant["error_info"]["details"]
+    assert details["root_id"] == "root"
+    assert any("module.kind: react" in err for err in details["validation_errors"])
+    assert sess["status"] == "error"
+
+
 def test_post_message_prompt_user_agent_executes_registered_agent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

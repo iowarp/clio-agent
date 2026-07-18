@@ -763,7 +763,12 @@ def _runtime_active_agent_blueprint_root_id(app: "FastAPI", session_id: str = ""
     if not rows:
         return ""
     requested_root = str(rows[0].metadata.get("agent_blueprint_root_expert") or "").strip()
-    if requested_root and any(row.id == requested_root and row.enabled for row in rows):
+    if requested_root and any(row.id == requested_root for row in rows):
+        # The DECLARED root is the root, enabled or not. A disabled root is a
+        # fact the turn path fails TYPED on (_BlueprintRootDisabled) — silently
+        # substituting another enabled expert as root ran a leaf as the
+        # orchestrator on the live gate (#948 S4). Substitution below applies
+        # only when the manifest declares no resolvable root at all.
         return requested_root
     roots = [row for row in rows if row.enabled and not row.parent_id]
     if len(roots) == 1:

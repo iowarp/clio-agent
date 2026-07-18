@@ -240,9 +240,10 @@ def _runtime_dynamic_agent_children_context(
     General across blueprints: any expert with declared children IS, by construction,
     an orchestrator -- it routes work to children (who hold the tools and produce the
     grounded evidence) and assembles their results. This briefing tells the model that
-    it is an orchestrator, what each child produces, and how to emit its routing
-    decision (next_expert / next_task). This is *grounding* -- telling the model what it
-    is and how routing works -- not a behavioral handcuff, and it is what makes a model
+    it is an orchestrator, what each child produces, and how to route work to them by
+    CALLING the spawn-runtime tools (``spawn_agent_task`` / ``wait_agent_tasks`` /
+    ``spawn_agents_parallel``). This is *grounding* -- telling the model what it is and
+    how routing works -- not a behavioral handcuff, and it is what makes a model
     delegate instead of answering (and fabricating) from its own prior knowledge.
     """
 
@@ -282,14 +283,15 @@ def _runtime_dynamic_agent_children_context(
         lines.append(f"- `{row.id}`: {detail}{cap_text}")
     lines.append("")
     lines.append(
-        "Routing: set `next_expert` to the id of the ONE child to run next and "
-        "`next_task` to the concrete task for it. After that child returns its evidence "
-        "you will be re-invoked to route again — so advance ONE child at a time and let "
-        "each child's returned evidence (in the typed workflow_state) decide the next "
-        "hop. Set `next_expert` = `finish` ONLY when the task is fully complete and every "
-        "claim in your `answer` is backed by a child's returned evidence; NEVER finish "
-        "with an answer you composed from your own knowledge. If you have done no "
-        "delegation yet, you have no evidence yet — do not finish."
+        "Routing: delegate by CALLING your spawn tools. `spawn_agent_task(agent, task)` "
+        "spawns ONE declared child as a real child turn and returns its `task_id`; "
+        "`wait_agent_tasks([task_id])` blocks until it finishes and returns its typed "
+        "evidence. Spawn one child, wait for its evidence, and let that evidence (in the "
+        "returned typed workflow_state) decide the next hop; use `spawn_agents_parallel` "
+        "to fan out independent children at once. Read the returned evidence, then write "
+        "your final `answer` — every claim in it must be backed by a child's returned "
+        "evidence; NEVER answer from your own knowledge. If you have spawned no children "
+        "yet, you have no evidence yet — do not answer."
     )
     briefing = "\n".join(lines)
     if _aid:

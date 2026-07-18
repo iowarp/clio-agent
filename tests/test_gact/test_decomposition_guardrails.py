@@ -35,7 +35,11 @@ from clio_agent.gact.app import build_app
 # from the current surface; a mismatch means routes were added/removed
 # (fine — bump this with intent) or, more dangerously, a route was wired
 # inline in app.py instead of in a gact/routes/<concern>.py module.
-EXPECTED_ROUTE_METHOD_PAIRS = 141
+# 141 -> 151 (#948): +3 agent-task routes (S2, moved to distinct /agent-tasks
+# paths in S4 — the original same-path claim shadowed the #18 session-task GET)
+# + the MCP-app/session-lifecycle routes landed by the campaign's route modules.
+# Duplicate-free verified: zero (path, method) pairs register twice.
+EXPECTED_ROUTE_METHOD_PAIRS = 151
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

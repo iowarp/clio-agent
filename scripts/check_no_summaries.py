@@ -30,9 +30,10 @@ retired vocabulary reappears in CODE:
 
   Epic #880/#881: the client renders model prose VERBATIM and the server fixes
   leaks at the root (the #877 line-start marker split), so no core code may
-  scrub a model's visible text. The kept ``_delegated_expert_public_prompt``
-  splits a SERVER-COMPOSED prompt at the server's OWN marker constants (structural
-  string handling), which is not a prose matcher and is not banned.
+  scrub a model's visible text. Structural string handling that splits a
+  SERVER-COMPOSED string at the server's OWN marker constants is not a prose
+  matcher and is not banned (the sync-delegate prompt composer that once did this
+  was itself deleted with the settle layer, #948 S4).
 
 MATCHING RULES (documented per #880 hazard 8):
 

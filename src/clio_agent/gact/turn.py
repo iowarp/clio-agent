@@ -8,13 +8,12 @@ one agent turn end to end:
   ``message.created`` events, and schedules the turn as a tracked ``asyncio``
   task (so cancellation can reach it via ``app.state.in_flight_turns``).
 * :func:`_run_turn_in_background` is the body of that task: it invokes
-  ``agent.forward`` in an executor, streams/slices the result into Parts,
-  settles dynamic-agent delegations (via the
-  :mod:`clio_agent.gact.turn_delegation` settle engine —
-  ``settle_dynamic_agent_delegations`` / ``execute_delegated_experts`` /
-  ``run_dynamic_agent_sync``), publishes every SSE event the TUI consumes,
-  persists the assistant message, records the context frame + token/cost usage,
-  and returns the session to ``idle`` (or ``error``).
+  ``agent.forward`` in an executor, streams/slices the result into Parts
+  (a react main routes to its declared children by CALLING the spawn-runtime
+  tools, so its ``answer`` is already the deliverable — no post-forward settle
+  pass), publishes every SSE event the TUI consumes, persists the assistant
+  message, records the context frame + token/cost usage, and returns the session
+  to ``idle`` (or ``error``).
 
 It was carved verbatim out of ``clio_agent.gact.app.build_app`` so the route
 factories (post-message, question-answer, retry-attempt, schedules) and the
@@ -67,6 +66,7 @@ from clio_agent.gact.messaging import (
     _user_message_parts,
 )
 from clio_agent.gact.runtime.globals import (
+    _BlueprintRootDisabled,
     _cancelled_error_info,
     _coerce_error_info,
     _ContextFileAccessError,
@@ -425,7 +425,6 @@ async def _run_turn_in_background(
     # seam and carry it on ``state`` for every delegation/grounding/scrub site.
     state.workflow_schema = _active_workflow_state_schema(state.app, state.sid)
     state.transcript = _open_turn_transcript(state.app, state.sid, state.turn_id)
-    state.suppressed_parent_resume_offsets = {}
     # TRICKY #1 (Phase B spec): bind the emitter over ``state`` so its LATE reads
     # of state.active_agent_id / state.invocation_agent_id see the forward seam's
     # IN-PLACE mutations. ``forward_turn`` reconstructs the same
@@ -648,6 +647,32 @@ async def _run_turn_in_background(
             recoverable=True,
         )
         state.answer_text = partial_answer
+        state.tools_called = []
+    except _BlueprintRootDisabled as exc:
+        # #948 S4: the active blueprint's declared root is disabled by validation.
+        # Typed failure carrying the exact errors — never a substitute root,
+        # never the legacy planner.
+        state.selected_agent = exc.root_id
+        state.rationale = "The active Agent Blueprint's root expert is disabled by validation."
+        state.error_info = ErrorInfo(
+            error="blueprint_root_disabled",
+            message=(
+                f"Active Agent Blueprint root expert {exc.root_id!r} is disabled "
+                "by validation; the turn cannot run."
+            ),
+            details={
+                "root_id": exc.root_id,
+                "agent_blueprint_id": exc.blueprint_id,
+                "validation_errors": exc.validation_errors,
+                "recovery_actions": [
+                    "update_agent_blueprint_install",
+                    "fix_blueprint_declaration",
+                    "activate_another_blueprint",
+                ],
+            },
+            recoverable=True,
+        )
+        state.answer_text = ""
         state.tools_called = []
     except _UnsupportedSessionAgent as exc:
         state.selected_agent = exc.agent_id
