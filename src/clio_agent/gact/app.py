@@ -828,7 +828,6 @@ from clio_agent.gact.skills import SkillNotDelegatableError
 # "clio_agent.gact.app._try_streamed_forward", ...)`` test seam keeps working.
 from clio_agent.gact.streaming import (  # noqa: E402,F401
     _REASONING_HEARTBEAT_S,
-    _agent_forward_compat,
     _agent_streaming_unsupported_reason,
     _append_stream_listener,
     _build_stream_listeners,

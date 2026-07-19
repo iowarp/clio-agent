@@ -207,9 +207,59 @@ def test_maybe_autocompact_wires_ops_reset_through_the_v2_loop(
 # T3 — Tier-1-shaped stateful scope: append-only sends delta on call 2+.
 #
 # The legacy ``ClioAgent.forward`` planner-loop scope-binding test was deleted
-# with the planner (#948 S4b). The delta mechanism it exercised is pinned below
-# directly on the shared codex registry (the append-only growing message list
-# under an active ``stateful_scope``), which does not depend on the deleted loop.
+# with the planner (#948 S4b). Post-S4b the top-level orchestrator IS the reactv2
+# retention forward, whose ``with stateful_scope():`` (reactv2.py:193) is the
+# surviving equivalent binding. Two locks below:
+#   * ``test_reactv2_forward_binds_stateful_scope`` drives a REAL V2 forward and
+#     asserts the scope is active INSIDE the loop body — the sabotage guard on the
+#     orchestrator-level binding (remove the ``with`` and it goes red), restored
+#     in the new world to replace the deleted planner-loop guard.
+#   * ``test_tier1_shaped_forward_deltas_on_call_two`` pins the delta MECHANISM
+#     the binding unlocks, directly on the shared codex registry (append-only
+#     growing message list under an active scope), independent of the deleted loop.
+# --------------------------------------------------------------------------- #
+def test_reactv2_forward_binds_stateful_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The V2 orchestrator forward binds a per-forward stateful scope for its LM sends.
+
+    Post-#948-S4b the top-level orchestrator is the reactv2 retention forward, not the
+    deleted ``ClioAgent.forward`` planner. Its ``with stateful_scope():`` binding
+    (reactv2.py:193) is what makes consecutive append-only orchestrator LM sends
+    classify as prefix deltas. This drives a real V2 forward and asserts
+    ``active_stateful_scope()`` is non-None from INSIDE the loop body — the
+    orchestrator-level invariant the deleted planner test used to guard.
+
+    Sabotage: remove ``with stateful_scope():`` in the reactv2 forward → the captured
+    scope is ``None`` → this test goes red.
+    """
+    from clio_agent.gact.agents import reactv2_events as _events
+    from clio_agent.gact.agents.reactv2 import retaining_reactv2_cls
+
+    class _Sig(dspy.Signature):
+        question: str = dspy.InputField()
+        answer: str = dspy.OutputField()
+
+    def _tool(x: str) -> str:
+        """A tool."""
+        return x
+
+    captured: dict[str, Any] = {}
+
+    def _fake_instrumented_forward(agent: Any, **input_args: Any) -> Any:
+        # Runs where the real append-only V2 loop runs: under the forward's
+        # ``with stateful_scope():``. Record what the rail carries.
+        captured["scope"] = active_stateful_scope()
+        return dspy.Prediction(answer="ok")
+
+    monkeypatch.setattr(_events, "instrumented_forward", _fake_instrumented_forward)
+
+    agent = retaining_reactv2_cls()(_Sig, tools=[_tool], max_iters=1)
+    pred = agent.forward(question="hi")
+
+    assert pred.answer == "ok"
+    # The forward bound a live stateful scope around the loop (unbinding → None).
+    assert captured["scope"] is not None
+
+
 # --------------------------------------------------------------------------- #
 def test_tier1_shaped_forward_deltas_on_call_two(monkeypatch: pytest.MonkeyPatch) -> None:
     """A Tier-1-shaped forward with append-only sends deltas on call 2+ under the scope.

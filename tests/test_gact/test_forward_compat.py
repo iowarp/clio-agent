@@ -20,7 +20,6 @@ from typing import Any
 import pytest
 
 from clio_agent.gact.streaming import (
-    _agent_forward_compat,
     _run_dynamic_agent_compat,
     _try_streamed_forward_compat,
 )
@@ -29,95 +28,6 @@ from clio_agent.gact.streaming import (
 @dataclass
 class _Pred:
     answer: str = "ok"
-
-
-class _InternalTypeErrorAgent:
-    """A modern-signature agent whose body raises TypeError on every call."""
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def forward(
-        self,
-        question: str,
-        session_id: str,
-        session_mode: str = "chat",
-        session_edit_mode: str = "diff",
-        images: list[Any] | None = None,
-        cancel_requested: Any | None = None,
-    ) -> _Pred:
-        del question, session_id, session_mode, session_edit_mode, images
-        del cancel_requested
-        self.calls += 1
-        raise TypeError("internal boom")
-
-
-class _LegacyAgent:
-    """Legacy ``(question, session_id)`` signature — no new kwargs."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, str]] = []
-
-    def forward(self, question: str, session_id: str) -> _Pred:
-        self.calls.append((question, session_id))
-        return _Pred(answer="legacy")
-
-
-class _ModernAgent:
-    """Records the optional kwargs it actually received."""
-
-    def __init__(self) -> None:
-        self.seen: dict[str, Any] = {}
-
-    def forward(
-        self,
-        question: str,
-        session_id: str,
-        session_mode: str = "chat",
-        session_edit_mode: str = "diff",
-        images: list[Any] | None = None,
-        cancel_requested: Any | None = None,
-    ) -> _Pred:
-        self.seen = {
-            "question": question,
-            "session_id": session_id,
-            "session_mode": session_mode,
-            "session_edit_mode": session_edit_mode,
-            "images": images,
-            "cancel_requested": cancel_requested,
-        }
-        return _Pred(answer="modern")
-
-
-def test_agent_forward_compat_internal_typeerror_calls_once() -> None:
-    """An internal TypeError must propagate after exactly one invocation."""
-
-    agent = _InternalTypeErrorAgent()
-    with pytest.raises(TypeError, match="internal boom"):
-        _agent_forward_compat(agent, "hi", "sid", "chat", "diff", None, None)
-    assert agent.calls == 1
-
-
-def test_agent_forward_compat_legacy_signature_called_once() -> None:
-    """Legacy fakes still work and are invoked exactly once."""
-
-    agent = _LegacyAgent()
-    pred = _agent_forward_compat(agent, "hi", "sid", "chat", "diff", lambda: False, [])
-    assert pred.answer == "legacy"
-    assert agent.calls == [("hi", "sid")]
-
-
-def test_agent_forward_compat_modern_receives_optional_kwargs() -> None:
-    """A modern-signature agent receives images + cancel callback."""
-
-    agent = _ModernAgent()
-    cancel = lambda: True  # noqa: E731
-    imgs = [object()]
-    _agent_forward_compat(agent, "hi", "sid", "chat", "diff", cancel, imgs)
-    assert agent.seen["images"] == imgs
-    assert agent.seen["cancel_requested"] is cancel
-    assert agent.seen["session_mode"] == "chat"
-    assert agent.seen["session_edit_mode"] == "diff"
 
 
 def _modern_runner(
@@ -210,9 +120,7 @@ async def test_try_streamed_forward_compat_internal_typeerror_calls_once(
         calls["n"] += 1
         raise TypeError("cancel_requested internal boom")
 
-    monkeypatch.setattr(
-        "clio_agent.gact.app._try_streamed_forward", fake_streamed_forward
-    )
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
 
     with pytest.raises(TypeError, match="cancel_requested internal boom"):
         await _try_streamed_forward_compat(

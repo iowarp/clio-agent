@@ -113,7 +113,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # #948 S4 live-gate fix: +22 for _BlueprintRootDisabled (typed disabled-root
     # failure; lives with its sibling turn exceptions).
     "src/clio_agent/gact/runtime/globals.py": 977,
-    "src/clio_agent/gact/streaming.py": 1024,
+    "src/clio_agent/gact/streaming.py": 995,
     "src/clio_agent/gact/tool_observer.py": 930,
     "src/clio_agent/gact/transcript.py": 986,
     # #918: +17 for the typed SkillNotDelegatableError ladder arm (a skill-bound

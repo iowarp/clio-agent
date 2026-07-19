@@ -31,7 +31,6 @@ PUBLIC_SYMBOLS: list[str] = [
 # Each must stay importable from clio_agent.gact.app as the shim re-exports
 # decomposed internals (#714).
 SEAM_SYMBOLS: list[str] = [
-    "_agent_forward_compat",
     "_agent_streaming_unsupported_reason",
     "_blueprint_runtime_signature",
     "_build_tool_user_agent_module",
@@ -71,10 +70,6 @@ def test_public_main_importable() -> None:
 
 def test_public_active_gact_app_importable() -> None:
     _assert_importable("_ACTIVE_GACT_APP")
-
-
-def test_seam_agent_forward_compat_importable() -> None:
-    _assert_importable("_agent_forward_compat")
 
 
 def test_seam_agent_streaming_unsupported_reason_importable() -> None:

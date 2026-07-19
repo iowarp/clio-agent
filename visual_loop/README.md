@@ -83,7 +83,6 @@ From this repo:
 ```powershell
 uv sync --extra dev --extra optimizers
 $env:CLIO_AGENT_SRC = "D:\Libraries\Documents\projects\clio-agent"
-$env:CLIO_AGENT_MAX_STEPS = "12"
 $env:CLIO_GACT_TURN_TIMEOUT_S = "900"
 $env:CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS = "5,15"
 gact agent deploy clio visual-benchmark

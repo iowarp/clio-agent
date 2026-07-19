@@ -214,18 +214,18 @@ def _runtime_active_agent_blueprint_id(app: "FastAPI", session_id: str = "") -> 
     if explicit:
         return explicit
     cwd = _runtime_workspace_catalog_cwd(app, session_id=session_id)
-    # An explicitly activated session pack, or a workspace/cwd pack discoverable
-    # for this session, IS the session's agent set: the implicit default-registry
-    # blueprint fallback below must not shadow it (that would drop the pack's
-    # experts from both the catalog and the turn executor, breaking #770 C1's
-    # list==execute invariant). Only the IMPLICIT default is suppressed here; an
-    # EXPLICIT active blueprint (above) still wins. ``_agent_rows`` then composes
-    # the builtin/user/pack fallback for these sessions.
+    # Suppress the implicit default only on EXPLICIT ACTIVATION: a session-activated
+    # pack (id/path) or a workspace-scoped MANIFEST pack (``manifest_path`` set) IS the
+    # workspace's declared agent set (#770 C1). A GLOBAL pack or a LOOSE expert must NOT
+    # suppress -- it augments the resolved default main (#948 S4b findings 1/5/6).
     pack_cwd = cwd or Path.cwd()
     if (
         _runtime_active_session_expert_pack_id(app, session_id)
         or _runtime_active_session_expert_pack_path(app, session_id) is not None
-        or discover_expert_packs(cwd=pack_cwd)
+        or any(
+            pack.scope == "workspace" and pack.manifest_path is not None
+            for pack in discover_expert_packs(cwd=pack_cwd)
+        )
     ):
         return ""
     if any(

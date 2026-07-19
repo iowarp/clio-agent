@@ -8,8 +8,9 @@ user-facing entry point (the gact ``/optimize`` command, the
 ``optimizer_command`` capability-gap row, the ``--tune`` CLI hook) returns
 the uniform structured not-implemented payload from
 :mod:`clio_agent.optimizer.stub`. The live pieces are the per-turn invocation
-collection (``ClioAgent._store_expert_invocation``, the future training
-corpus) and :class:`MetricsAggregator`, which feeds ``/metrics``.
+collection (the ``instrumented_forward`` decorator persisting through
+``arc_memory.store_invocation``, the future training corpus) and
+:class:`MetricsAggregator`, which feeds ``/metrics``.
 
 Provides instrumentation, training set generation, metric functions,
 SIMBA optimization runner, and variant management for expert modules.

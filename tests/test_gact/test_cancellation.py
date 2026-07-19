@@ -44,50 +44,6 @@ class _CountingAgent:
         return _Pred()
 
 
-class _CooperativeCancelAgent:
-    def __init__(self) -> None:
-        import threading
-
-        self.started = threading.Event()
-
-    def forward(
-        self,
-        question: str,
-        session_id: str,
-        session_mode: str = "chat",
-        session_edit_mode: str = "diff",
-        cancel_requested=None,
-    ):
-        import time
-
-        del session_mode, session_edit_mode
-        self.started.set()
-        deadline = time.monotonic() + 3.0
-        while time.monotonic() < deadline:
-            if cancel_requested is not None and cancel_requested():
-                return type(
-                    "Pred",
-                    (),
-                    {
-                        "answer": "",
-                        "selected_expert": "",
-                        "routing_rationale": "",
-                        "error_info": {
-                            "error": "cancelled",
-                            "message": "turn cancelled by client",
-                            "details": {
-                                "execution_cancellation": "cooperative",
-                                "executor_work_may_continue": False,
-                                "stage": "fake_agent_loop",
-                            },
-                            "recoverable": True,
-                        },
-                    },
-                )()
-            time.sleep(0.02)
-        return _Pred(answer="missed cancellation")
-
-
 def _client(tmp_path: Path) -> TestClient:
     return TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
 
@@ -331,26 +287,6 @@ def test_cancel_before_turn_skips_agent_forward(tmp_path: Path) -> None:
     assert attempt["in_flight"] is False
     assert attempt["hard_abort_supported"] is False
     assert attempt["upstream_abort"] == "not_supported"
-
-
-def test_agent_forward_compat_passes_cancel_callback_to_custom_agent() -> None:
-    """GACT's forward shim should pass cancellation callbacks to compatible agents."""
-
-    from clio_agent.gact.app import _agent_forward_compat
-
-    agent = _CooperativeCancelAgent()
-    pred = _agent_forward_compat(
-        agent,
-        "hi",
-        "sess_coop",
-        "chat",
-        "diff",
-        lambda: True,
-    )
-
-    assert pred.error_info["error"] == "cancelled"
-    assert pred.error_info["details"]["execution_cancellation"] == "cooperative"
-    assert pred.error_info["details"]["executor_work_may_continue"] is False
 
 
 def test_capabilities_do_not_claim_hard_upstream_abort(tmp_path: Path) -> None:
