@@ -576,9 +576,7 @@ class AsyncMCPToolExecutor:
         outcome = await self.call_tool_result(name, args)
         return outcome.model_text
 
-    async def call_tool_result(
-        self, name: str, args: Mapping[str, Any]
-    ) -> _MCPCallOutcome:
+    async def call_tool_result(self, name: str, args: Mapping[str, Any]) -> _MCPCallOutcome:
         """Call an MCP tool and preserve its private raw result projection."""
         if self._closed:
             raise RuntimeError("AsyncMCPToolExecutor is closed")
@@ -669,9 +667,7 @@ class AsyncMCPToolExecutor:
                 # composite: its resolution fallback (fastmcp >= 3.4) can list
                 # — and therefore spawn — every mounted backend. Typed error
                 # instead (the model hallucinated a tool name).
-                raise ValueError(
-                    f"unknown tool {name!r}: not in the preloaded tool catalog"
-                )
+                raise ValueError(f"unknown tool {name!r}: not in the preloaded tool catalog")
             assert self._client is not None
             return self._client, name, None
         client = self._namespace_clients.get(namespace)
@@ -700,9 +696,7 @@ class AsyncMCPToolExecutor:
         """Return model-visible MCP tool definitions keyed by stable name."""
 
         return {
-            name: tool
-            for name, tool in self._mcp_tools.items()
-            if _tool_visible_to_model(tool)
+            name: tool for name, tool in self._mcp_tools.items() if _tool_visible_to_model(tool)
         }
 
     def get_all_tool_definitions(self) -> dict[str, Any]:

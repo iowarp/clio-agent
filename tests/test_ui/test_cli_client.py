@@ -21,6 +21,10 @@ from clio_agent import serve
 from clio_agent.sdk import ClioClient
 from clio_agent.ui.cli import ClioAgentCLI, boot_client, main
 
+# #948 S4b: default sessions run the blueprint react ``main``; route it to each
+# test's ``build_app(agent=...)`` host/stub fake.
+pytestmark = pytest.mark.usefixtures("host_agent_executor")
+
 
 def _recording_console() -> Console:
     """A Rich console that captures output as plain text (no real TTY)."""

@@ -16,6 +16,7 @@ import asyncio
 import time
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import _fire_schedule, build_app
@@ -26,6 +27,10 @@ from clio_agent.gact.turn_runner import (
     TurnRunner,
     session_busy_error_payload,
 )
+
+# #948 S4b: default sessions run the blueprint react ``main``; route it to each
+# test's ``build_app(agent=...)`` host fake.
+pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 # --------------------------------------------------------------------------- #
 # Direct TurnRunner unit tests (driven on a real loop via asyncio.run).        #
@@ -300,9 +305,7 @@ def _wait_busy(app, sid: str, timeout: float = 3.0) -> None:
 def _user_texts(client: TestClient, sid: str) -> list[str]:
     msgs = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
     return [
-        "".join(p.get("text", "") for p in m.get("parts", []))
-        for m in msgs
-        if m["role"] == "user"
+        "".join(p.get("text", "") for p in m.get("parts", [])) for m in msgs if m["role"] == "user"
     ]
 
 
@@ -392,7 +395,9 @@ def test_answer_resume_deferred_when_busy_then_redriven(tmp_path: Path) -> None:
         assert resp.status_code == 200
         # Deferred, not double-staged, not dropped: only the intervening turn is
         # staged so far, the resume is recorded, and a typed event was published.
-        assert _user_texts(client, sid) == ["intervening"], "resume double-staged onto a busy session"
+        assert _user_texts(client, sid) == ["intervening"], (
+            "resume double-staged onto a busy session"
+        )
         assert sid in app.state.deferred_resumes, "resume was dropped, not deferred"
         assert _bus_events(app, sid, "user_question.resume_deferred"), "no typed deferral event"
 
@@ -405,7 +410,9 @@ def test_answer_resume_deferred_when_busy_then_redriven(tmp_path: Path) -> None:
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline and len(_user_texts(client, sid)) < 2:
             time.sleep(0.05)
-        assert len(_user_texts(client, sid)) >= 2, "resume turn never staged after the session freed"
+        assert len(_user_texts(client, sid)) >= 2, (
+            "resume turn never staged after the session freed"
+        )
         assert _bus_events(app, sid, "user_question.resumed"), "no user_question.resumed event"
 
 

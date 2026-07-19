@@ -18,10 +18,11 @@ These lock the three fixes whose *wiring* (not the shared detector, proved in
   **Sabotage:** unwire the ``note_prefix_reset_for_active_scope`` call → the next plan
   returns ``prefix_mismatch``/``delta`` → red.
 
-* **T3 — Tier-1 forward scope.** ``ClioAgent.forward`` must bind a per-forward
-  ``stateful_scope`` around the Tier-1 planner loop (``_run_agent_loop``) so its
-  consecutive sends are eligible for delta (like the V2 expert loop's ``forward``).
-  **Sabotage:** unbind the scope → the planner runs with no active scope → red.
+* **T3 — Tier-1-shaped delta.** The legacy ``ClioAgent.forward`` planner-loop
+  scope binding was deleted with the planner (#948 S4b); the delta mechanism it
+  relied on (append-only sends under an active ``stateful_scope`` classify as a
+  delta over the retained prefix) is pinned below directly on the shared codex
+  registry, which does not depend on the deleted loop.
 """
 
 from __future__ import annotations
@@ -116,9 +117,7 @@ def test_note_prefix_reset_flags_both_provider_registries() -> None:
         cst.codex_stateful_registry().plan(
             session_key=_key("s"), scope_token="s", messages=_m("a", "b")
         )
-        ccs.stateful_registry().plan(
-            session_key=_key("s"), scope_token="s", messages=_m("a", "b")
-        )
+        ccs.stateful_registry().plan(session_key=_key("s"), scope_token="s", messages=_m("a", "b"))
         assert note_prefix_reset_for_active_scope("ops_reset") is True
         # An append-only extension that WOULD be a delta is forced full=ops_reset on both.
         for reg in (cst.codex_stateful_registry(), ccs.stateful_registry()):
@@ -191,9 +190,7 @@ def test_maybe_autocompact_wires_ops_reset_through_the_v2_loop(
         cst.codex_stateful_registry().plan(
             session_key=_key("s"), scope_token="s", messages=_m("a", "b")
         )
-        ccs.stateful_registry().plan(
-            session_key=_key("s"), scope_token="s", messages=_m("a", "b")
-        )
+        ccs.stateful_registry().plan(session_key=_key("s"), scope_token="s", messages=_m("a", "b"))
         agent._maybe_autocompact()
         assert summarized.get("ids") == ["s0", "s1"]  # the op really fired
         for reg in (cst.codex_stateful_registry(), ccs.stateful_registry()):
@@ -207,39 +204,63 @@ def test_maybe_autocompact_wires_ops_reset_through_the_v2_loop(
 
 
 # --------------------------------------------------------------------------- #
-# T3 — Tier-1 forward binds a per-forward stateful scope around the planner loop.
+# T3 — Tier-1-shaped stateful scope: append-only sends delta on call 2+.
+#
+# The legacy ``ClioAgent.forward`` planner-loop scope-binding test was deleted
+# with the planner (#948 S4b). Post-S4b the top-level orchestrator IS the reactv2
+# retention forward, whose ``with stateful_scope():`` (reactv2.py:193) is the
+# surviving equivalent binding. Two locks below:
+#   * ``test_reactv2_forward_binds_stateful_scope`` drives a REAL V2 forward and
+#     asserts the scope is active INSIDE the loop body — the sabotage guard on the
+#     orchestrator-level binding (remove the ``with`` and it goes red), restored
+#     in the new world to replace the deleted planner-loop guard.
+#   * ``test_tier1_shaped_forward_deltas_on_call_two`` pins the delta MECHANISM
+#     the binding unlocks, directly on the shared codex registry (append-only
+#     growing message list under an active scope), independent of the deleted loop.
 # --------------------------------------------------------------------------- #
-def test_tier1_forward_binds_stateful_scope(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
-    """``ClioAgent.forward`` runs the Tier-1 planner loop under an active stateful scope.
+def test_reactv2_forward_binds_stateful_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The V2 orchestrator forward binds a per-forward stateful scope for its LM sends.
 
-    Pins the T3 fix directly on the real ``forward``: it wraps ``_run_agent_loop`` in
-    ``stateful_scope`` so the top-level orchestrator's consecutive planner sends are
-    eligible for the delta path. Sabotage: remove the ``with stateful_scope()`` in
-    ``forward`` → the captured scope is ``None`` → red.
+    Post-#948-S4b the top-level orchestrator is the reactv2 retention forward, not the
+    deleted ``ClioAgent.forward`` planner. Its ``with stateful_scope():`` binding
+    (reactv2.py:193) is what makes consecutive append-only orchestrator LM sends
+    classify as prefix deltas. This drives a real V2 forward and asserts
+    ``active_stateful_scope()`` is non-None from INSIDE the loop body — the
+    orchestrator-level invariant the deleted planner test used to guard.
+
+    Sabotage: remove ``with stateful_scope():`` in the reactv2 forward → the captured
+    scope is ``None`` → this test goes red.
     """
-    from clio_agent.agent import ClioAgent
-    from clio_agent.harness import RouteDecision
+    from clio_agent.gact.agents import reactv2_events as _events
+    from clio_agent.gact.agents.reactv2 import retaining_reactv2_cls
+
+    class _Sig(dspy.Signature):
+        question: str = dspy.InputField()
+        answer: str = dspy.OutputField()
+
+    def _tool(x: str) -> str:
+        """A tool."""
+        return x
 
     captured: dict[str, Any] = {}
-    agent = ClioAgent(data_dir=str(tmp_path / "agent"))
-    try:
-        route = RouteDecision(target="chat", source="dspy", reason="t3", confidence=0.5)
 
-        def _fake_loop(**_kwargs: Any) -> tuple[str, str, Any, Any, RouteDecision]:
-            # Capture the scope active during the Tier-1 loop (the delta eligibility gate).
-            captured["scope"] = active_stateful_scope()
-            return "chat", "ok", None, None, route
+    def _fake_instrumented_forward(agent: Any, **input_args: Any) -> Any:
+        # Runs where the real append-only V2 loop runs: under the forward's
+        # ``with stateful_scope():``. Record what the rail carries.
+        captured["scope"] = active_stateful_scope()
+        return dspy.Prediction(answer="ok")
 
-        monkeypatch.setattr(agent, "_run_agent_loop", _fake_loop)
-        assert active_stateful_scope() is None  # not bound off-forward
-        agent.forward(question="hello", session_id="t3-forward")
-        assert captured["scope"] is not None  # forward bound a per-forward scope
-    finally:
-        agent.shutdown()
-    # The scope is released on forward exit (no leak past the loop).
-    assert active_stateful_scope() is None
+    monkeypatch.setattr(_events, "instrumented_forward", _fake_instrumented_forward)
+
+    agent = retaining_reactv2_cls()(_Sig, tools=[_tool], max_iters=1)
+    pred = agent.forward(question="hi")
+
+    assert pred.answer == "ok"
+    # The forward bound a live stateful scope around the loop (unbinding → None).
+    assert captured["scope"] is not None
 
 
+# --------------------------------------------------------------------------- #
 def test_tier1_shaped_forward_deltas_on_call_two(monkeypatch: pytest.MonkeyPatch) -> None:
     """A Tier-1-shaped forward with append-only sends deltas on call 2+ under the scope.
 
@@ -251,9 +272,7 @@ def test_tier1_shaped_forward_deltas_on_call_two(monkeypatch: pytest.MonkeyPatch
     cst.codex_stateful_registry().reset_for_tests()
     reg = cst.codex_stateful_registry()
     with stateful_scope("tier1"):
-        plan1, _h1 = reg.plan(
-            session_key=_key("tier1"), scope_token="tier1", messages=_m("q", "a")
-        )
+        plan1, _h1 = reg.plan(session_key=_key("tier1"), scope_token="tier1", messages=_m("q", "a"))
         assert plan1.mode == "full" and plan1.reason == "first_call"
         # Call 2: the message list grew append-only (a Tier-1 planner step appended).
         plan2, _h2 = reg.plan(

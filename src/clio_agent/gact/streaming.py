@@ -4,11 +4,10 @@ This module owns the runtime plumbing that turns an agent ``forward`` into a
 live token stream, plus the helpers that render a finished prediction onto the
 wire:
 
-* signature-compatible agent invocation (:func:`_agent_forward_compat`,
-  :func:`_try_streamed_forward_compat`, :func:`_run_dynamic_agent_compat`) that
-  thread new optional kwargs (``session_mode``/``session_edit_mode``/``images``/
-  ``cancel_requested``) while falling back to legacy signatures for test fakes
-  and older builds;
+* signature-compatible agent invocation (:func:`_try_streamed_forward_compat`,
+  :func:`_run_dynamic_agent_compat`) that thread new optional kwargs
+  (``session_mode``/``session_edit_mode``/``images``/``cancel_requested``) while
+  falling back to legacy signatures for test fakes and older builds;
 * the DSPy ``streamify`` pump (:func:`_try_streamed_forward`) that emits every
   text chunk through ``emit_chunk`` as it arrives, with reasoning-channel
   heartbeats and a structured fallback ledger
@@ -103,38 +102,6 @@ def _callable_positional_slots(func: Any, count: int) -> bool:
         ):
             slots += 1
     return slots >= count
-
-
-def _agent_forward_compat(
-    agent: Any,
-    question: str,
-    session_id: str,
-    session_mode: str,
-    session_edit_mode: str,
-    cancel_requested: Any | None = None,
-    images: list[Any] | None = None,
-) -> Any:
-    """Call agent.forward, threading session_mode + session_edit_mode + the
-    optional ``images``/``cancel_requested`` kwargs *only when the agent's
-    signature accepts them*, falling back to the legacy
-    ``(question, session_id)`` signature for fakes / older builds.
-
-    The callee is inspected once up front and invoked exactly once: no
-    TypeError-message sniffing and no double-run, so a ``TypeError`` raised
-    from inside ``forward`` propagates unchanged.
-    """
-
-    candidate: dict[str, Any] = {
-        "session_id": session_id,
-        "session_mode": session_mode,
-        "session_edit_mode": session_edit_mode,
-        "images": images or [],
-        "cancel_requested": cancel_requested,
-    }
-    selected = _select_accepted_kwargs(agent.forward, candidate)
-    if selected is None:
-        return agent.forward(question, **candidate)
-    return agent.forward(question, **selected)
 
 
 async def _try_streamed_forward_compat(
@@ -631,6 +598,10 @@ async def _try_streamed_forward(
         )
         return None
 
+    # The turn path always passes ``agent_override`` (the built blueprint/tool-user
+    # module), but ``_try_streamed_forward`` stays a general streamify helper: the
+    # streaming unit tests call it directly against ``app.state.agent`` (a dspy.Module
+    # fake) with no override, so the ``app.state.agent`` arm remains load-bearing.
     agent = agent_override if agent_override is not None else app.state.agent
     if agent is None:
         _record_stream_fallback(app, sid, "agent_not_available")

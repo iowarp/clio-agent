@@ -29,6 +29,10 @@ from clio_agent.gact.app import (
 from clio_agent.gact.types import Message, Part
 from tests.test_gact.conftest import complete_turn
 
+# #948 S4b: default sessions run the blueprint react ``main``; route it to each
+# test's ``build_app(agent=...)`` host fake.
+pytestmark = pytest.mark.usefixtures("host_agent_executor")
+
 
 def test_non_destructive_tool_fast_allows(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "s.json")

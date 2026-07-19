@@ -17,6 +17,10 @@ from clio_agent.gact.expert_packs import (
 )
 from clio_agent.gact.types import AgentDef
 
+# #948 S4b: default sessions run the blueprint react ``main``; route it to each
+# test's ``build_app(agent=...)`` host fake.
+pytestmark = pytest.mark.usefixtures("host_agent_executor")
+
 
 @pytest.fixture()
 def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -891,4 +895,3 @@ def test_prompt_agent_empty_answer_raises_typed_failure(
     finally:
         ctx.reset(session_token)
         ctx.reset(app_token)
-

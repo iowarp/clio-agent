@@ -4,8 +4,8 @@ layer — app + session — for the WHOLE turn, not just turn_id/trace_id.
 Before the keystone, ``_run_turn_in_background`` bare-set only ``turn_id`` /
 ``trace_id`` at the top of the turn; ``turn.app`` / ``turn.session_id`` were bound
 only inside the narrow ``_gact_app_context`` / ``set_session_id`` wrappers around
-the *dynamic-agent* forward sites. The CLIO orchestrator forward path
-(``_agent_forward_compat`` under a ``contextvars.copy_context()`` executor
+the *dynamic-agent* forward sites. The orchestrator sync forward path (the
+blueprint react ``main`` runner under a ``contextvars.copy_context()`` executor
 snapshot) had NEITHER, so ``active_app()`` resolved ``None`` and
 ``active_session_id()`` resolved ``""`` on the executor rail — which made the
 empty-gated emitters (``_emit_react_step_event`` / ``_emit_expert_lifecycle_event``)
@@ -29,11 +29,16 @@ import time
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
 
 from .test_post_messages import FakeClioAgent
+
+# #948 S4b: default sessions run the blueprint react ``main``; route it to each
+# test's ``build_app(agent=...)`` host fake.
+pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 
 class _KeystoneProbeAgent(FakeClioAgent):

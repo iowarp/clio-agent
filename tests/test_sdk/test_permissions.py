@@ -11,6 +11,10 @@ import pytest
 from clio_agent.sdk import ClioClient, NotFoundError
 from tests.test_sdk.conftest import StreamingASGITransport, StubAgent, _fresh_arc
 
+# #948 S4b: default sessions run the blueprint react ``main``; route it to each
+# test's ``build_app(agent=...)`` host/stub fake.
+pytestmark = pytest.mark.usefixtures("host_agent_executor")
+
 _PERMS = [
     {
         "tool_call": {

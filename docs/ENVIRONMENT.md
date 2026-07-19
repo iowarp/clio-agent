@@ -11,8 +11,6 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | Environment variable | Config key | Type | Default | Defined in |
 | --- | --- | --- | --- | --- |
 | `CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP` | `agents.disable_default_registry_bootstrap` | bool | `false` | `src/clio_agent/gact/agent_blueprints.py` |
-| `CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS` | `agents.enable_legacy_native_experts` | bool | `false` | `src/clio_agent/gact/agents/resolution.py` |
-| `CLIO_AGENT_MAX_STEPS` | `limits.agent_max_steps` | int | `8` | `src/clio_agent/agent.py` |
 | `CLIO_ALLOWED_ROOTS` | `tools.file_policy.allowed_roots` | str | `_default_allowed_roots()` _(computed)_ | `src/clio_agent/tools/file_policy.py` |
 | `CLIO_ALLOW_SYMLINKS` | `tools.file_policy.allow_symlinks` | bool | `false` | `src/clio_agent/tools/file_policy.py` |
 | `CLIO_ARC_CACHE_CAPACITY` | `arc.cache_capacity` | int | `1000` | `src/clio_agent/arc/memory.py` |

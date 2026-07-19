@@ -27,6 +27,10 @@ from clio_agent.gact.turn_spawn import (
     spawn_child_turn_threadsafe,
 )
 
+# #948 S4b: a child turn runs the blueprint react ``main``; route it to each
+# test's ``build_app(agent=...)`` host fake.
+pytestmark = pytest.mark.usefixtures("host_agent_executor")
+
 
 class _Agent:
     def __init__(self, sleep_s: float = 0.0) -> None:
@@ -36,7 +40,13 @@ class _Agent:
         if self.sleep_s:
             time.sleep(self.sleep_s)
         return type(
-            "P", (), {"answer": f"child did: {question[:20]}", "selected_expert": "", "routing_rationale": ""}
+            "P",
+            (),
+            {
+                "answer": f"child did: {question[:20]}",
+                "selected_expert": "",
+                "routing_rationale": "",
+            },
         )()
 
 
@@ -413,17 +423,13 @@ def test_spawn_inherits_session_scoped_blueprint_so_child_resolves(
         parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
 
         # Activate the blueprint SESSION-SCOPED by path (not globally installed).
-        resp = client.post(
-            f"/v1/sessions/{parent}/agent-blueprint", json={"path": str(blueprint)}
-        )
+        resp = client.post(f"/v1/sessions/{parent}/agent-blueprint", json={"path": str(blueprint)})
         assert resp.status_code == 200, resp.text
         assert resp.json()["active_agent_blueprint_id"] == "inherit-scope-bp"
 
         # The child expert is a real DECLARED child of the parent's blueprint root,
         # but is NOT resolvable globally (the blueprint is not installed).
-        assert "worker" in _runtime_declared_child_ids(
-            app, "orchestrator", session_id=parent
-        )
+        assert "worker" in _runtime_declared_child_ids(app, "orchestrator", session_id=parent)
         assert _resolve_runtime_dynamic_agent(app, "worker") is None, (
             "worker must not exist in the global catalog for this test to be meaningful"
         )

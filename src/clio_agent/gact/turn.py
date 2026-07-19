@@ -73,6 +73,7 @@ from clio_agent.gact.runtime.globals import (
     _emit_semantic_event,
     _iso_from_epoch,
     _new_message_id,
+    _NoResolvableAgent,
     _session_agent_id,
     _TurnCancelled,
     _TurnTimedOut,
@@ -668,6 +669,32 @@ async def _run_turn_in_background(
                     "update_agent_blueprint_install",
                     "fix_blueprint_declaration",
                     "activate_another_blueprint",
+                ],
+            },
+            recoverable=True,
+        )
+        state.answer_text = ""
+        state.tools_called = []
+    except _NoResolvableAgent as exc:
+        # #948 S4b: a default/main session resolved NO executable Agent Blueprint,
+        # and the legacy Tier-1 planner that used to run here is deleted. Fail
+        # TYPED — never fall through to a legacy pathway.
+        state.selected_agent = exc.agent_id
+        state.rationale = (
+            "No Agent Blueprint resolved for this session, and the legacy planner "
+            "is removed, so the turn has nothing to execute."
+        )
+        state.error_info = ErrorInfo(
+            error="no_resolvable_agent",
+            message=(
+                "No resolvable Agent Blueprint for this session; install the "
+                "default registry or activate an Agent Blueprint to run turns."
+            ),
+            details={
+                "agent_id": exc.agent_id,
+                "recovery_actions": [
+                    "install_default_registry",
+                    "activate_agent_blueprint",
                 ],
             },
             recoverable=True,

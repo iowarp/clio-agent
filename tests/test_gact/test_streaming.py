@@ -26,6 +26,11 @@ from clio_agent.gact.app import (
 )
 from clio_agent.gact.types import AgentDef
 
+# #948 S4b: turns that POST through the engine now run the default blueprint react
+# ``main``; route that root to each test's ``build_app(agent=...)`` host fake.
+# (Tests that call ``_try_streamed_forward`` directly are unaffected by this.)
+pytestmark = pytest.mark.usefixtures("host_agent_executor")
+
 
 @dataclass
 class _Pred:

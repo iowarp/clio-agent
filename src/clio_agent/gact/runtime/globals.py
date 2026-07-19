@@ -860,6 +860,21 @@ class _UnsupportedSessionAgent(RuntimeError):
         self.tools = tools or []
 
 
+class _NoResolvableAgent(RuntimeError):
+    """Raised when a default/main session resolves NO executable agent.
+
+    #948 S4b: the legacy Tier-1 ``ClioAgent.forward`` planner that used to run for
+    a default/``main`` session with no Agent Blueprint is DELETED. When neither the
+    active blueprint's declared root nor the default-registry blueprint resolves,
+    the turn MUST fail TYPED here — never fall through to a legacy planner pathway.
+    The turn handler maps this to a ``no_resolvable_agent`` error envelope.
+    """
+
+    def __init__(self, agent_id: str = "") -> None:
+        super().__init__(agent_id)
+        self.agent_id = agent_id
+
+
 class _BlueprintRootDisabled(RuntimeError):
     """Raised when the active Agent Blueprint's declared root expert is disabled.
 

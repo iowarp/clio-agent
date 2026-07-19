@@ -27,7 +27,13 @@ import time
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
+
+# #948 S4b: default sessions run the blueprint react ``main``; route it to each
+# scenario's ``build_app(agent=...)`` host fake (scenarios that monkeypatch
+# ``_try_streamed_forward`` are unaffected).
+pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 GOLDEN_DIR = Path(__file__).parent / "goldens" / "turn_transcript_pr1"
 _GOLDEN_REGEN = os.environ.get("CLIO_TURN_TRANSCRIPT_GOLDEN_REGEN") == "1"
@@ -59,6 +65,20 @@ _VOLATILE_KEY_TOKENS = (
     "elapsed",
     "latency",
     "uptime",
+    # #948 S4b: a default session now runs the default-registry blueprint react
+    # ``main`` (the legacy planner that produced the original develop goldens is
+    # gone), so ``message.completed`` metadata gains the dynamic-agent
+    # ``agent_runtime`` provenance + its ``prompt_resolution`` block. Rather than
+    # drop those whole subtrees (which would let a wire regression in the
+    # provenance shape hide — the #948-S4b review finding), the goldens now COMPARE
+    # that structure and exclude ONLY the genuinely environment-specific leaf: the
+    # absolute ``definition_path`` values (per-run pytest tmp dirs). Everything else
+    # in the provenance is deterministic via the conftest default-registry fixture
+    # (blueprint id/version/scope, the ``package://`` prompt ``source_path``, the
+    # prompt checksum, commands), so it locks. The goldens were regenerated on this
+    # tree to capture the added provenance structure; a POSITIVE shape assertion
+    # lives in ``test_default_main_turn_stamps_agent_runtime_provenance`` below.
+    "definition_path",
 )
 
 
@@ -302,6 +322,51 @@ def test_multi_part_thinking_turn_matches_develop_golden(tmp_path: Path, monkeyp
     _assert_matches_golden(
         "multi_part_thinking_turn", scenario_multi_part_thinking_turn(tmp_path, monkeypatch)
     )
+
+
+def test_default_main_turn_stamps_agent_runtime_provenance(tmp_path: Path) -> None:
+    """POSITIVE lock: a default-registry-main turn stamps the runtime provenance.
+
+    The golden diff excludes the env-specific ``definition_path`` leaves, and the
+    develop goldens historically dropped the whole ``agent_runtime`` /
+    ``prompt_resolution`` subtrees — so this test is the compensating positive
+    assertion (#948 S4b review): it drives a real default-main turn and asserts the
+    persisted ``message.completed`` metadata carries the dynamic-agent provenance
+    with the right SHAPE. A wire regression in that class (dropped block, wrong
+    agent_id/execution_mode/blueprint id, or missing prompt_resolution) turns this
+    red where the id-normalized golden alone could not.
+    """
+
+    from clio_agent.gact.agent_blueprints import DEFAULT_AGENT_BLUEPRINT_ID
+
+    app = _build(tmp_path, "provenance", _PlainAgent("plain answer"))
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        _complete_turn(client, sid, "hello")
+        messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+
+    assistants = [
+        m for m in messages if m["role"] == "assistant" and not m.get("metadata", {}).get("live")
+    ]
+    assert assistants, "no persisted assistant message"
+    meta = assistants[0].get("metadata") or {}
+
+    runtime = meta.get("agent_runtime")
+    assert isinstance(runtime, dict), "agent_runtime provenance missing from the wire"
+    assert runtime.get("kind") == "dynamic_agent"
+    assert runtime.get("agent_id") == "main"
+    assert runtime.get("execution_mode") == "blueprint_react"
+    assert isinstance(runtime.get("module"), dict) and runtime["module"].get("kind") == "react"
+    blueprint = runtime.get("agent_blueprint")
+    assert isinstance(blueprint, dict), "agent_blueprint provenance missing"
+    assert blueprint.get("id") == DEFAULT_AGENT_BLUEPRINT_ID
+    assert blueprint.get("version") and blueprint.get("scope")
+
+    prompt_res = meta.get("prompt_resolution")
+    assert isinstance(prompt_res, dict), "prompt_resolution provenance missing from the wire"
+    # Structural keys present (values are deterministic via the conftest fixture).
+    for key in ("id", "profile", "scope", "source_path", "checksum"):
+        assert prompt_res.get(key), f"prompt_resolution.{key} missing"
 
 
 # ---------------------------------------------------------------------------

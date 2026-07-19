@@ -6,10 +6,15 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import _make_tool_observer, build_app
 from clio_agent.runtime.hooks import HookRegistry, install_global_registry
+
+# #948 S4b: default sessions run the blueprint react ``main``; route it to each
+# test's ``build_app(agent=...)`` host fake.
+pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 
 @dataclass
@@ -279,8 +284,7 @@ def test_artifact_and_builtin_command_semantic_events(tmp_path: Path, monkeypatc
     diff_parts = [
         e.payload["part"]
         for e in history
-        if e.type == "message.part.added"
-        and e.payload.get("part", {}).get("type") == "file_diff"
+        if e.type == "message.part.added" and e.payload.get("part", {}).get("type") == "file_diff"
     ]
     assert any(p.get("path") == "result.txt" for p in diff_parts)
     assert "[redacted]" not in str(diff_parts)
@@ -295,9 +299,7 @@ def test_artifact_and_builtin_command_semantic_events(tmp_path: Path, monkeypatc
     ]
     assert command_msgs, "command result must reach the UI as an assistant message"
     assert any("cache-stats" in str(m.get("metadata", {}).get("command", "")) for m in command_msgs)
-    bus_semantic_types = {
-        e.payload["event_type"] for e in history if e.type == "semantic.event"
-    }
+    bus_semantic_types = {e.payload["event_type"] for e in history if e.type == "semantic.event"}
     assert "artifact.proposed" not in bus_semantic_types
     assert "command.invocation.completed" not in bus_semantic_types
 

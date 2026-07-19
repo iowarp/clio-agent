@@ -71,20 +71,6 @@ class TestLmCallTimeout:
         assert _max_lm_call_seconds() == 123.0
 
 
-class TestAgentMaxSteps:
-    def test_default_and_clamp(self, monkeypatch):
-        from clio_agent.agent import DEFAULT_AGENT_MAX_STEPS, ClioAgent
-
-        monkeypatch.delenv("CLIO_AGENT_MAX_STEPS", raising=False)
-        assert ClioAgent._agent_max_steps() == DEFAULT_AGENT_MAX_STEPS
-        monkeypatch.setenv("CLIO_AGENT_MAX_STEPS", "5")
-        assert ClioAgent._agent_max_steps() == 5
-        monkeypatch.setenv("CLIO_AGENT_MAX_STEPS", "999")  # clamped to 12
-        assert ClioAgent._agent_max_steps() == 12
-        monkeypatch.setenv("CLIO_AGENT_MAX_STEPS", "garbage")  # falls back
-        assert ClioAgent._agent_max_steps() == DEFAULT_AGENT_MAX_STEPS
-
-
 class TestHookTimeout:
     def test_env_and_default(self, monkeypatch, tmp_path):
         from clio_agent.runtime.hooks import HookRegistry
@@ -208,27 +194,11 @@ class TestParseRetryAttempts:
         assert _parse_retry_attempts(self._cfg()) == 9
 
 
-class TestLegacyNativeExpertsEnabled:
-    """``agents.enable_legacy_native_experts`` / env."""
-
-    def test_default(self, monkeypatch):
-        from clio_agent.gact.agents.resolution import _legacy_native_expert_runtime_enabled
-
-        monkeypatch.delenv("CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS", raising=False)
-        assert _legacy_native_expert_runtime_enabled() is False
-
-    def test_env(self, monkeypatch):
-        from clio_agent.gact.agents.resolution import _legacy_native_expert_runtime_enabled
-
-        monkeypatch.setenv("CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS", "on")
-        assert _legacy_native_expert_runtime_enabled() is True
-
-    def test_file_wins(self, monkeypatch, tmp_path):
-        from clio_agent.gact.agents.resolution import _legacy_native_expert_runtime_enabled
-
-        monkeypatch.delenv("CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS", raising=False)
-        _write_user_config(monkeypatch, tmp_path, "agents:\n  enable_legacy_native_experts: true\n")
-        assert _legacy_native_expert_runtime_enabled() is True
+# NOTE (#948 S4b): ``TestLegacyNativeExpertsEnabled`` was deleted alongside the
+# retirement of the ``agents.enable_legacy_native_experts`` /
+# ``CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS`` knob. The legacy native-expert
+# runtime it gated (the Tier-1 ``ClioAgent.forward`` planner) no longer exists, so
+# there is no config surface left to migrate.
 
 
 class TestStreamAuditEnabled:
