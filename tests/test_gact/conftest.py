@@ -204,7 +204,11 @@ def complete_turn(
     text: str,
     *,
     json_override: dict[str, Any] | None = None,
-    timeout: float = 10.0,
+    # 30s: post-S4b every turn builds+runs a real blueprint module through the
+    # single dispatch branch; 10s was calibrated for the deleted legacy fake
+    # dispatch and flaked on slow 2-core CI runners (settle timeouts on green
+    # local runs).
+    timeout: float = 30.0,
     poll_interval: float = 0.05,
 ) -> dict[str, Any]:
     """POST a user message, wait for the assistant turn to settle,
