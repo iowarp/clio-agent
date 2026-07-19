@@ -42,16 +42,9 @@ DEFAULT_MAX_LINES = 800
 # falls under DEFAULT_MAX_LINES) in the same change. Paths are relative to the
 # repository root and use forward slashes.
 RATCHET_BASELINE: dict[str, int] = {
-    # #900: +4 for ClioAgent.shutdown closing the MCP tool executors (heavy reaping
-    # logic lives in the new owner module runtime/process_tree.py, not here).
-    # #932: +26 to wire the one boot listing pass + preloaded/namespace-routed
-    # executors (the fleet logic itself lives in tools/execution.py+gateway.py).
-    # #933: +58 for the workspace-fleet state accessor, turn leases, reaper
-    # wiring, and reaped-executor rebuild (the reaper itself is the owner
-    # module tools/reaper.py).
-    # #933 review hardening: shutdown snapshots the workspace registry under
-    # the shared lock; _workspace_state publishes the lock last (+8).
-    "src/clio_agent/agent.py": 2798,
+    # #948 S4b: ClioAgent.agent.py dropped from its 2798-line baseline to ~723
+    # once the dead Tier-1 planner half was deleted (host-only surface). Now
+    # under DEFAULT_MAX_LINES, so its ratchet entry is removed entirely.
     "src/clio_agent/arc/memory.py": 1394,
     "src/clio_agent/arc/segments.py": 1117,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.

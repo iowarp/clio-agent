@@ -1,0 +1,543 @@
+WARNING | \u2691 RESIDENT-LEDGER metrics seeded via streaming corpus walk (bounded memory, O(corpus) boot time); index-only rollup is owner-gated (design 1.13/§3.1)
+INFO:     Started server process [2800]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:17805 (Press CTRL+C to quit)
+INFO:     127.0.0.1:52697 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52703 - "PUT /v1/policies HTTP/1.1" 200 OK
+WARNING | process-tree census: 2 orphaned CLIO process(es) reason=orphaned_from_tree uv.exe(pid=22504), clio_run.exe(pid=25300)
+[31mD:\a\clio-core\clio-core\context-transport-primitives\src\event_manager_win.cc:125 ERROR 9824 AddEvent EventManager::AddEvent: WSAEventSelect ADD failed: 203[0m
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+INFO:     127.0.0.1:52705 - "PUT /v1/providers/lm HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52733 - "POST /v1/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52734 - "POST /v1/sessions/sess_fec2a76a94bd/agent-blueprint HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52763 - "GET /v1/sessions/sess_fec2a76a94bd/events HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52764 - "POST /v1/sessions/sess_fec2a76a94bd/messages HTTP/1.1" 200 OK
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+
+
++-----------------------------------------------------------------------------+
+|                                                                             |
+|                                                                             |
+|                        \u2584\u2580\u2580 \u2584\u2580\u2588 \u2588\u2580\u2580 \u2580\u2588\u2580 \u2588\u2580\u2584\u2580\u2588 \u2588\u2580\u2580 \u2588\u2580\u2588                        |
+|                        \u2588\u2580  \u2588\u2580\u2588 \u2584\u2584\u2588  \u2588  \u2588 \u2580 \u2588 \u2588\u2584\u2584 \u2588\u2580\u2580                        |
+|                                                                             |
+|                                                                             |
+|                                                                             |
+|                                FastMCP 3.4.4                                |
+|                            https://gofastmcp.com                            |
+|                                                                             |
+|                 \U0001f5a5  Server:      geo, 3.4.4                                  |
+|                 \U0001f680 Deploy free: https://horizon.prefect.io                  |
+|                                                                             |
++-----------------------------------------------------------------------------+
+
+
+[07/18/26 14:52:54] INFO     Starting MCP server 'geo' with    transport.py:241
+                             transport 'stdio'                                 
+2026-07-18 14:52:54,653 - INFO - Processing request of type ListToolsRequest
+2026-07-18 14:52:54,661 - INFO - Processing request of type CallToolRequest
+2026-07-18 14:52:55,854 - INFO - HTTP Request: GET https://nominatim.openstreetmap.org/search?format=json&q=Los+Angeles%2C+California&limit=1&addressdetails=0&countrycodes=us "HTTP/1.1 200 OK"
+2026-07-18 14:52:55,862 - INFO - Processing request of type ListToolsRequest
+WARNING | usage rollup degraded to an estimate because the LM fired but reported zero usage reason=usage_estimated strategy=price_table_estimate session=sess_b7525159dde5
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+
+
++-----------------------------------------------------------------------------+
+|                                                                             |
+|                                                                             |
+|                        \u2584\u2580\u2580 \u2584\u2580\u2588 \u2588\u2580\u2580 \u2580\u2588\u2580 \u2588\u2580\u2584\u2580\u2588 \u2588\u2580\u2580 \u2588\u2580\u2588                        |
+|                        \u2588\u2580  \u2588\u2580\u2588 \u2584\u2584\u2588  \u2588  \u2588 \u2580 \u2588 \u2588\u2584\u2584 \u2588\u2580\u2580                        |
+|                                                                             |
+|                                                                             |
+|                                                                             |
+|                                FastMCP 3.4.4                                |
+|                            https://gofastmcp.com                            |
+|                                                                             |
+|                 \U0001f5a5  Server:      ndp, 3.4.4                                  |
+|                 \U0001f680 Deploy free: https://horizon.prefect.io                  |
+|                                                                             |
++-----------------------------------------------------------------------------+
+
+
+[07/18/26 14:53:54] INFO     Starting MCP server 'ndp' with    transport.py:241
+                             transport 'stdio'                                 
+
+
++-----------------------------------------------------------------------------+
+|                                                                             |
+|                                                                             |
+|                        \u2584\u2580\u2580 \u2584\u2580\u2588 \u2588\u2580\u2580 \u2580\u2588\u2580 \u2588\u2580\u2584\u2580\u2588 \u2588\u2580\u2580 \u2588\u2580\u2588                        |
+|                        \u2588\u2580  \u2588\u2580\u2588 \u2584\u2584\u2588  \u2588  \u2588 \u2580 \u2588 \u2588\u2584\u2584 \u2588\u2580\u2580                        |
+|                                                                             |
+|                                                                             |
+|                                                                             |
+|                                FastMCP 3.4.4                                |
+|                            https://gofastmcp.com                            |
+|                                                                             |
+|                 \U0001f5a5  Server:      pandas, 3.4.4                               |
+|                 \U0001f680 Deploy free: https://horizon.prefect.io                  |
+|                                                                             |
++-----------------------------------------------------------------------------+
+
+
+[07/18/26 14:54:14] INFO     Starting MCP server 'pandas' with transport.py:241
+                             transport 'stdio'                                 
+INFO:mcp.server.lowlevel.server:Processing request of type ListToolsRequest
+INFO:mcp.server.lowlevel.server:Processing request of type ListToolsRequest
+INFO:mcp.server.lowlevel.server:Processing request of type CallToolRequest
+INFO:pandas_mcp.server:Filtering data in: D:\Libraries\Documents\projects\clio-agent\earthscope_converted_data.csv
+INFO:mcp.server.lowlevel.server:Processing request of type ListToolsRequest
+INFO:mcp.server.lowlevel.server:Processing request of type ListToolsRequest
+WARNING | usage rollup degraded to an estimate because the LM fired but reported zero usage reason=usage_estimated strategy=price_table_estimate session=sess_922d4fd46936
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+2026-07-18 14:55:11,318 - INFO - Processing request of type CallToolRequest
+WARNING | usage rollup degraded to an estimate because the LM fired but reported zero usage reason=usage_estimated strategy=price_table_estimate session=sess_b797f8c0c2d4
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | usage rollup degraded to an estimate because the LM fired but reported zero usage reason=usage_estimated strategy=price_table_estimate session=sess_774627529b10
+WARNING | usage rollup degraded to an estimate because the LM fired but reported zero usage reason=usage_estimated strategy=price_table_estimate session=sess_b899efeeca04
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+INFO:mcp.server.lowlevel.server:Processing request of type CallToolRequest
+INFO:pandas_mcp.server:Profiling CSV file: D:\Libraries\Documents\projects\clio-agent\MTA1.CI.LY_.30.csv
+WARNING | usage rollup degraded to an estimate because the LM fired but reported zero usage reason=usage_estimated strategy=price_table_estimate session=sess_4d5f3e2bc7ff
+WARNING | usage rollup degraded to an estimate because the LM fired but reported zero usage reason=usage_estimated strategy=price_table_estimate session=sess_42cdef8f2636
+WARNING | usage rollup degraded to an estimate because the LM fired but reported zero usage reason=usage_estimated strategy=price_table_estimate session=sess_4ad00b32a1a8
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+
+
++-----------------------------------------------------------------------------+
+|                                                                             |
+|                                                                             |
+|                        \u2584\u2580\u2580 \u2584\u2580\u2588 \u2588\u2580\u2580 \u2580\u2588\u2580 \u2588\u2580\u2584\u2580\u2588 \u2588\u2580\u2580 \u2588\u2580\u2588                        |
+|                        \u2588\u2580  \u2588\u2580\u2588 \u2584\u2584\u2588  \u2588  \u2588 \u2580 \u2588 \u2588\u2584\u2584 \u2588\u2580\u2580                        |
+|                                                                             |
+|                                                                             |
+|                                                                             |
+|                                FastMCP 3.4.4                                |
+|                            https://gofastmcp.com                            |
+|                                                                             |
+|                 \U0001f5a5  Server:      plot, 3.4.4                                 |
+|                 \U0001f680 Deploy free: https://horizon.prefect.io                  |
+|                                                                             |
++-----------------------------------------------------------------------------+
+
+
+[07/18/26 15:00:13] INFO     Starting MCP server 'plot' with   transport.py:241
+                             transport 'stdio'                                 
+2026-07-18 15:00:13,985 - INFO - Processing request of type ListToolsRequest
+2026-07-18 15:00:13,994 - INFO - Processing request of type CallToolRequest
+2026-07-18 15:00:14,002 - INFO - Creating timeseries plot from D:\Libraries\Documents\projects\clio-agent\MTA1.CI.LY_.30.csv
+2026-07-18 15:00:16,044 - INFO - Processing request of type ListToolsRequest
+WARNING | usage rollup degraded to an estimate because the LM fired but reported zero usage reason=usage_estimated strategy=price_table_estimate session=sess_8ec90097788b
+INFO:     127.0.0.1:50996 - "GET /v1/sessions/sess_fec2a76a94bd/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50997 - "GET /v1/sessions?include_all_workspaces=true HTTP/1.1" 200 OK
+WARNING | \u2691 TOOLS workspace_fleet_reaped root=D:\Libraries\Documents\projects\clio-agent reason=idle_ttl resident=0
+INFO:     127.0.0.1:59447 - "GET /v1/sessions/sess_fec2a76a94bd/agent-tasks HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59451 - "GET /v1/sessions/sess_fec2a76a94bd/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59536 - "POST /v1/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59537 - "POST /v1/sessions/sess_64ec293c5942/agent-blueprint HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59538 - "GET /v1/sessions/sess_64ec293c5942/events HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59539 - "POST /v1/sessions/sess_64ec293c5942/messages HTTP/1.1" 200 OK
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+
+
++-----------------------------------------------------------------------------+
+|                                                                             |
+|                                                                             |
+|                        \u2584\u2580\u2580 \u2584\u2580\u2588 \u2588\u2580\u2580 \u2580\u2588\u2580 \u2588\u2580\u2584\u2580\u2588 \u2588\u2580\u2580 \u2588\u2580\u2588                        |
+|                        \u2588\u2580  \u2588\u2580\u2588 \u2584\u2584\u2588  \u2588  \u2588 \u2580 \u2588 \u2588\u2584\u2584 \u2588\u2580\u2580                        |
+|                                                                             |
+|                                                                             |
+|                                                                             |
+|                                FastMCP 3.4.4                                |
+|                            https://gofastmcp.com                            |
+|                                                                             |
+|                 \U0001f5a5  Server:      ndp, 3.4.4                                  |
+|                 \U0001f680 Deploy free: https://horizon.prefect.io                  |
+|                                                                             |
++-----------------------------------------------------------------------------+
+
+
+[07/18/26 15:19:19] INFO     Starting MCP server 'ndp' with    transport.py:241
+                             transport 'stdio'                                 
+INFO:     127.0.0.1:59699 - "GET /v1/sessions/sess_64ec293c5942 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59700 - "GET /v1/sessions/sess_64ec293c5942/agent-tasks HTTP/1.1" 200 OK
+
+
++-----------------------------------------------------------------------------+
+|                                                                             |
+|                                                                             |
+|                        \u2584\u2580\u2580 \u2584\u2580\u2588 \u2588\u2580\u2580 \u2580\u2588\u2580 \u2588\u2580\u2584\u2580\u2588 \u2588\u2580\u2580 \u2588\u2580\u2588                        |
+|                        \u2588\u2580  \u2588\u2580\u2588 \u2584\u2584\u2588  \u2588  \u2588 \u2580 \u2588 \u2588\u2584\u2584 \u2588\u2580\u2580                        |
+|                                                                             |
+|                                                                             |
+|                                                                             |
+|                                FastMCP 3.4.4                                |
+|                            https://gofastmcp.com                            |
+|                                                                             |
+|                 \U0001f5a5  Server:      geo, 3.4.4                                  |
+|                 \U0001f680 Deploy free: https://horizon.prefect.io                  |
+|                                                                             |
++-----------------------------------------------------------------------------+
+
+
+[07/18/26 15:21:39] INFO     Starting MCP server 'geo' with    transport.py:241
+                             transport 'stdio'                                 
+2026-07-18 15:21:39,925 - INFO - Processing request of type ListToolsRequest
+2026-07-18 15:21:39,933 - INFO - Processing request of type CallToolRequest
+                    WARNING  Invalid arguments for tool          server.py:1325
+                             'query_arcgis_features': [{'type':                
+                             'missing_argument', 'loc':                        
+                             ('feature_service_url',), 'msg':                  
+                             'Missing required argument',                      
+                             'input': {'service_url':                          
+                             'https://services3.arcgis.com/T4QMs               
+                             pbfLg3qTGWY/arcgis/rest/services/WF               
+                             IGS_Interagency_Perimeters_Current/               
+                             FeatureServer/0', 'where':                        
+                             "attr_IncidentTypeCategory = 'WF'                 
+                             AND attr_POOState = 'CA'",                        
+                             'out_fields':                                     
+                             'attr_IncidentName,poly_IncidentNam               
+                             e,poly_GISAcres,attr_PercentContain               
+                             ed,attr_FireCause,attr_POOCounty,at               
+                             tr_POOState,attr_InitialLatitude,at               
+                             tr_InitialLongitude,attr_IncidentSi               
+                             ze', 'max_features': 60, 'min_lon':               
+                             -121.0, 'min_lat': 32.5, 'max_lon':               
+                             -115.0, 'max_lat': 36.0,                          
+                             'output_geojson_path':                            
+                             'D:\\Libraries\\Documents\\projects               
+                             \\clio-agent\\fire_perimeter.geojso               
+                             n'}}, {'type':                                    
+                             'unexpected_keyword_argument',                    
+                             'loc': ('service_url',), 'msg':                   
+                             'Unexpected keyword argument',                    
+                             'input':                                          
+                             'https://services3.arcgis.com/T4QMs               
+                             pbfLg3qTGWY/arcgis/rest/services/WF               
+                             IGS_Interagency_Perimeters_Current/               
+                             FeatureServer/0'}, {'type':                       
+                             'unexpected_keyword_argument',                    
+                             'loc': ('output_geojson_path',),                  
+                             'msg': 'Unexpected keyword                        
+                             argument', 'input':                               
+                             'D:\\Libraries\\Documents\\projects               
+                             \\clio-agent\\fire_perimeter.geojso               
+                             n'}]                                              
+[07/18/26 15:21:39] Error calling tool 'query_arcgis_features'                 
+                    +----------- Traceback (most recent call last) -----------+
+                    | D:\Libraries\Documents\projects\clio-agent-s1\.venv\Lib |
+                    | \site-packages\fastmcp\server\server.py:1240 in         |
+                    | call_tool                                               |
+                    |                                                         |
+                    | D:\Libraries\Documents\projects\clio-agent-s1\.venv\Lib |
+                    | \site-packages\fastmcp\tools\base.py:377 in _run        |
+                    |                                                         |
+                    | D:\Libraries\Documents\projects\clio-agent-s1\.venv\Lib |
+                    | \site-packages\fastmcp\server\providers\proxy.py:161 in |
+                    | run                                                     |
+                    +---------------------------------------------------------+
+                    ToolError: 3 validation errors for                         
+                    call[query_arcgis_features_tool]                           
+                    feature_service_url                                        
+                      Missing required argument [type=missing_argument,        
+                    input_value={'service_url':                                
+                    'https://...fire_perimeter.geojson'}, input_type=dict]     
+                        For further information visit                          
+                    https://errors.pydantic.dev/2.13/v/missing_argument        
+                    service_url                                                
+                      Unexpected keyword argument                              
+                    [type=unexpected_keyword_argument,                         
+                    input_value='https://services3.arcgis...Current/FeatureServ
+                    er/0', input_type=str]                                     
+                        For further information visit                          
+                    https://errors.pydantic.dev/2.13/v/unexpected_keyword_argum
+                    ent                                                        
+                    output_geojson_path                                        
+                      Unexpected keyword argument                              
+                    [type=unexpected_keyword_argument,                         
+                    input_value='D:\\Libraries\\Documents...\fire_perimeter.geo
+                    json', input_type=str]                                     
+                        For further information visit                          
+                    https://errors.pydantic.dev/2.13/v/unexpected_keyword_argum
+                    ent                                                        
+2026-07-18 15:21:50,341 - INFO - Processing request of type CallToolRequest
+2026-07-18 15:21:51,263 - INFO - HTTP Request: GET https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_Interagency_Perimeters_Current/FeatureServer/0/query?f=json&where=attr_IncidentTypeCategory+%3D+%27WF%27+AND+attr_POOState+%3D+%27CA%27&outFields=attr_IncidentName%2Cpoly_IncidentName%2Cpoly_GISAcres%2Cattr_PercentContained%2Cattr_FireCause%2Cattr_POOCounty%2Cattr_POOState%2Cattr_InitialLatitude%2Cattr_InitialLongitude%2Cattr_IncidentSize&returnGeometry=true&outSR=4326&resultRecordCount=60&geometry=%7B%22xmin%22%3A+-121.0%2C+%22ymin%22%3A+32.5%2C+%22xmax%22%3A+-115.0%2C+%22ymax%22%3A+36.0%2C+%22spatialReference%22%3A+%7B%22wkid%22%3A+4326%7D%7D&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects "HTTP/1.1 200 OK"
+2026-07-18 15:21:51,954 - INFO - HTTP Request: GET https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_Interagency_Perimeters_Current/FeatureServer/0/query?f=geojson&where=attr_IncidentTypeCategory+%3D+%27WF%27+AND+attr_POOState+%3D+%27CA%27&outFields=attr_IncidentName%2Cpoly_IncidentName%2Cpoly_GISAcres%2Cattr_PercentContained%2Cattr_FireCause%2Cattr_POOCounty%2Cattr_POOState%2Cattr_InitialLatitude%2Cattr_InitialLongitude%2Cattr_IncidentSize&returnGeometry=true&outSR=4326&resultRecordCount=60&geometry=%7B%22xmin%22%3A+-121.0%2C+%22ymin%22%3A+32.5%2C+%22xmax%22%3A+-115.0%2C+%22ymax%22%3A+36.0%2C+%22spatialReference%22%3A+%7B%22wkid%22%3A+4326%7D%7D&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects "HTTP/1.1 200 OK"
+2026-07-18 15:21:51,963 - INFO - Processing request of type ListToolsRequest
+2026-07-18 15:22:01,575 - INFO - Processing request of type CallToolRequest
+2026-07-18 15:22:02,547 - INFO - HTTP Request: GET https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_Interagency_Perimeters_Current/FeatureServer/0/query?f=json&where=attr_IncidentTypeCategory+%3D+%27WF%27&outFields=attr_IncidentName%2Cpoly_IncidentName%2Cpoly_GISAcres%2Cattr_PercentContained%2Cattr_FireCause%2Cattr_POOCounty%2Cattr_POOState%2Cattr_InitialLatitude%2Cattr_InitialLongitude%2Cattr_IncidentSize&returnGeometry=true&outSR=4326&resultRecordCount=60&geometry=%7B%22xmin%22%3A+-121.0%2C+%22ymin%22%3A+32.5%2C+%22xmax%22%3A+-115.0%2C+%22ymax%22%3A+36.0%2C+%22spatialReference%22%3A+%7B%22wkid%22%3A+4326%7D%7D&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects "HTTP/1.1 200 OK"
+2026-07-18 15:22:03,518 - INFO - HTTP Request: GET https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_Interagency_Perimeters_Current/FeatureServer/0/query?f=geojson&where=attr_IncidentTypeCategory+%3D+%27WF%27&outFields=attr_IncidentName%2Cpoly_IncidentName%2Cpoly_GISAcres%2Cattr_PercentContained%2Cattr_FireCause%2Cattr_POOCounty%2Cattr_POOState%2Cattr_InitialLatitude%2Cattr_InitialLongitude%2Cattr_IncidentSize&returnGeometry=true&outSR=4326&resultRecordCount=60&geometry=%7B%22xmin%22%3A+-121.0%2C+%22ymin%22%3A+32.5%2C+%22xmax%22%3A+-115.0%2C+%22ymax%22%3A+36.0%2C+%22spatialReference%22%3A+%7B%22wkid%22%3A+4326%7D%7D&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects "HTTP/1.1 200 OK"
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 RESIDENT-LEDGER idle_ttl session=sess_b7525159dde5 bytes=12903
+WARNING | \u2691 RESIDENT-LEDGER idle_ttl session=sess_922d4fd46936 bytes=73991
+WARNING | \u2691 RESIDENT-LEDGER idle_ttl session=sess_b797f8c0c2d4 bytes=31613
+WARNING | \u2691 RESIDENT-LEDGER idle_ttl session=sess_774627529b10 bytes=26469
+WARNING | \u2691 RESIDENT-LEDGER idle_ttl session=sess_b899efeeca04 bytes=30370
+WARNING | \u2691 RESIDENT-LEDGER idle_ttl session=sess_42cdef8f2636 bytes=20606
+WARNING | \u2691 RESIDENT-LEDGER idle_ttl session=sess_4d5f3e2bc7ff bytes=9643
+WARNING | \u2691 RESIDENT-LEDGER idle_ttl session=sess_4ad00b32a1a8 bytes=20886
+WARNING | \u2691 RESIDENT-LEDGER idle_ttl session=sess_8ec90097788b bytes=15268
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+2026-07-18 15:31:55,005 - INFO - Processing request of type ListToolsRequest
+2026-07-18 15:31:55,011 - INFO - Processing request of type CallToolRequest
+2026-07-18 15:31:55,756 - INFO - HTTP Request: GET https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_Interagency_Perimeters_Current/FeatureServer/0/query?f=json&where=attr_IncidentName+%3D+%27SUMMIT%27&outFields=attr_IncidentName%2Cpoly_GISAcres%2Cattr_PercentContained%2Cattr_FireCause%2Cattr_POOCounty%2Cattr_POOState%2Cattr_InitialLatitude%2Cattr_InitialLongitude%2Cattr_IncidentSize&returnGeometry=true&outSR=4326&resultRecordCount=10 "HTTP/1.1 200 OK"
+[07/18/26 15:31:55] Error calling tool 'query_arcgis_features'                 
+[07/18/26 15:31:55] Error calling tool 'query_arcgis_features'                 
+                    +----------- Traceback (most recent call last) -----------+
+                    | D:\Libraries\Documents\projects\clio-agent-s1\.venv\Lib |
+                    | \site-packages\fastmcp\server\server.py:1240 in         |
+                    | call_tool                                               |
+                    |                                                         |
+                    | D:\Libraries\Documents\projects\clio-agent-s1\.venv\Lib |
+                    | \site-packages\fastmcp\tools\base.py:377 in _run        |
+                    |                                                         |
+                    | D:\Libraries\Documents\projects\clio-agent-s1\.venv\Lib |
+                    | \site-packages\fastmcp\server\providers\proxy.py:161 in |
+                    | run                                                     |
+                    +---------------------------------------------------------+
+                    ToolError: ArcGIS returned an error for the requested      
+                    feature query: {'code': 429, 'message': 'Unable to perform 
+                    query. Too many requests.', 'details': ['API calls quota   
+                    exceeded (68658 request units)! maximum allowed request    
+                    units (57600) per Minute. Retry after 60 sec.']}           
+WARNING | usage rollup degraded to an estimate because the LM fired but reported zero usage reason=usage_estimated strategy=price_table_estimate session=sess_04e2538a90c3
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+2026-07-18 15:34:22,981 - INFO - Processing request of type CallToolRequest
+2026-07-18 15:34:22,981 - ERROR - bounding_box failed
+Traceback (most recent call last):
+  File "C:\Users\jaime\AppData\Local\clio-agent\Cache\mcp-uv-cache\archive-v0\F0KOGE9VMW6xZC4s\Lib\site-packages\geo_mcp\server.py", line 148, in bounding_box_tool
+    return bounding_box(geojson, pad_km=pad_km)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\jaime\AppData\Local\clio-agent\Cache\mcp-uv-cache\archive-v0\F0KOGE9VMW6xZC4s\Lib\site-packages\geo_mcp\implementation\overlap.py", line 112, in bounding_box
+    feats = _coerce_feature_collection(geojson)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\jaime\AppData\Local\clio-agent\Cache\mcp-uv-cache\archive-v0\F0KOGE9VMW6xZC4s\Lib\site-packages\geo_mcp\implementation\map_render.py", line 71, in _coerce_feature_collection
+    raise MapRenderError(f"Layer geojson path not found: {geojson}")
+geo_mcp.implementation.map_render.MapRenderError: Layer geojson path not found: D:\Libraries\Documents\projects\clio-agent\fire_perimeter.geojson
+[07/18/26 15:34:23] Error calling tool 'bounding_box'                          
+[07/18/26 15:34:23] Error calling tool 'bounding_box'                          
+                    +----------- Traceback (most recent call last) -----------+
+                    | D:\Libraries\Documents\projects\clio-agent-s1\.venv\Lib |
+                    | \site-packages\fastmcp\server\server.py:1240 in         |
+                    | call_tool                                               |
+                    |                                                         |
+                    | D:\Libraries\Documents\projects\clio-agent-s1\.venv\Lib |
+                    | \site-packages\fastmcp\tools\base.py:377 in _run        |
+                    |                                                         |
+                    | D:\Libraries\Documents\projects\clio-agent-s1\.venv\Lib |
+                    | \site-packages\fastmcp\server\providers\proxy.py:161 in |
+                    | run                                                     |
+                    +---------------------------------------------------------+
+                    ToolError: Bounding box failed: Layer geojson path not     
+                    found:                                                     
+                    D:\Libraries\Documents\projects\clio-agent\fire_perimeter.g
+                    eojson                                                     
+2026-07-18 15:34:43,409 - INFO - Processing request of type CallToolRequest
+WARNING | usage rollup degraded to an estimate because the LM fired but reported zero usage reason=usage_estimated strategy=price_table_estimate session=sess_4ad136a8c2ae
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+2026-07-18 15:36:03,835 - INFO - Processing request of type CallToolRequest
+2026-07-18 15:36:05,849 - INFO - HTTP Request: GET https://services9.arcgis.com/RHVPKKiFTONKtxq3/arcgis/rest/services/NDGD_SmokeForecast_v1/FeatureServer/0/query?f=json&where=1%3D1&outFields=%2A&returnGeometry=true&outSR=4326&resultRecordCount=100&geometry=%7B%22xmin%22%3A+-119.06%2C+%22ymin%22%3A+33.0525%2C+%22xmax%22%3A+-116.3209%2C+%22ymax%22%3A+35.8033%2C+%22spatialReference%22%3A+%7B%22wkid%22%3A+4326%7D%7D&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects "HTTP/1.1 200 OK"
+2026-07-18 15:36:23,492 - INFO - HTTP Request: GET https://services9.arcgis.com/RHVPKKiFTONKtxq3/arcgis/rest/services/NDGD_SmokeForecast_v1/FeatureServer/0/query?f=geojson&where=1%3D1&outFields=%2A&returnGeometry=true&outSR=4326&resultRecordCount=100&geometry=%7B%22xmin%22%3A+-119.06%2C+%22ymin%22%3A+33.0525%2C+%22xmax%22%3A+-116.3209%2C+%22ymax%22%3A+35.8033%2C+%22spatialReference%22%3A+%7B%22wkid%22%3A+4326%7D%7D&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects "HTTP/1.1 200 OK"
+2026-07-18 15:36:23,624 - INFO - Processing request of type CallToolRequest
+2026-07-18 15:36:24,446 - INFO - HTTP Request: GET https://services.arcgis.com/cJ9YHowT8TU7DUyn/arcgis/rest/services/Air%20Now%20Current%20Monitor%20Data%20Public/FeatureServer/0/query?f=json&where=1%3D1&outFields=%2A&returnGeometry=true&outSR=4326&resultRecordCount=200&geometry=%7B%22xmin%22%3A+-119.06%2C+%22ymin%22%3A+33.0525%2C+%22xmax%22%3A+-116.3209%2C+%22ymax%22%3A+35.8033%2C+%22spatialReference%22%3A+%7B%22wkid%22%3A+4326%7D%7D&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects "HTTP/1.1 200 OK"
+2026-07-18 15:36:25,160 - INFO - HTTP Request: GET https://services.arcgis.com/cJ9YHowT8TU7DUyn/arcgis/rest/services/Air%20Now%20Current%20Monitor%20Data%20Public/FeatureServer/0/query?f=geojson&where=1%3D1&outFields=%2A&returnGeometry=true&outSR=4326&resultRecordCount=200&geometry=%7B%22xmin%22%3A+-119.06%2C+%22ymin%22%3A+33.0525%2C+%22xmax%22%3A+-116.3209%2C+%22ymax%22%3A+35.8033%2C+%22spatialReference%22%3A+%7B%22wkid%22%3A+4326%7D%7D&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects "HTTP/1.1 200 OK"
+WARNING | usage rollup degraded to an estimate because the LM fired but reported zero usage reason=usage_estimated strategy=price_table_estimate session=sess_01396dc6153c
+INFO:     127.0.0.1:56106 - "GET /v1/sessions/sess_64ec293c5942/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56107 - "GET /v1/sessions?include_all_workspaces=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56141 - "GET /v1/sessions/sess_64ec293c5942/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56142 - "GET /v1/sessions/sess_64ec293c5942/agent-tasks HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56172 - "GET /v1/sessions/sess_a138da43588c/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56173 - "GET /v1/sessions/sess_a138da43588c/agent-tasks HTTP/1.1" 200 OK
+WARNING | usage rollup degraded to an estimate because the LM fired but reported zero usage reason=usage_estimated strategy=price_table_estimate session=sess_b6796ba59b64
+INFO:     127.0.0.1:56222 - "GET /v1/sessions/sess_64ec293c5942 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56260 - "POST /v1/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56262 - "POST /v1/sessions/sess_346ea334b047/agent-blueprint HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56263 - "GET /v1/sessions/sess_346ea334b047/events HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56264 - "POST /v1/sessions/sess_346ea334b047/messages HTTP/1.1" 200 OK
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+INFO:     127.0.0.1:56266 - "GET /v1/sessions/sess_64ec293c5942 HTTP/1.1" 200 OK
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | usage rollup degraded to an estimate because the LM fired but reported zero usage reason=usage_estimated strategy=price_table_estimate session=sess_a138da43588c
+INFO:     127.0.0.1:56317 - "GET /v1/sessions/sess_64ec293c5942 HTTP/1.1" 200 OK
+WARNING | \u2691 SKILLS agent main loaded skill route_dataset_questions (D:\Libraries\Documents\projects\clio-agent-s1\external\clio-agent-marketplace\data-semantics\skills\route_dataset_questions\SKILL.md)
+INFO:     127.0.0.1:56404 - "GET /v1/sessions/sess_64ec293c5942 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56451 - "GET /v1/sessions/sess_64ec293c5942 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56498 - "GET /v1/sessions/sess_64ec293c5942 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56499 - "GET /v1/sessions/sess_64ec293c5942 HTTP/1.1" 200 OK
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+INFO:     127.0.0.1:56538 - "GET /v1/sessions/sess_64ec293c5942/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56539 - "GET /v1/sessions/sess_64ec293c5942/agent-tasks HTTP/1.1" 200 OK
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+INFO:     127.0.0.1:56733 - "GET /v1/sessions/sess_346ea334b047/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56734 - "GET /v1/sessions?include_all_workspaces=true HTTP/1.1" 200 OK
+WARNING | \u2691 TOOLS workspace_fleet_reaped root=D:\Libraries\Documents\projects\clio-agent reason=idle_ttl resident=0
+INFO:     127.0.0.1:63798 - "GET /v1/sessions/sess_346ea334b047/messages HTTP/1.1" 200 OK

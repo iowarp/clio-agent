@@ -1,0 +1,241 @@
+WARNING | \u2691 RESIDENT-LEDGER metrics seeded via streaming corpus walk (bounded memory, O(corpus) boot time); index-only rollup is owner-gated (design 1.13/§3.1)
+INFO:     Started server process [14848]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:17805 (Press CTRL+C to quit)
+INFO:     127.0.0.1:50086 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+WARNING | process-tree census: 1 orphaned CLIO process(es) reason=orphaned_from_tree uv.exe(pid=3544)
+INFO:     127.0.0.1:50097 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:50113 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:50128 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:50139 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:52718 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+WARNING | process-tree census: 1 orphaned CLIO process(es) reason=orphaned_from_tree uv.exe(pid=3544)
+INFO:     127.0.0.1:52728 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:52742 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:52756 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:52767 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:52774 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+WARNING | process-tree census: 1 orphaned CLIO process(es) reason=orphaned_from_tree uv.exe(pid=3544)
+INFO:     127.0.0.1:52784 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:52799 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:52807 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:52817 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:52829 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+WARNING | process-tree census: 1 orphaned CLIO process(es) reason=orphaned_from_tree uv.exe(pid=3544)
+INFO:     127.0.0.1:52837 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:52847 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:52856 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:52871 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:52879 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+WARNING | process-tree census: 1 orphaned CLIO process(es) reason=orphaned_from_tree uv.exe(pid=3544)
+INFO:     127.0.0.1:52891 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:52911 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:52918 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:52926 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:52933 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+WARNING | process-tree census: 1 orphaned CLIO process(es) reason=orphaned_from_tree uv.exe(pid=3544)
+INFO:     127.0.0.1:52950 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:52962 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:52972 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:52987 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:52996 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+WARNING | process-tree census: 1 orphaned CLIO process(es) reason=orphaned_from_tree uv.exe(pid=3544)
+INFO:     127.0.0.1:53003 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53016 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:56996 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:56645 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:56660 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+WARNING | process-tree census: 1 orphaned CLIO process(es) reason=orphaned_from_tree uv.exe(pid=3544)
+INFO:     127.0.0.1:49517 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:49527 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:49541 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:49551 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:49566 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+WARNING | process-tree census: 1 orphaned CLIO process(es) reason=orphaned_from_tree uv.exe(pid=3544)
+INFO:     127.0.0.1:49575 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:49592 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:49602 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:49614 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:49623 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+WARNING | process-tree census: 1 orphaned CLIO process(es) reason=orphaned_from_tree uv.exe(pid=3544)
+INFO:     127.0.0.1:49642 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:49655 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:49672 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57356 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57366 - "PUT /v1/policies HTTP/1.1" 200 OK
+[31mD:\a\clio-core\clio-core\context-transport-primitives\src\event_manager_win.cc:125 ERROR 3772 AddEvent EventManager::AddEvent: WSAEventSelect ADD failed: 203[0m
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+INFO:     127.0.0.1:57367 - "PUT /v1/providers/lm HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58425 - "POST /v1/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58428 - "POST /v1/sessions/sess_ce3ea5513024/agent-blueprint HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58470 - "GET /v1/sessions/sess_ce3ea5513024/events HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58471 - "POST /v1/sessions/sess_ce3ea5513024/messages HTTP/1.1" 200 OK
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+
+
++-----------------------------------------------------------------------------+
+|                                                                             |
+|                                                                             |
+|                        \u2584\u2580\u2580 \u2584\u2580\u2588 \u2588\u2580\u2580 \u2580\u2588\u2580 \u2588\u2580\u2584\u2580\u2588 \u2588\u2580\u2580 \u2588\u2580\u2588                        |
+|                        \u2588\u2580  \u2588\u2580\u2588 \u2584\u2584\u2588  \u2588  \u2588 \u2580 \u2588 \u2588\u2584\u2584 \u2588\u2580\u2580                        |
+|                                                                             |
+|                                                                             |
+|                                                                             |
+|                                FastMCP 3.4.4                                |
+|                            https://gofastmcp.com                            |
+|                                                                             |
+|                 \U0001f5a5  Server:      geo, 3.4.4                                  |
+|                 \U0001f680 Deploy free: https://horizon.prefect.io                  |
+|                                                                             |
++-----------------------------------------------------------------------------+
+
+
+[07/18/26 14:08:44] INFO     Starting MCP server 'geo' with    transport.py:241
+                             transport 'stdio'                                 
+2026-07-18 14:08:44,725 - INFO - Processing request of type ListToolsRequest
+2026-07-18 14:08:44,738 - INFO - Processing request of type CallToolRequest
+2026-07-18 14:08:45,824 - INFO - HTTP Request: GET https://nominatim.openstreetmap.org/search?format=json&q=Los+Angeles%2C+California&limit=1&addressdetails=0&countrycodes=us "HTTP/1.1 200 OK"
+2026-07-18 14:08:45,831 - INFO - Processing request of type ListToolsRequest
+WARNING | usage rollup degraded to an estimate because the LM fired but reported zero usage reason=usage_estimated strategy=price_table_estimate session=sess_fa9e42b40333
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+
+
++-----------------------------------------------------------------------------+
+|                                                                             |
+|                                                                             |
+|                        \u2584\u2580\u2580 \u2584\u2580\u2588 \u2588\u2580\u2580 \u2580\u2588\u2580 \u2588\u2580\u2584\u2580\u2588 \u2588\u2580\u2580 \u2588\u2580\u2588                        |
+|                        \u2588\u2580  \u2588\u2580\u2588 \u2584\u2584\u2588  \u2588  \u2588 \u2580 \u2588 \u2588\u2584\u2584 \u2588\u2580\u2580                        |
+|                                                                             |
+|                                                                             |
+|                                                                             |
+|                                FastMCP 3.4.4                                |
+|                            https://gofastmcp.com                            |
+|                                                                             |
+|                 \U0001f5a5  Server:      ndp, 3.4.4                                  |
+|                 \U0001f680 Deploy free: https://horizon.prefect.io                  |
+|                                                                             |
++-----------------------------------------------------------------------------+
+
+
+[07/18/26 14:09:40] INFO     Starting MCP server 'ndp' with    transport.py:241
+                             transport 'stdio'                                 
+
+
++-----------------------------------------------------------------------------+
+|                                                                             |
+|                                                                             |
+|                        \u2584\u2580\u2580 \u2584\u2580\u2588 \u2588\u2580\u2580 \u2580\u2588\u2580 \u2588\u2580\u2584\u2580\u2588 \u2588\u2580\u2580 \u2588\u2580\u2588                        |
+|                        \u2588\u2580  \u2588\u2580\u2588 \u2584\u2584\u2588  \u2588  \u2588 \u2580 \u2588 \u2588\u2584\u2584 \u2588\u2580\u2580                        |
+|                                                                             |
+|                                                                             |
+|                                                                             |
+|                                FastMCP 3.4.4                                |
+|                            https://gofastmcp.com                            |
+|                                                                             |
+|                 \U0001f5a5  Server:      pandas, 3.4.4                               |
+|                 \U0001f680 Deploy free: https://horizon.prefect.io                  |
+|                                                                             |
++-----------------------------------------------------------------------------+
+
+
+[07/18/26 14:10:00] INFO     Starting MCP server 'pandas' with transport.py:241
+                             transport 'stdio'                                 
+INFO:mcp.server.lowlevel.server:Processing request of type ListToolsRequest
+INFO:mcp.server.lowlevel.server:Processing request of type ListToolsRequest
+INFO:mcp.server.lowlevel.server:Processing request of type CallToolRequest
+INFO:pandas_mcp.server:Filtering data in: D:\Libraries\Documents\projects\clio-agent\earthscope_converted_data.csv
+INFO:mcp.server.lowlevel.server:Processing request of type ListToolsRequest
+INFO:mcp.server.lowlevel.server:Processing request of type ListToolsRequest
+WARNING | usage rollup degraded to an estimate because the LM fired but reported zero usage reason=usage_estimated strategy=price_table_estimate session=sess_cef5d5d0b916
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+2026-07-18 14:10:53,409 - INFO - Processing request of type CallToolRequest
+WARNING | usage rollup degraded to an estimate because the LM fired but reported zero usage reason=usage_estimated strategy=price_table_estimate session=sess_c72461091075
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | usage rollup degraded to an estimate because the LM fired but reported zero usage reason=usage_estimated strategy=price_table_estimate session=sess_755ed02ccb12
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | usage rollup degraded to an estimate because the LM fired but reported zero usage reason=usage_estimated strategy=price_table_estimate session=sess_33ef4dae47f6
+WARNING | \u2691 TOOLS workspace_fleet_reaped root=D:\Libraries\Documents\projects\clio-agent reason=idle_ttl resident=0
+INFO:     127.0.0.1:55829 - "GET /v1/sessions/sess_ce3ea5513024/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55830 - "GET /v1/sessions?include_all_workspaces=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64006 - "GET /v1/sessions/sess_ce3ea5513024/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64007 - "GET /v1/sessions/sess_ce3ea5513024/agent-tasks HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50156 - "GET /v1/sessions/sess_647d64c9974c/messages HTTP/1.1" 200 OK

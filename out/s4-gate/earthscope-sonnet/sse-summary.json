@@ -1,0 +1,31 @@
+{
+  "session_id": "sess_ce3ea5513024",
+  "event_count": 176,
+  "normalized_event_count": 2,
+  "delta_event_count": 74,
+  "event_types": {
+    "server.connected": 1,
+    "session.snapshot": 1,
+    "lm.provider.changed": 1,
+    "session.status_changed": 1,
+    "message.created": 2,
+    "turn.started": 1,
+    "semantic.event": 15,
+    "message.part.added": 24,
+    "message.part.delta": 74,
+    "message.part.completed": 19,
+    "agent.task.queued": 3,
+    "agent.task.started": 3,
+    "server.heartbeat": 27,
+    "agent.task.completed": 2,
+    "agent.task.failed": 1,
+    "turn.completed": 1
+  },
+  "max_occurred_to_received_ms": 10939,
+  "max_sse_write_to_received_ms": null,
+  "max_delta_interarrival_ms": 285494,
+  "public_marker_leak_count": 0,
+  "completed": true,
+  "has_trace_delta": true,
+  "has_text_delta": true
+}

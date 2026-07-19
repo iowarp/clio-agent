@@ -1,12 +1,16 @@
 """#771 truth pass: persisted version stamps reflect the installed build.
 
-Both the core agent (``agent.py::_store_conversation``) and the gact
-compaction route (``routes/sessions.py`` ``POST /v1/sessions/{sid}/compact``)
-used to hard-code ``clio_agent_version="0.2.0"`` into ARC conversation
-metadata while the package was on 0.5.x. These tests drive the two real
-store paths against a recording ARC fake and assert the *persisted*
+The gact compaction route (``routes/sessions.py`` ``POST
+/v1/sessions/{sid}/compact``) used to hard-code
+``clio_agent_version="0.2.0"`` into ARC conversation metadata while the
+package was on 0.5.x. This test drives the real store path against a
+recording ARC fake and asserts the *persisted*
 ``metadata["clio_agent_version"]`` equals the installed distribution
-version — re-hardcoding a literal at either call site fails them.
+version — re-hardcoding a literal at the call site fails it.
+
+Note (#948 S4b): the core agent's ``ClioAgent._store_conversation`` (and its
+``_clio_agent_version`` helper) were deleted with the Tier-1 planner; the gact
+route's ``_installed_clio_agent_version`` is now the sole stamping helper.
 """
 
 from __future__ import annotations
@@ -14,7 +18,6 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
-from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -48,20 +51,6 @@ class _StubCompactAgent:
         return "stub compact summary"
 
 
-def test_agent_store_conversation_stamps_installed_version() -> None:
-    """The core agent persists the installed version, not a frozen literal."""
-
-    from clio_agent.agent import ClioAgent
-
-    holder = SimpleNamespace(arc=_RecordingArc())
-    ClioAgent._store_conversation(holder, "what is in run.h5?", "one dataset.", "sess-vstamp")
-
-    assert len(holder.arc.stored) == 1
-    stamped = holder.arc.stored[0].metadata["clio_agent_version"]
-    assert stamped == INSTALLED_VERSION
-    assert stamped != "0.2.0"
-
-
 def test_gact_compact_route_stamps_installed_version(tmp_path: Path) -> None:
     """The gact compact route persists the installed version in ARC metadata."""
 
@@ -92,12 +81,14 @@ def test_gact_compact_route_stamps_installed_version(tmp_path: Path) -> None:
 
 
 def test_version_helpers_report_installed_distribution() -> None:
-    """Both stamping helpers resolve to the installed distribution version."""
+    """The gact stamping helper resolves to the installed distribution version.
 
-    from clio_agent.agent import _clio_agent_version
+    #948 S4b: the core ``clio_agent.agent._clio_agent_version`` helper was deleted
+    with the planner; ``_installed_clio_agent_version`` is the surviving stamp.
+    """
+
     from clio_agent.gact.runtime.constants import _installed_clio_agent_version
 
-    assert _clio_agent_version() == INSTALLED_VERSION
     assert _installed_clio_agent_version() == INSTALLED_VERSION
     assert INSTALLED_VERSION != "0.2.0"
 
