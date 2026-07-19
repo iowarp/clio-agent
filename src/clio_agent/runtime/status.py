@@ -17,6 +17,8 @@ from typing import Any, Callable, Mapping
 
 import requests
 
+from clio_agent import conf
+from clio_agent.conf import ConfigStore
 from clio_agent.config import _CLOUD_API_KEY_ENV as _CONFIG_CLOUD_API_KEY_ENV
 from clio_agent.config import PROVIDER_DEFAULTS, LMProviderConfig
 from clio_agent.runtime.humanize import format_bytes as _format_bytes
@@ -199,8 +201,13 @@ class RuntimeProbe:
         api_timeout: float = 1.0,
         port_checker: PortChecker | None = None,
         clio_runtime_dir: str | Path | None = None,
+        config_store: ConfigStore | None = None,
     ) -> None:
         self.env = env if env is not None else os.environ
+        # Config-first resolution (#985): the env layer is the SAME injected ``self.env``
+        # the probes read, so ``env=`` still drives the override tier; a caller may inject
+        # a fully hermetic ``config_store`` (file + env) for the file tier.
+        self._conf = config_store if config_store is not None else ConfigStore(env=self.env)
         self.http_get = http_get or requests.get
         self.gateway_lister = gateway_lister or _list_gateway_capabilities
         self.module_checker = module_checker or _module_available
@@ -682,11 +689,37 @@ class RuntimeProbe:
             required=True,
         )
 
+    def _source_label(self, key: str, env: str, default: str) -> str:
+        """Provenance label for a config-first knob: which tier supplied the value (#985).
+
+        ``config:<key>`` / ``env:<env>`` / ``default:<default>`` — surfaced in the doctor
+        ``config_source``. (The ``conf.resolve`` calls stay inline in the probes so the
+        env-reference generator discovers each knob directly.)
+        """
+        if self._conf.file_value(key) is not conf.UNSET:
+            return f"config:{key}"
+        if self.env.get(env, "").strip():
+            return f"env:{env}"
+        return f"default:{default}"
+
+    def _data_dir(self) -> tuple[Path, str]:
+        """Agent data dir (``paths.data_dir`` / ``CLIO_DATA_DIR``, default ``.clio/agent``)."""
+        raw = self._conf.resolve(
+            "paths.data_dir", env="CLIO_DATA_DIR", default=".clio/agent", cast=conf.as_str
+        )
+        return Path(raw), self._source_label("paths.data_dir", "CLIO_DATA_DIR", ".clio/agent")
+
+    def _api_base(self) -> tuple[str, str]:
+        """gact API base URL (``runtime.api_base`` / ``CLIO_API_BASE``); empty = skip probe."""
+        endpoint = self._conf.resolve(
+            "runtime.api_base", env="CLIO_API_BASE", default="", cast=conf.as_str
+        ).strip()
+        return endpoint, self._source_label("runtime.api_base", "CLIO_API_BASE", "")
+
     def _probe_arc_local(self, backend_source: str) -> IntegrationStatus:
         """Probe local ARC persistence path readiness (explicit local backend)."""
-        base_dir = Path(self.env.get("CLIO_DATA_DIR", ".clio/agent"))
+        base_dir, dir_source = self._data_dir()
         arc_dir = base_dir / "arc"
-        dir_source = "env:CLIO_DATA_DIR" if "CLIO_DATA_DIR" in self.env else "default:.clio/agent"
         source = f"{backend_source}; {dir_source}"
         try:
             arc_dir.mkdir(parents=True, exist_ok=True)
@@ -858,7 +891,7 @@ class RuntimeProbe:
                 required=True,
             )
 
-        endpoint = self.env.get("CLIO_API_BASE")
+        endpoint, api_base_source = self._api_base()
         if not endpoint:
             return IntegrationStatus(
                 name="api",
@@ -881,7 +914,7 @@ class RuntimeProbe:
                 name="api",
                 state=IntegrationState.UNAVAILABLE,
                 summary=f"gact API is not reachable at {health_url}: {exc}",
-                config_source="env:CLIO_API_BASE",
+                config_source=api_base_source,
                 next_action="Start the gact server (clio start) or correct CLIO_API_BASE.",
                 endpoint=endpoint,
                 capabilities=list(_GACT_API_ENDPOINTS),
@@ -916,7 +949,7 @@ class RuntimeProbe:
                 name="api",
                 state=state,
                 summary=(f"gact /v1/health reports {overall_status or '?'} (HTTP {status_code})."),
-                config_source="env:CLIO_API_BASE",
+                config_source=api_base_source,
                 next_action="Inspect the failing gact integrations and server logs.",
                 endpoint=endpoint,
                 capabilities=list(_GACT_API_ENDPOINTS),
@@ -949,7 +982,7 @@ class RuntimeProbe:
                     "gact /v1/health is ready but /v1/capabilities failed: "
                     f"{caps_error or 'malformed response'}."
                 ),
-                config_source="env:CLIO_API_BASE",
+                config_source=api_base_source,
                 next_action="Inspect the gact server logs; the capability catalog should be static.",
                 endpoint=endpoint,
                 capabilities=list(_GACT_API_ENDPOINTS),
@@ -977,7 +1010,7 @@ class RuntimeProbe:
                 f"gact /v1 API is ready: contract {contract_version or '?'}, "
                 f"{len(enabled)} capabilities enabled."
             ),
-            config_source="env:CLIO_API_BASE",
+            config_source=api_base_source,
             next_action="No action required.",
             endpoint=endpoint,
             capabilities=enabled,

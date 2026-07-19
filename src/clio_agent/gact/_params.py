@@ -29,6 +29,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent import conf
+from clio_agent.gact.semantic_events import DEFAULT_DETAIL_LEVEL
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -107,3 +108,21 @@ def _gact_turn_timeout_s(app: Optional["FastAPI"] = None) -> float:
         )
     except (ValueError, TypeError):
         return 900.0
+
+
+def _semantic_trace_detail_level() -> str:
+    """Semantic-trace detail level (``trace.detail_level`` / ``CLIO_SEMANTIC_TRACE_DETAIL``).
+
+    Sibling of ``trace.backend``. Resolved file → env → default like every other knob; a
+    blank value falls through to the shipped ``DEFAULT_DETAIL_LEVEL``. ``SemanticEventSink``
+    normalizes an unknown level back to the default, so this only chooses the raw string.
+    """
+    return (
+        conf.resolve(
+            "trace.detail_level",
+            env="CLIO_SEMANTIC_TRACE_DETAIL",
+            default=DEFAULT_DETAIL_LEVEL,
+            cast=conf.as_str,
+        ).strip()
+        or DEFAULT_DETAIL_LEVEL
+    )

@@ -28,13 +28,13 @@ per-app ``app.state.ledger_evictions`` audit deque (itself bounded) and emits a
 
 from __future__ import annotations
 
-import os
 from collections import deque
 from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from clio_agent import conf
 from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
@@ -150,15 +150,41 @@ class LedgerBound:
         return self.hard_cap if self.hard_cap is not None else self.max_entries
 
 
-def _env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name, "").strip()
-    if not raw:
+def _config_fallback(key: str, raw: Any, default: int, why: str) -> None:
+    """Emit a typed trace reason for an invalid retention-bound value (no silent swap)."""
+
+    trace.event(
+        "LEDGER-RETENTION",
+        "config %s=%r invalid (%s); falling back to default %r",
+        key,
+        raw,
+        why,
+        default,
+    )
+
+
+def _resolve_positive_int(key: str, env: str, default: int) -> int:
+    """Resolve a positive-int retention bound (config file → env → default).
+
+    Mirrors :func:`clio_agent.gact.resident_ledgers._resolve_positive_int`: the value
+    resolves under the ``gact.ledger_retention.*`` config namespace with the original
+    ``CLIO_LEDGER_*`` environment variable kept as a documented override. An unparseable
+    or non-positive value falls back to ``default`` and emits a **typed trace reason** —
+    never a boot crash and never a silent swap (no-silent-fallback, §3.3).
+    """
+
+    raw = conf.resolve(key, env=env, default=default)
+    if raw is default:  # neither file nor env set the key — use the default silently
         return default
     try:
-        value = int(raw)
-    except ValueError:
+        value = conf.as_int(raw)
+    except (TypeError, ValueError):
+        _config_fallback(key, raw, default, "not an integer")
         return default
-    return value if value > 0 else default
+    if value <= 0:
+        _config_fallback(key, raw, default, "must be > 0")
+        return default
+    return value
 
 
 def _terminal_permission(row: Any) -> bool:
@@ -199,36 +225,77 @@ def _terminal_shared_token(row: Any) -> bool:
     return expires > 0 and datetime.now(timezone.utc).timestamp() > expires
 
 
-# Generous, age-tolerant defaults. Env-overridable for tuning without a redeploy;
-# discovered-not-hardcoded in spirit (the values are a safety ceiling, not a
-# behavioural knob). Terminal-first ledgers keep pending rows until the hard cap.
-LEDGER_BOUNDS: dict[str, LedgerBound] = {
-    "command_audit": LedgerBound(max_entries=_env_int("CLIO_LEDGER_COMMAND_AUDIT_MAX", 2000)),
-    "memory_tool_audit": LedgerBound(
-        max_entries=_env_int("CLIO_LEDGER_MEMORY_TOOL_AUDIT_MAX", 2000)
-    ),
-    "context_frames": LedgerBound(max_entries=_env_int("CLIO_LEDGER_CONTEXT_FRAMES_MAX", 200)),
-    "pending_diffs": LedgerBound(
-        max_entries=_env_int("CLIO_LEDGER_PENDING_DIFFS_MAX", 500),
-        hard_cap=_env_int("CLIO_LEDGER_PENDING_DIFFS_HARD", 1000),
-        is_terminal=_terminal_diff,
-    ),
-    "permissions": LedgerBound(
-        max_entries=_env_int("CLIO_LEDGER_PERMISSIONS_MAX", 2000),
-        hard_cap=_env_int("CLIO_LEDGER_PERMISSIONS_HARD", 4000),
-        is_terminal=_terminal_permission,
-    ),
-    "turn_attempts": LedgerBound(
-        max_entries=_env_int("CLIO_LEDGER_TURN_ATTEMPTS_MAX", 2000),
-        hard_cap=_env_int("CLIO_LEDGER_TURN_ATTEMPTS_HARD", 4000),
-        is_terminal=_terminal_turn_attempt,
-    ),
-    "shared_tokens": LedgerBound(
-        max_entries=_env_int("CLIO_LEDGER_SHARED_TOKENS_MAX", 5000),
-        hard_cap=_env_int("CLIO_LEDGER_SHARED_TOKENS_HARD", 10000),
-        is_terminal=_terminal_shared_token,
-    ),
-}
+# Generous, age-tolerant defaults. Config-first under the ``gact.ledger_retention.*``
+# namespace with the ``CLIO_LEDGER_*`` env vars kept as documented overrides for tuning
+# without a redeploy; discovered-not-hardcoded in spirit (the values are a safety
+# ceiling, not a behavioural knob). Terminal-first ledgers keep pending rows until the
+# hard cap.
+def build_ledger_bounds() -> dict[str, LedgerBound]:
+    """Resolve every ledger's retention bound (config file → env → default).
+
+    Rebuilt fresh so a test (or a config reload) can vary the bounds through the
+    injected :class:`~clio_agent.conf.ConfigStore` rather than ambient process env; the
+    module-level :data:`LEDGER_BOUNDS` is one such snapshot taken at import.
+    """
+
+    return {
+        "command_audit": LedgerBound(
+            max_entries=_resolve_positive_int(
+                "gact.ledger_retention.command_audit.max", "CLIO_LEDGER_COMMAND_AUDIT_MAX", 2000
+            )
+        ),
+        "memory_tool_audit": LedgerBound(
+            max_entries=_resolve_positive_int(
+                "gact.ledger_retention.memory_tool_audit.max",
+                "CLIO_LEDGER_MEMORY_TOOL_AUDIT_MAX",
+                2000,
+            )
+        ),
+        "context_frames": LedgerBound(
+            max_entries=_resolve_positive_int(
+                "gact.ledger_retention.context_frames.max", "CLIO_LEDGER_CONTEXT_FRAMES_MAX", 200
+            )
+        ),
+        "pending_diffs": LedgerBound(
+            max_entries=_resolve_positive_int(
+                "gact.ledger_retention.pending_diffs.max", "CLIO_LEDGER_PENDING_DIFFS_MAX", 500
+            ),
+            hard_cap=_resolve_positive_int(
+                "gact.ledger_retention.pending_diffs.hard", "CLIO_LEDGER_PENDING_DIFFS_HARD", 1000
+            ),
+            is_terminal=_terminal_diff,
+        ),
+        "permissions": LedgerBound(
+            max_entries=_resolve_positive_int(
+                "gact.ledger_retention.permissions.max", "CLIO_LEDGER_PERMISSIONS_MAX", 2000
+            ),
+            hard_cap=_resolve_positive_int(
+                "gact.ledger_retention.permissions.hard", "CLIO_LEDGER_PERMISSIONS_HARD", 4000
+            ),
+            is_terminal=_terminal_permission,
+        ),
+        "turn_attempts": LedgerBound(
+            max_entries=_resolve_positive_int(
+                "gact.ledger_retention.turn_attempts.max", "CLIO_LEDGER_TURN_ATTEMPTS_MAX", 2000
+            ),
+            hard_cap=_resolve_positive_int(
+                "gact.ledger_retention.turn_attempts.hard", "CLIO_LEDGER_TURN_ATTEMPTS_HARD", 4000
+            ),
+            is_terminal=_terminal_turn_attempt,
+        ),
+        "shared_tokens": LedgerBound(
+            max_entries=_resolve_positive_int(
+                "gact.ledger_retention.shared_tokens.max", "CLIO_LEDGER_SHARED_TOKENS_MAX", 5000
+            ),
+            hard_cap=_resolve_positive_int(
+                "gact.ledger_retention.shared_tokens.hard", "CLIO_LEDGER_SHARED_TOKENS_HARD", 10000
+            ),
+            is_terminal=_terminal_shared_token,
+        ),
+    }
+
+
+LEDGER_BOUNDS: dict[str, LedgerBound] = build_ledger_bounds()
 
 
 # --------------------------------------------------------------------------- #

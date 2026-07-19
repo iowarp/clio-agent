@@ -168,7 +168,13 @@ RATCHET_BASELINE: dict[str, int] = {
     # #947 DEBT (recorded 2026-07-18, #948 S4): residual over the pre-#947 count
     # (1188) is inherited MCP-apps landing growth; ratchet down with the mcp_app_*
     # owner-module split (see the #947 DEBT block on mcp_apps.py).
-    "src/clio_agent/runtime/status.py": 1205,
+    # #985 move 1 (2026-07-19): +33 for config-first resolution of paths.data_dir /
+    # runtime.api_base — the injectable ConfigStore, a shared _source_label helper for
+    # the config/env/default provenance, and two thin probe seams (the conf.resolve
+    # calls stay inline so the env-reference generator discovers each knob directly).
+    # Real new functionality (env-only → config-first); ratchets down when the doctor's
+    # probe methods are extracted to an owner module.
+    "src/clio_agent/runtime/status.py": 1238,
     # #932: +62 for preloaded tool definitions (start() without the list_tools
     # fan-out) and namespace-direct call routing with lazy per-namespace
     # clients — the executor IS the owner module for this.

@@ -15,7 +15,13 @@ Two kinds of knob are discovered:
    ``conf.resolve(...)`` (any module alias) or as a bare ``resolve(...)`` after
    ``from clio_agent.conf import resolve``. For each we record the dotted
    config-file key, the environment variable, the coercion type (from the
-   ``cast=`` argument), the in-code default and the defining module.
+   ``cast=`` argument), the in-code default and the defining module. Reads through
+   a **single-hop config-resolve helper** are followed too -- a same-module function
+   that forwards its ``(key, env, default)`` parameters straight into
+   ``conf.resolve`` (e.g. ``_resolve_positive_int("gact.x", "CLIO_X", 2000)`` in
+   ``gact/resident_ledgers.py`` / ``gact/runtime/retention.py``). The helper's own
+   coercion (an ``as_int`` / ``as_float`` call in its body) supplies the type when
+   the wrapped ``conf.resolve`` omits a ``cast=`` argument.
 2. **Environment-only** reads of a ``CLIO_*`` / ``ALCF_*`` variable that
    deliberately does *not* go through :mod:`clio_agent.conf` (see that
    module's docstring). Three read shapes are recognised:
@@ -147,6 +153,23 @@ class EnvOnlyVar:
     sources: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class ConfWrapper:
+    """A same-module helper forwarding its params into ``conf.resolve``.
+
+    Records which parameter (``(name, index)``) carries the config ``key``, the
+    ``env`` var name and the ``default`` at a call site, plus the coercion label the
+    helper applies (inferred from its ``cast=`` argument or an ``as_*`` call in its
+    body). A call ``_resolve_positive_int("gact.x", "CLIO_X", 2000)`` then resolves
+    to a :class:`ResolvedVar` exactly as a direct ``conf.resolve`` would.
+    """
+
+    key: tuple[str, int]
+    env: tuple[str, int]
+    default: tuple[str, int]
+    cast: str
+
+
 # --------------------------------------------------------------------------- #
 # AST collection
 # --------------------------------------------------------------------------- #
@@ -242,9 +265,59 @@ def _module_constants(tree: ast.Module) -> dict[str, object]:
     return consts
 
 
+def _class_attr_defaults(tree: ast.Module, consts: dict[str, object]) -> dict[str, object]:
+    """Map class-body attribute defaults (``NAME[: ann] = <expr>``) to their value.
+
+    A config-resolve helper frequently defaults a bound to a dataclass field
+    (``_resolve_positive_int("gact.x", "CLIO_X", cls.max_bytes)`` where
+    ``max_bytes: int = 512 * 1024 * 1024``). Keyed by the bare attribute name so the
+    wrapper-default path can resolve a ``cls.<attr>`` / ``self.<attr>`` reference to a
+    concrete documented value. Kept separate from :func:`_module_constants` so it is
+    consulted ONLY for wrapper defaults — direct ``conf.resolve`` rendering is
+    unchanged (no risk of an attribute default resolving differently than before).
+    """
+    out: dict[str, object] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for stmt in node.body:
+            if (
+                isinstance(stmt, ast.AnnAssign)
+                and isinstance(stmt.target, ast.Name)
+                and stmt.value is not None
+            ):
+                value = _eval(stmt.value, consts)
+                if value is not _UNRESOLVED:
+                    out[stmt.target.id] = value
+            elif isinstance(stmt, ast.Assign):
+                value = _eval(stmt.value, consts)
+                if value is _UNRESOLVED:
+                    continue
+                for target in stmt.targets:
+                    if isinstance(target, ast.Name):
+                        out[target.id] = value
+    return out
+
+
 def _literal(node: ast.expr | None, consts: dict[str, object]) -> object:
     """Resolve ``node`` to a Python literal, else ``_UNRESOLVED``."""
     return _eval(node, consts)
+
+
+def _wrapper_default(
+    node: ast.expr | None,
+    consts: dict[str, object],
+    class_attr_consts: dict[str, object],
+) -> tuple[str, str]:
+    """Return ``(scalar_default, dynamic_expr)`` for a wrapper call's ``default`` arg.
+
+    Like :func:`_render_default`, but a bare ``cls.<attr>`` / ``self.<attr>`` default
+    is resolved through the class-attribute defaults so a dataclass-field default
+    renders as its concrete value rather than an opaque ``_(computed)_`` expression.
+    """
+    if isinstance(node, ast.Attribute) and node.attr in class_attr_consts:
+        return (_format_value(class_attr_consts[node.attr]), "")
+    return _render_default(node, consts)
 
 
 def _render_default(node: ast.expr | None, consts: dict[str, object]) -> tuple[str, str]:
@@ -366,6 +439,84 @@ def _env_wrapper_functions(tree: ast.Module) -> dict[str, tuple[str, int]]:
     return wrappers
 
 
+def _conf_resolve_wrappers(
+    tree: ast.Module, resolve_names: set[str], conf_aliases: set[str]
+) -> dict[str, ConfWrapper]:
+    """Map same-module helper names to how they forward params into ``conf.resolve``.
+
+    A *config-resolve wrapper* is a function that calls ``conf.resolve(key, env=env,
+    default=default)`` with all three of ``key`` / ``env`` / ``default`` bound to its
+    own parameters (single-hop forwarding). Returns ``{func_name: ConfWrapper}`` so a
+    call site like ``_resolve_positive_int("gact.x", "CLIO_X", 2000)`` resolves to a
+    real knob. The coercion label comes from the wrapped ``conf.resolve``'s ``cast=``
+    if present, else an ``as_int`` / ``as_float`` / ... call in the helper body.
+    """
+    wrappers: dict[str, ConfWrapper] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        params = [a.arg for a in (*node.args.posonlyargs, *node.args.args)]
+        index = {name: pos for pos, name in enumerate(params)}
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.Call):
+                continue
+            if not _is_conf_resolve(inner, resolve_names, conf_aliases):
+                continue
+            key_node: ast.expr | None = inner.args[0] if inner.args else None
+            env_node: ast.expr | None = None
+            default_node: ast.expr | None = None
+            for kw in inner.keywords:
+                if kw.arg == "key":
+                    key_node = kw.value
+                elif kw.arg == "env":
+                    env_node = kw.value
+                elif kw.arg == "default":
+                    default_node = kw.value
+            key_param = _param_ref(key_node, index)
+            env_param = _param_ref(env_node, index)
+            default_param = _param_ref(default_node, index)
+            if key_param and env_param and default_param:
+                wrappers[node.name] = ConfWrapper(
+                    key=key_param,
+                    env=env_param,
+                    default=default_param,
+                    cast=_wrapper_cast(inner, node),
+                )
+                break
+    return wrappers
+
+
+def _param_ref(node: ast.expr | None, index: dict[str, int]) -> tuple[str, int] | None:
+    """Return ``(name, position)`` if ``node`` names a known parameter, else ``None``."""
+    if isinstance(node, ast.Name) and node.id in index:
+        return (node.id, index[node.id])
+    return None
+
+
+def _wrapper_cast(call: ast.Call, func: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
+    """Infer a wrapper's coercion label from its ``conf.resolve`` cast or an ``as_*`` call."""
+    cast = _cast_type(call)
+    if cast != "str":
+        return cast
+    for inner in ast.walk(func):
+        if isinstance(inner, ast.Call):
+            name = ast.unparse(inner.func).rsplit(".", 1)[-1]
+            if name in _CAST_TYPES:
+                return _CAST_TYPES[name]
+    return "str"
+
+
+def _wrapper_arg(call: ast.Call, param: tuple[str, int]) -> ast.expr | None:
+    """Extract a wrapper call's argument for ``param`` (positional or keyword)."""
+    name, position = param
+    if len(call.args) > position:
+        return call.args[position]
+    for kw in call.keywords:
+        if kw.arg == name:
+            return kw.value
+    return None
+
+
 def _environ_mapping_aliases(tree: ast.Module) -> set[str]:
     """Names/attributes assigned a mapping that falls back to ``os.environ``.
 
@@ -476,14 +627,21 @@ def collect(root: Path | None = None) -> tuple[list[ResolvedVar], list[EnvOnlyVa
         rel = path.relative_to(repo_root).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"))
         consts = _module_constants(tree)
+        class_attr_consts = {**consts, **_class_attr_defaults(tree, consts)}
         resolve_names, conf_aliases = _conf_import_aliases(tree)
         wrappers = _env_wrapper_functions(tree)
+        conf_wrappers = _conf_resolve_wrappers(tree, resolve_names, conf_aliases)
         environ_aliases = _environ_mapping_aliases(tree)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
             if _is_conf_resolve(node, resolve_names, conf_aliases):
                 _record_resolve(node, consts, rel, resolved)
+                continue
+            if isinstance(node.func, ast.Name) and node.func.id in conf_wrappers:
+                _record_wrapper_resolve(
+                    node, conf_wrappers[node.func.id], consts, class_attr_consts, rel, resolved
+                )
                 continue
             arg0 = _env_read_name_node(node, environ_aliases, wrappers)
             if arg0 is not None:
@@ -545,6 +703,35 @@ def _record_resolve(
     out.setdefault(env, record)
 
 
+def _record_wrapper_resolve(
+    call: ast.Call,
+    wrapper: ConfWrapper,
+    consts: dict[str, object],
+    class_attr_consts: dict[str, object],
+    rel: str,
+    out: dict[str, ResolvedVar],
+) -> None:
+    """Extract a ResolvedVar from a config-resolve wrapper call site into ``out``."""
+    env_val = _literal(_wrapper_arg(call, wrapper.env), consts)
+    if not _is_tracked_var(env_val):
+        return  # can't resolve the env name to a CLIO_*/ALCF_* literal
+    env = str(env_val)
+    key_val = _literal(_wrapper_arg(call, wrapper.key), consts)
+    key = str(key_val) if isinstance(key_val, str) else ""
+    default, dynamic_expr = _wrapper_default(
+        _wrapper_arg(call, wrapper.default), consts, class_attr_consts
+    )
+    record = ResolvedVar(
+        env=env,
+        key=key,
+        type_=wrapper.cast,
+        default=default,
+        source=rel,
+        dynamic_expr=dynamic_expr,
+    )
+    out.setdefault(env, record)
+
+
 # --------------------------------------------------------------------------- #
 # Rendering
 # --------------------------------------------------------------------------- #
@@ -559,7 +746,9 @@ def render_markdown(resolved: list[ResolvedVar], env_only: list[EnvOnlyVar]) -> 
         "",
         "Every `CLIO_*` / `ALCF_*` variable the agent reads, derived from the "
         "source tree by `scripts/gen_env_reference.py`. Discovery covers "
-        "`conf.resolve(...)` calls (module-qualified or imported), literal "
+        "`conf.resolve(...)` calls (module-qualified or imported), single-hop "
+        "config-resolve helpers (a function forwarding its `key`/`env`/`default` "
+        "into `conf.resolve`, e.g. `_resolve_positive_int(...)`), literal "
         "`os.environ` / `os.getenv` reads, single-hop env-read helpers (e.g. "
         '`_env_int("CLIO_...")`), and injected env mappings that default to '
         "`os.environ`; dynamically named variables (`CLIO_CRED_*`) and "

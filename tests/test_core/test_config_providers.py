@@ -384,14 +384,17 @@ class TestLoadConfigFileLayerWins:
         config = load_config_from_env()
         assert config.environment == "production"
 
-    def test_planner_temperature_router_legacy_env_only(self, monkeypatch):
-        # No file/primary env → the legacy CLIO_LM_ROUTER_TEMPERATURE alias applies.
+    def test_router_temperature_legacy_env_alias_is_retired(self, monkeypatch):
+        # SABOTAGE twin (#985 move 1): the CLIO_LM_ROUTER_TEMPERATURE env alias was a
+        # pure fall-through to the migrated lm.planner_temperature and is now deleted.
+        # Setting it must be INERT — planner_temperature falls to its normal default,
+        # never 0.42, so the retired alias can never silently re-acquire a reader.
         monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")
         monkeypatch.setenv("CLIO_LM_MODEL", "plain/model")  # avoid a profile override
         monkeypatch.delenv("CLIO_LM_PLANNER_TEMPERATURE", raising=False)
         monkeypatch.setenv("CLIO_LM_ROUTER_TEMPERATURE", "0.42")
         config = load_config_from_env()
-        assert config.planner_temperature == 0.42
+        assert config.planner_temperature == 0.3
 
     def test_api_key_stays_env_only(self, monkeypatch):
         # A config file must NOT be able to supply the secret API key.

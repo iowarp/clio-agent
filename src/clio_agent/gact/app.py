@@ -24,7 +24,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import os
 import sys
 import time
 
@@ -57,7 +56,6 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from clio_agent import conf
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.semantic_events import (
-    DEFAULT_DETAIL_LEVEL,
     SemanticEventSink,
     build_trace_backend,
 )
@@ -331,6 +329,7 @@ def _enrich_cancellation_error_info(
 # gact/_params.py -- user-agent generation-parameter parsing.
 from clio_agent.gact._params import (  # noqa: E402,F401
     _gact_turn_timeout_s,
+    _semantic_trace_detail_level,
     _user_agent_bool_param,
     _user_agent_float_param,
     _user_agent_int_param,
@@ -1398,13 +1397,7 @@ def build_app(
     # per-session pub/sub. POST /messages
     # publishes; /v1/sessions/{sid}/events subscribers consume.
     app.state.bus = EventBus()
-    app.state.semantic_trace_detail_level = (
-        os.environ.get(
-            "CLIO_SEMANTIC_TRACE_DETAIL",
-            DEFAULT_DETAIL_LEVEL,
-        ).strip()
-        or DEFAULT_DETAIL_LEVEL
-    )
+    app.state.semantic_trace_detail_level = _semantic_trace_detail_level()
     app.state.semantic_trace_backend = build_trace_backend(
         session_store_path.parent / "semantic_traces"
     )
