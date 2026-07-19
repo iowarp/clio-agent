@@ -324,6 +324,17 @@ class LivenessGate:
             self._port,
         )
 
+    def note_rpc_stalled(self, reason: str = "clio_core_rpc_stalled") -> None:
+        """Quarantine after a per-RPC stall ladder exhausts (arc/rpc_liveness, #948 S4).
+
+        A zombie daemon (socket alive, RPC hung) defeats the socket probe, so the stall
+        wrapper -- not :meth:`ensure_live` -- detected the loss. Enter the SAME
+        quarantine so the NEXT op fails fast via :meth:`ensure_live` (one guarded
+        reconnect per TTL) instead of paying the full stall ladder again.
+        """
+        with self._lock:
+            self._enter_quarantine(reason)
+
     def _enter_quarantine(self, reason: str) -> None:
         self._quarantined = True
         self._reason = reason
