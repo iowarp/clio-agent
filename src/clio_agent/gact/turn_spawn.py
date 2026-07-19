@@ -104,6 +104,11 @@ class TaskSpec:
     depth: int = 1
     mode: str = "async"  # "sync" (a waiter will collect) | "async" (notify-later)
     workflow_state: Optional[dict[str, Any]] = None
+    # Fan-out admission bound (#948 S5): when > 0, the declaring parent's
+    # ``fanout.max_workers`` — at most this many of the same (parent, requesting
+    # expert, depth) children RUN before the next spawn queues. 0 = only the global
+    # per-depth cap applies.
+    fanout_bound: int = 0
 
 
 class SpawnError(Exception):
@@ -168,6 +173,49 @@ def shutdown_agent_task_executors(app: "FastAPI") -> None:
     pools = getattr(app.state, "agent_task_executors", None) or {}
     for pool in list(pools.values()):
         pool.shutdown(wait=False, cancel_futures=True)
+
+
+def _batch_key(parent_session_id: str, requesting_expert_id: str, depth: int) -> tuple[str, str, int]:
+    """The fan-out batch identity: the same parent expert's children at one depth.
+
+    The ``fanout.max_workers`` bound (#948 S5) caps how many tasks sharing this key
+    may RUN concurrently — a per-parent-expert concurrency limit distinct from the
+    global per-depth cap."""
+
+    return (parent_session_id, requesting_expert_id, depth)
+
+
+def _queued_admissible(
+    task: "AgentTask",
+    running_by_depth: dict[int, int],
+    running_by_batch: dict[tuple[str, str, int], int],
+    cap: int,
+) -> bool:
+    """Whether a queued task may be admitted: the global per-depth cap AND (when the
+    task declares a ``fanout_bound``) the fan-out batch bound must both have room —
+    else admitting it would exceed the parent's declared max_workers (#948 S5)."""
+
+    if running_by_depth.get(task.depth, 0) >= cap:
+        return False
+    if task.fanout_bound > 0:
+        key = _batch_key(
+            task.parent_session_id, task.agent_ref.get("requesting_expert_id", ""), task.depth
+        )
+        if running_by_batch.get(key, 0) >= task.fanout_bound:
+            return False
+    return True
+
+
+def _running_in_batch(snapshot: Any, batch_key: tuple[str, str, int]) -> int:
+    """Count RUNNING tasks in ``batch_key``'s fan-out batch (over a registry snapshot)."""
+
+    return sum(
+        1
+        for t in snapshot
+        if t.status == STATUS_RUNNING
+        and _batch_key(t.parent_session_id, t.agent_ref.get("requesting_expert_id", ""), t.depth)
+        == batch_key
+    )
 
 
 def _now() -> str:
@@ -244,8 +292,20 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
     # behind depth-1 siblings on a different pool (#948 S4 adversarial review).
     reg = app.state.agent_task_registry
     cap = getattr(app.state, "max_concurrent_agent_tasks", 3)
-    running = sum(1 for t in reg.snapshot() if t.status == STATUS_RUNNING and t.depth == spec.depth)
-    at_cap = running >= cap
+    snap = reg.snapshot()
+    running = sum(1 for t in snap if t.status == STATUS_RUNNING and t.depth == spec.depth)
+    global_at_cap = running >= cap
+    # Fan-out admission bound (#948 S5): a declared ``fanout.max_workers`` caps this
+    # parent expert's concurrent children at this depth. A batch spawn beyond the
+    # bound QUEUES (typed ``concurrency_cap``) even when the global per-depth cap has
+    # room — the per-depth cap stays the global bound.
+    fanout_at_cap = spec.fanout_bound > 0 and (
+        _running_in_batch(
+            snap, _batch_key(spec.parent_session_id, spec.requesting_expert_id, spec.depth)
+        )
+        >= spec.fanout_bound
+    )
+    at_cap = global_at_cap or fanout_at_cap
 
     # ---- mint the child session (authoritative store) ----------------------
     parent = app.state.sessions.get(spec.parent_session_id)
@@ -271,6 +331,7 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
         },
         depth=spec.depth,
         run_index=run_index,
+        fanout_bound=spec.fanout_bound,
         status=STATUS_QUEUED,
         queued_reason="concurrency_cap" if at_cap else "",
         created_at=now,
@@ -502,11 +563,19 @@ def _admit_next_queued(app: "FastAPI") -> None:
     while True:
         snap = reg.snapshot()
         running_by_depth: dict[int, int] = {}
+        running_by_batch: dict[tuple[str, str, int], int] = {}
         for t in snap:
             if t.status == STATUS_RUNNING:
                 running_by_depth[t.depth] = running_by_depth.get(t.depth, 0) + 1
+                key = _batch_key(
+                    t.parent_session_id, t.agent_ref.get("requesting_expert_id", ""), t.depth
+                )
+                running_by_batch[key] = running_by_batch.get(key, 0) + 1
         queued = sorted((t for t in snap if t.status == STATUS_QUEUED), key=lambda t: t.created_at)
-        task = next((t for t in queued if running_by_depth.get(t.depth, 0) < cap), None)
+        task = next(
+            (t for t in queued if _queued_admissible(t, running_by_depth, running_by_batch, cap)),
+            None,
+        )
         if task is None:
             return
         child = app.state.sessions.get(task.child_session_id)
@@ -520,6 +589,7 @@ def _admit_next_queued(app: "FastAPI") -> None:
             depth=task.depth,
             mode=pending.get("mode", "async"),
             workflow_state=pending.get("workflow_state") or None,
+            fanout_bound=task.fanout_bound,
         )
         reg.register(replace(task, queued_reason=""))  # clear queued_reason as it launches
         _launch(app, reg.get(task.task_id), spec)

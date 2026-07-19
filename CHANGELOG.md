@@ -7,6 +7,30 @@ TUI/HTTP surface aren't tracked here.
 ## Unreleased
 
 ### Added
+- **Declared deterministic workflows** (#948 S5). A tier-1 orchestrator blueprint may
+  declare a `workflow:` block — a `steps` list describing an `a -> b -> c` child pathway
+  gated on typed `workflow_state` predicates (`when_state.<field>.exists` /
+  `when_state.<field>.equals` / `when_child_completed`), reviving the retired
+  continuation-contract shape. The runner (`gact/workflows.py`) executes the steps
+  DETERMINISTICALLY in declaration order — each step is a real `spawn_child_turn` + wait
+  with its own `AgentTask` record, evaluating its gate over the ACCUMULATED typed
+  `workflow_state` (the declaration is the decision; the model is not in the loop for the
+  declared steps). A gate that cannot be satisfied (missing field, a prior child that
+  never completed) or a child that FAILS is a typed STALL — the run stops and returns
+  `stalled{reason, step, predicate, observed}`, never a guess or a silent continuation.
+  A react main enters the workflow via one `run_workflow` tool (present ONLY when a
+  workflow is declared, mirroring the children-gated toolset); the tool returns the full
+  run record (per-step task ids/results, accumulated `workflow_state`, terminal
+  `completed | stalled`) and the model decides how to proceed from a stall. Invalid
+  declarations (unknown child, dependency cycle, malformed predicate, an unproduced
+  `when_child_completed`) are typed validation errors on the expert row that compose with
+  the react-children hierarchy rules.
+- **`fanout.max_workers` is now enforced** (#948 S5). A parent expert's declared
+  `fanout: {enabled, max_workers}` bounds `spawn_agents_parallel`'s batch admission: at
+  most `max_workers` of the parent's concurrent children at a depth RUN before the next
+  spawn queues with the typed `concurrency_cap` reason (queue admission honors the bound
+  too); the global per-depth cap remains the overall bound, and an absent/disabled
+  declaration leaves the batch unbounded up to that cap.
 - **Declarable `dspy.BestOfN` / `dspy.Refine` module variants** (#948 S5). A blueprint
   may widen its `module` from `{kind}` to `{kind, variant, n, threshold, reward}` — where
   `variant` is `best_of_n` or `refine` and `reward` declares an LM-as-judge signature

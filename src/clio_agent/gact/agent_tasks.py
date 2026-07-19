@@ -111,6 +111,12 @@ class AgentTask:
     # never leaks into scope. Durable on the record (assigned once at spawn, never
     # recomputed on queue admission).
     run_index: int = 0
+    # Fan-out admission bound (#948 S5): when > 0, at most this many of the SAME
+    # parent-expert's concurrent children at this depth may RUN before a spawn queues
+    # (the declaring parent's ``fanout.max_workers``). Durable on the record so queue
+    # admission (``_admit_next_queued``) honors the bound after a boot rebuild too; 0
+    # means only the global per-depth cap applies.
+    fanout_bound: int = 0
     status: str = STATUS_QUEUED
     queued_reason: str = ""
     error_reason: str = ""

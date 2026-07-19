@@ -35,6 +35,7 @@ from typing import Any, Literal
 from clio_agent.gact import skills as _skills
 from clio_agent.gact.runtime.type_parsing import parse_module_variant as _parse_module_variant
 from clio_agent.gact.types import AgentDef
+from clio_agent.gact.workflows import workflow_row_errors as _workflow_row_errors
 
 _EXPERT_ID_RE = re.compile(r"[A-Za-z0-9_.-]+")
 _REF_ID_RE = re.compile(r"[A-Za-z0-9_.:/-]+")
@@ -284,9 +285,7 @@ def parse_expert_file(
                 "pack_version": pack.version,
                 "pack_scope": pack.scope,
                 "pack_title": pack.title,
-                "pack_definition_path": str(pack.manifest_path)
-                if pack.manifest_path
-                else str(pack.root),
+                "pack_definition_path": str(pack.manifest_path or pack.root),
                 "pack_enabled": pack.enabled,
             }
         )
@@ -296,15 +295,14 @@ def parse_expert_file(
     for key in ("fallback_tier", "model_fallback", "delegation_policy"):
         if meta.get(key):
             metadata[key] = str(meta[key]).strip()
-    dspy_semantics = _dspy_semantics_from_meta(meta)
-    if dspy_semantics:
+    if dspy_semantics := _dspy_semantics_from_meta(meta):
         metadata["dspy"] = dspy_semantics
-    structured_outputs = _mapping_field(meta, "structured_outputs", "structured-outputs")
-    if structured_outputs:
+    if structured_outputs := _mapping_field(meta, "structured_outputs", "structured-outputs"):
         metadata["structured_outputs"] = structured_outputs
-    fanout = _mapping_field(meta, "fanout", "fan_out", "fan-out")
-    if fanout:
+    if fanout := _mapping_field(meta, "fanout", "fan_out", "fan-out"):
         metadata["fanout"] = fanout
+    if workflow := _mapping_field(meta, "workflow"):
+        metadata["workflow"] = workflow  # declaration home (no new AgentDef field, #948 S5)
     enabled_meta = str(meta["enabled"] if "enabled" in meta else "true").strip().lower()
     enabled = enabled_meta not in {"false", "0", "no", "off"} and not errors
     return AgentDef(
@@ -375,6 +373,8 @@ def validate_expert_hierarchy(
                     "(children are spawned via the spawn-runtime tools, which only "
                     "react experts carry)"
                 )
+        # #948 S5: declared workflow -> typed row errors composed with react-children.
+        errors.extend(_workflow_row_errors(row, rows))
         enabled = row.enabled and not errors
         out.append(row.model_copy(update={"enabled": enabled, "validation_errors": errors}))
     return out

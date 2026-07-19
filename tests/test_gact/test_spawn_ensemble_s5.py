@@ -143,8 +143,18 @@ class _RecordingAgent:
     calls to (``_ctx.active_tool_session_id()``), appending a ledger row exactly as the
     live tool observer does — proving per-child attribution under interleaving."""
 
-    def __init__(self, sleep_s: float = 0.0) -> None:
+    def __init__(
+        self, sleep_s: float = 0.0, barrier: threading.Barrier | None = None
+    ) -> None:
         self.sleep_s = sleep_s
+        # A load-insensitive concurrency WITNESS (#948 S5 flake hardening): when set,
+        # every forward rendezvous at the barrier BEFORE it records its window, so the
+        # proof of overlap is the barrier filling (N threads provably simultaneous),
+        # not a wall-clock window comparison that scheduling jitter can defeat under
+        # parallel suite load. Under a cap-1 sabotage the barrier can never fill (only
+        # one worker runs at a time) — the first waiter times out with
+        # BrokenBarrierError, the child turn fails, and the test goes red.
+        self.barrier = barrier
         self.windows: list[tuple[str, float, float]] = []
         # (session_id kwarg, tool_session the observer would attribute to) per forward.
         self.attributions: list[tuple[str, str]] = []
@@ -152,6 +162,11 @@ class _RecordingAgent:
         self.app: Any = None
 
     def forward(self, question: str, session_id: str, **_kw: Any) -> Any:
+        if self.barrier is not None:
+            # Rendezvous: all N forwards must be executing at once to pass. Generous
+            # timeout so a genuinely-concurrent pool never flakes; a serialized (cap-1)
+            # pool never fills the barrier and raises BrokenBarrierError here.
+            self.barrier.wait(timeout=15.0)
         start = time.monotonic()
         # The tool session id the live observer keys the ledger on — bound per child
         # turn by _tool_session_context(child_sid) and inherited here via the forward's
@@ -200,6 +215,26 @@ def _bus(app: Any, sid: str, etype: str) -> list[Any]:
     return [e for e in app.state.bus._history.get(sid, []) if e.type == etype]
 
 
+def _wait_bus(app: Any, sid: str, etype: str, n: int, timeout: float = 15.0) -> list[Any]:
+    """Poll the bus until ``n`` events of ``etype`` are on ``sid``, then return them.
+
+    A task reaches its terminal STATUS (``is_terminal``) inside ``transition`` — one
+    step BEFORE the completion hook publishes the terminal ``agent.task.*`` bus event.
+    So ``_wait_terminal`` returning does NOT guarantee the bus event is on the channel
+    yet: reading the count immediately races the publish (a real, load-independent
+    race — reproducible in isolation). Waiting on the event COUNT is the deterministic
+    fix; it never masks a genuine miss because a bounded timeout still fails if an
+    event is truly absent."""
+
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        events = _bus(app, sid, etype)
+        if len(events) >= n:
+            return events
+        time.sleep(0.02)
+    return _bus(app, sid, etype)
+
+
 def _spawn_ensemble(app: Any, parent: str, child: str, n: int) -> list[AgentTask]:
     """Spawn the SAME declared child ``n`` times from one parent turn (an ensemble)."""
 
@@ -243,8 +278,11 @@ def test_same_child_ensemble_three_distinct_records_sessions_and_run_indexes(
         assert sorted(s.run_index for s in settled) == [0, 1, 2]
 
         # Three started + three completed operational events on the PARENT channel.
-        started = _bus(app, parent, "agent.task.started")
-        completed = _bus(app, parent, "agent.task.completed")
+        # Wait on the COUNT: the terminal bus event publishes one step AFTER the task
+        # reaches its terminal status, so reading immediately after _wait_terminal races
+        # the publish (see _wait_bus).
+        started = _wait_bus(app, parent, "agent.task.started", 3)
+        completed = _wait_bus(app, parent, "agent.task.completed", 3)
         assert len(started) == 3, [e.payload.get("run_index") for e in started]
         assert len(completed) == 3
         # Every started event carries its run_index.
@@ -254,14 +292,18 @@ def test_same_child_ensemble_three_distinct_records_sessions_and_run_indexes(
 def test_ensemble_of_three_runs_concurrently_overlapping_windows(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """A same-child ensemble of 3 with cap>=3 runs 3 CONCURRENT child turns: their run
-    windows overlap (there is an instant all three are executing). Proof uses real
-    threads on the dedicated depth pool with slow stub children — max(starts) <
-    min(ends) is impossible under sequential execution (each 0.5s child would finish
-    before the next starts)."""
+    """A same-child ensemble of 3 with cap>=3 runs 3 CONCURRENT child turns. The proof
+    is a 3-way ``threading.Barrier`` rendezvous — a LOAD-INSENSITIVE witness: the
+    barrier only releases once all three forwards are executing SIMULTANEOUSLY, which
+    is impossible under sequential (cap-1) execution (the barrier would never fill and
+    the first waiter would raise BrokenBarrierError → the child fails → this test goes
+    red). The wall-clock window overlap is asserted as a secondary check but is now
+    guaranteed by the rendezvous, so parallel-suite scheduling jitter can no longer
+    flake it."""
 
     _declare(monkeypatch, "main")
-    agent = _RecordingAgent(sleep_s=0.5)
+    barrier = threading.Barrier(3)
+    agent = _RecordingAgent(sleep_s=0.5, barrier=barrier)
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     agent.app = app
     with TestClient(app) as client:
@@ -270,18 +312,44 @@ def test_ensemble_of_three_runs_concurrently_overlapping_windows(
 
         spawned = _spawn_ensemble(app, parent, "main", 3)
         for t in spawned:
-            assert _wait_terminal(app, t.task_id).status == "completed"
+            assert _wait_terminal(app, t.task_id, timeout=30.0).status == "completed"
 
+        # The barrier filled → all three forwards were provably executing at once.
+        assert not barrier.broken, "barrier broke — the three runs did not rendezvous"
         assert len(agent.windows) == 3
         starts = [w[1] for w in agent.windows]
         ends = [w[2] for w in agent.windows]
-        # All three intervals share a common instant → genuinely concurrent.
+        # Guaranteed by the rendezvous: all three intervals share a common instant.
         assert max(starts) < min(ends), (
             f"runs did not overlap (sequential?): windows={agent.windows}"
         )
-        # And the whole ensemble finished in ~one child's time, not three.
-        wall = max(ends) - min(starts)
-        assert wall < 3 * 0.5, f"wall {wall:.2f}s ~ serialized, not concurrent"
+
+
+def test_ensemble_cap_one_serializes_barrier_never_fills_sabotage_lock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Sabotage lock for the concurrency proof above: at cap=1 the pool can only run
+    ONE child at a time, so a 3-way barrier can NEVER fill — the first waiter times out
+    (BrokenBarrierError), its child turn fails, and NOT all three runs complete. This
+    is exactly what the overlap test relies on to detect a cap regression; if the cap
+    were silently 1, the overlap test would go red here too."""
+
+    _declare(monkeypatch, "main")
+    barrier = threading.Barrier(3, timeout=3.0)
+    agent = _RecordingAgent(sleep_s=0.1, barrier=barrier)
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    agent.app = app
+    with TestClient(app) as client:
+        app.state.max_concurrent_agent_tasks = 1
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+
+        spawned = _spawn_ensemble(app, parent, "main", 3)
+        settled = [_wait_terminal(app, t.task_id, timeout=30.0) for t in spawned]
+        # Serialized execution can never satisfy the 3-way rendezvous.
+        assert barrier.broken, "barrier filled under cap=1 — concurrency proof is not load-bearing"
+        assert not all(s.status == "completed" for s in settled), (
+            "all runs completed under cap=1 — the barrier witness did not bite"
+        )
 
 
 def test_ledger_rows_attribute_to_each_child_session_under_interleaving(
@@ -353,7 +421,7 @@ def test_ensemble_queue_admission_fifo_per_depth(tmp_path: Path, monkeypatch) ->
             assert _wait_terminal(app, t.task_id).status == "completed"
 
         # FIFO per depth: the started events fire in run_index order (0 then 1 then 2).
-        started = _bus(app, parent, "agent.task.started")
+        started = _wait_bus(app, parent, "agent.task.started", 3)
         assert [e.payload["run_index"] for e in started] == [0, 1, 2]
 
 
@@ -373,8 +441,9 @@ def test_cancel_cascade_kills_all_ensemble_runs(tmp_path: Path, monkeypatch) -> 
 
         for t in spawned:
             assert _wait_terminal(app, t.task_id, timeout=8.0).status == "cancelled"
-        # One cascade-cancel event per run on the parent channel.
-        assert len(_bus(app, parent, "agent.task.cancelled")) == 3
+        # One cascade-cancel event per run on the parent channel (wait on the count —
+        # the cancelled bus event publishes just after the terminal transition).
+        assert len(_wait_bus(app, parent, "agent.task.cancelled", 3)) == 3
 
 
 # ===========================================================================
