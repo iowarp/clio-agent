@@ -6,6 +6,22 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Added
+- **Declarable `dspy.BestOfN` / `dspy.Refine` module variants** (#948 S5). A blueprint
+  may widen its `module` from `{kind}` to `{kind, variant, n, threshold, reward}` — where
+  `variant` is `best_of_n` or `refine` and `reward` declares an LM-as-judge signature
+  (`instructions` + optional `inputs` + `target`). The inner `predict`/`chain_of_thought`/
+  `react` program is wrapped in the REAL engine, whose reward is a generated source-backed
+  scorer (an out-of-range/unparseable judge score clamps or degrades to `0.0` with a typed
+  `variant.reward.parse_failed` log — never a crash). Invalid declarations (unknown
+  variant, `n < 1`, missing/malformed reward or threshold) are typed validation errors
+  surfaced on the expert row. The selected try's `winning_index` + `winning_score` (and
+  every try's score) are stamped, additive, on the prediction as `variant_selection`; each
+  try emits a structured `variant.try` / `variant.reward` log. N in-process tries of one
+  module in one session are partitioned per try on the ARC live plane + transcript-tap
+  KEYS via a new `react_run` discriminator (folded only into keying, never attribution) so
+  try N's model input never accumulates try N-1's trajectory.
+
 ### Changed
 - **The legacy Tier-1 `ClioAgent` planner pathway is deleted** (#948 S4b). The
   planner loop (`ClioAgent.forward` / `_run_agent_loop` and its action-planner /

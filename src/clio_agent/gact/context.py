@@ -76,6 +76,16 @@ class RuntimeContext:
     # field name, which would also delete a chain_of_thought expert's visible
     # reasoning (#878). Empty off-scope (main planner / CLI / optimizer).
     react_kind: str = ""  # module.kind of the active expert
+    # Per-try discriminator for an in-process module variant (dspy.BestOfN /
+    # dspy.Refine, #948 S5). ``-1`` off-variant. When a variant runs N forwards of
+    # ONE module in ONE child session, the tries collide on the ARC live plane +
+    # transcript-tap KEYS (even sequentially: try N's History fold would accumulate
+    # try N-1's trajectory — a model-input correctness bug). This index is folded
+    # ONLY into those KEYING planes (via :func:`run_keyed_scope`), NEVER into what
+    # UI/actor/audit attribution reads: :func:`active_react_scope` stays the bare
+    # agent id, so lm_activity agent_id / tool_observer invoking_expert are unchanged
+    # (spike verdict on #953).
+    react_run: int = -1  # per-try variant run index; -1 off-variant
     # The current ReAct step's reasoning, set by the react loop BEFORE it invokes
     # the step's tool so the tool observer (which runs synchronously on the react
     # thread) can stamp it onto the ``tool_call`` part — one LLM turn = thought +
@@ -186,6 +196,32 @@ def react_extract_field_suppressed(kind: str, field: str, *, answer_is_deliverab
     if field == "answer":
         return not answer_is_deliverable
     return False
+
+
+def active_react_run() -> int:
+    """The active in-process variant try index (0..N-1), or ``-1`` off-variant.
+
+    Set per try by :mod:`clio_agent.gact.agents.module_variants` around each inner
+    forward of a ``dspy.BestOfN`` / ``dspy.Refine`` variant. Consumed ONLY by
+    :func:`run_keyed_scope` to partition the ARC live plane + transcript-tap dedup
+    keys per try; it never touches attribution (#953 spike verdict)."""
+    return _RUNTIME.get().react_run
+
+
+def run_keyed_scope(scope: str) -> str:
+    """Fold the active variant :func:`active_react_run` into an ARC/tap KEY string.
+
+    Returns ``f"{scope}#run{n}"`` when a variant try is active (``react_run >= 0``)
+    and ``scope`` is non-empty, else ``scope`` unchanged. This is the SINGLE place the
+    per-try discriminator enters a keying plane, so the ARC scope (reactv2_events
+    ``_arc_scope`` / reactv2 ``arc_history_messages``) and the transcript-tap dedup key
+    (lm_activity ``record_dedup`` write / tool_observer tap read) partition per try in
+    lockstep — while ``active_react_scope`` itself stays the bare agent id for every
+    attribution reader (#953)."""
+    run = _RUNTIME.get().react_run
+    if run >= 0 and scope:
+        return f"{scope}#run{run}"
+    return scope
 
 
 def active_step_thought() -> str:
@@ -359,6 +395,16 @@ def set_react_kind(kind: str) -> contextvars.Token[RuntimeContext]:
     :func:`set_react_scope` (#878)."""
     cur = _RUNTIME.get()
     return _RUNTIME.set(replace(cur, react_kind=kind))
+
+
+def set_react_run(run_index: int) -> contextvars.Token[RuntimeContext]:
+    """Set ``react_run`` for one variant try (its own token, reset per try).
+
+    Folded ONLY into the ARC/tap keying planes (:func:`run_keyed_scope`); it does not
+    ride the scope token, so ``react_scope``/``react_kind`` and every attribution
+    reader stay untouched by the variant leg (#953)."""
+    cur = _RUNTIME.get()
+    return _RUNTIME.set(replace(cur, react_run=int(run_index)))
 
 
 def set_step_thought(thought: str, reasoning: str = "") -> contextvars.Token[RuntimeContext]:

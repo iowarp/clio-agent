@@ -62,7 +62,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # #948 S4: +14 for the children-must-be-react hierarchy rule (a predict/CoT
     # parent would silently strand its children now that the settle loop routing
     # for it is deleted; typed validation error instead).
-    "src/clio_agent/gact/expert_packs.py": 814,
+    # #948 S5: +7 to validate the dspy.BestOfN/Refine module variant declaration on the
+    # row (the parse itself is the leaf runtime/type_parsing.parse_module_variant).
+    "src/clio_agent/gact/expert_packs.py": 821,
     # #919: +35 to WIRE progressive-disclosure skills into all three module
     # classes (block + load_skill tool; logic lives in agents/skill_runtime.py)
     # and to document the deleted stale extract alias that crashed every
@@ -71,7 +73,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # deleted; an empty blueprint/prompt-agent answer is now a typed failure).
     # #948 S4 live-gate fix: +29 for the child-scaled react iteration budget (the
     # declared-children resolution at the react build site + the scaling default).
-    "src/clio_agent/gact/agents/builders.py": 1827,
+    # #948 S5: +4 to wrap the inner program in the declared dspy.BestOfN/Refine module
+    # variant at the dispatch (logic lives in the owner module agents/module_variants.py).
+    "src/clio_agent/gact/agents/builders.py": 1831,
     # #900: +14 for the lifespan child-reaper install + clean-shutdown teardown wiring
     # (both delegate to the owner module runtime/process_tree.py).
     # #918: +7 for the SkillNotDelegatableError exception handler (app.py owns
@@ -114,7 +118,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # failure; lives with its sibling turn exceptions).
     "src/clio_agent/gact/runtime/globals.py": 977,
     "src/clio_agent/gact/streaming.py": 995,
-    "src/clio_agent/gact/tool_observer.py": 930,
+    # #948 S5: +2 to read the RUN-KEYED tap-dedup bucket under an in-process module
+    # variant (context.run_keyed_scope; bare invoking_expert still owns attribution).
+    "src/clio_agent/gact/tool_observer.py": 932,
     "src/clio_agent/gact/transcript.py": 986,
     # #918: +17 for the typed SkillNotDelegatableError ladder arm (a skill-bound
     # turn fails typed, never as generic agent_error).

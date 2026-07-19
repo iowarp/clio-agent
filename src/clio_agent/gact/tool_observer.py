@@ -645,8 +645,10 @@ def _make_tool_observer(app: "FastAPI"):
             # never vanishes. Every outcome emits a structured reason (no silent
             # fallback). See tests/test_gact/test_next_thought_single_owner.py.
             transcript = _session_turn_transcript(app, sid)
+            # #953: read the RUN-KEYED tap bucket (bare invoking_expert still owns attribution).
+            _tap_scope = _ctx.run_keyed_scope(invoking_expert)
             had_stream, survived = (
-                transcript.tap_step_survives_clean(invoking_expert, "next_thought")
+                transcript.tap_step_survives_clean(_tap_scope, "next_thought")
                 if transcript is not None
                 else (False, False)
             )

@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from clio_agent.gact import skills as _skills
+from clio_agent.gact.runtime.type_parsing import parse_module_variant as _parse_module_variant
 from clio_agent.gact.types import AgentDef
 
 _EXPERT_ID_RE = re.compile(r"[A-Za-z0-9_.-]+")
@@ -250,6 +251,12 @@ def parse_expert_file(
     module_kind = str(module.get("kind") or "predict").strip().lower()
     if module_kind not in {"predict", "chain_of_thought", "react"}:
         errors.append(f"unsupported module.kind: {module_kind}")
+    # Validate any dspy.BestOfN / dspy.Refine variant (#948 S5): orthogonal to kind (it
+    # WRAPS the inner), so it composes with the children-must-be-react rule below.
+    try:
+        _parse_module_variant(module, agent_id=expert_id or "expert")
+    except ValueError as variant_exc:
+        errors.append(str(variant_exc))
     for field_name, values in {
         "tools": tools,
         "skills": skills,
