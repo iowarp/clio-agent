@@ -285,7 +285,8 @@ def _runtime_dynamic_agent_children_context(
     lines.append(
         "Routing: delegate by CALLING your spawn tools. `spawn_agent_task(agent, task)` "
         "spawns ONE declared child as a real child turn and returns its `task_id`; "
-        "`wait_agent_tasks([task_id])` blocks until it finishes and returns its typed "
+        "`wait_agent_tasks([task_id], timeout_s=...)` blocks (up to your required "
+        "`timeout_s` budget) until it finishes and returns its typed "
         "evidence. Spawn one child, wait for its evidence, and let that evidence (in the "
         "returned typed workflow_state) decide the next hop; use `spawn_agents_parallel` "
         "to fan out independent children at once. Read the returned evidence, then write "

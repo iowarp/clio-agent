@@ -74,6 +74,11 @@ ERROR_REASONS = frozenset(
         "cancelled_by_parent",
         "child_session_gone",
         "timeout",
+        # #948 S6 adversarial-review [10]: a task folded at boot in a non-terminal
+        # status has no live turn to resume (a crash/unclean stop left it mid-run),
+        # so the boot settle fails it with this typed reason + notify_pending so the
+        # parent's next turn learns its spawned task was interrupted and decides.
+        "server_restart_interrupted",
     }
 )
 
@@ -282,9 +287,18 @@ class AgentTaskRegistry:
             self._index(updated)
             return updated
 
-    def mark_consumed(self, task_id: str, consumed_at: str) -> AgentTask:
-        """Mark an async task's result consumed by the parent's next turn (clears
-        ``notify_pending``). Only terminal tasks can be consumed."""
+    def mark_consumed(self, task_id: str, consumed_at: str) -> Optional[AgentTask]:
+        """Atomically claim an async task's observe-later notification (clears
+        ``notify_pending``, stamps ``consumed_at``), returning the updated record.
+
+        The claim is a check-and-set under the registry lock — mirroring
+        :meth:`mark_delegation_reported` — so two concurrent consumers
+        (``wait_agent_tasks`` / ``check_agent_tasks`` / next-turn injection) race to
+        claim exactly once: the FIRST call on a terminal, still-``notify_pending``
+        task flips the flag and returns the record; every LATER call returns ``None``
+        (already consumed) with no restamp, so :func:`consume_notification` never
+        double-publishes ``agent.task.consumed``. An unknown id or a non-terminal
+        task is a caller error (never a race) and raises ``AgentTaskError``."""
 
         with self._lock:
             current = self._tasks.get(task_id)
@@ -295,6 +309,9 @@ class AgentTaskRegistry:
                     f"cannot consume a non-terminal task (status={current.status!r})",
                     reason="not_terminal",
                 )
+            if not current.notify_pending:
+                # Already claimed by a concurrent/earlier consumer — the once-guard.
+                return None
             updated = replace(current, notify_pending=False, consumed_at=consumed_at)
             self._index(updated)
             return updated
@@ -352,12 +369,75 @@ class AgentTaskRegistry:
 def install_agent_task_registry(app: "FastAPI") -> AgentTaskRegistry:
     """Create the registry, fold existing agent-task sessions into it, and stash it
     on ``app.state.agent_task_registry``. Call once from ``build_app`` after the
-    session store exists (boot recovery of the projection)."""
+    session store exists (boot recovery of the projection).
+
+    After the fold, settle any INTERRUPTED tasks (#948 S6 adversarial-review [10]):
+    a folded task still in a non-terminal status has no live turn on this fresh
+    process, so it is a zombie — fail it typed + mark it observe-later pending."""
 
     registry = AgentTaskRegistry()
     registry.rebuild_from_sessions(app.state.sessions.list())
     app.state.agent_task_registry = registry
+    settle_interrupted_agent_tasks(app)
     return registry
+
+
+def settle_interrupted_agent_tasks(app: "FastAPI") -> int:
+    """Fail every boot-folded task left in a NON-TERMINAL status (#948 S6 [10]).
+
+    A ``queued``/``running`` task in the rebuilt registry was interrupted by an
+    unclean stop (crash / power loss / SIGKILL): its in-flight turn does not exist
+    on this fresh process and cannot be resumed, so leaving it non-terminal makes it
+    a permanent zombie — ``wait_agent_tasks`` blocks its full budget on a never-set
+    Event, ``check_agent_tasks`` reports it ``running`` forever, and it permanently
+    counts against the per-depth concurrency cap (progressive slot starvation across
+    restarts). Each such task is transitioned to ``failed`` with the typed reason
+    ``server_restart_interrupted`` and ``notify_pending=True``, so the parent's next
+    turn LEARNS its spawned task was interrupted (observe-later) and the model
+    decides how to proceed. Failing them (terminal) also frees their per-depth slots
+    — the running-task cap accounting counts only ``STATUS_RUNNING``. Returns the
+    number settled. Idempotent: a second boot finds nothing non-terminal to settle.
+    """
+
+    from datetime import datetime, timezone  # noqa: PLC0415
+
+    reg = app.state.agent_task_registry
+    now = datetime.now(timezone.utc).isoformat()
+    settled = 0
+    for task in reg.snapshot():
+        if task.is_terminal:
+            continue
+        try:
+            updated = reg.transition(
+                task.task_id,
+                STATUS_FAILED,
+                error_reason="server_restart_interrupted",
+                notify_pending=True,
+                updated_at=now,
+            )
+        except AgentTaskError as exc:
+            # A concurrent boot path already settled it, or an illegal-transition
+            # edge — never brick boot; surface the typed reason.
+            logger.warning(
+                "agent_task boot settle skipped reason=%s task=%s",
+                getattr(exc, "reason", "unknown"),
+                task.task_id,
+            )
+            continue
+        try:
+            persist_agent_task(app, updated)
+        except (AgentTaskError, OSError) as exc:
+            logger.warning(
+                "agent_task boot settle not persisted reason=%s task=%s err=%r",
+                getattr(exc, "reason", type(exc).__name__),
+                task.task_id,
+                exc,
+            )
+        publish_agent_task_event(app, updated, AGENT_TASK_EVENTS[STATUS_FAILED])
+        settled += 1
+    if settled:
+        logger.warning("agent_task boot settle failed %d interrupted task(s)", settled)
+    return settled
 
 
 def seed_agent_task(
@@ -463,31 +543,49 @@ def consume_notification(app: "FastAPI", task_id: str) -> Optional[AgentTask]:
     """Mark ONE async task's result consumed — exactly once (#948 S6).
 
     Shared by the three consumers (``wait_agent_tasks`` / ``check_agent_tasks`` /
-    next-turn injection): the FIRST to reach a terminal, still-``notify_pending``
-    task flips ``notify_pending`` off, stamps ``consumed_at``, persists the record
-    (durable across a boot rebuild, like ``delegation_reported``), and publishes the
-    ``agent.task.consumed`` event; every later caller no-ops (the ``notify_pending``
-    gate is the once guard). Returns the consumed record, or ``None`` when the task
-    is unknown, non-terminal, or already consumed."""
+    next-turn injection). The claim is ATOMIC: :meth:`AgentTaskRegistry.mark_consumed`
+    does the ``notify_pending`` check-and-set under the registry lock (like
+    ``mark_delegation_reported``), so exactly one caller flips ``notify_pending``
+    off + stamps ``consumed_at`` and returns the record; a concurrent/later caller
+    gets ``None`` and this function no-ops (no duplicate ``agent.task.consumed`` and
+    no restamped ``consumed_at``). The claimant persists the record (durable across
+    a boot rebuild, like ``delegation_reported``) and publishes the event. Returns
+    the consumed record, or ``None`` when the task is unknown, non-terminal, or
+    already consumed.
+
+    Persistence is best-effort (never crashes the turn): a gone child session
+    (``AgentTaskError``) or a transient store IO fault (``OSError`` from the disk
+    flush) is logged with a typed reason and swallowed. Redelivery semantics are
+    honest at-least-once ACROSS A CRASH: if the durable consumed-marker write is
+    lost to a fault and the process then restarts, the boot-rebuilt registry
+    re-derives ``notify_pending=True`` from the child metadata and the parent's next
+    turn re-injects the SAME notification once more — the model sees a repeat and
+    decides. Never silent loss."""
 
     reg = app.state.agent_task_registry
     task = reg.get(task_id)
-    if task is None or not task.is_terminal or not task.notify_pending:
+    if task is None or not task.is_terminal:
         return None
     from datetime import datetime, timezone  # noqa: PLC0415
 
     updated = reg.mark_consumed(task_id, datetime.now(timezone.utc).isoformat())
+    if updated is None:
+        # Already consumed by a concurrent/earlier caller (the atomic once-guard).
+        return None
     # Durable so a boot-rebuilt registry does not re-inject an already-consumed
-    # task (mirrors _persist_delegation_reported). Best-effort: a gone child
-    # session cannot be re-injected after a reboot anyway (the fold folds only
-    # existing sessions), so surface the typed reason, never crash the turn.
+    # task (mirrors _persist_delegation_reported). Catch the FULL surface
+    # persist_agent_task can raise — AgentTaskError (child gone) AND the OSError
+    # family from the authoritative store's disk flush — with a structured reason,
+    # never crash the turn (no-silent-fallback: the degrade is logged, and the
+    # cross-crash at-least-once redelivery documented above is the honest recovery).
     try:
         persist_agent_task(app, updated)
-    except AgentTaskError as exc:
+    except (AgentTaskError, OSError) as exc:
         logger.warning(
-            "agent_task consumed not persisted reason=%s task=%s",
-            getattr(exc, "reason", "unknown"),
+            "agent_task consumed not persisted reason=%s task=%s err=%r",
+            getattr(exc, "reason", type(exc).__name__),
             task_id,
+            exc,
         )
     publish_agent_task_event(app, updated, AGENT_TASK_CONSUMED_EVENT)
     return updated

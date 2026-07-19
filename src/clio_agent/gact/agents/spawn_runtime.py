@@ -142,12 +142,17 @@ def _persist_delegation_reported(app: Any, task: Any) -> None:
 
     from clio_agent.gact.agent_tasks import AgentTaskError, persist_agent_task  # noqa: PLC0415
 
+    # Catch the FULL surface persist_agent_task can raise — AgentTaskError (child
+    # gone) AND the OSError family from the authoritative store's disk flush — so a
+    # transient store fault never crashes the wait/collect ([3] parity). At-least-
+    # once re-emit across a crash is acceptable and guarded by the delegation_reported
+    # once-gate on reboot.
     try:
         persist_agent_task(app, task)
-    except AgentTaskError as exc:
+    except (AgentTaskError, OSError) as exc:
         logger.warning(
             "delegation_reported not persisted reason=%s task=%s",
-            getattr(exc, "reason", "unknown"),
+            getattr(exc, "reason", type(exc).__name__),
             getattr(task, "task_id", "?"),
         )
 
@@ -595,8 +600,14 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
                     "artifact_ref": t.artifact_ref,
                 }
                 # A poll that surfaces the finished result consumes its observe-later
-                # notification (exactly-once via the notify_pending gate).
+                # notification (exactly-once via the notify_pending gate) AND closes
+                # the delegation on the wire — the SAME terminal choreography wait
+                # emits (blueprint.delegation.completed|failed + return Part +
+                # parent_resumed), through the shared delegation_reported once-gate so
+                # a later wait can't double-emit ([1]/[9]). Without this a polled async
+                # child left a started with no terminal (a dangling delegation).
                 consume_notification(app, t.task_id)
+                _emit_delegation_terminal(app, session_id, agent_def, t)
             rows.append(row)
         return json.dumps({"tasks": rows}, sort_keys=True)
 

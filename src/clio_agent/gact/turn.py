@@ -55,6 +55,7 @@ from clio_agent.gact.enrichment import (
     _enrich_with_context_files,
     _enrich_with_requested_memory_search,
     _record_context_frame,
+    consume_pending_agent_task_notifications,
     inject_pending_agent_task_notifications,
 )
 from clio_agent.gact.events import Event, EventBus, _publish_transcript_event
@@ -270,10 +271,11 @@ async def _run_turn_in_background(
         state.enriched_text, state.memory_search_metadata = _enrich_with_requested_memory_search(
             state.app, state.sid, state.enriched_text, state.user_msg
         )
-        # #948 S6: surface completed-but-unconsumed background tasks from a prior turn
-        # (observe-later); server grounding, consumed once, the model decides.
-        state.enriched_text = inject_pending_agent_task_notifications(
-            state.app, state.sid, state.enriched_text
+        # #948 S6 [1]/[4]: surface prior-turn background task results (observe-later).
+        # STAGE the ids only; consumption + terminal emission defer to the commit-to-
+        # run seam below, so a turn aborted after enrichment leaves them pending.
+        state.enriched_text, state.pending_notification_task_ids = (
+            inject_pending_agent_task_notifications(state.app, state.sid, state.enriched_text)
         )
         # Carry prior turns so a follow-up ("now plot it") reuses resolved state (no-op turn 1).
         state.enriched_text = _compile_session_conversation_history(state.app, state.sid, state.enriched_text)
@@ -468,6 +470,14 @@ async def _run_turn_in_background(
                     executor_work_may_continue=False,
                 )
             )
+
+        # #948 S6 [1]/[4]: commit-to-run seam — past the last abort/veto seam, the
+        # turn will forward with the enriched input. Consume the staged observe-later
+        # notifications once AND emit each delegation terminal (shared once-gate with
+        # wait/check) into this turn's already-open transcript.
+        consume_pending_agent_task_notifications(
+            state.app, state.sid, state.pending_notification_task_ids
+        )
 
         # #767 Phase B Slice 5: agent resolve -> module build -> streamed/sync
         # forward -> expert-pack delegation settle lives in ``turn_forward.py``.
