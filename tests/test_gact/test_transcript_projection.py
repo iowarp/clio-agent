@@ -64,11 +64,16 @@ def _run_turn(client: TestClient, sid: str, text: str = "how many stations?") ->
         f"/v1/sessions/{sid}/messages", json={"parts": [{"type": "text", "text": text}]}
     )
     assert ack.status_code == 200, ack.text
-    deadline = time.monotonic() + 10.0
+    # 30s + loud failure: the old 10s window silently BROKE out on timeout and
+    # let assertions run against a still-running turn (the CI flake signature:
+    # missing assistant / session_busy on the next post). Post-S4b turns build a
+    # real blueprint module, so slow runners need the headroom.
+    deadline = time.monotonic() + 30.0
     while time.monotonic() < deadline:
         if client.get(f"/v1/sessions/{sid}").json()["status"] != "running":
-            break
+            return
         time.sleep(0.05)
+    raise TimeoutError(f"turn on session {sid!r} did not settle within 30s")
 
 
 def _build(tmp_path: Path) -> tuple[Any, ARCMemory]:
