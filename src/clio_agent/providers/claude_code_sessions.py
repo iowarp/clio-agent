@@ -57,6 +57,10 @@ import threading
 from collections.abc import AsyncIterator
 from typing import Any
 
+from clio_agent.providers.claude_code_cancel import (
+    register_sdk_stream,
+    unregister_sdk_stream,
+)
 from clio_agent.providers.claude_code_options import build_sdk_options, thinking_key
 
 # Re-export the sibling blocking-path pool for the historical import seams (tests
@@ -241,6 +245,25 @@ def session_reuse_enabled() -> bool:
 _STREAM_END = object()  # queue sentinel: the pump's message stream is exhausted
 
 
+def _active_gact_session_id() -> str:
+    """The GACT session that owns the current LM call, or ``""`` off-turn (#993).
+
+    Read from the turn/executor context var the GACT machinery binds around every
+    expert/child forward (the same seam ``lm_activity`` uses to attribute an in-flight
+    call). Deferred import: ``clio_agent.gact`` transitively imports the providers, so a
+    module-level import would cycle; by the time a real stream runs during a turn, ``gact``
+    is already loaded and this is a cheap ``sys.modules`` hit. Kill-on-cancel binds the
+    in-flight stream to this id so cancelling the child terminates ONLY its subprocess.
+    """
+
+    try:
+        from clio_agent.gact.context import active_session_id  # noqa: PLC0415
+
+        return active_session_id() or ""
+    except Exception:  # noqa: BLE001 - context unavailable off-turn -> not cancellable
+        return ""
+
+
 class _StreamClientEntry:
     """One pooled ``ClaudeSDKClient`` for a ``(model, cwd, thinking)`` key.
 
@@ -303,6 +326,24 @@ class _StreamClientEntry:
         except Exception:  # noqa: BLE001 - best-effort teardown; never block the caller
             logger.warning("claude stream client disconnect failed", exc_info=True)
 
+    def _abort_active_query(self) -> None:
+        """Kill the currently-streaming query by resetting this entry's client on its
+        owner loop (#993 kill-on-cancel).
+
+        Scheduled cross-thread from the cancel path: disconnecting the pooled
+        ``ClaudeSDKClient`` terminates its ``claude`` CLI subprocess, which ends the
+        in-flight ``receive_response()`` and stops the late-op flood. Only THIS entry's
+        connection is dropped (the next same-key caller reconnects on demand); other
+        pooled entries and other sessions' streams are untouched. Best-effort — a closed
+        owner loop (teardown) or a scheduling fault is swallowed, never raised into cancel.
+        """
+
+        loop = self._loop
+        if loop is None:
+            return
+        with contextlib.suppress(Exception):
+            asyncio.run_coroutine_threadsafe(self._areset_client(), loop)
+
     async def stream(
         self, *, payload: str, session_id: str, timeout: float | None, on_construct: Any
     ) -> AsyncIterator[Any]:
@@ -315,13 +356,22 @@ class _StreamClientEntry:
         self._ensure_loop()
         caller_loop = asyncio.get_running_loop()
         chunks: queue.SimpleQueue[tuple[Any, Any]] = queue.SimpleQueue()
+        # Kill-on-cancel binding (#993): capture the GACT session that owns this call in
+        # the CALLER's context (the executor where the turn's session contextvar is set) —
+        # the owner-loop pump below has no access to it. The stream is registered as
+        # cancellable only WHILE it holds the query and is actively generating, so
+        # cancelling a session never kills a same-key sibling that is merely queued behind
+        # the per-loop query lock (that sibling has not registered yet).
+        gact_sid = _active_gact_session_id()
 
         async def _pump() -> None:
             clean = False
+            handle = None
             try:
                 async with asyncio.timeout(timeout):
                     client = await self._ensure_client(on_construct)
                     async with self._query_lock:
+                        handle = register_sdk_stream(gact_sid, self._abort_active_query)
                         await client.query(payload, session_id=session_id)
                         async for msg in client.receive_response():
                             chunks.put(("msg", msg))
@@ -329,9 +379,12 @@ class _StreamClientEntry:
             except BaseException as exc:  # noqa: BLE001 - surfaced onto the caller loop
                 chunks.put(("exc", exc))
             finally:
+                if handle is not None:
+                    unregister_sdk_stream(handle)
                 if not clean:
-                    # Mid-cycle end (timeout/error/cancel): drop the connection so
-                    # its leftover response can never bleed into the next call.
+                    # Mid-cycle end (timeout/error/cancel/kill-on-cancel): drop the
+                    # connection so its leftover response can never bleed into the next
+                    # call. Idempotent with a kill-on-cancel reset that already ran.
                     await self._areset_client()
                 chunks.put((_STREAM_END, None))
 

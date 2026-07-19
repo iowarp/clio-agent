@@ -108,7 +108,12 @@ def _wait_terminal(app: Any, task_id: str, timeout: float = 15.0) -> Any:
 
 def test_valid_workflow_parses_and_expert_stays_enabled() -> None:
     steps = [
-        {"id": "s_a", "child": "a", "task": "do a", "when_state": {"acq.status": {"exists": False}}},
+        {
+            "id": "s_a",
+            "child": "a",
+            "task": "do a",
+            "when_state": {"acq.status": {"exists": False}},
+        },
         {"id": "s_b", "child": "b", "task": "do b", "when_child_completed": "a"},
         {"id": "s_c", "child": "c", "task": "do c", "when_child_completed": "b"},
     ]
@@ -219,7 +224,11 @@ def test_equals_predicate_parses() -> None:
 
 def _step(child: str, *, when_state=(), when_child="") -> WorkflowStep:
     return WorkflowStep(
-        id=child, child=child, task="t", when_state=tuple(when_state), when_child_completed=when_child
+        id=child,
+        child=child,
+        task="t",
+        when_state=tuple(when_state),
+        when_child_completed=when_child,
     )
 
 
@@ -275,9 +284,7 @@ class _WorkflowAgent:
         # The child session's agent rides as a plain dict in the store (not coerced to
         # AgentRef); read the id from either shape.
         expert = (
-            raw_agent.get("id")
-            if isinstance(raw_agent, dict)
-            else getattr(raw_agent, "id", "")
+            raw_agent.get("id") if isinstance(raw_agent, dict) else getattr(raw_agent, "id", "")
         ) or ""
         with self._lock:
             self.seen.append((expert, question))
@@ -333,7 +340,12 @@ def _run_workflow_app(
 
 def test_runner_executes_a_b_c_in_order_with_per_step_records(tmp_path: Path, monkeypatch) -> None:
     steps = [
-        {"id": "s_a", "child": "a", "task": "do a", "when_state": {"acq.status": {"exists": False}}},
+        {
+            "id": "s_a",
+            "child": "a",
+            "task": "do a",
+            "when_state": {"acq.status": {"exists": False}},
+        },
         {"id": "s_b", "child": "b", "task": "do b", "when_child_completed": "a"},
         {"id": "s_c", "child": "c", "task": "do c", "when_child_completed": "b"},
     ]
@@ -479,21 +491,27 @@ def test_spawn_tool_run_index_resets_per_parent_turn(tmp_path: Path, monkeypatch
     assert idx2 == [0, 1, 2]  # fresh per turn
 
 
-def test_step_timeout_is_distinct_reason_and_cancels_orphan(tmp_path: Path, monkeypatch) -> None:
-    """A step whose child exceeds the step budget while still RUNNING stalls with the distinct
-    ``workflow_step_timeout`` reason (never ``workflow_child_failed`` for a child whose status
-    is "running") AND the orphan is cancelled so it stops holding a slot (#953 [7])."""
+def test_declared_absolute_budget_is_distinct_reason_and_cancels_orphan(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A step that DECLARES ``timeout_s`` (an opt-in absolute budget, #992) whose child
+    exceeds it while still RUNNING stalls with the distinct ``workflow_step_timeout`` reason
+    (never ``workflow_child_failed`` for a child whose status is "running") AND the orphan is
+    cancelled so it stops holding a slot (#953 [7]). The budget is a PACK KNOB, not the
+    default: a step without ``timeout_s`` is progress-based only."""
     from clio_agent.gact.workflows import STALL_STEP_TIMEOUT
     from tests.test_gact.test_spawn_ensemble_s5 import _RecordingAgent
 
-    steps = [{"id": "s_a", "child": "a", "task": "do a"}]
+    # timeout_s declared on the step; a huge inactivity window proves the ABSOLUTE budget
+    # (not inactivity) is what fires here even though this child is silent.
+    steps = [{"id": "s_a", "child": "a", "task": "do a", "timeout_s": 0.1}]
     agent = _RecordingAgent(sleep_s=3.0)
     app = _run_workflow_app(tmp_path, agent, monkeypatch, "a")
     with TestClient(app) as client:
         app.state.max_concurrent_agent_tasks = 3
         parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
         record = run_declared_workflow(
-            app, _wf_def(steps), parent, requesting_expert_id="main", step_timeout_s=0.1
+            app, _wf_def(steps), parent, requesting_expert_id="main", inactivity_window_s=300.0
         )
 
     assert record["status"] == "stalled", record
@@ -504,6 +522,165 @@ def test_step_timeout_is_distinct_reason_and_cancels_orphan(tmp_path: Path, monk
     # The orphan child was cancelled (transitively) — it stops holding its per-depth slot.
     task_id = stall["observed"]["task_id"]
     assert app.state.agent_task_registry.get(task_id).status == "cancelled"
+
+
+def test_declared_absolute_budget_must_be_positive_number() -> None:
+    """A malformed ``timeout_s`` (non-number / non-positive) is a TYPED authoring error that
+    disables the expert (#992) — never a silent degrade to no budget. ABSENT ``timeout_s`` is
+    valid (progress-based liveness only); an EXPLICIT ``timeout_s`` must be > 0."""
+    from clio_agent.gact.workflows import parse_workflow, workflow_validation_errors
+
+    bad_type = _wf_def([{"id": "s", "child": "a", "task": "x", "timeout_s": "soon"}])
+    errors = workflow_validation_errors(bad_type, {"a"})
+    assert any("'timeout_s' must be a positive number" in e for e in errors), errors
+
+    for bad_value in (0, -5):
+        step = _wf_def([{"id": "s", "child": "a", "task": "x", "timeout_s": bad_value}])
+        assert any("must be > 0" in e for e in workflow_validation_errors(step, {"a"})), bad_value
+
+    # Absent timeout_s → valid, and the parsed step carries the 0.0 "no budget" sentinel.
+    ok = _wf_def([{"id": "s", "child": "a", "task": "x"}])
+    assert workflow_validation_errors(ok, {"a"}) == []
+    assert parse_workflow(ok).steps[0].timeout_s == 0.0
+    # A positive declared budget parses through.
+    budgeted = _wf_def([{"id": "s", "child": "a", "task": "x", "timeout_s": 600}])
+    assert workflow_validation_errors(budgeted, {"a"}) == []
+    assert parse_workflow(budgeted).steps[0].timeout_s == 600.0
+
+
+# ===========================================================================
+# Part C3 — progress-based step liveness (#992).
+#
+# The final-gate finding: a legitimately-heavy step (fusing three live feature
+# services) exceeded the old fixed 300s per-step budget and was misclassified as
+# stalled. The step watch is now PROGRESS-based: a step is stalled only when its
+# child shows NO observable activity for the inactivity window — never a wall-clock
+# bound on legitimate work. An optional pack-declared ``timeout_s`` remains as an
+# explicit hard wall (covered above).
+# ===========================================================================
+
+
+class _ActiveChildAgent:
+    """Stub host agent whose forward PUBLISHES steady bus activity on the child session
+    for a duration far exceeding the inactivity window, then returns its typed
+    ``workflow_state``. Models a slow-but-progressing step (each publish is a message
+    delta / tool part the child turn would emit) — the runner's activity probe must see it
+    and keep the step alive."""
+
+    def __init__(self, states: dict[str, dict], *, ticks: int, interval_s: float) -> None:
+        self.states = states
+        self.ticks = ticks
+        self.interval_s = interval_s
+        self.app: Any = None
+        self.seen: list[tuple[str, str]] = []
+        self._lock = threading.Lock()
+
+    def forward(self, question: str, session_id: str, **_kw: Any) -> Any:
+        import time as _time
+
+        from clio_agent.gact.events import Event
+
+        sess = self.app.state.sessions.get(session_id) if self.app is not None else None
+        raw_agent = getattr(sess, "agent", None)
+        expert = (
+            raw_agent.get("id") if isinstance(raw_agent, dict) else getattr(raw_agent, "id", "")
+        ) or ""
+        with self._lock:
+            self.seen.append((expert, question))
+        # Steady observable progress on THIS child's session channel (what the runner's
+        # activity probe reads via bus.last_publish_monotonic).
+        for _i in range(self.ticks):
+            self.app.state.bus.publish(
+                Event(type="turn.text.delta", session_id=session_id, payload={"i": _i})
+            )
+            _time.sleep(self.interval_s)
+        wf = self.states.get(expert, {})
+        if wf and self.app is not None:
+            self.app.state.sessions.update(session_id, metadata_patch={"workflow_state": wf})
+        return type(
+            "P", (), {"answer": f"{expert} done", "selected_expert": "", "routing_rationale": ""}
+        )()
+
+
+def test_slow_but_active_child_is_not_stalled(tmp_path: Path, monkeypatch) -> None:
+    """A child that keeps publishing progress for MUCH longer than the inactivity window is
+    NOT stalled — the step watch is progress-based, not a total-duration bound (#992). The
+    child stays active ~1.5s against a 0.4s window (well past the old fixed budget in
+    principle) and the workflow COMPLETES."""
+
+    steps = [{"id": "s_a", "child": "a", "task": "do a"}]
+    # 15 ticks x 0.1s ≈ 1.5s of steady activity vs a 0.4s inactivity window.
+    agent = _ActiveChildAgent(states={"a": {"acq": {"status": "done"}}}, ticks=15, interval_s=0.1)
+    app = _run_workflow_app(tmp_path, agent, monkeypatch, "a")
+    with TestClient(app) as client:
+        app.state.max_concurrent_agent_tasks = 3
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        record = run_declared_workflow(
+            app, _wf_def(steps), parent, requesting_expert_id="main", inactivity_window_s=0.4
+        )
+
+    assert record["status"] == "completed", record
+    assert record["steps"][0]["child_status"] == "completed"
+    assert record["workflow_state"]["acq"] == {"status": "done"}
+
+
+def test_truly_inactive_child_stalls_typed_and_cancels_orphan(tmp_path: Path, monkeypatch) -> None:
+    """A child that produces NO activity for the inactivity window stalls with the typed
+    ``workflow_step_stalled`` reason (child still RUNNING, NOT failed), carrying the observed
+    inactivity evidence, AND the orphan is cancelled (the S7 cancel path) so it stops holding
+    a slot and stops producing (#992)."""
+    from clio_agent.gact.workflows import STALL_STEP_STALLED
+    from tests.test_gact.test_spawn_ensemble_s5 import _RecordingAgent
+
+    steps = [{"id": "s_a", "child": "a", "task": "do a"}]
+    # _RecordingAgent sleeps WITHOUT publishing — a truly-silent child.
+    agent = _RecordingAgent(sleep_s=2.0)
+    app = _run_workflow_app(tmp_path, agent, monkeypatch, "a")
+    with TestClient(app) as client:
+        app.state.max_concurrent_agent_tasks = 3
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        record = run_declared_workflow(
+            app, _wf_def(steps), parent, requesting_expert_id="main", inactivity_window_s=0.4
+        )
+
+    assert record["status"] == "stalled", record
+    stall = record["stall"]
+    assert stall["reason"] == STALL_STEP_STALLED
+    assert stall["observed"]["child_status"] == "running"  # NOT "failed"
+    assert stall["observed"]["inactivity_s"] == 0.4
+    assert stall["observed"]["observed_inactivity_s"] >= 0.4
+    # The orphan child was cancelled — it stops holding its per-depth slot AND producing.
+    task_id = stall["observed"]["task_id"]
+    assert app.state.agent_task_registry.get(task_id).status == "cancelled"
+
+
+def test_activity_probe_is_load_bearing_sabotage_lock(tmp_path: Path, monkeypatch) -> None:
+    """Sabotage: FREEZE the activity probe (as if the runner could no longer see the child's
+    progress). The SAME slow-but-active child that completes under the real probe now looks
+    inactive and STALLS — proving the probe is what keeps a progressing step alive (#992). If
+    the watch ever reverted to a total-duration bound, this lock would go red the wrong way."""
+    from clio_agent.gact.workflows import STALL_STEP_STALLED
+
+    steps = [{"id": "s_a", "child": "a", "task": "do a"}]
+    agent = _ActiveChildAgent(states={"a": {"acq": {"status": "done"}}}, ticks=15, interval_s=0.1)
+    app = _run_workflow_app(tmp_path, agent, monkeypatch, "a")
+
+    # Neutralize the probe: it never reports fresh activity, so a genuinely-active child is
+    # indistinguishable from a silent one.
+    monkeypatch.setattr(
+        "clio_agent.gact.workflow_step_watch.step_activity_monotonic",
+        lambda app, child_session_id, *, now: 0.0,
+    )
+
+    with TestClient(app) as client:
+        app.state.max_concurrent_agent_tasks = 3
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        record = run_declared_workflow(
+            app, _wf_def(steps), parent, requesting_expert_id="main", inactivity_window_s=0.4
+        )
+
+    assert record["status"] == "stalled", record
+    assert record["stall"]["reason"] == STALL_STEP_STALLED
 
 
 def test_gate_is_load_bearing_sabotage_lock(tmp_path: Path, monkeypatch) -> None:
@@ -628,9 +805,7 @@ def test_spawned_child_threads_prediction_workflow_state_field(
     assert meta.get("workflow_state") == wf, meta
 
 
-def test_workflow_gates_step_b_on_cot_step_a_prediction_field(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_workflow_gates_step_b_on_cot_step_a_prediction_field(tmp_path: Path, monkeypatch) -> None:
     """A declared workflow whose step-a is a chain_of_thought child producing its
     ``workflow_state`` ONLY as its Prediction field, and whose step-b gates on that
     field (``when_state: {acq.status: {exists: True}}``): the CoT field must thread
@@ -692,7 +867,9 @@ def _active(app: Any, session_id: str) -> Iterator[None]:
             ctx.reset(token)
 
 
-def _tool_names(base_agent: Any, agent_def: AgentDef, app: Any, session_id: str, monkeypatch) -> set:
+def _tool_names(
+    base_agent: Any, agent_def: AgentDef, app: Any, session_id: str, monkeypatch
+) -> set:
     _declare(monkeypatch, "a", "b", "c")
     with _active(app, session_id):
         tools = spawn_runtime.build_spawn_runtime_tools(base_agent, agent_def)
@@ -772,7 +949,9 @@ def test_fanout_max_workers_bounds_batch_admission(tmp_path: Path, monkeypatch) 
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     agent.app = app
     fan_def = AgentDef(
-        id="main", title="main", module={"kind": "react"},
+        id="main",
+        title="main",
+        module={"kind": "react"},
         fanout={"enabled": True, "max_workers": 2},
     )
     with TestClient(app) as client:

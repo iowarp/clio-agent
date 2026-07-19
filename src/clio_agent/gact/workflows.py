@@ -40,10 +40,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
+from clio_agent import conf
+from clio_agent.gact.workflow_step_watch import resolve_step_inactivity_s, watch_step
+
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
-    from clio_agent.gact.agent_tasks import AgentTask
     from clio_agent.gact.types import AgentDef
 
 logger = logging.getLogger(__name__)
@@ -52,12 +54,20 @@ logger = logging.getLogger(__name__)
 STALL_PREDICATE_UNSATISFIED = "workflow_predicate_unsatisfied"
 STALL_CHILD_FAILED = "workflow_child_failed"
 STALL_SPAWN_REFUSED = "workflow_spawn_refused"
-# A step whose child exceeded the step budget but is still RUNNING (non-terminal) — a
-# distinct reason from a child that FAILED, so the wire record never claims "failed" for a
-# child whose status is "running" (#953 [7]).
+# A step whose child went INACTIVE (no observable progress) for the inactivity window
+# while still RUNNING (non-terminal) — the progress-based liveness stall (#992). Distinct
+# from a child that FAILED, so the wire record never claims "failed" for a child whose
+# status is "running", and distinct from STALL_STEP_TIMEOUT (a declared absolute budget).
+STALL_STEP_STALLED = "workflow_step_stalled"
+# A step whose child exceeded a pack-DECLARED absolute per-step budget (``step.timeout_s``)
+# while still RUNNING. Retained ONLY for the opt-in declared budget — the default liveness
+# watch is progress-based (STALL_STEP_STALLED), never a wall-clock bound on legitimate work
+# (the owner's liveness principle, #992). A child that FAILED is STALL_CHILD_FAILED.
 STALL_STEP_TIMEOUT = "workflow_step_timeout"
 
-_DEFAULT_STEP_TIMEOUT_S = 300.0
+# Progress-based step liveness lives in the owner module ``workflow_step_watch`` (#992);
+# ``run_declared_workflow`` calls ``watch_step`` and maps its verdict to the typed stalls
+# above. ``resolve_step_inactivity_s`` supplies the config-first default window.
 
 
 # ===========================================================================
@@ -100,6 +110,12 @@ class WorkflowStep:
     task: str
     when_state: tuple[StatePredicate, ...]
     when_child_completed: str  # "" when no completion gate
+    # Optional pack-DECLARED absolute per-step budget in seconds (#992): a hard wall this
+    # step's child may not exceed even while actively progressing. ``0.0`` (the default,
+    # and the absence of ``timeout_s`` in the declaration) means progress-based liveness
+    # ONLY — no absolute bound. A pack author sets this only when a step genuinely must be
+    # bounded regardless of activity; the default watch never wall-clock-bounds legit work.
+    timeout_s: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -196,6 +212,9 @@ def _parse_step(raw: Any, *, index: int) -> tuple[Optional[WorkflowStep], list[s
         _step_raw_key(raw, "when_state"), step_id=display_id
     )
     errors.extend(pred_errors)
+    timeout_s, timeout_error = _parse_step_timeout(raw, step_id=display_id)
+    if timeout_error:
+        errors.append(timeout_error)
     if errors:
         return None, errors
     return (
@@ -205,9 +224,33 @@ def _parse_step(raw: Any, *, index: int) -> tuple[Optional[WorkflowStep], list[s
             task=task,
             when_state=tuple(predicates),
             when_child_completed=when_child,
+            timeout_s=timeout_s,
         ),
         [],
     )
+
+
+def _parse_step_timeout(raw: Mapping[str, Any], *, step_id: str) -> tuple[float, str]:
+    """Parse a step's optional declared absolute budget ``timeout_s`` (#992).
+
+    Absent → ``(0.0, "")`` (progress-based liveness only). Present → it must be a
+    positive number; anything else is a typed authoring error (like a malformed
+    predicate) that disables the expert rather than silently degrading to no budget.
+    """
+
+    raw_value = _step_raw_key(raw, "timeout_s")
+    if raw_value in (None, ""):
+        return 0.0, ""
+    try:
+        value = conf.as_float(raw_value)
+    except (ValueError, TypeError):
+        return 0.0, (
+            f"workflow step {step_id!r} 'timeout_s' must be a positive number, "
+            f"got {type(raw_value).__name__}"
+        )
+    if value <= 0:
+        return 0.0, f"workflow step {step_id!r} 'timeout_s' must be > 0, got {value}"
+    return value, ""
 
 
 def _build_workflow(raw: Any) -> tuple[Optional[DeclaredWorkflow], list[str]]:
@@ -452,14 +495,6 @@ def _render_task(step: WorkflowStep, request: str) -> str:
     return task
 
 
-def _wait_for_task(app: "FastAPI", task_id: str, timeout_s: float) -> Optional["AgentTask"]:
-    reg = app.state.agent_task_registry
-    if reg.get(task_id) is None:
-        return None
-    reg.event(task_id).wait(timeout=max(0.0, float(timeout_s or 0.0)))
-    return reg.get(task_id)
-
-
 def run_declared_workflow(
     app: "FastAPI",
     agent_def: "AgentDef",
@@ -467,25 +502,34 @@ def run_declared_workflow(
     *,
     requesting_expert_id: str = "",
     request: str = "",
-    step_timeout_s: float = _DEFAULT_STEP_TIMEOUT_S,
+    inactivity_window_s: Optional[float] = None,
 ) -> dict[str, Any]:
     """Execute ``agent_def``'s declared workflow deterministically over the substrate.
 
     Steps run sequentially in declaration order. Before each step the runner
     evaluates its gate over the ACCUMULATED typed ``workflow_state``; an unmet gate
     is a typed :data:`STALL_PREDICATE_UNSATISFIED`. A satisfied step is spawned as a
-    real child turn (its own :class:`AgentTask` record) and waited on; a child that
-    does not complete is a typed :data:`STALL_CHILD_FAILED`. The child's typed
-    ``workflow_state`` is merged into the accumulator (later step wins a collision)
-    and its id joins the completed set. Returns the full run record::
+    real child turn (its own :class:`AgentTask` record) and WATCHED for PROGRESS: a step
+    is stalled (:data:`STALL_STEP_STALLED`) only when its child shows no observable
+    activity for ``inactivity_window_s`` (the owner's liveness principle — a
+    legitimately-heavy step that keeps progressing is never wall-clock-bounded, #992). A
+    step that DECLARES an absolute budget (``step.timeout_s``) is additionally hard-bounded
+    (:data:`STALL_STEP_TIMEOUT`) even while active. A child that terminates non-completed is
+    :data:`STALL_CHILD_FAILED`. A completed child's typed ``workflow_state`` is merged into
+    the accumulator (later step wins a collision) and its id joins the completed set. On any
+    non-completing outcome the orphaned child is cancelled (the S7 cancel path). Returns::
 
         {"status": "completed" | "stalled",
          "steps": [{step_id, child, task_id, run_index, child_status, workflow_state}...],
          "workflow_state": <accumulated>,
          "stall": {reason, step, predicate, observed} | None}
 
-    The MODEL decides what to do with a stall — the runner never guesses.
+    ``inactivity_window_s`` defaults to the configured window
+    (:func:`_resolve_step_inactivity_s`, file → env → 120s). The MODEL decides what to do
+    with a stall — the runner never guesses.
     """
+
+    window = inactivity_window_s if inactivity_window_s is not None else resolve_step_inactivity_s()
 
     from clio_agent.gact.agent_tasks import STATUS_COMPLETED  # noqa: PLC0415
     from clio_agent.gact.agents.spawn_runtime import (  # noqa: PLC0415
@@ -589,7 +633,13 @@ def run_declared_workflow(
             }
 
         emit_workflow_step_start(app, parent_session_id, agent_def, step.child, task_text, spawned)
-        task = _wait_for_task(app, spawned.task_id, step_timeout_s)
+        task, outcome, observed_inactivity_s = watch_step(
+            app,
+            spawned.task_id,
+            spawned.child_session_id,
+            inactivity_window_s=window,
+            absolute_budget_s=step.timeout_s,
+        )
         child_status = task.status if task is not None else "unknown"
         child_state = (task.result or {}).get("workflow_state", {}) if task is not None else {}
         if not isinstance(child_state, dict):
@@ -607,14 +657,25 @@ def run_declared_workflow(
         if task is not None:
             emit_workflow_step_return(app, parent_session_id, agent_def, task)
 
-        if task is None or task.status != STATUS_COMPLETED:
-            # #953 [7]: a child that is present but NON-TERMINAL exceeded the step budget
-            # (timeout), it did NOT fail — surface a distinct typed reason AND cancel the
-            # orphan (transitively) so it stops holding a per-depth pool slot. A None /
-            # failed / cancelled child is a genuine child failure.
-            timed_out = task is not None and not task.is_terminal
-            reason = STALL_STEP_TIMEOUT if timed_out else STALL_CHILD_FAILED
-            if timed_out:
+        if outcome != "terminal" or task is None or task.status != STATUS_COMPLETED:
+            # A non-completing step. Three distinct typed reasons, never conflated (#992):
+            #   * "stalled": the child went INACTIVE for the inactivity window while still
+            #     RUNNING (progress-based liveness) — NOT a failure, and NOT a wall-clock
+            #     bound on legitimate work.
+            #   * "timeout": the child exceeded a pack-DECLARED absolute budget while still
+            #     RUNNING (#953 [7], opt-in only).
+            #   * STALL_CHILD_FAILED: the child terminated non-completed (failed/cancelled)
+            #     or was never on the registry.
+            # A still-RUNNING orphan (stalled/timeout) is cancelled transitively (the S7
+            # cancel path) so it stops holding a per-depth pool slot AND stops producing.
+            non_terminal = outcome in ("stalled", "timeout")
+            if outcome == "stalled":
+                reason = STALL_STEP_STALLED
+            elif outcome == "timeout":
+                reason = STALL_STEP_TIMEOUT
+            else:
+                reason = STALL_CHILD_FAILED
+            if non_terminal:
                 cancel_agent_task(app, spawned.task_id)
             logger.warning(
                 "workflow stall reason=%s step=%s child=%s child_status=%s agent=%s",
@@ -629,8 +690,11 @@ def run_declared_workflow(
                 "child_status": child_status,
                 "error_reason": getattr(task, "error_reason", "") if task else "",
             }
-            if timed_out:
-                observed["timeout_s"] = step_timeout_s
+            if outcome == "stalled":
+                observed["inactivity_s"] = window
+                observed["observed_inactivity_s"] = round(observed_inactivity_s, 3)
+            elif outcome == "timeout":
+                observed["timeout_s"] = step.timeout_s
             return {
                 "status": "stalled",
                 "steps": step_records,

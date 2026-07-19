@@ -400,6 +400,16 @@ def _cancel_one_child_task(app: "FastAPI", reg: Any, task: "AgentTask") -> Optio
     in_flight = app.state.in_flight_turns.get(child_sid)
     if in_flight is not None and not in_flight.done():
         in_flight.cancel()
+    # #993: the cooperative flag / future cancel above stops the ReAct loop at its next
+    # decision point, but an LM call ALREADY in flight keeps its provider transport
+    # streaming — on the pooled claude_code SDK that is a CLI subprocess that keeps
+    # producing late ops the settled transcript must refuse. Kill that child's in-flight
+    # SDK stream NOW (typed cancelled_transport_killed) so it stops producing. Only this
+    # child session's stream is terminated; unrelated sessions on the shared pool survive.
+    # No-op for a child with no in-flight SDK stream (non-claude_code transport / idle).
+    from clio_agent.providers.claude_code_cancel import abort_session_streams  # noqa: PLC0415
+
+    abort_session_streams(child_sid)
     try:
         updated = reg.transition(task.task_id, STATUS_CANCELLED, updated_at=_now())
     except Exception:  # noqa: BLE001 - already terminal via a racing completion
