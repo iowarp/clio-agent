@@ -42,6 +42,28 @@ TUI/HTTP surface aren't tracked here.
   alongside `output` / `workflow_state` / `stage` and no longer carries
   `return_to` / `tools_called` / `structured` (those live on the AgentTask
   record and the `agent.task.*` events).
+- **Concurrent same-child ensembles + deterministic request-order merge** (#948
+  S5 part 1 / #953). The SAME declared child may now be spawned N times
+  concurrently in one parent turn (an ensemble): each run mints its own child
+  session + `AgentTask` record and runs as its own concurrent child turn on the
+  per-depth pool (up to `CLIO_MAX_CONCURRENT_AGENT_TASKS`). Wire-additive shape
+  changes (nothing removed):
+  - A new `run_index` integer field (0, 1, 2… in spawn order per
+    `(parent_turn, child expert)`, durable on the record) rides the `AgentTask`
+    record, the `agent.task.*` event payloads, the `blueprint.delegation.started`
+    / `.completed` / `.failed` / `.parent_resumed` payloads, the `expert_handoff`
+    started/return Part metadata, and the `spawn_agent_task` /
+    `spawn_agents_parallel` tool return. It disambiguates an ensemble's otherwise
+    identical child-id rows (the ARC `react_scope` deliberately stays the bare
+    agent id per the S5 spike — run identity is a field, never a scope suffix).
+  - `wait_agent_tasks` now returns two new keys alongside `results`:
+    `merged_workflow_state` (the collected runs' typed `workflow_state` merged in
+    REQUEST ORDER = `run_index` order, NOT completion order, so the merge is
+    timing-independent) and `workflow_state_conflicts` — a list of typed
+    `workflow_state_merge_conflict` rows (`{reason, key, winner:{run_index,
+    task_id}, loser_runs:[…]}`), one per top-level key two-or-more runs set to
+    different values. No silent last-writer: every collision is surfaced on the
+    payload and logged structurally for the model to arbitrate.
 - Typed blueprint validation: an expert with declared children must declare
   `module.kind: react` (children are reachable only via the spawn-runtime
   tools); `predict` / `chain_of_thought` remain valid for leaf experts only.

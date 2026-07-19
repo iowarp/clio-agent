@@ -88,8 +88,7 @@ def _inherited_session_scope_metadata(parent: Any) -> dict[str, Any]:
     return {
         key: value
         for key, value in metadata.items()
-        if key.startswith(_INHERITED_SESSION_SCOPE_PREFIXES)
-        or key in _INHERITED_SESSION_SCOPE_KEYS
+        if key.startswith(_INHERITED_SESSION_SCOPE_PREFIXES) or key in _INHERITED_SESSION_SCOPE_KEYS
     }
 
 
@@ -187,12 +186,38 @@ def _message_text(msg: Any) -> str:
     return "".join(out).strip()
 
 
+def _next_run_index(app: "FastAPI", spec: TaskSpec) -> int:
+    """The ensemble run index for a new spawn (#948 S5).
+
+    Assigned in spawn order per ``(parent_session_id, parent_turn_id, child expert)``:
+    the count of tasks ALREADY spawned for that triple. So spawning the same declared
+    child three times in one parent turn yields run_index 0, 1, 2 — durable per record.
+
+    Race-free: ``spawn_child_turn`` runs on the single app event loop (S5's tools reach
+    it via ``spawn_child_turn_threadsafe`` → ``run_coroutine_threadsafe``), so the
+    registry count and the subsequent ``persist_agent_task`` are serialized — two
+    concurrent fan-outs cannot read the same count and collide on an index."""
+
+    reg = app.state.agent_task_registry
+    return sum(
+        1
+        for t in reg.snapshot()
+        if t.parent_session_id == spec.parent_session_id
+        and t.parent_turn_id == spec.parent_turn_id
+        and t.agent_ref.get("expert_id") == spec.child_expert_id
+    )
+
+
 def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
     """Spawn ``spec``'s declared child expert as a real child turn; return its
     :class:`AgentTask` record (already ``running``, or ``queued`` at the cap).
 
     Must be called on the app event loop (S3): it stages a turn via the turn
     runner. S5's model-facing tools call it cross-thread via the executor seam.
+
+    The SAME declared child may be spawned N times concurrently in one parent turn
+    (an ensemble): each call mints its own child session + task record (task ids are
+    unique per child session), disambiguated by a durable ``run_index`` (#948 S5).
     """
 
     from clio_agent.gact.agents.resolution import _runtime_declared_child_ids  # noqa: PLC0415
@@ -231,6 +256,9 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
         parent_session_id=spec.parent_session_id,
         agent={"id": spec.child_expert_id, "mode": "subagent"},
     )
+    # Ensemble run index (#948 S5): computed from the registry BEFORE this task is
+    # persisted, so the first spawn of the child in this parent turn gets 0, the next 1…
+    run_index = _next_run_index(app, spec)
     now = _now()
     task = AgentTask(
         task_id="task_" + child.id.split("_")[-1],
@@ -242,6 +270,7 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
             "requesting_expert_id": spec.requesting_expert_id,
         },
         depth=spec.depth,
+        run_index=run_index,
         status=STATUS_QUEUED,
         queued_reason="concurrency_cap" if at_cap else "",
         created_at=now,

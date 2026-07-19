@@ -132,6 +132,32 @@ def _persist_delegation_reported(app: Any, task: Any) -> None:
         )
 
 
+def _merge_wait_workflow_states(
+    results: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Deterministic request-order merge of a wait batch's per-run workflow_state
+    (#948 S5). Considers only rows that carry BOTH a ``run_index`` and a mapping
+    ``workflow_state`` (a completed run) — ``unknown_task`` / failed-empty rows
+    contribute nothing. Delegates the ordering + conflict detection to the owner
+    module (``workflow_state.merge``); returns ``(merged, conflicts)``."""
+
+    from clio_agent.gact.workflow_state.merge import (  # noqa: PLC0415
+        RunWorkflowState,
+        merge_run_workflow_states,
+    )
+
+    runs = [
+        RunWorkflowState(
+            run_index=int(row.get("run_index", 0)),
+            task_id=str(row.get("task_id", "")),
+            workflow_state=row["workflow_state"],
+        )
+        for row in results
+        if isinstance(row.get("workflow_state"), dict) and "run_index" in row
+    ]
+    return merge_run_workflow_states(runs)
+
+
 def _completion_payload(app: Any, task: Any) -> dict[str, Any]:
     """The delegate.completed payload shape (wire parity with the old tool).
 
@@ -145,6 +171,10 @@ def _completion_payload(app: Any, task: Any) -> dict[str, Any]:
         "agent_id": task.agent_ref.get("expert_id", ""),
         "parent_id": task.agent_ref.get("requesting_expert_id", ""),
         "task_id": task.task_id,
+        # Ensemble run identity (#948 S5): which run of a repeated child this is (0,1,2…
+        # in spawn order). On the payload so a same-child ensemble's return rows / merge
+        # conflict rows are attributable to a specific run.
+        "run_index": task.run_index,
         "status": task.status,
         "stage": "delegate.completed" if task.status == "completed" else f"delegate.{task.status}",
         "output": output,
@@ -156,7 +186,9 @@ def _completion_payload(app: Any, task: Any) -> dict[str, Any]:
     return payload
 
 
-def _started_handoff_part(agent_def: "AgentDef", child_id: str, task_text: str, depth: int) -> Part:
+def _started_handoff_part(
+    agent_def: "AgentDef", child_id: str, task_text: str, depth: int, run_index: int = 0
+) -> Part:
     """The ``delegate.started`` expert_handoff Part appended to the PARENT transcript
     when a child is spawned (#948 S4 finding [7]).
 
@@ -174,6 +206,7 @@ def _started_handoff_part(agent_def: "AgentDef", child_id: str, task_text: str, 
         "stage": "delegate.started",
         "question": task_text,
         "depth": depth,
+        "run_index": run_index,
     }
     return Part(
         id=f"live_handoff_{uuid.uuid4().hex[:12]}",
@@ -209,6 +242,7 @@ def _return_handoff_part(agent_def: "AgentDef", task: Any, payload: dict[str, An
         "output": payload.get("output", ""),
         "workflow_state": payload.get("workflow_state", {}),
         "error": task.error_reason or "",
+        "run_index": task.run_index,
     }
     # Surface the verbatim-output degradation markers (never silent) onto the Part too.
     for marker in ("output_source", "output_fallback_reason"):
@@ -288,14 +322,22 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
             actor={"agent_id": agent_def.id, "role": "parent_expert"},
             subject={"agent_id": agent, "role": "child_expert"},
             blueprint=_blueprint_block(agent_def, agent),
+            payload={"run_index": spawned.run_index},
         )
         # Transcript render parity (#948 S4 finding [7]): the delegation header /
         # nesting is driven off the expert_handoff Part, not the semantic event.
         # Spawn happens once per task, so the started Part is inherently once-per-task.
+        # The ensemble run_index (#948 S5) rides the Part so a same-child ensemble's
+        # started rows are distinguishable.
         _append_live_assistant_part(
-            app, session_id, _started_handoff_part(agent_def, agent, task, depth)
+            app,
+            session_id,
+            _started_handoff_part(agent_def, agent, task, depth, spawned.run_index),
         )
-        return json.dumps({"task_id": spawned.task_id, "status": spawned.status}, sort_keys=True)
+        return json.dumps(
+            {"task_id": spawned.task_id, "status": spawned.status, "run_index": spawned.run_index},
+            sort_keys=True,
+        )
 
     def wait_agent_tasks(task_ids: list[str], timeout_s: float = _DEFAULT_WAIT_TIMEOUT_S) -> str:
         """Block until the given spawned tasks finish (up to timeout_s), then return
@@ -381,13 +423,36 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
                     payload={
                         "agent_id": agent_def.id,
                         "resumed_from": child_id,
+                        "run_index": task.run_index,
                         "status": "completed",
                         "stage": "parent.resumed",
                         "output": payload.get("output", ""),
                         "workflow_state": payload.get("workflow_state", {}),
                     },
                 )
-        return json.dumps({"results": results}, sort_keys=True, default=str)
+        # Deterministic ensemble merge (#948 S5): when this wait collected several
+        # runs whose typed workflow_state sections COLLIDE, merge them in REQUEST
+        # ORDER (run_index, never completion order) and surface every collision as a
+        # typed ``workflow_state_merge_conflict`` row + a structured log — no silent
+        # last-writer. The model reads the conflict rows and decides.
+        merged_state, conflicts = _merge_wait_workflow_states(results)
+        for conflict in conflicts:
+            logger.warning(
+                "workflow_state_merge_conflict key=%s winner_run=%s loser_runs=%s session=%s",
+                conflict["key"],
+                conflict["winner"]["run_index"],
+                [loser["run_index"] for loser in conflict["loser_runs"]],
+                session_id,
+            )
+        return json.dumps(
+            {
+                "results": results,
+                "merged_workflow_state": merged_state,
+                "workflow_state_conflicts": conflicts,
+            },
+            sort_keys=True,
+            default=str,
+        )
 
     def check_agent_tasks() -> str:
         """List the tasks this session has spawned and their current status."""
