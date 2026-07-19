@@ -175,6 +175,9 @@ def _merge_wait_workflow_states(
             run_index=int(row.get("run_index", 0)),
             task_id=str(row.get("task_id", "")),
             workflow_state=row["workflow_state"],
+            # #953 [1]: attribute each run to its child expert so a heterogeneous batch's
+            # same-index runs are distinguishable in the conflict rows.
+            agent_id=str(row.get("agent_id", "")),
         )
         for row in results
         if isinstance(row.get("workflow_state"), dict) and "run_index" in row
@@ -285,9 +288,7 @@ def _return_handoff_part(agent_def: "AgentDef", task: Any, payload: dict[str, An
     )
 
 
-def _emit_delegation_terminal(
-    app: Any, session_id: str, agent_def: "AgentDef", task: Any
-) -> None:
+def _emit_delegation_terminal(app: Any, session_id: str, agent_def: "AgentDef", task: Any) -> None:
     """Emit a terminal task's once-per-task delegation event + return Part + resume.
 
     Shared by :func:`wait_agent_tasks` and the declared-workflow runner
@@ -430,6 +431,9 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
                     task_text=task,
                     parent_session_id=session_id,
                     requesting_expert_id=agent_def.id,
+                    # #953 [2]/[8]: stamp the ACTIVE turn id so run_index resets per
+                    # parent turn (else it accumulates across the whole session).
+                    parent_turn_id=_active_semantic_turn_id(),
                     depth=depth,
                     mode="sync",
                     fanout_bound=fanout_bound,
@@ -515,10 +519,15 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
         merged_state, conflicts = _merge_wait_workflow_states(results)
         for conflict in conflicts:
             logger.warning(
-                "workflow_state_merge_conflict key=%s winner_run=%s loser_runs=%s session=%s",
+                "workflow_state_merge_conflict key=%s winner_run=%s winner_agent=%s "
+                "loser_runs=%s session=%s",
                 conflict["key"],
                 conflict["winner"]["run_index"],
-                [loser["run_index"] for loser in conflict["loser_runs"]],
+                conflict["winner"].get("agent_id", ""),
+                [
+                    (loser["run_index"], loser.get("agent_id", ""))
+                    for loser in conflict["loser_runs"]
+                ],
                 session_id,
             )
         return json.dumps(

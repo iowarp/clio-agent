@@ -152,6 +152,31 @@ def test_when_child_completed_unproduced_is_typed_error() -> None:
     assert any("is never produced by any step" in e for e in errors), errors
 
 
+def test_misordered_acyclic_workflow_is_typed_error_at_load() -> None:
+    """s1 (child b) gates on 'a', but 'a' is produced by a LATER step s2 — acyclic (no
+    cycle) yet the runner (declaration order, no topo-sort) would stall on s1 forever. It
+    must be a TYPED load error, like the sibling unproduced check (#953 [6]). Sabotage:
+    without the producer-precedes-consumer check this passes validation and stalls at
+    runtime."""
+    steps = [
+        {"id": "s1", "child": "b", "when_child_completed": "a"},
+        {"id": "s2", "child": "a"},
+    ]
+    errors = _errors_for(_wf_def(steps), [_child_def("a"), _child_def("b")])
+    assert any("produced by a LATER step" in e for e in errors), errors
+    rows = validate_expert_hierarchy([_wf_def(steps), _child_def("a"), _child_def("b")])
+    assert next(r for r in rows if r.id == "main").enabled is False
+
+
+def test_correctly_ordered_when_child_completed_stays_enabled() -> None:
+    # producer s1 precedes consumer s2 → valid (the ordering check does not false-positive).
+    steps = [
+        {"id": "s1", "child": "a"},
+        {"id": "s2", "child": "b", "when_child_completed": "a"},
+    ]
+    assert _errors_for(_wf_def(steps), [_child_def("a"), _child_def("b")]) == []
+
+
 def test_empty_steps_is_typed_error() -> None:
     parent = AgentDef(
         id="main", title="main", module={"kind": "react"}, metadata={"workflow": {"steps": []}}
@@ -385,6 +410,83 @@ def test_runner_stalls_on_child_failure_not_a_guess(tmp_path: Path, monkeypatch)
     assert "c" not in {e for e, _ in agent.seen}
 
 
+def test_run_index_resets_per_parent_turn(tmp_path: Path, monkeypatch) -> None:
+    """The runner stamps each step's spawn with the ACTIVE turn id, so run_index resets per
+    turn. Two sequential run_declared_workflow calls (distinct turn ids) over the same single
+    -step workflow each get run_index 0 (#953 [2]/[8]). Sabotage: without the parent_turn_id
+    stamp both spawns share turn_id="" → the 2nd child gets run_index 1 → red."""
+    steps = [{"id": "s_a", "child": "a", "task": "do a"}]
+    agent = _WorkflowAgent(states={"a": {"acq": {"status": "done"}}})
+    app = _run_workflow_app(tmp_path, agent, monkeypatch, "a")
+    with TestClient(app) as client:
+        app.state.max_concurrent_agent_tasks = 3
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        with _active(app, parent):
+            tok1 = ctx.set_turn_id_token("turn-1")
+            rec1 = run_declared_workflow(app, _wf_def(steps), parent, requesting_expert_id="main")
+            ctx.reset(tok1)
+            tok2 = ctx.set_turn_id_token("turn-2")
+            rec2 = run_declared_workflow(app, _wf_def(steps), parent, requesting_expert_id="main")
+            ctx.reset(tok2)
+
+    assert rec1["steps"][0]["run_index"] == 0
+    assert rec2["steps"][0]["run_index"] == 0  # fresh per turn, not 1
+    reg = app.state.agent_task_registry
+    assert reg.get(rec1["steps"][0]["task_id"]).parent_turn_id == "turn-1"
+    assert reg.get(rec2["steps"][0]["task_id"]).parent_turn_id == "turn-2"
+
+
+def test_spawn_tool_run_index_resets_per_parent_turn(tmp_path: Path, monkeypatch) -> None:
+    """The spawn_agent_task tool (the _do_spawn site) also stamps the active turn id, so an
+    ensemble's run_index resets per turn (#953 [2]/[8])."""
+    agent = _WorkflowAgent(states={})
+    app = _run_workflow_app(tmp_path, agent, monkeypatch, "w")
+    main_def = AgentDef(id="main", title="main", module={"kind": "react"})
+    with TestClient(app) as client:
+        app.state.max_concurrent_agent_tasks = 6
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        with _active(app, parent):
+            spawn = {t.name: t for t in spawn_runtime.build_spawn_runtime_tools(agent, main_def)}[
+                "spawn_agent_task"
+            ]
+            tok1 = ctx.set_turn_id_token("turn-1")
+            idx1 = [json.loads(spawn.func(agent="w", task=f"t{i}"))["run_index"] for i in range(3)]
+            ctx.reset(tok1)
+            tok2 = ctx.set_turn_id_token("turn-2")
+            idx2 = [json.loads(spawn.func(agent="w", task=f"u{i}"))["run_index"] for i in range(3)]
+            ctx.reset(tok2)
+
+    assert idx1 == [0, 1, 2]
+    assert idx2 == [0, 1, 2]  # fresh per turn
+
+
+def test_step_timeout_is_distinct_reason_and_cancels_orphan(tmp_path: Path, monkeypatch) -> None:
+    """A step whose child exceeds the step budget while still RUNNING stalls with the distinct
+    ``workflow_step_timeout`` reason (never ``workflow_child_failed`` for a child whose status
+    is "running") AND the orphan is cancelled so it stops holding a slot (#953 [7])."""
+    from clio_agent.gact.workflows import STALL_STEP_TIMEOUT
+    from tests.test_gact.test_spawn_ensemble_s5 import _RecordingAgent
+
+    steps = [{"id": "s_a", "child": "a", "task": "do a"}]
+    agent = _RecordingAgent(sleep_s=3.0)
+    app = _run_workflow_app(tmp_path, agent, monkeypatch, "a")
+    with TestClient(app) as client:
+        app.state.max_concurrent_agent_tasks = 3
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        record = run_declared_workflow(
+            app, _wf_def(steps), parent, requesting_expert_id="main", step_timeout_s=0.1
+        )
+
+    assert record["status"] == "stalled", record
+    stall = record["stall"]
+    assert stall["reason"] == STALL_STEP_TIMEOUT
+    assert stall["observed"]["child_status"] == "running"  # NOT "failed"
+    assert stall["observed"]["timeout_s"] == 0.1
+    # The orphan child was cancelled (transitively) — it stops holding its per-depth slot.
+    task_id = stall["observed"]["task_id"]
+    assert app.state.agent_task_registry.get(task_id).status == "cancelled"
+
+
 def test_gate_is_load_bearing_sabotage_lock(tmp_path: Path, monkeypatch) -> None:
     """Sabotage: force the gate ALWAYS-satisfied (as a runner that skipped an unmet
     predicate would). The same workflow that stalls under the real gate now COMPLETES —
@@ -457,6 +559,44 @@ def test_run_workflow_tool_present_only_when_workflow_declared(tmp_path: Path, m
     assert "run_workflow" not in names_without
     # The base spawn toolset is present in both cases.
     assert {"spawn_agent_task", "wait_agent_tasks", "spawn_agents_parallel"} <= names_without
+
+
+def test_run_workflow_tool_func_invokes_runner(tmp_path: Path, monkeypatch) -> None:
+    """Drive the run_workflow tool wrapper's FUNC (not just assert its presence): it resolves
+    the app/session from context, wires requesting_expert_id=agent_def.id + the request
+    passthrough, and json-serializes the runner's record (#953 [12]). A regression in the
+    ~6-line wrapper (swapped args, context break, serialization error) goes red here."""
+    captured: dict[str, Any] = {}
+
+    def _fake_runner(app_arg, agent_def_arg, session_id, *, requesting_expert_id="", request=""):
+        captured.update(
+            agent_id=agent_def_arg.id,
+            session_id=session_id,
+            requesting=requesting_expert_id,
+            request=request,
+        )
+        return {"status": "completed", "steps": [], "workflow_state": {"x": 1}, "stall": None}
+
+    monkeypatch.setattr("clio_agent.gact.workflows.run_declared_workflow", _fake_runner)
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    wf = _wf_def([{"id": "s", "child": "a", "task": "x"}])
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        _declare(monkeypatch, "a")
+        with _active(app, parent):
+            run_wf = {t.name: t for t in spawn_runtime.build_spawn_runtime_tools(_Agent(), wf)}[
+                "run_workflow"
+            ]
+            out = json.loads(run_wf.func(request="LA fires"))
+
+    assert captured == {
+        "agent_id": "main",
+        "session_id": parent,
+        "requesting": "main",
+        "request": "LA fires",
+    }
+    assert out["status"] == "completed"
+    assert out["workflow_state"] == {"x": 1}
 
 
 def _parallel_tool(base_agent: Any, agent_def: AgentDef, app: Any, session_id: str, monkeypatch):

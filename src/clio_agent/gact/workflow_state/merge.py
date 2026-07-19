@@ -37,11 +37,15 @@ MERGE_CONFLICT_REASON = "workflow_state_merge_conflict"
 @dataclass(frozen=True)
 class RunWorkflowState:
     """One ensemble run's contribution to the merge: its durable ``run_index``, its
-    ``task_id`` (for attribution in a conflict row) and its typed ``workflow_state``."""
+    ``task_id`` and ``agent_id`` (for attribution in a conflict row) and its typed
+    ``workflow_state``. ``agent_id`` is the child expert id — required because a
+    heterogeneous fan-out can produce several runs sharing ``run_index==0`` (each is the
+    first of its OWN expert), so ``run_index`` alone does not identify the run (#953 [1])."""
 
     run_index: int
     task_id: str
     workflow_state: Mapping[str, Any]
+    agent_id: str = ""
 
 
 def _canonical(value: Any) -> str:
@@ -70,11 +74,18 @@ def merge_run_workflow_states(
     two-or-more runs set to DIFFERENT values yields one conflict row::
 
         {"reason": "workflow_state_merge_conflict", "key": <key>,
-         "winner": {"run_index": int, "task_id": str},
-         "loser_runs": [{"run_index": int, "task_id": str}, ...]}
+         "winner": {"run_index": int, "task_id": str, "agent_id": str},
+         "loser_runs": [{"run_index": int, "task_id": str, "agent_id": str}, ...]}
 
     ``loser_runs`` lists (in request order) every earlier run whose value differs
     from the winner's. A key all runs agree on is merged with no conflict row.
+
+    Cross-expert tie-break (#953 [1]): ``run_index`` is assigned PER child expert, so a
+    heterogeneous fan-out (e.g. ``researcher`` + ``analyst``) yields several runs at the
+    SAME ``run_index`` (each first-of-its-own-expert). The sort is STABLE, so ties break by
+    the caller's wait-list order (the model's ``task_ids`` argument order). ``agent_id`` on
+    each attribution dict disambiguates such same-index runs — never rely on ``run_index``
+    alone to identify a run across a heterogeneous batch.
     """
 
     ordered = sorted(runs, key=lambda run: run.run_index)
@@ -100,7 +111,7 @@ def merge_run_workflow_states(
         merged[key] = winner_value
         winner_canonical = _canonical(winner_value)
         losers = [
-            {"run_index": run.run_index, "task_id": run.task_id}
+            {"run_index": run.run_index, "task_id": run.task_id, "agent_id": run.agent_id}
             for run in contributors[:-1]
             if _canonical(run.workflow_state[key]) != winner_canonical
         ]
@@ -109,7 +120,11 @@ def merge_run_workflow_states(
                 {
                     "reason": MERGE_CONFLICT_REASON,
                     "key": key,
-                    "winner": {"run_index": winner.run_index, "task_id": winner.task_id},
+                    "winner": {
+                        "run_index": winner.run_index,
+                        "task_id": winner.task_id,
+                        "agent_id": winner.agent_id,
+                    },
                     "loser_runs": losers,
                 }
             )

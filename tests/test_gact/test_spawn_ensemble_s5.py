@@ -69,11 +69,11 @@ def test_merge_request_order_highest_run_index_wins() -> None:
     conflict = conflicts[0]
     assert conflict["reason"] == MERGE_CONFLICT_REASON
     assert conflict["key"] == "target"
-    assert conflict["winner"] == {"run_index": 2, "task_id": "task_2"}
+    assert conflict["winner"] == {"run_index": 2, "task_id": "task_2", "agent_id": ""}
     # Both earlier runs supplied a DIFFERENT value → both are losers, in request order.
     assert conflict["loser_runs"] == [
-        {"run_index": 0, "task_id": "task_0"},
-        {"run_index": 1, "task_id": "task_1"},
+        {"run_index": 0, "task_id": "task_0", "agent_id": ""},
+        {"run_index": 1, "task_id": "task_1", "agent_id": ""},
     ]
 
 
@@ -129,7 +129,28 @@ def test_merge_partial_conflict_only_disagreeing_runs_are_losers() -> None:
     assert merged == {"k": {"v": "A"}}
     assert len(conflicts) == 1
     assert conflicts[0]["winner"]["run_index"] == 2
-    assert conflicts[0]["loser_runs"] == [{"run_index": 1, "task_id": "task_1"}]
+    assert conflicts[0]["loser_runs"] == [{"run_index": 1, "task_id": "task_1", "agent_id": ""}]
+
+
+def test_conflict_rows_carry_agent_id_for_cross_expert_same_run_index() -> None:
+    """A heterogeneous fan-out: researcher + analyst are EACH run_index 0 (first of their OWN
+    expert) and collide on 'summary'. run_index alone cannot tell them apart — agent_id does,
+    and the stable-sort tie-break resolves the winner by wait-list order (#953 [1])."""
+    runs = [
+        RunWorkflowState(
+            run_index=0, task_id="task_r", workflow_state={"summary": {"v": "R"}}, agent_id="researcher"
+        ),
+        RunWorkflowState(
+            run_index=0, task_id="task_a", workflow_state={"summary": {"v": "A"}}, agent_id="analyst"
+        ),
+    ]
+    merged, conflicts = merge_run_workflow_states(runs)
+    # Stable sort preserves wait-list order → analyst (listed last) wins the same-index tie.
+    assert merged == {"summary": {"v": "A"}}
+    assert conflicts[0]["winner"] == {"run_index": 0, "task_id": "task_a", "agent_id": "analyst"}
+    assert conflicts[0]["loser_runs"] == [
+        {"run_index": 0, "task_id": "task_r", "agent_id": "researcher"}
+    ]
 
 
 # ===========================================================================
@@ -446,6 +467,37 @@ def test_cancel_cascade_kills_all_ensemble_runs(tmp_path: Path, monkeypatch) -> 
         assert len(_wait_bus(app, parent, "agent.task.cancelled", 3)) == 3
 
 
+def test_cancel_cascade_is_transitive_to_grandchildren(tmp_path: Path) -> None:
+    """main -> A -> B (nested spawns are first-class in S5). Cancelling main cancels A AND
+    its grandchild B — no child turn outlives the parent that spawned it (#953 [3]). Sabotage:
+    the pre-fix single-level cascade only touched main's DIRECT children, leaving B running →
+    B stays non-terminal → red."""
+
+    from clio_agent.gact.agent_tasks import seed_agent_task
+    from clio_agent.gact.turn_spawn import cancel_children_of
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        main = client.post("/v1/sessions", json={"title": "m"}).json()["id"]
+        # A is a direct child of main; B is a child of A's OWN child session (a grandchild).
+        a = seed_agent_task(
+            app, parent_session_id=main, agent_ref={"expert_id": "A"}, depth=1, status=STATUS_RUNNING
+        )
+        b = seed_agent_task(
+            app,
+            parent_session_id=a.child_session_id,
+            agent_ref={"expert_id": "B"},
+            depth=2,
+            status=STATUS_RUNNING,
+        )
+        n = cancel_children_of(app, main)
+
+    reg = app.state.agent_task_registry
+    assert reg.get(a.task_id).status == "cancelled"
+    assert reg.get(b.task_id).status == "cancelled"  # grandchild cancelled too (transitive)
+    assert n == 2
+
+
 # ===========================================================================
 # Part C — wait aggregation: request-order merge + typed conflict rows + run_index
 # on the return Parts. Bare fake app (like the S4 wire-parity tests).
@@ -593,10 +645,10 @@ def test_wait_merges_ensemble_workflow_state_in_request_order_with_conflict_rows
     assert len(conflicts) == 1
     assert conflicts[0]["reason"] == "workflow_state_merge_conflict"
     assert conflicts[0]["key"] == "target"
-    assert conflicts[0]["winner"] == {"run_index": 2, "task_id": "task_run2"}
+    assert conflicts[0]["winner"] == {"run_index": 2, "task_id": "task_run2", "agent_id": "worker"}
     assert conflicts[0]["loser_runs"] == [
-        {"run_index": 0, "task_id": "task_run0"},
-        {"run_index": 1, "task_id": "task_run1"},
+        {"run_index": 0, "task_id": "task_run0", "agent_id": "worker"},
+        {"run_index": 1, "task_id": "task_run1", "agent_id": "worker"},
     ]
     # Each per-run row is still returned individually with its run_index.
     assert sorted(r["run_index"] for r in result["results"]) == [0, 1, 2]

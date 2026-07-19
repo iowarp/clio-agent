@@ -23,8 +23,11 @@ TUI/HTTP surface aren't tracked here.
   run record (per-step task ids/results, accumulated `workflow_state`, terminal
   `completed | stalled`) and the model decides how to proceed from a stall. Invalid
   declarations (unknown child, dependency cycle, malformed predicate, an unproduced
-  `when_child_completed`) are typed validation errors on the expert row that compose with
-  the react-children hierarchy rules.
+  `when_child_completed`, or a `when_child_completed` produced by a LATER step — an
+  acyclic-but-misordered workflow that would stall forever) are typed validation errors on
+  the expert row that compose with the react-children hierarchy rules. A step whose child
+  exceeds the step budget stalls with a distinct `workflow_step_timeout` reason (never the
+  child-failed reason) and the orphaned child is cancelled so it stops holding a slot.
 - **`fanout.max_workers` is now enforced** (#948 S5). A parent expert's declared
   `fanout: {enabled, max_workers}` bounds `spawn_agents_parallel`'s batch admission: at
   most `max_workers` of the parent's concurrent children at a depth RUN before the next
@@ -40,11 +43,30 @@ TUI/HTTP surface aren't tracked here.
   `variant.reward.parse_failed` log — never a crash). Invalid declarations (unknown
   variant, `n < 1`, missing/malformed reward or threshold) are typed validation errors
   surfaced on the expert row. The selected try's `winning_index` + `winning_score` (and
-  every try's score) are stamped, additive, on the prediction as `variant_selection`; each
-  try emits a structured `variant.try` / `variant.reward` log. N in-process tries of one
+  every try's score) are stamped, additive, on the prediction as `variant_selection` — and
+  carried across the expert boundary onto the assistant message metadata
+  (`metadata.variant_selection`) so the winner is observable in the durable trace; each
+  try emits a structured `variant.try` / `variant.reward` log. When EVERY try fails (total
+  failure), the wrapper raises ONE typed error carrying the last try's real error + a
+  per-try summary — identical for any `n` (previously the engine swallowed it to `None` for
+  `n<=2` and raised only for `n>=3`). N in-process tries of one
   module in one session are partitioned per try on the ARC live plane + transcript-tap
   KEYS via a new `react_run` discriminator (folded only into keying, never attribution) so
   try N's model input never accumulates try N-1's trajectory.
+
+### Fixed
+- **The ensemble `run_index` now resets per parent turn** (#948 S5 / #953 [2][8]). The
+  model-facing spawn paths (`spawn_agent_task` / `spawn_agents_parallel` and the declared-
+  workflow runner) now stamp the active turn id on each spawn, so `run_index` restarts at 0
+  each turn (it previously accumulated across the whole session because `parent_turn_id` was
+  never populated).
+- **The cancel cascade is now transitive** (#948 S5 / #953 [3]). Cancelling a parent turn
+  cancels the whole descendant tree (grandchildren and deeper), depth-first and cycle-safe,
+  so no nested child turn outlives the ancestor that spawned it.
+- **Ensemble merge conflict rows carry `agent_id`** (#948 S5 / #953 [1]). Each `winner` /
+  `loser_runs` attribution dict in a `workflow_state_merge_conflict` row now includes the
+  child expert id, disambiguating a heterogeneous fan-out's same-`run_index` runs; the
+  cross-expert tie-break (stable `run_index`, then wait-list order) is documented.
 
 ### Changed
 - **The legacy Tier-1 `ClioAgent` planner pathway is deleted** (#948 S4b). The

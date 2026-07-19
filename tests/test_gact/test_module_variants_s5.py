@@ -35,12 +35,14 @@ from clio_agent.arc.memory import ARCMemory
 from clio_agent.gact import context as ctx
 from clio_agent.gact.agents import module_variants as mv
 from clio_agent.gact.agents.reactv2 import arc_history_messages
+from clio_agent.gact.app import _build_blueprint_dspy_module, build_app
 from clio_agent.gact.expert_packs import parse_expert_file
 from clio_agent.gact.runtime.type_parsing import (
     VariantSpec,
     _blueprint_module_variant,
     parse_module_variant,
 )
+from clio_agent.gact.types import AgentDef
 
 # --------------------------------------------------------------------------- #
 # helpers
@@ -320,12 +322,191 @@ def test_wrapped_variant_runs_and_selects_by_reward() -> None:
     with dspy.context(lm=lm):
         pred = wrapped(question="pick the best")
     assert pred is not None
+    # #953 [9]: the RETURNED prediction is the WINNING try's output, not just a stamp
+    # computed independently from the ledger — a regression returning the losing try's
+    # prediction ("wordy first attempt") goes red here.
+    assert pred.answer == "second"
     sel = pred.variant_selection
     assert sel["variant"] == "best_of_n"
     assert sel["n"] == 2
     assert sel["winning_index"] == 1
     assert sel["winning_score"] == pytest.approx(0.9)
     assert {s["run_index"] for s in sel["scores"]} == {0, 1}
+
+
+# --------------------------------------------------------------------------- #
+# 4b. total variant failure — ALWAYS a typed error, never N-dependent (#953 [4])
+# --------------------------------------------------------------------------- #
+
+
+class _BoomInner(dspy.Module):
+    """A real inner dspy.Module whose forward raises on EVERY try (401/tool-crash/OOM
+    stand-in), so the whole variant is a total failure."""
+
+    def __init__(self, err: str = "boom-401") -> None:
+        super().__init__()
+        self.predict = dspy.Predict("question -> answer")
+        self._err = err
+
+    def forward(self, **_kwargs: Any) -> Any:
+        raise RuntimeError(self._err)
+
+
+@pytest.mark.parametrize("n", [1, 2, 3])
+def test_total_variant_failure_raises_typed_for_every_n(n: int) -> None:
+    """Every declared n (1, 2, 3) that totally fails raises the SAME typed error carrying
+    the real root cause. Sabotage/regression: the pre-fix wrapper returned None for n<=2
+    (dspy fail_count off-by-one) → no raise → red here; n>=3 raised a bare RuntimeError."""
+    wrapped = mv.wrap_module_variant(_BoomInner(), _agent(_module(n=n, threshold=1.0)))
+    with dspy.context(lm=DummyLM([{"answer": "x"}])):
+        with pytest.raises(mv.VariantTotalFailure) as excinfo:
+            wrapped(question="q")
+    err = excinfo.value
+    assert err.variant == "best_of_n"
+    assert err.last_error == "RuntimeError: boom-401"
+    assert len(err.per_try_errors) == n  # every try's real error captured, not swallowed
+    assert "exhausted all" in str(err)
+
+
+def test_total_variant_failure_outcome_is_identical_across_n() -> None:
+    """The engine is N-dependent on total failure (None for n<=2, raise for n>=3); the
+    wrapper normalizes BOTH into one typed outcome — identical type + last error for n=1,2,3."""
+    outcomes: dict[int, mv.VariantTotalFailure] = {}
+    for n in (1, 2, 3):
+        wrapped = mv.wrap_module_variant(_BoomInner(), _agent(_module(n=n, threshold=1.0)))
+        with dspy.context(lm=DummyLM([{"answer": "x"}])):
+            with pytest.raises(mv.VariantTotalFailure) as excinfo:
+                wrapped(question="q")
+        outcomes[n] = excinfo.value
+    assert {o.last_error for o in outcomes.values()} == {"RuntimeError: boom-401"}
+    assert [len(outcomes[n].per_try_errors) for n in (1, 2, 3)] == [1, 2, 3]
+
+
+def test_total_refine_failure_is_typed_too() -> None:
+    """Refine shares the same fail_count guard; total failure is likewise typed."""
+    wrapped = mv.wrap_module_variant(_BoomInner(), _agent(_module(variant="refine", n=2)))
+    with dspy.context(lm=DummyLM([{"answer": "x"}])):
+        with pytest.raises(mv.VariantTotalFailure) as excinfo:
+            wrapped(question="q")
+    assert excinfo.value.variant == "refine"
+    assert excinfo.value.last_error == "RuntimeError: boom-401"
+
+
+# --------------------------------------------------------------------------- #
+# 4c. builder integration lock — the wrap call at builders.py is exercised (#953 [10])
+# --------------------------------------------------------------------------- #
+
+
+def _resolved_spec_stub() -> Any:
+    return types.SimpleNamespace(materialize=lambda cred=None: types.SimpleNamespace(
+        provider="argonne", model="gpt-oss-120b", temperature=0.0
+    ))
+
+
+def _build_variant_module(
+    monkeypatch: pytest.MonkeyPatch,
+    module_decl: dict[str, Any],
+    *,
+    agent_id: str = "judge",
+    lm: Any = None,
+) -> Any:
+    """Build a REAL BlueprintExpertModule through the production builder (the ONLY
+    integration path that runs the ``self.program = _wrap_module_variant(...)`` seam)."""
+    monkeypatch.setattr("clio_agent.config.create_lm", lambda config: lm or DummyLM([{"answer": "x"}]))
+    monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: dspy.ChatAdapter())
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
+        lambda base_agent, agent_def: _resolved_spec_stub(),
+    )
+    return _build_blueprint_dspy_module(
+        types.SimpleNamespace(),
+        AgentDef(
+            id=agent_id,
+            source="expert_pack",
+            title=agent_id,
+            module=module_decl,
+            # keep the runtime signature to just `answer` so a DummyLM forward is simple.
+            structured_outputs={"workflow_state": False},
+        ),
+    )
+
+
+@pytest.mark.parametrize("kind", ["predict", "chain_of_thought", "react"])
+def test_builder_wires_variant_over_declared_kind(monkeypatch: pytest.MonkeyPatch, kind: str) -> None:
+    """The BUILT program is the real dspy engine wrapping the declared inner kind. Sabotage:
+    delete ``self.program = _wrap_module_variant(...)`` at builders.py → module.program is the
+    bare inner (not BestOfN) → red."""
+    module = _build_variant_module(monkeypatch, _module(kind=kind, variant="best_of_n", n=2))
+    assert isinstance(module.program, dspy.BestOfN)
+    assert isinstance(module.program.module, mv._RunKeyedModule)
+    if kind == "react":
+        # the react program tag survives the wrap (inner is the real retaining-react cls).
+        assert getattr(module.program.module.inner, "_clio_expert_id", None) == "judge"
+
+
+def test_variant_selection_reaches_assistant_message_metadata(
+    tmp_path: Path, host_agent_executor: Any
+) -> None:
+    """A full turn whose prediction carries ``variant_selection`` surfaces it on the durable
+    assistant message metadata (#953 [5]). Sabotage: without the turn_finalize carry (or the
+    builders boundary carry) the field never reaches the persisted metadata → red."""
+    from fastapi.testclient import TestClient
+
+    from tests.test_gact.conftest import complete_turn
+
+    sel = {
+        "variant": "best_of_n",
+        "n": 2,
+        "winning_index": 1,
+        "winning_score": 0.9,
+        "scores": [{"run_index": 0, "score": 0.3}, {"run_index": 1, "score": 0.9}],
+    }
+
+    class _Host:
+        def forward(self, question: str, session_id: str, **_kw: Any) -> Any:
+            return type(
+                "P",
+                (),
+                {
+                    "answer": "done",
+                    "selected_expert": "",
+                    "routing_rationale": "",
+                    "variant_selection": sel,
+                },
+            )()
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Host())
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        asst = complete_turn(client, sid, "go")
+    assert asst["metadata"]["variant_selection"] == sel
+
+
+def test_builder_variant_forward_returns_winner_and_stamps_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Forward the BUILT module under a stubbed LM: the returned prediction is the WINNING
+    try's output AND carries variant_selection across the boundary (#953 [5]/[9]/[10]).
+    Sabotage: delete the wrap call → a single-shot Predict returns 'wordy first attempt' with
+    no variant_selection → both asserts red."""
+    lm = DummyLM(
+        [
+            {"answer": "wordy first attempt"},
+            {"score": "0.3"},
+            {"answer": "second"},
+            {"score": "0.9"},
+        ]
+    )
+    module = _build_variant_module(
+        monkeypatch,
+        _module(kind="predict", variant="best_of_n", n=2, threshold=1.0, reward=_reward_decl(inputs=["question"])),
+        lm=lm,
+    )
+    pred = module(question="pick the best", session_id="s1")
+    assert pred.answer == "second"
+    assert pred.variant_selection is not None
+    assert pred.variant_selection["winning_index"] == 1
+    assert pred.variant_selection["winning_score"] == pytest.approx(0.9)
 
 
 # --------------------------------------------------------------------------- #
@@ -428,3 +609,91 @@ def test_attribution_reads_bare_scope_under_variant_run() -> None:
         ctx.reset(scope_tok)
     # off-variant the helper is a no-op (identity)
     assert ctx.run_keyed_scope(_SCOPE) == _SCOPE
+
+
+# --------------------------------------------------------------------------- #
+# 5b. run keying driven through a REAL variant forward (the production seam, #953 [11])
+# --------------------------------------------------------------------------- #
+
+_ARC_OBS: list[tuple[int, list[Any]]] = []
+
+
+class _ArcWritingInner(dspy.Module):
+    """A real inner that, per forward, records what its OWN run-keyed ARC partition folds
+    BEFORE writing its thought, then writes it — through the SAME contextvar seams the
+    production react writer uses (``active_app().state.arc`` + ``run_keyed_scope``), reached
+    via contextvars so ``dspy.BestOfN``'s per-try ``module.deepcopy`` never clones them."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.predict = dspy.Predict("question -> answer")
+
+    def forward(self, **kwargs: Any) -> Any:
+        run = ctx.active_react_run()
+        _ARC_OBS.append((run, [m.get("next_thought") for m in (arc_history_messages() or [])]))
+        arc_memory = ctx.active_app().state.arc
+        scope = ctx.run_keyed_scope(ctx.active_react_scope())
+        arc_memory.append_segment(
+            ctx.active_react_session(), scope, "thought", {"text": f"TRY{run}-THOUGHT"},
+            step=0, token_count=1,
+        )
+        return self.predict(**kwargs)
+
+
+def test_variant_forward_run_keys_arc_partitions_through_real_bestofn(arc: ARCMemory) -> None:
+    """Drive the BUILT variant program through the REAL dspy.BestOfN loop over an ARC-writing
+    inner: each try's ``react_run`` is set by the production ``_RunKeyedModule.forward`` (not
+    hand-set), so try 1's History fold EXCLUDES try 0's trajectory and the two writes land in
+    DISTINCT ARC partitions. This is the integration seam the piecewise tests above do not
+    exercise (they set ``set_react_run`` manually). A full react inner is too heavy to drive
+    deterministically under a stub LM, so this drives the minimal real path — the real BestOfN
+    loop + real _RunKeyedModule + real reactv2 fold + real ARCMemory."""
+    _ARC_OBS.clear()
+    wrapped = mv.wrap_module_variant(
+        _ArcWritingInner(), _agent(_module(n=2, threshold=1.0, reward=_reward_decl(inputs=["question"])))
+    )
+    gen = _variant_scope_ctx(arc)
+    next(gen)
+    try:
+        lm = DummyLM([{"answer": "a0"}, {"score": "0.1"}, {"answer": "a1"}, {"score": "0.2"}])
+        with dspy.context(lm=lm):
+            wrapped(question="q")
+        # Each try, driven by the real loop, observed ONLY its own (empty) partition.
+        assert _ARC_OBS == [(0, []), (1, [])]
+        # ...and the two writes are in DISTINCT run-keyed partitions.
+        t0 = ctx.set_react_run(0)
+        fold0 = [m.get("next_thought") for m in (arc_history_messages() or [])]
+        ctx.reset(t0)
+        t1 = ctx.set_react_run(1)
+        fold1 = [m.get("next_thought") for m in (arc_history_messages() or [])]
+        ctx.reset(t1)
+        assert fold0 == ["TRY0-THOUGHT"]
+        assert fold1 == ["TRY1-THOUGHT"]
+    finally:
+        next(gen, None)
+
+
+def test_sabotage_neutralizing_set_react_run_leaks_prior_try_in_real_forward(
+    arc: ARCMemory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sabotage the single line wiring the variant loop to the keying plane: force
+    ``set_react_run`` to always bind run 0. Both tries then key to the same partition, so the
+    second try's real-loop fold accumulates try 0's trajectory — the silent cross-try model
+    -input contamination the discriminator prevents. Proves _RunKeyedModule's set_react_run is
+    load-bearing through the real forward."""
+    _ARC_OBS.clear()
+    orig_set = ctx.set_react_run
+    monkeypatch.setattr(ctx, "set_react_run", lambda _idx: orig_set(0))
+    wrapped = mv.wrap_module_variant(
+        _ArcWritingInner(), _agent(_module(n=2, threshold=1.0, reward=_reward_decl(inputs=["question"])))
+    )
+    gen = _variant_scope_ctx(arc)
+    next(gen)
+    try:
+        lm = DummyLM([{"answer": "a0"}, {"score": "0.1"}, {"answer": "a1"}, {"score": "0.2"}])
+        with dspy.context(lm=lm):
+            wrapped(question="q")
+    finally:
+        next(gen, None)
+    # The SECOND forward saw the FIRST try's trajectory (leak) — red under the real fix.
+    assert _ARC_OBS[1][1] == ["TRY0-THOUGHT"]

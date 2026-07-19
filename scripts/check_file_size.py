@@ -75,7 +75,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # declared-children resolution at the react build site + the scaling default).
     # #948 S5: +4 to wrap the inner program in the declared dspy.BestOfN/Refine module
     # variant at the dispatch (logic lives in the owner module agents/module_variants.py).
-    "src/clio_agent/gact/agents/builders.py": 1831,
+    # #953 [5]: +2 to carry the variant winner stamp (variant_selection) across the
+    # BlueprintExpertModule.forward re-construction boundary (else silently dropped).
+    "src/clio_agent/gact/agents/builders.py": 1833,
     # #900: +14 for the lifespan child-reaper install + clean-shutdown teardown wiring
     # (both delegate to the owner module runtime/process_tree.py).
     # #918: +7 for the SkillNotDelegatableError exception handler (app.py owns
@@ -132,7 +134,9 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/gact/turn.py": 882,
     # #952 S4 Pass C: -9 (the answer-substitution finalize call + import were
     # removed with the settle layer's degradation ledger).
-    "src/clio_agent/gact/turn_finalize.py": 920,
+    # #953 [5]: +3 to surface the variant winner stamp (variant_selection) on the
+    # assistant-message metadata (additive observability contract).
+    "src/clio_agent/gact/turn_finalize.py": 923,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (baseline 1143 -> actual); ratchet back below the pre-#947 count with the
     # mcp_app_* owner-module split (see the #947 DEBT block on mcp_apps.py).

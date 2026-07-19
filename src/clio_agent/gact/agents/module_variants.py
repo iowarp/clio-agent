@@ -71,11 +71,83 @@ class _VariantRunLedger:
     next_index: int = 0
     current_index: int = 0
     scores: list[tuple[int, float]] = field(default_factory=list)
+    # Per-try real error (run_index, "ExcType: message"). The engine only PRINTS a
+    # failed try's exception to stdout and discards it; the inner :class:`_RunKeyedModule`
+    # records it here so a TOTAL failure (every try raised) can carry the real root cause
+    # into the typed turn-ladder error regardless of N (#953 total-failure normalization).
+    errors: list[tuple[int, str]] = field(default_factory=list)
 
 
 _LEDGER: contextvars.ContextVar[_VariantRunLedger | None] = contextvars.ContextVar(
     "clio_variant_run_ledger", default=None
 )
+
+
+class VariantTotalFailure(RuntimeError):
+    """Every try of a declared variant raised (#953): a typed turn-ladder failure.
+
+    The installed ``dspy.BestOfN``/``Refine`` are N-dependent on total failure — their
+    ``fail_count`` off-by-one returns ``best_pred=None`` for ``n<=2`` (swallowing the real
+    error to a ``None``-ish result the caller mislabels as an empty answer) and raises only
+    for ``n>=3``. This wrapper normalizes BOTH into ONE typed failure that ALWAYS surfaces
+    the last try's real error + a per-try summary, so the root cause reaches the trace and
+    the outcome is identical for n=1, 2, 3. ``str()`` is a clio-owned message (never the raw
+    inner error verbatim) so it is not mistaken for a repairable schema-validation miss; the
+    structured detail rides ``per_try_errors`` / ``last_error``."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        agent_id: str,
+        variant: str,
+        per_try_errors: list[tuple[int, str]],
+        last_error: str,
+    ) -> None:
+        super().__init__(message)
+        self.agent_id = agent_id
+        self.variant = variant
+        self.per_try_errors = per_try_errors
+        self.last_error = last_error
+
+
+def _total_variant_failure(
+    agent_id: str,
+    variant: str,
+    ledger: _VariantRunLedger,
+    engine_exc: BaseException | None,
+) -> VariantTotalFailure:
+    """Build the typed total-failure error from the ledger's per-try record.
+
+    ``engine_exc`` is the exception the engine re-raised on the ``n>=3`` path (the last
+    try's real error); on the ``n<=2`` path the engine returned ``None`` and the last
+    error is taken from the ledger. Either way the message carries the last error + a
+    per-try summary — never N-dependent, never swallowed."""
+
+    per_try = list(ledger.errors)
+    if engine_exc is not None:
+        last_error = f"{type(engine_exc).__name__}: {engine_exc}"
+    elif per_try:
+        last_error = per_try[-1][1]
+    else:  # pragma: no cover - a None return always has recorded per-try errors
+        last_error = "unknown error"
+    n = ledger.next_index or len(per_try)
+    summary = "; ".join(f"try {idx}: {err}" for idx, err in per_try) or "no per-try detail"
+    logger.warning(
+        "variant.total_failure agent=%s variant=%s tries=%d last_error=%s",
+        agent_id,
+        variant,
+        n,
+        last_error,
+    )
+    return VariantTotalFailure(
+        f"blueprint expert {agent_id!r} variant {variant!r} exhausted all {n} tries "
+        f"(every attempt raised); last try error follows | per-try: {summary}",
+        agent_id=agent_id,
+        variant=variant,
+        per_try_errors=per_try,
+        last_error=last_error,
+    )
 
 
 class _RunKeyedModule(dspy.Module):
@@ -111,6 +183,14 @@ class _RunKeyedModule(dspy.Module):
         )
         try:
             return self.inner(**kwargs)
+        except Exception as exc:  # noqa: BLE001 - record the REAL error the engine only prints
+            # The engine (`dspy.BestOfN`/`Refine`) catches + PRINTS each failed try and
+            # discards the exception; capture it on the ledger so a total failure can carry
+            # the real root cause into the typed turn-ladder error (#953). Re-raise so the
+            # engine's own selection loop is unchanged.
+            if ledger is not None:
+                ledger.errors.append((run_index, f"{type(exc).__name__}: {exc}"))
+            raise
         finally:
             _ctx.reset(token)
 
@@ -132,9 +212,21 @@ class _RunScopedVariantMixin:
         ledger = _VariantRunLedger()
         token = _LEDGER.set(ledger)
         try:
-            pred = super().forward(**kwargs)  # type: ignore[misc]
+            try:
+                pred = super().forward(**kwargs)  # type: ignore[misc]
+            except Exception as engine_exc:  # noqa: BLE001
+                # dspy raises the last try's exception on TOTAL failure only for n>=3
+                # (fail_count off-by-one). Normalize to the typed total-failure so the
+                # outcome is identical for every N and the root cause reaches the trace.
+                raise _total_variant_failure(
+                    self._clio_agent_id, self._clio_variant, ledger, engine_exc
+                ) from engine_exc
         finally:
             _LEDGER.reset(token)
+        if pred is None:
+            # n<=2 total failure: dspy returns best_pred=None (every try raised, none
+            # selected). ALWAYS a typed turn-ladder failure — never swallowed to None.
+            raise _total_variant_failure(self._clio_agent_id, self._clio_variant, ledger, None)
         _stamp_variant_selection(pred, self._clio_variant, self._clio_agent_id, ledger)
         return pred
 

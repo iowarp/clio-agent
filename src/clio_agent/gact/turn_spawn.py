@@ -175,7 +175,9 @@ def shutdown_agent_task_executors(app: "FastAPI") -> None:
         pool.shutdown(wait=False, cancel_futures=True)
 
 
-def _batch_key(parent_session_id: str, requesting_expert_id: str, depth: int) -> tuple[str, str, int]:
+def _batch_key(
+    parent_session_id: str, requesting_expert_id: str, depth: int
+) -> tuple[str, str, int]:
     """The fan-out batch identity: the same parent expert's children at one depth.
 
     The ``fanout.max_workers`` bound (#948 S5) caps how many tasks sharing this key
@@ -385,34 +387,60 @@ def spawn_child_turn_threadsafe(app: "FastAPI", spec: TaskSpec) -> AgentTask:
     return asyncio.run_coroutine_threadsafe(_call(), loop).result(timeout=60)
 
 
+def _cancel_one_child_task(app: "FastAPI", reg: Any, task: "AgentTask") -> Optional["AgentTask"]:
+    """Cooperatively + hard-cancel one non-terminal child task's in-flight turn and mark
+    the task cancelled. Returns the updated record, or ``None`` if it raced to terminal.
+    The single per-task cancel primitive shared by the cascade + the per-task cancel."""
+
+    child_sid = task.child_session_id
+    app.state.cancel_flags.add(child_sid)
+    event = app.state.cancel_events.get(child_sid)
+    if event is not None:
+        event.set()
+    in_flight = app.state.in_flight_turns.get(child_sid)
+    if in_flight is not None and not in_flight.done():
+        in_flight.cancel()
+    try:
+        updated = reg.transition(task.task_id, STATUS_CANCELLED, updated_at=_now())
+    except Exception:  # noqa: BLE001 - already terminal via a racing completion
+        return None
+    persist_agent_task(app, updated)
+    publish_agent_task_event(app, updated, AGENT_TASK_EVENTS[STATUS_CANCELLED])
+    return updated
+
+
 def cancel_children_of(app: "FastAPI", parent_session_id: str) -> int:
-    """Cancel every non-terminal child task of ``parent_session_id`` (the cancel
-    cascade): cooperatively + hard-cancel each child's in-flight turn and mark the
+    """Cancel every non-terminal DESCENDANT task of ``parent_session_id`` (the cancel
+    cascade): cooperatively + hard-cancel each descendant's in-flight turn and mark the
     task cancelled. Returns the count cancelled. Called when a parent turn/task is
-    cancelled so children never outlive the parent that spawned them."""
+    cancelled so no child turn outlives the parent that spawned it.
+
+    TRANSITIVE (#953 [3]): S5 makes nested spawns first-class (declared workflows,
+    nested experts, ``run_workflow`` reachable from a child), so a direct child may have
+    its own children. This recurses depth-first into each child's own ``for_parent`` set
+    (cycle-safe via a ``seen`` set over session ids) — a grandchild is descended into even
+    when its parent already settled, since a grandchild can outlive a completed child."""
 
     reg = getattr(app.state, "agent_task_registry", None)
     if reg is None:
         return 0
     n = 0
-    for task in reg.for_parent(parent_session_id):
-        if task.is_terminal:
+    seen: set[str] = set()
+    stack: list[str] = [parent_session_id]
+    while stack:
+        pid = stack.pop()
+        if pid in seen:
             continue
-        child_sid = task.child_session_id
-        app.state.cancel_flags.add(child_sid)
-        event = app.state.cancel_events.get(child_sid)
-        if event is not None:
-            event.set()
-        in_flight = app.state.in_flight_turns.get(child_sid)
-        if in_flight is not None and not in_flight.done():
-            in_flight.cancel()
-        try:
-            updated = reg.transition(task.task_id, STATUS_CANCELLED, updated_at=_now())
-        except Exception:  # noqa: BLE001 - already terminal via a racing completion
-            continue
-        persist_agent_task(app, updated)
-        publish_agent_task_event(app, updated, AGENT_TASK_EVENTS[STATUS_CANCELLED])
-        n += 1
+        seen.add(pid)
+        for task in reg.for_parent(pid):
+            # Descend into the child's OWN children regardless of the child's terminality
+            # (a grandchild can still be running under a completed child).
+            if task.child_session_id and task.child_session_id not in seen:
+                stack.append(task.child_session_id)
+            if task.is_terminal:
+                continue
+            if _cancel_one_child_task(app, reg, task) is not None:
+                n += 1
     # Cancelling running children frees concurrency slots — admit queued tasks
     # (possibly of OTHER parents) into them, else they strand forever (the
     # completion hook won't: a cancelled task is already terminal when its
@@ -420,6 +448,27 @@ def cancel_children_of(app: "FastAPI", parent_session_id: str) -> int:
     if n:
         _admit_next_queued(app)
     return n
+
+
+def cancel_agent_task(app: "FastAPI", task_id: str) -> bool:
+    """Cancel a SINGLE agent task by id (the per-task cancel machinery) AND cascade to
+    its own descendants, so a cancelled task's children never outlive it. Returns whether
+    anything was cancelled. Used by the declared-workflow runner on a step timeout (#953
+    [7]) to stop an orphaned still-running child."""
+
+    reg = getattr(app.state, "agent_task_registry", None)
+    if reg is None:
+        return False
+    task = reg.get(task_id)
+    if task is None:
+        return False
+    updated = None
+    if not task.is_terminal:
+        updated = _cancel_one_child_task(app, reg, task)
+    descendants = cancel_children_of(app, task.child_session_id)
+    if updated is not None:
+        _admit_next_queued(app)
+    return updated is not None or descendants > 0
 
 
 def _launch(app: "FastAPI", task: AgentTask, spec: TaskSpec) -> AgentTask:

@@ -516,6 +516,9 @@ def finalize_turn(
         state.assistant_metadata["agent_runtime"] = state.agent_runtime
     if state.prompt_resolution:
         state.assistant_metadata["prompt_resolution"] = state.prompt_resolution
+    # #953 [5]: surface a declared variant's winner stamp (additive) on the metadata.
+    if getattr(state.pred, "variant_selection", None):
+        state.assistant_metadata["variant_selection"] = state.pred.variant_selection
     # Reasoning capture: persist per-call chain-of-thought onto the assistant
     # message metadata (owner: usage.capture_reasoning_log). Best-effort, gated
     # by CLIO_CAPTURE_REASONING; mutates state.assistant_metadata in place.

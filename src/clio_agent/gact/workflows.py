@@ -52,6 +52,10 @@ logger = logging.getLogger(__name__)
 STALL_PREDICATE_UNSATISFIED = "workflow_predicate_unsatisfied"
 STALL_CHILD_FAILED = "workflow_child_failed"
 STALL_SPAWN_REFUSED = "workflow_spawn_refused"
+# A step whose child exceeded the step budget but is still RUNNING (non-terminal) — a
+# distinct reason from a child that FAILED, so the wire record never claims "failed" for a
+# child whose status is "running" (#953 [7]).
+STALL_STEP_TIMEOUT = "workflow_step_timeout"
 
 _DEFAULT_STEP_TIMEOUT_S = 300.0
 
@@ -295,9 +299,7 @@ def _dependency_cycle(steps: tuple[WorkflowStep, ...]) -> list[str]:
     return []
 
 
-def workflow_validation_errors(
-    agent_def: "AgentDef", declared_children: set[str]
-) -> list[str]:
+def workflow_validation_errors(agent_def: "AgentDef", declared_children: set[str]) -> list[str]:
     """Typed validation of a blueprint's ``workflow`` against its declared children.
 
     Composes structural errors (malformed predicate, missing child, non-list
@@ -315,7 +317,11 @@ def workflow_validation_errors(
     if workflow is None:
         return errors
     produced: set[str] = {step.child for step in workflow.steps}
-    for step in workflow.steps:
+    # First step index that produces each child (the runner executes in declaration order).
+    producer_index: dict[str, int] = {}
+    for i, step in enumerate(workflow.steps):
+        producer_index.setdefault(step.child, i)
+    for consumer_index, step in enumerate(workflow.steps):
         if step.child not in declared_children:
             errors.append(
                 f"workflow step {step.id!r} references undeclared child {step.child!r} "
@@ -331,6 +337,15 @@ def workflow_validation_errors(
                 errors.append(
                     f"workflow step {step.id!r} when_child_completed {step.when_child_completed!r} "
                     "is never produced by any step"
+                )
+            elif producer_index[step.when_child_completed] > consumer_index:
+                # #953 [6]: acyclic but MISORDERED — the producer step is declared AFTER
+                # this consumer, so the runner (which never topo-sorts) stalls on this gate
+                # forever. A typed load error, like the sibling unproduced check above.
+                errors.append(
+                    f"workflow step {step.id!r} when_child_completed "
+                    f"{step.when_child_completed!r} is produced by a LATER step "
+                    "(declaration order must satisfy the dependency order)"
                 )
     cycle = _dependency_cycle(workflow.steps)
     if cycle:
@@ -478,11 +493,19 @@ def run_declared_workflow(
         emit_workflow_step_return,
         emit_workflow_step_start,
     )
+    from clio_agent.gact.runtime.globals import (  # noqa: PLC0415
+        _active_semantic_turn_id,
+    )
     from clio_agent.gact.turn_spawn import (  # noqa: PLC0415
         SpawnError,
         TaskSpec,
+        cancel_agent_task,
         spawn_child_turn_threadsafe,
     )
+
+    # #953 [2]/[8]: stamp each step's spawn with the active parent turn id so run_index
+    # resets per turn (else it accumulates across the whole session).
+    active_turn_id = _active_semantic_turn_id()
 
     workflow = parse_workflow(agent_def)
     requesting = requesting_expert_id or agent_def.id
@@ -539,6 +562,7 @@ def run_declared_workflow(
                     task_text=task_text,
                     parent_session_id=parent_session_id,
                     requesting_expert_id=requesting,
+                    parent_turn_id=active_turn_id,
                     depth=depth,
                     mode="sync",
                     workflow_state=dict(accumulated) or None,
@@ -584,27 +608,38 @@ def run_declared_workflow(
             emit_workflow_step_return(app, parent_session_id, agent_def, task)
 
         if task is None or task.status != STATUS_COMPLETED:
+            # #953 [7]: a child that is present but NON-TERMINAL exceeded the step budget
+            # (timeout), it did NOT fail — surface a distinct typed reason AND cancel the
+            # orphan (transitively) so it stops holding a per-depth pool slot. A None /
+            # failed / cancelled child is a genuine child failure.
+            timed_out = task is not None and not task.is_terminal
+            reason = STALL_STEP_TIMEOUT if timed_out else STALL_CHILD_FAILED
+            if timed_out:
+                cancel_agent_task(app, spawned.task_id)
             logger.warning(
                 "workflow stall reason=%s step=%s child=%s child_status=%s agent=%s",
-                STALL_CHILD_FAILED,
+                reason,
                 step.id,
                 step.child,
                 child_status,
                 agent_def.id,
             )
+            observed: dict[str, Any] = {
+                "task_id": spawned.task_id,
+                "child_status": child_status,
+                "error_reason": getattr(task, "error_reason", "") if task else "",
+            }
+            if timed_out:
+                observed["timeout_s"] = step_timeout_s
             return {
                 "status": "stalled",
                 "steps": step_records,
                 "workflow_state": accumulated,
                 "stall": {
-                    "reason": STALL_CHILD_FAILED,
+                    "reason": reason,
                     "step": step.id,
                     "predicate": {"child": step.child},
-                    "observed": {
-                        "task_id": spawned.task_id,
-                        "child_status": child_status,
-                        "error_reason": getattr(task, "error_reason", "") if task else "",
-                    },
+                    "observed": observed,
                 },
             }
 
