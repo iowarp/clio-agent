@@ -19,6 +19,16 @@ Fresh installs install that snapshot into the normal Agent Blueprint store.
 Missing or mismatched pins are surfaced as disabled Blueprint diagnostics; CLIO
 has no in-repo builtin blueprint fallback.
 
+An already-installed default registry that predates the main-as-react pivot is a
+special case: a `chain_of_thought` / `predict` root that declares children is
+disabled by hierarchy validation (only a `react` root can reach children). Rather
+than fail every default session forever with a typed `blueprint_root_disabled`, an
+upgraded box **self-heals** (`gact/agent_blueprint_refresh.py`): the stale-invalid
+install is detected and refreshed to the shipped pin in a typed, swap-safe
+transition (the running registry is replaced atomically; no manual surgery). A
+default session that was answering through the old root answers through the react
+main after the refresh.
+
 ## Expert Module Contract
 
 Each expert declares its DSPy program through frontmatter:
@@ -107,24 +117,119 @@ deciding the route (see the superseding principles in `.claude/CLAUDE.md`).
 ## Child Experts
 
 An orchestrator routes to its declared children by CALLING the spawn-runtime
-tools, attached automatically to a react expert with declared children:
+tools, attached automatically to a react expert with declared children. Every spawn
+is **fire-and-forget async**: the handle returns IMMEDIATELY (`status`
+`queued|running`, with a typed `queued_reason` at the concurrency cap) and the child
+turn is UNTIED to the spawning turn's lifetime — a parent turn ending never cancels
+its children (only cancelling the parent SESSION cascades). The model decides
+spawn-vs-wait-vs-observe; CLIO carries the decision, it does not make it.
 
 - `spawn_agent_task(agent, task)` starts a declared child as a REAL child turn in
   a REAL child session (projected as an `AgentTask`, `session_type=agent_task`)
-  and returns a `task_id`.
-- `wait_agent_tasks([task_id], timeout_s=...)` blocks until the named child turns
-  reach a terminal state and returns each child's `output` (its verbatim `answer`)
-  and typed `workflow_state`.
-- `spawn_agents_parallel([...])` fans a batch of declared children out at once.
-- `check_agent_tasks()` lists the tasks this session has spawned and their status.
+  and returns a `task_id` immediately.
+- `spawn_agents_parallel([...])` fans a batch of declared children out at once
+  (bounded by the parent's declared `fanout.max_workers`; see [Fanout](#fanout)).
+- `wait_agent_tasks([task_id], timeout_s=...)` — `timeout_s` is **REQUIRED** (a wait
+  without a budget is a hang). It blocks up to the budget for the named child turns
+  to reach a terminal state and returns each child's `output` (its verbatim
+  `answer`) and typed `workflow_state`. On timeout it returns the current statuses
+  and the model decides whether to keep waiting, keep working, or finish.
+- `check_agent_tasks([task_id]?)` polls NON-blocking: the tasks this session spawned
+  and their status, plus a bounded result excerpt + `message_ref` for finished ones.
+
+Whichever collection path reaches a finished task first CONSUMES it exactly once
+(durable `consumed_at` + an `agent.task.consumed` event). A completed-but-unconsumed
+child spawned in a PRIOR turn is injected as a bounded, clio-marked grounding block
+into the parent's NEXT turn input (task id, child expert, status, result excerpt,
+child session id) — the model reads it and decides; CLIO never auto-acts on the
+content, and a FAILED child is observed-later IDENTICALLY to a completed one (no
+branch anywhere on child output content).
 
 Each spawn/return is recorded as `blueprint.delegation.{started,completed,failed,
 parent_resumed}` semantic events and `expert_handoff` transcript Parts (a
 `delegate.started` header and a terminal return row), so the canonical transcript
 renders the delegation header, nesting, and return row. The declared parent→child
 edge is enforced (a spawn target must be a declared child of the spawning expert)
-and the 3-tier hierarchy is bounded structurally. There are no generated in-thread
-`delegate_to_<child>` tools; children run as real, independently-persisted turns.
+and the 3-tier hierarchy is bounded structurally (`depth > 3` refused). There are no
+generated in-thread `delegate_to_<child>` tools; children run as real,
+independently-persisted turns on a dedicated executor pool (never the default), so a
+waiting parent can never starve its own children.
+
+## Declared Workflows
+
+Deterministic `a → b → c` child pathways are an explicitly DECLARED blueprint
+`workflow:` block, not something CLIO infers from model prose. A tier-1 orchestrator
+declares a `steps` list, each step naming a declared child and a typed gate over the
+accumulated `workflow_state`:
+
+```yaml
+workflow:
+  steps:
+    - id: locate
+      agent: geo_resolver
+    - id: select
+      agent: catalog_selector
+      when_state:
+        geospatial.status:
+          equals: resolved
+    - id: profile
+      agent: data_profiler
+      when_child_completed: select
+```
+
+The runner (`gact/workflows.py`) executes the steps in declaration order — each step
+is a real `spawn_child_turn` + wait with its own `AgentTask` record, evaluating its
+gate (`when_state.<field>.exists` / `.equals` / `when_child_completed`) over the
+ACCUMULATED typed `workflow_state`. The DECLARATION is the decision; the model is not
+in the loop for the declared steps (declared infra determinism is allowed;
+prose-scraping is not). A gate that cannot be satisfied, a child that FAILS, or a
+step that exceeds its budget is a TYPED STALL — the run stops and returns
+`stalled{reason, step, predicate, observed}` (`workflow_predicate_unsatisfied` /
+`workflow_child_failed` / `workflow_step_timeout`, the last cancelling the orphaned
+child), never a guess or a silent continuation.
+
+A react main enters the workflow via one `run_workflow` tool, present ONLY when a
+workflow is declared (mirroring the children-gated toolset). It returns the full run
+record (per-step task ids/results, accumulated `workflow_state`, terminal
+`completed | stalled`) and the model decides how to proceed from a stall. Invalid
+declarations — unknown child, dependency cycle, malformed predicate, or a
+`when_child_completed` naming a step that never runs or runs LATER (an acyclic but
+misordered workflow that would stall forever) — are typed validation errors on the
+expert row that compose with the react-children hierarchy rules.
+
+## Module Variants (BestOfN / Refine)
+
+An expert may widen its `module` from `{kind}` to `{kind, variant, n, threshold,
+reward}` to run its inner DSPy program under a real `dspy.BestOfN` or `dspy.Refine`:
+
+```yaml
+module:
+  kind: react
+  variant: best_of_n        # or: refine
+  n: 3
+  threshold: 0.8
+  reward:
+    instructions: Score how completely the answer resolves the user's request.
+    inputs: [question, answer]
+    target: answer
+```
+
+`wrap_module_variant` (`gact/agents/module_variants.py`) wraps the built inner module
+in the REAL engine (not a re-implementation); the declared `reward` compiles to a
+source-backed generated `def` (`dspy.Refine` requires a real function via
+`inspect.getsource`) that scores each attempt with an LM-as-judge `dspy.Predict`,
+early-breaking at `reward >= threshold`. An out-of-range/unparseable judge score
+clamps or degrades to `0.0` with a typed `variant.reward.parse_failed` log, never a
+crash; when EVERY try fails the wrapper raises ONE typed error carrying the last
+try's real error (identical for any `n`). The selected try's `winning_index` /
+`winning_score` (and every try's score) are stamped additively on the prediction as
+`variant_selection` and carried onto the assistant message metadata so the winner is
+observable in the durable trace. Invalid declarations (unknown variant, `n < 1`,
+missing/malformed reward or threshold) are typed validation errors on the expert row.
+N in-process tries of one module in one session are partitioned per try on the ARC
+live plane + transcript-tap via a `react_run` keying discriminator (folded only into
+keying, never attribution), so try N's model input never accumulates try N-1's
+trajectory.
 
 ## Workspace Artifacts
 
@@ -149,6 +254,18 @@ of declared children onto a dedicated child-turn executor pool (never the defaul
 under a global concurrency cap — queueing at the cap and admitting queued tasks as
 running ones reach a terminal state. Each child runs as a real child turn and
 emits live plus durable `agent.task.*` / `blueprint.delegation.*` semantic events.
+
+A parent expert may declare `fanout: {enabled, max_workers}` to bound its own batch:
+at most `max_workers` of that parent's concurrent children RUN before the next spawn
+queues with the typed `concurrency_cap` reason (queue admission honors the bound
+too). The global per-depth cap remains the overall ceiling; an absent/disabled
+declaration leaves the batch unbounded up to that cap. The SAME declared child may be
+spawned N times concurrently in one parent turn (an ensemble) — each run mints its
+own child session + `AgentTask` and carries a durable `run_index` (0, 1, 2… in spawn
+order per parent-turn + child) that disambiguates the otherwise-identical rows;
+`wait_agent_tasks` merges the runs' typed `workflow_state` in REQUEST order and
+surfaces every collision as a typed `workflow_state_merge_conflict` row (no silent
+last-writer).
 
 ## Native Expert Removal
 

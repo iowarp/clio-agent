@@ -6,7 +6,47 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
-### Added
+The agents-creating-agents campaign (#948) accumulated its GACT-surface changes
+per slice; the sub-headers below are slice-scoped so the whole surface story reads
+top to bottom (S7 newest first, back to the S2–S3 substrate).
+
+### Added (S6–S7)
+- **The `ExpertInvoker` federation seam is minted** (#948 S7 / #671; internal
+  infrastructure, no wire change today). `gact/agents/invoker.py` owns the
+  transport-abstracted expert-execution boundary — an `ExpertInvoker` Protocol
+  (`invoke`/`wait`/`check`/`cancel`) plus the in-process `InProcessExpertInvoker`
+  that delegates to the exact spawn/registry/cancel primitives the spawn-runtime
+  tools already use (the seam IS the substrate — no second execution pathway). Its
+  serializable shapes (`TaskHandle`, `TaskResult`, `TaskEvent`, and the reused
+  `TaskSpec`) are relay-compatible: `RELAY_STATE_MAP` records the 1:1 lossless
+  mapping to clio-relay's durable job-record vocabulary so a later federation
+  campaign swaps the executor BEHIND the seam, not in front of every caller. The
+  model-facing tools keep calling the substrate directly in this slice; they
+  migrate onto the invoker when federation lands. `TaskResult` carries a RESERVED
+  `artifact_ref` (the #670 artifacts campaign fills it).
+- **ARC/CTE runtime liveness is hardened with typed degrades** (#948 S7;
+  operator-facing knobs). Every `ClioCoreStore` RPC (put/get/exists/scan/delete/
+  clear/search) runs under a **progress-based** stall ladder in
+  `arc/rpc_liveness.py` — never absolute wall-clock bounds (a call that answers on a
+  later attempt succeeds; only a whole-RPC no-response counts as a stall). A stalled
+  peer gets N reconnecting retries with growing backoff, then a typed
+  `ClioCoreRuntimeLostError` (`reason=clio_core_rpc_stalled`) + gate quarantine so
+  subsequent ops fast-fail instead of freezing the event loop (the S4 live-gate
+  zombie-daemon incident). Config-first knobs with documented env overrides and
+  fail-safe defaults: `CLIO_ARC_LIVENESS_STALL_AFTER_S` (30.0),
+  `CLIO_ARC_LIVENESS_RETRIES` (3), `CLIO_ARC_LIVENESS_BACKOFF_INITIAL_S` (2.0),
+  `CLIO_ARC_LIVENESS_BACKOFF_MAX_S` (15.0).
+- **The memory budget is release-gated with background children active** (#948 S7 /
+  #930 discipline; operator note, no wire change). The acceptance load in
+  `scripts/mcp_mem_attribution.py` gained a `--children-pack` scenario: 3 concurrent
+  claude-haiku sessions on the real CTE where session 0 fans out 2 background
+  children (real child sessions via `spawn_agents_parallel`). Measured cold peak
+  1.01 GB / settled final 0.73 GB (medians of 4 live runs), recorded in the
+  `children` block of `scripts/mcp_mem_budget.json` per the ratchet contract
+  (cold-max peak, median final, never raised to pass) — far under the 1.8/1.3
+  campaign targets, with zero untyped degrades. Proven, not assumed: children cost
+  bounded transcripts (`resident_ledgers`) + provider turns, and the #933 reaper
+  cleans their fleets (`workspace_fleet_reaped reason=idle_ttl` every run).
 - **Async spawn / wait / observe-later — the model decides** (#948 S6). Every
   model-driven spawn (`spawn_agent_task` / `spawn_agents_parallel`) is now
   fire-and-forget on ONE honest semantic: the handle returns IMMEDIATELY (`status`
@@ -27,7 +67,13 @@ TUI/HTTP surface aren't tracked here.
   (`_MAX_NOTIFY_BLOCKS`); overflow stays pending for the following turn with a typed
   truncation note — never dropped.
 
-### Changed
+### Changed (S6–S7)
+- **Provider-summary serialization no longer warns every turn** (#948 S7; log
+  noise, no wire change). The `PROMPT-CTX provider summary serialize failed` line
+  fired each turn because `app.state.lm_config` is a plain dict fed to
+  `dataclasses.asdict`; it is now serialized by shape (a `Mapping` directly, a
+  dataclass via `asdict`, with the typed-repr fallback preserved for genuinely bad
+  inputs).
 - **`wait_agent_tasks` now REQUIRES `timeout_s`** (#948 S6 / #670) — BREAKING tool-arg
   change. A wait without a budget is a hang; the model passes its own budget and, on
   timeout, gets the current statuses and decides whether to keep waiting, keep
@@ -87,7 +133,7 @@ TUI/HTTP surface aren't tracked here.
   KEYS via a new `react_run` discriminator (folded only into keying, never attribution) so
   try N's model input never accumulates try N-1's trajectory.
 
-### Fixed
+### Fixed (S5)
 - **The ensemble `run_index` now resets per parent turn** (#948 S5 / #953 [2][8]). The
   model-facing spawn paths (`spawn_agent_task` / `spawn_agents_parallel` and the declared-
   workflow runner) now stamp the active turn id on each spawn, so `run_index` restarts at 0
@@ -101,7 +147,7 @@ TUI/HTTP surface aren't tracked here.
   child expert id, disambiguating a heterogeneous fan-out's same-`run_index` runs; the
   cross-expert tie-break (stable `run_index`, then wait-list order) is documented.
 
-### Changed
+### Changed (S4–S5)
 - **The legacy Tier-1 `ClioAgent` planner pathway is deleted** (#948 S4b). The
   planner loop (`ClioAgent.forward` / `_run_agent_loop` and its action-planner /
   answer-synthesizer / chat-tool-loop / ARC-persistence stack) and the turn
@@ -177,7 +223,7 @@ TUI/HTTP surface aren't tracked here.
   (`session_type=agent_task`) + `blueprint.delegation.*` events rather than the
   retired nanoagent subsessions / `subagent.*` events.
 
-### Removed
+### Removed (S4)
 - The settle/synthesis orchestration internals (#948 S4 / #952): the settle
   loop + parent re-invoke resume prompts (`turn_delegation.py`,
   `turn_delegation_arc.py`), the `final_responder` synthesis-child adoption
@@ -214,7 +260,7 @@ TUI/HTTP surface aren't tracked here.
   (formerly `turn_degradation.assemble_stream_and_degradation_metadata`) is
   retained as `turn_stream.assemble_stream_metadata`.
 
-### Added
+### Added (S2–S3 substrate)
 - Child-turn substrate (#948 S3 / #951): `spawn_child_turn` spawns a declared child
   expert as a REAL turn in a REAL child session (projected as an `AgentTask`), on a
   dedicated executor pool (never the default), with depth/declared-child guards,

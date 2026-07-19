@@ -14,10 +14,13 @@ is stale or aspirational — do not treat it as ground truth.
 1. **NO deterministic decision-making in clio core.** clio MUST NOT decide routing,
    completion, "pending work," or re-work via keyword/phrase/heuristic matching on a
    model's prose, nor fabricate a decision the model didn't make. The **parent agent
-   (the model) is the router/decider** — it expresses next steps via its *structured
-   output* (`expert_handoffs`: run them; their absence: it decided it's done). clio's
-   job is to **carry results back, execute the stated handoffs, and — when one seems
-   missing — RE-ASK the parent** (bounded repair) and let *it* decide. Deterministic
+   (the model) is the router/decider** — a react main routes by CALLING the
+   spawn-runtime tools (`spawn_agent_task` / `spawn_agents_parallel` / `wait_agent_tasks`
+   / `check_agent_tasks` / `run_workflow`); a spawn is a routing decision, no spawn means
+   it decided it's done. clio's job is to **carry child results back to the live parent
+   and spawn what it is told** — never to re-invoke a settled parent with a synthesized
+   prompt or fake results back through prompt blocks (the settle/synthesis loop that did
+   that is DELETED, #948 S4). Deterministic
    barriers enable the easy case and break every new model/use-case; they do not scale.
    *(Anti-patterns removed this session: a prose-keyword "pending work" detector, a
    "self-contract" path that scraped prose and fabricated a synthetic prediction, a
@@ -256,8 +259,11 @@ async def test_fs_read():
 ## Architecture DOs and DONTs
 
 ### 3-Tier Hierarchy
-- **DO**: Tier 1 (Main) -> Tier 2 (Experts) -> Tier 3 (Nanoagents)
-- **DON'T**: Skip tiers, mix responsibilities, or have experts call other experts directly
+- **DO**: Tier 1 (Main) -> Tier 2 (Experts) -> Tier 3 (children of experts). All
+  tiers are react agents spawning their DECLARED children as real child sessions
+  (`spawn_child_turn`); the Tier-3 nanoagent primitive is deleted (#948 S4).
+- **DON'T**: Skip tiers (depth > 3 is refused), mix responsibilities, or let an
+  expert spawn a child it did not DECLARE (the parent→child edge is enforced)
 
 ### Agent Registry
 - **DO**: Use registry for capability-based routing with typed outputs
@@ -316,7 +322,9 @@ async def test_fs_read():
 ### Current Working Files
 ```
 src/clio_agent/
-├── agent.py                  # Main agent — planner loop (Tier 1)
+├── agent.py                  # ClioAgent — runtime HOST only (provider identity,
+│                             #   MCP tool fleet, ARC keystone, registry); the
+│                             #   Tier-1 planner loop is DELETED (#948 S4b)
 ├── conf.py / config.py       # Runtime config + multi-provider LM configuration
 ├── paths.py                  # Canonical config/data/cache locations
 ├── prompts.py                # External editable prompt system
@@ -330,10 +338,12 @@ src/clio_agent/
 ├── registry/                 # Capability-based agent registry + matching
 ├── arc/                      # ARC memory: live context plane, prompt recorder,
 │                             #   context compiler, cache, index, LSM, storage,
-│                             #   retrieval, semantic schema/segments, replay
+│                             #   retrieval, semantic schema/segments, replay,
+│                             #   rpc_liveness (per-RPC CTE stall ladder, #948 S7)
 ├── optimizer/                # Instrumentation, trainer, variants, runner
-├── runtime/                  # Doctor/status, hooks, LM activity + stream audit,
-│                             #   nanoagent spawn primitive (Tier 3)
+├── runtime/                  # Doctor/status, hooks, LM activity + stream audit
+│                             #   (the Tier-3 nanoagent primitive is DELETED —
+│                             #   children are real child sessions, #948 S4)
 ├── providers/                # Provider auth + LiteLLM bridges (Argonne/ALCF,
 │                             #   claude_code, codex) and handshake/ (model
 │                             #   limits discovery)
@@ -344,12 +354,20 @@ src/clio_agent/
 │   │                         #   talks to (FastAPI + SSE)
 │   ├── app.py                # FastAPI app assembly
 │   ├── turn.py               # Turn orchestration
+│   ├── turn_runner.py        # Turn-task lifetime owner + within-session busy gate
+│   ├── turn_spawn.py         # spawn_child_turn — children as real child turns
+│   ├── agent_tasks.py        # AgentTask record + registry + agent.task.* catalog
+│   ├── workflows.py          # Declared deterministic workflow runner
+│   ├── agent_blueprint_refresh.py  # Stale default-registry self-heal (#948 S4b)
 │   ├── streaming.py          # SSE streaming + stream_fallback reason catalog
 │   ├── sessions.py / session_store.py / messages.py / messaging.py
 │   ├── events.py / semantic_events.py / evidence.py / usage.py
 │   ├── routes/               # HTTP routes: sessions, messages, agents, memory,
-│   │                         #   permissions, providers, workspaces, ...
-│   ├── agents/               # Agent composition/resolution/builders/runtime
+│   │                         #   permissions, providers, workspaces, agent_tasks
+│   ├── agents/               # Agent composition/resolution/builders/runtime;
+│   │                         #   spawn_runtime (react-main spawn tools),
+│   │                         #   module_variants (BestOfN/Refine),
+│   │                         #   invoker (#671 ExpertInvoker seam)
 │   ├── runtime/              # Capabilities, commands, permission policies,
 │   │                         #   context tokens, globals
 │   ├── workflow_state/       # Workflow-state merge
