@@ -90,7 +90,7 @@ def test_tier_classification_rules() -> None:
     assert _classify_tier("CLIO_LM_API_KEY") == "secret"
     assert _classify_tier("ALCF_INFERENCE_TOKEN") == "secret"
     assert _classify_tier("CLIO_CRED_OPENAI_MAIN") == "secret"
-    assert _classify_tier("CLIO_LM_ROUTER_TEMPERATURE") == "unmigrated"
+    assert _classify_tier("CLIO_RUNTIME_STATE_DIR") == "unmigrated"
 
 
 def test_env_example_leaves_secrets_blank_and_comments_knobs() -> None:
@@ -128,31 +128,141 @@ def test_bare_resolve_imports_are_discovered_as_resolved_knobs() -> None:
     assert liveness.key == "runtime.lm_token_liveness"
 
 
-def test_env_read_wrapper_helpers_are_discovered() -> None:
-    """Reads through a same-module helper (``_env_int``) count as env reads.
+def test_conf_resolve_wrapper_knobs_are_discovered() -> None:
+    """Knobs resolved through a single-hop ``conf.resolve`` helper are configured knobs.
 
-    Regression: the 11 ``CLIO_LEDGER_*`` knobs in ``gact/runtime/retention.py``
-    were invisible because only literal ``os.environ`` calls matched.
+    Regression (#985 move 2): the 11 ``CLIO_LEDGER_*`` retention knobs and the 3
+    ``CLIO_RESIDENT_LEDGERS_*`` knobs resolve through same-module helpers
+    (``_resolve_positive_int`` / ``_resolve_positive_float``) that forward their
+    ``(key, env, default)`` into ``conf.resolve``. The generator followed only
+    ``os.environ`` wrappers before, so the resident-ledger trio was DROPPED entirely
+    and the ledger-retention knobs were misclassified as env-only.
     """
-    _, env_only = collect(ROOT)
-    by_env = {e.env: e for e in env_only}
-    for name in ("CLIO_LEDGER_COMMAND_AUDIT_MAX", "CLIO_LEDGER_PENDING_DIFFS_HARD"):
-        assert name in by_env, f"{name} (read via _env_int wrapper) missing from env-only vars"
-        assert "src/clio_agent/gact/runtime/retention.py" in by_env[name].sources
+    resolved, env_only = collect(ROOT)
+    by_env = {r.env: r for r in resolved}
+    env_names = {e.env for e in env_only}
+    expected = {
+        "CLIO_LEDGER_COMMAND_AUDIT_MAX": ("gact.ledger_retention.command_audit.max", "int", "2000"),
+        "CLIO_LEDGER_PENDING_DIFFS_HARD": (
+            "gact.ledger_retention.pending_diffs.hard",
+            "int",
+            "1000",
+        ),
+        "CLIO_RESIDENT_LEDGERS_MAX_BYTES": (
+            "gact.resident_ledgers.max_bytes",
+            "int",
+            "536870912",
+        ),
+        "CLIO_RESIDENT_LEDGERS_TTL_S": ("gact.resident_ledgers.idle_ttl_s", "float", "1800.0"),
+    }
+    for name, (key, type_, default) in expected.items():
+        assert name in by_env, f"{name} (via conf.resolve wrapper) missing from resolved knobs"
+        assert name not in env_names, f"{name} must not double-list as env-only"
+        record = by_env[name]
+        assert record.key == key
+        assert record.type_ == type_
+        # The wrapper default (a literal or a dataclass-field default) renders concretely.
+        assert record.default == default, f"{name} default {record.default!r} != {default!r}"
 
 
-def test_injected_env_mapping_reads_are_discovered() -> None:
-    """``self.env.get(...)`` where ``self.env`` defaults to ``os.environ`` counts.
+def test_status_data_dir_and_api_base_are_config_first() -> None:
+    """``runtime/status.py`` resolves ``CLIO_DATA_DIR`` / ``CLIO_API_BASE`` config-first.
 
-    Regression: ``runtime/status.py`` reads ``CLIO_DATA_DIR`` / ``CLIO_API_BASE``
-    through an injected mapping that falls back to the real environment; both
-    were absent from the reference.
+    Regression (#985 move 1): both were read through an injected ``self.env`` mapping
+    (env-only). They now resolve file → env → default through ``conf`` and must be
+    discovered as configured knobs, not env-only.
     """
-    _, env_only = collect(ROOT)
-    by_env = {e.env: e for e in env_only}
-    for name in ("CLIO_DATA_DIR", "CLIO_API_BASE"):
-        assert name in by_env, f"{name} (read via self.env mapping) missing from env-only vars"
-        assert "src/clio_agent/runtime/status.py" in by_env[name].sources
+    resolved, env_only = collect(ROOT)
+    by_env = {r.env: r for r in resolved}
+    env_names = {e.env for e in env_only}
+    for name, key in (("CLIO_DATA_DIR", "paths.data_dir"), ("CLIO_API_BASE", "runtime.api_base")):
+        assert name in by_env, f"{name} missing from resolved knobs after migration"
+        assert name not in env_names, f"{name} must no longer be env-only"
+        assert by_env[name].key == key
+        assert by_env[name].source == "src/clio_agent/runtime/status.py"
+
+
+def test_conf_resolve_wrapper_following_locked(tmp_path) -> None:
+    """The generator follows a same-module helper that forwards params into conf.resolve.
+
+    A fixture module wraps ``conf.resolve`` behind ``_resolve_wrapped`` and calls it
+    with literal args (one default a plain int, one a dataclass-field default via
+    ``cls.<attr>``). Both must surface as resolved knobs with the wrapper's inferred
+    ``int`` coercion and their concrete defaults — locking the wrapper-following (and
+    the class-attribute-default resolution) against regression.
+    """
+    module = """\
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from clio_agent import conf
+
+
+def _resolve_wrapped(key: str, env: str, default: int) -> int:
+    raw = conf.resolve(key, env=env, default=default)
+    return conf.as_int(raw)
+
+
+@dataclass(frozen=True)
+class _Fixture:
+    limit: int = 4096
+
+    @classmethod
+    def build(cls) -> int:
+        return _resolve_wrapped("fixture.limit", "CLIO_FIXTURE_LIMIT", cls.limit)
+
+
+FOO = _resolve_wrapped("fixture.foo", "CLIO_FIXTURE_FOO", 7)
+"""
+    pkg = tmp_path / "src" / "clio_agent"
+    pkg.mkdir(parents=True)
+    (pkg / "wrapfixture.py").write_text(module, encoding="utf-8")
+
+    resolved, env_only = collect(tmp_path)
+    by_env = {r.env: r for r in resolved}
+    env_names = {e.env for e in env_only}
+
+    assert "CLIO_FIXTURE_FOO" in by_env, "literal-default wrapper call was not followed"
+    foo = by_env["CLIO_FIXTURE_FOO"]
+    assert foo.key == "fixture.foo"
+    assert foo.type_ == "int"  # inferred from the wrapper's conf.as_int call
+    assert foo.default == "7"
+
+    assert "CLIO_FIXTURE_LIMIT" in by_env, "class-attr-default wrapper call was not followed"
+    limit = by_env["CLIO_FIXTURE_LIMIT"]
+    assert limit.key == "fixture.limit"
+    assert limit.type_ == "int"
+    assert limit.default == "4096", "the dataclass-field default must render concretely"
+
+    # A wrapper knob is authoritative — never double-listed as env-only.
+    assert env_names.isdisjoint({"CLIO_FIXTURE_FOO", "CLIO_FIXTURE_LIMIT"})
+
+
+# The retired kill-switches from prior deletion campaigns. Each survives ONLY as a
+# doc comment or a SABOTAGE test asserting it is inert; NONE may have a src reader.
+_RETIRED_ENV_SWITCHES = (
+    "CLIO_REACTV2",
+    "CLIO_CODEX_APP_SERVER",
+    "CLIO_TRANSCRIPT_PROJECTION",
+    "CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS",
+    "CLIO_LM_ROUTER_TEMPERATURE",
+)
+
+
+def test_retired_env_switches_have_no_readers() -> None:
+    """Baseline-0 guard: no retired kill-switch may re-acquire a src reader.
+
+    ``collect()`` is AST-grounded — it finds real reads (``os.environ`` / ``conf.resolve``
+    / wrappers / injected mappings), never a comment mention — so a retired name absent
+    from BOTH the resolved and env-only sets proves nothing in ``src/clio_agent`` reads
+    it. If any of these reappears, a deleted legacy pathway has silently come back to
+    life under configuration (#985 / #775), and this guard fails.
+    """
+    resolved, env_only = collect(ROOT)
+    discovered = {r.env for r in resolved} | {e.env for e in env_only}
+    live = [name for name in _RETIRED_ENV_SWITCHES if name in discovered]
+    assert not live, f"retired env switches re-acquired a src reader: {live}"
 
 
 def test_dynamic_cred_prefix_is_documented_as_secret_pattern() -> None:

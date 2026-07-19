@@ -460,7 +460,6 @@ def load_config_from_env() -> LMProviderConfig:
         ``lm.model`` / CLIO_LM_MODEL: Override model identifier
         ``lm.temperature`` / CLIO_LM_TEMPERATURE: Override reasoner/chat temperature
         ``lm.planner_temperature`` / CLIO_LM_PLANNER_TEMPERATURE: planner temperature
-            (legacy CLIO_LM_ROUTER_TEMPERATURE is honored env-tier only)
         ``lm.planner_max_tokens`` / CLIO_LM_PLANNER_MAX_TOKENS: planner token cap
         ``lm.max_tokens`` / CLIO_LM_MAX_TOKENS: Override max tokens
         ``lm.top_p`` / ``lm.top_k`` / ``lm.min_p`` / ``lm.presence_penalty``: sampling
@@ -530,11 +529,6 @@ def load_config_from_env() -> LMProviderConfig:
         default=None,
         cast=conf.as_float,
     )
-    if planner_temperature is None:
-        # Legacy alias, env-tier only (below file + CLIO_LM_PLANNER_TEMPERATURE).
-        router_temperature = os.environ.get("CLIO_LM_ROUTER_TEMPERATURE", "")
-        if router_temperature.strip():
-            planner_temperature = conf.as_float(router_temperature)
     planner_max_tokens = conf.resolve(
         "lm.planner_max_tokens", env="CLIO_LM_PLANNER_MAX_TOKENS", default=None, cast=conf.as_int
     )

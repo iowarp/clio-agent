@@ -60,6 +60,10 @@ _WORKSPACE_CONFIG_RELPATH = (".clio", "config.yaml")
 # Sentinel distinguishing "key absent from file" from "file value is None/empty".
 _UNSET: Any = object()
 
+# Public alias so callers can test a :meth:`ConfigStore.file_value` result for
+# "key absent from the file layer" (used to label config-vs-env provenance).
+UNSET: Any = _UNSET
+
 
 # --------------------------------------------------------------------------- #
 # Cast helpers — accept the raw value from any source (already-typed YAML scalar

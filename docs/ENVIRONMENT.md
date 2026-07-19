@@ -2,7 +2,7 @@
 
 # Environment variable reference
 
-Every `CLIO_*` / `ALCF_*` variable the agent reads, derived from the source tree by `scripts/gen_env_reference.py`. Discovery covers `conf.resolve(...)` calls (module-qualified or imported), literal `os.environ` / `os.getenv` reads, single-hop env-read helpers (e.g. `_env_int("CLIO_...")`), and injected env mappings that default to `os.environ`; dynamically named variables (`CLIO_CRED_*`) and variables consumed outside the Python tree are curated. Regenerate after adding or renaming a knob; `tests/test_docs/test_env_reference.py` fails on drift.
+Every `CLIO_*` / `ALCF_*` variable the agent reads, derived from the source tree by `scripts/gen_env_reference.py`. Discovery covers `conf.resolve(...)` calls (module-qualified or imported), single-hop config-resolve helpers (a function forwarding its `key`/`env`/`default` into `conf.resolve`, e.g. `_resolve_positive_int(...)`), literal `os.environ` / `os.getenv` reads, single-hop env-read helpers (e.g. `_env_int("CLIO_...")`), and injected env mappings that default to `os.environ`; dynamically named variables (`CLIO_CRED_*`) and variables consumed outside the Python tree are curated. Regenerate after adding or renaming a knob; `tests/test_docs/test_env_reference.py` fails on drift.
 
 ## Configured knobs (config file -> env -> default)
 
@@ -13,6 +13,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP` | `agents.disable_default_registry_bootstrap` | bool | `false` | `src/clio_agent/gact/agent_blueprints.py` |
 | `CLIO_ALLOWED_ROOTS` | `tools.file_policy.allowed_roots` | str | `_default_allowed_roots()` _(computed)_ | `src/clio_agent/tools/file_policy.py` |
 | `CLIO_ALLOW_SYMLINKS` | `tools.file_policy.allow_symlinks` | bool | `false` | `src/clio_agent/tools/file_policy.py` |
+| `CLIO_API_BASE` | `runtime.api_base` | str | _(unset)_ | `src/clio_agent/runtime/status.py` |
 | `CLIO_ARC_CACHE_CAPACITY` | `arc.cache_capacity` | int | `1000` | `src/clio_agent/arc/memory.py` |
 | `CLIO_ARC_CLIO_CORE_DAEMON_RECYCLE` | `arc.clio_core.daemon_recycle_enabled` | bool | `false` | `src/clio_agent/arc/clio_core_daemon.py` |
 | `CLIO_ARC_CLIO_CORE_DAEMON_RSS_CRITICAL` | `arc.clio_core.daemon_rss_critical_bytes` | int | `4294967296` | `src/clio_agent/arc/clio_core_daemon.py` |
@@ -40,6 +41,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_CODEX_TRANSPORT` | `lm.codex_transport` | str | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_CORE_PORT` | `arc.core_port` | str | _(unset)_ | `src/clio_agent/arc/clio_core_liveness.py` |
 | `CLIO_CTX_MAX_BYTES` | `limits.context_inline_bytes` | int | `32768` | `src/clio_agent/gact/runtime/constants.py` |
+| `CLIO_DATA_DIR` | `paths.data_dir` | str | `.clio/agent` | `src/clio_agent/runtime/status.py` |
 | `CLIO_DEBUG` | `debug.level` | str | `low` | `src/clio_agent/runtime/trace.py` |
 | `CLIO_DEBUG_MEMPROF` | `debug.memprof` | bool | `false` | `src/clio_agent/gact/diagnostics.py` |
 | `CLIO_DEBUG_MEMPROF_FRAMES` | `debug.memprof_frames` | int | `20` | `src/clio_agent/gact/diagnostics.py` |
@@ -57,6 +59,17 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_HOOKS_DIR` | `hooks.dir` | str | _(unset)_ | `src/clio_agent/runtime/hooks.py` |
 | `CLIO_HOOKS_FACTORY` | `hooks.factory` | str | _(unset)_ | `src/clio_agent/runtime/hooks.py` |
 | `CLIO_HOOK_TIMEOUT_S` | `limits.hook_timeout_s` | float | `5.0` | `src/clio_agent/runtime/hooks.py` |
+| `CLIO_LEDGER_COMMAND_AUDIT_MAX` | `gact.ledger_retention.command_audit.max` | int | `2000` | `src/clio_agent/gact/runtime/retention.py` |
+| `CLIO_LEDGER_CONTEXT_FRAMES_MAX` | `gact.ledger_retention.context_frames.max` | int | `200` | `src/clio_agent/gact/runtime/retention.py` |
+| `CLIO_LEDGER_MEMORY_TOOL_AUDIT_MAX` | `gact.ledger_retention.memory_tool_audit.max` | int | `2000` | `src/clio_agent/gact/runtime/retention.py` |
+| `CLIO_LEDGER_PENDING_DIFFS_HARD` | `gact.ledger_retention.pending_diffs.hard` | int | `1000` | `src/clio_agent/gact/runtime/retention.py` |
+| `CLIO_LEDGER_PENDING_DIFFS_MAX` | `gact.ledger_retention.pending_diffs.max` | int | `500` | `src/clio_agent/gact/runtime/retention.py` |
+| `CLIO_LEDGER_PERMISSIONS_HARD` | `gact.ledger_retention.permissions.hard` | int | `4000` | `src/clio_agent/gact/runtime/retention.py` |
+| `CLIO_LEDGER_PERMISSIONS_MAX` | `gact.ledger_retention.permissions.max` | int | `2000` | `src/clio_agent/gact/runtime/retention.py` |
+| `CLIO_LEDGER_SHARED_TOKENS_HARD` | `gact.ledger_retention.shared_tokens.hard` | int | `10000` | `src/clio_agent/gact/runtime/retention.py` |
+| `CLIO_LEDGER_SHARED_TOKENS_MAX` | `gact.ledger_retention.shared_tokens.max` | int | `5000` | `src/clio_agent/gact/runtime/retention.py` |
+| `CLIO_LEDGER_TURN_ATTEMPTS_HARD` | `gact.ledger_retention.turn_attempts.hard` | int | `4000` | `src/clio_agent/gact/runtime/retention.py` |
+| `CLIO_LEDGER_TURN_ATTEMPTS_MAX` | `gact.ledger_retention.turn_attempts.max` | int | `2000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LIVE_EDGE_STREAMING` | `gact.live_edge_streaming` | bool | `false` | `src/clio_agent/gact/live_edge.py` |
 | `CLIO_LIVE_STREAMING` | `runtime.live_streaming` | bool | `true` | `src/clio_agent/lm/adapters.py` |
 | `CLIO_LMSTUDIO_FLASH_ATTENTION` | `lm.lmstudio_flash_attention` | bool | `true` | `src/clio_agent/gact/routes/providers.py` |
@@ -93,8 +106,12 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_MCP_WORKSPACE_MAX_RESIDENT` | `tools.mcp.workspace_max_resident` | int | `2` | `src/clio_agent/tools/reaper.py` |
 | `CLIO_MCP_WORKSPACE_TTL_S` | `tools.mcp.workspace_ttl_s` | float | `120.0` | `src/clio_agent/tools/reaper.py` |
 | `CLIO_MODEL_DB` | `paths.model_db` | str | _(unset)_ | `src/clio_agent/providers/handshake/sources/db.py` |
+| `CLIO_RESIDENT_LEDGERS_MAX` | `gact.resident_ledgers.max_sessions` | int | `512` | `src/clio_agent/gact/resident_ledgers.py` |
+| `CLIO_RESIDENT_LEDGERS_MAX_BYTES` | `gact.resident_ledgers.max_bytes` | int | `536870912` | `src/clio_agent/gact/resident_ledgers.py` |
+| `CLIO_RESIDENT_LEDGERS_TTL_S` | `gact.resident_ledgers.idle_ttl_s` | float | `1800.0` | `src/clio_agent/gact/resident_ledgers.py` |
 | `CLIO_SEMANTIC_TRACE_BACKEND` | `trace.backend` | str | `none` | `src/clio_agent/arc/memory.py` |
 | `CLIO_SEMANTIC_TRACE_CONFIG` | `trace.semantic_config` | str | _(unset)_ | `src/clio_agent/gact/semantic_events.py` |
+| `CLIO_SEMANTIC_TRACE_DETAIL` | `trace.detail_level` | str | `DEFAULT_DETAIL_LEVEL` _(computed)_ | `src/clio_agent/gact/_params.py` |
 | `CLIO_SEMANTIC_TRACE_FACTORY` | `trace.semantic_factory` | str | _(unset)_ | `src/clio_agent/gact/semantic_events.py` |
 | `CLIO_SEMANTIC_TRACE_PATH` | `trace.path` | str | _(unset)_ | `src/clio_agent/gact/semantic_events.py` |
 | `CLIO_SERVER_CONF` | `arc.server_conf` | str | _(unset)_ | `src/clio_agent/arc/clio_core_liveness.py` |
@@ -119,26 +136,11 @@ These deliberately bypass the config store (a shared file must not be able to re
 | Environment variable | Tier | Read in |
 | --- | --- | --- |
 | `ALCF_INFERENCE_TOKEN` | secret | `src/clio_agent/gact/routes/providers.py`, `src/clio_agent/providers/credentials.py` |
-| `CLIO_API_BASE` | unmigrated | `src/clio_agent/runtime/status.py` |
 | `CLIO_ARGONNE_TOKEN` | secret | `src/clio_agent/gact/routes/providers.py`, `src/clio_agent/providers/credentials.py` |
 | `CLIO_CRED_<PROVIDER>_<ACCOUNT>` | secret | `src/clio_agent/providers/credentials.py` |
-| `CLIO_DATA_DIR` | unmigrated | `src/clio_agent/runtime/status.py` |
 | `CLIO_ENV_FILE` | bootstrap | `src/clio_agent/config.py` |
-| `CLIO_LEDGER_COMMAND_AUDIT_MAX` | unmigrated | `src/clio_agent/gact/runtime/retention.py` |
-| `CLIO_LEDGER_CONTEXT_FRAMES_MAX` | unmigrated | `src/clio_agent/gact/runtime/retention.py` |
-| `CLIO_LEDGER_MEMORY_TOOL_AUDIT_MAX` | unmigrated | `src/clio_agent/gact/runtime/retention.py` |
-| `CLIO_LEDGER_PENDING_DIFFS_HARD` | unmigrated | `src/clio_agent/gact/runtime/retention.py` |
-| `CLIO_LEDGER_PENDING_DIFFS_MAX` | unmigrated | `src/clio_agent/gact/runtime/retention.py` |
-| `CLIO_LEDGER_PERMISSIONS_HARD` | unmigrated | `src/clio_agent/gact/runtime/retention.py` |
-| `CLIO_LEDGER_PERMISSIONS_MAX` | unmigrated | `src/clio_agent/gact/runtime/retention.py` |
-| `CLIO_LEDGER_SHARED_TOKENS_HARD` | unmigrated | `src/clio_agent/gact/runtime/retention.py` |
-| `CLIO_LEDGER_SHARED_TOKENS_MAX` | unmigrated | `src/clio_agent/gact/runtime/retention.py` |
-| `CLIO_LEDGER_TURN_ATTEMPTS_HARD` | unmigrated | `src/clio_agent/gact/runtime/retention.py` |
-| `CLIO_LEDGER_TURN_ATTEMPTS_MAX` | unmigrated | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LM_API_KEY` | secret | `src/clio_agent/config.py`, `src/clio_agent/gact/routes/providers.py`, `src/clio_agent/runtime/status.py` |
-| `CLIO_LM_ROUTER_TEMPERATURE` | unmigrated | `src/clio_agent/config.py` |
 | `CLIO_RUNTIME_STATE_DIR` | unmigrated | `src/clio_agent/arc/clio_core_config.py` |
-| `CLIO_SEMANTIC_TRACE_DETAIL` | unmigrated | `src/clio_agent/gact/app.py` |
 | `CLIO_USER_DIR` | bootstrap | `src/clio_agent/paths.py` |
 
 ## Owned elsewhere
