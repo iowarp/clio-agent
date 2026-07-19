@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import asdict
+from dataclasses import asdict, is_dataclass
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.catalog import (
@@ -212,9 +212,25 @@ def _prompt_render_context(app: "FastAPI") -> dict[str, str]:
     provider = getattr(app.state, "lm_config", None)
     provider_summary = "{}"
     if provider is not None:
+        # ``app.state.lm_config`` is a plain dict (set by ``PUT /v1/providers/lm``),
+        # not a dataclass, so ``asdict`` raised EVERY turn ("asdict() should be
+        # called on dataclass instances") and silently degraded to repr. Serialize
+        # by shape at the root: a Mapping goes straight through ``json.dumps``, a
+        # genuine dataclass through ``asdict`` first. The typed fallback stays for
+        # a genuinely unserializable input (a non-mapping, non-dataclass object, or
+        # a mapping carrying a non-JSON value).
         try:
-            provider_summary = json.dumps(asdict(provider), sort_keys=True)
-        except Exception as exc:  # noqa: BLE001 - non-dataclass provider; stringify
+            if is_dataclass(provider) and not isinstance(provider, type):
+                payload: Any = asdict(provider)
+            elif isinstance(provider, Mapping):
+                payload = dict(provider)
+            else:
+                raise TypeError(
+                    f"provider summary is neither a dataclass nor a mapping: "
+                    f"{type(provider).__name__}"
+                )
+            provider_summary = json.dumps(payload, sort_keys=True)
+        except Exception as exc:  # noqa: BLE001 - genuinely bad input; stringify
             trace.event("PROMPT-CTX", "provider summary serialize failed (%s); using repr", exc)
             provider_summary = str(provider)
     return {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -515,3 +516,74 @@ def test_planner_render_context_records_reason_on_enrichment_failure(
     assert any("planner enrichment exploded" in reason for reason in reasons)
     # Enrichment failed -> render still succeeds on the base command list.
     assert "/summarize" in resp.json()["prompt"]["text"]
+
+
+def test_provider_summary_serializes_dict_lm_config(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``provider.current`` renders the live ``app.state.lm_config`` as proper JSON
+    without the degraded repr fallback.
+
+    Regression (S6 live-gate wart): ``lm_config`` is a plain dict (set by
+    ``PUT /v1/providers/lm``), but the render context called ``asdict()`` on it —
+    ``asdict()`` only accepts DATACLASS instances, so it raised every single turn
+    ("asdict() should be called on dataclass instances") and silently degraded to
+    ``str(provider)`` (a Python repr, not JSON). The fix serializes a Mapping
+    directly.
+
+    Sabotage: revert the fix to ``json.dumps(asdict(provider), ...)`` and this test
+    fails — the degrade reason fires and ``provider.current`` is a repr, not JSON.
+    """
+
+    from clio_agent.gact.agents.composition import _prompt_render_context
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app):
+        app.state.lm_config = {
+            "provider": "lmstudio",
+            "model": "qwen3",
+            "api_base": "http://127.0.0.1:1234/v1",
+            "temperature": 0.2,
+            "max_tokens": 4096,
+            "transport": "openai_chat",
+        }
+        with caplog.at_level(logging.WARNING, logger="clio_agent"):
+            ctx = _prompt_render_context(app)
+
+    summary = ctx["provider.current"]
+    # Proper JSON of the live config (NOT a Python repr), round-trips to the dict.
+    parsed = json.loads(summary)
+    assert parsed == app.state.lm_config
+    # No degrade reason fired (the asdict() footgun is gone).
+    assert not [
+        r.getMessage()
+        for r in caplog.records
+        if "provider summary serialize failed" in r.getMessage()
+    ], "provider summary should serialize cleanly, not degrade to repr"
+
+
+def test_provider_summary_typed_fallback_survives_bad_input(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The typed repr fallback is preserved for a GENUINELY unserializable provider
+    (neither a dataclass nor a mapping) — the fix removes the spurious degrade on a
+    plain dict, it does not remove the real defensive path."""
+
+    from clio_agent.gact.agents.composition import _prompt_render_context
+
+    class _Weird:
+        def __repr__(self) -> str:
+            return "<weird-provider>"
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app):
+        app.state.lm_config = _Weird()
+        with caplog.at_level(logging.WARNING, logger="clio_agent"):
+            ctx = _prompt_render_context(app)
+
+    assert ctx["provider.current"] == "<weird-provider>"
+    assert any("provider summary serialize failed" in r.getMessage() for r in caplog.records), (
+        "a genuinely bad provider must still emit the structured degrade reason"
+    )

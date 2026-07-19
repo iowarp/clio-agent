@@ -19,6 +19,26 @@ The server is booted as a child of THIS process (claude_code/haiku + the real
 CTE substrate per the accepted gate config — never CLIO_ARC_STORE=local) and
 torn down on exit. Run it as ONE task: server and load share this process
 tree so external task eviction cannot split them.
+
+Background-children scenario (#955): pass ``--children-pack <blueprint with
+declared children>`` (e.g. the S5 canary pack). Session 0 then drives that
+blueprint and fans out 2 BACKGROUND children (alpha+beta) via the async spawn
+tools instead of the data-semantics load; the other sessions keep the standard
+load. The children are REAL sessions — ``resident_ledgers`` caps their
+transcripts and the #933 workspace-fleet reaper cleans their fleets — so the
+gate exercises the bound with real child sessions resident.
+
+HONEST CAVEAT (the load is a SWAP, not an add): session 0 runs the canary pack
+INSTEAD of the data-semantics pack, so this scenario has 2 MCP-fleet data
+sessions (1-2) vs the baseline's 3, and the canary children declare NO
+``mcp_servers`` (they add transcript + provider-CLI cost, not a fleet). The
+children peak is therefore a LIGHTER fleet load than the baseline and is NOT a
+peak-vs-baseline delta measurement — its value is (a) the dedicated ``children``
+budget block ratchet (its own recorded cold-max numbers) and (b) the
+non-vacuity guard below (``_assert_children_spawned``), which fails the gate if
+session 0 did not actually spawn its 2 children (so a silent no-spawn cannot be
+recorded as a passing children run). Under ``--assert-budget`` this scenario is
+checked against the ``children`` budget block in ``mcp_mem_budget.json``.
 """
 
 from __future__ import annotations
@@ -57,11 +77,19 @@ PROMPT_SHAPES = [
         "Before we archive {data}, can you review it like a collaborator would "
         "and flag anything that would bite us in a downstream analysis?"
     ),
-    (
-        "Is {data} trustworthy enough to build a report on? Walk me through "
-        "its condition."
-    ),
+    ("Is {data} trustworthy enough to build a report on? Walk me through its condition."),
 ]
+
+# The children scenario's fan-out prompt: drive the canary orchestrator's
+# "parallel consult" exercise, which spawns alpha AND beta as 2 background
+# children in one spawn_agents_parallel call and waits on both. This is the
+# minimal correct vehicle for "one session fanning out 2 background children".
+CHILDREN_PROMPT = (
+    "Run the parallel-consult exercise: consult alpha and beta in parallel. "
+    "Spawn BOTH as background children in a SINGLE spawn_agents_parallel call, "
+    "wait on both task_ids with timeout_s=180, then write a final answer that "
+    "quotes alpha's canary token and beta's canary token verbatim."
+)
 
 
 def classify(name: str, cmdline: str) -> str:
@@ -194,12 +222,13 @@ def check_budget(peak_gb: float, final_gb: float, budget: dict) -> tuple[bool, s
     return peak_gb <= peak_cap and final_gb <= final_cap, detail
 
 
-def drive_session(base: str, pack: Path, prompt: str, out: dict, idx: int) -> None:
+def drive_session(base: str, pack: Path, prompt: str, out: dict, idx: int, sids: dict) -> None:
     s = requests.Session()
     try:
         sid = s.post(f"{base}/v1/sessions", json={"title": f"membudget {idx}"}, timeout=30).json()[
             "id"
         ]
+        sids[idx] = sid  # recorded so the children scenario can verify real child spawns
         s.post(
             f"{base}/v1/sessions/{sid}/agent-blueprint", json={"path": str(pack)}, timeout=120
         ).raise_for_status()
@@ -226,6 +255,31 @@ def drive_session(base: str, pack: Path, prompt: str, out: dict, idx: int) -> No
         out[idx] = f"error: {exc!r}"
 
 
+def _assert_children_spawned(base: str, sid: str | None) -> tuple[bool, str]:
+    """Non-vacuity guard for the children scenario (adversarial-review finding [8]).
+
+    Session 0 MUST have actually spawned its 2 background children (alpha + beta). A run
+    where the model answered WITHOUT spawning them (or the spawns failed) is a strictly
+    LIGHTER no-children load; recording it as a passing ``children`` budget would let a
+    silent no-spawn masquerade as proof. We read the authoritative task projection
+    (``GET /v1/sessions/{sid}/agent-tasks``) and require >= 2 child records.
+    """
+    if not sid:
+        return False, "children guard: session 0 sid was never recorded (no spawn possible)"
+    try:
+        r = requests.get(f"{base}/v1/sessions/{sid}/agent-tasks", timeout=30)
+        r.raise_for_status()
+        tasks = r.json().get("tasks", [])
+    except Exception as exc:  # noqa: BLE001 - a guard that cannot read is a guard that fails
+        return False, f"children guard: could not read agent-tasks for session 0 ({sid}): {exc!r}"
+    statuses = [t.get("status") for t in tasks]
+    ok = len(tasks) >= 2
+    return ok, (
+        f"children guard: session 0 spawned {len(tasks)} child task(s) "
+        f"(need >= 2: alpha+beta); statuses={statuses}"
+    )
+
+
 def _service_alive(base: str) -> bool:
     try:
         requests.get(f"{base}/v1/capabilities", timeout=5).raise_for_status()
@@ -247,6 +301,16 @@ def _port_listener_pid(port: int) -> int | None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pack", required=True, type=Path)
+    parser.add_argument(
+        "--children-pack",
+        type=Path,
+        default=None,
+        help=(
+            "Blueprint with declared children (e.g. out/s5-gate/canary-pack). When "
+            "set, session 0 fans out 2 BACKGROUND children instead of the data load; "
+            "--assert-budget then checks the 'children' block of mcp_mem_budget.json."
+        ),
+    )
     parser.add_argument("--workspace", required=True, type=Path)
     parser.add_argument("--data", default="sensor_readings.csv")
     parser.add_argument("--sessions", type=int, default=3)
@@ -393,10 +457,27 @@ def main() -> int:
 
         data_path = (args.workspace / args.data).as_posix()
         out: dict = {}
+        sids: dict = {}
+
+        def _assign(i: int) -> tuple[Path, str]:
+            # Children scenario: session 0 drives the declared-children blueprint
+            # and fans out 2 background children (alpha+beta); the rest run the
+            # standard data-semantics load so the fleet cost is measured WITH real
+            # child sessions resident alongside the normal acceptance load.
+            if args.children_pack is not None and i == 0:
+                return args.children_pack, CHILDREN_PROMPT
+            return args.pack, PROMPT_SHAPES[i % len(PROMPT_SHAPES)].format(data=data_path)
+
+        plan = [_assign(i) for i in range(args.sessions)]
+        if args.children_pack is not None:
+            print(
+                f"scenario: children — session 0 -> {args.children_pack} "
+                "(fan-out of 2 background children: alpha+beta)"
+            )
         threads = [
             threading.Thread(
                 target=drive_session,
-                args=(base, args.pack, PROMPT_SHAPES[i % len(PROMPT_SHAPES)].format(data=data_path), out, i),
+                args=(base, plan[i][0], plan[i][1], out, i, sids),
                 daemon=True,
             )
             for i in range(args.sessions)
@@ -436,10 +517,35 @@ def main() -> int:
             print(f"GATE: FAIL (sessions not all idle: {out})")
             return 1
 
+        # Children scenario is only meaningful if the children ACTUALLY spawned: a
+        # no-spawn run measures a lighter load and must never be recorded as a pass.
+        if args.children_pack is not None:
+            child_ok, child_detail = _assert_children_spawned(base, sids.get(0))
+            print(child_detail)
+            if not child_ok:
+                print(
+                    "GATE: FAIL — the children scenario recorded fewer than 2 child tasks. "
+                    "A silent no-spawn cannot pass as a children run; fix the spawn, do not "
+                    "record this measurement."
+                )
+                return 1
+
         if args.assert_budget:
-            budget = json.loads(BUDGET_PATH.read_text(encoding="utf-8"))
+            budget_root = json.loads(BUDGET_PATH.read_text(encoding="utf-8"))
+            if args.children_pack is not None:
+                budget = budget_root.get("children")
+                budget_label = "children"
+                if not isinstance(budget, dict):
+                    print(
+                        "FAIL: --children-pack asserted but no 'children' budget block "
+                        f"is recorded in {BUDGET_PATH.name}"
+                    )
+                    return 2
+            else:
+                budget = budget_root
+                budget_label = "baseline"
             ok, detail = check_budget(peak_gb, final_gb, budget)
-            print(f"BUDGET ({BUDGET_PATH.name}): {detail}")
+            print(f"BUDGET ({BUDGET_PATH.name}:{budget_label}): {detail}")
             if not ok:
                 print(
                     "GATE: FAIL — fleet memory regressed past the recorded budget. "
