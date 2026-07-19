@@ -47,7 +47,10 @@ from typing import TYPE_CHECKING, Any
 from clio_agent.gact.agents.resolution import (
     _runtime_active_agent_blueprint_id,
 )
-from clio_agent.gact.delegation import _workflow_state_from_handoff_rows
+from clio_agent.gact.delegation import (
+    _produced_turn_workflow_state,
+    _workflow_state_from_handoff_rows,
+)
 from clio_agent.gact.enrichment import _finalize_context_frame
 from clio_agent.gact.events import Event, EventBus, _publish_transcript_event
 from clio_agent.gact.evidence import (
@@ -508,6 +511,14 @@ def finalize_turn(
             for row in state.expert_handoffs
         ]
         state.assistant_metadata["expert_handoffs"] = state.expert_handoffs
+    # #953: stamp the turn's produced typed workflow_state so a spawned child's
+    # completion hook (turn_spawn._child_workflow_state, reading metadata["workflow_state"])
+    # threads it back — root seam, all kinds (a chain_of_thought LEAF's field was dropped here).
+    produced_wf = _produced_turn_workflow_state(
+        state.pred, state.expert_handoffs, schema=state.workflow_schema
+    )
+    if produced_wf:
+        state.assistant_metadata["workflow_state"] = produced_wf
     if state.context_file_provenance["files"]:
         state.assistant_metadata["context_files"] = state.context_file_provenance
     if state.memory_search_metadata:
@@ -516,6 +527,9 @@ def finalize_turn(
         state.assistant_metadata["agent_runtime"] = state.agent_runtime
     if state.prompt_resolution:
         state.assistant_metadata["prompt_resolution"] = state.prompt_resolution
+    # #953 [5]: surface a declared variant's winner stamp (additive) on the metadata.
+    if getattr(state.pred, "variant_selection", None):
+        state.assistant_metadata["variant_selection"] = state.pred.variant_selection
     # Reasoning capture: persist per-call chain-of-thought onto the assistant
     # message metadata (owner: usage.capture_reasoning_log). Best-effort, gated
     # by CLIO_CAPTURE_REASONING; mutates state.assistant_metadata in place.

@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact import context as _ctx
@@ -49,6 +50,29 @@ logger = logging.getLogger(__name__)
 # Bounded wait so a stuck child never wedges the parent's react loop forever; the
 # model passes its own timeout and decides how to proceed on a partial result.
 _DEFAULT_WAIT_TIMEOUT_S = 300.0
+
+
+def _fanout_batch_bound(agent_def: "AgentDef") -> int:
+    """The declaring parent's fan-out admission bound (#948 S5).
+
+    Reads ``fanout.max_workers`` when the ``fanout`` block is enabled and declares a
+    positive worker count; returns 0 (unbounded — only the global per-depth cap
+    applies) when the block is absent, disabled, or malformed. A quoted author-error
+    ``enabled: "false"`` is treated as disabled (never silently on)."""
+
+    fanout = getattr(agent_def, "fanout", None)
+    if not isinstance(fanout, Mapping) or not fanout:
+        return 0
+    enabled = fanout.get("enabled", True)
+    if isinstance(enabled, str):
+        enabled = enabled.strip().lower() not in {"false", "0", "no", "off", "disabled"}
+    if not enabled:
+        return 0
+    try:
+        max_workers = int(fanout.get("max_workers") or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, max_workers)
 
 
 def _blueprint_block(parent: "AgentDef", child_id: str) -> dict[str, str]:
@@ -132,6 +156,35 @@ def _persist_delegation_reported(app: Any, task: Any) -> None:
         )
 
 
+def _merge_wait_workflow_states(
+    results: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Deterministic request-order merge of a wait batch's per-run workflow_state
+    (#948 S5). Considers only rows that carry BOTH a ``run_index`` and a mapping
+    ``workflow_state`` (a completed run) — ``unknown_task`` / failed-empty rows
+    contribute nothing. Delegates the ordering + conflict detection to the owner
+    module (``workflow_state.merge``); returns ``(merged, conflicts)``."""
+
+    from clio_agent.gact.workflow_state.merge import (  # noqa: PLC0415
+        RunWorkflowState,
+        merge_run_workflow_states,
+    )
+
+    runs = [
+        RunWorkflowState(
+            run_index=int(row.get("run_index", 0)),
+            task_id=str(row.get("task_id", "")),
+            workflow_state=row["workflow_state"],
+            # #953 [1]: attribute each run to its child expert so a heterogeneous batch's
+            # same-index runs are distinguishable in the conflict rows.
+            agent_id=str(row.get("agent_id", "")),
+        )
+        for row in results
+        if isinstance(row.get("workflow_state"), dict) and "run_index" in row
+    ]
+    return merge_run_workflow_states(runs)
+
+
 def _completion_payload(app: Any, task: Any) -> dict[str, Any]:
     """The delegate.completed payload shape (wire parity with the old tool).
 
@@ -145,6 +198,10 @@ def _completion_payload(app: Any, task: Any) -> dict[str, Any]:
         "agent_id": task.agent_ref.get("expert_id", ""),
         "parent_id": task.agent_ref.get("requesting_expert_id", ""),
         "task_id": task.task_id,
+        # Ensemble run identity (#948 S5): which run of a repeated child this is (0,1,2…
+        # in spawn order). On the payload so a same-child ensemble's return rows / merge
+        # conflict rows are attributable to a specific run.
+        "run_index": task.run_index,
         "status": task.status,
         "stage": "delegate.completed" if task.status == "completed" else f"delegate.{task.status}",
         "output": output,
@@ -156,7 +213,9 @@ def _completion_payload(app: Any, task: Any) -> dict[str, Any]:
     return payload
 
 
-def _started_handoff_part(agent_def: "AgentDef", child_id: str, task_text: str, depth: int) -> Part:
+def _started_handoff_part(
+    agent_def: "AgentDef", child_id: str, task_text: str, depth: int, run_index: int = 0
+) -> Part:
     """The ``delegate.started`` expert_handoff Part appended to the PARENT transcript
     when a child is spawned (#948 S4 finding [7]).
 
@@ -174,6 +233,7 @@ def _started_handoff_part(agent_def: "AgentDef", child_id: str, task_text: str, 
         "stage": "delegate.started",
         "question": task_text,
         "depth": depth,
+        "run_index": run_index,
     }
     return Part(
         id=f"live_handoff_{uuid.uuid4().hex[:12]}",
@@ -209,6 +269,7 @@ def _return_handoff_part(agent_def: "AgentDef", task: Any, payload: dict[str, An
         "output": payload.get("output", ""),
         "workflow_state": payload.get("workflow_state", {}),
         "error": task.error_reason or "",
+        "run_index": task.run_index,
     }
     # Surface the verbatim-output degradation markers (never silent) onto the Part too.
     for marker in ("output_source", "output_fallback_reason"):
@@ -225,6 +286,103 @@ def _return_handoff_part(agent_def: "AgentDef", task: Any, payload: dict[str, An
         text=f"{agent_def.id} <- {child_id}",
         metadata={**_handoff_part_metadata(return_row), "stream_source": "live"},
     )
+
+
+def _emit_delegation_terminal(app: Any, session_id: str, agent_def: "AgentDef", task: Any) -> None:
+    """Emit a terminal task's once-per-task delegation event + return Part + resume.
+
+    Shared by :func:`wait_agent_tasks` and the declared-workflow runner
+    (:func:`emit_workflow_step_return`): BOTH spawn+wait through the same substrate,
+    so BOTH reach a terminal task and must render it exactly once. The once-per-task
+    claim (``mark_delegation_reported``) guarantees exactly-once wire emission no
+    matter which path gets there first (the server owns the de-duplicated stream)."""
+
+    registry = app.state.agent_task_registry
+    reported = registry.mark_delegation_reported(task.task_id)
+    if reported is None:
+        return
+    _persist_delegation_reported(app, reported)
+    payload = _completion_payload(app, task)
+    child_id = task.agent_ref.get("expert_id", "")
+    event_type = (
+        "blueprint.delegation.completed"
+        if task.status == "completed"
+        else "blueprint.delegation.failed"
+    )
+    _emit_semantic_event(
+        app,
+        session_id,
+        event_type,
+        turn_id=_active_semantic_turn_id(),
+        trace_id=_active_semantic_trace_id(),
+        status=task.status,
+        summary=f"{child_id} returned to {agent_def.id}",
+        actor={"agent_id": child_id, "role": "child_expert"},
+        subject={"agent_id": agent_def.id, "role": "parent_expert"},
+        blueprint=_blueprint_block(agent_def, child_id),
+        payload=dict(payload),
+    )
+    _append_live_assistant_part(app, session_id, _return_handoff_part(agent_def, task, payload))
+    _emit_semantic_event(
+        app,
+        session_id,
+        "blueprint.delegation.parent_resumed",
+        turn_id=_active_semantic_turn_id(),
+        trace_id=_active_semantic_trace_id(),
+        status="completed",
+        summary=f"{agent_def.id} resumed after {child_id}",
+        actor={"agent_id": agent_def.id, "role": "parent_expert"},
+        subject={"agent_id": child_id, "role": "child_expert"},
+        blueprint=_blueprint_block(agent_def, child_id),
+        payload={
+            "agent_id": agent_def.id,
+            "resumed_from": child_id,
+            "run_index": task.run_index,
+            "status": "completed",
+            "stage": "parent.resumed",
+            "output": payload.get("output", ""),
+            "workflow_state": payload.get("workflow_state", {}),
+        },
+    )
+
+
+def emit_workflow_step_start(
+    app: Any, session_id: str, agent_def: "AgentDef", child_id: str, task_text: str, spawned: Any
+) -> None:
+    """Wire parity for a declared-workflow step spawn (#948 S5 work item 4).
+
+    A workflow step spawns its child directly through the substrate (never the
+    model's ``spawn_agent_task`` tool), so the runner re-emits the same
+    ``blueprint.delegation.started`` event + started ``expert_handoff`` Part the tool
+    path emits — otherwise the step's child would render nothing in the parent
+    transcript."""
+
+    _emit_semantic_event(
+        app,
+        session_id,
+        "blueprint.delegation.started",
+        turn_id=_active_semantic_turn_id(),
+        trace_id=_active_semantic_trace_id(),
+        status="running",
+        summary=f"{agent_def.id} spawned {child_id} (workflow)",
+        actor={"agent_id": agent_def.id, "role": "parent_expert"},
+        subject={"agent_id": child_id, "role": "child_expert"},
+        blueprint=_blueprint_block(agent_def, child_id),
+        payload={"run_index": spawned.run_index, "workflow_step": True},
+    )
+    _append_live_assistant_part(
+        app,
+        session_id,
+        _started_handoff_part(agent_def, child_id, task_text, spawned.depth, spawned.run_index),
+    )
+
+
+def emit_workflow_step_return(app: Any, session_id: str, agent_def: "AgentDef", task: Any) -> None:
+    """Terminal wire parity for a declared-workflow step (delegates to the shared
+    once-per-task terminal emission)."""
+
+    if task.is_terminal:
+        _emit_delegation_terminal(app, session_id, agent_def, task)
 
 
 def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[Any]:
@@ -254,9 +412,11 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
             raise RuntimeError("spawn-runtime tool requires an active CLIO app/session context")
         return app, session_id
 
-    def spawn_agent_task(agent: str, task: str) -> str:
-        """Spawn a declared child expert as a background child turn; returns its
-        task_id (use wait_agent_tasks to collect its result)."""
+    def _do_spawn(agent: str, task: str, *, fanout_bound: int = 0) -> str:
+        """Spawn one declared child through the substrate + emit the started wire
+        parity. ``fanout_bound`` (> 0) caps how many of THIS parent's concurrent
+        children at this depth may run before a spawn queues — the fan-out admission
+        bound (#948 S5); 0 means only the global per-depth cap applies."""
 
         app, session_id = _ctx_app_session()
         # Computed depth: a child spawns at (its own depth) + 1, so nesting
@@ -271,8 +431,12 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
                     task_text=task,
                     parent_session_id=session_id,
                     requesting_expert_id=agent_def.id,
+                    # #953 [2]/[8]: stamp the ACTIVE turn id so run_index resets per
+                    # parent turn (else it accumulates across the whole session).
+                    parent_turn_id=_active_semantic_turn_id(),
                     depth=depth,
                     mode="sync",
+                    fanout_bound=fanout_bound,
                 ),
             )
         except SpawnError as exc:
@@ -288,14 +452,28 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
             actor={"agent_id": agent_def.id, "role": "parent_expert"},
             subject={"agent_id": agent, "role": "child_expert"},
             blueprint=_blueprint_block(agent_def, agent),
+            payload={"run_index": spawned.run_index},
         )
         # Transcript render parity (#948 S4 finding [7]): the delegation header /
         # nesting is driven off the expert_handoff Part, not the semantic event.
         # Spawn happens once per task, so the started Part is inherently once-per-task.
+        # The ensemble run_index (#948 S5) rides the Part so a same-child ensemble's
+        # started rows are distinguishable.
         _append_live_assistant_part(
-            app, session_id, _started_handoff_part(agent_def, agent, task, depth)
+            app,
+            session_id,
+            _started_handoff_part(agent_def, agent, task, depth, spawned.run_index),
         )
-        return json.dumps({"task_id": spawned.task_id, "status": spawned.status}, sort_keys=True)
+        return json.dumps(
+            {"task_id": spawned.task_id, "status": spawned.status, "run_index": spawned.run_index},
+            sort_keys=True,
+        )
+
+    def spawn_agent_task(agent: str, task: str) -> str:
+        """Spawn a declared child expert as a background child turn; returns its
+        task_id (use wait_agent_tasks to collect its result)."""
+
+        return _do_spawn(agent, task)
 
     def wait_agent_tasks(task_ids: list[str], timeout_s: float = _DEFAULT_WAIT_TIMEOUT_S) -> str:
         """Block until the given spawned tasks finish (up to timeout_s), then return
@@ -326,68 +504,41 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
             results.append(payload)
             if task.is_terminal:
                 # Once-per-task wire emission: the ROW above is returned on EVERY wait
-                # (the model may legitimately re-collect), but the terminal EVENT fires
-                # exactly once — the server owns the de-duplicated stream. A re-wait
-                # (partial-timeout re-collect, id repeated in a batch) gets None here
-                # and emits nothing.
-                reported = registry.mark_delegation_reported(task.task_id)
-                if reported is None:
-                    continue
-                _persist_delegation_reported(app, reported)
-                event_type = (
-                    "blueprint.delegation.completed"
-                    if task.status == "completed"
-                    else "blueprint.delegation.failed"
-                )
-                _emit_semantic_event(
-                    app,
-                    session_id,
-                    event_type,
-                    turn_id=_active_semantic_turn_id(),
-                    trace_id=_active_semantic_trace_id(),
-                    status=task.status,
-                    summary=f"{task.agent_ref.get('expert_id', '')} returned to {agent_def.id}",
-                    actor={"agent_id": task.agent_ref.get("expert_id", ""), "role": "child_expert"},
-                    subject={"agent_id": agent_def.id, "role": "parent_expert"},
-                    blueprint=_blueprint_block(agent_def, task.agent_ref.get("expert_id", "")),
-                    payload=dict(payload),
-                )
-                # Transcript render parity (#948 S4 finding [7]): a spawned child
-                # renders in the PARENT transcript ONLY via an expert_handoff Part —
-                # the events above feed the activity label / execution trace, not the
-                # transcript. Gated by the SAME once-per-task claim as the event, so a
-                # re-wait / repeated id never appends a second return row.
-                _append_live_assistant_part(
-                    app, session_id, _return_handoff_part(agent_def, task, payload)
-                )
-                # Re-pin the active-agent indicator to the parent (#948 S4 finding [6]):
-                # the TUI resets the executing agent to the parent ONLY on
-                # ``*.delegation.parent_resumed`` (a terminal ``completed``/``failed``
-                # falls through to the child in the indicator switch), so without this
-                # the header stays stuck on the last-spawned child for the rest of the
-                # turn. Once per terminal task (same dedup gate), for BOTH outcomes.
-                child_id = task.agent_ref.get("expert_id", "")
-                _emit_semantic_event(
-                    app,
-                    session_id,
-                    "blueprint.delegation.parent_resumed",
-                    turn_id=_active_semantic_turn_id(),
-                    trace_id=_active_semantic_trace_id(),
-                    status="completed",
-                    summary=f"{agent_def.id} resumed after {child_id}",
-                    actor={"agent_id": agent_def.id, "role": "parent_expert"},
-                    subject={"agent_id": child_id, "role": "child_expert"},
-                    blueprint=_blueprint_block(agent_def, child_id),
-                    payload={
-                        "agent_id": agent_def.id,
-                        "resumed_from": child_id,
-                        "status": "completed",
-                        "stage": "parent.resumed",
-                        "output": payload.get("output", ""),
-                        "workflow_state": payload.get("workflow_state", {}),
-                    },
-                )
-        return json.dumps({"results": results}, sort_keys=True, default=str)
+                # (the model may legitimately re-collect), but the terminal EVENT +
+                # return Part + parent-resume fire exactly once — the server owns the
+                # de-duplicated stream. A re-wait (partial-timeout re-collect, id
+                # repeated in a batch) claims nothing and emits nothing. Shared with the
+                # declared-workflow runner (both reach a terminal task via the same
+                # substrate).
+                _emit_delegation_terminal(app, session_id, agent_def, task)
+        # Deterministic ensemble merge (#948 S5): when this wait collected several
+        # runs whose typed workflow_state sections COLLIDE, merge them in REQUEST
+        # ORDER (run_index, never completion order) and surface every collision as a
+        # typed ``workflow_state_merge_conflict`` row + a structured log — no silent
+        # last-writer. The model reads the conflict rows and decides.
+        merged_state, conflicts = _merge_wait_workflow_states(results)
+        for conflict in conflicts:
+            logger.warning(
+                "workflow_state_merge_conflict key=%s winner_run=%s winner_agent=%s "
+                "loser_runs=%s session=%s",
+                conflict["key"],
+                conflict["winner"]["run_index"],
+                conflict["winner"].get("agent_id", ""),
+                [
+                    (loser["run_index"], loser.get("agent_id", ""))
+                    for loser in conflict["loser_runs"]
+                ],
+                session_id,
+            )
+        return json.dumps(
+            {
+                "results": results,
+                "merged_workflow_state": merged_state,
+                "workflow_state_conflicts": conflicts,
+            },
+            sort_keys=True,
+            default=str,
+        )
 
     def check_agent_tasks() -> str:
         """List the tasks this session has spawned and their current status."""
@@ -411,9 +562,15 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
 
     def spawn_agents_parallel(spawns: list[dict]) -> str:
         """Fan out several declared children at once. ``spawns`` is a list of
-        {agent, task}; returns their task_ids (collect with wait_agent_tasks)."""
+        {agent, task}; returns their task_ids (collect with wait_agent_tasks).
+
+        When this parent declares ``fanout.max_workers`` (#948 S5), the batch's
+        concurrent admission is bounded by it: spawns beyond the bound QUEUE with a
+        typed reason (the per-depth cap remains the global bound). Absent a declared
+        bound the batch admits up to the global per-depth cap."""
 
         app, session_id = _ctx_app_session()
+        bound = _fanout_batch_bound(agent_def)
         _emit_semantic_event(
             app,
             session_id,
@@ -424,15 +581,33 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
             summary=f"{agent_def.id} fanned out to {len(spawns or [])} children",
             actor={"agent_id": agent_def.id, "role": "parent_expert"},
             blueprint=_blueprint_block(agent_def, ""),
+            payload={"max_workers": bound} if bound else {},
         )
         out = []
         for entry in spawns or []:
             agent = str((entry or {}).get("agent") or "")
             task = str((entry or {}).get("task") or "")
-            out.append(json.loads(spawn_agent_task(agent, task)))
+            out.append(json.loads(_do_spawn(agent, task, fanout_bound=bound)))
         return json.dumps({"spawned": out}, sort_keys=True)
 
-    return [
+    def run_workflow(request: str = "") -> str:
+        """Execute this blueprint's DECLARED deterministic workflow — an a->b->c child
+        pathway gated on typed workflow_state, run in declaration order by the runner
+        (the pack author's declaration IS the decision; clio executes it, never
+        infers). Returns the full run record: per-step task ids + results, the
+        accumulated workflow_state, and a terminal status (completed | stalled). A
+        stall means a step's gate could not be satisfied or a child failed — read the
+        stall reason (step, predicate, observed) and YOU decide how to proceed."""
+
+        from clio_agent.gact.workflows import run_declared_workflow  # noqa: PLC0415
+
+        app, session_id = _ctx_app_session()
+        record = run_declared_workflow(
+            app, agent_def, session_id, requesting_expert_id=agent_def.id, request=request
+        )
+        return json.dumps(record, sort_keys=True, default=str)
+
+    tools = [
         dspy.Tool(
             func=spawn_agent_task,
             name="spawn_agent_task",
@@ -466,3 +641,22 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
             },
         ),
     ]
+    # run_workflow is gated on a DECLARED workflow (mirroring the children-gated
+    # toolset above): a blueprint with no ``workflow:`` block never sees the tool.
+    from clio_agent.gact.workflows import parse_workflow  # noqa: PLC0415
+
+    if parse_workflow(agent_def) is not None:
+        tools.append(
+            dspy.Tool(
+                func=run_workflow,
+                name="run_workflow",
+                desc=run_workflow.__doc__,
+                args={
+                    "request": {
+                        "type": "string",
+                        "description": "The user's request, grounding each declared step's task.",
+                    },
+                },
+            )
+        )
+    return tools

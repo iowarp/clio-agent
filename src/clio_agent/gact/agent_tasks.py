@@ -102,6 +102,21 @@ class AgentTask:
     child_turn_id: str = ""
     agent_ref: dict[str, str] = field(default_factory=dict)  # {expert_id, blueprint_id}
     depth: int = 1
+    # Per-run ensemble identity (#948 S5): when the SAME declared child is spawned N
+    # times concurrently in one parent turn (an ensemble), each run gets its own task
+    # record — ``run_index`` disambiguates them (0, 1, 2… in spawn order per
+    # ``(parent_turn_id, child expert)``). It is a human-facing/attribution FIELD only;
+    # per the S5 spike the ARC ``react_scope`` stays the bare agent id (a scope suffix
+    # regresses the five consumers that treat scope as agent identity), so run identity
+    # never leaks into scope. Durable on the record (assigned once at spawn, never
+    # recomputed on queue admission).
+    run_index: int = 0
+    # Fan-out admission bound (#948 S5): when > 0, at most this many of the SAME
+    # parent-expert's concurrent children at this depth may RUN before a spawn queues
+    # (the declaring parent's ``fanout.max_workers``). Durable on the record so queue
+    # admission (``_admit_next_queued``) honors the bound after a boot rebuild too; 0
+    # means only the global per-depth cap applies.
+    fanout_bound: int = 0
     status: str = STATUS_QUEUED
     queued_reason: str = ""
     error_reason: str = ""

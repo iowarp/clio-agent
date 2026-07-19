@@ -88,8 +88,7 @@ def _inherited_session_scope_metadata(parent: Any) -> dict[str, Any]:
     return {
         key: value
         for key, value in metadata.items()
-        if key.startswith(_INHERITED_SESSION_SCOPE_PREFIXES)
-        or key in _INHERITED_SESSION_SCOPE_KEYS
+        if key.startswith(_INHERITED_SESSION_SCOPE_PREFIXES) or key in _INHERITED_SESSION_SCOPE_KEYS
     }
 
 
@@ -105,6 +104,11 @@ class TaskSpec:
     depth: int = 1
     mode: str = "async"  # "sync" (a waiter will collect) | "async" (notify-later)
     workflow_state: Optional[dict[str, Any]] = None
+    # Fan-out admission bound (#948 S5): when > 0, the declaring parent's
+    # ``fanout.max_workers`` — at most this many of the same (parent, requesting
+    # expert, depth) children RUN before the next spawn queues. 0 = only the global
+    # per-depth cap applies.
+    fanout_bound: int = 0
 
 
 class SpawnError(Exception):
@@ -171,6 +175,51 @@ def shutdown_agent_task_executors(app: "FastAPI") -> None:
         pool.shutdown(wait=False, cancel_futures=True)
 
 
+def _batch_key(
+    parent_session_id: str, requesting_expert_id: str, depth: int
+) -> tuple[str, str, int]:
+    """The fan-out batch identity: the same parent expert's children at one depth.
+
+    The ``fanout.max_workers`` bound (#948 S5) caps how many tasks sharing this key
+    may RUN concurrently — a per-parent-expert concurrency limit distinct from the
+    global per-depth cap."""
+
+    return (parent_session_id, requesting_expert_id, depth)
+
+
+def _queued_admissible(
+    task: "AgentTask",
+    running_by_depth: dict[int, int],
+    running_by_batch: dict[tuple[str, str, int], int],
+    cap: int,
+) -> bool:
+    """Whether a queued task may be admitted: the global per-depth cap AND (when the
+    task declares a ``fanout_bound``) the fan-out batch bound must both have room —
+    else admitting it would exceed the parent's declared max_workers (#948 S5)."""
+
+    if running_by_depth.get(task.depth, 0) >= cap:
+        return False
+    if task.fanout_bound > 0:
+        key = _batch_key(
+            task.parent_session_id, task.agent_ref.get("requesting_expert_id", ""), task.depth
+        )
+        if running_by_batch.get(key, 0) >= task.fanout_bound:
+            return False
+    return True
+
+
+def _running_in_batch(snapshot: Any, batch_key: tuple[str, str, int]) -> int:
+    """Count RUNNING tasks in ``batch_key``'s fan-out batch (over a registry snapshot)."""
+
+    return sum(
+        1
+        for t in snapshot
+        if t.status == STATUS_RUNNING
+        and _batch_key(t.parent_session_id, t.agent_ref.get("requesting_expert_id", ""), t.depth)
+        == batch_key
+    )
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -187,12 +236,38 @@ def _message_text(msg: Any) -> str:
     return "".join(out).strip()
 
 
+def _next_run_index(app: "FastAPI", spec: TaskSpec) -> int:
+    """The ensemble run index for a new spawn (#948 S5).
+
+    Assigned in spawn order per ``(parent_session_id, parent_turn_id, child expert)``:
+    the count of tasks ALREADY spawned for that triple. So spawning the same declared
+    child three times in one parent turn yields run_index 0, 1, 2 — durable per record.
+
+    Race-free: ``spawn_child_turn`` runs on the single app event loop (S5's tools reach
+    it via ``spawn_child_turn_threadsafe`` → ``run_coroutine_threadsafe``), so the
+    registry count and the subsequent ``persist_agent_task`` are serialized — two
+    concurrent fan-outs cannot read the same count and collide on an index."""
+
+    reg = app.state.agent_task_registry
+    return sum(
+        1
+        for t in reg.snapshot()
+        if t.parent_session_id == spec.parent_session_id
+        and t.parent_turn_id == spec.parent_turn_id
+        and t.agent_ref.get("expert_id") == spec.child_expert_id
+    )
+
+
 def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
     """Spawn ``spec``'s declared child expert as a real child turn; return its
     :class:`AgentTask` record (already ``running``, or ``queued`` at the cap).
 
     Must be called on the app event loop (S3): it stages a turn via the turn
     runner. S5's model-facing tools call it cross-thread via the executor seam.
+
+    The SAME declared child may be spawned N times concurrently in one parent turn
+    (an ensemble): each call mints its own child session + task record (task ids are
+    unique per child session), disambiguated by a durable ``run_index`` (#948 S5).
     """
 
     from clio_agent.gact.agents.resolution import _runtime_declared_child_ids  # noqa: PLC0415
@@ -219,8 +294,20 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
     # behind depth-1 siblings on a different pool (#948 S4 adversarial review).
     reg = app.state.agent_task_registry
     cap = getattr(app.state, "max_concurrent_agent_tasks", 3)
-    running = sum(1 for t in reg.snapshot() if t.status == STATUS_RUNNING and t.depth == spec.depth)
-    at_cap = running >= cap
+    snap = reg.snapshot()
+    running = sum(1 for t in snap if t.status == STATUS_RUNNING and t.depth == spec.depth)
+    global_at_cap = running >= cap
+    # Fan-out admission bound (#948 S5): a declared ``fanout.max_workers`` caps this
+    # parent expert's concurrent children at this depth. A batch spawn beyond the
+    # bound QUEUES (typed ``concurrency_cap``) even when the global per-depth cap has
+    # room — the per-depth cap stays the global bound.
+    fanout_at_cap = spec.fanout_bound > 0 and (
+        _running_in_batch(
+            snap, _batch_key(spec.parent_session_id, spec.requesting_expert_id, spec.depth)
+        )
+        >= spec.fanout_bound
+    )
+    at_cap = global_at_cap or fanout_at_cap
 
     # ---- mint the child session (authoritative store) ----------------------
     parent = app.state.sessions.get(spec.parent_session_id)
@@ -231,6 +318,9 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
         parent_session_id=spec.parent_session_id,
         agent={"id": spec.child_expert_id, "mode": "subagent"},
     )
+    # Ensemble run index (#948 S5): computed from the registry BEFORE this task is
+    # persisted, so the first spawn of the child in this parent turn gets 0, the next 1…
+    run_index = _next_run_index(app, spec)
     now = _now()
     task = AgentTask(
         task_id="task_" + child.id.split("_")[-1],
@@ -242,6 +332,8 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
             "requesting_expert_id": spec.requesting_expert_id,
         },
         depth=spec.depth,
+        run_index=run_index,
+        fanout_bound=spec.fanout_bound,
         status=STATUS_QUEUED,
         queued_reason="concurrency_cap" if at_cap else "",
         created_at=now,
@@ -295,34 +387,60 @@ def spawn_child_turn_threadsafe(app: "FastAPI", spec: TaskSpec) -> AgentTask:
     return asyncio.run_coroutine_threadsafe(_call(), loop).result(timeout=60)
 
 
+def _cancel_one_child_task(app: "FastAPI", reg: Any, task: "AgentTask") -> Optional["AgentTask"]:
+    """Cooperatively + hard-cancel one non-terminal child task's in-flight turn and mark
+    the task cancelled. Returns the updated record, or ``None`` if it raced to terminal.
+    The single per-task cancel primitive shared by the cascade + the per-task cancel."""
+
+    child_sid = task.child_session_id
+    app.state.cancel_flags.add(child_sid)
+    event = app.state.cancel_events.get(child_sid)
+    if event is not None:
+        event.set()
+    in_flight = app.state.in_flight_turns.get(child_sid)
+    if in_flight is not None and not in_flight.done():
+        in_flight.cancel()
+    try:
+        updated = reg.transition(task.task_id, STATUS_CANCELLED, updated_at=_now())
+    except Exception:  # noqa: BLE001 - already terminal via a racing completion
+        return None
+    persist_agent_task(app, updated)
+    publish_agent_task_event(app, updated, AGENT_TASK_EVENTS[STATUS_CANCELLED])
+    return updated
+
+
 def cancel_children_of(app: "FastAPI", parent_session_id: str) -> int:
-    """Cancel every non-terminal child task of ``parent_session_id`` (the cancel
-    cascade): cooperatively + hard-cancel each child's in-flight turn and mark the
+    """Cancel every non-terminal DESCENDANT task of ``parent_session_id`` (the cancel
+    cascade): cooperatively + hard-cancel each descendant's in-flight turn and mark the
     task cancelled. Returns the count cancelled. Called when a parent turn/task is
-    cancelled so children never outlive the parent that spawned them."""
+    cancelled so no child turn outlives the parent that spawned it.
+
+    TRANSITIVE (#953 [3]): S5 makes nested spawns first-class (declared workflows,
+    nested experts, ``run_workflow`` reachable from a child), so a direct child may have
+    its own children. This recurses depth-first into each child's own ``for_parent`` set
+    (cycle-safe via a ``seen`` set over session ids) — a grandchild is descended into even
+    when its parent already settled, since a grandchild can outlive a completed child."""
 
     reg = getattr(app.state, "agent_task_registry", None)
     if reg is None:
         return 0
     n = 0
-    for task in reg.for_parent(parent_session_id):
-        if task.is_terminal:
+    seen: set[str] = set()
+    stack: list[str] = [parent_session_id]
+    while stack:
+        pid = stack.pop()
+        if pid in seen:
             continue
-        child_sid = task.child_session_id
-        app.state.cancel_flags.add(child_sid)
-        event = app.state.cancel_events.get(child_sid)
-        if event is not None:
-            event.set()
-        in_flight = app.state.in_flight_turns.get(child_sid)
-        if in_flight is not None and not in_flight.done():
-            in_flight.cancel()
-        try:
-            updated = reg.transition(task.task_id, STATUS_CANCELLED, updated_at=_now())
-        except Exception:  # noqa: BLE001 - already terminal via a racing completion
-            continue
-        persist_agent_task(app, updated)
-        publish_agent_task_event(app, updated, AGENT_TASK_EVENTS[STATUS_CANCELLED])
-        n += 1
+        seen.add(pid)
+        for task in reg.for_parent(pid):
+            # Descend into the child's OWN children regardless of the child's terminality
+            # (a grandchild can still be running under a completed child).
+            if task.child_session_id and task.child_session_id not in seen:
+                stack.append(task.child_session_id)
+            if task.is_terminal:
+                continue
+            if _cancel_one_child_task(app, reg, task) is not None:
+                n += 1
     # Cancelling running children frees concurrency slots — admit queued tasks
     # (possibly of OTHER parents) into them, else they strand forever (the
     # completion hook won't: a cancelled task is already terminal when its
@@ -330,6 +448,27 @@ def cancel_children_of(app: "FastAPI", parent_session_id: str) -> int:
     if n:
         _admit_next_queued(app)
     return n
+
+
+def cancel_agent_task(app: "FastAPI", task_id: str) -> bool:
+    """Cancel a SINGLE agent task by id (the per-task cancel machinery) AND cascade to
+    its own descendants, so a cancelled task's children never outlive it. Returns whether
+    anything was cancelled. Used by the declared-workflow runner on a step timeout (#953
+    [7]) to stop an orphaned still-running child."""
+
+    reg = getattr(app.state, "agent_task_registry", None)
+    if reg is None:
+        return False
+    task = reg.get(task_id)
+    if task is None:
+        return False
+    updated = None
+    if not task.is_terminal:
+        updated = _cancel_one_child_task(app, reg, task)
+    descendants = cancel_children_of(app, task.child_session_id)
+    if updated is not None:
+        _admit_next_queued(app)
+    return updated is not None or descendants > 0
 
 
 def _launch(app: "FastAPI", task: AgentTask, spec: TaskSpec) -> AgentTask:
@@ -473,11 +612,19 @@ def _admit_next_queued(app: "FastAPI") -> None:
     while True:
         snap = reg.snapshot()
         running_by_depth: dict[int, int] = {}
+        running_by_batch: dict[tuple[str, str, int], int] = {}
         for t in snap:
             if t.status == STATUS_RUNNING:
                 running_by_depth[t.depth] = running_by_depth.get(t.depth, 0) + 1
+                key = _batch_key(
+                    t.parent_session_id, t.agent_ref.get("requesting_expert_id", ""), t.depth
+                )
+                running_by_batch[key] = running_by_batch.get(key, 0) + 1
         queued = sorted((t for t in snap if t.status == STATUS_QUEUED), key=lambda t: t.created_at)
-        task = next((t for t in queued if running_by_depth.get(t.depth, 0) < cap), None)
+        task = next(
+            (t for t in queued if _queued_admissible(t, running_by_depth, running_by_batch, cap)),
+            None,
+        )
         if task is None:
             return
         child = app.state.sessions.get(task.child_session_id)
@@ -491,6 +638,7 @@ def _admit_next_queued(app: "FastAPI") -> None:
             depth=task.depth,
             mode=pending.get("mode", "async"),
             workflow_state=pending.get("workflow_state") or None,
+            fanout_bound=task.fanout_bound,
         )
         reg.register(replace(task, queued_reason=""))  # clear queued_reason as it launches
         _launch(app, reg.get(task.task_id), spec)

@@ -223,15 +223,15 @@ def test_spawn_agent_task_success_emits_delegation_started_and_returns_task(monk
     emitted = _capture_emits(monkeypatch)
     monkeypatch.setattr(
         "clio_agent.gact.turn_spawn.spawn_child_turn_threadsafe",
-        lambda a, spec: SimpleNamespace(task_id="task_abc", status="running"),
+        lambda a, spec: SimpleNamespace(task_id="task_abc", status="running", run_index=0),
     )
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
         result = json.loads(tools["spawn_agent_task"].func(agent="data_expert", task="analyze"))
 
-    # Returns the task handle for a later wait.
-    assert result == {"task_id": "task_abc", "status": "running"}
+    # Returns the task handle for a later wait (run_index is the ensemble run id, #948 S5).
+    assert result == {"task_id": "task_abc", "status": "running", "run_index": 0}
     # Exactly one delegation.started event, with the full wire block (migrated from
     # the deleted test_generated_child_expert_tool_emits_semantic_delegation_events).
     assert [e["event_type"] for e in emitted] == ["blueprint.delegation.started"]
@@ -367,7 +367,7 @@ def test_spawn_agents_parallel_emits_fanout_started_and_spawns_each(monkeypatch)
 
     def _fake_spawn(a: Any, spec: Any) -> Any:
         spawn_calls.append(spec.child_expert_id)
-        return SimpleNamespace(task_id=f"task_{spec.child_expert_id}", status="running")
+        return SimpleNamespace(task_id=f"task_{spec.child_expert_id}", status="running", run_index=0)
 
     monkeypatch.setattr("clio_agent.gact.turn_spawn.spawn_child_turn_threadsafe", _fake_spawn)
 
@@ -383,8 +383,8 @@ def test_spawn_agents_parallel_emits_fanout_started_and_spawns_each(monkeypatch)
     assert spawn_calls == ["data_expert", "hpc_expert"]
     assert result == {
         "spawned": [
-            {"task_id": "task_data_expert", "status": "running"},
-            {"task_id": "task_hpc_expert", "status": "running"},
+            {"task_id": "task_data_expert", "status": "running", "run_index": 0},
+            {"task_id": "task_hpc_expert", "status": "running", "run_index": 0},
         ]
     }
     # fanout.started fires ONCE up front (with the spawn count in its summary), then
@@ -580,7 +580,7 @@ def test_spawn_depth_computed_and_increments_through_tool_path(monkeypatch) -> N
 
     def _capture_spawn(a: Any, spec: Any) -> Any:
         captured.append(spec)
-        return SimpleNamespace(task_id=f"task_d{spec.depth}", status="running")
+        return SimpleNamespace(task_id=f"task_d{spec.depth}", status="running", run_index=0)
 
     monkeypatch.setattr("clio_agent.gact.turn_spawn.spawn_child_turn_threadsafe", _capture_spawn)
     # Stub the started-Part append (the bare app has no transcript/bus); this test
@@ -663,7 +663,7 @@ def test_spawn_appends_started_expert_handoff_part(monkeypatch) -> None:
     parts = _capture_parts(monkeypatch)
     monkeypatch.setattr(
         "clio_agent.gact.turn_spawn.spawn_child_turn_threadsafe",
-        lambda a, spec: SimpleNamespace(task_id="task_abc", status="running"),
+        lambda a, spec: SimpleNamespace(task_id="task_abc", status="running", run_index=0),
     )
 
     with _active_turn(app):

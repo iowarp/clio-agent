@@ -26,10 +26,13 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
 if TYPE_CHECKING:
     from clio_agent.gact.types import AgentDef
+
+_MODULE_VARIANTS = frozenset({"best_of_n", "refine"})
 
 
 def _structured_output_enabled(value: Any) -> bool:
@@ -62,6 +65,119 @@ def _blueprint_module_kind(agent_def: "AgentDef") -> str:
     if kind not in {"predict", "chain_of_thought", "react"}:
         raise ValueError(f"unsupported module.kind for {agent_def.id!r}: {kind}")
     return kind
+
+
+@dataclass(frozen=True)
+class VariantSpec:
+    """A validated ``dspy.BestOfN`` / ``dspy.Refine`` blueprint module variant (#948 S5).
+
+    A blueprint widens ``module`` from ``{kind}`` to
+    ``{kind, variant, n, threshold, reward}``. The ``reward`` sub-mapping declares an
+    LM-as-judge SIGNATURE (``instructions`` + optional ``inputs`` + ``target``) that
+    :mod:`clio_agent.gact.agents.module_variants` compiles to a source-backed real
+    ``def`` (so ``inspect.getsource`` works for ``dspy.Refine``). Fields:
+
+    * ``variant`` — ``best_of_n`` or ``refine``.
+    * ``n`` — number of tries (``>= 1``).
+    * ``threshold`` — early-break reward (dspy breaks at ``reward >= threshold``).
+    * ``reward_instructions`` — the judge signature docstring (rubric).
+    * ``reward_inputs`` — module-input field names the judge sees (pulled from the
+      call kwargs), in declared order.
+    * ``reward_input_descs`` — per-input field descriptions (empty when declared as a
+      bare list).
+    * ``reward_target`` — the prediction field the judge scores (default ``answer``).
+    """
+
+    variant: str
+    n: int
+    threshold: float
+    reward_instructions: str
+    reward_inputs: tuple[str, ...]
+    reward_input_descs: Mapping[str, str]
+    reward_target: str
+
+
+def parse_module_variant(module: Mapping[str, Any], *, agent_id: str) -> VariantSpec | None:
+    """Validate a blueprint ``module`` mapping's variant declaration (``None`` when absent).
+
+    Raises ``ValueError`` (a loud blueprint-authoring error, never a silent degrade) on:
+    an unknown ``variant``; a missing/non-integer/``< 1`` ``n``; a malformed
+    ``threshold``; a missing/empty ``reward`` declaration; or a malformed
+    ``reward.inputs``. ``refine`` composes with a ``react`` inner (verified against the
+    installed ``dspy/predict/refine.py``: ``Refine`` is module-agnostic — it drives the
+    inner via ``named_predictors()`` and ``inspect.getsource(module.__class__)``, and the
+    wrap interposes a source-backed wrapper class — so no kind is rejected here)."""
+    raw = module.get("variant") if isinstance(module, Mapping) else None
+    if raw in (None, ""):
+        return None
+    variant = str(raw).strip().lower()
+    if variant not in _MODULE_VARIANTS:
+        raise ValueError(
+            f"unsupported module.variant for {agent_id!r}: {variant!r} "
+            f"(expected one of {sorted(_MODULE_VARIANTS)})"
+        )
+    n_raw = module.get("n")
+    try:
+        n = int(n_raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"module.variant {variant!r} for {agent_id!r} requires an integer n >= 1, got {n_raw!r}"
+        ) from None
+    if n < 1:
+        raise ValueError(f"module.variant {variant!r} for {agent_id!r} requires n >= 1, got {n}")
+    threshold_raw = module.get("threshold", 1.0)
+    try:
+        threshold = float(threshold_raw)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"module.variant {variant!r} for {agent_id!r} has a malformed threshold: "
+            f"{threshold_raw!r}"
+        ) from None
+    reward = module.get("reward")
+    if not isinstance(reward, Mapping):
+        raise ValueError(
+            f"module.variant {variant!r} for {agent_id!r} requires a reward declaration "
+            "(a mapping with 'instructions')"
+        )
+    instructions = str(reward.get("instructions") or reward.get("desc") or "").strip()
+    if not instructions:
+        raise ValueError(
+            f"module.variant {variant!r} for {agent_id!r} reward requires non-empty 'instructions'"
+        )
+    inputs_decl = reward.get("inputs")
+    inputs: list[str] = []
+    input_descs: dict[str, str] = {}
+    if isinstance(inputs_decl, Mapping):
+        for key, desc in inputs_decl.items():
+            inputs.append(str(key))
+            input_descs[str(key)] = str(desc)
+    elif isinstance(inputs_decl, (list, tuple)):
+        inputs = [str(item) for item in inputs_decl]
+    elif inputs_decl not in (None, ""):
+        raise ValueError(
+            f"module.variant {variant!r} for {agent_id!r} reward.inputs must be a list "
+            f"of field names or a name->description mapping, got {type(inputs_decl).__name__}"
+        )
+    target = str(reward.get("target") or "answer").strip() or "answer"
+    return VariantSpec(
+        variant=variant,
+        n=n,
+        threshold=threshold,
+        reward_instructions=instructions,
+        reward_inputs=tuple(inputs),
+        reward_input_descs=input_descs,
+        reward_target=target,
+    )
+
+
+def _blueprint_module_variant(agent_def: "AgentDef") -> VariantSpec | None:
+    """The validated variant of a blueprint AgentDef (``None`` when unset).
+
+    Thin AgentDef adapter over :func:`parse_module_variant` (the pure validator the
+    loader also calls) — same typed errors, so a build-time wrap and a load-time
+    diagnostic agree."""
+    module = agent_def.module if isinstance(agent_def.module, Mapping) else {}
+    return parse_module_variant(module, agent_id=str(getattr(agent_def, "id", "?")))
 
 
 _SCALAR_FIELD_TYPES: dict[str, Any] = {
