@@ -7,6 +7,39 @@ TUI/HTTP surface aren't tracked here.
 ## Unreleased
 
 ### Added
+- **Async spawn / wait / observe-later — the model decides** (#948 S6). Every
+  model-driven spawn (`spawn_agent_task` / `spawn_agents_parallel`) is now
+  fire-and-forget on ONE honest semantic: the handle returns IMMEDIATELY (`status`
+  `queued|running` with the typed `queued_reason` at the concurrency cap) and the
+  child turn is UNTIED to the spawning turn's lifetime — a parent turn ending never
+  cancels its children (only cancelling the parent SESSION cascades). The model
+  collects results three ways, and whichever reaches a finished task first CONSUMES
+  it exactly once (`consumed_at` + an `agent.task.consumed` event, durable across a
+  boot rebuild like `delegation_reported`): (a) `wait_agent_tasks` blocks on the
+  children's completion; (b) `check_agent_tasks(task_ids?)` polls non-blocking and
+  now returns finished tasks' bounded result excerpt + `message_ref` (+ reserved
+  `artifact_ref`); (c) any completed-but-unconsumed child spawned in a PRIOR turn is
+  injected as a bounded, clio-marked grounding block into the parent's NEXT turn
+  input (task id, child expert, status, result excerpt, child session id) — the
+  model reads it and decides; clio never auto-acts on the content. A FAILED child is
+  observed-later and injected IDENTICALLY to a completed one (no branch on child
+  output content anywhere in the runtime). The injection is bounded
+  (`_MAX_NOTIFY_BLOCKS`); overflow stays pending for the following turn with a typed
+  truncation note — never dropped.
+
+### Changed
+- **`wait_agent_tasks` now REQUIRES `timeout_s`** (#948 S6 / #670) — BREAKING tool-arg
+  change. A wait without a budget is a hang; the model passes its own budget and, on
+  timeout, gets the current statuses and decides whether to keep waiting, keep
+  working, or finish. The `spawn_agent_task` handle additionally carries the typed
+  `queued_reason`. (The declared-workflow runner's internal step waits keep their own
+  explicit per-step budgets.) The injected observe-later block is SERVER-composed
+  grounding carrying the clio-owned `PENDING_TASK_NOTIFICATION_MARKER` (the #881
+  marker discipline) so a presentation-model split keeps it out of the user-text
+  lane; when that split machinery lands on this lineage, register the marker in its
+  `_SERVER_APPENDED_CONTEXT_MARKERS` set.
+
+### Added (S5)
 - **Declared deterministic workflows** (#948 S5). A tier-1 orchestrator blueprint may
   declare a `workflow:` block — a `steps` list describing an `a -> b -> c` child pathway
   gated on typed `workflow_state` predicates (`when_state.<field>.exists` /

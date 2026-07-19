@@ -82,6 +82,11 @@ class TurnState:
     context_file_provenance: Any = None
     enriched_text: str = ""
     memory_search_metadata: dict[str, Any] = field(default_factory=dict)
+    # #948 S6 [1]/[4]: observe-later task ids composed into this turn's enriched
+    # input during enrichment but NOT yet consumed. Consumed + their delegation
+    # terminals emitted only at the commit-to-run seam (immediately before forward),
+    # so a turn aborted after enrichment leaves them pending for the next turn.
+    pending_notification_task_ids: list[str] = field(default_factory=list)
 
     # --- Mutable accumulators (reassigned as the turn progresses) ---
     error_info: "Optional[ErrorInfo]" = None

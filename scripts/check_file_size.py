@@ -131,7 +131,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # #948 S4 live-gate fix: +27 for the blueprint_root_disabled catch arm (typed
     # error envelope with the root's validation errors; the except-ladder is
     # owned here).
-    "src/clio_agent/gact/turn.py": 882,
+    # #948 S6 [1]/[4]: +10 for the observe-later commit-to-run seam — staging the
+    # injected task ids at enrichment + consuming/emitting each delegation terminal
+    # immediately before forward dispatch (the fix for compose-time consumption +
+    # dangling delegations). Load-bearing turn-orchestration wiring, comments minimized.
+    "src/clio_agent/gact/turn.py": 892,
     # #952 S4 Pass C: -9 (the answer-substitution finalize call + import were
     # removed with the settle layer's degradation ledger).
     # #953 [5]: +3 to surface the variant winner stamp (variant_selection) on the

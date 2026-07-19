@@ -532,7 +532,13 @@ def _on_child_done(app: "FastAPI", task_id: str, child_sid: str, mode: str) -> N
     if child_sess is not None and getattr(child_sess, "status", "") == "waiting_user":
         try:
             updated = reg.transition(
-                task_id, STATUS_FAILED, error_reason="child_requires_user_input", updated_at=now
+                task_id,
+                STATUS_FAILED,
+                error_reason="child_requires_user_input",
+                # #948 S6: a FAILED async child is observed-later exactly like a
+                # completed one — the model decides what to do with the failure.
+                notify_pending=(mode == "async"),
+                updated_at=now,
             )
         except Exception:  # noqa: BLE001
             updated = reg.get(task_id) or task
@@ -553,14 +559,24 @@ def _on_child_done(app: "FastAPI", task_id: str, child_sid: str, mode: str) -> N
 
     try:
         if code == "cancelled":
+            # A cancelled child is NOT observed-later: cancellation is parent-driven
+            # (session cancel cascade), so the parent already knows — no notify.
             updated = reg.transition(task_id, STATUS_CANCELLED, updated_at=now)
         elif code:
             updated = reg.transition(
-                task_id, STATUS_FAILED, error_reason="agent_error", updated_at=now
+                task_id,
+                STATUS_FAILED,
+                error_reason="agent_error",
+                notify_pending=(mode == "async"),
+                updated_at=now,
             )
         elif final is None:
             updated = reg.transition(
-                task_id, STATUS_FAILED, error_reason="agent_error", updated_at=now
+                task_id,
+                STATUS_FAILED,
+                error_reason="agent_error",
+                notify_pending=(mode == "async"),
+                updated_at=now,
             )
         else:
             result = {
