@@ -444,6 +444,55 @@ AGENT_TASK_EVENTS = {
 AGENT_TASK_CONSUMED_EVENT = "agent.task.consumed"
 
 
+def pending_notifications(app: "FastAPI", parent_session_id: str) -> list[AgentTask]:
+    """Terminal, still-``notify_pending`` tasks a parent spawned async and has NOT
+    yet consumed (via wait/check/injection), oldest-completed first (#948 S6).
+
+    This is the observe-later feed the parent's NEXT turn drains: an async child
+    that finished after (or during) the spawning turn sets ``notify_pending`` at
+    completion; it stays pending until one of the three consumers flips it. Ordered
+    by ``updated_at`` ascending so the earliest-finished result is presented first.
+    """
+
+    reg = app.state.agent_task_registry
+    pending = [t for t in reg.for_parent(parent_session_id) if t.is_terminal and t.notify_pending]
+    return sorted(pending, key=lambda t: t.updated_at)
+
+
+def consume_notification(app: "FastAPI", task_id: str) -> Optional[AgentTask]:
+    """Mark ONE async task's result consumed — exactly once (#948 S6).
+
+    Shared by the three consumers (``wait_agent_tasks`` / ``check_agent_tasks`` /
+    next-turn injection): the FIRST to reach a terminal, still-``notify_pending``
+    task flips ``notify_pending`` off, stamps ``consumed_at``, persists the record
+    (durable across a boot rebuild, like ``delegation_reported``), and publishes the
+    ``agent.task.consumed`` event; every later caller no-ops (the ``notify_pending``
+    gate is the once guard). Returns the consumed record, or ``None`` when the task
+    is unknown, non-terminal, or already consumed."""
+
+    reg = app.state.agent_task_registry
+    task = reg.get(task_id)
+    if task is None or not task.is_terminal or not task.notify_pending:
+        return None
+    from datetime import datetime, timezone  # noqa: PLC0415
+
+    updated = reg.mark_consumed(task_id, datetime.now(timezone.utc).isoformat())
+    # Durable so a boot-rebuilt registry does not re-inject an already-consumed
+    # task (mirrors _persist_delegation_reported). Best-effort: a gone child
+    # session cannot be re-injected after a reboot anyway (the fold folds only
+    # existing sessions), so surface the typed reason, never crash the turn.
+    try:
+        persist_agent_task(app, updated)
+    except AgentTaskError as exc:
+        logger.warning(
+            "agent_task consumed not persisted reason=%s task=%s",
+            getattr(exc, "reason", "unknown"),
+            task_id,
+        )
+    publish_agent_task_event(app, updated, AGENT_TASK_CONSUMED_EVENT)
+    return updated
+
+
 def publish_agent_task_event(app: "FastAPI", task: AgentTask, event_type: str) -> None:
     """Publish an ``agent.task.*`` event to BOTH the parent and child session
     channels (the bus is per-session), so a parent watching its SSE stream sees its

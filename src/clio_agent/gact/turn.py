@@ -55,6 +55,7 @@ from clio_agent.gact.enrichment import (
     _enrich_with_context_files,
     _enrich_with_requested_memory_search,
     _record_context_frame,
+    inject_pending_agent_task_notifications,
 )
 from clio_agent.gact.events import Event, EventBus, _publish_transcript_event
 from clio_agent.gact.evidence import (
@@ -259,23 +260,22 @@ async def _run_turn_in_background(
         },
     )
 
-    # iowarp/clio-agent#5: prepend any attached context files to the
-    # user's text so the agent's forward() sees them as primed input.
-    # Plain text concat — keeps the agent.py interface untouched and
-    # works regardless of which expert handles the turn.
+    # iowarp/clio-agent#5: prepend attached context files to the user's text so the
+    # agent's forward() sees them as primed input (plain concat, expert-agnostic).
     context_file_error: ErrorInfo | None = None
     state.context_file_provenance = _context_file_turn_provenance(state.app, state.sid, status="prepared")
     state.memory_search_metadata = {}
     try:
         state.enriched_text = _enrich_with_context_files(state.app, state.sid, state.user_text)
         state.enriched_text, state.memory_search_metadata = _enrich_with_requested_memory_search(
-            state.app,
-            state.sid,
-            state.enriched_text,
-            state.user_msg,
+            state.app, state.sid, state.enriched_text, state.user_msg
         )
-        # Carry prior turns of this session so a follow-up ("now plot it") can reuse
-        # the region/stations/paths already resolved. No-op on the first turn.
+        # #948 S6: surface completed-but-unconsumed background tasks from a prior turn
+        # (observe-later); server grounding, consumed once, the model decides.
+        state.enriched_text = inject_pending_agent_task_notifications(
+            state.app, state.sid, state.enriched_text
+        )
+        # Carry prior turns so a follow-up ("now plot it") reuses resolved state (no-op turn 1).
         state.enriched_text = _compile_session_conversation_history(state.app, state.sid, state.enriched_text)
     except _ContextFileAccessError as exc:
         state.enriched_text = state.user_text

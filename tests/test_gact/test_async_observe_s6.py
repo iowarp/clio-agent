@@ -1,0 +1,632 @@
+"""S6 (#948 / #954): async spawn / wait / observe-later — the MODEL decides.
+
+Covers the honest single semantic (every model-driven spawn is fire-and-forget
+mode="async"), the required wait timeout (#670), check_agent_tasks completed
+results, the observe-later next-turn injection (consumed exactly once, durable
+across a boot rebuild), the model-decides locks (no branch on child content; a
+failed child is injected identically to a completed one), the survivable child
+(a child outlives the parent's turn), and the thread-topology stress test proving
+per-depth pools + queue admission make self-starvation impossible.
+"""
+
+from __future__ import annotations
+
+import inspect
+import threading
+import time
+from contextlib import contextmanager
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, Iterator
+
+import pytest
+from fastapi.testclient import TestClient
+
+from clio_agent.gact import context as ctx
+from clio_agent.gact.agent_tasks import (
+    STATUS_COMPLETED,
+    STATUS_FAILED,
+    STATUS_RUNNING,
+    AgentTask,
+    consume_notification,
+    install_agent_task_registry,
+    pending_notifications,
+    persist_agent_task,
+)
+from clio_agent.gact.app import build_app
+from clio_agent.gact.enrichment import (
+    PENDING_TASK_NOTIFICATION_MARKER,
+    inject_pending_agent_task_notifications,
+)
+from clio_agent.gact.runtime.globals import _gact_app_context
+from clio_agent.gact.turn_spawn import (
+    TaskSpec,
+    _on_child_done,
+    spawn_child_turn_threadsafe,
+)
+
+pytestmark = pytest.mark.usefixtures("host_agent_executor")
+
+
+# --------------------------------------------------------------------------- #
+# Test agent + helpers                                                         #
+# --------------------------------------------------------------------------- #
+
+
+class _Agent:
+    def __init__(self, sleep_s: float = 0.0) -> None:
+        self.sleep_s = sleep_s
+
+    def forward(self, question: str, session_id: str, **_kw: Any) -> Any:
+        if self.sleep_s:
+            time.sleep(self.sleep_s)
+        return SimpleNamespace(
+            answer=f"child did: {question[:24]}", selected_expert="", routing_rationale=""
+        )
+
+
+def _declare(monkeypatch, *child_ids: str) -> None:
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.resolution._runtime_declared_child_ids",
+        lambda app, pid, session_id="": set(child_ids),
+    )
+
+
+def _wait_terminal(app, task_id: str, timeout: float = 12.0) -> AgentTask:
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        t = app.state.agent_task_registry.get(task_id)
+        if t is not None and t.is_terminal:
+            return t
+        time.sleep(0.02)
+    return app.state.agent_task_registry.get(task_id)
+
+
+def _bus(app, sid: str, etype: str) -> list[Any]:
+    return [e for e in app.state.bus._history.get(sid, []) if e.type == etype]
+
+
+@contextmanager
+def _active_turn(app: Any, session_id: str) -> Iterator[None]:
+    with _gact_app_context(app):
+        token = ctx.set_session_id(session_id)
+        try:
+            yield
+        finally:
+            ctx.reset(token)
+
+
+def _seed_terminal_task(
+    app,
+    parent_sid: str,
+    *,
+    status: str = STATUS_COMPLETED,
+    notify_pending: bool = True,
+    excerpt: str = "the staged CSV is ready",
+    error_reason: str = "",
+    task_id: str = "task_seed",
+) -> AgentTask:
+    """Mint a REAL child session + a terminal AgentTask projection over it, so
+    persist_agent_task (which refuses a gone child) succeeds and a boot rebuild can
+    re-source the record."""
+
+    child = app.state.sessions.create(
+        workspace_id="ws_default", title="c", parent_session_id=parent_sid
+    )
+    task = AgentTask(
+        task_id=task_id,
+        parent_session_id=parent_sid,
+        child_session_id=child.id,
+        agent_ref={"expert_id": "data_expert", "requesting_expert_id": "main"},
+        status=status,
+        error_reason=error_reason,
+        notify_pending=notify_pending,
+        result={"answer_excerpt": excerpt, "message_ref": "msg_x", "workflow_state": {}},
+        created_at="2026-07-19T00:00:00+00:00",
+        updated_at="2026-07-19T00:00:00+00:00",
+    )
+    persist_agent_task(app, task)
+    return task
+
+
+# --------------------------------------------------------------------------- #
+# 1. Mode semantics — one honest fire-and-forget async pathway                 #
+# --------------------------------------------------------------------------- #
+
+
+def test_spawn_tool_spawns_async_mode(tmp_path: Path, monkeypatch) -> None:
+    """The model-facing spawn stamps the child's pending_spawn with mode="async" —
+    the single honest observe-later semantic (not the old "sync")."""
+
+    from clio_agent.gact.agents import spawn_runtime
+
+    _declare(monkeypatch, "data_expert")
+    captured: list[TaskSpec] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.turn_spawn.spawn_child_turn_threadsafe",
+        lambda a, spec: (
+            captured.append(spec)
+            or SimpleNamespace(task_id="task_abc", status="running", run_index=0, queued_reason="")
+        ),
+    )
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.spawn_runtime._emit_semantic_event", lambda *a, **k: {}
+    )
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.spawn_runtime._append_live_assistant_part", lambda *a, **k: None
+    )
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app):
+        with _active_turn(app, "sess_x"):
+            tools = {
+                t.name: t for t in spawn_runtime.build_spawn_runtime_tools(_Agent(), _Def("main"))
+            }
+            tools["spawn_agent_task"].func(agent="data_expert", task="go")
+    assert captured and captured[0].mode == "async", "model spawn must be fire-and-forget async"
+
+
+def test_wait_timeout_is_required_no_default() -> None:
+    """#670: wait_agent_tasks must require timeout_s (a wait without a budget hangs).
+    The bound function's signature carries no default for timeout_s."""
+
+    from clio_agent.gact.agents import spawn_runtime
+
+    src = inspect.getsource(spawn_runtime.build_spawn_runtime_tools)
+    assert "def wait_agent_tasks(task_ids: list[str], timeout_s: float) -> str:" in src, (
+        "timeout_s must be a REQUIRED parameter (no default) on wait_agent_tasks"
+    )
+    # And the removed default constant is gone (no lingering fallback timeout).
+    assert not hasattr(spawn_runtime, "_DEFAULT_WAIT_TIMEOUT_S")
+
+
+class _Def:
+    def __init__(self, agent_id: str) -> None:
+        self.id = agent_id
+        self.metadata = {"agent_blueprint_id": "bp"}
+        self.fanout = None
+
+
+# --------------------------------------------------------------------------- #
+# 2. notify_pending set for async completed AND failed children                #
+# --------------------------------------------------------------------------- #
+
+
+def test_completed_async_child_sets_notify_pending(tmp_path: Path, monkeypatch) -> None:
+    _declare(monkeypatch, "main")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        task = spawn_child_turn_threadsafe(
+            app,
+            TaskSpec(
+                child_expert_id="main",
+                task_text="x",
+                parent_session_id=parent,
+                requesting_expert_id="main",
+                mode="async",
+            ),
+        )
+        settled = _wait_terminal(app, task.task_id)
+        assert settled.status == STATUS_COMPLETED
+        assert settled.notify_pending is True, "completed async child must be observe-later pending"
+
+
+def test_failed_async_child_sets_notify_pending(tmp_path: Path, monkeypatch) -> None:
+    """A FAILED async child is observe-later exactly like a completed one — the
+    model must learn its spawned task failed and decide what to do (#954)."""
+
+    _declare(monkeypatch, "data_expert")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app):
+        child = app.state.sessions.create(
+            workspace_id="ws_default", title="c", parent_session_id="sess_p"
+        )
+        # A child whose turn produced NO assistant message → the hook fails it typed.
+        task = AgentTask(
+            task_id="task_fail",
+            parent_session_id="sess_p",
+            child_session_id=child.id,
+            agent_ref={"expert_id": "data_expert", "requesting_expert_id": "main"},
+            status=STATUS_RUNNING,
+            created_at="2026-07-19T00:00:00+00:00",
+            updated_at="2026-07-19T00:00:00+00:00",
+        )
+        app.state.sessions.update(child.id, metadata_patch=task.to_metadata())
+        app.state.agent_task_registry.register(task)
+        _on_child_done(app, task.task_id, child.id, "async")
+        settled = app.state.agent_task_registry.get(task.task_id)
+        assert settled.status == STATUS_FAILED
+        assert settled.notify_pending is True, "failed async child must be observe-later pending"
+
+
+def test_cancelled_child_is_not_notify_pending(tmp_path: Path, monkeypatch) -> None:
+    """A cancelled child is NOT observed-later (cancellation is parent-driven, so the
+    parent already knows)."""
+
+    _declare(monkeypatch, "data_expert")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app):
+        from clio_agent.gact.types import ErrorInfo, Message, Part
+
+        child = app.state.sessions.create(
+            workspace_id="ws_default", title="c", parent_session_id="sess_p"
+        )
+        cancelled_msg = Message(
+            id="m_c",
+            session_id=child.id,
+            role="assistant",
+            created_at="2026-07-19T00:00:00+00:00",
+            updated_at="2026-07-19T00:00:00+00:00",
+            parts=[Part(type="text", text="")],
+            error_info=ErrorInfo(error="cancelled", message="cancelled", recoverable=True),
+        )
+        app.state.messages[child.id] = [cancelled_msg]
+        task = AgentTask(
+            task_id="task_cancel",
+            parent_session_id="sess_p",
+            child_session_id=child.id,
+            agent_ref={"expert_id": "data_expert", "requesting_expert_id": "main"},
+            status=STATUS_RUNNING,
+            created_at="2026-07-19T00:00:00+00:00",
+            updated_at="2026-07-19T00:00:00+00:00",
+        )
+        app.state.sessions.update(child.id, metadata_patch=task.to_metadata())
+        app.state.agent_task_registry.register(task)
+        _on_child_done(app, task.task_id, child.id, "async")
+        settled = app.state.agent_task_registry.get(task.task_id)
+        assert settled.status == "cancelled"
+        assert settled.notify_pending is False
+
+
+# --------------------------------------------------------------------------- #
+# 3. Observe-later injection — the core                                        #
+# --------------------------------------------------------------------------- #
+
+
+def test_next_turn_injects_pending_and_marks_consumed(tmp_path: Path, monkeypatch) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        task = _seed_terminal_task(app, parent, excerpt="staged /data/out.csv (1024 rows)")
+
+        injected = inject_pending_agent_task_notifications(app, parent, "USER-QUESTION")
+
+        # The block is composed with the clio-owned marker (server grounding), carries
+        # the structured fields, and preserves the original enriched text verbatim.
+        assert PENDING_TASK_NOTIFICATION_MARKER in injected
+        assert task.task_id in injected
+        assert "staged /data/out.csv (1024 rows)" in injected
+        assert task.child_session_id in injected
+        assert injected.endswith("USER-QUESTION")
+
+        # Consumed exactly once: notify_pending off, consumed_at stamped, event published.
+        consumed = app.state.agent_task_registry.get(task.task_id)
+        assert consumed.notify_pending is False
+        assert consumed.consumed_at
+        assert _bus(app, parent, "agent.task.consumed"), "no agent.task.consumed event"
+
+
+def test_injection_is_once_per_task_double_turn(tmp_path: Path, monkeypatch) -> None:
+    """Sabotage lock: a task injected on turn N must NOT re-inject on turn N+1."""
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        _seed_terminal_task(app, parent)
+
+        first = inject_pending_agent_task_notifications(app, parent, "Q1")
+        assert PENDING_TASK_NOTIFICATION_MARKER in first
+
+        # Second turn: nothing pending → text returned unchanged, no marker.
+        second = inject_pending_agent_task_notifications(app, parent, "Q2")
+        assert second == "Q2"
+        assert PENDING_TASK_NOTIFICATION_MARKER not in second
+        # Exactly one consumed event across the two turns.
+        assert len(_bus(app, parent, "agent.task.consumed")) == 1
+
+
+def test_failed_child_injected_identically_to_completed(tmp_path: Path, monkeypatch) -> None:
+    """Model-decides lock: a failed child's result is injected the SAME way as a
+    completed one (same block shape, both present) — clio never decides on content."""
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        ok = _seed_terminal_task(
+            app, parent, status=STATUS_COMPLETED, excerpt="done", task_id="task_ok"
+        )
+        bad = _seed_terminal_task(
+            app,
+            parent,
+            status=STATUS_FAILED,
+            error_reason="agent_error",
+            excerpt="",
+            task_id="task_bad",
+        )
+        injected = inject_pending_agent_task_notifications(app, parent, "Q")
+        # BOTH tasks appear, each rendered with the identical field template.
+        for t, status in ((ok, "completed"), (bad, "failed")):
+            assert f"### task {t.task_id} — data_expert [{status}]" in injected
+            assert f"child_session_id: {t.child_session_id}" in injected
+        assert "error_reason: agent_error" in injected  # failure surfaced, not swallowed
+        # Both consumed.
+        assert app.state.agent_task_registry.get("task_ok").notify_pending is False
+        assert app.state.agent_task_registry.get("task_bad").notify_pending is False
+
+
+def test_injection_content_has_no_branch_on_result_text(tmp_path: Path) -> None:
+    """Grep-style model-decides lock: the injection composer contains NO conditional
+    on the child's result TEXT (only the fixed excerpt length bound). Success and
+    failure flow through one branchless template."""
+
+    from clio_agent.gact import enrichment
+
+    block_src = inspect.getsource(enrichment._notify_block)
+    inject_src = inspect.getsource(enrichment.inject_pending_agent_task_notifications)
+    # No keyword/content heuristics on the result text.
+    for needle in ("answer_excerpt ==", "in excerpt", "in result", '"error" in', "startswith("):
+        assert needle not in block_src, f"content branch leaked into _notify_block: {needle}"
+    # The only status/size gating allowed: the block-count cap + excerpt slice. No
+    # per-status composition fork inside the injector body.
+    assert "if task.status" not in inject_src
+    assert "if task.status" not in block_src
+
+
+def test_injection_bounded_with_truncation_note(tmp_path: Path, monkeypatch) -> None:
+    from clio_agent.gact import enrichment
+
+    monkeypatch.setattr(enrichment, "_MAX_NOTIFY_BLOCKS", 2)
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        for i in range(4):
+            _seed_terminal_task(app, parent, task_id=f"task_{i}", excerpt=f"r{i}")
+        injected = enrichment.inject_pending_agent_task_notifications(app, parent, "Q")
+        # Only the cap injected; a typed note reports the remaining; the rest stay
+        # pending for the next turn (never dropped).
+        assert "2 more finished task(s) pending" in injected
+        remaining = pending_notifications(app, parent)
+        assert len(remaining) == 2, "un-injected tasks must remain pending, not be dropped"
+
+
+# --------------------------------------------------------------------------- #
+# 4. consume-on-collect (wait / check) + durability                           #
+# --------------------------------------------------------------------------- #
+
+
+def test_wait_consumes_notification_so_next_turn_skips(tmp_path: Path, monkeypatch) -> None:
+    from clio_agent.gact.agents import spawn_runtime
+
+    _declare(monkeypatch, "data_expert")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        task = _seed_terminal_task(app, parent, excerpt="collected in-turn")
+        with _active_turn(app, parent):
+            tools = {
+                t.name: t for t in spawn_runtime.build_spawn_runtime_tools(_Agent(), _Def("main"))
+            }
+            tools["wait_agent_tasks"].func(task_ids=[task.task_id], timeout_s=1.0)
+        assert app.state.agent_task_registry.get(task.task_id).notify_pending is False
+        # Collected in-turn → the next turn injects NOTHING for it.
+        assert inject_pending_agent_task_notifications(app, parent, "Q") == "Q"
+
+
+def test_check_returns_completed_result_and_consumes(tmp_path: Path, monkeypatch) -> None:
+    from clio_agent.gact.agents import spawn_runtime
+
+    _declare(monkeypatch, "data_expert")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        task = _seed_terminal_task(app, parent, excerpt="poll result")
+        with _active_turn(app, parent):
+            tools = {
+                t.name: t for t in spawn_runtime.build_spawn_runtime_tools(_Agent(), _Def("main"))
+            }
+            import json as _json
+
+            out = _json.loads(tools["check_agent_tasks"].func())
+        (row,) = out["tasks"]
+        assert row["status"] == "completed"
+        assert row["result"]["answer_excerpt"] == "poll result"
+        assert row["result"]["message_ref"] == "msg_x"
+        assert "artifact_ref" in row["result"]  # reserved field carried
+        # Poll consumed it → not re-injected next turn.
+        assert app.state.agent_task_registry.get(task.task_id).notify_pending is False
+        assert inject_pending_agent_task_notifications(app, parent, "Q") == "Q"
+
+
+def test_consumed_survives_boot_rebuild(tmp_path: Path, monkeypatch) -> None:
+    """consumed_at is durable across a registry boot rebuild (like delegation_reported):
+    a consumed task is NOT re-injected after a restart. Sabotage: drop the
+    persist_agent_task in consume_notification and the rebuilt task comes back
+    notify_pending=True → re-injected → this fails."""
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        task = _seed_terminal_task(app, parent)
+        consume_notification(app, task.task_id)
+
+        # Rebuild the registry projection from the persisted session store (boot fold).
+        install_agent_task_registry(app)
+        rebuilt = app.state.agent_task_registry.get(task.task_id)
+        assert rebuilt is not None
+        assert rebuilt.notify_pending is False, "consumed flag did not survive boot rebuild"
+        assert rebuilt.consumed_at, "consumed_at did not survive boot rebuild"
+        assert pending_notifications(app, parent) == []
+
+
+# --------------------------------------------------------------------------- #
+# 5. Survivable child — outlives the parent's turn                            #
+# --------------------------------------------------------------------------- #
+
+
+class _SpawnOnceAgent:
+    """Depth-routed single agent. On a ROOT (non-agent-task) turn it spawns a slow
+    async child ONCE and returns immediately (the parent turn ENDS while the child
+    runs); it records every root-turn question so the test can assert the
+    observe-later block reached the next turn's input. On the CHILD turn (depth ≥ 1)
+    it sleeps, so the child reliably outlives its spawning turn."""
+
+    def __init__(self) -> None:
+        self.app = None
+        self.questions: list[str] = []
+        self.child_task_id = ""
+
+    def forward(self, question: str, session_id: str, **_kw: Any) -> Any:
+        sess = self.app.state.sessions.get(session_id)
+        task = AgentTask.from_session(sess) if sess is not None else None
+        if task is not None and task.depth >= 1:
+            time.sleep(1.5)  # the child outlives the parent's (fast) turn
+            return SimpleNamespace(answer="child done", selected_expert="", routing_rationale="")
+        self.questions.append(question)
+        if self.child_task_id == "":
+            spawned = spawn_child_turn_threadsafe(
+                self.app,
+                TaskSpec(
+                    child_expert_id="main",
+                    task_text="slow background job",
+                    parent_session_id=session_id,
+                    requesting_expert_id="main",
+                    depth=1,
+                    mode="async",
+                ),
+            )
+            self.child_task_id = spawned.task_id
+        return SimpleNamespace(answer="ack", selected_expert="", routing_rationale="")
+
+
+def test_child_survives_parent_turn_end_and_injects_next_turn(tmp_path: Path, monkeypatch) -> None:
+    """The child is NOT tied to the parent turn's lifetime: the parent turn finishes,
+    the (slow) child keeps running, completes, and its result surfaces in the parent's
+    NEXT turn's input (observe-later). Ending a turn must NOT cancel children."""
+
+    _declare(monkeypatch, "main")
+    agent = _SpawnOnceAgent()
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    agent.app = app
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+
+        # Turn 1: spawns the slow child, returns fast.
+        client.post(f"/v1/sessions/{parent}/messages", json={"text": "start the job"})
+        _wait_status(app, parent, "idle", timeout=10.0)
+        # The parent turn ENDED but the child is still running (not cancelled).
+        mid = app.state.agent_task_registry.get(agent.child_task_id)
+        assert mid is not None and not mid.is_terminal, "child was cancelled at parent-turn end"
+
+        # The child finishes on its own pool, untied to the parent turn.
+        settled = _wait_terminal(app, agent.child_task_id, timeout=12.0)
+        assert settled.status == STATUS_COMPLETED
+        assert settled.notify_pending is True
+
+        # Turn 2: the observe-later block is injected into the model's input.
+        client.post(f"/v1/sessions/{parent}/messages", json={"text": "what happened?"})
+        _wait_status(app, parent, "idle", timeout=10.0)
+        assert any(PENDING_TASK_NOTIFICATION_MARKER in q for q in agent.questions[1:]), (
+            "completed child's result was not injected into the parent's next turn"
+        )
+        assert app.state.agent_task_registry.get(agent.child_task_id).notify_pending is False
+
+
+def _wait_status(app, sid: str, status: str, timeout: float = 10.0) -> None:
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        sess = app.state.sessions.get(sid)
+        if sess is not None and getattr(sess, "status", "") == status:
+            return
+        time.sleep(0.02)
+
+
+# --------------------------------------------------------------------------- #
+# 6. Thread-topology STRESS test — self-starvation is impossible               #
+# --------------------------------------------------------------------------- #
+
+
+class _StressAgent:
+    """Root parents (depth 0, DEFAULT executor) each spawn a depth-1 child and BLOCK
+    waiting on it. Each depth-1 child (pool[1]) spawns a depth-2 grandchild (pool[2])
+    and — after a rendezvous barrier proving ALL depth-1 workers are simultaneously
+    occupied — blocks waiting on the grandchild. If the grandchild shared pool[1]
+    (already saturated by the blocked depth-1 children) it could never launch →
+    deadlock. Per-depth pools give the grandchildren their own workers, so every
+    level makes progress. A real barrier + real threads → a stress test, not an
+    argument."""
+
+    def __init__(self, n: int) -> None:
+        self.app = None
+        self.all_children_waiting = threading.Barrier(n, timeout=30)
+
+    def forward(self, question: str, session_id: str, **_kw: Any) -> Any:
+        app = self.app
+        sess = app.state.sessions.get(session_id)
+        task = AgentTask.from_session(sess) if sess is not None else None
+        depth = task.depth if task is not None else 0
+        if depth == 0:
+            child = spawn_child_turn_threadsafe(
+                app,
+                TaskSpec(
+                    child_expert_id="main",
+                    task_text="c",
+                    parent_session_id=session_id,
+                    requesting_expert_id="main",
+                    depth=1,
+                ),
+            )
+            app.state.agent_task_registry.event(child.task_id).wait(timeout=40.0)
+        elif depth == 1:
+            grand = spawn_child_turn_threadsafe(
+                app,
+                TaskSpec(
+                    child_expert_id="main",
+                    task_text="g",
+                    parent_session_id=session_id,
+                    requesting_expert_id="main",
+                    depth=2,
+                ),
+            )
+            # Rendezvous: prove pool[1] is saturated with waiting children before any
+            # grandchild is allowed to matter — the deadlock-prone instant.
+            self.all_children_waiting.wait()
+            app.state.agent_task_registry.event(grand.task_id).wait(timeout=40.0)
+        return SimpleNamespace(answer=f"depth {depth} ok", selected_expert="", routing_rationale="")
+
+
+def test_thread_topology_no_self_starvation_under_load(tmp_path: Path, monkeypatch) -> None:
+    n = 4
+    _declare(monkeypatch, "main")
+    agent = _StressAgent(n)
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    agent.app = app
+    with TestClient(app) as client:
+        # cap = n so all n depth-1 children run concurrently on pool[1] (the barrier of
+        # n can only trip when they do), and all n grandchildren run on pool[2].
+        app.state.max_concurrent_agent_tasks = n
+        # n ROOT parents on the DEFAULT executor (normal user sessions), each posts a
+        # turn that spawns a depth-1 child and blocks waiting on it.
+        parents = [
+            client.post("/v1/sessions", json={"title": f"p{i}"}).json()["id"] for i in range(n)
+        ]
+        for sid in parents:
+            client.post(f"/v1/sessions/{sid}/messages", json={"text": "go"})
+        # Every root parent turn returns to idle — impossible if a blocked depth-1
+        # waiter could starve its own grandchild on a shared pool (the whole chain
+        # would deadlock and the parent turn would never settle).
+        for sid in parents:
+            _wait_status(app, sid, "idle", timeout=45.0)
+            assert app.state.sessions.get(sid).status == "idle", (
+                "a parent turn stalled → starvation"
+            )
+        completed_depths = {
+            t.depth
+            for t in app.state.agent_task_registry.snapshot()
+            if t.status == STATUS_COMPLETED
+        }
+        # Both spawned depths ran to completion under the saturating barrier.
+        assert completed_depths == {1, 2}, sorted(completed_depths)
+        assert sum(1 for t in app.state.agent_task_registry.snapshot() if t.depth == 2) == n, (
+            "not every parent's grandchild ran"
+        )

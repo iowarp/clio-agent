@@ -586,6 +586,83 @@ def _enrich_with_requested_memory_search(
     ), metadata
 
 
+# Clio-owned marker for the server-composed observe-later notification block
+# (#948 S6). The block is SERVER grounding prepended to the model's turn input —
+# never user text and never model output — so it carries this constant header
+# (the #881 marker discipline): a presentation-model split machinery keys off the
+# marker to keep the block out of the user-text lane. Exported for that
+# registration + for the injection tests.
+PENDING_TASK_NOTIFICATION_MARKER = (
+    "## Background agent-task results (spawned in an earlier turn — you decide what to do)"
+)
+# Injection is BOUNDED: at most this many task blocks per turn, each excerpt
+# size-capped; a typed note reports how many more remain pending (they surface on
+# the following turn — never dropped).
+_MAX_NOTIFY_BLOCKS = 8
+_NOTIFY_EXCERPT_MAX = 600
+
+
+def _notify_block(task: Any) -> str:
+    """Compose ONE agent-task notification block — a uniform structured field
+    template (#948 S6 model-decides lock).
+
+    Renders the SAME fields for every terminal task, success or failure alike:
+    task id, child expert, status, typed error_reason, a size-bounded result
+    excerpt, and the child session id. There is deliberately NO branch on the
+    result's CONTENT (only the fixed excerpt length bound) — a failed child's
+    result is presented identically to a completed one, and the MODEL decides."""
+
+    result = task.result or {}
+    excerpt = str(result.get("answer_excerpt", ""))[:_NOTIFY_EXCERPT_MAX]
+    return (
+        f"### task {task.task_id} — {task.agent_ref.get('expert_id', '')} [{task.status}]\n"
+        f"- child_session_id: {task.child_session_id}\n"
+        f"- error_reason: {task.error_reason}\n"
+        f"- result_excerpt:\n```\n{excerpt}\n```"
+    )
+
+
+def inject_pending_agent_task_notifications(app: "FastAPI", sid: str, enriched_text: str) -> str:
+    """Prepend a bounded block of completed-but-unconsumed background task results
+    to this turn's enriched input, then mark each consumed (#948 S6 observe-later).
+
+    An async child spawned in a PRIOR turn that was never collected (via
+    wait/check) in that turn sets ``notify_pending`` at completion. Here — the
+    parent's next turn — those results are composed into a server-grounding block
+    (marked with :data:`PENDING_TASK_NOTIFICATION_MARKER`) so the model SEES them
+    and decides what to do; clio never auto-acts on the content. Each injected task
+    is then consumed exactly once (``consumed_at`` + ``agent.task.consumed``), so a
+    subsequent turn never re-injects it. Bounded to :data:`_MAX_NOTIFY_BLOCKS`; a
+    typed note reports any remaining (they surface next turn — never dropped)."""
+
+    from clio_agent.gact.agent_tasks import (  # noqa: PLC0415
+        consume_notification,
+        pending_notifications,
+    )
+
+    pending = pending_notifications(app, sid)
+    if not pending:
+        return enriched_text
+    selected = pending[:_MAX_NOTIFY_BLOCKS]
+    blocks = [_notify_block(task) for task in selected]
+    for task in selected:
+        consume_notification(app, task.task_id)
+    remaining = len(pending) - len(selected)
+    truncation = (
+        f"\n\n_({remaining} more finished task(s) pending — they will surface next turn.)_"
+        if remaining > 0
+        else ""
+    )
+    return (
+        PENDING_TASK_NOTIFICATION_MARKER
+        + "\n\n"
+        + "\n\n".join(blocks)
+        + truncation
+        + "\n\n---\n\n"
+        + enriched_text
+    )
+
+
 def _context_file_turn_provenance(app: "FastAPI", sid: str, *, status: str) -> dict[str, Any]:
     """Return non-secret provenance for context files attached to this turn."""
 

@@ -47,10 +47,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Bounded wait so a stuck child never wedges the parent's react loop forever; the
-# model passes its own timeout and decides how to proceed on a partial result.
-_DEFAULT_WAIT_TIMEOUT_S = 300.0
-
 
 def _fanout_batch_bound(agent_def: "AgentDef") -> int:
     """The declaring parent's fan-out admission bound (#948 S5).
@@ -435,7 +431,14 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
                     # parent turn (else it accumulates across the whole session).
                     parent_turn_id=_active_semantic_turn_id(),
                     depth=depth,
-                    mode="sync",
+                    # #948 S6: ONE honest semantic — every model-driven spawn is
+                    # fire-and-forget (notify-later). The child is untied to this
+                    # turn's lifetime; on completion it sets notify_pending, which
+                    # the model collects in-turn (wait/check) or observes next turn
+                    # (injection). Both mark it consumed exactly once. (The declared-
+                    # workflow runner keeps mode="sync": it always collects its steps
+                    # within run_workflow, never observe-later.)
+                    mode="async",
                     fanout_bound=fanout_bound,
                 ),
             )
@@ -465,24 +468,37 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
             _started_handoff_part(agent_def, agent, task, depth, spawned.run_index),
         )
         return json.dumps(
-            {"task_id": spawned.task_id, "status": spawned.status, "run_index": spawned.run_index},
+            {
+                "task_id": spawned.task_id,
+                "status": spawned.status,
+                "run_index": spawned.run_index,
+                # Typed queued_reason at the concurrency cap (#948 S6): the handle
+                # returns IMMEDIATELY as queued|running, never blocking on admission.
+                "queued_reason": spawned.queued_reason,
+            },
             sort_keys=True,
         )
 
     def spawn_agent_task(agent: str, task: str) -> str:
         """Spawn a declared child expert as a background child turn; returns its
-        task_id (use wait_agent_tasks to collect its result)."""
+        task_id IMMEDIATELY (status queued|running). Fire-and-forget: the child runs
+        untied to this turn — collect it now with wait_agent_tasks, poll it with
+        check_agent_tasks, or let its result surface in your NEXT turn."""
 
         return _do_spawn(agent, task)
 
-    def wait_agent_tasks(task_ids: list[str], timeout_s: float = _DEFAULT_WAIT_TIMEOUT_S) -> str:
+    def wait_agent_tasks(task_ids: list[str], timeout_s: float) -> str:
         """Block until the given spawned tasks finish (up to timeout_s), then return
-        each one's result. The children run on a dedicated pool, so waiting here
+        each one's result. ``timeout_s`` is REQUIRED — pass your own budget; on
+        timeout you get the current statuses and YOU decide (keep waiting, keep
+        working, or finish). The children run on a dedicated pool, so waiting here
         never starves them."""
 
         app, session_id = _ctx_app_session()
         registry = app.state.agent_task_registry
         import time as _time  # noqa: PLC0415
+
+        from clio_agent.gact.agent_tasks import consume_notification  # noqa: PLC0415
 
         deadline = _time.monotonic() + max(0.0, float(timeout_s or 0.0))
         results = []
@@ -503,6 +519,10 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
             payload = _completion_payload(app, task)
             results.append(payload)
             if task.is_terminal:
+                # Collecting a terminal task in-turn consumes its observe-later
+                # notification (#948 S6): the model saw the result HERE, so the next
+                # turn must not re-inject it. Exactly-once via the notify_pending gate.
+                consume_notification(app, task.task_id)
                 # Once-per-task wire emission: the ROW above is returned on EVERY wait
                 # (the model may legitimately re-collect), but the terminal EVENT +
                 # return Part + parent-resume fire exactly once — the server owns the
@@ -540,25 +560,45 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
             default=str,
         )
 
-    def check_agent_tasks() -> str:
-        """List the tasks this session has spawned and their current status."""
+    def check_agent_tasks(task_ids: list[str] | None = None) -> str:
+        """Non-blocking poll of this session's spawned tasks: each one's status AND,
+        for finished tasks, a bounded result excerpt + message_ref (full text via
+        wait_agent_tasks). Pass ``task_ids`` to poll a subset, or omit for all.
+        Polling a finished task collects it (its result won't re-surface next turn)."""
 
         app, session_id = _ctx_app_session()
+        from clio_agent.gact.agent_tasks import consume_notification  # noqa: PLC0415
+
         tasks = app.state.agent_task_registry.for_parent(session_id)
-        return json.dumps(
-            {
-                "tasks": [
-                    {
-                        "task_id": t.task_id,
-                        "agent": t.agent_ref.get("expert_id", ""),
-                        "status": t.status,
-                        "queued_reason": t.queued_reason,
-                    }
-                    for t in tasks
-                ]
-            },
-            sort_keys=True,
-        )
+        wanted = set(task_ids or [])
+        if wanted:
+            tasks = [t for t in tasks if t.task_id in wanted]
+        rows: list[dict[str, Any]] = []
+        for t in tasks:
+            row: dict[str, Any] = {
+                "task_id": t.task_id,
+                "agent": t.agent_ref.get("expert_id", ""),
+                "status": t.status,
+                "queued_reason": t.queued_reason,
+            }
+            if t.is_terminal:
+                result = t.result or {}
+                # Uniform structured fields for EVERY terminal task — success and
+                # failure alike (the model decides): a size-bounded excerpt, the
+                # message_ref for the full text, the typed error_reason, and the
+                # child session id. artifact_ref is reserved (#670).
+                row["result"] = {
+                    "answer_excerpt": str(result.get("answer_excerpt", "")),
+                    "message_ref": str(result.get("message_ref", "")),
+                    "error_reason": t.error_reason,
+                    "child_session_id": t.child_session_id,
+                    "artifact_ref": t.artifact_ref,
+                }
+                # A poll that surfaces the finished result consumes its observe-later
+                # notification (exactly-once via the notify_pending gate).
+                consume_notification(app, t.task_id)
+            rows.append(row)
+        return json.dumps({"tasks": rows}, sort_keys=True)
 
     def spawn_agents_parallel(spawns: list[dict]) -> str:
         """Fan out several declared children at once. ``spawns`` is a list of
@@ -623,14 +663,26 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
             desc=wait_agent_tasks.__doc__,
             args={
                 "task_ids": {"type": "array", "description": "Task ids returned by spawn."},
-                "timeout_s": {"type": "number", "description": "Max seconds to wait."},
+                "timeout_s": {
+                    "type": "number",
+                    "description": (
+                        "REQUIRED max seconds to wait before returning current "
+                        "statuses (a wait without a budget is a hang). You decide "
+                        "how to proceed on a partial result."
+                    ),
+                },
             },
         ),
         dspy.Tool(
             func=check_agent_tasks,
             name="check_agent_tasks",
             desc=check_agent_tasks.__doc__,
-            args={},
+            args={
+                "task_ids": {
+                    "type": "array",
+                    "description": "Optional subset of task ids to poll (omit for all).",
+                },
+            },
         ),
         dspy.Tool(
             func=spawn_agents_parallel,
