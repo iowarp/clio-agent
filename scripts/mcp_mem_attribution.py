@@ -26,9 +26,19 @@ blueprint and fans out 2 BACKGROUND children (alpha+beta) via the async spawn
 tools instead of the data-semantics load; the other sessions keep the standard
 load. The children are REAL sessions — ``resident_ledgers`` caps their
 transcripts and the #933 workspace-fleet reaper cleans their fleets — so the
-gate PROVES the bound holds with children resident rather than assuming it.
-Under ``--assert-budget`` this scenario is checked against the ``children``
-budget block in ``mcp_mem_budget.json`` (its own ratcheted-down numbers).
+gate exercises the bound with real child sessions resident.
+
+HONEST CAVEAT (the load is a SWAP, not an add): session 0 runs the canary pack
+INSTEAD of the data-semantics pack, so this scenario has 2 MCP-fleet data
+sessions (1-2) vs the baseline's 3, and the canary children declare NO
+``mcp_servers`` (they add transcript + provider-CLI cost, not a fleet). The
+children peak is therefore a LIGHTER fleet load than the baseline and is NOT a
+peak-vs-baseline delta measurement — its value is (a) the dedicated ``children``
+budget block ratchet (its own recorded cold-max numbers) and (b) the
+non-vacuity guard below (``_assert_children_spawned``), which fails the gate if
+session 0 did not actually spawn its 2 children (so a silent no-spawn cannot be
+recorded as a passing children run). Under ``--assert-budget`` this scenario is
+checked against the ``children`` budget block in ``mcp_mem_budget.json``.
 """
 
 from __future__ import annotations
@@ -212,12 +222,13 @@ def check_budget(peak_gb: float, final_gb: float, budget: dict) -> tuple[bool, s
     return peak_gb <= peak_cap and final_gb <= final_cap, detail
 
 
-def drive_session(base: str, pack: Path, prompt: str, out: dict, idx: int) -> None:
+def drive_session(base: str, pack: Path, prompt: str, out: dict, idx: int, sids: dict) -> None:
     s = requests.Session()
     try:
         sid = s.post(f"{base}/v1/sessions", json={"title": f"membudget {idx}"}, timeout=30).json()[
             "id"
         ]
+        sids[idx] = sid  # recorded so the children scenario can verify real child spawns
         s.post(
             f"{base}/v1/sessions/{sid}/agent-blueprint", json={"path": str(pack)}, timeout=120
         ).raise_for_status()
@@ -242,6 +253,31 @@ def drive_session(base: str, pack: Path, prompt: str, out: dict, idx: int) -> No
         out[idx] = "timeout"
     except Exception as exc:  # noqa: BLE001 - a failed session is a failed run, reported below
         out[idx] = f"error: {exc!r}"
+
+
+def _assert_children_spawned(base: str, sid: str | None) -> tuple[bool, str]:
+    """Non-vacuity guard for the children scenario (adversarial-review finding [8]).
+
+    Session 0 MUST have actually spawned its 2 background children (alpha + beta). A run
+    where the model answered WITHOUT spawning them (or the spawns failed) is a strictly
+    LIGHTER no-children load; recording it as a passing ``children`` budget would let a
+    silent no-spawn masquerade as proof. We read the authoritative task projection
+    (``GET /v1/sessions/{sid}/agent-tasks``) and require >= 2 child records.
+    """
+    if not sid:
+        return False, "children guard: session 0 sid was never recorded (no spawn possible)"
+    try:
+        r = requests.get(f"{base}/v1/sessions/{sid}/agent-tasks", timeout=30)
+        r.raise_for_status()
+        tasks = r.json().get("tasks", [])
+    except Exception as exc:  # noqa: BLE001 - a guard that cannot read is a guard that fails
+        return False, f"children guard: could not read agent-tasks for session 0 ({sid}): {exc!r}"
+    statuses = [t.get("status") for t in tasks]
+    ok = len(tasks) >= 2
+    return ok, (
+        f"children guard: session 0 spawned {len(tasks)} child task(s) "
+        f"(need >= 2: alpha+beta); statuses={statuses}"
+    )
 
 
 def _service_alive(base: str) -> bool:
@@ -421,6 +457,7 @@ def main() -> int:
 
         data_path = (args.workspace / args.data).as_posix()
         out: dict = {}
+        sids: dict = {}
 
         def _assign(i: int) -> tuple[Path, str]:
             # Children scenario: session 0 drives the declared-children blueprint
@@ -440,7 +477,7 @@ def main() -> int:
         threads = [
             threading.Thread(
                 target=drive_session,
-                args=(base, plan[i][0], plan[i][1], out, i),
+                args=(base, plan[i][0], plan[i][1], out, i, sids),
                 daemon=True,
             )
             for i in range(args.sessions)
@@ -479,6 +516,19 @@ def main() -> int:
         if failed_sessions or len(out) != args.sessions:
             print(f"GATE: FAIL (sessions not all idle: {out})")
             return 1
+
+        # Children scenario is only meaningful if the children ACTUALLY spawned: a
+        # no-spawn run measures a lighter load and must never be recorded as a pass.
+        if args.children_pack is not None:
+            child_ok, child_detail = _assert_children_spawned(base, sids.get(0))
+            print(child_detail)
+            if not child_ok:
+                print(
+                    "GATE: FAIL — the children scenario recorded fewer than 2 child tasks. "
+                    "A silent no-spawn cannot pass as a children run; fix the spawn, do not "
+                    "record this measurement."
+                )
+                return 1
 
         if args.assert_budget:
             budget_root = json.loads(BUDGET_PATH.read_text(encoding="utf-8"))

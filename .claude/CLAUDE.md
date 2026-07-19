@@ -262,8 +262,10 @@ async def test_fs_read():
 - **DO**: Tier 1 (Main) -> Tier 2 (Experts) -> Tier 3 (children of experts). All
   tiers are react agents spawning their DECLARED children as real child sessions
   (`spawn_child_turn`); the Tier-3 nanoagent primitive is deleted (#948 S4).
-- **DON'T**: Skip tiers (depth > 3 is refused), mix responsibilities, or let an
-  expert spawn a child it did not DECLARE (the parent→child edge is enforced)
+- **DON'T**: mix responsibilities, or let an expert spawn a child it did not DECLARE
+  (the parent→child edge is enforced). Spawn depth is a COMPUTED runaway backstop
+  (`depth > MAX_SPAWN_DEPTH` = 8 refused, typed `spawn_depth_exceeded`), NOT a 3-tier
+  rule — `tier` is semantic weight, not depth, so deep declared chains are legitimate
 
 ### Agent Registry
 - **DO**: Use registry for capability-based routing with typed outputs

@@ -40,8 +40,9 @@ top to bottom (S7 newest first, back to the S2–S3 substrate).
   #930 discipline; operator note, no wire change). The acceptance load in
   `scripts/mcp_mem_attribution.py` gained a `--children-pack` scenario: 3 concurrent
   claude-haiku sessions on the real CTE where session 0 fans out 2 background
-  children (real child sessions via `spawn_agents_parallel`). Measured cold peak
-  1.01 GB / settled final 0.73 GB (medians of 4 live runs), recorded in the
+  children (real child sessions via `spawn_agents_parallel`). Measured cold-max peak
+  1.01 GB / settled final 0.73 GB (peak = cold max, final = median; 3 recorded runs
+  + 1 gate-assert run), recorded in the
   `children` block of `scripts/mcp_mem_budget.json` per the ratchet contract
   (cold-max peak, median final, never raised to pass) — far under the 1.8/1.3
   campaign targets, with zero untyped degrades. Proven, not assumed: children cost

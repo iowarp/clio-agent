@@ -69,7 +69,12 @@ from clio_agent.arc.clio_core_retry import put_blob_with_retry
 
 # Per-RPC stall guard (#948 S4): every native op below runs through this so a ZOMBIE
 # daemon (socket alive, RPC hung) degrades typed instead of freezing the caller.
-from clio_agent.arc.rpc_liveness import call_with_liveness, guard_store_op
+from clio_agent.arc.rpc_liveness import (
+    call_with_liveness,
+    guard_store_op,
+    guarded_store_rpc,
+    store_rpc_health_probe,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -713,9 +718,24 @@ class ClioCoreStore:
 
     # ---- liveness gate (#892) ----
 
+    # Sentinel for the RPC-level health probe: a key that never exists in a record kind.
+    # ``GetBlobSize`` on a missing blob returns 0 on a healthy daemon (no write, no raise)
+    # and HANGS on a zombie — a cheap, side-effect-free liveness RPC.
+    _HEALTH_PROBE_KIND = ARC_KINDS[0]
+    _HEALTH_PROBE_NAME = "__clio_liveness_probe__"
+
     def _live(self) -> None:
-        """Gate an op: raise ``ClioCoreRuntimeLostError`` before the native binding if dead."""
-        self._gate.ensure_live(self._reconnect)
+        """Gate an op: raise ``ClioCoreRuntimeLostError`` before the native binding if dead.
+
+        Recovery from an ``rpc_stalled`` (zombie) quarantine needs a REAL RPC to answer,
+        not just a socket reconnect a zombie passes — hence the ``rpc_probe`` seam.
+        """
+        self._gate.ensure_live(
+            self._reconnect,
+            rpc_probe=lambda: store_rpc_health_probe(
+                self, kind=self._HEALTH_PROBE_KIND, name=self._HEALTH_PROBE_NAME
+            ),
+        )
 
     def _reconnect(self) -> None:
         """Rebuild the clio-core client binding via the connect-or-spawn seam (one attempt).
@@ -733,7 +753,6 @@ class ClioCoreStore:
 
     # ---- ARCStore Protocol ----
 
-    @guard_store_op("put")
     def put(
         self,
         kind: str,
@@ -743,17 +762,25 @@ class ClioCoreStore:
         tier: str = "warm",
         search_text: Optional[str] = None,
     ) -> None:
+        # Multi-RPC method: each native call is guarded INDIVIDUALLY (guarded_store_rpc)
+        # so stall_after_s bounds a single RPC, never the whole method body.
         # base64-wrap: CTE GetBlob UTF-8-decodes, so store ascii-safe bytes.
-        tag = self._cte.Tag(kind)
-        put_blob_with_retry(tag, name, base64.b64encode(data))
-        # Optional plain-text companion for BM25 semantic discovery (Thread D): CTE
-        # SemanticSearch tokenises payloads, which the base64 record defeats, so a UTF-8
+        payload = base64.b64encode(data)
+        guarded_store_rpc(
+            self, "put", lambda: put_blob_with_retry(self._cte.Tag(kind), name, payload)
+        )
+        # Optional plain-text companion for BM25 semantic discovery (Thread D): a UTF-8
         # companion at <name>.text carries the searchable text (scan()/get() skip it).
         companion = name + _SEARCH_SUFFIX
         if search_text is not None:
-            put_blob_with_retry(tag, companion, search_text.encode("utf-8"))
-        elif tag.GetBlobSize(companion) > 0:
-            self._client.DelBlob(tag.GetTagId(), companion)  # drop a now-stale companion
+            text = search_text.encode("utf-8")
+            guarded_store_rpc(
+                self, "put", lambda: put_blob_with_retry(self._cte.Tag(kind), companion, text)
+            )
+        elif guarded_store_rpc(self, "put", lambda: self._cte.Tag(kind).GetBlobSize(companion)) > 0:
+            guarded_store_rpc(  # drop a now-stale companion
+                self, "put", lambda: self._client.DelBlob(self._cte.Tag(kind).GetTagId(), companion)
+            )
         # ``tier`` is advisory: the default single DRAM tier makes ReorganizeBlob a no-op.
 
     @guard_store_op("get")
@@ -796,13 +823,20 @@ class ClioCoreStore:
         self._client.DelBlob(tag_id, name)
         self._client.DelBlob(tag_id, name + _SEARCH_SUFFIX)  # companion (no-op if absent)
 
-    @guard_store_op("clear")
     def clear(self) -> None:
+        # Multi-RPC method: each DelBlob (and the per-kind listing) is guarded
+        # INDIVIDUALLY so a legitimately long, PROGRESSING clear over many blobs (each
+        # DelBlob prompt, total > stall_after_s) is never misclassified as a stalled
+        # peer. Only a single RPC that itself hangs triggers the stall ladder.
         for kind in ARC_KINDS:
-            tag = self._cte.Tag(kind)
-            tag_id = tag.GetTagId()
-            for blob_name in tag.GetContainedBlobs():
-                self._client.DelBlob(tag_id, blob_name)
+            tag_id = guarded_store_rpc(self, "clear", lambda k: self._cte.Tag(k).GetTagId(), kind)
+            blob_names = guarded_store_rpc(
+                self, "clear", lambda k: list(self._cte.Tag(k).GetContainedBlobs()), kind
+            )
+            for blob_name in blob_names:
+                guarded_store_rpc(
+                    self, "clear", lambda tid, bn: self._client.DelBlob(tid, bn), tag_id, blob_name
+                )
 
     # ---- semantic discovery (Thread D) ----
 

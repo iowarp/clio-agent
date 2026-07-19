@@ -21,10 +21,13 @@ and the in-process implementation:
 * :class:`TaskResult` — the serializable RESPONSE: a wire projection of an
   :class:`AgentTask` carrying the status lifecycle, the create/update timeline, the
   ``result`` payload (``message_ref`` / ``answer_excerpt`` / ``workflow_state``), the
-  typed ``error_reason`` and a RESERVED ``artifact_ref``. It deliberately DROPS the
-  in-process-only registry bookkeeping (``notify_pending`` / ``consumed_at`` /
-  ``delegation_reported`` — parent-side observe-later + wire-dedup state a remote
-  executor does not own; that choreography stays local under federation).
+  typed ``error_reason`` and a RESERVED ``artifact_ref``. It DROPS all six
+  non-executor-boundary :class:`AgentTask` fields, in two classes: (a) parent-side
+  observe-later + wire-dedup bookkeeping — ``notify_pending`` / ``consumed_at`` /
+  ``delegation_reported`` — choreography that stays local under federation; and (b)
+  the spawn-REQUEST / topology fields the parent already holds on the ``TaskSpec`` it
+  authored — ``parent_turn_id`` / ``child_turn_id`` / ``fanout_bound`` — which the
+  executor need not echo back in a result.
 * :class:`TaskEvent` + :data:`TASK_EVENT_VOCABULARY` — the ``agent.task.*`` event
   family the substrate publishes, as a serializable boundary shape + the
   status→event-type mapping.
@@ -216,11 +219,17 @@ class TaskResult:
     Carries the status lifecycle, the create/update timeline, the ``result`` payload
     (``{message_ref, answer_excerpt, workflow_state}``), the typed ``error_reason``
     and a RESERVED ``artifact_ref`` (the #670 artifacts campaign fills it with a
-    spill ref; carried from day one so a federation record matches). Deliberately
-    OMITS the registry's in-process-only bookkeeping (``notify_pending`` /
-    ``consumed_at`` / ``delegation_reported``): those drive the parent-side
-    observe-later + wire-dedup choreography, which stays local under federation and
-    is not part of the executor boundary.
+    spill ref; carried from day one so a federation record matches).
+
+    It OMITS all six :class:`AgentTask` fields that are not part of the executor
+    boundary, in two classes:
+
+    * parent-side observe-later + wire-dedup bookkeeping — ``notify_pending`` /
+      ``consumed_at`` / ``delegation_reported`` — choreography that stays local under
+      federation; and
+    * spawn-REQUEST / topology fields the parent already holds on the ``TaskSpec`` it
+      authored — ``parent_turn_id`` / ``child_turn_id`` / ``fanout_bound`` — which the
+      executor need not echo back in its result.
     """
 
     task_id: str

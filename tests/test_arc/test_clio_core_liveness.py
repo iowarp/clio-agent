@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import pytest
 
+import clio_agent.arc.clio_core_liveness as clio_core_liveness
 from clio_agent.arc.clio_core_liveness import (
+    RPC_STALLED_REASON,
     ClioCoreRuntimeLostError,
     LivenessGate,
     liveness_snapshot,
@@ -236,6 +238,102 @@ def test_reconnect_is_rate_limited_within_ttl():
         gate.ensure_live(reconnect)  # within TTL -> back-off, NO new attempt
     assert attempts["n"] == 1
     assert exc.value.details["reason"] == "clio_core_reconnect_backoff"
+
+
+# --------------------------------------------------------------------------- #
+# reason-aware recovery: an rpc_stalled (ZOMBIE) quarantine needs an RPC-LEVEL probe
+# --------------------------------------------------------------------------- #
+
+
+def test_rpc_stalled_recovery_requires_rpc_probe_not_socket(monkeypatch):
+    """The blocker fix: a quarantine set by the stall ladder (reason=rpc_stalled) is a
+    ZOMBIE whose socket still ACCEPTS. Recovery must NOT dissolve it on the socket probe
+    / a plain reconnect (which a zombie passes); it recovers ONLY when a real RPC-level
+    probe answers, and re-probes are rate-limited so the intervening ops fail fast.
+
+    Sabotage: route the rpc_stalled branch back through ``reconnect`` (socket-gated) and
+    the very first quarantined op un-quarantines (``gate.quarantined`` after step 2
+    flips to False) — this test goes red.
+    """
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(clio_core_liveness.time, "monotonic", lambda: clock["t"])
+    # probe=True => the SOCKET always accepts (the zombie's defining property).
+    gate = LivenessGate(config_path="", probe=lambda _p: True, ttl_s=0.5)
+    probe = {"n": 0, "healthy": False}
+    socket_reconnects = {"n": 0}
+
+    def rpc_probe() -> bool:
+        probe["n"] += 1
+        return probe["healthy"]
+
+    def reconnect() -> None:  # the SOCKET-gated seam; must NOT be used for a zombie
+        socket_reconnects["n"] += 1
+
+    # Ladder exhausted -> quarantine (arms the recovery clock so the next op is spaced).
+    gate.note_rpc_stalled()
+    assert gate.quarantined is True
+
+    # SECOND op, immediately: rate-limited -> fails fast typed, NO probe, NO socket reconnect.
+    with pytest.raises(ClioCoreRuntimeLostError) as exc:
+        gate.ensure_live(reconnect, rpc_probe=rpc_probe)
+    assert exc.value.details["reason"] == "clio_core_reconnect_backoff"
+    assert probe["n"] == 0
+    assert socket_reconnects["n"] == 0
+    assert gate.quarantined is True
+
+    # Past the (raised) rpc_stalled recovery TTL: an RPC probe runs; the zombie still
+    # hangs -> probe returns False -> STAY quarantined, and the socket seam is untouched.
+    clock["t"] += 31.0
+    with pytest.raises(ClioCoreRuntimeLostError) as exc2:
+        gate.ensure_live(reconnect, rpc_probe=rpc_probe)
+    assert exc2.value.details["reason"] == RPC_STALLED_REASON
+    assert probe["n"] == 1
+    assert socket_reconnects["n"] == 0  # socket-probe recovery is NEVER used for a zombie
+    assert gate.quarantined is True
+
+    # Daemon comes back healthy: the next spaced RPC probe answers -> leave quarantine.
+    probe["healthy"] = True
+    clock["t"] += 31.0
+    gate.ensure_live(reconnect, rpc_probe=rpc_probe)  # no raise
+    assert probe["n"] == 2
+    assert gate.quarantined is False
+
+
+def test_rpc_stalled_recovery_without_probe_stays_quarantined(monkeypatch):
+    """No ``rpc_probe`` supplied => an rpc_stalled quarantine cannot be left (a socket
+    reconnect a zombie passes must never silently dissolve it)."""
+    clock = {"t": 500.0}
+    monkeypatch.setattr(clio_core_liveness.time, "monotonic", lambda: clock["t"])
+    gate = LivenessGate(config_path="", probe=lambda _p: True, ttl_s=0.5)
+    gate.note_rpc_stalled()
+    clock["t"] += 31.0  # past the recovery back-off
+    with pytest.raises(ClioCoreRuntimeLostError) as exc:
+        gate.ensure_live(lambda: None)  # no rpc_probe
+    assert exc.value.details["reason"] == RPC_STALLED_REASON
+    assert gate.quarantined is True
+
+
+def test_socket_loss_quarantine_still_recovers_via_reconnect():
+    """A socket-loss quarantine (reason=daemon_not_listening) keeps today's socket-probe
+    recovery: a successful reconnect leaves quarantine (reason-aware, other branch)."""
+    seq = iter([False, True, True, True])
+    reconnects = {"n": 0}
+    probe_calls = {"n": 0}
+
+    def rpc_probe() -> bool:  # must NOT be consulted for a socket-loss quarantine
+        probe_calls["n"] += 1
+        return True
+
+    gate = LivenessGate(config_path="", probe=lambda _p: next(seq), ttl_s=0.0)
+    with pytest.raises(ClioCoreRuntimeLostError):
+        gate.ensure_live(
+            lambda: reconnects.__setitem__("n", reconnects["n"] + 1), rpc_probe=rpc_probe
+        )
+    assert gate.quarantined is True
+    gate.ensure_live(lambda: reconnects.__setitem__("n", reconnects["n"] + 1), rpc_probe=rpc_probe)
+    assert gate.quarantined is False
+    assert reconnects["n"] == 1
+    assert probe_calls["n"] == 0  # the RPC probe is only for rpc_stalled quarantines
 
 
 # --------------------------------------------------------------------------- #

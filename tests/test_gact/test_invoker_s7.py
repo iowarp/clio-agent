@@ -124,6 +124,27 @@ def _norm_events(app, sid: str) -> list[tuple[str, dict]]:
     ]
 
 
+_TERMINAL_TASK_EVENTS = frozenset(
+    {"agent.task.completed", "agent.task.failed", "agent.task.cancelled"}
+)
+
+
+def _wait_task_events_settled(app, sid: str, timeout: float = 10.0) -> None:
+    """Wait until a session's ``agent.task.*`` stream ENDS on a terminal event.
+
+    ``_wait_terminal`` only waits for the registry RECORD to reach a terminal status;
+    the terminal ``agent.task.*`` BUS event is published on a separate step and can lag
+    that transition. An event-stream parity diff must wait for the terminal EVENT too, or
+    it races (one child's ``completed`` already appended, the other's not yet)."""
+
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        events = _norm_events(app, sid)
+        if events and events[-1][0] in _TERMINAL_TASK_EVENTS:
+            return
+        time.sleep(0.05)
+
+
 def _spec(parent: str, task_text: str = "analyze the dataset") -> TaskSpec:
     return TaskSpec(
         child_expert_id="main",
@@ -199,6 +220,10 @@ def test_invoke_parity_records_and_events(tmp_path: Path, monkeypatch) -> None:
 
         _wait_terminal(app, handle.task_id)
         _wait_terminal(app, direct.task_id)
+        # Wait for the terminal BUS event too (it lags the registry transition), or the
+        # stream diff races on a not-yet-appended ``completed``.
+        _wait_task_events_settled(app, handle.child_session_id)
+        _wait_task_events_settled(app, direct.child_session_id)
 
         # Structural diff of the two children's own event streams (queued→started→
         # completed), ids/timestamps normalized out.
@@ -319,6 +344,9 @@ def test_cancel_parity_effect_and_event(tmp_path: Path, monkeypatch) -> None:
         inv_settled = _wait_terminal(app, h_inv.task_id, timeout=6.0)
         dir_settled = _wait_terminal(app, t_dir.task_id, timeout=6.0)
         assert inv_settled.status == dir_settled.status == "cancelled"
+        # The terminal BUS event lags the registry transition; settle on it before diffing.
+        _wait_task_events_settled(app, h_inv.child_session_id)
+        _wait_task_events_settled(app, t_dir.child_session_id)
 
         inv_events = _norm_events(app, h_inv.child_session_id)
         dir_events = _norm_events(app, t_dir.child_session_id)
@@ -474,12 +502,29 @@ def test_run_index_and_notify_parity(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_taskresult_drops_internal_bookkeeping(tmp_path: Path, monkeypatch) -> None:
-    """The boundary :class:`TaskResult` omits the in-process-only registry fields
-    (``notify_pending`` / ``consumed_at`` / ``delegation_reported``) — those are
-    parent-side observe-later / wire-dedup state, not the executor boundary."""
+    """The boundary :class:`TaskResult` omits EVERY :class:`AgentTask` field that is not
+    part of the executor boundary — all six, in two classes: parent-side observe-later /
+    wire-dedup bookkeeping (``notify_pending`` / ``consumed_at`` / ``delegation_reported``)
+    and spawn-request / topology fields the parent already holds on its ``TaskSpec``
+    (``parent_turn_id`` / ``child_turn_id`` / ``fanout_bound``).
 
-    fields = set(TaskResult.__dataclass_fields__)
-    assert {"notify_pending", "consumed_at", "delegation_reported"}.isdisjoint(fields)
+    Adversarial-review finding [5]: the drop-list must be EXHAUSTIVE against the code —
+    ``AgentTask`` minus ``TaskResult`` is exactly these six, no more, no less."""
+
+    task_fields = set(AgentTask.__dataclass_fields__)
+    result_fields = set(TaskResult.__dataclass_fields__)
+    dropped = {
+        "notify_pending",
+        "consumed_at",
+        "delegation_reported",
+        "parent_turn_id",
+        "child_turn_id",
+        "fanout_bound",
+    }
+    assert dropped.isdisjoint(result_fields)  # none of the six survive the projection
+    # EXHAUSTIVE: the six named above are exactly the fields AgentTask has and
+    # TaskResult drops — a newly-added dropped/carried field must update this + the docs.
+    assert task_fields - result_fields == dropped
     # But it DOES carry the durable, relay-compatible record vocabulary.
     assert {
         "task_id",
@@ -489,7 +534,7 @@ def test_taskresult_drops_internal_bookkeeping(tmp_path: Path, monkeypatch) -> N
         "error_reason",
         "result",
         "artifact_ref",
-    } <= fields
+    } <= result_fields
 
 
 def test_relay_state_map_is_total_and_lossless() -> None:
@@ -501,6 +546,62 @@ def test_relay_state_map_is_total_and_lossless() -> None:
     assert RELAY_STATE_MAP["cancelled"] == "canceled"
     # Lossless: distinct clio statuses never collapse to one relay state.
     assert len(set(RELAY_STATE_MAP.values())) == len(RELAY_STATE_MAP)
+
+
+def _relay_jobstate_values() -> set[str]:
+    """Parse clio-relay's real ``JobState`` StrEnum values from its source, or skip.
+
+    clio-relay is not a clio-agent dependency (federation is future work), so its
+    models are not importable; we AST-parse the sibling checkout when present and skip
+    with a typed reason otherwise — the map is asserted against the REAL enum, never a
+    hand-copied literal list that could silently drift (adversarial-review finding [6])."""
+    import ast
+    import os
+
+    repo_root = Path(__file__).resolve().parents[2]
+    candidates = [
+        os.environ.get("CLIO_RELAY_ROOT", ""),
+        str(repo_root.parent / "clio-relay"),
+        str(repo_root.parent.parent / "clio-relay"),
+    ]
+    models: Path | None = None
+    for cand in candidates:
+        if not cand:
+            continue
+        p = Path(cand) / "src" / "clio_relay" / "models.py"
+        if p.is_file():
+            models = p
+            break
+    if models is None:
+        pytest.skip("clio-relay checkout not found (set CLIO_RELAY_ROOT); cannot verify JobState")
+
+    tree = ast.parse(models.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == "JobState":
+            values: set[str] = set()
+            for stmt in node.body:
+                if isinstance(stmt, ast.Assign) and isinstance(stmt.value, ast.Constant):
+                    values.add(str(stmt.value.value))
+            return values
+    pytest.skip("JobState enum not found in clio-relay models.py")
+    return set()  # unreachable (pragma)
+
+
+def test_relay_state_map_targets_are_real_jobstates() -> None:
+    """The map's targets must be REAL ``clio_relay.JobState`` values, injective into the
+    enum — asserted against relay's actual source, not a copied literal list.
+
+    Relay's enum also carries ``leased`` (a transitional scheduler state clio does not
+    originate), so the map is injective INTO ``JobState``, not onto it — that unmapped
+    state is the exact drift shape this guard exists to surface if it ever changes."""
+
+    job_states = _relay_jobstate_values()
+    mapped = set(RELAY_STATE_MAP.values())
+    missing = mapped - job_states
+    assert not missing, f"RELAY_STATE_MAP targets not present in relay JobState: {missing}"
+    # Injective, not onto: relay's transitional 'leased' is deliberately unmapped by clio.
+    assert "leased" in job_states  # present in relay; if this ever disappears, revisit the map
+    assert "leased" not in mapped
 
 
 # ---------------------------------------------------------------------------

@@ -149,8 +149,12 @@ Each spawn/return is recorded as `blueprint.delegation.{started,completed,failed
 parent_resumed}` semantic events and `expert_handoff` transcript Parts (a
 `delegate.started` header and a terminal return row), so the canonical transcript
 renders the delegation header, nesting, and return row. The declared parent→child
-edge is enforced (a spawn target must be a declared child of the spawning expert)
-and the 3-tier hierarchy is bounded structurally (`depth > 3` refused). There are no
+edge is enforced (a spawn target must be a declared child of the spawning expert).
+Spawn depth is COMPUTED (each child is one deeper than its parent) and bounded only by
+a runaway backstop — `depth > MAX_SPAWN_DEPTH` (8) is refused (typed
+`spawn_depth_exceeded`). This is NOT a 3-tier rule: `tier` is semantic weight, not
+depth, so a legitimate chain (tier-1 → tier-2 → tier-2 → tier-2 → tier-3s) can run
+several levels deep; the backstop only stops unbounded self-spawning. There are no
 generated in-thread `delegate_to_<child>` tools; children run as real,
 independently-persisted turns on a dedicated executor pool (never the default), so a
 waiting parent can never starve its own children.

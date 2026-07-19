@@ -50,7 +50,13 @@ RATCHET_BASELINE: dict[str, int] = {
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
     # owner ruling 2026-07-14: +3 to route explicit =local through the loud
     # DEGRADED banner (owner module: arc/init_degradation.py).
-    "src/clio_agent/arc/storage.py": 886,
+    # #955 S7 adversarial-review closeout (886 -> 920): per-RPC stall granularity for
+    # the multi-RPC put/clear (finding [3]) + the RPC-level health-probe wiring for
+    # rpc_stalled quarantine recovery (blocker [1]). Both need the store's _cte/_client,
+    # so they live here; the reusable guard helpers (guarded_store_rpc /
+    # store_rpc_health_probe) were moved to the rpc_liveness owner module to hold the
+    # growth down. Ratchet back below on the arc/storage decomposition (#714).
+    "src/clio_agent/arc/storage.py": 920,
     # #737 S2 fold owner module. Crossed the 800 new-file cap restoring the FROZEN
     # arc.op reproducibility contract (§2 / GOAL.md DoD #4): the five working-set write
     # overrides now emit a per-op arc.op via _emit_op so arc.replay rebuilds the live
