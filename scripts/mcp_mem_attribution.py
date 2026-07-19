@@ -19,6 +19,16 @@ The server is booted as a child of THIS process (claude_code/haiku + the real
 CTE substrate per the accepted gate config — never CLIO_ARC_STORE=local) and
 torn down on exit. Run it as ONE task: server and load share this process
 tree so external task eviction cannot split them.
+
+Background-children scenario (#955): pass ``--children-pack <blueprint with
+declared children>`` (e.g. the S5 canary pack). Session 0 then drives that
+blueprint and fans out 2 BACKGROUND children (alpha+beta) via the async spawn
+tools instead of the data-semantics load; the other sessions keep the standard
+load. The children are REAL sessions — ``resident_ledgers`` caps their
+transcripts and the #933 workspace-fleet reaper cleans their fleets — so the
+gate PROVES the bound holds with children resident rather than assuming it.
+Under ``--assert-budget`` this scenario is checked against the ``children``
+budget block in ``mcp_mem_budget.json`` (its own ratcheted-down numbers).
 """
 
 from __future__ import annotations
@@ -57,11 +67,19 @@ PROMPT_SHAPES = [
         "Before we archive {data}, can you review it like a collaborator would "
         "and flag anything that would bite us in a downstream analysis?"
     ),
-    (
-        "Is {data} trustworthy enough to build a report on? Walk me through "
-        "its condition."
-    ),
+    ("Is {data} trustworthy enough to build a report on? Walk me through its condition."),
 ]
+
+# The children scenario's fan-out prompt: drive the canary orchestrator's
+# "parallel consult" exercise, which spawns alpha AND beta as 2 background
+# children in one spawn_agents_parallel call and waits on both. This is the
+# minimal correct vehicle for "one session fanning out 2 background children".
+CHILDREN_PROMPT = (
+    "Run the parallel-consult exercise: consult alpha and beta in parallel. "
+    "Spawn BOTH as background children in a SINGLE spawn_agents_parallel call, "
+    "wait on both task_ids with timeout_s=180, then write a final answer that "
+    "quotes alpha's canary token and beta's canary token verbatim."
+)
 
 
 def classify(name: str, cmdline: str) -> str:
@@ -247,6 +265,16 @@ def _port_listener_pid(port: int) -> int | None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pack", required=True, type=Path)
+    parser.add_argument(
+        "--children-pack",
+        type=Path,
+        default=None,
+        help=(
+            "Blueprint with declared children (e.g. out/s5-gate/canary-pack). When "
+            "set, session 0 fans out 2 BACKGROUND children instead of the data load; "
+            "--assert-budget then checks the 'children' block of mcp_mem_budget.json."
+        ),
+    )
     parser.add_argument("--workspace", required=True, type=Path)
     parser.add_argument("--data", default="sensor_readings.csv")
     parser.add_argument("--sessions", type=int, default=3)
@@ -393,10 +421,26 @@ def main() -> int:
 
         data_path = (args.workspace / args.data).as_posix()
         out: dict = {}
+
+        def _assign(i: int) -> tuple[Path, str]:
+            # Children scenario: session 0 drives the declared-children blueprint
+            # and fans out 2 background children (alpha+beta); the rest run the
+            # standard data-semantics load so the fleet cost is measured WITH real
+            # child sessions resident alongside the normal acceptance load.
+            if args.children_pack is not None and i == 0:
+                return args.children_pack, CHILDREN_PROMPT
+            return args.pack, PROMPT_SHAPES[i % len(PROMPT_SHAPES)].format(data=data_path)
+
+        plan = [_assign(i) for i in range(args.sessions)]
+        if args.children_pack is not None:
+            print(
+                f"scenario: children — session 0 -> {args.children_pack} "
+                "(fan-out of 2 background children: alpha+beta)"
+            )
         threads = [
             threading.Thread(
                 target=drive_session,
-                args=(base, args.pack, PROMPT_SHAPES[i % len(PROMPT_SHAPES)].format(data=data_path), out, i),
+                args=(base, plan[i][0], plan[i][1], out, i),
                 daemon=True,
             )
             for i in range(args.sessions)
@@ -437,9 +481,21 @@ def main() -> int:
             return 1
 
         if args.assert_budget:
-            budget = json.loads(BUDGET_PATH.read_text(encoding="utf-8"))
+            budget_root = json.loads(BUDGET_PATH.read_text(encoding="utf-8"))
+            if args.children_pack is not None:
+                budget = budget_root.get("children")
+                budget_label = "children"
+                if not isinstance(budget, dict):
+                    print(
+                        "FAIL: --children-pack asserted but no 'children' budget block "
+                        f"is recorded in {BUDGET_PATH.name}"
+                    )
+                    return 2
+            else:
+                budget = budget_root
+                budget_label = "baseline"
             ok, detail = check_budget(peak_gb, final_gb, budget)
-            print(f"BUDGET ({BUDGET_PATH.name}): {detail}")
+            print(f"BUDGET ({BUDGET_PATH.name}:{budget_label}): {detail}")
             if not ok:
                 print(
                     "GATE: FAIL — fleet memory regressed past the recorded budget. "
