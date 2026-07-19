@@ -1,0 +1,196 @@
+WARNING | \u2691 RESIDENT-LEDGER metrics seeded via streaming corpus walk (bounded memory, O(corpus) boot time); index-only rollup is owner-gated (design 1.13/§3.1)
+INFO:     Started server process [15468]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:17805 (Press CTRL+C to quit)
+INFO:     127.0.0.1:53190 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53197 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53205 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53214 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53222 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53231 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53240 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53248 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53255 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53262 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53270 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53280 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53294 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53302 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53313 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53332 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53341 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53348 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53358 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53368 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53378 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53387 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53394 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53401 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53409 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53418 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53426 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53435 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53442 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53452 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53460 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53467 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53477 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53484 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53493 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53501 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53509 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53517 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53525 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53534 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53541 - "PUT /v1/policies HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53553 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53572 - "GET /v1/health HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53603 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53608 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53624 - "POST /v1/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53625 - "POST /v1/sessions/sess_f8e6e125cd88/agent-blueprint HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53638 - "POST /v1/sessions/sess_f8e6e125cd88/messages HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53646 - "GET /v1/sessions/sess_f8e6e125cd88/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53652 - "POST /v1/sessions/sess_f8e6e125cd88/messages HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53655 - "GET /v1/health HTTP/1.1" 200 OK
+[31mD:\a\clio-core\clio-core\context-transport-primitives\src\event_manager_win.cc:125 ERROR 380 AddEvent EventManager::AddEvent: WSAEventSelect ADD failed: 203[0m
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+INFO:     127.0.0.1:53670 - "PUT /v1/providers/lm HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53692 - "POST /v1/sessions/sess_f8e6e125cd88/messages HTTP/1.1" 200 OK
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+INFO:     127.0.0.1:53730 - "GET /v1/sessions/sess_f8e6e125cd88/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53763 - "POST /v1/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53764 - "POST /v1/sessions/sess_39bf124fcb31/agent-blueprint HTTP/1.1" 422 Unprocessable Entity
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+INFO:     127.0.0.1:53765 - "GET /v1/agents?session_id=sess_39bf124fcb31 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53793 - "POST /v1/sessions/sess_39bf124fcb31/agent-blueprint HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:53814 - "POST /v1/sessions/sess_39bf124fcb31/agent-blueprint HTTP/1.1" 200 OK
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+INFO:     127.0.0.1:53815 - "GET /v1/agents?session_id=sess_39bf124fcb31 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53845 - "GET /v1/sessions/sess_39bf124fcb31/events HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53846 - "POST /v1/sessions/sess_39bf124fcb31/messages HTTP/1.1" 200 OK
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+2026-07-18 13:24:39,094 - INFO - HTTP Request: GET https://pypi.org/pypi/fastmcp/json "HTTP/1.1 200 OK"
+
+
++-----------------------------------------------------------------------------+
+|                                                                             |
+|                                                                             |
+|                        \u2584\u2580\u2580 \u2584\u2580\u2588 \u2588\u2580\u2580 \u2580\u2588\u2580 \u2588\u2580\u2584\u2580\u2588 \u2588\u2580\u2580 \u2588\u2580\u2588                        |
+|                        \u2588\u2580  \u2588\u2580\u2588 \u2584\u2584\u2588  \u2588  \u2588 \u2580 \u2588 \u2588\u2584\u2584 \u2588\u2580\u2580                        |
+|                                                                             |
+|                                                                             |
+|                                                                             |
+|                                FastMCP 3.4.4                                |
+|                            https://gofastmcp.com                            |
+|                                                                             |
+|                 \U0001f5a5  Server:      geo, 3.4.4                                  |
+|                 \U0001f680 Deploy free: https://horizon.prefect.io                  |
+|                                                                             |
++-----------------------------------------------------------------------------+
+
+
+[07/18/26 13:24:39] INFO     Starting MCP server 'geo' with    transport.py:241
+                             transport 'stdio'                                 
+2026-07-18 13:24:39,174 - INFO - Processing request of type ListToolsRequest
+2026-07-18 13:24:39,186 - INFO - Processing request of type CallToolRequest
+2026-07-18 13:24:40,182 - INFO - HTTP Request: GET https://nominatim.openstreetmap.org/search?format=json&q=Los+Angeles&limit=1&addressdetails=0&countrycodes=us "HTTP/1.1 200 OK"
+2026-07-18 13:24:40,189 - INFO - Processing request of type ListToolsRequest
+WARNING | usage rollup degraded to an estimate because the LM fired but reported zero usage reason=usage_estimated strategy=price_table_estimate session=sess_5be765c33a59
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+WARNING | \u2691 PROMPT-CTX provider summary serialize failed (asdict() should be called on dataclass instances); using repr
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+INFO:     127.0.0.1:53430 - "GET /v1/sessions/sess_39bf124fcb31/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53431 - "GET /v1/sessions?include_all_workspaces=true HTTP/1.1" 200 OK
+WARNING | \u2691 TOOLS workspace_fleet_reaped root=D:\Libraries\Documents\projects\clio-agent reason=idle_ttl resident=0
+INFO:     127.0.0.1:50444 - "GET /v1/sessions/sess_39bf124fcb31/agent-tasks HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50484 - "GET /v1/agent-tasks/task_5f8e6fc777ab HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50546 - "GET /v1/sessions/sess_5f8e6fc777ab/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50547 - "GET /v1/sessions/sess_39bf124fcb31/messages HTTP/1.1" 200 OK

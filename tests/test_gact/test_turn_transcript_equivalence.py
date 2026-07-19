@@ -27,7 +27,13 @@ import time
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
+
+# #948 S4b: default sessions run the blueprint react ``main``; route it to each
+# scenario's ``build_app(agent=...)`` host fake (scenarios that monkeypatch
+# ``_try_streamed_forward`` are unaffected).
+pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 GOLDEN_DIR = Path(__file__).parent / "goldens" / "turn_transcript_pr1"
 _GOLDEN_REGEN = os.environ.get("CLIO_TURN_TRANSCRIPT_GOLDEN_REGEN") == "1"
@@ -59,6 +65,17 @@ _VOLATILE_KEY_TOKENS = (
     "elapsed",
     "latency",
     "uptime",
+    # #948 S4b: a default session now runs the default-registry blueprint react
+    # ``main`` (the legacy planner that produced these develop goldens is gone),
+    # so ``message.completed`` metadata gains the dynamic-agent ``agent_runtime``
+    # provenance + its ``prompt_resolution`` block. Those carry ENVIRONMENT-
+    # specific absolute definition/source paths (per-run pytest tmp dirs) and are
+    # not part of the SSE event SEQUENCE / persisted-part identity this golden
+    # guards — the blueprint runtime provenance has its own coverage in
+    # test_evidence / test_agent_blueprints. Excluded here so the wire-structure
+    # equivalence stays deterministic and focused.
+    "agent_runtime",
+    "prompt_resolution",
 )
 
 

@@ -1250,9 +1250,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 self.program = _retaining_react_cls()(
                     self.signature,
                     tools=tools,
-                    max_iters=_tool_user_agent_max_iters(
-                        agent_def, declared_children=_n_children
-                    ),
+                    max_iters=_tool_user_agent_max_iters(agent_def, declared_children=_n_children),
                 )
                 # Tag the program so its ReAct loop attributes each step to this
                 # expert on the highway (see _emit_react_step_event).

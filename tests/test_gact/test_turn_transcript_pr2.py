@@ -35,6 +35,11 @@ from clio_agent.gact.types import Part
 
 from .conftest import complete_turn
 
+# #948 S4b: default sessions run the blueprint react ``main``; route it to each
+# test's ``build_app(agent=...)`` host fake (tests that monkeypatch
+# ``_try_streamed_forward`` are unaffected).
+pytestmark = pytest.mark.usefixtures("host_agent_executor")
+
 
 class _RecordingPublisher:
     def __init__(self) -> None:

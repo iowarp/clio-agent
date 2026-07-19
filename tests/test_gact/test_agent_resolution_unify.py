@@ -38,10 +38,8 @@ def _isolate_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """
 
     monkeypatch.setenv("CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP", "1")
-    # The default-blueprint fallback is the behaviour under test; the shared
-    # root conftest force-enables legacy native experts (which short-circuits the
-    # fallback), so turn it off here.
-    monkeypatch.delenv("CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS", raising=False)
+    # The default-blueprint fallback is the behaviour under test. (#948 S4b retired
+    # the legacy-native-experts short-circuit that used to suppress it.)
     # ``CLIO_USER_DIR`` wins over ``XDG_CONFIG_HOME`` (paths.user_config_dir_for),
     # so an empty per-user root keeps both the machine's real marketplace and the
     # conftest's ambient XDG default blueprint out of the resolved set.
@@ -282,3 +280,54 @@ def test_import_seam_and_root_id_symmetry(tmp_path: Path) -> None:
 
     assert root_id == "root"
     assert root_id in route_ids
+
+
+class _ForwardSpyAgent:
+    """Stand-in main agent whose legacy ``forward`` must NEVER be invoked (#948 S4b).
+
+    The Tier-1 planner ``ClioAgent.forward`` is deleted; this spy exists only to
+    prove the turn engine never falls back to a legacy ``app.state.agent.forward``
+    dispatch when no Agent Blueprint resolves.
+    """
+
+    def __init__(self) -> None:
+        self.forward_calls = 0
+
+    def forward(self, *_args: object, **_kwargs: object) -> object:  # pragma: no cover
+        self.forward_calls += 1
+        raise AssertionError("legacy planner forward must not run (#948 S4b)")
+
+
+def test_no_resolvable_agent_fails_typed_and_never_runs_forward(tmp_path: Path) -> None:
+    """#948 S4b: a default/main session with NO resolvable Agent Blueprint must fail
+    with a typed ``no_resolvable_agent`` error and must NEVER fall through to the
+    deleted legacy planner ``forward``.
+
+    The autouse ``_isolate_config`` fixture drops the legacy-native-experts flag and
+    disables the default-registry bootstrap, and this session has no workspace
+    blueprint — so nothing resolves, which is exactly the else-branch condition
+    turn_forward now converts into a typed failure.
+
+    Sabotage check: restore the deleted else branch (dispatch to
+    ``_agent_forward_compat(app.state.agent, ...)`` instead of raising
+    ``_NoResolvableAgent``) and this goes red on BOTH the missing typed error and
+    the non-zero spy ``forward`` count.
+    """
+
+    spy = _ForwardSpyAgent()
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=spy)
+    with TestClient(app) as client:
+        from .conftest import complete_turn
+
+        sid = client.post("/v1/sessions", json={"title": "no-blueprint"}).json()["id"]
+        assistant = complete_turn(client, sid, "do something")
+
+    error_info = assistant.get("error_info") or {}
+    assert error_info.get("error") == "no_resolvable_agent"
+    recovery = (error_info.get("details") or {}).get("recovery_actions", [])
+    assert "install_default_registry" in recovery
+    assert "activate_agent_blueprint" in recovery
+    # The deleted legacy planner dispatch must never have been reached.
+    assert spy.forward_calls == 0
+
+

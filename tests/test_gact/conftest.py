@@ -193,6 +193,11 @@ def _live_equals_reload_property(monkeypatch):
     assert not violations, "\n".join(violations)
 
 
+# ``host_agent_executor`` (the #948 S4b turn-executor seam) is defined in the ROOT
+# ``tests/conftest.py`` so every suite that drives a turn with a ``build_app``
+# host fake (test_gact, test_sdk, test_ui) can opt into it by name.
+
+
 def complete_turn(
     client: TestClient,
     sid: str,

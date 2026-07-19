@@ -19,7 +19,9 @@ from fastapi.testclient import TestClient
 
 # #735: run under the xdist-load flake-hunt CI job — this file is the one that
 # flaked on cross-app tool-observer contamination.
-pytestmark = pytest.mark.concurrency
+# #948 S4b: default sessions run the blueprint react ``main``; route it to each
+# test's ``build_app(agent=...)`` host fake.
+pytestmark = [pytest.mark.concurrency, pytest.mark.usefixtures("host_agent_executor")]
 
 
 def _settled_history(

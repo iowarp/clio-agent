@@ -207,16 +207,9 @@ def gact_server(request: pytest.FixtureRequest) -> Generator[GactServer, None, N
     #   - XDG_CONFIG_HOME: points the server at a throwaway tmp config root, so it
     #     can't see the user's installed blueprint -> assignment 404s "agent
     #     blueprint not found" (TRAP 1/5).
-    #   - CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS: switches off the Agent Blueprint
-    #     runtime (app.py _agent_definition_uses_blueprint_runtime), so the
-    #     orchestrator runs as a legacy USER agent (route_source=user_agent) that
-    #     never settles its expert_handoffs -> the turn ends after main's first
-    #     call with no delegation (steps=[], end_turn). THIS is the agent-driven
-    #     routing path the grind exists to exercise.
     #   - CLIO_LM_MODEL: a unit-test default model; the bind PUT sets the real one.
     for _k in (
         "XDG_CONFIG_HOME",
-        "CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS",
         "CLIO_LM_MODEL",
     ):
         env.pop(_k, None)

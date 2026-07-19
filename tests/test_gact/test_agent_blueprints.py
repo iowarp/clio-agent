@@ -2050,7 +2050,6 @@ def test_session_agent_overlay_prompt_provenance_reaches_prompts_and_turn_metada
         )
 
     monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", no_stream)
-    monkeypatch.delenv("CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS", raising=False)
     monkeypatch.setattr("clio_agent.gact.app._run_blueprint_dspy_agent", fake_blueprint_runner)
 
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
@@ -2500,7 +2499,6 @@ def test_active_agent_blueprint_drives_turn_runtime_and_overrides_builtin_ids(
         )
 
     monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", no_stream)
-    monkeypatch.delenv("CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS", raising=False)
     monkeypatch.setattr("clio_agent.gact.app._run_blueprint_dspy_agent", fake_blueprint_runner)
 
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())

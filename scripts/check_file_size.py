@@ -119,7 +119,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # rooted turn has no leasable agent (+9).
     # #948 S4 live-gate fix: +22 for _BlueprintRootDisabled (typed disabled-root
     # failure; lives with its sibling turn exceptions).
-    "src/clio_agent/gact/runtime/globals.py": 962,
+    "src/clio_agent/gact/runtime/globals.py": 977,
     "src/clio_agent/gact/streaming.py": 1024,
     "src/clio_agent/gact/tool_observer.py": 930,
     "src/clio_agent/gact/transcript.py": 986,
@@ -130,7 +130,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # #948 S4 live-gate fix: +27 for the blueprint_root_disabled catch arm (typed
     # error envelope with the root's validation errors; the except-ladder is
     # owned here).
-    "src/clio_agent/gact/turn.py": 855,
+    "src/clio_agent/gact/turn.py": 882,
     # #952 S4 Pass C: -9 (the answer-substitution finalize call + import were
     # removed with the settle layer's degradation ledger).
     "src/clio_agent/gact/turn_finalize.py": 920,

@@ -808,9 +808,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             turn_id=_active_semantic_turn_id(),
             summary=summary or "",
             event_id=event_id,
-            compacted_message_ids=[
-                mid for m in ledger if (mid := _attr(m, "id", ""))
-            ],
+            compacted_message_ids=[mid for m in ledger if (mid := _attr(m, "id", ""))],
         )
         deps.replace_session_messages(app, sid, [compact_message])
         memory_event = {

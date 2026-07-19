@@ -29,11 +29,16 @@ import time
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
 
 from .test_post_messages import FakeClioAgent
+
+# #948 S4b: default sessions run the blueprint react ``main``; route it to each
+# test's ``build_app(agent=...)`` host fake.
+pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 
 class _KeystoneProbeAgent(FakeClioAgent):

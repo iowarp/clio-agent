@@ -381,7 +381,6 @@ from clio_agent.gact.agents.resolution import (  # noqa: E402, F401
     _agent_definition_uses_blueprint_runtime,
     _agent_overlay_patchable_fields,
     _agent_with_capability_refs,
-    _legacy_native_expert_runtime_enabled,
     _merge_agent_def_rows,
     _resolve_dynamic_agent,
     _resolve_runtime_dynamic_agent,

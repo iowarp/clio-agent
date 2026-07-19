@@ -30,6 +30,11 @@ from clio_agent.gact.app import (
 )
 from clio_agent.tools.file_policy import FilePolicyError
 
+# #948 S4b: default sessions run the blueprint react ``main``; route it to each
+# test's ``build_app(agent=...)`` host fake (a ``dspy.Module`` host — e.g. the real
+# ``ClioAgent`` with mocked planner internals — is streamified unchanged).
+pytestmark = pytest.mark.usefixtures("host_agent_executor")
+
 
 @dataclass
 class _Pred:

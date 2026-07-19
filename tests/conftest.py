@@ -211,8 +211,14 @@ def allow_pytest_tmp_path(tmp_path, monkeypatch):
     if "CLIO_LM_MODEL" not in os.environ:
         monkeypatch.setenv("CLIO_LM_MODEL", "ibm/granite-4-h-tiny")
 
+    # #948 S4b: the legacy native-expert runtime (the deleted Tier-1 planner) is
+    # gone, and its ``CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS`` knob is retired, so
+    # a default/main session MUST resolve an Agent Blueprint react main to run.
+    # ``_write_test_default_registry_blueprint`` writes that default registry
+    # blueprint (react ``main`` root + experts) directly on disk below, so leave
+    # the network git bootstrap DISABLED (no clone in unit tests) while still
+    # letting discovery find the pre-written default blueprint.
     monkeypatch.setenv("CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP", "1")
-    monkeypatch.setenv("CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS", "1")
     # Tests use the fast, isolated LocalFS ARC store by default; production
     # defaults to clio-core. The clio-core integration tests override via an
     # explicit backend="cte" arg, so they are unaffected.
@@ -425,6 +431,25 @@ scope: global
 """,
         encoding="utf-8",
     )
+
+
+@pytest.fixture
+def host_agent_executor(monkeypatch):
+    """Make a default session's react ``main`` execute the ``build_app`` host fake.
+
+    Opt-in seam (#948 S4b) for turn-engine tests (test_gact / test_sdk / test_ui)
+    that hand ``build_app`` a fake agent with a canned-``Prediction`` ``forward``
+    and assert the turn produced it. Since the legacy fall-through planner is
+    deleted, a default session now resolves the default-registry blueprint react
+    ``main``; this fixture routes that root's ONE build seam back to the host
+    fake's ``forward`` (see :mod:`tests._harness`). Request it via
+    ``pytestmark = pytest.mark.usefixtures("host_agent_executor")`` at module
+    scope, or per test.
+    """
+
+    from tests._harness import install_host_agent_executor
+
+    install_host_agent_executor(monkeypatch)
 
 
 @pytest.fixture

@@ -7,6 +7,23 @@ TUI/HTTP surface aren't tracked here.
 ## Unreleased
 
 ### Changed
+- **The legacy Tier-1 `ClioAgent` planner pathway is deleted** (#948 S4b). The
+  planner loop (`ClioAgent.forward` / `_run_agent_loop` and its action-planner /
+  answer-synthesizer / chat-tool-loop / ARC-persistence stack) and the turn
+  engine's fall-through dispatch to it are gone; `ClioAgent` is now the runtime
+  HOST only (provider identity, MCP tool fleet, ARC keystone, agent registry).
+  Blueprint react mains are the only mains. This is an internal-engine change;
+  the only wire-facing effect is a new typed `no_resolvable_agent` error (with
+  `recovery_actions: [install_default_registry, activate_agent_blueprint]`) that
+  a default/main session with **no** resolvable Agent Blueprint now returns —
+  replacing the previous silent execution of the legacy planner.
+- **The `CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS` /
+  `agents.enable_legacy_native_experts` knob is retired** (#948 S4b). It gated
+  the deleted legacy native-expert runtime (routing Agent Blueprint experts to
+  the tool/prompt user-agent runners instead of the blueprint runtime); with
+  that runtime gone there is no configuration under which a blueprint agent
+  routes anywhere else, so the flag no longer exists. Setting it now has no
+  effect and it is dropped from `docs/ENVIRONMENT.md` / `.env.example`.
 - **Mains are react agents; the settle/synthesis layer is deleted** (#948 S4 /
   #952). A tier-1 main runs the retained ReAct loop and its `answer` IS the
   user deliverable; it routes by CALLING the spawn-runtime tools

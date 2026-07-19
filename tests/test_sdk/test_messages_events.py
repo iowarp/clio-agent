@@ -28,6 +28,10 @@ from clio_agent.sdk import (
 )
 from tests.test_sdk.conftest import StreamingASGITransport, StubAgent
 
+# #948 S4b: default sessions run the blueprint react ``main``; route it to each
+# test's ``build_app(agent=...)`` host/stub fake.
+pytestmark = pytest.mark.usefixtures("host_agent_executor")
+
 
 def _wait_for_settled_turn(
     client: ClioClient, session_id: str, user_message_id: str, timeout: float = 10.0
