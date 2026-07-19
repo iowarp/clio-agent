@@ -303,6 +303,27 @@ def _workflow_state_from_handoff_rows(
     return state
 
 
+def _produced_turn_workflow_state(
+    pred: Any, handoff_rows: list[dict[str, Any]], *, schema: "WorkflowStateSchema"
+) -> dict[str, Any]:
+    """The COMPLETE typed workflow_state a turn produced, for the assistant message.
+
+    The one carrier a spawned child's completion hook
+    (:func:`clio_agent.gact.turn_spawn._child_workflow_state`) reads back — so it MUST
+    be per-module-kind-agnostic: a ``predict``/``chain_of_thought`` LEAF has no tool
+    loop / handoff rows and carries its state ONLY on the prediction's typed
+    ``workflow_state`` field, while a ``react`` orchestrator additionally accumulates
+    its delegated children's state from the handoff rows. Merges both (empty -> ``{}``).
+    """
+
+    state = _prediction_workflow_state(pred, schema=schema)
+    if handoff_rows:
+        _merge_workflow_state_mapping(
+            state, _workflow_state_from_handoff_rows(handoff_rows, schema=schema), schema=schema
+        )
+    return state
+
+
 def _prediction_workflow_state(result: Any, *, schema: "WorkflowStateSchema") -> dict[str, Any]:
     """Return a prediction's first-class typed ``workflow_state`` as a Mapping.
 

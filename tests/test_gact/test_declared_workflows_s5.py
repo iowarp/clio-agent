@@ -89,6 +89,18 @@ def _errors_for(parent: AgentDef, children: list[AgentDef]) -> list[str]:
     return by_id[parent.id].validation_errors
 
 
+def _wait_terminal(app: Any, task_id: str, timeout: float = 15.0) -> Any:
+    import time as _time
+
+    end = _time.monotonic() + timeout
+    while _time.monotonic() < end:
+        t = app.state.agent_task_registry.get(task_id)
+        if t is not None and t.is_terminal:
+            return t
+        _time.sleep(0.02)
+    return app.state.agent_task_registry.get(task_id)
+
+
 # ===========================================================================
 # Part A — declaration matrix (pure loader validation)
 # ===========================================================================
@@ -279,23 +291,28 @@ class _WorkflowAgent:
         )()
 
 
-def _route_children(monkeypatch, *child_ids: str) -> None:
-    """Make the workflow's child experts resolve to blueprint-runtime react agents.
+def _route_children(monkeypatch, *child_ids: str, kinds: dict[str, str] | None = None) -> None:
+    """Make the workflow's child experts resolve to blueprint-runtime agents.
 
     A spawned child turn resolves its agent via ``_resolve_runtime_dynamic_agent``;
     without this it would be ``not_implemented`` (only ``main``/``default`` are
     built-in executable). The returned AgentDef carries an ``agent_blueprint_id`` so
     it routes through the blueprint runtime, where the ``host_agent_executor`` fixture
-    delegates its forward to the stub host agent (never a real LM)."""
+    delegates its forward to the stub host agent (never a real LM).
+
+    ``kinds`` overrides the per-expert module kind (default ``react``); it lets a test
+    route a specific child as ``chain_of_thought`` to exercise the CoT-leaf
+    workflow_state threading seam (#953)."""
 
     known = set(child_ids)
+    kind_map = dict(kinds or {})
 
     def _resolve(app, agent_id, *, session_id="", workspace_id="", prompt_registry=None):
         if agent_id in known:
             return AgentDef(
                 id=agent_id,
                 title=agent_id,
-                module={"kind": "react"},
+                module={"kind": kind_map.get(agent_id, "react")},
                 source="expert_pack",
                 metadata={"agent_blueprint_id": "wf_bp"},
             )
@@ -304,9 +321,11 @@ def _route_children(monkeypatch, *child_ids: str) -> None:
     monkeypatch.setattr("clio_agent.gact.turn_forward._resolve_runtime_dynamic_agent", _resolve)
 
 
-def _run_workflow_app(tmp_path: Path, agent: _WorkflowAgent, monkeypatch, *child_ids: str):
+def _run_workflow_app(
+    tmp_path: Path, agent: Any, monkeypatch, *child_ids: str, kinds: dict[str, str] | None = None
+):
     _declare(monkeypatch, *child_ids)
-    _route_children(monkeypatch, *child_ids)
+    _route_children(monkeypatch, *child_ids, kinds=kinds)
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     agent.app = app
     return app
@@ -516,6 +535,141 @@ def test_gate_is_load_bearing_sabotage_lock(tmp_path: Path, monkeypatch) -> None
         parent2 = client.post("/v1/sessions", json={"title": "p2"}).json()["id"]
         completed = run_declared_workflow(app, _wf_def(steps), parent2, requesting_expert_id="main")
         assert completed["status"] == "completed", completed
+
+
+# ===========================================================================
+# Part C2 — typed workflow_state threads back from a child's Prediction FIELD.
+#
+# The live-gate miss (#953): a chain_of_thought LEAF child declares
+# ``structured_outputs.workflow_state`` and returns it as its Prediction's typed
+# OUTPUT field (a CoT/predict leaf has NO tool loop / handoff rows — the field is its
+# ONLY carrier). turn_finalize must stamp that field onto the assistant message
+# metadata, else turn_spawn._child_workflow_state reads ``metadata["workflow_state"]``
+# and gets nothing → task.result["workflow_state"] is empty and the parent's
+# wait/merge (and any declared workflow gating on it) sees no state.
+#
+# Unlike ``_WorkflowAgent`` (which WRITES the child SESSION metadata directly and so
+# bypasses the finalize stamping seam entirely — which is why the runner tests above
+# stayed green even with the bug), this agent returns the state ONLY as the Prediction
+# field, exercising the real blueprint-forward carrier. RED on HEAD.
+# ===========================================================================
+
+
+class _TypedFieldAgent:
+    """Stub host agent whose forward returns a real ``dspy.Prediction`` carrying a
+    per-expert typed ``workflow_state`` FIELD (the way a blueprint CoT/predict/react
+    leaf forward returns it) — and writes NOTHING to the session metadata. Records the
+    question each child received to prove state threading through the substrate."""
+
+    def __init__(self, states: dict[str, dict]) -> None:
+        self.states = states
+        self.app: Any = None
+        self.seen: list[tuple[str, str]] = []
+        self._lock = threading.Lock()
+
+    def forward(self, question: str, session_id: str, **_kw: Any) -> Any:
+        import dspy  # noqa: PLC0415
+
+        sess = self.app.state.sessions.get(session_id) if self.app is not None else None
+        raw_agent = getattr(sess, "agent", None)
+        expert = (
+            raw_agent.get("id") if isinstance(raw_agent, dict) else getattr(raw_agent, "id", "")
+        ) or ""
+        with self._lock:
+            self.seen.append((expert, question))
+        return dspy.Prediction(
+            answer=f"{expert} done",
+            selected_expert="",
+            routing_rationale="",
+            workflow_state=self.states.get(expert, {}),
+        )
+
+
+@pytest.mark.parametrize("kind", ["chain_of_thought", "react"])
+def test_spawned_child_threads_prediction_workflow_state_field(
+    tmp_path: Path, monkeypatch, kind: str
+) -> None:
+    """A spawned LEAF child that returns its typed ``workflow_state`` ONLY as its
+    Prediction field carries that state back on ``task.result["workflow_state"]`` AND
+    on its assistant-message metadata — for BOTH chain_of_thought and react.
+
+    RED on HEAD: finalize dropped the Prediction field, so
+    ``task.result["workflow_state"]`` was ``{}`` and ``metadata`` had no
+    ``workflow_state`` key. The react parametrization proves the root seam is
+    per-kind-agnostic (a react LEAF returning only the field shared the same latent
+    miss); both are green after the fix."""
+
+    from clio_agent.gact.turn_spawn import TaskSpec, spawn_child_turn_threadsafe
+
+    wf = {"acq": {"status": "done", "src": kind}}
+    agent = _TypedFieldAgent(states={kind: wf})
+    app = _run_workflow_app(tmp_path, agent, monkeypatch, kind, kinds={kind: kind})
+    with TestClient(app) as client:
+        app.state.max_concurrent_agent_tasks = 3
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        spawned = spawn_child_turn_threadsafe(
+            app,
+            TaskSpec(
+                child_expert_id=kind,
+                task_text="do it",
+                parent_session_id=parent,
+                requesting_expert_id="main",
+            ),
+        )
+        settled = _wait_terminal(app, spawned.task_id)
+
+    assert settled.status == "completed", settled
+    # (a) The completion hook threaded the child's typed field onto the task result.
+    assert (settled.result or {}).get("workflow_state") == wf
+    # (b) ...and the same state is durable on the child's assistant message metadata.
+    child_msgs = app.state.messages.get(spawned.child_session_id, []) or []
+    finals = [m for m in child_msgs if getattr(m, "role", "") == "assistant"]
+    meta = (getattr(finals[-1], "metadata", {}) or {}) if finals else {}
+    assert meta.get("workflow_state") == wf, meta
+
+
+def test_workflow_gates_step_b_on_cot_step_a_prediction_field(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A declared workflow whose step-a is a chain_of_thought child producing its
+    ``workflow_state`` ONLY as its Prediction field, and whose step-b gates on that
+    field (``when_state: {acq.status: {exists: True}}``): the CoT field must thread
+    through the substrate into the runner's accumulated state so step-b's gate is
+    satisfied and the workflow COMPLETES end-to-end.
+
+    RED on HEAD: the CoT step-a's field was dropped at finalize → the accumulated
+    state stayed empty → step-b's ``exists`` gate was UNSATISFIED → the runner stalled
+    at s_b (``STALL_PREDICATE_UNSATISFIED``) instead of completing (the live-gate miss)."""
+
+    steps = [
+        {"id": "s_a", "child": "a", "task": "do a"},
+        {
+            "id": "s_b",
+            "child": "b",
+            "task": "do b",
+            "when_state": {"acq.status": {"exists": True}},
+        },
+    ]
+    agent = _TypedFieldAgent(
+        states={"a": {"acq": {"status": "done", "src": "a"}}, "b": {"impact": {"status": "ranked"}}}
+    )
+    # step-a routes as chain_of_thought (the producer under test); step-b as react.
+    app = _run_workflow_app(tmp_path, agent, monkeypatch, "a", "b", kinds={"a": "chain_of_thought"})
+    with TestClient(app) as client:
+        app.state.max_concurrent_agent_tasks = 3
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        record = run_declared_workflow(
+            app, _wf_def(steps), parent, requesting_expert_id="main", request="LA fires"
+        )
+
+    assert record["status"] == "completed", record
+    assert [s["step_id"] for s in record["steps"]] == ["s_a", "s_b"]
+    # s_a's CoT Prediction field threaded into the accumulated state (the gate saw it).
+    assert record["workflow_state"]["acq"] == {"status": "done", "src": "a"}
+    assert record["workflow_state"]["impact"] == {"status": "ranked"}
+    # b's task template SAW a's accumulated state (injected by the substrate).
+    seen = dict(agent.seen)
+    assert "acq" in seen["b"] and "done" in seen["b"], seen["b"]
 
 
 # ===========================================================================

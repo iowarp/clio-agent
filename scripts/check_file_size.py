@@ -136,7 +136,13 @@ RATCHET_BASELINE: dict[str, int] = {
     # removed with the settle layer's degradation ledger).
     # #953 [5]: +3 to surface the variant winner stamp (variant_selection) on the
     # assistant-message metadata (additive observability contract).
-    "src/clio_agent/gact/turn_finalize.py": 923,
+    # #953 (workflow_state finalize seam): +11 to stamp the turn's produced typed
+    # workflow_state onto the assistant message metadata (the root fix for a live-gate
+    # miss where a chain_of_thought LEAF child's Prediction field never reached its
+    # AgentTask result). The substantive merge lives in the owner module
+    # (delegation._produced_turn_workflow_state); only the trivial import + stamp call
+    # land here.
+    "src/clio_agent/gact/turn_finalize.py": 934,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (baseline 1143 -> actual); ratchet back below the pre-#947 count with the
     # mcp_app_* owner-module split (see the #947 DEBT block on mcp_apps.py).
