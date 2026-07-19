@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from fastapi.testclient import TestClient
 from clio_agent import conf
 from clio_agent.agent import ClioAgent
 from clio_agent.gact import context as ctx
+from clio_agent.gact.agent_blueprint_refresh import _default_blueprint_root_disabled
 from clio_agent.gact.agent_blueprints import (
     DEFAULT_AGENT_BLUEPRINT_ID,
     DEFAULT_REGISTRY_COMMIT,
@@ -23,6 +25,7 @@ from clio_agent.gact.agent_blueprints import (
     default_registry_metadata,
     default_registry_url,
     discover_agent_blueprints,
+    ensure_default_registry_bootstrap,
     load_agent_blueprint_path,
     load_agent_blueprints,
     validate_agent_blueprint_path,
@@ -291,6 +294,276 @@ def test_default_registry_url_blank_configured_value_falls_back_with_warning(
         )
     finally:
         conf.reload()
+
+
+# --------------------------------------------------------------------------- #
+# #948 S4b: upgrade-path refresh for a stale (pre-migration) default install.   #
+# --------------------------------------------------------------------------- #
+
+_STALE_MAIN_MD = """---
+id: main
+title: Main Agent
+description: Pre-migration Tier-1 orchestrator.
+tier: 1
+module:
+  kind: chain_of_thought
+prompt_id: clio.main.planner
+---
+Pre-migration chain_of_thought orchestrator (cannot reach children).
+"""
+
+_STALE_CHILD_MD = """---
+id: data
+title: Data Expert
+description: A declared child the chain_of_thought root cannot reach.
+parent_id: main
+tier: 2
+module:
+  kind: react
+prompt_id: clio.expert.data
+---
+Data child.
+"""
+
+_REACT_MAIN_MD = """---
+id: main
+title: Main Agent
+description: Migrated Tier-1 react orchestrator.
+tier: 1
+module:
+  kind: react
+prompt_id: clio.main.planner
+---
+Migrated react orchestrator (reaches children via spawn tools).
+"""
+
+_REACT_CHILD_MD = """---
+id: data
+title: Data Expert
+description: A declared child reachable from the react root.
+parent_id: main
+tier: 2
+module:
+  kind: react
+prompt_id: clio.expert.data
+---
+Data child.
+"""
+
+_DEFAULT_AGENT_MD = f"""---
+id: {DEFAULT_AGENT_BLUEPRINT_ID}
+version: 0.1.0
+title: EarthScope GNSS Region
+description: Default registry blueprint.
+root_expert: main
+---
+Default registry Agent Blueprint.
+"""
+
+
+def _write_blueprint_tree(root: Path, *, main_md: str, child_md: str, commit: str) -> None:
+    """Write a default-blueprint install tree (AGENT.md + experts + install meta)."""
+
+    (root / "experts").mkdir(parents=True, exist_ok=True)
+    root.joinpath("AGENT.md").write_text(_DEFAULT_AGENT_MD, encoding="utf-8")
+    root.joinpath("experts", "main.md").write_text(main_md, encoding="utf-8")
+    root.joinpath("experts", "data.md").write_text(child_md, encoding="utf-8")
+    root.joinpath(".clio-install.md").write_text(
+        "\n".join(
+            [
+                "# CLIO Agent Blueprint install metadata",
+                "",
+                f"source: {DEFAULT_REGISTRY_URL}",
+                "source_kind: git",
+                f"ref: {DEFAULT_REGISTRY_REF}",
+                f"commit: {commit}",
+                f"pinned_commit: {DEFAULT_REGISTRY_COMMIT}",
+                "scope: global",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def _make_migrated_registry_repo(path: Path) -> str:
+    """Build a local git registry (branch ``main``) carrying the migrated packs.
+
+    Returns a ``file://`` URL suitable for ``gact.blueprint_registry.url`` so the
+    bootstrap refresh exercises the real clone path (not a direct-path copy).
+    """
+
+    path.mkdir(parents=True, exist_ok=True)
+    _write_blueprint_tree(
+        path, main_md=_REACT_MAIN_MD, child_md=_REACT_CHILD_MD, commit="migrated-head"
+    )
+    # The install-metadata file is a per-box install artifact, not registry
+    # content; drop it from the source repo so a clone carries only the packs.
+    path.joinpath(".clio-install.md").unlink()
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "clio-test",
+        "GIT_AUTHOR_EMAIL": "clio-test@example.com",
+        "GIT_COMMITTER_NAME": "clio-test",
+        "GIT_COMMITTER_EMAIL": "clio-test@example.com",
+    }
+    subprocess.run(
+        ["git", "init", "-b", "main", str(path)], check=True, env=env, capture_output=True
+    )
+    subprocess.run(["git", "-C", str(path), "add", "-A"], check=True, env=env, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(path), "commit", "-m", "migrated react packs"],
+        check=True,
+        env=env,
+        capture_output=True,
+    )
+    return path.as_uri()
+
+
+def _prepare_default_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    registry_url: str = "",
+) -> tuple[Path, Path]:
+    """Point the per-user store at a fresh tmp dir with bootstrap ENABLED.
+
+    Returns ``(install_root_for_default_blueprint, home)``. The default blueprint
+    install dir is left empty for callers to populate.
+    """
+
+    store = tmp_path / "store"
+    monkeypatch.delenv("CLIO_USER_DIR", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(store))
+    # #948 S4b: the refresh path must actually run, so re-enable the bootstrap
+    # (conftest disables it globally for unit isolation).
+    monkeypatch.delenv("CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP", raising=False)
+    config_dir = store / "clio-agent"
+    if registry_url:
+        # Config-over-env (the config-over-env principle): drive the registry URL
+        # through the config FILE, not CLIO_BLUEPRINT_REGISTRY_URL.
+        config_dir.mkdir(parents=True, exist_ok=True)
+        config_dir.joinpath("config.yaml").write_text(
+            f"gact:\n  blueprint_registry:\n    url: {registry_url}\n",
+            encoding="utf-8",
+        )
+    conf.reload()
+    install_root = config_dir / "agent-blueprints" / DEFAULT_AGENT_BLUEPRINT_ID
+    return install_root, tmp_path / "home"
+
+
+def test_stale_default_install_is_refreshed_from_migrated_registry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """(a) A pre-migration chain_of_thought root refreshes to a react root."""
+
+    registry_url = _make_migrated_registry_repo(tmp_path / "registry")
+    install_root, home = _prepare_default_store(tmp_path, monkeypatch, registry_url=registry_url)
+    _write_blueprint_tree(
+        install_root, main_md=_STALE_MAIN_MD, child_md=_STALE_CHILD_MD, commit="stale-head"
+    )
+    try:
+        # Precondition: the installed root is disabled by validation (dead end).
+        disabled_before, errors_before = _default_blueprint_root_disabled(install_root)
+        assert disabled_before, "stale chain_of_thought root must start disabled"
+        assert any("cannot reach them" in err for err in errors_before)
+
+        with caplog.at_level("WARNING", logger="clio_agent.gact.agent_blueprints"):
+            diagnostic = ensure_default_registry_bootstrap(home=home, cwd=tmp_path / "cwd")
+
+        # The refresh repaired the box: no diagnostic, root now enabled + react.
+        assert diagnostic == ""
+        disabled_after, _ = _default_blueprint_root_disabled(install_root)
+        assert not disabled_after, "refreshed react root must validate enabled"
+        validation = validate_agent_blueprint_path(install_root, scope="global")
+        main_row = next(row for row in validation["agents"] if row["id"] == "main")
+        assert main_row["enabled"] is True
+        assert main_row["module"]["kind"] == "react"
+        # Sabotage guard: the on-disk root file was actually replaced.
+        assert "chain_of_thought" not in install_root.joinpath("experts", "main.md").read_text(
+            encoding="utf-8"
+        )
+        # Structured migration reason reached the log with old + new commit.
+        messages = [rec.getMessage() for rec in caplog.records]
+        assert any(
+            "default_registry_refreshed reason=root_disabled_stale_install" in msg
+            and "old_commit=stale-head" in msg
+            and "new_commit=" in msg
+            for msg in messages
+        ), messages
+    finally:
+        conf.reload()
+
+
+def test_stale_default_install_kept_when_refresh_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """(b) An unreachable registry keeps the stale install (never deletes it)."""
+
+    missing = (tmp_path / "no-such-registry").as_uri()
+    install_root, home = _prepare_default_store(tmp_path, monkeypatch, registry_url=missing)
+    _write_blueprint_tree(
+        install_root, main_md=_STALE_MAIN_MD, child_md=_STALE_CHILD_MD, commit="stale-head"
+    )
+    original_agent_md = install_root.joinpath("AGENT.md").read_bytes()
+    original_main_md = install_root.joinpath("experts", "main.md").read_bytes()
+    try:
+        with caplog.at_level("WARNING", logger="clio_agent.gact.agent_blueprints"):
+            diagnostic = ensure_default_registry_bootstrap(home=home, cwd=tmp_path / "cwd")
+
+        # Failure is surfaced, not swallowed.
+        assert "stale install kept" in diagnostic
+        assert any(
+            "default_registry_refresh_failed reason=root_disabled_stale_install" in rec.getMessage()
+            for rec in caplog.records
+        )
+        # The only copy was NOT deleted and NOT mutated.
+        assert install_root.joinpath("AGENT.md").read_bytes() == original_agent_md
+        assert install_root.joinpath("experts", "main.md").read_bytes() == original_main_md
+        disabled_after, _ = _default_blueprint_root_disabled(install_root)
+        assert disabled_after, "stale install must remain (still disabled) after a failed refresh"
+    finally:
+        conf.reload()
+
+
+def test_valid_default_install_is_not_refreshed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(c) A valid react install triggers no refresh (no churn)."""
+
+    install_root, home = _prepare_default_store(tmp_path, monkeypatch)
+    _write_blueprint_tree(
+        install_root, main_md=_REACT_MAIN_MD, child_md=_REACT_CHILD_MD, commit="valid-head"
+    )
+    install_meta = install_root / ".clio-install.md"
+    before_mtime = install_meta.stat().st_mtime_ns
+    before_bytes = install_meta.read_bytes()
+
+    calls: list[str] = []
+
+    def _spy_install(*_args: object, **_kwargs: object) -> dict[str, Any]:
+        calls.append("install")
+        raise AssertionError("install_agent_blueprint must not run for a valid install")
+
+    # The refresh path calls install through the owner module's binding, so spy
+    # there (a valid install must trigger neither a refresh nor a fresh install).
+    monkeypatch.setattr(
+        "clio_agent.gact.agent_blueprint_refresh.install_agent_blueprint", _spy_install
+    )
+    try:
+        diagnostic = ensure_default_registry_bootstrap(home=home, cwd=tmp_path / "cwd")
+    finally:
+        conf.reload()
+
+    assert diagnostic == ""
+    assert calls == [], "no refresh (and no fresh install) may run for a valid install"
+    assert install_meta.stat().st_mtime_ns == before_mtime
+    assert install_meta.read_bytes() == before_bytes
 
 
 def test_workflow_state_normalizes_unicode_hyphens_in_path_fields() -> None:

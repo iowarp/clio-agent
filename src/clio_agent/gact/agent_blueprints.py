@@ -230,20 +230,15 @@ def ensure_default_registry_bootstrap(
     pinned = DEFAULT_REGISTRY_COMMIT.strip()
     root = _install_root(home=home, cwd=cwd, scope="global") / DEFAULT_AGENT_BLUEPRINT_ID
     if (root / _BLUEPRINT_ROOT_NAME).exists():
-        # HEAD-following mode (no pinned commit): any installed snapshot is
-        # acceptable; we track the registry ref rather than a frozen commit.
-        if not pinned:
-            return ""
-        metadata = read_install_metadata(root)
-        installed_commit = str(metadata.get("commit") or "").strip()
-        if installed_commit == pinned:
-            return ""
-        if installed_commit:
-            return (
-                f"default registry pin mismatch for {DEFAULT_AGENT_BLUEPRINT_ID}: "
-                f"expected {pinned}, found {installed_commit}"
-            )
-        return f"default registry install metadata missing pinned commit for {DEFAULT_AGENT_BLUEPRINT_ID}"
+        # #948 S4b upgrade path: an installed-but-invalid default blueprint (a
+        # pre-migration chain_of_thought/predict root disabled by validation) is a
+        # dead end that never self-heals. The evaluate/refresh decision lives in
+        # its owner module (no accretion here).
+        from clio_agent.gact.agent_blueprint_refresh import (  # noqa: PLC0415
+            evaluate_installed_default_registry,
+        )
+
+        return evaluate_installed_default_registry(home=home, cwd=cwd, root=root, pinned=pinned)
     try:
         install_agent_blueprint(
             source=default_registry_install_source(),
