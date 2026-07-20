@@ -609,14 +609,22 @@ def test_slow_but_active_child_is_not_stalled(tmp_path: Path, monkeypatch) -> No
     principle) and the workflow COMPLETES."""
 
     steps = [{"id": "s_a", "child": "a", "task": "do a"}]
-    # 15 ticks x 0.1s ≈ 1.5s of steady activity vs a 0.4s inactivity window.
-    agent = _ActiveChildAgent(states={"a": {"acq": {"status": "done"}}}, ticks=15, interval_s=0.1)
+    # 16 ticks x 0.25s = 4s of steady activity vs a 2.0s inactivity window: activity
+    # dwarfs the window (progress-based, not duration-based). The window in turn dwarfs
+    # a WARM child's dispatch latency — and the untimed warm-up run below absorbs the
+    # cold-boot cost of the first turn in a fresh app (imports/blueprint build exceeded
+    # ANY honest window on a loaded Windows box; the product default is 120s).
+    agent = _ActiveChildAgent(states={"a": {"acq": {"status": "done"}}}, ticks=16, interval_s=0.25)
     app = _run_workflow_app(tmp_path, agent, monkeypatch, "a")
     with TestClient(app) as client:
         app.state.max_concurrent_agent_tasks = 3
+        warm_parent = client.post("/v1/sessions", json={"title": "warm"}).json()["id"]
+        run_declared_workflow(
+            app, _wf_def(steps), warm_parent, requesting_expert_id="main", inactivity_window_s=30.0
+        )
         parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
         record = run_declared_workflow(
-            app, _wf_def(steps), parent, requesting_expert_id="main", inactivity_window_s=0.4
+            app, _wf_def(steps), parent, requesting_expert_id="main", inactivity_window_s=2.0
         )
 
     assert record["status"] == "completed", record
