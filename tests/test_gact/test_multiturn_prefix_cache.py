@@ -207,6 +207,14 @@ def test_orchestrator_briefing_byte_stable(monkeypatch: pytest.MonkeyPatch) -> N
     second = _runtime_dynamic_agent_children_context(app, PARENT, session_id="sess-multiturn")
     assert first == second
     assert first  # non-empty: the parent HAS children, so a briefing was rendered
+    # Briefing-content lock (#1000): the routing paragraph teaches all three postures —
+    # wait (collect), check (collect without blocking), and observe (read progress
+    # WITHOUT consuming, with cursor + pattern-return for intermediate evidence).
+    assert "wait_agent_tasks(" in first
+    assert "check_agent_tasks(" in first
+    assert "observe_agent_tasks(task_ids, cursor=" in first
+    assert "without consuming it" in first
+    assert "pattern" in first and "next_cursor" in first
 
 
 def test_orchestrator_briefing_child_order_is_deterministic(

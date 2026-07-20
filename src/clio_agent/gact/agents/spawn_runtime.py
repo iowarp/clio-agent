@@ -11,7 +11,12 @@ field consumed by a settle loop, it CALLS these tools:
   Events and return their results (spawn + wait COMPOSE the old synchronous
   delegate; the child runs on the dedicated pool so the waiting parent thread can
   never starve it).
-* ``check_agent_tasks()`` — the parent's spawned tasks + their status.
+* ``check_agent_tasks()`` — the parent's spawned tasks + their status (CONSUMES a
+  finished child: collect-and-close).
+* ``observe_agent_tasks(task_ids, cursor=...)`` — the OBSERVE posture (#1000): read a
+  child's event stream incrementally from a resumable cursor, with optional regex
+  pattern-return, WITHOUT consuming it (the read-only sibling of check; owner module
+  ``observe_runtime``). Acts on intermediate evidence while the child keeps running.
 * ``spawn_agents_parallel(spawns)`` — fan out several children at once (replaces
   the deleted inline fan-out tool).
 
@@ -392,6 +397,7 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
 
     import dspy  # noqa: PLC0415
 
+    from clio_agent.gact.agents.observe_runtime import build_observe_tool  # noqa: PLC0415
     from clio_agent.gact.agents.resolution import _runtime_declared_child_ids  # noqa: PLC0415
     from clio_agent.gact.turn_spawn import (  # noqa: PLC0415
         SpawnError,
@@ -701,6 +707,9 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
                 },
             },
         ),
+        # OBSERVE posture (#1000): the read-only sibling of check_agent_tasks, built in
+        # its owner module (observe_runtime) so this file stays under the size ratchet.
+        build_observe_tool(),
         dspy.Tool(
             func=spawn_agents_parallel,
             name="spawn_agents_parallel",

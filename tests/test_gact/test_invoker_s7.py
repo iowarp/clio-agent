@@ -626,11 +626,19 @@ def test_task_event_vocabulary_and_projection(tmp_path: Path, monkeypatch) -> No
         parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
         handle = invoker.invoke(_spec(parent))
         _wait_terminal(app, handle.task_id)
-        completed = [
-            e
-            for e in app.state.bus._history.get(handle.child_session_id, [])
-            if e.type == "agent.task.completed"
-        ]
+        # Terminal STATUS lands one step before the completion hook publishes the
+        # terminal bus event — poll the bus rather than racing it (the _wait_bus
+        # pattern; a bounded wait still fails if the event is truly absent).
+        deadline = time.monotonic() + 15.0
+        completed: list = []
+        while time.monotonic() < deadline and not completed:
+            completed = [
+                e
+                for e in app.state.bus._history.get(handle.child_session_id, [])
+                if e.type == "agent.task.completed"
+            ]
+            if not completed:
+                time.sleep(0.05)
         assert completed
         ev = TaskEvent.from_bus_event(completed[0])
         assert ev.event_type == "agent.task.completed"
