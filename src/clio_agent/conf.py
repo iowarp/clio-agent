@@ -243,6 +243,9 @@ class ConfigStore:
         self._lock = threading.Lock()
         self._data: dict[str, Any] | None = None
         self._defaults: dict[str, Any] | None = None
+        # Path-class selection is os.name-dynamic on 3.12 — snapshot outside
+        # any monkeypatch window (see _load).
+        self._cwd_snapshot: Path = Path.cwd()
 
     def _env_map(self) -> Mapping[str, str]:
         return self._env if self._env is not None else os.environ
@@ -250,7 +253,12 @@ class ConfigStore:
     def _load(self) -> dict[str, Any]:
         from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
 
-        cwd = self._cwd or Path.cwd()
+        # The cwd snapshot is taken at reload()/construction time, NEVER here:
+        # this lazy load can run inside a test's os.name monkeypatch window, and
+        # Python 3.12's Path() selects WindowsPath/PosixPath by os.name AT CALL
+        # TIME — Path.cwd() under a patched os.name raises NotImplementedError
+        # on the other OS. reload() and __init__ always run unpatched.
+        cwd = self._cwd or self._cwd_snapshot
         env = self._env_map()
         user: dict[str, Any] = {}
         try:
@@ -292,6 +300,9 @@ class ConfigStore:
         with self._lock:
             self._data = None
             self._defaults = None
+            # Re-snapshot the workspace root: reload() runs unpatched (e.g. the
+            # per-test fixture after monkeypatch.chdir), unlike the lazy _load.
+            self._cwd_snapshot = Path.cwd()
 
     def file_value(self, key: str) -> Any:
         """Return the dotted-path value from the file layer, or ``_UNSET``."""
