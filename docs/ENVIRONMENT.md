@@ -20,6 +20,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARC_CLIO_CORE_DAEMON_RSS_WARN` | `arc.clio_core.daemon_rss_warn_bytes` | int | `1073741824` | `src/clio_agent/arc/clio_core_daemon.py` |
 | `CLIO_ARC_CLIO_CORE_LIVENESS_TTL_S` | `arc.clio_core.liveness_ttl_s` | float | `3.0` | `src/clio_agent/arc/clio_core_liveness.py` |
 | `CLIO_ARC_CTE_DIR` | `arc.cte.dir` | str | _(unset)_ | `src/clio_agent/arc/clio_core_config.py` |
+| `CLIO_ARC_CTE_DISK_WARN_FRACTION` | `arc.cte.disk_warn_fraction` | float | `0.5` | `src/clio_agent/arc/clio_core_config.py` |
 | `CLIO_ARC_CTE_FILE_CAPACITY` | `arc.cte.file_capacity` | str | `50GB` | `src/clio_agent/arc/clio_core_config.py` |
 | `CLIO_ARC_CTE_RAM_CAPACITY` | `arc.cte.ram_capacity` | str | `1GB` | `src/clio_agent/arc/clio_core_config.py` |
 | `CLIO_ARC_EVENTS_CHUNK_SEGMENTS` | `arc.events_chunk_segments` | int | `512` | `src/clio_agent/arc/memory.py` |
@@ -99,6 +100,10 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_MAX_CONCURRENT_AGENT_TASKS` | `agent_tasks.max_concurrent` | int | `3` | `src/clio_agent/gact/turn_spawn.py` |
 | `CLIO_MAX_FILE_SIZE_BYTES` | `tools.file_policy.max_file_size_bytes` | str | `1073741824` | `src/clio_agent/tools/file_policy.py` |
 | `CLIO_MAX_LM_CALL_S` | `limits.lm_call_s` | float | `1800.0` | `src/clio_agent/runtime/lm_activity.py` |
+| `CLIO_MCP_CACHE_MAX_AGE_DAYS` | `tools.mcp_cache.max_age_days` | float | `14.0` | `src/clio_agent/tools/mcp_cache.py` |
+| `CLIO_MCP_CACHE_MAX_BYTES` | `tools.mcp_cache.max_bytes` | int | `2147483648` | `src/clio_agent/tools/mcp_cache.py` |
+| `CLIO_MCP_CACHE_TEMP_MAX_AGE_DAYS` | `tools.mcp_cache.temp_max_age_days` | float | `3.0` | `src/clio_agent/runtime/disk_gc.py` |
+| `CLIO_MCP_CACHE_TEMP_ROOTS` | `tools.mcp_cache.temp_roots` | str | _(unset)_ | `src/clio_agent/runtime/disk_gc.py` |
 | `CLIO_MCP_LISTING_TTL_H` | `tools.mcp.listing_ttl_h` | float | `24.0` | `src/clio_agent/tools/listing_cache.py` |
 | `CLIO_MCP_SETUP_TIMEOUT_S` | `tools.mcp.setup_timeout_s` | float | `10.0` | `src/clio_agent/tools/execution.py` |
 | `CLIO_MCP_SPAWN_DIET` | `tools.mcp.spawn_diet` | bool | `true` | `src/clio_agent/tools/spawn_diet.py` |
@@ -140,6 +145,7 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_ARGONNE_TOKEN` | secret | `src/clio_agent/gact/routes/providers.py`, `src/clio_agent/providers/credentials.py` |
 | `CLIO_CRED_<PROVIDER>_<ACCOUNT>` | secret | `src/clio_agent/providers/credentials.py` |
 | `CLIO_ENV_FILE` | bootstrap | `src/clio_agent/config.py` |
+| `CLIO_KIT_CACHE_DIR` | unmigrated | `src/clio_agent/runtime/disk_gc.py` |
 | `CLIO_LM_API_KEY` | secret | `src/clio_agent/config.py`, `src/clio_agent/gact/routes/providers.py`, `src/clio_agent/runtime/status.py` |
 | `CLIO_RUNTIME_STATE_DIR` | unmigrated | `src/clio_agent/arc/clio_core_config.py` |
 | `CLIO_USER_DIR` | bootstrap | `src/clio_agent/paths.py` |

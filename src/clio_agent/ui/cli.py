@@ -65,6 +65,7 @@ from clio_agent.sdk import (
     PermissionRequested,
     SessionStatusChanged,
 )
+from clio_agent.ui.doctor import render_doctor_report, run_doctor_gc
 
 # ============================================================================
 # CLI CLASS
@@ -921,43 +922,6 @@ def render_health(console: Console, health: Health) -> None:
     console.print(table)
 
 
-def render_doctor_report(console: Console, report: Any) -> None:
-    """Render an in-process runtime doctor report (``collect_runtime_status``).
-
-    Reads :class:`~clio_agent.runtime.status.IntegrationStatus.state`; used by
-    the standalone ``doctor`` subcommand, which must run without a server.
-    """
-    status_styles = {
-        "ready": "green",
-        "degraded": "yellow",
-        "unavailable": "red",
-        "misconfigured": "red",
-        "skipped": "cyan",
-    }
-    title = f"CLIO Runtime Doctor ({report.overall_status})"
-    table = Table(title=title, show_header=True)
-    table.add_column("Integration", style="cyan")
-    table.add_column("Status")
-    table.add_column("Summary")
-    table.add_column("Config Source")
-    table.add_column("Endpoint")
-    table.add_column("Next Action")
-
-    for item in report.integrations:
-        state = item.state.value
-        style = status_styles.get(state, "white")
-        table.add_row(
-            item.name,
-            f"[{style}]{state}[/{style}]",
-            escape(item.summary),
-            escape(item.config_source),
-            escape(item.endpoint or ""),
-            escape(item.next_action),
-        )
-
-    console.print(table)
-
-
 def run_doctor(json_output: bool = False) -> int:
     """Run the non-interactive doctor command IN-PROCESS.
 
@@ -1096,6 +1060,19 @@ def main() -> None:
     parser.add_argument(
         "--json", action="store_true", help="Output results as JSON (use with --query)"
     )
+    parser.add_argument(
+        "--gc",
+        action="store_true",
+        help=(
+            "With 'doctor': run disk garbage collection (#1001) — prune the clio-owned "
+            "caches. REFUSES if a clio server/daemon/MCP process is alive."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="With 'doctor --gc': show the reclamation plan without deleting anything.",
+    )
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Server host")
     parser.add_argument("--port", type=int, default=8100, help="Server port")
     parser.add_argument(
@@ -1114,6 +1091,8 @@ def main() -> None:
     trace.configure()
 
     if args.command == "doctor":
+        if args.gc:
+            sys.exit(run_doctor_gc(dry_run=args.dry_run, json_output=args.json))
         sys.exit(run_doctor(json_output=args.json))
 
     # Serve mode: run the GACT server in the foreground on this process,
