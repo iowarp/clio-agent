@@ -175,9 +175,15 @@ def _deep_merge(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[st
     return out
 
 
+# Snapshot at IMPORT time: on Python 3.12 ``Path()`` selects WindowsPath vs
+# PosixPath by ``os.name`` AT CALL TIME, and this path is reached from the LAZY
+# defaults load, which can run inside a test's ``os.name`` monkeypatch window.
+_PACKAGED_DEFAULTS_PATH: Path = Path(__file__).with_name(_DEFAULTS_FILENAME)
+
+
 def _packaged_defaults_path() -> Path:
     """Return the path to the wheel-shipped ``config.defaults.yaml``."""
-    return Path(__file__).with_name(_DEFAULTS_FILENAME)
+    return _PACKAGED_DEFAULTS_PATH
 
 
 def _read_flat_defaults(path: Path) -> dict[str, Any]:
@@ -246,12 +252,37 @@ class ConfigStore:
         # Path-class selection is os.name-dynamic on 3.12 — snapshot outside
         # any monkeypatch window (see _load).
         self._cwd_snapshot: Path = Path.cwd()
+        # Same os.name-dynamic hazard as cwd: snapshot home outside any
+        # monkeypatch window; None = no resolvable home (scrubbed envs).
+        try:
+            self._home_snapshot: Path | None = Path.home()
+        except RuntimeError:
+            self._home_snapshot = None
+        self._user_dir_snapshot: Path | None = self._compute_user_dir()
 
     def _env_map(self) -> Mapping[str, str]:
         return self._env if self._env is not None else os.environ
 
-    def _load(self) -> dict[str, Any]:
+    def _compute_user_dir(self) -> Path | None:
+        """Resolve the per-user config dir NOW (construction/reload time).
+
+        ``paths.user_config_dir_for`` constructs ``Path`` objects, whose class is
+        selected by ``os.name`` at call time on Python 3.12 — so this must never
+        run inside the lazy ``_load`` (a test's os.name monkeypatch window).
+        ``None`` = no resolvable home (scrubbed envs); the user layer is skipped
+        with a logged reason at load.
+        """
         from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
+
+        home = self._home or self._home_snapshot
+        if home is None:
+            return None
+        try:
+            return paths.user_config_dir_for(home, self._env_map())
+        except RuntimeError:
+            return None
+
+    def _load(self) -> dict[str, Any]:
 
         # The cwd snapshot is taken at reload()/construction time, NEVER here:
         # this lazy load can run inside a test's os.name monkeypatch window, and
@@ -259,12 +290,11 @@ class ConfigStore:
         # TIME — Path.cwd() under a patched os.name raises NotImplementedError
         # on the other OS. reload() and __init__ always run unpatched.
         cwd = self._cwd or self._cwd_snapshot
-        env = self._env_map()
         user: dict[str, Any] = {}
         try:
-            home = self._home or Path.home()
-            # OS-correct per-user config dir (honors injected home/env for tests).
-            user_dir = paths.user_config_dir_for(home, env)
+            user_dir = self._user_dir_snapshot
+            if user_dir is None:
+                raise RuntimeError("no home directory was resolvable at store construction")
         except RuntimeError as exc:
             # No resolvable home directory — e.g. on Windows, ``Path.home()``
             # raises when USERPROFILE/HOME are absent from the environment
@@ -300,9 +330,15 @@ class ConfigStore:
         with self._lock:
             self._data = None
             self._defaults = None
-            # Re-snapshot the workspace root: reload() runs unpatched (e.g. the
-            # per-test fixture after monkeypatch.chdir), unlike the lazy _load.
+            # Re-snapshot the workspace root + home: reload() runs unpatched
+            # (e.g. the per-test fixture after monkeypatch.chdir), unlike the
+            # lazy _load.
             self._cwd_snapshot = Path.cwd()
+            try:
+                self._home_snapshot = Path.home()
+            except RuntimeError:
+                self._home_snapshot = None
+            self._user_dir_snapshot = self._compute_user_dir()
 
     def file_value(self, key: str) -> Any:
         """Return the dotted-path value from the file layer, or ``_UNSET``."""
