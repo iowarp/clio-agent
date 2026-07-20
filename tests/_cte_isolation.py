@@ -27,9 +27,15 @@ tests default to ``CLIO_ARC_STORE=local`` anyway.
 from __future__ import annotations
 
 import random
+import re
+import shutil
 import socket
+import stat
+import time
 from dataclasses import dataclass
 from pathlib import Path
+
+_PRIVATE_ROOT_NAME = re.compile(r"clio-agent-cte-[0-9]+-[A-Za-z0-9_-]+\Z")
 
 # Private clio-core topology for the suite: DRAM hot tier + file cold tier, own port.
 # Mirrors the proven private-daemon config of tests/test_arc/test_clio_core_offload_spill.py
@@ -55,7 +61,7 @@ compose:
     storage:
       - path: "{file_tier}"
         bdev_type: "file"
-        capacity_limit: "4GB"
+        capacity_limit: "512MB"
         score: 1.0
     dpe:
       dpe_type: "max_bw"
@@ -69,8 +75,10 @@ compose:
 class CteIsolation:
     """The private-daemon environment prepared for this suite run."""
 
+    root: Path  # Session-owned root removed after the daemon is reaped.
     state_dir: Path  # CLIO_RUNTIME_STATE_DIR (lock/pidfile/registry/log)
     config_path: Path  # the private cte.yaml
+    file_tier_path: Path  # Bounded file-tier backing path used by the private daemon.
     port: int  # base of the reserved contiguous port block
 
 
@@ -137,6 +145,7 @@ def isolate_cte_env(root: Path, environ: dict[str, str]) -> CteIsolation:
     conf_dir.mkdir(exist_ok=True)
     store_dir = root / "store"
     store_dir.mkdir(exist_ok=True)
+    file_tier_path = store_dir / "storage.bin_node0"
 
     port = reserve_port_block()
     config_path = root / "cte.yaml"
@@ -154,7 +163,56 @@ def isolate_cte_env(root: Path, environ: dict[str, str]) -> CteIsolation:
     environ["CLIO_ARC_STORE_CONFIG"] = str(config_path)
     environ["CLIO_SERVER_CONF"] = str(config_path)
     environ["CLIO_CORE_PORT"] = str(port)
-    return CteIsolation(state_dir=state_dir, config_path=config_path, port=port)
+    return CteIsolation(
+        root=root,
+        state_dir=state_dir,
+        config_path=config_path,
+        file_tier_path=file_tier_path,
+        port=port,
+    )
+
+
+def remove_private_cte_root(
+    root: Path,
+    *,
+    attempts: int = 6,
+    retry_delay_seconds: float = 0.1,
+) -> None:
+    """Remove only this suite's stopped, identity-stable private CTE root."""
+    if _PRIVATE_ROOT_NAME.fullmatch(root.name) is None:
+        raise RuntimeError(f"refusing to remove an unexpected CTE test root: {root}")
+    if attempts < 1 or retry_delay_seconds < 0:
+        raise ValueError("CTE cleanup retry bounds are invalid")
+    try:
+        initial = root.lstat()
+    except FileNotFoundError:
+        return
+    file_attributes = getattr(initial, "st_file_attributes", 0)
+    reparse_attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    if (
+        not stat.S_ISDIR(initial.st_mode)
+        or stat.S_ISLNK(initial.st_mode)
+        or (reparse_attribute and file_attributes & reparse_attribute)
+    ):
+        raise RuntimeError(f"refusing to remove a linked CTE test root: {root}")
+    identity = (initial.st_dev, initial.st_ino)
+    last_error: OSError | None = None
+    for attempt in range(attempts):
+        try:
+            current = root.lstat()
+            if (current.st_dev, current.st_ino) != identity:
+                raise RuntimeError(f"CTE test root identity changed before cleanup: {root}")
+            shutil.rmtree(root)
+            if root.exists() or root.is_symlink():
+                raise OSError(f"CTE test root remained after cleanup: {root}")
+            return
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            last_error = exc
+            if attempt + 1 < attempts:
+                time.sleep(retry_delay_seconds)
+    raise RuntimeError(f"could not remove private CTE test root: {root}") from last_error
 
 
 def eagerly_attach_private_daemon() -> bool:
