@@ -488,7 +488,8 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
         """Spawn a declared child expert as a background child turn; returns its
         task_id IMMEDIATELY (status queued|running). Fire-and-forget: the child runs
         untied to this turn — collect it now with wait_agent_tasks, poll it with
-        check_agent_tasks, or let its result surface in your NEXT turn."""
+        check_agent_tasks, or let its result surface in your NEXT turn. Prefer to spawn
+        ALL independent children before waiting on any."""
 
         return _do_spawn(agent, task)
 
@@ -497,7 +498,8 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
         each one's result. ``timeout_s`` is REQUIRED — pass your own budget; on
         timeout you get the current statuses and YOU decide (keep waiting, keep
         working, or finish). The children run on a dedicated pool, so waiting here
-        never starves them."""
+        never starves them. Prefer a short budget (e.g. 30-60s) and continue on a
+        partial — don't block the whole turn on one long child."""
 
         app, session_id = _ctx_app_session()
         registry = app.state.agent_task_registry
@@ -569,7 +571,9 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
         """Non-blocking poll of this session's spawned tasks: each one's status AND,
         for finished tasks, a bounded result excerpt + message_ref (full text via
         wait_agent_tasks). Pass ``task_ids`` to poll a subset, or omit for all.
-        Polling a finished task collects it (its result won't re-surface next turn)."""
+        Polling a finished task collects it (its result won't re-surface next turn).
+        Use it to collect finished children while you keep working, instead of
+        blocking in wait."""
 
         app, session_id = _ctx_app_session()
         from clio_agent.gact.agent_tasks import consume_notification  # noqa: PLC0415
@@ -679,7 +683,9 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
                     "description": (
                         "REQUIRED max seconds to wait before returning current "
                         "statuses (a wait without a budget is a hang). You decide "
-                        "how to proceed on a partial result."
+                        "how to proceed on a partial result. Prefer a short budget "
+                        "(e.g. 30-60s) and re-collect finished children with a follow-up "
+                        "wait or check_agent_tasks rather than blocking the whole turn."
                     ),
                 },
             },

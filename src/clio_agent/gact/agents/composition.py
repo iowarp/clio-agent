@@ -300,15 +300,22 @@ def _runtime_dynamic_agent_children_context(
     lines.append("")
     lines.append(
         "Routing: delegate by CALLING your spawn tools. `spawn_agent_task(agent, task)` "
-        "spawns ONE declared child as a real child turn and returns its `task_id`; "
-        "`wait_agent_tasks([task_id], timeout_s=...)` blocks (up to your required "
-        "`timeout_s` budget) until it finishes and returns its typed "
-        "evidence. Spawn one child, wait for its evidence, and let that evidence (in the "
-        "returned typed workflow_state) decide the next hop; use `spawn_agents_parallel` "
-        "to fan out independent children at once. Read the returned evidence, then write "
-        "your final `answer` — every claim in it must be backed by a child's returned "
-        "evidence; NEVER answer from your own knowledge. If you have spawned no children "
-        "yet, you have no evidence yet — do not answer."
+        "spawns ONE declared child as a real child turn and returns its `task_id` "
+        "IMMEDIATELY — the child runs untied to this turn; the call does not block. "
+        "So spawn EVERY independent child right away (use `spawn_agents_parallel` to fan "
+        "out a batch in one call) instead of serializing spawn→wait→spawn→wait; only "
+        "chain a hop that genuinely DEPENDS on a prior child's returned evidence. Collect "
+        "with `wait_agent_tasks([task_id], timeout_s=...)` under a SHORT budget (30-60s is "
+        "usually right): it blocks only up to that budget, and on a partial result YOU "
+        "decide — keep waiting, continue with the evidence you have, or collect later. "
+        "`check_agent_tasks(...)` picks up finished children without blocking, so you can "
+        "keep working while the rest run. On a naturally multi-turn task you may end this "
+        "turn without waiting at all — each child's result injects into your NEXT turn "
+        "automatically. Read the returned typed evidence (in the returned workflow_state) "
+        "and let it decide the next hop, then write your final `answer` — every claim in "
+        "it must be backed by a child's returned evidence; NEVER answer from your own "
+        "knowledge. If you have spawned no children yet, you have no evidence yet — do not "
+        "answer."
     )
     briefing = "\n".join(lines)
     if _aid:
