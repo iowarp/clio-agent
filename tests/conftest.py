@@ -200,7 +200,23 @@ def allow_pytest_tmp_path(tmp_path, monkeypatch):
     Unit tests also should not depend on a live LM Studio server for
     model discovery. Tests that need discovery unset CLIO_LM_MODEL
     explicitly.
+
+    #985 move 3 — config-first dissolution of the autouse env soup: the
+    registry-bootstrap knob is now written as explicit config to the per-test
+    user ``config.yaml`` (the XDG-relative user-config layer ConfigStore reads)
+    instead of ``CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP`` in the env. It
+    resolves config-first through ``conf`` (``agents.disable_default_registry_bootstrap``),
+    has no env-direct reader, and its overriders escape the file cleanly (they
+    re-point ``XDG_CONFIG_HOME`` or overwrite ``config.yaml`` + ``conf.reload()``).
+    The other three (``CLIO_ALLOWED_ROOTS`` / ``CLIO_LM_MODEL`` / ``CLIO_ARC_STORE``)
+    stay env by necessity — each has a per-test override contract a winning config
+    file would break (subdir-restriction + dev-shell union for allowed_roots; the
+    ``delenv``-to-trigger-discovery + ``has_explicit_model_override`` file/env read
+    for lm.model; the ``CLIO_ARC_STORE=banana`` env-resolution-error test for
+    arc.store) — see #985 move 3 report. Migrating those means converting their
+    per-test setenv calls, which is out of scope for this slice.
     """
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cost at collection
 
     existing = os.environ.get("CLIO_ALLOWED_ROOTS", "")
     roots = [str(tmp_path)]
@@ -211,20 +227,30 @@ def allow_pytest_tmp_path(tmp_path, monkeypatch):
     if "CLIO_LM_MODEL" not in os.environ:
         monkeypatch.setenv("CLIO_LM_MODEL", "ibm/granite-4-h-tiny")
 
-    # #948 S4b: the legacy native-expert runtime (the deleted Tier-1 planner) is
-    # gone, and its ``CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS`` knob is retired, so
-    # a default/main session MUST resolve an Agent Blueprint react main to run.
-    # ``_write_test_default_registry_blueprint`` writes that default registry
-    # blueprint (react ``main`` root + experts) directly on disk below, so leave
-    # the network git bootstrap DISABLED (no clone in unit tests) while still
-    # letting discovery find the pre-written default blueprint.
-    monkeypatch.setenv("CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP", "1")
     # Tests use the fast, isolated LocalFS ARC store by default; production
     # defaults to clio-core. The clio-core integration tests override via an
     # explicit backend="cte" arg, so they are unaffected.
     monkeypatch.setenv("CLIO_ARC_STORE", "local")
     xdg_root = tmp_path / "xdg"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_root))
+
+    # #948 S4b: the legacy native-expert runtime (the deleted Tier-1 planner) is
+    # gone, and its ``CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS`` knob is retired, so
+    # a default/main session MUST resolve an Agent Blueprint react main to run.
+    # ``_write_test_default_registry_blueprint`` writes that default registry
+    # blueprint (react ``main`` root + experts) directly on disk below, so leave
+    # the network git bootstrap DISABLED (no clone in unit tests) while still
+    # letting discovery find the pre-written default blueprint. #985 move 3:
+    # express that disable through the user config file, not the env.
+    config_dir = xdg_root / "clio-agent"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_dir.joinpath("config.yaml").write_text(
+        "agents:\n  disable_default_registry_bootstrap: true\n",
+        encoding="utf-8",
+    )
+    # The process-wide store caches its file layer; drop it so this test's
+    # freshly-written user config.yaml (and XDG) take effect.
+    conf.reload()
     _write_test_default_registry_blueprint(xdg_root)
 
     # Isolate on-disk skill discovery (gact.skills owns the scanner, #917;

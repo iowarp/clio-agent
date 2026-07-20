@@ -14,8 +14,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
+
 from scripts.gen_env_reference import (
     BOOTSTRAP_VARS,
+    DEFAULTS_RELPATH,
     DOC_RELPATH,
     DOTENV_RELPATH,
     DYNAMIC_SECRET_VARS,
@@ -23,6 +26,7 @@ from scripts.gen_env_reference import (
     _classify_tier,
     collect,
     generate,
+    generate_defaults,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -40,6 +44,51 @@ def test_env_example_matches_source_tree() -> None:
     _, dotenv = generate(ROOT)
     committed = (ROOT / DOTENV_RELPATH).read_text(encoding="utf-8")
     assert committed == dotenv, ".env.example is stale; run `python scripts/gen_env_reference.py`."
+
+
+def test_config_defaults_yaml_matches_source_tree() -> None:
+    """Drift guard: the committed base-layer defaults must mirror the in-code defaults.
+
+    ``config.defaults.yaml`` is generated from the same ``conf.resolve`` ``default=``
+    arguments the runtime falls back to, so a changed in-code default without a
+    regeneration diverges the below-env base layer from the operative fallback.
+    Regenerate with ``uv run python scripts/gen_env_reference.py``.
+    """
+    committed = (ROOT / DEFAULTS_RELPATH).read_text(encoding="utf-8")
+    assert committed == generate_defaults(ROOT), (
+        "src/clio_agent/config.defaults.yaml is stale; run `python scripts/gen_env_reference.py`."
+    )
+
+
+def test_config_defaults_yaml_is_flat_and_parses() -> None:
+    """The committed defaults document is a flat dotted-key mapping the store reads."""
+    committed = (ROOT / DEFAULTS_RELPATH).read_text(encoding="utf-8")
+    assert committed.startswith("# GENERATED")
+    assert "DO NOT EDIT" in committed.splitlines()[0]
+    data = yaml.safe_load(committed) or {}
+    assert isinstance(data, dict)
+    # Every emitted key is a flat dotted string (not a nested mapping), so the
+    # below-env layer's exact-key lookup finds it.
+    for key, value in data.items():
+        assert "." in key or key.isidentifier(), key
+        assert not isinstance(value, dict), f"{key} must be a flat scalar, not nested"
+    # Sanity: a couple of known knobs surface with the expected in-code defaults.
+    assert data["arc.store"] == "cte"
+    assert data["agents.disable_default_registry_bootstrap"] is False
+
+
+def test_config_defaults_omits_dynamic_and_unset_knobs() -> None:
+    """Computed/unset defaults are comments only, so resolution uses the in-code default."""
+    resolved, _ = collect(ROOT)
+    committed = yaml.safe_load((ROOT / DEFAULTS_RELPATH).read_text(encoding="utf-8")) or {}
+    for r in resolved:
+        if r.key and (r.dynamic_expr or r.default == ""):
+            assert r.key not in committed, (
+                f"{r.key} has a dynamic/unset default and must not carry a value"
+            )
+    # The two knobs Part 2 keeps env-driven are omitted (dynamic/unset).
+    assert "tools.file_policy.allowed_roots" not in committed  # computed
+    assert "lm.model" not in committed  # unset
 
 
 def test_generated_files_carry_the_do_not_edit_banner() -> None:
