@@ -2098,6 +2098,20 @@ Coordinate genomics work.
     assert "memory_search_sessions" in context
     assert "`spawn_agent_task(agent, task)`" in context
     assert "`wait_agent_tasks(" in context
+    # Async-first posture lock (async-first-semantics slice): the routing briefing
+    # MUST teach the fire-and-forget async spawn posture, not the old serial
+    # "spawn one child, wait, decide the next hop" loop. These load-bearing phrases
+    # are the taught surface under live test — reverting the paragraph reddens this.
+    assert "IMMEDIATELY" in context  # spawn_agent_task returns immediately (non-blocking)
+    assert "independent child right away" in context  # spawn all independent children first
+    assert "SHORT budget" in context  # bounded wait, decide on a partial
+    assert "NEXT turn" in context  # observe-later: results inject into the next turn
+    assert "check_agent_tasks" in context  # non-blocking collection while working
+    # The old serial teaching must be gone (it made sync spawn→wait the default).
+    assert "Spawn one child, wait for its evidence" not in context
+    # The evidence-grounding guarantee must survive the rewrite intact.
+    assert "must be backed by a child's returned" in context
+    assert "no evidence yet" in context
     # The child listing moved out of the static system_prompt into the runtime
     # children context (asserted above); the system_prompt must still have no
     # unresolved template markers.
