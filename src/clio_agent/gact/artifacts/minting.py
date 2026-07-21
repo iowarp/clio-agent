@@ -1,9 +1,10 @@
 """The artifact minting funnel — identity hashing + the three S1 mint seams.
 
 One funnel (:func:`mint_artifact`) builds an immutable version, emits the durable
-``artifact.created`` semantic event (trace-only this slice — the sole
-artifact-event emitter), folds it into the registry projection and patches the
-SessionStore badge index. The three seams feed it:
+``artifact.created`` semantic event (the sole artifact-event emitter; as of S2
+(#968) it rides the SSE UI wire at ``semantic`` detail, no longer trace-only),
+folds it into the registry projection and patches the SessionStore badge index.
+The three seams feed it:
 
 * :func:`mint_tool_declared_outputs` — gact tool observer ``completed`` phase
   (mechanism ``tool-schema``, producing ``call_id``);
@@ -58,9 +59,10 @@ _HASH_CHUNK_BYTES = 1024 * 1024
 #: finalize (#968 item 2). Only genuinely NEW versions land here (a W&B same-sha
 #: dedup no-op mints nothing, so it contributes no part — matching "one part per
 #: artifact GENERATED this turn"). ``turn_finalize`` drains + filters by turn id
-#: and clears the session's list; ``settle_failed_finalize`` clears it on the
-#: failure path so a crashed turn never leaks its buffer into the next turn.
-#: Bounded per session so a pathological turn cannot grow it unboundedly.
+#: and clears the session's list; ``settle_failed_finalize`` calls
+#: :func:`clear_turn_artifacts` on the failure path so a crashed turn cannot
+#: re-emit its buffered parts when the same turn is retried. Bounded per session
+#: so a pathological turn cannot grow it unboundedly.
 _TURN_ARTIFACT_CAP = 256
 _TURN_ARTIFACT_LOCK = threading.Lock()
 
@@ -123,6 +125,20 @@ def drain_turn_artifacts(app: "FastAPI", sid: str, turn_id: str = "") -> list[di
     return [e for e in entries if str(e.get("turn_id") or "") == turn_id]
 
 
+def clear_turn_artifacts(app: "FastAPI", sid: str) -> None:
+    """Drop the whole per-session turn buffer (failed-finalize seam, finding [7]).
+
+    A finalize-region crash never reaches the finalize drain, so its buffered
+    versions would linger. If the SAME turn is then retried, the retry re-buffers
+    the same mints and the next successful finalize would drain BOTH the stale and
+    the fresh entries — one artifact, two ``resource_link`` parts. Clearing the
+    session's buffer on the failure path makes the retry emit exactly once. Called
+    unconditionally from ``settle_failed_finalize``; a missing buffer is a no-op.
+    """
+    with _TURN_ARTIFACT_LOCK:
+        buffers = getattr(app.state, "turn_artifacts", None)
+        if buffers:
+            buffers.pop(sid, None)
 
 
 def hash_max_file_bytes() -> int:
@@ -628,11 +644,17 @@ def mint_harness_write(
 
     The bytes flowed through the harness (``write_text_with_policy``), so the write
     itself is the evidence: mechanism ``harness``, ``hashed-at-use`` from the
-    ``sha256`` the writer returned in-hand. Trace-only this slice. Fully guarded so
+    ``sha256`` the writer returned in-hand. The mint rides the SSE wire like every
+    other (S2 #968). The ACTIVE turn id is threaded from the turn-identity
+    contextvar (:func:`context.active_turn_id`) so that when this write happens
+    DURING a turn its version is buffered under that turn and drains to a
+    ``resource_link`` part at finalize — parity with seams (a)/(c); an out-of-turn
+    apply leaves it empty and simply buffers nothing that drains. Fully guarded so
     the gact-side ``fs_apply_edit_write`` caller invokes it in one line — an
     artifact mint must never break the approved write.
     """
     try:
+        from clio_agent.gact import context as _ctx  # noqa: PLC0415
         from clio_agent.gact.artifacts.designation import kind_for_path  # noqa: PLC0415
 
         sha256 = str(write_result.get("sha256") or "")
@@ -655,9 +677,12 @@ def mint_harness_write(
             producer={
                 "session_id": str(getattr(session, "id", "") or ""),
                 "tool": "fs_apply_edit_write",
+                "turn_id": _ctx.active_turn_id(),
             },
             custody=Custody.WORKSPACE_REFERENCED,
             path=target,
+            turn_id=_ctx.active_turn_id(),
+            trace_id=_ctx.active_trace_id(),
         )
     except Exception:  # noqa: BLE001 — an artifact mint must never break an approved write
         logger.warning("artifact mint skipped reason=harness_mint_failed path=%s", target)
@@ -692,6 +717,7 @@ def _created_payload(
 
 __all__ = [
     "artifact_name_for_path",
+    "clear_turn_artifacts",
     "compute_identity",
     "drain_turn_artifacts",
     "hash_max_file_bytes",

@@ -184,9 +184,11 @@ def test_resource_link_uri_and_metadata_completeness():
     assert wire["server_id"] == ARTIFACT_SERVER_ID
     assert wire["name"] == "plot.png"
     md = wire["metadata"]
-    # Sabotage: drop any key from resource_link_metadata -> this set-equality goes
-    # red (the metadata-completeness lock — owner decision #966.9's exact keys).
-    assert set(md) >= {
+    # Sabotage: drop OR add any key in resource_link_metadata -> this EXACT
+    # set-equality goes red (the metadata lock — owner #966.9's 9 pinned keys plus
+    # the logical-identity pair workspace_id/name, and NOTHING else; SPEC §4.5
+    # documents all eleven). A superset would let undocumented drift pass.
+    assert set(md) == {
         "artifact_id",
         "sha256",
         "size_bytes",
@@ -196,7 +198,11 @@ def test_resource_link_uri_and_metadata_completeness():
         "fetch_url",
         "producer_activity_id",
         "mechanism",
+        "workspace_id",
+        "name",
     }
+    assert md["workspace_id"] == "ws1"
+    assert md["name"] == "plot.png"
     assert md["fetch_url"] == f"/v1/artifacts/{v.artifact_id}/bytes"
     assert md["producer_activity_id"] == "call_9"
     assert md["mechanism"] == "tool-schema"
@@ -239,9 +245,32 @@ def test_artifact_proposed_is_not_on_the_sse_wire_and_payload_shape_is_pinned():
     # onto the SSE family wire, and its payload keys are exactly the file_diff set.
     # Sabotage: add "artifact.proposed" to SSE_UI_EVENT_TYPES -> the first assert
     # goes red (the byte-parity lock: proposal stage unchanged).
+    from clio_agent.gact.artifacts.wire import PROPOSED_ARTIFACT_EVENT, proposed_diff_payload
+
+    assert PROPOSED_ARTIFACT_EVENT == "artifact.proposed"
     assert "artifact.proposed" not in SSE_UI_EVENT_TYPES
     assert event_reaches_ui("artifact.proposed") is False
-    # The finalize emit payload shape (§7.3a) — pinned so a widening never drifts it.
+
+    # Bind the REAL emit payload: turn_finalize builds the artifact.proposed payload
+    # via proposed_diff_payload(...) (the owner-module projection it actually calls),
+    # so pinning that function's output pins the wire. Construct the event exactly as
+    # turn_finalize does and pin the projected shape — an added OR removed key reddens.
+    payload = proposed_diff_payload(
+        path="notebook.py",
+        unified_diff="@@ -1 +1 @@",
+        new_content="print('x')\n",
+        edit_mode="diff",
+        lines_added=1,
+        lines_removed=1,
+    )
+    event = SemanticEvent(
+        event_type="artifact.proposed",
+        session_id="s1",
+        trace_id="t1",
+        payload=payload,
+    )
+    full = project_full(event)
+    sse = project_sse(event)
     expected_keys = {
         "path",
         "unified_diff",
@@ -250,10 +279,12 @@ def test_artifact_proposed_is_not_on_the_sse_wire_and_payload_shape_is_pinned():
         "lines_added",
         "lines_removed",
     }
-    src = Path("src/clio_agent/gact/turn_finalize.py").read_text(encoding="utf-8")
-    assert '"artifact.proposed"' in src
-    for key in expected_keys:
-        assert f'"{key}"' in src
+    # Sabotage: add a 7th field (or drop one) in wire.proposed_diff_payload -> this
+    # EXACT set-equality goes red on BOTH projections (the byte-parity lock).
+    assert set(full["payload"]) == expected_keys
+    assert set(sse["payload"]) == expected_keys
+    # The full trace projection preserves the payload verbatim (values unchanged).
+    assert full["payload"] == payload
 
 
 # --------------------------------------------------------------------------- #
@@ -420,6 +451,186 @@ def test_get_unknown_artifact_is_typed_404(tmp_path: Path):
     r = c.get("/v1/artifacts/artifact_missing")
     assert r.status_code == 404
     assert r.json()["error"]["error"] == "not_found"
+
+
+def test_resolve_unknown_alias_is_typed_409_not_cacheable_404(tmp_path: Path):
+    """Finding [4]: an unknown alias pre-S4 is a typed 409, not a cacheable 404."""
+    c = _client(tmp_path)
+    wid, sid = _workspace_session(c, tmp_path)
+    f = tmp_path / "plot.png"
+    f.write_bytes(b"\x89PNG\r\n")
+    c.post(f"/v1/sessions/{sid}/artifacts/pin", json={"path": "plot.png"})
+    # An unknown alias (not latest, not vN, not tracked) -> typed 409 not_yet signal.
+    r = c.get(f"/v1/workspaces/{wid}/artifacts/plot.png", params={"ref": "final"})
+    # Sabotage: revert resolve_artifact_by_name to raise a 404 not_found for an
+    # unknown alias -> this goes red (the non-cacheable typed-signal lock).
+    assert r.status_code == 409
+    body = r.json()["error"]
+    assert body["error"] == "alias_resolution_not_available"
+    assert body["details"]["available"] == ["latest", "vN"]
+    assert body["recoverable"] is True
+    # A vN naming a version that does not exist stays a genuine 404 not_found.
+    missing = c.get(f"/v1/workspaces/{wid}/artifacts/plot.png", params={"ref": "v99"})
+    assert missing.status_code == 404
+    assert missing.json()["error"]["error"] == "not_found"
+
+
+def test_pagination_cursor_survives_boundary_reversion(tmp_path: Path):
+    """Finding [3]: a re-versioned boundary record still anchors an outstanding cursor."""
+    c = _client(tmp_path)
+    wid, sid = _workspace_session(c, tmp_path)
+    for i in range(3):
+        f = tmp_path / f"f{i}.txt"
+        f.write_text(f"c{i}\n", encoding="utf-8")
+        c.post(f"/v1/sessions/{sid}/artifacts/pin", json={"path": f"f{i}.txt"})
+    # Page 1 (limit 1) hands out a next_cursor = the boundary record's head id.
+    page1 = c.get(f"/v1/workspaces/{wid}/artifacts", params={"limit": 1}).json()
+    boundary_name = page1["artifacts"][0]["name"]
+    cursor = page1["next_cursor"]
+    assert cursor
+    # Re-version the boundary record: pin its file again with NEW content -> a new
+    # version is minted and the record's head artifact_id rotates (the cursor's id is
+    # now a superseded, non-head version id of the same record).
+    (tmp_path / boundary_name).write_text("rerendered!!\n", encoding="utf-8")
+    reversion = c.post(f"/v1/sessions/{sid}/artifacts/pin", json={"path": boundary_name})
+    assert reversion.status_code == 200, reversion.text
+    # Page 2 with the STALE cursor still resolves (anchors on the owning record),
+    # rather than the hard 404 a head-only cursor would raise.
+    # Sabotage: resolve `before` against head ids only in _paginate_records -> this
+    # 404s (the mutable-cursor bug), reddening the assert.
+    page2 = c.get(f"/v1/workspaces/{wid}/artifacts", params={"limit": 1, "before": cursor})
+    assert page2.status_code == 200, page2.text
+    assert isinstance(page2.json()["artifacts"], list)
+
+
+def test_bytes_unresolvable_root_refuses_typed(tmp_path: Path):
+    """Finding [5]: an unresolvable workspace root REFUSES the serve, never skips containment."""
+    from clio_agent.gact.artifacts.minting import mint_artifact
+
+    c = _client(tmp_path)
+    _wid, sid = _workspace_session(c, tmp_path)
+    blob = tmp_path / "ghost.png"
+    blob.write_bytes(b"GHOSTBYTES")
+    # Mint under a workspace id that is NOT registered -> _workspace_root() is None.
+    version = mint_artifact(
+        c.app,
+        sid,
+        name="ghost.png",
+        workspace_id="ghost_ws_unregistered",
+        evidence=IdentityEvidence.hashed_at_use(
+            sha256=hashlib.sha256(b"GHOSTBYTES").hexdigest(), size_bytes=10
+        ),
+        kind=ArtifactKind.IMAGE,
+        mechanism=Mechanism.HARNESS,
+        custody=Custody.CAS,
+        path=str(blob),
+    )
+    r = c.get(f"/v1/artifacts/{version.artifact_id}/bytes")
+    # Sabotage: skip the containment check when root is None (the old behavior) ->
+    # the serve would proceed and this 409 goes red (the containment-refusal lock).
+    assert r.status_code == 409
+    assert r.json()["error"]["error"] == "containment_unresolved"
+
+
+def test_bytes_cas_streams_in_bounded_chunks(tmp_path: Path, monkeypatch):
+    """Finding [5]: CAS bytes stream chunked (re-hash + serve), never a whole-file read."""
+    from clio_agent.gact import routes as _routes_pkg  # noqa: F401
+    from clio_agent.gact.artifacts.minting import mint_artifact
+    from clio_agent.gact.routes import artifacts as _artifacts_routes
+
+    # Force a tiny chunk so a small blob spans MANY read()s -> the streaming hash +
+    # streaming serve must both iterate. If the code fell back to read_bytes()/one
+    # Response(content=...), a bug there would still surface as wrong/empty content.
+    monkeypatch.setattr(_artifacts_routes, "_HASH_CHUNK_BYTES", 4)
+    c = _client(tmp_path)
+    wid, sid = _workspace_session(c, tmp_path)
+    blob = tmp_path / "cas_big.png"
+    content = b"\x89PNG\r\n" + b"CHUNKED-STREAM-PAYLOAD" * 8
+    blob.write_bytes(content)
+    version = mint_artifact(
+        c.app,
+        sid,
+        name="cas_big.png",
+        workspace_id=wid,
+        evidence=IdentityEvidence.hashed_at_use(
+            sha256=hashlib.sha256(content).hexdigest(), size_bytes=len(content)
+        ),
+        kind=ArtifactKind.IMAGE,
+        mechanism=Mechanism.HARNESS,
+        custody=Custody.CAS,
+        path=str(blob),
+    )
+    r = c.get(f"/v1/artifacts/{version.artifact_id}/bytes")
+    # Sabotage: drop the seek(0) or serve a stale buffer -> content mismatches, red.
+    assert r.status_code == 200
+    assert r.content == content
+
+
+# --------------------------------------------------------------------------- #
+# 2c. Seam-b harness write buffers under the active turn; failed finalize clears
+# --------------------------------------------------------------------------- #
+
+
+def test_harness_write_during_turn_yields_part(tmp_path: Path):
+    """Finding [6]: a harness write during a turn threads the active turn id -> a part."""
+    from clio_agent.gact import context
+    from clio_agent.gact.artifacts.minting import drain_turn_artifacts, mint_harness_write
+
+    app, sess, _arc = _fake_mint_app(tmp_path)
+    target = str(tmp_path / "harness_out.md")
+    write_result = {"sha256": "d" * 64, "size_bytes": 5}
+    token = context.set_turn_id_token("T1")
+    try:
+        mint_harness_write(app, sess, target, write_result)
+    finally:
+        context.reset(token)
+    # The seam-b mint is buffered under the ACTIVE turn, so the finalize drain for
+    # that turn returns it (parity with seams a/c).
+    # Sabotage: drop the turn_id thread in mint_harness_write -> the entry is stamped
+    # "" and drain(T1) returns [], reddening this assert.
+    drained = drain_turn_artifacts(app, sess.id, "T1")
+    assert len(drained) == 1
+    assert drained[0]["name"] == "harness_out.md"
+
+
+def test_failed_finalize_clears_buffer_no_double_emit(tmp_path: Path):
+    """Finding [7]: a failed finalize clears the buffer so a retry emits parts once."""
+    import threading
+    from types import SimpleNamespace
+
+    from clio_agent.gact.artifacts.minting import (
+        _record_turn_artifact,
+        drain_turn_artifacts,
+    )
+    from clio_agent.gact.sessions import SessionStore
+    from clio_agent.gact.turn_finalize import settle_failed_finalize
+
+    store = SessionStore(path=tmp_path / "sessions.json")
+    sess = store.create(workspace_id="ws1", title="t")  # status "idle" (not running)
+    app = SimpleNamespace(state=SimpleNamespace(sessions=store, turn_artifacts=None))
+    # The crashed turn had already buffered a mint before finalize died.
+    _record_turn_artifact(
+        app, sess.id, workspace_id="ws1", name="a.png", version=_version(), turn_id="T1"
+    )
+    settle_failed_finalize(
+        app,
+        sess.id,
+        turn_id="T1",
+        trace_id="tr1",
+        turn_tokens={},
+        turn_cost=0.0,
+        turn_cancel_event=threading.Event(),
+        update_retry_attempt=lambda *a, **k: None,
+        exc=RuntimeError("boom"),
+    )
+    # Sabotage: remove the clear_turn_artifacts call in settle_failed_finalize ->
+    # the stale T1 entry survives and the drain below returns it, reddening this.
+    assert drain_turn_artifacts(app, sess.id, "T1") == []
+    # The retry re-buffers its own mint; drain returns exactly one (no stale double).
+    _record_turn_artifact(
+        app, sess.id, workspace_id="ws1", name="a.png", version=_version(), turn_id="T1"
+    )
+    assert len(drain_turn_artifacts(app, sess.id, "T1")) == 1
 
 
 # --------------------------------------------------------------------------- #

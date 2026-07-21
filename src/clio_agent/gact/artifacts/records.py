@@ -101,7 +101,9 @@ class IdentityEvidence(BaseModel):
     authority: str = ""
 
     @classmethod
-    def hashed_at_use(cls, *, sha256: str, size_bytes: int, mtime: float | None = None) -> "IdentityEvidence":
+    def hashed_at_use(
+        cls, *, sha256: str, size_bytes: int, mtime: float | None = None
+    ) -> "IdentityEvidence":
         """Locally computed sha256 — the strongest local class."""
         return cls(
             evidence_class=EvidenceClass.HASHED_AT_USE,

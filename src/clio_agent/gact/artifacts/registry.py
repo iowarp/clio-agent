@@ -11,8 +11,9 @@ the rebuild source.
 Fold idempotency (owner decision #966): dedupe by ``event_id`` first, then by
 ``(workspace_id, name, version)``; a same-sha replay is a no-op; a conflicting
 sha for an existing ``(ws, name, version)`` keeps the FIRST and records a typed
-``fold_conflict``. Events are trace-only this slice — minting does NOT add
-``artifact.created`` to ``SSE_UI_EVENT_TYPES`` (that is S2).
+``fold_conflict``. As of S2 (#968) ``artifact.created`` is on the SSE UI wire
+(``SSE_UI_EVENT_TYPES``) and mints emit it at ``semantic`` detail; the durable
+fold source is unchanged (capture ignores ``detail_level``).
 """
 
 from __future__ import annotations

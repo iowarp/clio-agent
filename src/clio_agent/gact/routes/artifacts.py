@@ -27,10 +27,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse
 
 from clio_agent.gact.artifacts.minting import (
     artifact_name_for_path,
@@ -187,11 +189,17 @@ def _paginate_records(
     """Order records newest-first and apply the ``limit`` + ``before`` cursor.
 
     Order key: the head version's ``created_at`` descending, tie-broken by name
-    (stable, deterministic). ``before`` is a head ``artifact_id`` cursor — the page
-    returns records strictly AFTER that record in the ordering (older). The
-    returned ``next_cursor`` is the head ``artifact_id`` of the last record on this
-    page when the limit truncated more, else ``None``. An unknown ``before`` id is a
-    404 (like the messages cursor).
+    (stable, deterministic). ``before`` is an ``artifact_id`` cursor that anchors on
+    the RECORD OWNING that version id — ANY of the record's versions, head or
+    superseded, resolves it. This is what keeps pagination stable when message ids
+    cannot: a handed-out ``next_cursor`` is a head id at page time, but if that
+    boundary record is re-versioned before the next page fetch its head id rotates;
+    the stale id is still one of the record's versions, so it still resolves to the
+    record's position and the page continues (rather than a hard 404). The page
+    returns records strictly AFTER that record in the ordering (older). The returned
+    ``next_cursor`` is the head ``artifact_id`` of the last record on this page when
+    the limit truncated more, else ``None``. An ``artifact_id`` matching no known
+    version is a 404.
     """
 
     def _key(r: ArtifactRecord) -> tuple[str, str]:
@@ -201,15 +209,21 @@ def _paginate_records(
     ordered = sorted(records, key=_key, reverse=True)
     start = 0
     if before is not None:
-        head_ids = [r.head.artifact_id if r.head is not None else "" for r in ordered]
-        if before not in head_ids:
+        # Map EVERY version id (not just heads) to its owning record's position, so a
+        # cursor whose boundary record was re-versioned in the inter-page window still
+        # anchors (finding [3] — the head id it names is now a superseded version id).
+        pos_by_version_id: dict[str, int] = {}
+        for idx, rec in enumerate(ordered):
+            for ver in rec.versions:
+                pos_by_version_id[ver.artifact_id] = idx
+        if before not in pos_by_version_id:
             raise _artifact_error(
                 status_code=404,
                 error="not_found",
                 message=f"cursor artifact not found: {before}",
                 details={"before": before},
             )
-        start = head_ids.index(before) + 1
+        start = pos_by_version_id[before] + 1
     page = ordered[start : start + limit]
     next_cursor = None
     if start + limit < len(ordered) and page:
@@ -228,6 +242,38 @@ def _sha256_file(path: Path) -> str:
                 break
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _sha256_handle(handle: Any) -> str:
+    """Stream the sha256 of an ALREADY-OPEN handle from its current position.
+
+    Chunked so a multi-GB blob never lands in memory. Leaves the handle open (the
+    caller ``seek(0)``s and streams the SAME handle to the client) so the bytes we
+    hash are the bytes we serve — no re-open TOCTOU between verify and send.
+    """
+    digest = hashlib.sha256()
+    while True:
+        chunk = handle.read(_HASH_CHUNK_BYTES)
+        if not chunk:
+            break
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _stream_handle(handle: Any) -> Iterator[bytes]:
+    """Yield an open handle's bytes in bounded chunks, closing it when exhausted.
+
+    Starlette iterates this sync generator in a threadpool, so the file read never
+    blocks the event loop and never buffers the whole file (never ``read_bytes``).
+    """
+    try:
+        while True:
+            chunk = handle.read(_HASH_CHUNK_BYTES)
+            if not chunk:
+                break
+            yield chunk
+    finally:
+        handle.close()
 
 
 def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
@@ -289,8 +335,13 @@ def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
         """Resolve one version by name + ``ref`` (``latest`` | ``vN`` | alias).
 
         Full alias resolution activates in S4 (#970): ``latest`` (maintained since
-        S1) and ``vN`` resolve now; any OTHER alias returns a typed ``not_yet`` so a
-        client sees a stable, non-guessing signal rather than a 404 it might cache.
+        S1) and ``vN`` resolve now. An unknown alias (anything that is neither
+        ``latest`` nor a ``vN`` form nor an already-tracked alias) returns a typed
+        ``409 alias_resolution_not_available`` — a stable, non-cacheable signal
+        (``details.available: ["latest", "vN"]``) that the ref is valid but not yet
+        resolvable, distinct from a ``404`` a caching layer might treat as
+        permanently absent. A ``vN`` naming a version that does not exist stays a
+        genuine ``404 not_found``.
         """
         registry = await _registry(app)
         record = registry.get(wid, name)
@@ -303,6 +354,27 @@ def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         version = _resolve_ref(record, ref)
         if version is None:
+            normalized = (ref or "latest").strip()
+            is_version_form = normalized == "latest" or (
+                normalized.startswith("v") and normalized[1:].isdigit()
+            )
+            if not is_version_form and normalized not in record.aliases:
+                # Unknown alias, pre-S4: typed + non-cacheable, never a 404 to cache.
+                raise _artifact_error(
+                    status_code=409,
+                    error="alias_resolution_not_available",
+                    message=(
+                        f"alias {ref!r} is not resolvable yet; full alias resolution "
+                        "lands with version chains (S4)"
+                    ),
+                    details={
+                        "workspace_id": wid,
+                        "name": name,
+                        "ref": ref,
+                        "available": ["latest", "vN"],
+                    },
+                    recoverable=True,
+                )
             raise _artifact_error(
                 status_code=404,
                 error="not_found",
@@ -466,48 +538,60 @@ def _serve_bytes(app: FastAPI, record: ArtifactRecord, version: ArtifactVersion)
             message="artifact bytes are not retrievable (source missing)",
             details={"artifact_id": version.artifact_id, "path": version.path},
         )
-    # Defence in depth: never read outside the workspace root even if the recorded
-    # path drifted (owner decision 10). Resolve the root and re-check containment.
+    # Defence in depth: never read outside the workspace root (owner decision 10).
+    # An UNRESOLVABLE root REFUSES the serve (typed ``containment_unresolved``) —
+    # containment cannot be verified, so precision over recall: we do not read the
+    # path at all (finding [5]), rather than silently skipping the check.
     root = _workspace_root(app, record.workspace_id)
-    if root is not None:
-        from clio_agent.tools.file_policy import _is_relative_to  # noqa: PLC0415
+    if root is None:
+        raise _artifact_error(
+            status_code=409,
+            error="containment_unresolved",
+            message="workspace root is unresolvable; cannot serve artifact bytes",
+            details={
+                "artifact_id": version.artifact_id,
+                "workspace_id": record.workspace_id,
+            },
+        )
+    from clio_agent.tools.file_policy import _is_relative_to  # noqa: PLC0415
 
-        if not _is_relative_to(source.expanduser().resolve(strict=False), root):
-            raise _artifact_error(
-                status_code=403,
-                error="path_outside_workspace",
-                message="artifact path escapes its workspace root",
-                details={"artifact_id": version.artifact_id},
-            )
+    if not _is_relative_to(source.expanduser().resolve(strict=False), root):
+        raise _artifact_error(
+            status_code=403,
+            error="path_outside_workspace",
+            message="artifact path escapes its workspace root",
+            details={"artifact_id": version.artifact_id},
+        )
     recorded_sha = version.sha256
-    if recorded_sha:
-        try:
-            actual = _sha256_file(source)
-        except OSError as exc:
-            raise _artifact_error(
-                status_code=404,
-                error="not_found",
-                message="artifact bytes are not readable",
-                details={"artifact_id": version.artifact_id},
-            ) from exc
-        if actual != recorded_sha:
-            raise _artifact_error(
-                status_code=409,
-                error="integrity_violation",
-                message="artifact content no longer matches its recorded hash",
-                details={
-                    "artifact_id": version.artifact_id,
-                    "recorded_sha256": recorded_sha,
-                    "actual_sha256": actual,
-                },
-            )
     if version.custody != Custody.CAS:
-        rel = ""
-        if root is not None:
+        # Non-served custody (workspace-referenced/external). Detection is still the
+        # universal guarantee: re-hash the referenced file and 409 on a mismatch,
+        # then point the client at the workspace file route (the bytes live there).
+        if recorded_sha:
             try:
-                rel = str(source.expanduser().resolve(strict=False).relative_to(root))
-            except ValueError:
-                rel = ""
+                actual = _sha256_file(source)
+            except OSError as exc:
+                raise _artifact_error(
+                    status_code=404,
+                    error="not_found",
+                    message="artifact bytes are not readable",
+                    details={"artifact_id": version.artifact_id},
+                ) from exc
+            if actual != recorded_sha:
+                raise _artifact_error(
+                    status_code=409,
+                    error="integrity_violation",
+                    message="artifact content no longer matches its recorded hash",
+                    details={
+                        "artifact_id": version.artifact_id,
+                        "recorded_sha256": recorded_sha,
+                        "actual_sha256": actual,
+                    },
+                )
+        try:
+            rel = str(source.expanduser().resolve(strict=False).relative_to(root))
+        except ValueError:
+            rel = ""
         raise _artifact_error(
             status_code=409,
             error="custody_not_cas",
@@ -522,8 +606,13 @@ def _serve_bytes(app: FastAPI, record: ArtifactRecord, version: ArtifactVersion)
                 "fetch_via": f"/v1/workspaces/{record.workspace_id}/files/read?path={rel}",
             },
         )
+    # CAS (app-served). Hash + serve from ONE open handle so the served bytes ARE the
+    # verified bytes — no read-then-send TOCTOU (the old ``read_bytes`` re-opened the
+    # path after a separate hash) — and stream chunked so a large blob never buffers
+    # whole in RAM. Residual TOCTOU: a same-fd truncation/rewrite between the hash
+    # and the stream is served as-is; CAS is the app-private store, documented limit.
     try:
-        payload = source.read_bytes()
+        handle = open(source, "rb")
     except OSError as exc:
         raise _artifact_error(
             status_code=404,
@@ -531,7 +620,31 @@ def _serve_bytes(app: FastAPI, record: ArtifactRecord, version: ArtifactVersion)
             message="artifact bytes are not readable",
             details={"artifact_id": version.artifact_id},
         ) from exc
-    return Response(content=payload, media_type=mime_for(version, record.name))
+    if recorded_sha:
+        try:
+            actual = _sha256_handle(handle)
+        except OSError as exc:
+            handle.close()
+            raise _artifact_error(
+                status_code=404,
+                error="not_found",
+                message="artifact bytes are not readable",
+                details={"artifact_id": version.artifact_id},
+            ) from exc
+        if actual != recorded_sha:
+            handle.close()
+            raise _artifact_error(
+                status_code=409,
+                error="integrity_violation",
+                message="artifact content no longer matches its recorded hash",
+                details={
+                    "artifact_id": version.artifact_id,
+                    "recorded_sha256": recorded_sha,
+                    "actual_sha256": actual,
+                },
+            )
+        handle.seek(0)
+    return StreamingResponse(_stream_handle(handle), media_type=mime_for(version, record.name))
 
 
 def _pin_mint(

@@ -179,7 +179,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # lives in the owner module artifacts/wire.py (append_turn_resource_links); only
     # the import + one-line call land here. (A 34-line inline helper was moved out
     # and the dead settle-path clear removed to keep this to the minimum.)
-    "src/clio_agent/gact/turn_finalize.py": 946,
+    # #968 S2 review: -3 (946 -> 943) — the artifact.proposed payload dict moved to
+    # the owner module (artifacts/wire.proposed_diff_payload, finding [2]); the
+    # settle-path buffer clear delegates to artifacts/minting.clear_turn_artifacts.
+    "src/clio_agent/gact/turn_finalize.py": 943,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (baseline 1143 -> actual); ratchet back below the pre-#947 count with the
     # mcp_app_* owner-module split (see the #947 DEBT block on mcp_apps.py).

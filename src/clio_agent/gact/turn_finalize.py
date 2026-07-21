@@ -47,7 +47,8 @@ from typing import TYPE_CHECKING, Any
 from clio_agent.gact.agents.resolution import (
     _runtime_active_agent_blueprint_id,
 )
-from clio_agent.gact.artifacts.wire import append_turn_resource_links
+from clio_agent.gact.artifacts.minting import clear_turn_artifacts
+from clio_agent.gact.artifacts.wire import append_turn_resource_links, proposed_diff_payload
 from clio_agent.gact.delegation import (
     _produced_turn_workflow_state,
     _workflow_state_from_handoff_rows,
@@ -464,14 +465,9 @@ def finalize_turn(
             summary=f"Agent proposed a file diff for {path}.",
             actor={"agent_id": state.selected_agent or state.invocation_agent_id},
             subject={"path": path, "part_id": diff_part.id, "artifact_type": "file_diff"},
-            payload={
-                "path": path,
-                "unified_diff": udiff,
-                "new_content": new_content,
-                "edit_mode": edit_mode,
-                "lines_added": lines_added,
-                "lines_removed": lines_removed,
-            },
+            payload=proposed_diff_payload(
+                path, udiff, new_content, edit_mode, lines_added, lines_removed
+            ),
         )
 
     # #968 item 2: give every artifact GENERATED this turn outbound wire identity —
@@ -824,6 +820,11 @@ def settle_failed_finalize(
             transcript.abandon()
         registry.close(sid)
 
+    # A crashed finalize never reaches the resource_link drain; clear the turn's
+    # artifact buffer so a retry of the SAME turn cannot emit each part twice (#968
+    # finding [7]). Unconditional, before the already-settled early return.
+    clear_turn_artifacts(app, sid)
+
     sess = app.state.sessions.get(sid)
     if sess is not None and getattr(sess, "status", "") != "running":
         # Finalize already settled the turn (the exception escaped after the
@@ -921,10 +922,6 @@ def settle_failed_finalize(
     getattr(app.state, "live_assistant_message_ids", {}).pop(sid, None)
     getattr(app.state, "live_assistant_parts", {}).pop(sid, None)
     getattr(app.state, "live_assistant_part_keys", {}).pop(sid, None)
-    # No explicit artifact-buffer clear here: a failed turn never drains, but the
-    # NEXT finalize's drain pops the whole session list (returning only its own
-    # turn's entries), so a pre-failure mint self-clears then — and the buffer is
-    # capped per session, so it can never grow unbounded across repeated failures.
     if sess is not None:
         app.state.sessions.update(
             sid,
