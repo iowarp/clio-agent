@@ -12,6 +12,10 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
 
+# #948 S4b: default sessions run the blueprint react ``main``; route it to each
+# test's ``build_app(agent=...)`` host fake.
+pytestmark = pytest.mark.usefixtures("host_agent_executor")
+
 
 @dataclass
 class _Pred:
@@ -588,12 +592,22 @@ def test_agent_blueprint_packaged_command_discovery_dispatch_and_allowlist(
 ) -> None:
     calls: list[tuple[str, str, str]] = []
 
-    def fake_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
-        del base_agent
+    # #948 S4b: an Agent Blueprint expert (``root``) now executes on the blueprint
+    # runtime, so the command-dispatch route selects ``_run_blueprint_dspy_agent``
+    # via ``_blueprint_runner_for_agent`` — not the legacy ``_run_prompt_user_agent``
+    # the retired native-expert runtime used to route it to.
+    def fake_blueprint_runner(
+        base_agent: Any,
+        agent_def: Any,
+        question: str,
+        session_id: str,
+        cancel_requested: Any | None = None,
+    ) -> Any:
+        del base_agent, cancel_requested
         calls.append((agent_def.id, question, session_id))
         return _Pred(answer="VALIDATION_OK", selected_expert=agent_def.id)
 
-    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_agent)
+    monkeypatch.setattr("clio_agent.gact.app._run_blueprint_dspy_agent", fake_blueprint_runner)
     monkeypatch.chdir(tmp_path)
     workspace = tmp_path / "workspace"
     blueprint_root = workspace / ".clio" / "agent-blueprints" / "qc-agent"

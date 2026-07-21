@@ -53,6 +53,10 @@ from clio_agent.gact.part_atoms import (
 from clio_agent.gact.types import ErrorInfo, Message, Part, Tokens
 from tests.equivalence.normalizers import first_divergence
 
+# #948 S4b: the one end-to-end turn here runs the blueprint react ``main``; route
+# it to the ``build_app(agent=FakeClioAgent(...))`` host fake.
+pytestmark = pytest.mark.usefixtures("host_agent_executor")
+
 # --------------------------------------------------------------------------- #
 # Fixtures — both backends (LocalFS + clio-core), mirroring tests/test_arc/conftest
 # --------------------------------------------------------------------------- #

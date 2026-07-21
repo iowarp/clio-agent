@@ -234,7 +234,13 @@ def note_lm_answer_delta(text: str, *, field: str = "answer") -> None:
         # empty), matching the old buffer's guard.
         if record_dedup is not None and agent_id:
             try:
-                record_dedup(agent_id, field, text)
+                # #953: the DEDUP key is run-partitioned under an in-process variant
+                # (BestOfN/Refine try N gets its own tap bucket, never fed try N-1's
+                # thoughts) — the tool observer reads the same run-keyed scope. The
+                # VISIBLE emit below keeps the BARE agent_id for attribution.
+                from clio_agent.gact.context import run_keyed_scope  # noqa: PLC0415
+
+                record_dedup(run_keyed_scope(agent_id), field, text)
             except Exception:  # noqa: BLE001,S110 - dedup capture is best-effort
                 pass
         stream_audit(

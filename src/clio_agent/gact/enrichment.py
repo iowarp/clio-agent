@@ -43,6 +43,7 @@ locals.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -584,6 +585,165 @@ def _enrich_with_requested_memory_search(
         + "\n\n## User question\n\n"
         + user_text
     ), metadata
+
+
+# Clio-owned marker for the server-composed observe-later notification block
+# (#948 S6). The block is SERVER grounding prepended to the model's turn input —
+# never user text and never model output — so it carries this constant header (the
+# #881 marker discipline). The constant is DEFINED here and USED by the composer
+# (:func:`inject_pending_agent_task_notifications`) to head every injected block,
+# and is exported for the injection tests. NOTE: no presentation-model splitter
+# keys off this marker on this lineage TODAY — the split machinery that would
+# register it and keep the block out of the user-text lane is future work (see
+# CHANGELOG); the marker is a stable, greppable header now and the registration
+# hook when that machinery lands. It is NOT a machine-enforced trust boundary yet.
+PENDING_TASK_NOTIFICATION_MARKER = (
+    "## Background agent-task results (spawned in an earlier turn — you decide what to do)"
+)
+# Injection is BOUNDED: at most this many task blocks per turn, each excerpt
+# size-capped; a typed note reports how many more remain pending (they surface on
+# the following turn — never dropped).
+_MAX_NOTIFY_BLOCKS = 8
+_NOTIFY_EXCERPT_MAX = 600
+
+
+def _sanitize_excerpt(text: str) -> str:
+    """Neutralize a child-authored excerpt before it is embedded in the fenced
+    notification block (#948 S6 adversarial-review [5]).
+
+    The excerpt is the child agent's OWN final message text — untrusted content
+    that may reflect a poisoned document / web page / tool output. Embedded raw
+    inside triple-backtick fences under the block's marker, a child could close the
+    fence and forge extra ``### task …`` rows or the notification marker into the
+    parent's turn input (a fake-notification / cross-agent injection surface). This
+    replaces the two STRUCTURAL tokens the child must not control — any run of three
+    or more backticks (the fence delimiter) and the block marker — so child text can
+    never break out of the fence or forge the marker. Content is otherwise preserved
+    verbatim; the length bound is applied by the caller."""
+
+    text = re.sub(r"`{3,}", "``", text)
+    return text.replace(PENDING_TASK_NOTIFICATION_MARKER, "[marker removed]")
+
+
+def _notify_block(task: Any) -> str:
+    """Compose ONE agent-task notification block — a uniform structured field
+    template (#948 S6 model-decides lock).
+
+    Renders the SAME fields for every terminal task, success or failure alike:
+    task id, child expert, status, typed error_reason, a size-bounded result
+    excerpt, and the child session id. There is deliberately NO branch on the
+    result's CONTENT (only the fixed excerpt length bound + structural-token
+    sanitization) — a failed child's result is presented identically to a completed
+    one, and the MODEL decides."""
+
+    result = task.result or {}
+    excerpt = _sanitize_excerpt(str(result.get("answer_excerpt", ""))[:_NOTIFY_EXCERPT_MAX])
+    return (
+        f"### task {task.task_id} — {task.agent_ref.get('expert_id', '')} [{task.status}]\n"
+        f"- child_session_id: {task.child_session_id}\n"
+        f"- error_reason: {task.error_reason}\n"
+        f"- result_excerpt:\n```\n{excerpt}\n```"
+    )
+
+
+def inject_pending_agent_task_notifications(
+    app: "FastAPI", sid: str, enriched_text: str
+) -> tuple[str, list[str]]:
+    """Prepend a bounded block of completed-but-unconsumed background task results
+    to this turn's enriched input and STAGE (do not consume) the selected task ids
+    (#948 S6 observe-later; adversarial-review [1]/[4]).
+
+    An async child spawned in a PRIOR turn that was never collected (via
+    wait/check) in that turn sets ``notify_pending`` at completion. Here — during
+    the parent's next turn's ENRICHMENT — those results are composed into a
+    server-grounding block (marked with :data:`PENDING_TASK_NOTIFICATION_MARKER`) so
+    the model SEES them and decides what to do; clio never auto-acts on the content.
+
+    Consumption is DEFERRED to the commit-to-run seam
+    (:func:`consume_pending_agent_task_notifications`): this function only composes
+    the block and RETURNS ``(text, selected_task_ids)`` so the caller stages the ids
+    on the turn state WITHOUT consuming. If the turn then aborts after enrichment (a
+    pre_message hook veto, a cancellation before forward), the tasks stay
+    ``notify_pending`` and the NEXT turn injects them again — the observe-later
+    guarantee is never at-most-once-dropped. Bounded to :data:`_MAX_NOTIFY_BLOCKS`;
+    a typed note reports any remaining (they surface next turn — never dropped)."""
+
+    from clio_agent.gact.agent_tasks import pending_notifications  # noqa: PLC0415
+
+    pending = pending_notifications(app, sid)
+    if not pending:
+        return enriched_text, []
+    selected = pending[:_MAX_NOTIFY_BLOCKS]
+    blocks = [_notify_block(task) for task in selected]
+    remaining = len(pending) - len(selected)
+    truncation = (
+        f"\n\n_({remaining} more finished task(s) pending — they will surface next turn.)_"
+        if remaining > 0
+        else ""
+    )
+    text = (
+        PENDING_TASK_NOTIFICATION_MARKER
+        + "\n\n"
+        + "\n\n".join(blocks)
+        + truncation
+        + "\n\n---\n\n"
+        + enriched_text
+    )
+    return text, [task.task_id for task in selected]
+
+
+def consume_pending_agent_task_notifications(app: "FastAPI", sid: str, task_ids: list[str]) -> None:
+    """Consume the observe-later notifications staged by
+    :func:`inject_pending_agent_task_notifications` AND emit each one's delegation
+    terminal — at the COMMIT-TO-RUN seam, never at compose time (#948 S6
+    adversarial-review [1]/[4]).
+
+    Called once the turn is committed to forward with the enriched input (after the
+    last abort/veto seam), so a turn vetoed/aborted after enrichment leaves the
+    tasks ``notify_pending`` for the next turn. For each staged task:
+
+    * consume it exactly once (durable ``consumed_at`` + ``agent.task.consumed``),
+      atomically via the ``notify_pending`` once-guard; and
+    * emit its delegation TERMINAL — the SAME choreography ``wait_agent_tasks`` /
+      ``check_agent_tasks`` emit (``blueprint.delegation.completed|failed`` + the
+      return ``expert_handoff`` Part + ``blueprint.delegation.parent_resumed``),
+      keyed to the parent expert that requested the child.
+
+    The terminal emission goes through the SHARED ``delegation_reported`` once-gate
+    (``_emit_delegation_terminal``), so if a later ``wait_agent_tasks`` also reaches
+    this task it does not double-emit — and vice versa (exactly-once on the wire in
+    either order). Without this, an async child collected only via observe-later
+    left a ``blueprint.delegation.started`` with no terminal on the wire (a dangling
+    delegation that renders the child perpetually in-progress). The return Part is
+    appended to THIS (parent-session) turn's live transcript — the natural home,
+    since the parent-session transcript is where the delegation renders."""
+
+    if not task_ids:
+        return
+    from clio_agent.gact.agent_tasks import consume_notification  # noqa: PLC0415
+    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+        _runtime_active_agent_blueprint_id,
+    )
+    from clio_agent.gact.agents.spawn_runtime import _emit_delegation_terminal  # noqa: PLC0415
+    from clio_agent.gact.types import AgentDef  # noqa: PLC0415
+
+    reg = app.state.agent_task_registry
+    blueprint_id = _runtime_active_agent_blueprint_id(app, sid) or ""
+    for task_id in task_ids:
+        task = reg.get(task_id)
+        if task is None:
+            continue
+        # Consume (atomic once-guard); a concurrent wait may already have consumed
+        # it, in which case this no-ops. The terminal emission below is separately
+        # once-gated, so we ALWAYS attempt it (exactly-once regardless of order).
+        consume_notification(app, task_id)
+        parent_id = task.agent_ref.get("requesting_expert_id", "") or "main"
+        parent_def = AgentDef(
+            id=parent_id,
+            title=parent_id,
+            metadata={"agent_blueprint_id": blueprint_id},
+        )
+        _emit_delegation_terminal(app, sid, parent_def, task)
 
 
 def _context_file_turn_provenance(app: "FastAPI", sid: str, *, status: str) -> dict[str, Any]:

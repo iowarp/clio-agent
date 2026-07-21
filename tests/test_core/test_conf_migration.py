@@ -71,20 +71,6 @@ class TestLmCallTimeout:
         assert _max_lm_call_seconds() == 123.0
 
 
-class TestAgentMaxSteps:
-    def test_default_and_clamp(self, monkeypatch):
-        from clio_agent.agent import DEFAULT_AGENT_MAX_STEPS, ClioAgent
-
-        monkeypatch.delenv("CLIO_AGENT_MAX_STEPS", raising=False)
-        assert ClioAgent._agent_max_steps() == DEFAULT_AGENT_MAX_STEPS
-        monkeypatch.setenv("CLIO_AGENT_MAX_STEPS", "5")
-        assert ClioAgent._agent_max_steps() == 5
-        monkeypatch.setenv("CLIO_AGENT_MAX_STEPS", "999")  # clamped to 12
-        assert ClioAgent._agent_max_steps() == 12
-        monkeypatch.setenv("CLIO_AGENT_MAX_STEPS", "garbage")  # falls back
-        assert ClioAgent._agent_max_steps() == DEFAULT_AGENT_MAX_STEPS
-
-
 class TestHookTimeout:
     def test_env_and_default(self, monkeypatch, tmp_path):
         from clio_agent.runtime.hooks import HookRegistry
@@ -208,27 +194,11 @@ class TestParseRetryAttempts:
         assert _parse_retry_attempts(self._cfg()) == 9
 
 
-class TestLegacyNativeExpertsEnabled:
-    """``agents.enable_legacy_native_experts`` / env."""
-
-    def test_default(self, monkeypatch):
-        from clio_agent.gact.agents.resolution import _legacy_native_expert_runtime_enabled
-
-        monkeypatch.delenv("CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS", raising=False)
-        assert _legacy_native_expert_runtime_enabled() is False
-
-    def test_env(self, monkeypatch):
-        from clio_agent.gact.agents.resolution import _legacy_native_expert_runtime_enabled
-
-        monkeypatch.setenv("CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS", "on")
-        assert _legacy_native_expert_runtime_enabled() is True
-
-    def test_file_wins(self, monkeypatch, tmp_path):
-        from clio_agent.gact.agents.resolution import _legacy_native_expert_runtime_enabled
-
-        monkeypatch.delenv("CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS", raising=False)
-        _write_user_config(monkeypatch, tmp_path, "agents:\n  enable_legacy_native_experts: true\n")
-        assert _legacy_native_expert_runtime_enabled() is True
+# NOTE (#948 S4b): ``TestLegacyNativeExpertsEnabled`` was deleted alongside the
+# retirement of the ``agents.enable_legacy_native_experts`` /
+# ``CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS`` knob. The legacy native-expert
+# runtime it gated (the Tier-1 ``ClioAgent.forward`` planner) no longer exists, so
+# there is no config surface left to migrate.
 
 
 class TestStreamAuditEnabled:
@@ -479,6 +449,11 @@ class TestArcStore:
     def test_env(self, monkeypatch, tmp_path):
         from clio_agent.arc.storage import LocalFSStore, make_arc_store
 
+        # Drop the fixture's file-layer ``arc.store`` so the env is the real source
+        # under test (file > env; a bare setenv would otherwise be shadowed).
+        from tests._config_layer import delete_config
+
+        delete_config("arc.store")
         monkeypatch.setenv("CLIO_ARC_STORE", "local")
         assert isinstance(make_arc_store(data_dir=tmp_path / "arc"), LocalFSStore)
 
@@ -499,7 +474,13 @@ class TestArcStore:
     def test_unknown_backend_fails_loud(self, monkeypatch, tmp_path):
         from clio_agent.arc.storage import make_arc_store
 
-        monkeypatch.setenv("CLIO_ARC_STORE", "banana")
+        # The autouse fixture pins ``arc.store: local`` in the config-FILE layer
+        # (file > env), so a ``setenv`` here could never reach the resolver. Express
+        # the fail-loud contract at the file layer instead: an unknown backend name
+        # in config.yaml must still raise (#985 residual re-expression).
+        from tests._config_layer import set_config
+
+        set_config("arc.store", "banana")
         with pytest.raises(ValueError, match="banana"):
             make_arc_store(data_dir=tmp_path / "arc")
 
@@ -523,6 +504,11 @@ class TestArcStoreConfig:
     def test_env(self, monkeypatch, tmp_path, _stub_clio_core):
         from clio_agent.arc.storage import make_arc_store
 
+        # Drop the fixture's file-pinned ``arc.store: local`` so the cte branch is
+        # reachable; the SUBJECT here is the ``store_config`` env resolution (#985).
+        from tests._config_layer import delete_config
+
+        delete_config("arc.store")
         monkeypatch.setenv("CLIO_ARC_STORE", "cte")
         monkeypatch.setenv("CLIO_ARC_STORE_CONFIG", str(tmp_path / "env-cte.yaml"))
         make_arc_store(data_dir=tmp_path / "arc")

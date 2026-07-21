@@ -18,11 +18,10 @@ The orchestration is byte-for-byte behavior-preserving. :func:`forward_turn`:
 * runs the dynamic-agent (blueprint/prompt/tool) OR the CLIO-orchestrator forward,
   streamed-first with the synchronous executor path as the fallback, setting
   ``state.prompt_resolution`` / ``state.dynamic_agent_used`` / ``state.agent_runtime``
-  / ``state.pred`` as the original body did.
-* settles expert-pack delegations via
-  :func:`~clio_agent.gact.turn_delegation.settle_dynamic_agent_delegations`
-  (``state.pred, state.expert_handoffs = ...`` — the seam return values, TRICKY #2,
-  never an internal pred mutation) and returns ``state.pred``.
+  / ``state.pred`` as the original body did, and returns ``state.pred``. A react
+  main routes to its declared children by CALLING the spawn-runtime tools
+  (``spawn_agent_task`` / ``wait_agent_tasks``), so ``state.pred`` is already the
+  main's own answer — there is no post-forward settle/synthesis pass.
 
 The #714 danger set (the agent-builder + blueprint-runner seams and the executable
 session-agent constant) is resolved through ``app`` via a *function-local* import
@@ -44,30 +43,50 @@ from clio_agent.gact.agents.resolution import (
     _resolve_runtime_dynamic_agent,
     _runtime_active_agent_blueprint_agent_ids,
     _runtime_active_agent_blueprint_root_id,
+    _runtime_active_agent_blueprint_rows,
 )
 from clio_agent.gact.evidence import _dynamic_agent_runtime_provenance
 from clio_agent.gact.messaging import _prediction_summary
 from clio_agent.gact.providers.auth import _refresh_argonne_lm_token
 from clio_agent.gact.runtime.globals import (
+    _BlueprintRootDisabled,
     _emit_semantic_event,
     _llm_provider_payload,
+    _NoResolvableAgent,
     _session_agent_id,
     _tool_session_context,
     _UnsupportedSessionAgent,
 )
-from clio_agent.gact.runtime.type_parsing import _blueprint_module_kind, answer_stream_visible
+from clio_agent.gact.runtime.type_parsing import _blueprint_module_kind
 from clio_agent.gact.streaming import (
-    _agent_forward_compat,
     _run_dynamic_agent_compat,
     _try_streamed_forward_compat,
 )
-from clio_agent.gact.turn_delegation import settle_dynamic_agent_delegations
 from clio_agent.gact.turn_stream import emit_chunk
 from clio_agent.gact.turn_watchdog import await_turn_work, cancel_requested
 
 if TYPE_CHECKING:
     from clio_agent.gact.turn_state import TurnState
     from clio_agent.prompts import PromptRegistry
+
+
+def _forward_executor(state: "TurnState") -> Any:
+    """The executor a turn's forward should run in: the DEDICATED agent-task pool
+    for the CHILD turn's DEPTH (a ``session_type=="agent_task"`` session, #948 S3),
+    else ``None`` (the default pool). Routing children onto a PER-DEPTH pool keeps a
+    parent blocked in a wait on ``pool[d]`` from starving its own children on
+    ``pool[d+1]`` — a single shared pool deadlocks nested orchestrators (#948 S4
+    adversarial review)."""
+
+    sess = state.app.state.sessions.get(state.sid)
+    meta = (getattr(sess, "metadata", {}) or {}) if sess is not None else {}
+    if meta.get("session_type") != "agent_task":
+        return None
+    block = meta.get("agent_task")
+    depth = block.get("depth", 1) if isinstance(block, dict) else 1
+    from clio_agent.gact.turn_spawn import agent_task_executor_for_depth  # noqa: PLC0415
+
+    return agent_task_executor_for_depth(state.app, depth)
 
 
 async def forward_turn(state: "TurnState") -> Any:
@@ -121,6 +140,32 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
         and state.active_agent_id in {"", "main", "default"}
     ):
         state.active_agent_id = active_blueprint_root_id
+    if (
+        active_blueprint_root_id
+        and state.active_agent_id == active_blueprint_root_id
+        and state.active_agent_id not in active_blueprint_agent_ids
+    ):
+        # #948 S4: the active blueprint's DECLARED root exists but is disabled
+        # (validation errors — e.g. a pre-migration pack whose chain_of_thought
+        # main declares children). Fail TYPED here: no silent substitute root,
+        # no fall-through to the legacy planner (both observed on the live gate).
+        rows = _runtime_active_agent_blueprint_rows(state.app, session_id=state.sid)
+        root_errors = next(
+            (
+                list(row.validation_errors)
+                for row in rows
+                if row.id == active_blueprint_root_id
+            ),
+            [],
+        )
+        blueprint_id = str(
+            rows[0].metadata.get("agent_blueprint_id") or "" if rows else ""
+        )
+        raise _BlueprintRootDisabled(
+            active_blueprint_root_id,
+            blueprint_id=blueprint_id,
+            validation_errors=root_errors,
+        )
     routing_mode = getattr(state.sess, "routing_mode", "auto") or "auto"
     state.invocation_agent_id = state.active_agent_id or "orchestrator"
     _emit_semantic_event(
@@ -168,12 +213,6 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
             raise _UnsupportedSessionAgent(state.active_agent_id)
         state.prompt_resolution = dict(dynamic_agent.metadata.get("prompt_resolution") or {})
         state.dynamic_agent_used = dynamic_agent
-        # #880: capture, at the source, whether this responder's typed ``answer`` is
-        # a VISIBLE deliverable — decided STRUCTURALLY from its declared
-        # structured_outputs (final_responder OR no workflow_state). finalize reads
-        # this to blank a workflow_state extract expert's batch answer fallback,
-        # never re-deriving it by sniffing whether the answer text looks like JSON.
-        state.answer_stream_visible = answer_stream_visible(dynamic_agent)
         runner = _blueprint_runner_for_agent(dynamic_agent)
         dynamic_kind = (
             _blueprint_module_kind(dynamic_agent)
@@ -292,7 +331,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
                 state.pred = await await_turn_work(
                     state,
                     loop.run_in_executor(
-                        None,
+                        _forward_executor(state),
                         lambda: turn_context.run(
                             _run_dynamic_agent_compat,
                             runner,
@@ -318,134 +357,14 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
                 payload=_prediction_summary(state.pred),
             )
     else:
-        # Honour the session's routing override. routing_mode "chat"
-        # forces the chat path (no /chat prefix needed); "experts"
-        # rejects chat/none classifications. Keep the override scoped
-        # to this turn context so concurrent sessions do not mutate the
-        # shared ClioAgent instance.
-        routing_override = routing_mode
-        from clio_agent.agent import routing_mode_override as _routing_override  # noqa: PLC0415
-
-        with _routing_override(routing_override), _cancellation_checker(cancel_cb):
-            with _tool_session_context(state.sid):
-                llm_actor = {
-                    "agent_id": state.active_agent_id or "orchestrator",
-                    "source": "builtin",
-                    "execution_mode": "clio_agent_forward",
-                }
-                llm_subject = {"message_id": state.user_msg.id}
-                _emit_semantic_event(
-                    state.app,
-                    state.sid,
-                    "llm.request.started",
-                    turn_id=state.turn_id,
-                    trace_id=state.trace_id,
-                    status="running",
-                    summary="LLM request started for CLIO orchestrator.",
-                    actor=llm_actor,
-                    subject=llm_subject,
-                    provider=_llm_provider_payload(
-                        state.app, state.active_agent_id or "orchestrator"
-                    ),
-                    payload={
-                        "request_mode": "streamed",
-                        "routing_mode": routing_override,
-                        "session_mode": getattr(state.sess, "mode", "chat"),
-                        "edit_mode": getattr(state.sess, "edit_mode", "diff"),
-                        "input": state.enriched_text,
-                        "native_image_count": len(state.native_images),
-                    },
-                )
-                state.pred = await await_turn_work(
-                    state,
-                    _try_streamed_forward_compat(
-                        state.app,
-                        state.enriched_text,
-                        state.sid,
-                        live_emit,
-                        session_mode=getattr(state.sess, "mode", "chat"),
-                        session_edit_mode=getattr(state.sess, "edit_mode", "diff"),
-                        images=state.native_images,
-                        cancel_requested=cancel_cb,
-                    ),
-                )
-                if state.pred is not None:
-                    _emit_semantic_event(
-                        state.app,
-                        state.sid,
-                        "llm.response.completed",
-                        turn_id=state.turn_id,
-                        trace_id=state.trace_id,
-                        summary="LLM response completed for CLIO orchestrator.",
-                        actor=llm_actor,
-                        subject=llm_subject,
-                        provider=_llm_provider_payload(
-                            state.app, state.active_agent_id or "orchestrator"
-                        ),
-                        payload=_prediction_summary(state.pred),
-                    )
-                if state.pred is None:
-                    _emit_semantic_event(
-                        state.app,
-                        state.sid,
-                        "llm.request.started",
-                        turn_id=state.turn_id,
-                        trace_id=state.trace_id,
-                        status="running",
-                        summary="Synchronous LLM request started for CLIO orchestrator.",
-                        actor=llm_actor,
-                        subject=llm_subject,
-                        provider=_llm_provider_payload(
-                            state.app, state.active_agent_id or "orchestrator"
-                        ),
-                        payload={
-                            "request_mode": "sync",
-                            "routing_mode": routing_override,
-                            "session_mode": getattr(state.sess, "mode", "chat"),
-                            "edit_mode": getattr(state.sess, "edit_mode", "diff"),
-                            "input": state.enriched_text,
-                            "native_image_count": len(state.native_images),
-                        },
-                    )
-                    loop = asyncio.get_running_loop()
-                    turn_context = contextvars.copy_context()
-                    state.pred = await await_turn_work(
-                        state,
-                        loop.run_in_executor(
-                            None,
-                            lambda: turn_context.run(
-                                _agent_forward_compat,
-                                state.app.state.agent,
-                                state.enriched_text,
-                                state.sid,
-                                getattr(state.sess, "mode", "chat"),
-                                getattr(state.sess, "edit_mode", "diff"),
-                                cancel_cb,
-                                state.native_images,
-                            ),
-                        ),
-                    )
-                    _emit_semantic_event(
-                        state.app,
-                        state.sid,
-                        "llm.response.completed",
-                        turn_id=state.turn_id,
-                        trace_id=state.trace_id,
-                        summary="Synchronous LLM response completed for CLIO orchestrator.",
-                        actor=llm_actor,
-                        subject=llm_subject,
-                        provider=_llm_provider_payload(
-                            state.app, state.active_agent_id or "orchestrator"
-                        ),
-                        payload=_prediction_summary(state.pred),
-                    )
-    if state.dynamic_agent_used is not None and state.dynamic_agent_used.source == "expert_pack":
-        state.pred, state.expert_handoffs = await settle_dynamic_agent_delegations(
-            state,
-            state.dynamic_agent_used,
-            state.pred,
-            source_text=state.enriched_text,
-        )
+        # #948 S4b: the agent id is in {"", "main", "default"} but NO Agent
+        # Blueprint resolved for it — neither the active blueprint's declared
+        # root nor the default registry blueprint (normal pack-less sessions
+        # resolve the latter via _runtime_active_agent_blueprint_rows). The
+        # legacy Tier-1 planner (ClioAgent.forward) that used to run here is
+        # DELETED, so there is nothing to execute. Fail TYPED — never fall
+        # through to a legacy pathway.
+        raise _NoResolvableAgent(state.active_agent_id or session_agent_id)
     _emit_semantic_event(
         state.app,
         state.sid,

@@ -365,8 +365,6 @@ def _io_logging_lm_cls() -> Any:
                     "reasoning": AnswerFieldExtractor("reasoning"),
                     "answer": AnswerFieldExtractor("answer"),
                     "next_thought": AnswerFieldExtractor("next_thought"),
-                    "next_expert": AnswerFieldExtractor("next_expert"),
-                    "next_task": AnswerFieldExtractor("next_task"),
                     "workflow_state": AnswerFieldExtractor("workflow_state"),
                 }
                 visible_contract_fields = {"reasoning", "next_thought", "answer"}

@@ -61,6 +61,19 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_RUNTIME_PORT = 9413
 
+# The quarantine reason set when the per-RPC stall ladder exhausts against a zombie
+# (:mod:`clio_agent.arc.rpc_liveness`). Owned here (the quarantine-reason owner) so the
+# gate's recovery can be REASON-AWARE without importing rpc_liveness (which imports this
+# module); rpc_liveness re-exports it.
+RPC_STALLED_REASON = "clio_core_rpc_stalled"
+
+# Recovery back-off TTL for an ``rpc_stalled`` quarantine. A zombie's RPC-level health
+# re-probe (:func:`clio_agent.arc.rpc_liveness.probe_rpc_health`) costs up to
+# ``_HEALTH_PROBE_MAX_S`` and must not run on every op, so re-probes are spaced this far
+# apart — much wider than the socket-probe TTL, whose reconnect is nearly free. Between
+# probes an op fails fast (typed, microseconds), delivering the fail-fast promise.
+_RPC_STALLED_RECOVERY_TTL_S = 30.0
+
 # Default liveness-probe cache TTL, in seconds. A probe result is trusted for this
 # long so the per-op cost is one monotonic comparison, not a socket connect; the
 # window is also the residual AV race (a daemon that dies mid-TTL is not yet seen).
@@ -251,18 +264,34 @@ class LivenessGate:
                 "ttl_s": self._ttl_s,
             }
 
-    def ensure_live(self, reconnect: Callable[[], None]) -> None:
+    def ensure_live(
+        self,
+        reconnect: Callable[[], None],
+        rpc_probe: Callable[[], bool] | None = None,
+    ) -> None:
         """Confirm the daemon is live, else raise before the native op runs.
 
         Fast path: a probe confirmed live within ``ttl_s`` returns immediately (one
         monotonic comparison). Otherwise a fresh probe runs; a dead daemon quarantines
-        the store and raises. If already quarantined, one guarded reconnect attempt is
-        made (rate-limited to once per TTL) via ``reconnect``; success leaves
-        quarantine and returns, failure stays quarantined and re-raises.
+        the store and raises. If already quarantined, one guarded recovery attempt is
+        made (rate-limited to once per recovery TTL); success leaves quarantine and
+        returns, failure stays quarantined and re-raises.
+
+        Recovery is REASON-AWARE. A socket-loss quarantine
+        (``clio_core_daemon_not_listening``) recovers through ``reconnect`` — the
+        connect-or-spawn seam gated by the socket probe, which is sound because a
+        connection-refused daemon is genuinely gone. An ``rpc_stalled`` quarantine
+        (:data:`RPC_STALLED_REASON`) is a ZOMBIE whose socket still accepts, so a socket
+        probe / plain reconnect passes BY DEFINITION and would dissolve the quarantine
+        into another full stall ladder. It instead recovers only through ``rpc_probe``,
+        a real RPC-level health check; without one it stays quarantined.
 
         Args:
             reconnect: The connect-or-spawn seam that rebuilds the native binding
-                (raises on failure). Invoked at most once per TTL while quarantined.
+                (raises on failure). Used for socket-loss recovery.
+            rpc_probe: An RPC-LEVEL health probe ``() -> bool`` (returns True iff a real
+                RPC answered) used for ``rpc_stalled`` recovery. ``None`` => an
+                ``rpc_stalled`` quarantine cannot be left this op (fails fast, typed).
 
         Raises:
             ClioCoreRuntimeLostError: When the daemon is not listening and cannot be
@@ -270,7 +299,7 @@ class LivenessGate:
         """
         with self._lock:
             if self._quarantined:
-                self._attempt_recovery(reconnect)
+                self._attempt_recovery(reconnect, rpc_probe)
                 return
             now = time.monotonic()
             if self._last_ok_at is not None and now - self._last_ok_at < self._ttl_s:
@@ -288,18 +317,46 @@ class LivenessGate:
                 port=self._port,
             )
 
-    def _attempt_recovery(self, reconnect: Callable[[], None]) -> None:
-        """One guarded reconnect attempt per TTL; leave quarantine on success."""
+    def _recovery_ttl_s(self) -> float:
+        """Rate-limit window for the current quarantine reason.
+
+        An ``rpc_stalled`` re-probe is expensive (a real RPC that may hang up to the
+        health-probe window), so it is spaced far wider than a socket-loss reconnect.
+        """
+        return _RPC_STALLED_RECOVERY_TTL_S if self._reason == RPC_STALLED_REASON else self._ttl_s
+
+    def _attempt_recovery(
+        self,
+        reconnect: Callable[[], None],
+        rpc_probe: Callable[[], bool] | None,
+    ) -> None:
+        """One guarded recovery attempt per recovery TTL; leave quarantine on success.
+
+        Reason-aware: an ``rpc_stalled`` quarantine recovers only via ``rpc_probe`` (a
+        real RPC), a socket-loss quarantine via ``reconnect`` (the socket-gated
+        connect-or-spawn seam).
+        """
         now = time.monotonic()
-        if self._last_recovery_at is not None and now - self._last_recovery_at < self._ttl_s:
-            # Rate-limit: a hot loop must not spawn-storm the daemon while it is down.
+        if (
+            self._last_recovery_at is not None
+            and now - self._last_recovery_at < self._recovery_ttl_s()
+        ):
+            # Rate-limit: within the recovery TTL an op fails fast (typed, microseconds)
+            # instead of re-probing/spawn-storming a still-down daemon.
             raise ClioCoreRuntimeLostError(
                 f"clio-core runtime still unavailable on 127.0.0.1:{self._port} "
-                "(reconnect back-off); store remains quarantined.",
+                "(recovery back-off); store remains quarantined.",
                 reason="clio_core_reconnect_backoff",
                 port=self._port,
             )
         self._last_recovery_at = now
+        if self._reason == RPC_STALLED_REASON:
+            self._recover_from_rpc_stall(rpc_probe)
+            return
+        self._recover_via_reconnect(reconnect)
+
+    def _recover_via_reconnect(self, reconnect: Callable[[], None]) -> None:
+        """Socket-loss recovery: one guarded reconnect; leave quarantine on success."""
         try:
             reconnect()
         except Exception as exc:  # noqa: BLE001 - any reconnect failure -> stay quarantined
@@ -323,6 +380,45 @@ class LivenessGate:
             "(reason=clio_core_runtime_recovered port=%s); store left quarantine",
             self._port,
         )
+
+    def _recover_from_rpc_stall(self, rpc_probe: Callable[[], bool] | None) -> None:
+        """Zombie recovery: leave quarantine ONLY if a real RPC-level probe answers.
+
+        The socket probe/reconnect a zombie passes proves nothing, so recovery here
+        requires ``rpc_probe`` (a cheap real RPC through a single short stall watch) to
+        return True. A stalled/failed probe — or no probe supplied — stays quarantined
+        and fails fast typed; the next attempt is spaced by the recovery TTL.
+        """
+        if rpc_probe is not None and rpc_probe():
+            self._leave_quarantine()
+            self._last_ok_at = time.monotonic()
+            logger.info(
+                "clio-core liveness: shared clio-core runtime recovered via RPC probe "
+                "(reason=clio_core_runtime_recovered port=%s); store left quarantine",
+                self._port,
+            )
+            return
+        raise ClioCoreRuntimeLostError(
+            f"clio-core runtime on 127.0.0.1:{self._port} still fails an RPC-level health "
+            "probe (peer appears to be a zombie: socket accepts, runtime dead); store "
+            "remains quarantined.",
+            reason=RPC_STALLED_REASON,
+            port=self._port,
+        )
+
+    def note_rpc_stalled(self, reason: str = RPC_STALLED_REASON) -> None:
+        """Quarantine after a per-RPC stall ladder exhausts (arc/rpc_liveness, #948 S4).
+
+        A zombie daemon (socket alive, RPC hung) defeats the socket probe, so the stall
+        wrapper -- not :meth:`ensure_live` -- detected the loss. Enter the SAME
+        quarantine so the NEXT op fails fast via :meth:`ensure_live`. The recovery clock
+        is armed HERE (``_last_recovery_at``) so the immediately-following op is
+        rate-limited (fails fast in microseconds) rather than paying an RPC re-probe;
+        the first re-probe is spaced one recovery TTL out.
+        """
+        with self._lock:
+            self._enter_quarantine(reason)
+            self._last_recovery_at = time.monotonic()
 
     def _enter_quarantine(self, reason: str) -> None:
         self._quarantined = True

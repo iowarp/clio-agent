@@ -43,7 +43,11 @@ from clio_agent.gact.agents.composition import (
     _prompt_render_context,
 )
 from clio_agent.gact.catalog import _builtin_agents
-from clio_agent.gact.expert_packs import load_expert_packs, validate_expert_hierarchy
+from clio_agent.gact.expert_packs import (
+    discover_expert_packs,
+    load_expert_packs,
+    validate_expert_hierarchy,
+)
 from clio_agent.gact.runtime.app_state import per_app_dict
 from clio_agent.gact.types import AgentCapabilityRef, AgentDef
 from clio_agent.gact.workflow_state.schema import (
@@ -157,9 +161,7 @@ def _resolve_dynamic_agent(
     # real agent. Same process-cwd basis as the load_expert_packs() call above.
     skill_hit = _skills.SkillCatalog().resolve(agent_id)
     if skill_hit.status != "missing":
-        raise _skills.SkillNotDelegatableError(
-            agent_id, getattr(skill_hit.skill, "path", "") or ""
-        )
+        raise _skills.SkillNotDelegatableError(agent_id, getattr(skill_hit.skill, "path", "") or "")
     return None
 
 
@@ -172,24 +174,11 @@ def _agent_definition_is_agent_blueprint(agent_def: "AgentDef") -> bool:
     )
 
 
-def _legacy_native_expert_runtime_enabled() -> bool:
-    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
-
-    return bool(
-        conf.resolve(
-            "agents.enable_legacy_native_experts",
-            env="CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS",
-            default=False,
-            cast=conf.as_bool,
-        )
-    )
-
-
 def _agent_definition_uses_blueprint_runtime(agent_def: "AgentDef") -> bool:
-    return (
-        _agent_definition_is_agent_blueprint(agent_def)
-        and not _legacy_native_expert_runtime_enabled()
-    )
+    # An Agent Blueprint expert ALWAYS runs on the blueprint runtime: the legacy
+    # native-expert runtime it could route to (the deleted Tier-1 planner) is gone
+    # (#948 S4b), so there is no configuration under which it routes elsewhere.
+    return _agent_definition_is_agent_blueprint(agent_def)
 
 
 def _runtime_workspace_catalog_cwd(
@@ -224,9 +213,21 @@ def _runtime_active_agent_blueprint_id(app: "FastAPI", session_id: str = "") -> 
     explicit = str(metadata.get("active_agent_blueprint_id") or "").strip()
     if explicit:
         return explicit
-    if _legacy_native_expert_runtime_enabled():
-        return ""
     cwd = _runtime_workspace_catalog_cwd(app, session_id=session_id)
+    # Suppress the implicit default only on EXPLICIT ACTIVATION: a session-activated
+    # pack (id/path) or a workspace-scoped MANIFEST pack (``manifest_path`` set) IS the
+    # workspace's declared agent set (#770 C1). A GLOBAL pack or a LOOSE expert must NOT
+    # suppress -- it augments the resolved default main (#948 S4b findings 1/5/6).
+    pack_cwd = cwd or Path.cwd()
+    if (
+        _runtime_active_session_expert_pack_id(app, session_id)
+        or _runtime_active_session_expert_pack_path(app, session_id) is not None
+        or any(
+            pack.scope == "workspace" and pack.manifest_path is not None
+            for pack in discover_expert_packs(cwd=pack_cwd)
+        )
+    ):
+        return ""
     if any(
         row.id == DEFAULT_AGENT_BLUEPRINT_ID and row.enabled
         for row in discover_agent_blueprints(cwd=cwd)
@@ -763,7 +764,12 @@ def _runtime_active_agent_blueprint_root_id(app: "FastAPI", session_id: str = ""
     if not rows:
         return ""
     requested_root = str(rows[0].metadata.get("agent_blueprint_root_expert") or "").strip()
-    if requested_root and any(row.id == requested_root and row.enabled for row in rows):
+    if requested_root and any(row.id == requested_root for row in rows):
+        # The DECLARED root is the root, enabled or not. A disabled root is a
+        # fact the turn path fails TYPED on (_BlueprintRootDisabled) — silently
+        # substituting another enabled expert as root ran a leaf as the
+        # orchestrator on the live gate (#948 S4). Substitution below applies
+        # only when the manifest declares no resolvable root at all.
         return requested_root
     roots = [row for row in rows if row.enabled and not row.parent_id]
     if len(roots) == 1:

@@ -6,10 +6,9 @@ in-memory hot layer (``LRUCache`` + ``BTreeIndex`` in ``memory.py``); it does
 NOT do access-pattern-driven tier migration -- there is no hot/warm/cold/archive
 mover here.
 
-The seam -- :class:`ARCStore` (a ``Protocol``):
-    ``put(kind, name, data, search_text=...)`` / ``get(kind, name)`` /
-    ``scan(kind, prefix)`` over opaque ``bytes`` keyed by ``(kind, name)``.
-    Any backend that satisfies it plugs in.
+The seam -- :class:`ARCStore` (a ``Protocol``): ``put(kind, name, data,
+search_text=...)`` / ``get(kind, name)`` / ``scan(kind, prefix)`` over opaque
+``bytes`` keyed by ``(kind, name)``. Any backend that satisfies it plugs in.
 
 Backends:
     - :class:`LocalFSStore` -- plain files under ``<data_dir>``: one
@@ -17,16 +16,15 @@ Backends:
       plain-text companion for the degraded keyword-overlap search. Durable on
       disk; no external process.
     - :class:`ClioCoreStore` -- the clio-core CTE (Convergent Tiered Environment)
-      binding, connecting to a shared per-user daemon (connect-or-spawn, stopped
-      at interpreter exit via ``atexit``). Its DRAM tier is the live working set;
-      a file tier (``<user_data_dir>/cte/storage.bin``) backs it. On-disk
-      recovery of the file tier is still WIP, so for guaranteed disk durability
-      today prefer ``CLIO_ARC_STORE=local``.
+      binding, connecting to a shared per-user daemon (connect-or-spawn, stopped at
+      interpreter exit via ``atexit``). Its DRAM tier is the live working set backed by
+      a file tier; on-disk recovery is WIP, so for guaranteed disk durability today
+      prefer ``CLIO_ARC_STORE=local``.
 
 Backend selection is FAIL-LOUD, not a silent fallback: see :func:`make_arc_store`.
-``"cte"`` is the default; if its binding is absent or fails to init it RAISES --
-it does not quietly degrade to ``LocalFSStore``. ``LocalFSStore`` is used only
-when ``CLIO_ARC_STORE=local`` (or ``backend="local"``) is selected explicitly.
+``"cte"`` is the default and degrades to ``LocalFSStore`` only LOUDLY (a typed reason)
+if its binding is absent or fails to init; ``LocalFSStore`` is a silent choice only
+when ``CLIO_ARC_STORE=local`` is selected explicitly.
 """
 
 import atexit
@@ -68,6 +66,15 @@ from clio_agent.arc.clio_core_liveness import (  # noqa: F401 - re-exported for 
 # module (#892), re-exported above for callers/tests; blob writes ride the
 # bounded rc=13-class retry owner module (#893).
 from clio_agent.arc.clio_core_retry import put_blob_with_retry
+
+# Per-RPC stall guard (#948 S4): every native op below runs through this so a ZOMBIE
+# daemon (socket alive, RPC hung) degrades typed instead of freezing the caller.
+from clio_agent.arc.rpc_liveness import (
+    call_with_liveness,
+    guard_store_op,
+    guarded_store_rpc,
+    store_rpc_health_probe,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -248,15 +255,12 @@ class LocalFSStore:
 # --------------------------------------------------------------------------- #
 # clio-core shared-runtime lifecycle (connect-or-spawn)
 #
-# clio-core's chimaera runtime is a host-global singleton: ONE runtime binds the
-# RPC port (default 9413) and serves many clients. ``chimaera_init(kClient, True)``
-# would self-start an *embedded* runtime that dies with the calling process and
-# holds the port exclusively, so a second clio-agent process FATALs ("already
-# running on <port>"). Instead clio-core runs as a SHARED standalone daemon: spawn
-# it once (``clio_run start``) iff none is up, then every client attaches with
-# ``chimaera_init(kClient, False)``. This realises the user's directive: "multiple
-# clients connect to the same instance of clio-core — if no clio-core: spawn();
-# connect()."
+# clio-core's chimaera runtime is a host-global singleton: ONE runtime binds the RPC
+# port (default 9413) and serves many clients. ``chimaera_init(kClient, True)`` would
+# self-start an *embedded* runtime that dies with the caller and holds the port
+# exclusively (a second clio-agent process then FATALs). Instead it runs as a SHARED
+# standalone daemon: spawn once (``clio_run start``) iff none is up, then every client
+# attaches with ``chimaera_init(kClient, False)`` ("if no clio-core: spawn(); connect()").
 # --------------------------------------------------------------------------- #
 
 _RUNTIME_START_TIMEOUT_S = 30.0
@@ -372,14 +376,12 @@ def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str)
 
 # ---- client refcount: "last one out turns off the lights" -------------------
 #
-# The shared daemon must be released when the LAST client detaches (Jaime: "I leave
-# the TUI, everything gets released" — permanence rides the storage tier on disk,
-# NOT a warm process). Each clio-agent process registers its PID under
-# ``~/.clio/clio-runtime.clients/``; on graceful shutdown it deregisters and, if no
-# LIVE client remains, stops the daemon. Crash-safety: a SIGKILLed client cannot
-# deregister, so its stale PID file is pruned by liveness check (``/proc`` start-time
-# guards against PID reuse) on the next register/release — the daemon is at most one
-# reusable warm instance, never a growing leak.
+# The shared daemon is released when the LAST client detaches ("I leave the TUI,
+# everything gets released" — permanence rides the on-disk storage tier, not a warm
+# process). Each process registers its PID under ``~/.clio/clio-runtime.clients/`` and,
+# on graceful shutdown, deregisters + stops the daemon iff no LIVE client remains. A
+# SIGKILLed client's stale PID file is pruned by the liveness check (start-time guards
+# against PID reuse) on the next register/release — at most one warm instance, no leak.
 
 _client_registered = False  # process-level: are WE in the registry?
 _active_config_path = ""  # stashed so atexit/shutdown can stop the right daemon
@@ -614,14 +616,11 @@ class ClioCoreStore:
     base64-wrapped because CTE's ``GetBlob`` UTF-8-decodes in the C++ binding and
     raises on non-UTF-8 bytes.
 
-    RUNTIME MODEL: clio-core's chimaera runtime is a host-global singleton — one
-    runtime binds the RPC port (default 9413) and serves many clients. This store
-    runs it as a **standalone daemon** that outlives any single client: on first
-    use it spawns the daemon (``clio_run start``) iff none is listening, then every
-    process attaches as a pure client (``chimaera_init(kClient, default_with_runtime
-    =False)``). Multiple clio-agent processes (e.g. two gact servers) therefore
-    share ONE clio-core instance instead of each trying to self-start an embedded
-    runtime and FATAL-ing on the already-bound port. See ``_ensure_runtime``.
+    RUNTIME MODEL: the chimaera runtime is a host-global singleton — one runtime binds
+    the RPC port (default 9413) and serves many clients. This store runs it as a
+    **standalone daemon** that outlives any single client: on first use it spawns the
+    daemon iff none is listening, then every process attaches as a pure client, so
+    multiple clio-agent processes share ONE instance. See ``_ensure_runtime``.
 
     DURABILITY: the default CTE config is a DRAM hot tier spilling to a file cold
     tier (:func:`default_cte_config_path`). Cross-restart blob-data recovery is WIP
@@ -719,17 +718,33 @@ class ClioCoreStore:
 
     # ---- liveness gate (#892) ----
 
+    # Sentinel for the RPC-level health probe: a key that never exists in a record kind.
+    # ``GetBlobSize`` on a missing blob returns 0 on a healthy daemon (no write, no raise)
+    # and HANGS on a zombie — a cheap, side-effect-free liveness RPC.
+    _HEALTH_PROBE_KIND = ARC_KINDS[0]
+    _HEALTH_PROBE_NAME = "__clio_liveness_probe__"
+
     def _live(self) -> None:
-        """Gate an op: raise ``ClioCoreRuntimeLostError`` before the native binding if dead."""
-        self._gate.ensure_live(self._reconnect)
+        """Gate an op: raise ``ClioCoreRuntimeLostError`` before the native binding if dead.
+
+        Recovery from an ``rpc_stalled`` (zombie) quarantine needs a REAL RPC to answer,
+        not just a socket reconnect a zombie passes — hence the ``rpc_probe`` seam.
+        """
+        self._gate.ensure_live(
+            self._reconnect,
+            rpc_probe=lambda: store_rpc_health_probe(
+                self, kind=self._HEALTH_PROBE_KIND, name=self._HEALTH_PROBE_NAME
+            ),
+        )
 
     def _reconnect(self) -> None:
         """Rebuild the clio-core client binding via the connect-or-spawn seam (one attempt).
 
-        Reuses :func:`_ensure_runtime_daemon` — which spawns + rebinds under the
-        host-global file lock and FAILS LOUD if a fresh daemon never binds the port,
-        overwriting a stale pidfile in the process (clio-core#725) — then re-fetches
-        the native client handle. Raises on failure so the gate stays quarantined.
+        Reuses :func:`_ensure_runtime_daemon` (spawns + rebinds under the host-global
+        lock, FAILS LOUD if a fresh daemon never binds the port) then re-fetches the
+        native client handle. NOTE: a ZOMBIE whose socket still ACCEPTS is seen as
+        "alive" there, so this refreshes the handle without respawning — a persistent
+        zombie then exhausts the stall ladder into the typed degrade (never a hang).
         """
         import iowarp_core  # noqa: PLC0415
 
@@ -747,38 +762,51 @@ class ClioCoreStore:
         tier: str = "warm",
         search_text: Optional[str] = None,
     ) -> None:
-        self._live()
+        # Multi-RPC method: each native call is guarded INDIVIDUALLY (guarded_store_rpc)
+        # so stall_after_s bounds a single RPC, never the whole method body.
         # base64-wrap: CTE GetBlob UTF-8-decodes, so store ascii-safe bytes.
-        tag = self._cte.Tag(kind)
-        put_blob_with_retry(tag, name, base64.b64encode(data))
-        # Optional plain-text companion for BM25 semantic discovery (Thread D). CTE
-        # SemanticSearch tokenises blob payloads, which the base64 record defeats —
-        # so a UTF-8 companion at <name>.text carries the searchable text. scan()/get()
-        # skip it so it is never mistaken for a record.
+        payload = base64.b64encode(data)
+        guarded_store_rpc(
+            self, "put", lambda: put_blob_with_retry(self._cte.Tag(kind), name, payload)
+        )
+        # Optional plain-text companion for BM25 semantic discovery (Thread D): a UTF-8
+        # companion at <name>.text carries the searchable text (scan()/get() skip it).
         companion = name + _SEARCH_SUFFIX
         if search_text is not None:
-            put_blob_with_retry(tag, companion, search_text.encode("utf-8"))
-        elif tag.GetBlobSize(companion) > 0:
-            self._client.DelBlob(tag.GetTagId(), companion)  # drop a now-stale companion
-        # ``tier`` is advisory: the default single DRAM tier makes ReorganizeBlob a
-        # no-op. Wire tier->score only when a real file/HDD bdev is configured.
+            text = search_text.encode("utf-8")
+            guarded_store_rpc(
+                self, "put", lambda: put_blob_with_retry(self._cte.Tag(kind), companion, text)
+            )
+        elif guarded_store_rpc(self, "put", lambda: self._cte.Tag(kind).GetBlobSize(companion)) > 0:
+            guarded_store_rpc(  # drop a now-stale companion
+                self, "put", lambda: self._client.DelBlob(self._cte.Tag(kind).GetTagId(), companion)
+            )
+        # ``tier`` is advisory: the default single DRAM tier makes ReorganizeBlob a no-op.
 
+    @guard_store_op("get")
     def get(self, kind: str, name: str) -> Optional[bytes]:
-        self._live()
         tag = self._cte.Tag(kind)
         size = tag.GetBlobSize(name)  # 0 for a missing blob (does not raise)
         if size == 0:
             return None
         return base64.b64decode(tag.GetBlob(name, size, 0))
 
+    @guard_store_op("exists")
     def exists(self, kind: str, name: str) -> bool:
-        self._live()
         return self._cte.Tag(kind).GetBlobSize(name) > 0
 
     def scan(self, kind: str, prefix: str = "") -> Iterator[tuple[str, bytes]]:
+        # scan() is a generator: the decorator would guard only building it, not
+        # iterating. Guard the ONE listing RPC inline; per-blob reads use guarded get().
         self._live()
-        tag = self._cte.Tag(kind)
-        for blob_name in tag.GetContainedBlobs():
+        blobs = call_with_liveness(
+            lambda: list(self._cte.Tag(kind).GetContainedBlobs()),
+            op_name="scan",
+            port=self._gate.port,
+            reconnect=self._reconnect,
+            on_exhausted=self._gate.note_rpc_stalled,
+        )
+        for blob_name in blobs:
             if blob_name.endswith(_SEARCH_SUFFIX):
                 continue  # search companion, not a record
             if blob_name.startswith(prefix):
@@ -786,8 +814,8 @@ class ClioCoreStore:
                 if value is not None:
                     yield blob_name, value
 
+    @guard_store_op("delete")
     def delete(self, kind: str, name: str) -> None:
-        self._live()
         # Tag has no per-blob delete; go through the Client + TagId. DelBlob on a
         # missing blob returns False (no raise), satisfying the no-op contract.
         tag = self._cte.Tag(kind)
@@ -796,27 +824,33 @@ class ClioCoreStore:
         self._client.DelBlob(tag_id, name + _SEARCH_SUFFIX)  # companion (no-op if absent)
 
     def clear(self) -> None:
-        self._live()
+        # Multi-RPC method: each DelBlob (and the per-kind listing) is guarded
+        # INDIVIDUALLY so a legitimately long, PROGRESSING clear over many blobs (each
+        # DelBlob prompt, total > stall_after_s) is never misclassified as a stalled
+        # peer. Only a single RPC that itself hangs triggers the stall ladder.
         for kind in ARC_KINDS:
-            tag = self._cte.Tag(kind)
-            tag_id = tag.GetTagId()
-            for blob_name in tag.GetContainedBlobs():
-                self._client.DelBlob(tag_id, blob_name)
+            tag_id = guarded_store_rpc(self, "clear", lambda k: self._cte.Tag(k).GetTagId(), kind)
+            blob_names = guarded_store_rpc(
+                self, "clear", lambda k: list(self._cte.Tag(k).GetContainedBlobs()), kind
+            )
+            for blob_name in blob_names:
+                guarded_store_rpc(
+                    self, "clear", lambda tid, bn: self._client.DelBlob(tid, bn), tag_id, blob_name
+                )
 
     # ---- semantic discovery (Thread D) ----
 
     def supports_search(self) -> bool:
         return True
 
+    @guard_store_op("search")
     def search(
         self, kind: str, query_text: str, *, name_prefix: str = "", k: int = 10
     ) -> list[tuple[str, float]]:
-        """BM25 semantic search over the plain-text companions. Returns
-        ``[(record_name, score)]`` ranked by relevance, with the ``.text`` suffix
-        stripped so callers get the real record names."""
+        """BM25 semantic search over the plain-text companions; returns
+        ``[(record_name, score)]`` best-first with the ``.text`` suffix stripped."""
         import re  # noqa: PLC0415
 
-        self._live()
         blob_re = f"{re.escape(name_prefix)}.*{re.escape(_SEARCH_SUFFIX)}"
         results = self._client.SemanticSearch(
             kind, blob_re, query_text, k, self._cte.PoolQuery.Dynamic()

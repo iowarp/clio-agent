@@ -33,7 +33,9 @@ from pathlib import Path
 from typing import Any, Literal
 
 from clio_agent.gact import skills as _skills
+from clio_agent.gact.runtime.type_parsing import parse_module_variant as _parse_module_variant
 from clio_agent.gact.types import AgentDef
+from clio_agent.gact.workflows import workflow_row_errors as _workflow_row_errors
 
 _EXPERT_ID_RE = re.compile(r"[A-Za-z0-9_.-]+")
 _REF_ID_RE = re.compile(r"[A-Za-z0-9_.:/-]+")
@@ -250,6 +252,12 @@ def parse_expert_file(
     module_kind = str(module.get("kind") or "predict").strip().lower()
     if module_kind not in {"predict", "chain_of_thought", "react"}:
         errors.append(f"unsupported module.kind: {module_kind}")
+    # Validate any dspy.BestOfN / dspy.Refine variant (#948 S5): orthogonal to kind (it
+    # WRAPS the inner), so it composes with the children-must-be-react rule below.
+    try:
+        _parse_module_variant(module, agent_id=expert_id or "expert")
+    except ValueError as variant_exc:
+        errors.append(str(variant_exc))
     for field_name, values in {
         "tools": tools,
         "skills": skills,
@@ -277,9 +285,7 @@ def parse_expert_file(
                 "pack_version": pack.version,
                 "pack_scope": pack.scope,
                 "pack_title": pack.title,
-                "pack_definition_path": str(pack.manifest_path)
-                if pack.manifest_path
-                else str(pack.root),
+                "pack_definition_path": str(pack.manifest_path or pack.root),
                 "pack_enabled": pack.enabled,
             }
         )
@@ -289,15 +295,14 @@ def parse_expert_file(
     for key in ("fallback_tier", "model_fallback", "delegation_policy"):
         if meta.get(key):
             metadata[key] = str(meta[key]).strip()
-    dspy_semantics = _dspy_semantics_from_meta(meta)
-    if dspy_semantics:
+    if dspy_semantics := _dspy_semantics_from_meta(meta):
         metadata["dspy"] = dspy_semantics
-    structured_outputs = _mapping_field(meta, "structured_outputs", "structured-outputs")
-    if structured_outputs:
+    if structured_outputs := _mapping_field(meta, "structured_outputs", "structured-outputs"):
         metadata["structured_outputs"] = structured_outputs
-    fanout = _mapping_field(meta, "fanout", "fan_out", "fan-out")
-    if fanout:
+    if fanout := _mapping_field(meta, "fanout", "fan_out", "fan-out"):
         metadata["fanout"] = fanout
+    if workflow := _mapping_field(meta, "workflow"):
+        metadata["workflow"] = workflow  # declaration home (no new AgentDef field, #948 S5)
     enabled_meta = str(meta["enabled"] if "enabled" in meta else "true").strip().lower()
     enabled = enabled_meta not in {"false", "0", "no", "off"} and not errors
     return AgentDef(
@@ -344,6 +349,12 @@ def validate_expert_hierarchy(
     }
     child_parent = {row.id: row.parent_id for row in rows if row.parent_id}
     cycle_ids = _cycle_ids(child_parent)
+    # #948 S4: children are reachable ONLY via the spawn-runtime tools, and only
+    # react modules carry tools — a predict/chain_of_thought expert with declared
+    # children would silently strand them (the settle loop that used to route for
+    # it is deleted). Typed validation error; no legacy pathway survives under
+    # any configuration.
+    parent_ids_in_use = {row.parent_id for row in rows if row.parent_id}
     out: list[AgentDef] = []
     for row in rows:
         errors = list(row.validation_errors)
@@ -353,6 +364,17 @@ def validate_expert_hierarchy(
             errors.append(f"parent_id not found: {row.parent_id}")
         if row.id in cycle_ids:
             errors.append(f"hierarchy cycle includes: {row.id}")
+        if row.id in parent_ids_in_use:
+            module_kind = str((row.module or {}).get("kind") or "predict").strip().lower()
+            if module_kind != "react":
+                errors.append(
+                    f"expert {row.id} has declared children but module.kind "
+                    f"'{module_kind}' cannot reach them; declare module.kind: react "
+                    "(children are spawned via the spawn-runtime tools, which only "
+                    "react experts carry)"
+                )
+        # #948 S5: declared workflow -> typed row errors composed with react-children.
+        errors.extend(_workflow_row_errors(row, rows))
         enabled = row.enabled and not errors
         out.append(row.model_copy(update={"enabled": enabled, "validation_errors": errors}))
     return out

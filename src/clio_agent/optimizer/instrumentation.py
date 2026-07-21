@@ -2,10 +2,12 @@
 
 Research-pending (#801; tracked in
 https://github.com/iowarp/clio-agent/issues/633): this is the live half of
-the optimizer vertical — per-turn invocation records are written by
-``ClioAgent._store_expert_invocation`` (which reuses ``_extract_output``
-here) and ``MetricsAggregator`` feeds ``/metrics`` today. The
-``instrumented_forward`` decorator itself has no callers in the current
+the optimizer vertical — per-turn invocation records are written by the
+``instrumented_forward`` decorator here (which extracts output via
+``_extract_output`` and persists through ``arc_memory.store_invocation``),
+and ``MetricsAggregator`` feeds ``/metrics`` today. The legacy Tier-1
+``ClioAgent._store_expert_invocation`` writer was deleted with the planner
+(#948 S4b); ``instrumented_forward`` itself has no callers in the current
 blueprint runtime.
 
 Provides a decorator to wrap expert forward() calls, logging Invocation

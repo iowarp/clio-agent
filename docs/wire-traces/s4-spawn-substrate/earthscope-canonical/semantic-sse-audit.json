@@ -1,0 +1,179 @@
+{
+  "sessionId": "sess_fec2a76a94bd",
+  "received": 256,
+  "sentLogRows": 0,
+  "matched": 0,
+  "missingCount": 256,
+  "duplicateWriteCandidateCount": 0,
+  "missing": [
+    {
+      "event_id": "0",
+      "event_type": "server.connected",
+      "event_occurred_at": "2026-07-18T19:52:21.339814+00:00"
+    },
+    {
+      "event_id": "0",
+      "event_type": "session.snapshot",
+      "event_occurred_at": "2026-07-18T19:52:21.341352+00:00"
+    },
+    {
+      "event_id": "1",
+      "event_type": "lm.provider.changed",
+      "event_occurred_at": "2026-07-18T19:52:10.454895+00:00"
+    },
+    {
+      "event_id": "4",
+      "event_type": "session.status_changed",
+      "event_occurred_at": "2026-07-18T19:52:21.581519+00:00"
+    },
+    {
+      "event_id": "5",
+      "event_type": "message.created",
+      "event_occurred_at": "2026-07-18T19:52:21.581519+00:00"
+    },
+    {
+      "event_id": "6",
+      "event_type": "turn.started",
+      "event_occurred_at": "2026-07-18T19:52:22.054025+00:00"
+    },
+    {
+      "event_id": "7",
+      "event_type": "semantic.event",
+      "event_occurred_at": "2026-07-18T19:52:25.010122+00:00"
+    },
+    {
+      "event_id": "8",
+      "event_type": "message.created",
+      "event_occurred_at": "2026-07-18T19:52:27.920087+00:00"
+    },
+    {
+      "event_id": "9",
+      "event_type": "message.part.added",
+      "event_occurred_at": "2026-07-18T19:52:27.920087+00:00"
+    },
+    {
+      "event_id": "10",
+      "event_type": "message.part.delta",
+      "event_occurred_at": "2026-07-18T19:52:27.920087+00:00"
+    },
+    {
+      "event_id": "11",
+      "event_type": "message.part.delta",
+      "event_occurred_at": "2026-07-18T19:52:28.086675+00:00"
+    },
+    {
+      "event_id": "12",
+      "event_type": "message.part.delta",
+      "event_occurred_at": "2026-07-18T19:52:28.562983+00:00"
+    },
+    {
+      "event_id": "13",
+      "event_type": "message.part.delta",
+      "event_occurred_at": "2026-07-18T19:52:28.872344+00:00"
+    },
+    {
+      "event_id": "14",
+      "event_type": "message.part.delta",
+      "event_occurred_at": "2026-07-18T19:52:29.246460+00:00"
+    },
+    {
+      "event_id": "15",
+      "event_type": "message.part.delta",
+      "event_occurred_at": "2026-07-18T19:52:29.625522+00:00"
+    },
+    {
+      "event_id": "16",
+      "event_type": "message.part.delta",
+      "event_occurred_at": "2026-07-18T19:52:30.037081+00:00"
+    },
+    {
+      "event_id": "17",
+      "event_type": "message.part.completed",
+      "event_occurred_at": "2026-07-18T19:52:30.421686+00:00"
+    },
+    {
+      "event_id": "18",
+      "event_type": "message.part.added",
+      "event_occurred_at": "2026-07-18T19:52:30.421686+00:00"
+    },
+    {
+      "event_id": "19",
+      "event_type": "message.part.delta",
+      "event_occurred_at": "2026-07-18T19:52:30.421686+00:00"
+    },
+    {
+      "event_id": "20",
+      "event_type": "message.part.delta",
+      "event_occurred_at": "2026-07-18T19:52:30.936308+00:00"
+    }
+  ],
+  "sequenceViolations": [],
+  "normalizedCount": 3,
+  "publicLeakCount": 0,
+  "leaks": [],
+  "providerRawEventCount": 0,
+  "providerBatchResponseCount": 0,
+  "lowLevelProviderEventCount": 0,
+  "providerTimingAnchorCount": 0,
+  "providerStages": {},
+  "providerChannels": {},
+  "lowLevelProviderSources": {},
+  "bridgeContractFieldCount": 0,
+  "bridgeVisibleCount": 0,
+  "bridgeSuppressedCount": 0,
+  "normalizedEmitCount": 0,
+  "sseWriteAuditCount": 0,
+  "maxSseWriteToReceivedMs": null,
+  "maxEventOccurredToReceivedMs": 4356,
+  "minProviderToBridgeMs": null,
+  "maxProviderToBridgeMs": null,
+  "states": [
+    {
+      "event_id": 908,
+      "visibility": "hidden",
+      "keys": [
+        "acquisition",
+        "resource_candidate",
+        "profile",
+        "visualization",
+        "artifact",
+        "network_analysis",
+        "catalog",
+        "geospatial"
+      ]
+    }
+  ],
+  "normalizedTiming": [
+    {
+      "event_id": 6,
+      "event_type": "turn.started",
+      "action_kind": "",
+      "received_at": "2026-07-18T19:52:23.550Z",
+      "event_occurred_at": "2026-07-18T19:52:22.054025+00:00",
+      "sse_written_at": "",
+      "eventOccurredToReceivedMs": 1496,
+      "sseWriteToReceivedMs": null
+    },
+    {
+      "event_id": 908,
+      "event_type": "state.updated",
+      "action_kind": "",
+      "received_at": "2026-07-18T20:01:34.500Z",
+      "event_occurred_at": "2026-07-18T20:01:30.144708+00:00",
+      "sse_written_at": "",
+      "eventOccurredToReceivedMs": 4356,
+      "sseWriteToReceivedMs": null
+    },
+    {
+      "event_id": 913,
+      "event_type": "turn.completed",
+      "action_kind": "",
+      "received_at": "2026-07-18T20:01:34.508Z",
+      "event_occurred_at": "2026-07-18T20:01:30.285548+00:00",
+      "sse_written_at": "",
+      "eventOccurredToReceivedMs": 4223,
+      "sseWriteToReceivedMs": null
+    }
+  ],
+  "providerBridgeTiming": []
+}

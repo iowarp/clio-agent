@@ -7,12 +7,128 @@ only each other; they read no contextvars and no module-level app state.
 
 from __future__ import annotations
 
+import json
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from clio_agent.gact.workflow_state.schema import WorkflowStateSchema
+
+
+# ---------------------------------------------------------------------------
+# Deterministic request-order ensemble merge (#948 S5).
+#
+# When several concurrently-spawned children (an ensemble, or a fan-out) return
+# typed ``workflow_state`` sections that COLLIDE on a top-level key, the winner MUST
+# be chosen by REQUEST ORDER (spawn order = ``run_index``), never by completion
+# order — completion order is nondeterministic (the fastest child finishes first),
+# so a completion-order last-writer would make the merged state depend on timing.
+# Request order is deterministic: apply runs in ``run_index`` order and the highest
+# index wins each key. Every collision on DIFFERENT values is surfaced as a typed
+# ``workflow_state_merge_conflict`` row (winner run + loser runs) — no silent
+# last-writer; the model sees the conflict and decides.
+# ---------------------------------------------------------------------------
+
+MERGE_CONFLICT_REASON = "workflow_state_merge_conflict"
+
+
+@dataclass(frozen=True)
+class RunWorkflowState:
+    """One ensemble run's contribution to the merge: its durable ``run_index``, its
+    ``task_id`` and ``agent_id`` (for attribution in a conflict row) and its typed
+    ``workflow_state``. ``agent_id`` is the child expert id — required because a
+    heterogeneous fan-out can produce several runs sharing ``run_index==0`` (each is the
+    first of its OWN expert), so ``run_index`` alone does not identify the run (#953 [1])."""
+
+    run_index: int
+    task_id: str
+    workflow_state: Mapping[str, Any]
+    agent_id: str = ""
+
+
+def _canonical(value: Any) -> str:
+    """A stable, order-insensitive canonical form for equality of two run values.
+
+    JSON with sorted keys so ``{"a": 1, "b": 2}`` == ``{"b": 2, "a": 1}``; falls back
+    to ``repr`` for anything not JSON-serializable (never raises — an unserializable
+    value must not crash a merge)."""
+
+    try:
+        return json.dumps(value, sort_keys=True, default=repr)
+    except (TypeError, ValueError):  # pragma: no cover - default=repr makes this rare
+        return repr(value)
+
+
+def merge_run_workflow_states(
+    runs: Sequence[RunWorkflowState],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Merge ensemble runs' ``workflow_state`` in REQUEST ORDER; return
+    ``(merged, conflicts)``.
+
+    ``runs`` may arrive in ANY order (e.g. completion order); the merge sorts by
+    ``run_index`` FIRST, so the result is independent of arrival/completion order —
+    that determinism is the whole point (a completion-order merge is the bug this
+    replaces). Per top-level key, the highest ``run_index`` that set it wins. A key
+    two-or-more runs set to DIFFERENT values yields one conflict row::
+
+        {"reason": "workflow_state_merge_conflict", "key": <key>,
+         "winner": {"run_index": int, "task_id": str, "agent_id": str},
+         "loser_runs": [{"run_index": int, "task_id": str, "agent_id": str}, ...]}
+
+    ``loser_runs`` lists (in request order) every earlier run whose value differs
+    from the winner's. A key all runs agree on is merged with no conflict row.
+
+    Cross-expert tie-break (#953 [1]): ``run_index`` is assigned PER child expert, so a
+    heterogeneous fan-out (e.g. ``researcher`` + ``analyst``) yields several runs at the
+    SAME ``run_index`` (each first-of-its-own-expert). The sort is STABLE, so ties break by
+    the caller's wait-list order (the model's ``task_ids`` argument order). ``agent_id`` on
+    each attribution dict disambiguates such same-index runs — never rely on ``run_index``
+    alone to identify a run across a heterogeneous batch.
+    """
+
+    ordered = sorted(runs, key=lambda run: run.run_index)
+    per_key: dict[str, list[RunWorkflowState]] = {}
+    order: list[str] = []
+    for run in ordered:
+        state = run.workflow_state or {}
+        if not isinstance(state, Mapping):
+            continue
+        for raw_key in state:
+            key = str(raw_key)
+            if key not in per_key:
+                per_key[key] = []
+                order.append(key)
+            per_key[key].append(run)
+
+    merged: dict[str, Any] = {}
+    conflicts: list[dict[str, Any]] = []
+    for key in order:
+        contributors = per_key[key]
+        winner = contributors[-1]  # highest run_index (request order last-wins)
+        winner_value = winner.workflow_state[key]
+        merged[key] = winner_value
+        winner_canonical = _canonical(winner_value)
+        losers = [
+            {"run_index": run.run_index, "task_id": run.task_id, "agent_id": run.agent_id}
+            for run in contributors[:-1]
+            if _canonical(run.workflow_state[key]) != winner_canonical
+        ]
+        if losers:
+            conflicts.append(
+                {
+                    "reason": MERGE_CONFLICT_REASON,
+                    "key": key,
+                    "winner": {
+                        "run_index": winner.run_index,
+                        "task_id": winner.task_id,
+                        "agent_id": winner.agent_id,
+                    },
+                    "loser_runs": losers,
+                }
+            )
+    return merged, conflicts
 
 
 def _merge_inferred_workflow_state(
@@ -108,7 +224,10 @@ def _merge_workflow_state_mapping(
                 merged = dict(current)
                 stripped_incoming = False
                 for sticky_field in schema.sticky_true_fields_for(key):
-                    if current.get(sticky_field) is True and incoming_value.get(sticky_field) is False:
+                    if (
+                        current.get(sticky_field) is True
+                        and incoming_value.get(sticky_field) is False
+                    ):
                         if not stripped_incoming:
                             incoming_value = dict(incoming_value)
                             stripped_incoming = True

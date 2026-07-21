@@ -6,6 +6,282 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+(nothing yet)
+
+## [0.8.0] — 2026-07-21
+
+The agents-creating-agents campaign (#948) accumulated its GACT-surface changes
+per slice; the sub-headers below are slice-scoped so the whole surface story reads
+top to bottom (S7 newest first, back to the S2–S3 substrate).
+
+### Added (S6–S7)
+- **The `ExpertInvoker` federation seam is minted** (#948 S7 / #671; internal
+  infrastructure, no wire change today). `gact/agents/invoker.py` owns the
+  transport-abstracted expert-execution boundary — an `ExpertInvoker` Protocol
+  (`invoke`/`wait`/`check`/`cancel`) plus the in-process `InProcessExpertInvoker`
+  that delegates to the exact spawn/registry/cancel primitives the spawn-runtime
+  tools already use (the seam IS the substrate — no second execution pathway). Its
+  serializable shapes (`TaskHandle`, `TaskResult`, `TaskEvent`, and the reused
+  `TaskSpec`) are relay-compatible: `RELAY_STATE_MAP` records the 1:1 lossless
+  mapping to clio-relay's durable job-record vocabulary so a later federation
+  campaign swaps the executor BEHIND the seam, not in front of every caller. The
+  model-facing tools keep calling the substrate directly in this slice; they
+  migrate onto the invoker when federation lands. `TaskResult` carries a RESERVED
+  `artifact_ref` (the #670 artifacts campaign fills it).
+- **ARC/CTE runtime liveness is hardened with typed degrades** (#948 S7;
+  operator-facing knobs). Every `ClioCoreStore` RPC (put/get/exists/scan/delete/
+  clear/search) runs under a **progress-based** stall ladder in
+  `arc/rpc_liveness.py` — never absolute wall-clock bounds (a call that answers on a
+  later attempt succeeds; only a whole-RPC no-response counts as a stall). A stalled
+  peer gets N reconnecting retries with growing backoff, then a typed
+  `ClioCoreRuntimeLostError` (`reason=clio_core_rpc_stalled`) + gate quarantine so
+  subsequent ops fast-fail instead of freezing the event loop (the S4 live-gate
+  zombie-daemon incident). Config-first knobs with documented env overrides and
+  fail-safe defaults: `CLIO_ARC_LIVENESS_STALL_AFTER_S` (30.0),
+  `CLIO_ARC_LIVENESS_RETRIES` (3), `CLIO_ARC_LIVENESS_BACKOFF_INITIAL_S` (2.0),
+  `CLIO_ARC_LIVENESS_BACKOFF_MAX_S` (15.0).
+- **The memory budget is release-gated with background children active** (#948 S7 /
+  #930 discipline; operator note, no wire change). The acceptance load in
+  `scripts/mcp_mem_attribution.py` gained a `--children-pack` scenario: 3 concurrent
+  claude-haiku sessions on the real CTE where session 0 fans out 2 background
+  children (real child sessions via `spawn_agents_parallel`). Measured cold-max peak
+  1.01 GB / settled final 0.73 GB (peak = cold max, final = median; 3 recorded runs
+  + 1 gate-assert run), recorded in the
+  `children` block of `scripts/mcp_mem_budget.json` per the ratchet contract
+  (cold-max peak, median final, never raised to pass) — far under the 1.8/1.3
+  campaign targets, with zero untyped degrades. Proven, not assumed: children cost
+  bounded transcripts (`resident_ledgers`) + provider turns, and the #933 reaper
+  cleans their fleets (`workspace_fleet_reaped reason=idle_ttl` every run).
+- **Async spawn / wait / observe-later — the model decides** (#948 S6). Every
+  model-driven spawn (`spawn_agent_task` / `spawn_agents_parallel`) is now
+  fire-and-forget on ONE honest semantic: the handle returns IMMEDIATELY (`status`
+  `queued|running` with the typed `queued_reason` at the concurrency cap) and the
+  child turn is UNTIED to the spawning turn's lifetime — a parent turn ending never
+  cancels its children (only cancelling the parent SESSION cascades). The model
+  collects results three ways, and whichever reaches a finished task first CONSUMES
+  it exactly once (`consumed_at` + an `agent.task.consumed` event, durable across a
+  boot rebuild like `delegation_reported`): (a) `wait_agent_tasks` blocks on the
+  children's completion; (b) `check_agent_tasks(task_ids?)` polls non-blocking and
+  now returns finished tasks' bounded result excerpt + `message_ref` (+ reserved
+  `artifact_ref`); (c) any completed-but-unconsumed child spawned in a PRIOR turn is
+  injected as a bounded, clio-marked grounding block into the parent's NEXT turn
+  input (task id, child expert, status, result excerpt, child session id) — the
+  model reads it and decides; clio never auto-acts on the content. A FAILED child is
+  observed-later and injected IDENTICALLY to a completed one (no branch on child
+  output content anywhere in the runtime). The injection is bounded
+  (`_MAX_NOTIFY_BLOCKS`); overflow stays pending for the following turn with a typed
+  truncation note — never dropped.
+
+### Changed (S6–S7)
+- **Provider-summary serialization no longer warns every turn** (#948 S7; log
+  noise, no wire change). The `PROMPT-CTX provider summary serialize failed` line
+  fired each turn because `app.state.lm_config` is a plain dict fed to
+  `dataclasses.asdict`; it is now serialized by shape (a `Mapping` directly, a
+  dataclass via `asdict`, with the typed-repr fallback preserved for genuinely bad
+  inputs).
+- **`wait_agent_tasks` now REQUIRES `timeout_s`** (#948 S6 / #670) — BREAKING tool-arg
+  change. A wait without a budget is a hang; the model passes its own budget and, on
+  timeout, gets the current statuses and decides whether to keep waiting, keep
+  working, or finish. The `spawn_agent_task` handle additionally carries the typed
+  `queued_reason`. (The declared-workflow runner's internal step waits keep their own
+  explicit per-step budgets.) The injected observe-later block is SERVER-composed
+  grounding carrying the clio-owned `PENDING_TASK_NOTIFICATION_MARKER` (the #881
+  marker discipline) so a presentation-model split keeps it out of the user-text
+  lane; when that split machinery lands on this lineage, register the marker in its
+  `_SERVER_APPENDED_CONTEXT_MARKERS` set.
+
+### Added (S5)
+- **Declared deterministic workflows** (#948 S5). A tier-1 orchestrator blueprint may
+  declare a `workflow:` block — a `steps` list describing an `a -> b -> c` child pathway
+  gated on typed `workflow_state` predicates (`when_state.<field>.exists` /
+  `when_state.<field>.equals` / `when_child_completed`), reviving the retired
+  continuation-contract shape. The runner (`gact/workflows.py`) executes the steps
+  DETERMINISTICALLY in declaration order — each step is a real `spawn_child_turn` + wait
+  with its own `AgentTask` record, evaluating its gate over the ACCUMULATED typed
+  `workflow_state` (the declaration is the decision; the model is not in the loop for the
+  declared steps). A gate that cannot be satisfied (missing field, a prior child that
+  never completed) or a child that FAILS is a typed STALL — the run stops and returns
+  `stalled{reason, step, predicate, observed}`, never a guess or a silent continuation.
+  A react main enters the workflow via one `run_workflow` tool (present ONLY when a
+  workflow is declared, mirroring the children-gated toolset); the tool returns the full
+  run record (per-step task ids/results, accumulated `workflow_state`, terminal
+  `completed | stalled`) and the model decides how to proceed from a stall. Invalid
+  declarations (unknown child, dependency cycle, malformed predicate, an unproduced
+  `when_child_completed`, or a `when_child_completed` produced by a LATER step — an
+  acyclic-but-misordered workflow that would stall forever) are typed validation errors on
+  the expert row that compose with the react-children hierarchy rules. A step whose child
+  exceeds the step budget stalls with a distinct `workflow_step_timeout` reason (never the
+  child-failed reason) and the orphaned child is cancelled so it stops holding a slot.
+- **`fanout.max_workers` is now enforced** (#948 S5). A parent expert's declared
+  `fanout: {enabled, max_workers}` bounds `spawn_agents_parallel`'s batch admission: at
+  most `max_workers` of the parent's concurrent children at a depth RUN before the next
+  spawn queues with the typed `concurrency_cap` reason (queue admission honors the bound
+  too); the global per-depth cap remains the overall bound, and an absent/disabled
+  declaration leaves the batch unbounded up to that cap.
+- **Declarable `dspy.BestOfN` / `dspy.Refine` module variants** (#948 S5). A blueprint
+  may widen its `module` from `{kind}` to `{kind, variant, n, threshold, reward}` — where
+  `variant` is `best_of_n` or `refine` and `reward` declares an LM-as-judge signature
+  (`instructions` + optional `inputs` + `target`). The inner `predict`/`chain_of_thought`/
+  `react` program is wrapped in the REAL engine, whose reward is a generated source-backed
+  scorer (an out-of-range/unparseable judge score clamps or degrades to `0.0` with a typed
+  `variant.reward.parse_failed` log — never a crash). Invalid declarations (unknown
+  variant, `n < 1`, missing/malformed reward or threshold) are typed validation errors
+  surfaced on the expert row. The selected try's `winning_index` + `winning_score` (and
+  every try's score) are stamped, additive, on the prediction as `variant_selection` — and
+  carried across the expert boundary onto the assistant message metadata
+  (`metadata.variant_selection`) so the winner is observable in the durable trace; each
+  try emits a structured `variant.try` / `variant.reward` log. When EVERY try fails (total
+  failure), the wrapper raises ONE typed error carrying the last try's real error + a
+  per-try summary — identical for any `n` (previously the engine swallowed it to `None` for
+  `n<=2` and raised only for `n>=3`). N in-process tries of one
+  module in one session are partitioned per try on the ARC live plane + transcript-tap
+  KEYS via a new `react_run` discriminator (folded only into keying, never attribution) so
+  try N's model input never accumulates try N-1's trajectory.
+
+### Fixed (S5)
+- **The ensemble `run_index` now resets per parent turn** (#948 S5 / #953 [2][8]). The
+  model-facing spawn paths (`spawn_agent_task` / `spawn_agents_parallel` and the declared-
+  workflow runner) now stamp the active turn id on each spawn, so `run_index` restarts at 0
+  each turn (it previously accumulated across the whole session because `parent_turn_id` was
+  never populated).
+- **The cancel cascade is now transitive** (#948 S5 / #953 [3]). Cancelling a parent turn
+  cancels the whole descendant tree (grandchildren and deeper), depth-first and cycle-safe,
+  so no nested child turn outlives the ancestor that spawned it.
+- **Ensemble merge conflict rows carry `agent_id`** (#948 S5 / #953 [1]). Each `winner` /
+  `loser_runs` attribution dict in a `workflow_state_merge_conflict` row now includes the
+  child expert id, disambiguating a heterogeneous fan-out's same-`run_index` runs; the
+  cross-expert tie-break (stable `run_index`, then wait-list order) is documented.
+
+### Changed (S4–S5)
+- **The legacy Tier-1 `ClioAgent` planner pathway is deleted** (#948 S4b). The
+  planner loop (`ClioAgent.forward` / `_run_agent_loop` and its action-planner /
+  answer-synthesizer / chat-tool-loop / ARC-persistence stack) and the turn
+  engine's fall-through dispatch to it are gone; `ClioAgent` is now the runtime
+  HOST only (provider identity, MCP tool fleet, ARC keystone, agent registry).
+  Blueprint react mains are the only mains. This is an internal-engine change;
+  the only wire-facing effect is a new typed `no_resolvable_agent` error (with
+  `recovery_actions: [install_default_registry, activate_agent_blueprint]`) that
+  a default/main session with **no** resolvable Agent Blueprint now returns —
+  replacing the previous silent execution of the legacy planner.
+- **The `CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS` /
+  `agents.enable_legacy_native_experts` knob is retired** (#948 S4b). It gated
+  the deleted legacy native-expert runtime (routing Agent Blueprint experts to
+  the tool/prompt user-agent runners instead of the blueprint runtime); with
+  that runtime gone there is no configuration under which a blueprint agent
+  routes anywhere else, so the flag no longer exists. Setting it now has no
+  effect and it is dropped from `docs/ENVIRONMENT.md` / `.env.example`.
+- **Mains are react agents; the settle/synthesis layer is deleted** (#948 S4 /
+  #952). A tier-1 main runs the retained ReAct loop and its `answer` IS the
+  user deliverable; it routes by CALLING the spawn-runtime tools
+  (`spawn_agent_task` / `wait_agent_tasks` / `check_agent_tasks` /
+  `spawn_agents_parallel`) over real child turns. The wire-facing
+  `blueprint.delegation.{started,completed,failed,parent_resumed}` /
+  `blueprint.fanout.started` events are re-emitted by the spawn runtime (event
+  types unchanged); `parent_resumed` fires once per terminal child so the TUI
+  active-agent indicator re-pins to the parent. The spawn runtime also appends
+  the `expert_handoff` Parts the deleted sync-delegate path appended — one
+  `delegate.started` header Part per spawn and one terminal return Part per
+  child (success AND failure conclude on `stage: delegate.completed` with the
+  outcome on `status`, #882) — so the canonical transcript renderer shows the
+  delegation header / nesting / return row instead of a bare tool row. The
+  completed payload now carries `task_id` / `message_ref` / `error_reason`
+  alongside `output` / `workflow_state` / `stage` and no longer carries
+  `return_to` / `tools_called` / `structured` (those live on the AgentTask
+  record and the `agent.task.*` events).
+- **Concurrent same-child ensembles + deterministic request-order merge** (#948
+  S5 part 1 / #953). The SAME declared child may now be spawned N times
+  concurrently in one parent turn (an ensemble): each run mints its own child
+  session + `AgentTask` record and runs as its own concurrent child turn on the
+  per-depth pool (up to `CLIO_MAX_CONCURRENT_AGENT_TASKS`). Wire-additive shape
+  changes (nothing removed):
+  - A new `run_index` integer field (0, 1, 2… in spawn order per
+    `(parent_turn, child expert)`, durable on the record) rides the `AgentTask`
+    record, the `agent.task.*` event payloads, the `blueprint.delegation.started`
+    / `.completed` / `.failed` / `.parent_resumed` payloads, the `expert_handoff`
+    started/return Part metadata, and the `spawn_agent_task` /
+    `spawn_agents_parallel` tool return. It disambiguates an ensemble's otherwise
+    identical child-id rows (the ARC `react_scope` deliberately stays the bare
+    agent id per the S5 spike — run identity is a field, never a scope suffix).
+  - `wait_agent_tasks` now returns two new keys alongside `results`:
+    `merged_workflow_state` (the collected runs' typed `workflow_state` merged in
+    REQUEST ORDER = `run_index` order, NOT completion order, so the merge is
+    timing-independent) and `workflow_state_conflicts` — a list of typed
+    `workflow_state_merge_conflict` rows (`{reason, key, winner:{run_index,
+    task_id}, loser_runs:[…]}`), one per top-level key two-or-more runs set to
+    different values. No silent last-writer: every collision is surfaced on the
+    payload and logged structurally for the model to arbitrate.
+- Typed blueprint validation: an expert with declared children must declare
+  `module.kind: react` (children are reachable only via the spawn-runtime
+  tools); `predict` / `chain_of_thought` remain valid for leaf experts only.
+- Blueprint expert `answer` output is REQUIRED again — the optional-answer
+  default existed so an orchestrator could defer its deliverable to a
+  synthesis child; that pathway is deleted.
+- Session agent-overlay export now round-trips the `module:` declaration
+  (previously dropped, so an exported react parent re-loaded as `predict` and
+  failed validation).
+- An empty blueprint/prompt-agent `answer` is now a typed failure (raises into
+  the `agent_error` ladder like the tool-agent path) instead of returning a
+  silent empty deliverable with a "runtime settlement / declared-child handoff
+  repair" rationale — the settle layer that consumed those empty answers is gone.
+- The `subagents` capability flag is re-keyed to the spawn substrate: it still
+  advertises child-agent support, now provided by real agent-task child sessions
+  (`session_type=agent_task`) + `blueprint.delegation.*` events rather than the
+  retired nanoagent subsessions / `subagent.*` events.
+
+### Removed (S4)
+- The settle/synthesis orchestration internals (#948 S4 / #952): the settle
+  loop + parent re-invoke resume prompts (`turn_delegation.py`,
+  `turn_delegation_arc.py`), the `final_responder` synthesis-child adoption
+  (`turn_terminal.py`) and its degradation reasons, `answer_stream_visible`,
+  the nanoagent post-hoc materialization (`turn_nanoagents.py`), the
+  `next_expert`/`next_task` typed routing signature fields (internal, never
+  wire fields), and the inline per-child delegate / fan-out tools. Marketplace
+  packs are migrated (mains → react, synthesis children deleted) and the
+  submodule pin updated. A baseline-0 CI guard
+  (`scripts/check_no_settle_vocabulary.py`) keeps the vocabulary out.
+- Fan-out terminal + nanoagent events retired (#948 S4 / #952, no silent
+  retirement): the deleted inline fan-out tool emitted both
+  `blueprint.fanout.started` AND `blueprint.fanout.completed`, and the deleted
+  nanoagent path emitted `subagent.{started,completed}` (with
+  `session_type: nanoagent`). The spawn runtime re-emits only
+  `blueprint.fanout.started`; the per-child `blueprint.delegation.*` events are
+  now the terminal signal for a fan-out batch (`fanout.completed`/`failed` had
+  no wire consumer), and the delegation path uses `agent.task.*` with
+  `session_type: agent_task` in place of `subagent.*`. Clients that reloaded the
+  session list or raised a notification on `subagent.started` should key on
+  `agent.task.started` / `blueprint.delegation.started` instead.
+- Deletion closure for the settle removal (#948 S4 / #952): the orphaned
+  answer-substitution machinery (`substitute_answer_from_delegation_evidence`,
+  `_fallback_answer_from_delegation`, the `answer_substituted_from_delegation_evidence`
+  turn-degradation reason and its now-unused per-session ledger), the stream-only
+  parent-resume duplicate suppressor (its `parent.resumed` Part producer died with
+  the settle loop), the dead sync-delegate prompt/state helpers
+  (`_delegated_expert_prompt`, `_delegated_expert_public_prompt`,
+  `_should_execute_delegated_handoff`, `_delegated_expert_agent_id`,
+  `_failed_child_delegation_workflow_state`, `_append_session_workflow_state_context`,
+  `_delegate_started_row`, `_public_task_from_composed_prompt`, and their app.py
+  re-exports), and the orphaned Tier-3 nanoagent spawn primitive
+  (`runtime/nanoagent.py`). The finalize-time stream-provenance assembler
+  (formerly `turn_degradation.assemble_stream_and_degradation_metadata`) is
+  retained as `turn_stream.assemble_stream_metadata`.
+
+### Added (S2–S3 substrate)
+- Child-turn substrate (#948 S3 / #951): `spawn_child_turn` spawns a declared child
+  expert as a REAL turn in a REAL child session (projected as an `AgentTask`), on a
+  dedicated executor pool (never the default), with depth/declared-child guards,
+  FIFO queue admission at the concurrency cap, a completion hook that records the
+  child's result, HITL-in-child typed failure, and a parent→children cancel cascade.
+  The `#671` federation seam (`TaskSpec` serializable in/out).
+- Agent-task API + event family (#948 S2 / #950): `GET /v1/sessions/{sid}/agent-tasks`,
+  `GET /v1/agent-tasks/{task_id}`, `POST /v1/agent-tasks/{task_id}/cancel`, and the
+  `agent.task.{queued,started,completed,failed,cancelled,consumed}` events
+  (published on both the parent and child session channels). The `AgentTask`
+  record projects over a child session's metadata (`session_type=="agent_task"`)
+  — no new store — and its registry is rebuilt at boot from `sessions.json`.
+  The paths are `agent-tasks`: `/v1/sessions/{sid}/tasks` + `/v1/tasks/{tid}`
+  remain the #18 per-session manual task CRUD; S2's original same-path claim
+  shadowed that GET by registration order (fixed in S4).
+
 ## [0.7.12] — 2026-07-17
 
 ### Fixed

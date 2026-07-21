@@ -55,7 +55,12 @@ def test_zero_measurement_is_rejected() -> None:
 
 
 def test_malformed_budget_is_typed_fail() -> None:
-    for bad in ({}, {"peak_gb": 3.5}, {"peak_gb": "x", "final_gb": 3.5}, {"peak_gb": None, "final_gb": 3.5}):
+    for bad in (
+        {},
+        {"peak_gb": 3.5},
+        {"peak_gb": "x", "final_gb": 3.5},
+        {"peak_gb": None, "final_gb": 3.5},
+    ):
         ok, detail = check_budget(1.0, 1.0, bad)
         assert not ok, bad
         assert "malformed budget" in detail
@@ -80,4 +85,23 @@ def test_recorded_budget_never_regresses_above_campaign_targets() -> None:
     )
     assert budget["final_gb"] <= targets["final_gb"], (
         "recorded final budget regressed above the campaign target"
+    )
+
+
+def test_children_scenario_budget_is_wellformed_and_under_targets() -> None:
+    """The #955 background-children block obeys the same contract as the
+    baseline: it passes its own gate and stays at or under the campaign
+    targets, so a children-scenario memory regression cannot be smuggled in by
+    raising the recorded numbers."""
+
+    budget = json.loads((REPO / "scripts" / "mcp_mem_budget.json").read_text(encoding="utf-8"))
+    children = budget["children"]
+    ok, _ = check_budget(children["peak_gb"], children["final_gb"], children)
+    assert ok, "the recorded children baseline must pass its own gate"
+    targets = children["campaign_targets"]
+    assert children["peak_gb"] <= targets["peak_gb"], (
+        "recorded children peak budget regressed above the campaign target"
+    )
+    assert children["final_gb"] <= targets["final_gb"], (
+        "recorded children final budget regressed above the campaign target"
     )

@@ -11,10 +11,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.arc.schema import ToolCall
 from clio_agent.gact.app import build_app
+
+# #948 S4b: a default session runs the blueprint react ``main``; route that root
+# back to each test's ``build_app(agent=...)`` canned-Prediction fake.
+pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 
 @dataclass

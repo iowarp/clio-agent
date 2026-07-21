@@ -8,13 +8,12 @@ one agent turn end to end:
   ``message.created`` events, and schedules the turn as a tracked ``asyncio``
   task (so cancellation can reach it via ``app.state.in_flight_turns``).
 * :func:`_run_turn_in_background` is the body of that task: it invokes
-  ``agent.forward`` in an executor, streams/slices the result into Parts,
-  settles dynamic-agent delegations (via the
-  :mod:`clio_agent.gact.turn_delegation` settle engine —
-  ``settle_dynamic_agent_delegations`` / ``execute_delegated_experts`` /
-  ``run_dynamic_agent_sync``), publishes every SSE event the TUI consumes,
-  persists the assistant message, records the context frame + token/cost usage,
-  and returns the session to ``idle`` (or ``error``).
+  ``agent.forward`` in an executor, streams/slices the result into Parts
+  (a react main routes to its declared children by CALLING the spawn-runtime
+  tools, so its ``answer`` is already the deliverable — no post-forward settle
+  pass), publishes every SSE event the TUI consumes, persists the assistant
+  message, records the context frame + token/cost usage, and returns the session
+  to ``idle`` (or ``error``).
 
 It was carved verbatim out of ``clio_agent.gact.app.build_app`` so the route
 factories (post-message, question-answer, retry-attempt, schedules) and the
@@ -56,6 +55,8 @@ from clio_agent.gact.enrichment import (
     _enrich_with_context_files,
     _enrich_with_requested_memory_search,
     _record_context_frame,
+    consume_pending_agent_task_notifications,
+    inject_pending_agent_task_notifications,
 )
 from clio_agent.gact.events import Event, EventBus, _publish_transcript_event
 from clio_agent.gact.evidence import (
@@ -67,12 +68,14 @@ from clio_agent.gact.messaging import (
     _user_message_parts,
 )
 from clio_agent.gact.runtime.globals import (
+    _BlueprintRootDisabled,
     _cancelled_error_info,
     _coerce_error_info,
     _ContextFileAccessError,
     _emit_semantic_event,
     _iso_from_epoch,
     _new_message_id,
+    _NoResolvableAgent,
     _session_agent_id,
     _TurnCancelled,
     _TurnTimedOut,
@@ -258,23 +261,23 @@ async def _run_turn_in_background(
         },
     )
 
-    # iowarp/clio-agent#5: prepend any attached context files to the
-    # user's text so the agent's forward() sees them as primed input.
-    # Plain text concat — keeps the agent.py interface untouched and
-    # works regardless of which expert handles the turn.
+    # iowarp/clio-agent#5: prepend attached context files to the user's text so the
+    # agent's forward() sees them as primed input (plain concat, expert-agnostic).
     context_file_error: ErrorInfo | None = None
     state.context_file_provenance = _context_file_turn_provenance(state.app, state.sid, status="prepared")
     state.memory_search_metadata = {}
     try:
         state.enriched_text = _enrich_with_context_files(state.app, state.sid, state.user_text)
         state.enriched_text, state.memory_search_metadata = _enrich_with_requested_memory_search(
-            state.app,
-            state.sid,
-            state.enriched_text,
-            state.user_msg,
+            state.app, state.sid, state.enriched_text, state.user_msg
         )
-        # Carry prior turns of this session so a follow-up ("now plot it") can reuse
-        # the region/stations/paths already resolved. No-op on the first turn.
+        # #948 S6 [1]/[4]: surface prior-turn background task results (observe-later).
+        # STAGE the ids only; consumption + terminal emission defer to the commit-to-
+        # run seam below, so a turn aborted after enrichment leaves them pending.
+        state.enriched_text, state.pending_notification_task_ids = (
+            inject_pending_agent_task_notifications(state.app, state.sid, state.enriched_text)
+        )
+        # Carry prior turns so a follow-up ("now plot it") reuses resolved state (no-op turn 1).
         state.enriched_text = _compile_session_conversation_history(state.app, state.sid, state.enriched_text)
     except _ContextFileAccessError as exc:
         state.enriched_text = state.user_text
@@ -425,7 +428,6 @@ async def _run_turn_in_background(
     # seam and carry it on ``state`` for every delegation/grounding/scrub site.
     state.workflow_schema = _active_workflow_state_schema(state.app, state.sid)
     state.transcript = _open_turn_transcript(state.app, state.sid, state.turn_id)
-    state.suppressed_parent_resume_offsets = {}
     # TRICKY #1 (Phase B spec): bind the emitter over ``state`` so its LATE reads
     # of state.active_agent_id / state.invocation_agent_id see the forward seam's
     # IN-PLACE mutations. ``forward_turn`` reconstructs the same
@@ -468,6 +470,14 @@ async def _run_turn_in_background(
                     executor_work_may_continue=False,
                 )
             )
+
+        # #948 S6 [1]/[4]: commit-to-run seam — past the last abort/veto seam, the
+        # turn will forward with the enriched input. Consume the staged observe-later
+        # notifications once AND emit each delegation terminal (shared once-gate with
+        # wait/check) into this turn's already-open transcript.
+        consume_pending_agent_task_notifications(
+            state.app, state.sid, state.pending_notification_task_ids
+        )
 
         # #767 Phase B Slice 5: agent resolve -> module build -> streamed/sync
         # forward -> expert-pack delegation settle lives in ``turn_forward.py``.
@@ -649,6 +659,58 @@ async def _run_turn_in_background(
         )
         state.answer_text = partial_answer
         state.tools_called = []
+    except _BlueprintRootDisabled as exc:
+        # #948 S4: the active blueprint's declared root is disabled by validation.
+        # Typed failure carrying the exact errors — never a substitute root,
+        # never the legacy planner.
+        state.selected_agent = exc.root_id
+        state.rationale = "The active Agent Blueprint's root expert is disabled by validation."
+        state.error_info = ErrorInfo(
+            error="blueprint_root_disabled",
+            message=(
+                f"Active Agent Blueprint root expert {exc.root_id!r} is disabled "
+                "by validation; the turn cannot run."
+            ),
+            details={
+                "root_id": exc.root_id,
+                "agent_blueprint_id": exc.blueprint_id,
+                "validation_errors": exc.validation_errors,
+                "recovery_actions": [
+                    "update_agent_blueprint_install",
+                    "fix_blueprint_declaration",
+                    "activate_another_blueprint",
+                ],
+            },
+            recoverable=True,
+        )
+        state.answer_text = ""
+        state.tools_called = []
+    except _NoResolvableAgent as exc:
+        # #948 S4b: a default/main session resolved NO executable Agent Blueprint,
+        # and the legacy Tier-1 planner that used to run here is deleted. Fail
+        # TYPED — never fall through to a legacy pathway.
+        state.selected_agent = exc.agent_id
+        state.rationale = (
+            "No Agent Blueprint resolved for this session, and the legacy planner "
+            "is removed, so the turn has nothing to execute."
+        )
+        state.error_info = ErrorInfo(
+            error="no_resolvable_agent",
+            message=(
+                "No resolvable Agent Blueprint for this session; install the "
+                "default registry or activate an Agent Blueprint to run turns."
+            ),
+            details={
+                "agent_id": exc.agent_id,
+                "recovery_actions": [
+                    "install_default_registry",
+                    "activate_agent_blueprint",
+                ],
+            },
+            recoverable=True,
+        )
+        state.answer_text = ""
+        state.tools_called = []
     except _UnsupportedSessionAgent as exc:
         state.selected_agent = exc.agent_id
         state.rationale = (
@@ -817,15 +879,14 @@ def _start_background_user_turn(
         )
     )
 
-    task = asyncio.create_task(
-        _run_turn_in_background(app, sid, user_text, user_msg, turn_agent_id)
+    # #948 S1 (#662): route through the TurnRunner, the single owner of turn-task
+    # lifetime. It holds a master strong ref (no GC-cancellation), anchors the
+    # task to the app loop, records the busy-gate handle, and drops the
+    # per-session slot on completion — replacing the raw create_task + manual
+    # in_flight_turns bookkeeping that lived here.
+    app.state.turn_runner.spawn(
+        _run_turn_in_background(app, sid, user_text, user_msg, turn_agent_id),
+        sid=sid,
+        turn_id=user_msg_id,
     )
-    app.state.in_flight_turns[sid] = task
-
-    def _drop_task(_t, _sid=sid) -> None:
-        cur = app.state.in_flight_turns.get(_sid)
-        if cur is _t:
-            app.state.in_flight_turns.pop(_sid, None)
-
-    task.add_done_callback(_drop_task)
     return user_msg

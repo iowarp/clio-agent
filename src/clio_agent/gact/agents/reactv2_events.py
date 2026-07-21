@@ -66,7 +66,10 @@ def _arc_scope() -> tuple[Any, str, str]:
     from clio_agent.gact import context as _ctx  # noqa: PLC0415
 
     app = _ctx.active_app()
-    scope = _ctx.active_react_scope()
+    # Fold the in-process variant try index into the ARC KEY only (#953): N tries of
+    # one module in one session must not share a live-plane partition. Bare off-variant
+    # (react_run == -1). Attribution readers use active_react_scope() unchanged.
+    scope = _ctx.run_keyed_scope(_ctx.active_react_scope())
     session = _ctx.active_react_session()
     arc = (
         getattr(getattr(app, "state", None), "arc", None) if (app is not None and scope) else None

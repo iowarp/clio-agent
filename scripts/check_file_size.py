@@ -42,22 +42,21 @@ DEFAULT_MAX_LINES = 800
 # falls under DEFAULT_MAX_LINES) in the same change. Paths are relative to the
 # repository root and use forward slashes.
 RATCHET_BASELINE: dict[str, int] = {
-    # #900: +4 for ClioAgent.shutdown closing the MCP tool executors (heavy reaping
-    # logic lives in the new owner module runtime/process_tree.py, not here).
-    # #932: +26 to wire the one boot listing pass + preloaded/namespace-routed
-    # executors (the fleet logic itself lives in tools/execution.py+gateway.py).
-    # #933: +58 for the workspace-fleet state accessor, turn leases, reaper
-    # wiring, and reaped-executor rebuild (the reaper itself is the owner
-    # module tools/reaper.py).
-    # #933 review hardening: shutdown snapshots the workspace registry under
-    # the shared lock; _workspace_state publishes the lock last (+8).
-    "src/clio_agent/agent.py": 2798,
+    # #948 S4b: ClioAgent.agent.py dropped from its 2798-line baseline to ~723
+    # once the dead Tier-1 planner half was deleted (host-only surface). Now
+    # under DEFAULT_MAX_LINES, so its ratchet entry is removed entirely.
     "src/clio_agent/arc/memory.py": 1394,
     "src/clio_agent/arc/segments.py": 1117,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
     # owner ruling 2026-07-14: +3 to route explicit =local through the loud
     # DEGRADED banner (owner module: arc/init_degradation.py).
-    "src/clio_agent/arc/storage.py": 886,
+    # #955 S7 adversarial-review closeout (886 -> 920): per-RPC stall granularity for
+    # the multi-RPC put/clear (finding [3]) + the RPC-level health-probe wiring for
+    # rpc_stalled quarantine recovery (blocker [1]). Both need the store's _cte/_client,
+    # so they live here; the reusable guard helpers (guarded_store_rpc /
+    # store_rpc_health_probe) were moved to the rpc_liveness owner module to hold the
+    # growth down. Ratchet back below on the arc/storage decomposition (#714).
+    "src/clio_agent/arc/storage.py": 920,
     # #737 S2 fold owner module. Crossed the 800 new-file cap restoring the FROZEN
     # arc.op reproducibility contract (§2 / GOAL.md DoD #4): the five working-set write
     # overrides now emit a per-op arc.op via _emit_op so arc.replay rebuilds the live
@@ -65,42 +64,113 @@ RATCHET_BASELINE: dict[str, int] = {
     # minimized to concise docstrings; the per-op payload passing is irreducible. Ratchet
     # down with the #714/#767 decomposition.
     "src/clio_agent/arc/working_set_fold.py": 919,
-    "src/clio_agent/gact/agent_blueprints.py": 1108,
+    "src/clio_agent/gact/agent_blueprints.py": 1103,
+    # #948 S4: +14 for the children-must-be-react hierarchy rule (a predict/CoT
+    # parent would silently strand its children now that the settle loop routing
+    # for it is deleted; typed validation error instead).
+    # #948 S5: +7 to validate the dspy.BestOfN/Refine module variant declaration on the
+    # row (the parse itself is the leaf runtime/type_parsing.parse_module_variant).
+    "src/clio_agent/gact/expert_packs.py": 821,
     # #919: +35 to WIRE progressive-disclosure skills into all three module
     # classes (block + load_skill tool; logic lives in agents/skill_runtime.py)
     # and to document the deleted stale extract alias that crashed every
     # tool-user-agent build under ReActV2.
-    "src/clio_agent/gact/agents/builders.py": 2205,
+    # #952 S4 Pass C: -20 (the empty-answer settle/handoff-repair branches were
+    # deleted; an empty blueprint/prompt-agent answer is now a typed failure).
+    # #948 S4 live-gate fix: +29 for the child-scaled react iteration budget (the
+    # declared-children resolution at the react build site + the scaling default).
+    # #948 S5: +4 to wrap the inner program in the declared dspy.BestOfN/Refine module
+    # variant at the dispatch (logic lives in the owner module agents/module_variants.py).
+    # #953 [5]: +2 to carry the variant winner stamp (variant_selection) across the
+    # BlueprintExpertModule.forward re-construction boundary (else silently dropped).
+    # merge(main->develop): +43 (1833 -> 1876) integrating main's #962 external-MCP
+    # permission-gate enforcement (_invoke_permission_gate / _external_mcp_permission_context)
+    # + #964 sanitized-observer projection at the external MCP call site.
+    "src/clio_agent/gact/agents/builders.py": 1876,
     # #900: +14 for the lifespan child-reaper install + clean-shutdown teardown wiring
     # (both delegate to the owner module runtime/process_tree.py).
     # #918: +7 for the SkillNotDelegatableError exception handler (app.py owns
     # the handler cluster; see _validation_exception_handler precedent).
-    "src/clio_agent/gact/app.py": 2545,
-    "src/clio_agent/gact/routes/agents.py": 921,
-    "src/clio_agent/gact/routes/blueprints.py": 859,
-    "src/clio_agent/gact/routes/catalog.py": 880,
-    "src/clio_agent/gact/routes/mcp.py": 939,
+    # #947 DEBT (recorded 2026-07-18, #948 S4): part of this count is inherited
+    # MCP-apps landing growth (merged to develop with the size check red, baseline
+    # 2545 -> actual); ratchet back below the pre-#947 count with the mcp_app_*
+    # owner-module split (see the #947 DEBT block on mcp_apps.py).
+    # #952 S4 Pass C: -9 (the dead delegation-helper re-export cluster was deleted
+    # with the settle layer).
+    # merge(main->develop): -3 ratchet down (2712 -> 2709).
+    "src/clio_agent/gact/app.py": 2709,
+    # #948 S4: +10 for round-tripping the module: declaration in the overlay
+    # export (an exported react parent re-loaded as predict and failed the new
+    # hierarchy validation).
+    "src/clio_agent/gact/routes/agents.py": 931,
+    # merge(main->develop): +2 blueprints, +63 catalog, +54 mcp integrating main's
+    # #956 MCP-apps runtime tool exposure (runtime MCP tools surfaced in the GACT
+    # catalog + reconnect/streamable-http route growth). Part of the #947 MCP-apps
+    # decomposition debt; ratchets back with the mcp_app_* owner-module split.
+    "src/clio_agent/gact/routes/blueprints.py": 861,
+    "src/clio_agent/gact/routes/catalog.py": 943,
+    "src/clio_agent/gact/routes/mcp.py": 993,
+    # #947 DEBT (recorded 2026-07-18, #948 S4 branch): the MCP-apps landing grew
+    # these files past their baselines without a ratchet update (it merged to
+    # develop with the check job red). Recording current counts makes the debt
+    # visible and blockable again; the MCP-apps owner-module decomposition in
+    # flight (mcp_app_lifecycle/sandbox/runtime split) deletes these entries by
+    # ratcheting each file back below its pre-#947 count. Do NOT grow further.
+    # merge(main->develop): +15 (897 -> 912) integrating main's #964
+    # call_tool_result_to_observer public-projection wrapper (delegates to the
+    # tools/mcp_results.py owner module).
+    "src/clio_agent/gact/mcp_apps.py": 912,
     # #895: +6 for threading the provider-generic thinking_level onto the LM bind
     # (LMProviderConfig arg + app.state.lm_config + the GET's thinking_level /
     # thinking_effective fields). The mapping logic itself lives in the owner
     # module providers/thinking.py, not here.
     "src/clio_agent/gact/routes/providers.py": 1320,
-    "src/clio_agent/gact/routes/sessions.py": 1478,
+    # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
+    # (merged to develop with the size check red, baseline 1478 -> actual); ratchet
+    # back below the pre-#947 count with the mcp_app_* owner-module split (see the
+    # #947 DEBT block on mcp_apps.py).
+    # merge(main->develop): -2 ratchet down (1548 -> 1546).
+    "src/clio_agent/gact/routes/sessions.py": 1546,
     # #933: +8 for the turn-scoped workspace-fleet lease in _tool_session_context.
     # #933 review hardening: typed workspace_lease_unavailable degrade when a
     # rooted turn has no leasable agent (+9).
-    "src/clio_agent/gact/runtime/globals.py": 940,
-    "src/clio_agent/gact/streaming.py": 1024,
-    "src/clio_agent/gact/tool_observer.py": 930,
+    # #948 S4 live-gate fix: +22 for _BlueprintRootDisabled (typed disabled-root
+    # failure; lives with its sibling turn exceptions).
+    "src/clio_agent/gact/runtime/globals.py": 977,
+    "src/clio_agent/gact/streaming.py": 995,
+    # #948 S5: +2 to read the RUN-KEYED tap-dedup bucket under an in-process module
+    # variant (context.run_keyed_scope; bare invoking_expert still owns attribution).
+    # merge(main->develop): +10 (932 -> 942) integrating main's #964 structured
+    # MCP-result preservation in the tool observer.
+    "src/clio_agent/gact/tool_observer.py": 942,
     "src/clio_agent/gact/transcript.py": 986,
     # #918: +17 for the typed SkillNotDelegatableError ladder arm (a skill-bound
     # turn fails typed, never as generic agent_error).
-    "src/clio_agent/gact/turn.py": 831,
-    # #918: +17 for the typed skill_not_delegatable failed-handoff row (parent
-    # re-routes; the turn never dies on a skill-id handoff).
-    "src/clio_agent/gact/turn_delegation.py": 930,
-    "src/clio_agent/gact/turn_finalize.py": 935,
-    "src/clio_agent/gact/types.py": 1143,
+    # #952 S4 Pass C: -1 (the suppressed_parent_resume_offsets init was removed
+    # with the dead parent-resume duplicate suppressor).
+    # #948 S4 live-gate fix: +27 for the blueprint_root_disabled catch arm (typed
+    # error envelope with the root's validation errors; the except-ladder is
+    # owned here).
+    # #948 S6 [1]/[4]: +10 for the observe-later commit-to-run seam — staging the
+    # injected task ids at enrichment + consuming/emitting each delegation terminal
+    # immediately before forward dispatch (the fix for compose-time consumption +
+    # dangling delegations). Load-bearing turn-orchestration wiring, comments minimized.
+    "src/clio_agent/gact/turn.py": 892,
+    # #952 S4 Pass C: -9 (the answer-substitution finalize call + import were
+    # removed with the settle layer's degradation ledger).
+    # #953 [5]: +3 to surface the variant winner stamp (variant_selection) on the
+    # assistant-message metadata (additive observability contract).
+    # #953 (workflow_state finalize seam): +11 to stamp the turn's produced typed
+    # workflow_state onto the assistant message metadata (the root fix for a live-gate
+    # miss where a chain_of_thought LEAF child's Prediction field never reached its
+    # AgentTask result). The substantive merge lives in the owner module
+    # (delegation._produced_turn_workflow_state); only the trivial import + stamp call
+    # land here.
+    "src/clio_agent/gact/turn_finalize.py": 934,
+    # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
+    # (baseline 1143 -> actual); ratchet back below the pre-#947 count with the
+    # mcp_app_* owner-module split (see the #947 DEBT block on mcp_apps.py).
+    "src/clio_agent/gact/types.py": 1154,
     # -120 (#891): the SDK-session machinery moved out to sibling owner modules —
     # the blocking-path pool to providers/claude_code_sdk_pool.py and the per-expert
     # streaming session/delta transport to providers/claude_code_sessions.py; this
@@ -109,7 +179,16 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/providers/claude_code_litellm.py": 848,
     # #900: +2 for wiring probe_process_tree into the doctor collect().
     # owner ruling 2026-07-14: +3 for the DEGRADED-by-policy local-ARC doctor row.
-    "src/clio_agent/runtime/status.py": 1188,
+    # #947 DEBT (recorded 2026-07-18, #948 S4): residual over the pre-#947 count
+    # (1188) is inherited MCP-apps landing growth; ratchet down with the mcp_app_*
+    # owner-module split (see the #947 DEBT block on mcp_apps.py).
+    # #985 move 1 (2026-07-19): +33 for config-first resolution of paths.data_dir /
+    # runtime.api_base — the injectable ConfigStore, a shared _source_label helper for
+    # the config/env/default provenance, and two thin probe seams (the conf.resolve
+    # calls stay inline so the env-reference generator discovers each knob directly).
+    # Real new functionality (env-only → config-first); ratchets down when the doctor's
+    # probe methods are extracted to an owner module.
+    "src/clio_agent/runtime/status.py": 1238,
     # #932: +62 for preloaded tool definitions (start() without the list_tools
     # fan-out) and namespace-direct call routing with lazy per-namespace
     # clients — the executor IS the owner module for this.
@@ -120,8 +199,17 @@ RATCHET_BASELINE: dict[str, int] = {
     # spawns on its first FORWARDED CALL, not ctx-enter, so the learn /
     # drop-plan-on-failure signals wrap the first routed call per namespace;
     # incl. the timeout-vs-connect-health caveat comment).
-    "src/clio_agent/tools/execution.py": 1304,
-    "src/clio_agent/ui/cli.py": 1156,
+    # #947 DEBT (recorded 2026-07-18, #948 S4): residual over the pre-#947 count
+    # (1304) beyond the #932/#933/#934 deltas is inherited MCP-apps landing growth;
+    # ratchet down with the mcp_app_* owner-module split (see the #947 block on mcp_apps.py).
+    # merge(main->develop): +257 (1490 -> 1747) integrating main's #964 sanitized
+    # dual-projection (_MCPCallOutcome) + #965 mutating-tool timeout budget /
+    # uncertain-timeout handling. Part of the #947 MCP-apps decomposition debt.
+    "src/clio_agent/tools/execution.py": 1747,
+    # #1001: doctor rendering + disk-GC surface moved to the ui/doctor.py owner module
+    # (ratcheted 1156 -> 1135 in the same change).
+    # merge(main->develop): +6 (1135 -> 1141) integrating main's release-stream cli deltas.
+    "src/clio_agent/ui/cli.py": 1141,
 }
 
 # Root of the source tree to scan, relative to the repository root.

@@ -7,8 +7,8 @@ seam convention).
 
 The emitter is behavior-preserving. :func:`emit_chunk` is a thin adapter over the
 ``TurnTranscript`` ledger (#767 PR2): it emits the semantic ``lm.token.delta``
-event, applies the #736 parent-resume suppression gate, records stream audit, and
-makes ONE transcript call that owns the streamed-part state machine.
+event, records stream audit, and makes ONE transcript call that owns the
+streamed-part state machine.
 
 TRICKY #1 (Phase B spec): the live chunk emitter is *bound* (via
 :func:`bind_live_emitter`) BEFORE the forward seam resolves the turn's agents, and
@@ -23,14 +23,12 @@ golden staying byte-identical).
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from functools import partial
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.gact.runtime.globals import _emit_semantic_event, _llm_provider_payload
 from clio_agent.gact.tool_observer import _mirror_transcript_state
 from clio_agent.gact.transcript import _transcript_text_field
-from clio_agent.gact.types import Part
 from clio_agent.runtime import trace
 from clio_agent.runtime.stream_audit import stream_audit
 
@@ -38,23 +36,6 @@ if TYPE_CHECKING:
     import asyncio
 
     from clio_agent.gact.turn_state import TurnState
-
-
-def _latest_parent_resume_output(parts: list[Part], agent_id: str) -> str:
-    """Return the latest child output already handed back to ``agent_id``."""
-
-    if not agent_id:
-        return ""
-    for part in reversed(parts):
-        if part.type != "expert_handoff" or part.stage != "parent.resumed":
-            continue
-        if part.agent_id != agent_id:
-            continue
-        metadata = part.metadata if isinstance(part.metadata, Mapping) else {}
-        output = str(metadata.get("output") or "").strip()
-        if output:
-            return output
-    return ""
 
 
 def _feed_live_edge(
@@ -114,10 +95,10 @@ async def emit_chunk(
     """Publish one streamed token delta through the turn's transcript ledger.
 
     Thin adapter over the ``TurnTranscript`` (#767 PR2): emits the semantic
-    ``lm.token.delta`` event, applies the #736 parent-resume suppression gate,
-    records stream audit, and makes ONE transcript call that mints the message on
-    first arrival, opens/splits parts per ``(agent, field)``, cleans the buffer at
-    close, and publishes ``message.created`` / ``part.added`` / ``part.delta``.
+    ``lm.token.delta`` event, records stream audit, and makes ONE transcript call
+    that mints the message on first arrival, opens/splits parts per
+    ``(agent, field)``, cleans the buffer at close, and publishes
+    ``message.created`` / ``part.added`` / ``part.delta``.
 
     Reads ``state.active_agent_id`` / ``state.invocation_agent_id`` LATE (TRICKY
     #1): the emitter is bound before the forward seam resolves them, so it must
@@ -160,45 +141,6 @@ async def emit_chunk(
             stream_field,
         )
         return
-    resume_output = _latest_parent_resume_output(state.transcript.snapshot(), chunk_agent)
-    if stream_field == "answer" and resume_output:
-        offset = state.suppressed_parent_resume_offsets.get(chunk_agent, 0)
-        after = resume_output[offset + len(text) :]
-        # Only suppress a duplicated chunk when it ends on a WORD BOUNDARY in
-        # the resume output. Otherwise, when the parent's text diverges from
-        # the child's mid-word (e.g. parent paraphrases after "Los An|geles"),
-        # we'd drop "Los An" and emit "geles" — a corrupted mid-word fragment
-        # that also gets stored and breaks reload. Emitting the chunk instead
-        # keeps the text intact. This suppressor (suppressed_parent_resume_offsets)
-        # is now the SOLE remaining server-side de-duplication compensation: it
-        # covers a streaming (non-workflow_state) orchestrator restating a
-        # resumed child's evidence. The client-side dedupeRepeatedText it once
-        # deferred to has been retired (gact-tui 8243eb63); #736 removed the
-        # post-TERMINAL parent resume, but intermediate resumes still reach here.
-        chunk_ends_word = (not after) or after[:1].isspace() or text[-1:].isspace()
-        if resume_output[offset:].startswith(text) and chunk_ends_word:
-            state.suppressed_parent_resume_offsets[chunk_agent] = offset + len(text)
-            trace.HF_ON and trace.hot(
-                "STREAM-SSE",
-                "suppressed_parent_resume_duplicate agent=%s len=%d head=%r",
-                chunk_agent,
-                len(text),
-                text[:80],
-            )
-            stream_audit(
-                "sse.normalized_emit",
-                session_id=state.sid,
-                turn_id=state.turn_id,
-                agent_id=chunk_agent,
-                field=stream_field,
-                normalized_event="turn.text.delta",
-                chunk_len=len(text),
-                duplicate_suppressed=True,
-                duplicate_reason="parent_resume_duplicate",
-                head=text[:120],
-                full_text=text[:12000],
-            )
-            return
     # ONE transcript call: mints the message id on first arrival, opens/
     # splits parts per (agent, field), cleans the whole buffer once at
     # close, and publishes message.created/part.added/part.delta — the state
@@ -276,3 +218,46 @@ def bind_live_emitter(state: "TurnState", loop: "asyncio.AbstractEventLoop") -> 
         )
     except Exception:  # noqa: BLE001,S110 - live-stream wiring is best-effort
         pass
+
+
+def assemble_stream_metadata(
+    state: "TurnState",
+    *,
+    stream_fallback: dict[str, Any],
+    current_stream_part_id: str | None,
+    has_live_parts: bool,
+) -> None:
+    """Stamp the turn's stream provenance onto the assistant message metadata.
+
+    ``current_stream_part_id`` (captured BEFORE the finalize appends) keeps the
+    legacy semantic: a text part opened since the last mid-turn runtime boundary
+    marks the turn's text as live-streamed even after it closed. Per-part
+    ``stream_source`` is no longer restamped here -- every part carries the
+    provenance its producer appended it with (#767 PR3: finalize never rewrites
+    the ledger). A batch answer with a real ``stream_fallback`` payload records
+    it so the delivery-path downgrade is queryable (no-silent-fallback).
+
+    (Formerly ``assemble_stream_and_degradation_metadata`` in the retired
+    ``turn_degradation`` module; the turn-degradation ledger it also drained was
+    deleted in #948 S4 when its sole reason -- an answer substituted from settle
+    evidence -- was removed with the settle/synthesis layer.)
+
+    Args:
+        state: The active turn state (mutated: ``assistant_metadata`` is written).
+        stream_fallback: The popped single-slot stream-fallback payload for the turn.
+        current_stream_part_id: The pre-append open streamed text part id (or ``None``).
+        has_live_parts: Whether any live part streamed this turn.
+    """
+
+    should_report_stream_provenance = (
+        bool(state.answer_text) or state.error_info is not None or has_live_parts
+    )
+    text_stream_source = ""
+    if bool(state.answer_text) or state.error_info is not None:
+        text_stream_source = "live" if current_stream_part_id is not None else "batch"
+    elif has_live_parts:
+        text_stream_source = "live"
+    if should_report_stream_provenance and text_stream_source:
+        state.assistant_metadata["stream_source"] = text_stream_source
+    if text_stream_source == "batch" and (bool(state.answer_text) or state.error_info is not None):
+        state.assistant_metadata["stream_fallback"] = stream_fallback

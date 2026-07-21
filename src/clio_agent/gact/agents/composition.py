@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import asdict
+from dataclasses import asdict, is_dataclass
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.catalog import (
@@ -212,9 +212,25 @@ def _prompt_render_context(app: "FastAPI") -> dict[str, str]:
     provider = getattr(app.state, "lm_config", None)
     provider_summary = "{}"
     if provider is not None:
+        # ``app.state.lm_config`` is a plain dict (set by ``PUT /v1/providers/lm``),
+        # not a dataclass, so ``asdict`` raised EVERY turn ("asdict() should be
+        # called on dataclass instances") and silently degraded to repr. Serialize
+        # by shape at the root: a Mapping goes straight through ``json.dumps``, a
+        # genuine dataclass through ``asdict`` first. The typed fallback stays for
+        # a genuinely unserializable input (a non-mapping, non-dataclass object, or
+        # a mapping carrying a non-JSON value).
         try:
-            provider_summary = json.dumps(asdict(provider), sort_keys=True)
-        except Exception as exc:  # noqa: BLE001 - non-dataclass provider; stringify
+            if is_dataclass(provider) and not isinstance(provider, type):
+                payload: Any = asdict(provider)
+            elif isinstance(provider, Mapping):
+                payload = dict(provider)
+            else:
+                raise TypeError(
+                    f"provider summary is neither a dataclass nor a mapping: "
+                    f"{type(provider).__name__}"
+                )
+            provider_summary = json.dumps(payload, sort_keys=True)
+        except Exception as exc:  # noqa: BLE001 - genuinely bad input; stringify
             trace.event("PROMPT-CTX", "provider summary serialize failed (%s); using repr", exc)
             provider_summary = str(provider)
     return {
@@ -240,9 +256,10 @@ def _runtime_dynamic_agent_children_context(
     General across blueprints: any expert with declared children IS, by construction,
     an orchestrator -- it routes work to children (who hold the tools and produce the
     grounded evidence) and assembles their results. This briefing tells the model that
-    it is an orchestrator, what each child produces, and how to emit its routing
-    decision (next_expert / next_task). This is *grounding* -- telling the model what it
-    is and how routing works -- not a behavioral handcuff, and it is what makes a model
+    it is an orchestrator, what each child produces, and how to route work to them by
+    CALLING the spawn-runtime tools (``spawn_agent_task`` / ``wait_agent_tasks`` /
+    ``spawn_agents_parallel``). This is *grounding* -- telling the model what it is and
+    how routing works -- not a behavioral handcuff, and it is what makes a model
     delegate instead of answering (and fabricating) from its own prior knowledge.
     """
 
@@ -282,14 +299,29 @@ def _runtime_dynamic_agent_children_context(
         lines.append(f"- `{row.id}`: {detail}{cap_text}")
     lines.append("")
     lines.append(
-        "Routing: set `next_expert` to the id of the ONE child to run next and "
-        "`next_task` to the concrete task for it. After that child returns its evidence "
-        "you will be re-invoked to route again — so advance ONE child at a time and let "
-        "each child's returned evidence (in the typed workflow_state) decide the next "
-        "hop. Set `next_expert` = `finish` ONLY when the task is fully complete and every "
-        "claim in your `answer` is backed by a child's returned evidence; NEVER finish "
-        "with an answer you composed from your own knowledge. If you have done no "
-        "delegation yet, you have no evidence yet — do not finish."
+        "Routing: delegate by CALLING your spawn tools. `spawn_agent_task(agent, task)` "
+        "spawns ONE declared child as a real child turn and returns its `task_id` "
+        "IMMEDIATELY — the child runs untied to this turn; the call does not block. "
+        "So spawn EVERY independent child right away (use `spawn_agents_parallel` to fan "
+        "out a batch in one call) instead of serializing spawn→wait→spawn→wait; only "
+        "chain a hop that genuinely DEPENDS on a prior child's returned evidence. Collect "
+        "with `wait_agent_tasks([task_id], timeout_s=...)` under a SHORT budget (30-60s is "
+        "usually right): it blocks only up to that budget, and on a partial result YOU "
+        "decide — keep waiting, continue with the evidence you have, or collect later. "
+        "`check_agent_tasks(...)` picks up finished children without blocking, so you can "
+        "keep working while the rest run. `observe_agent_tasks(task_ids, cursor=...)` reads "
+        "a child's progress INCREMENTALLY without consuming it — use it to act on "
+        "intermediate evidence (a typed state landing, a stage completing) while the child "
+        "keeps running; start the cursor at 1 and pass back the returned `next_cursor` to "
+        "read only what is new, and pass a `pattern` (regex) to return the moment specific "
+        "evidence appears (e.g. a resolved id) instead of waiting for the child to finish. "
+        "On a naturally multi-turn task you may end this "
+        "turn without waiting at all — each child's result injects into your NEXT turn "
+        "automatically. Read the returned typed evidence (in the returned workflow_state) "
+        "and let it decide the next hop, then write your final `answer` — every claim in "
+        "it must be backed by a child's returned evidence; NEVER answer from your own "
+        "knowledge. If you have spawned no children yet, you have no evidence yet — do not "
+        "answer."
     )
     briefing = "\n".join(lines)
     if _aid:

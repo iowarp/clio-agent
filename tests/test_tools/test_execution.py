@@ -19,6 +19,7 @@ from clio_agent.tools.execution import (
     RepeatedToolFailureError,
     SyncMCPToolExecutor,
     ToolRuntimeHooks,
+    UncertainMutatingToolOutcomeError,
     _ground_output_paths,
     _repair_missing_file_arguments,
     create_async_tool_executor,
@@ -66,12 +67,33 @@ class FakeClient:
 
 
 class FailingClient(FakeClient):
-    """Fake client that raises configured errors from call_tool."""
+    """Fake client that raises configured errors from call_tool.
+
+    ``ndp_search_datasets`` carries a ``readOnlyHint`` so a timed-out search is
+    treated as a retry-safe transient failure (the circuit-breaker path) rather
+    than an uncertain mutation. ``fake_echo`` stays unannotated for the callers
+    that exercise non-transient (argument) errors.
+    """
 
     def __init__(self, errors: list[BaseException | None]):
         super().__init__()
         self.errors = errors
         self.calls = 0
+
+    async def list_tools(self):
+        return [
+            SimpleNamespace(
+                name="fake_echo",
+                description="Echo a value.",
+                inputSchema={"properties": {"value": {"type": "string"}}},
+            ),
+            SimpleNamespace(
+                name="ndp_search_datasets",
+                description="Search datasets (read-only).",
+                inputSchema={"properties": {"search_terms": {"type": "array"}}},
+                annotations={"readOnlyHint": True},
+            ),
+        ]
 
     async def call_tool(self, name: str, args: dict[str, Any]):
         self.calls += 1
@@ -290,7 +312,13 @@ def test_app_only_tools_are_hidden_from_model_tool_surface() -> None:
 
 @pytest.mark.asyncio
 async def test_async_mcp_tool_executor_timeout_cancels_tool_call():
-    """Async calls should honor the configured timeout and still clean up."""
+    """A mutating tool that times out fences the uncertain outcome and still cleans up.
+
+    ``fake_echo`` carries no ``readOnlyHint``/``idempotentHint``, so a timeout
+    leaves the remote outcome unknown (#958): the executor raises the
+    uncertain-mutating fence instead of a bare timeout, blocks an identical
+    retry, and still tears the client down.
+    """
     fake_client = FakeClient(delay=0.2)
     executor = AsyncMCPToolExecutor(
         object(),
@@ -300,9 +328,14 @@ async def test_async_mcp_tool_executor_timeout_cancels_tool_call():
     await executor.start()
 
     try:
-        with pytest.raises(TimeoutError, match="timed out"):
+        with pytest.raises(UncertainMutatingToolOutcomeError, match="outcome_unknown") as excinfo:
             await executor.call_tool("fake_echo", {"value": "slow"})
+        assert "action='do_not_retry'" in str(excinfo.value)
+        assert "retry_safe=False" in str(excinfo.value)
         assert fake_client.started_call is True
+        # The identical mutation is now fenced without touching the tool again.
+        with pytest.raises(UncertainMutatingToolOutcomeError, match="blocks this retry"):
+            await executor.call_tool("fake_echo", {"value": "slow"})
     finally:
         await executor.aclose()
 
@@ -380,7 +413,12 @@ def test_sync_tool_executor_explicit_setup_timeout_wins_over_config(monkeypatch,
 
 
 def test_sync_mcp_tool_executor_timeout_cancels_tool_call():
-    """Tool calls should honor the configured timeout and still clean up."""
+    """A mutating tool that times out fences the uncertain outcome and still cleans up.
+
+    Mirrors the async case (#958) across the sync bridge: an unannotated tool
+    that times out raises the uncertain-mutating fence, an identical retry is
+    blocked, and the client/loop are still torn down.
+    """
     fake_client = FakeClient(delay=0.2)
     executor = SyncMCPToolExecutor(
         object(),
@@ -389,9 +427,14 @@ def test_sync_mcp_tool_executor_timeout_cancels_tool_call():
     )
 
     try:
-        with pytest.raises(TimeoutError, match="timed out"):
+        with pytest.raises(UncertainMutatingToolOutcomeError, match="outcome_unknown") as excinfo:
             executor.call_tool("fake_echo", {"value": "slow"})
+        assert "action='do_not_retry'" in str(excinfo.value)
+        assert "retry_safe=False" in str(excinfo.value)
         assert fake_client.started_call is True
+        # The identical mutation is now fenced without touching the tool again.
+        with pytest.raises(UncertainMutatingToolOutcomeError, match="blocks this retry"):
+            executor.call_tool("fake_echo", {"value": "slow"})
     finally:
         executor.close()
 
@@ -560,7 +603,20 @@ def test_sync_mcp_tool_executor_reports_structured_tool_error_result():
     assert observed[-1][2] == "completed"
     assert observed[-1][3] is not None
     assert "parent_not_found" in observed[-1][3]
-    assert observed[-1][4] == result
+    # #964: the observer receives the preserved structured projection, not the
+    # flattened model text — the full structuredContent payload is retained.
+    assert observed[-1][4] == {
+        "content": [],
+        "structuredContent": {
+            "error": {
+                "type": "file_policy",
+                "code": "parent_not_found",
+                "message": "Output directory does not exist",
+            },
+            "tool": "ndp_plot_csv_timeseries",
+            "args": {"output_path": "/missing/plot.png"},
+        },
+    }
 
 
 def test_sync_mcp_tool_executor_bounds_repeated_transient_tool_failures():

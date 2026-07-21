@@ -10,6 +10,10 @@ from fastapi.testclient import TestClient
 from clio_agent.gact.app import build_app
 from clio_agent.gact.types import Message, Part, Tokens
 
+# #948 S4b: default sessions run the blueprint react ``main``; route it to each
+# test's ``build_app(agent=...)`` host fake.
+pytestmark = pytest.mark.usefixtures("host_agent_executor")
+
 
 class _FakeAgent:
     def __init__(self) -> None:
@@ -356,9 +360,10 @@ def test_retry_execute_queues_new_turn_with_attempt_provenance(tmp_path: Path) -
     attempts = client.get(f"/v1/sessions/{sid}/attempts").json()["attempts"]
     completed = next(row for row in attempts if row["id"] == attempt["id"])
     assert completed["status"] == "completed"
-    assert completed["metadata"]["queued_user_message_id"] == attempt["metadata"][
-        "queued_user_message_id"
-    ]
+    assert (
+        completed["metadata"]["queued_user_message_id"]
+        == attempt["metadata"]["queued_user_message_id"]
+    )
     assert completed["metadata"]["assistant_message_id"].startswith("msg_asst_")
     # The queued retry runs exactly one turn whose request carries the retry notes.
     # (Multi-turn sessions now prepend prior-conversation context before the current

@@ -21,7 +21,7 @@ def _model_dump(value: Any, *, exclude_none: bool) -> Any:
     dump = getattr(value, "model_dump", None)
     if not callable(dump):
         return _MISSING
-    attempts = (
+    attempts: tuple[dict[str, Any], ...] = (
         {"mode": "json", "by_alias": True, "exclude_none": exclude_none},
         {"by_alias": True, "exclude_none": exclude_none},
         {},

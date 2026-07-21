@@ -341,57 +341,6 @@ def test_expert_id_beats_stray_same_id_skill(
     assert resolved is not None and resolved.title == "Real Expert"
 
 
-def test_skill_handoff_is_failed_row_not_dead_turn(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A model-emitted handoff to a skill id settles as a typed FAILED row so
-    the parent decides the next step — it must never kill the turn (⚑ #1)."""
-
-    import asyncio
-
-    from fastapi.testclient import TestClient
-
-    from clio_agent.gact.app import build_app
-    from clio_agent.gact.skills import SkillNotDelegatableError
-    from clio_agent.gact.turn_delegation import execute_delegated_experts
-    from clio_agent.gact.turn_state import TurnState
-    from clio_agent.gact.types import AgentDef
-    from clio_agent.gact.workflow_state.schema import WorkflowStateSchema
-
-    app = build_app(sessions_path=tmp_path / "s.json")
-    with TestClient(app) as c:
-        sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
-        sess = app.state.sessions.get(sid)
-        state = TurnState(
-            app=app, sid=sid, user_text="", user_msg=sess, turn_agent_id="root",
-            sess=sess, bus=app.state.bus, turn_id="turn_918", trace_id="trace_918",
-            retry_attempt_id="", native_images=[],
-        )
-        state.workflow_schema = WorkflowStateSchema()
-        state.invocation_agent_id = "root"
-        state.active_agent_id = "root"
-        parent = AgentDef(id="root", source="expert_pack", title="Root")
-
-        def _raise(_app, agent_id, *, session_id="", **_kw):
-            raise SkillNotDelegatableError(agent_id, "/tmp/skill.md")
-
-        monkeypatch.setattr(
-            "clio_agent.gact.turn_delegation._resolve_runtime_dynamic_agent", _raise
-        )
-        rows = [{
-            "delegate_to": "some-skill", "agent_id": "some-skill",
-            "question": "do it", "thought": "route", "status": "requested",
-            "execute": True, "source": "agent_next_expert",
-        }]
-        executed = asyncio.run(
-            execute_delegated_experts(state, parent, rows, source_text="do it")
-        )
-    failed = [r for r in executed if r.get("status") == "failed"]
-    assert len(failed) == 1
-    assert failed[0]["error"] == "skill_not_delegatable"
-    assert "skills:" in failed[0]["error_message"]
-
-
 def test_skill_command_rows_derive_from_catalog(
     scopes: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:

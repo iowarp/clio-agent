@@ -31,6 +31,10 @@ from .test_turn_transcript_equivalence import (
     _ToolCallingAgent,
 )
 
+# #948 S4b: default sessions run the blueprint react ``main``; route it to each
+# test's ``build_app(agent=...)`` host fake.
+pytestmark = pytest.mark.usefixtures("host_agent_executor")
+
 # The four normalized transcript twins retired in #767 PR5. None may ride the bus.
 RETIRED_TWINS = {
     "turn.text.delta",

@@ -23,6 +23,10 @@ from clio_agent.gact.app import build_app
 from clio_agent.gact.types import Message, Part, Tokens
 from clio_agent.gact.workspaces import Workspace
 
+# #948 S4b: default sessions run the blueprint react ``main``; route it to each
+# test's ``build_app(agent=...)`` host fake.
+pytestmark = pytest.mark.usefixtures("host_agent_executor")
+
 
 class FakeARC:
     """Stand-in for ARCMemory exposing the get_cache_stats() shape
@@ -100,9 +104,7 @@ class FakeAgent:
 @pytest.fixture()
 def client_with_arc(tmp_path: Path) -> TestClient:
     arc = FakeARC(hits=80, misses=20, conv_index_size=12, inv_index_size=42)
-    return TestClient(
-        build_app(sessions_path=tmp_path / "s.json", arc=arc, agent=_StubAgent())
-    )
+    return TestClient(build_app(sessions_path=tmp_path / "s.json", arc=arc, agent=_StubAgent()))
 
 
 def test_memory_stats_reports_cache_counters(client_with_arc: TestClient) -> None:

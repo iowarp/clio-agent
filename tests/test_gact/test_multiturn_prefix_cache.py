@@ -120,19 +120,15 @@ def _patch_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda base_agent, agent_def: [],
     )
 
-    # Child rows resolve deterministically for BOTH the children-context render and the
-    # next_expert Literal build. ``builders`` binds ``_runtime_child_agent_rows`` /
-    # ``_runtime_declared_child_ids`` directly at module load, while ``composition``
-    # reaches into the ``resolution`` namespace at call time -- so patch BOTH bind sites.
+    # Child rows resolve deterministically for the children-context render. Since
+    # #948 S4 ``builders`` no longer binds ``_runtime_child_agent_rows`` (it stopped
+    # building a next_expert routing Literal from the children); the orchestrator
+    # briefing is still assembled by ``composition``, which reaches into the
+    # ``resolution`` namespace at call time -- so patching that one bind site suffices.
     def _children(app: Any, parent_id: str, session_id: str = "") -> list[AgentDef]:
         return list(CHILDREN) if parent_id == "main" else []
 
     monkeypatch.setattr("clio_agent.gact.agents.resolution._runtime_child_agent_rows", _children)
-    monkeypatch.setattr("clio_agent.gact.agents.builders._runtime_child_agent_rows", _children)
-    monkeypatch.setattr(
-        "clio_agent.gact.agents.builders._runtime_declared_child_ids",
-        lambda app, parent_id, session_id="": {row.id for row in _children(app, parent_id)},
-    )
     # No active workspace -> the workspace block is empty (it is also stable when a
     # workspace IS bound, since the allowed-roots tuple is ordered, but keep this test
     # focused on the orchestrator-identity injection). composition reaches this through
@@ -184,9 +180,8 @@ def test_signature_instructions_byte_stable_across_turns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The dspy signature *instructions* ARE the literal system message ChatAdapter
-    emits. They must be byte-stable for the SAME expert+children across turns -- the
-    ``next_expert`` Literal is built from ``sorted(child_ids)`` so its option order is
-    deterministic, and the rest of the signature is static."""
+    emits. They must be byte-stable for the SAME expert across turns -- the signature is
+    static (the workflow_state field type is stable and the rest is fixed)."""
     _patch_runtime(monkeypatch)
     app = SimpleNamespace(state=SimpleNamespace(arc=None, sessions={}))
     sid = "sess-multiturn"
@@ -199,10 +194,7 @@ def test_signature_instructions_byte_stable_across_turns(
     finally:
         ctx.reset(sid_token)
     assert sig1.instructions == sig2.instructions
-    # next_expert Literal options are deterministically ordered (sorted children + finish)
-    assert "next_expert" in sig1.output_fields
-    next_expert_ann = str(sig1.output_fields["next_expert"].annotation)
-    assert next_expert_ann == str(sig2.output_fields["next_expert"].annotation)
+    assert list(sig1.output_fields) == list(sig2.output_fields)
 
 
 def test_orchestrator_briefing_byte_stable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -215,6 +207,14 @@ def test_orchestrator_briefing_byte_stable(monkeypatch: pytest.MonkeyPatch) -> N
     second = _runtime_dynamic_agent_children_context(app, PARENT, session_id="sess-multiturn")
     assert first == second
     assert first  # non-empty: the parent HAS children, so a briefing was rendered
+    # Briefing-content lock (#1000): the routing paragraph teaches all three postures —
+    # wait (collect), check (collect without blocking), and observe (read progress
+    # WITHOUT consuming, with cursor + pattern-return for intermediate evidence).
+    assert "wait_agent_tasks(" in first
+    assert "check_agent_tasks(" in first
+    assert "observe_agent_tasks(task_ids, cursor=" in first
+    assert "without consuming it" in first
+    assert "pattern" in first and "next_cursor" in first
 
 
 def test_orchestrator_briefing_child_order_is_deterministic(

@@ -1,0 +1,7 @@
+{
+  "_comment": "Steady-state DISK budget for clio-OWNED cache/state (iowarp/clio-agent#1001). Bounded disk is release-gating, same class as bounded RAM (#930): a desktop agent must not demand tens of GB of cache from a user's machine. The 2026-07-20 audit found three eviction-free uv caches totaling ~44GB; clio-agent's own contribution is the mcp-uv-cache (peaked 14GB, now bounded by the boot prune in src/clio_agent/tools/mcp_cache.py) plus the regenerable user cache (catalogs / listing / spawn-diet). This budget bounds ONLY what THIS repo owns and can evict; the ambient uv cache and clio-kit's private cache are separately owned (dev env / upstream clio-kit#334). RATCHET: steady_state_gb only goes DOWN. Measured by scripts/disk_footprint.py (sums the clio-owned roots, per-root + total, exits nonzero over budget) — CI-runnable (just du; near-empty on a fresh box). campaign_target_gb is the #1001 line the recorded budget must stay at or under, pinned by tests/test_scripts/test_disk_budget.py so a footprint regression cannot be smuggled in by raising the recorded number.",
+  "scope": "clio-owned caches: mcp-uv-cache (bounded, evict-on-boot) + user cache dir (regenerable catalogs)",
+  "steady_state_gb": 2.0,
+  "campaign_target_gb": 2.5,
+  "recorded": "2026-07-20"
+}

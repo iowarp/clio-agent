@@ -14,16 +14,15 @@ died with that arm. Windows path grounding lives on in the shared
 from __future__ import annotations
 
 from clio_agent import harness
-from clio_agent.agent import SCIENTIFIC_FILE_SUFFIXES as AGENT_SUFFIXES
 
 
 class TestSuffixVocabularyConsolidation:
-    """One shared constant module feeds every suffix vocabulary (issue #765 (a))."""
+    """One shared constant module feeds every suffix vocabulary (issue #765 (a)).
 
-    def test_shared_module_is_single_source(self) -> None:
-        from clio_agent.scientific_suffixes import SCIENTIFIC_FILE_SUFFIXES
-
-        assert AGENT_SUFFIXES == SCIENTIFIC_FILE_SUFFIXES
+    Note: ``clio_agent.agent`` no longer re-exports ``SCIENTIFIC_FILE_SUFFIXES``
+    (the planner path that consumed it was deleted in #948 S4b); the shared
+    module ``clio_agent.scientific_suffixes`` is the single source below.
+    """
 
     def test_harness_pattern_derives_from_shared_vocabulary(self) -> None:
         from clio_agent.scientific_suffixes import scientific_suffix_alternation

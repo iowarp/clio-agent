@@ -38,6 +38,7 @@ private rollback + ask-user/retry helpers live here.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -82,6 +83,8 @@ from clio_agent.gact.types import (
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
+
+logger = logging.getLogger(__name__)
 
 
 def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
@@ -805,9 +808,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             turn_id=_active_semantic_turn_id(),
             summary=summary or "",
             event_id=event_id,
-            compacted_message_ids=[
-                mid for m in ledger if (mid := _attr(m, "id", ""))
-            ],
+            compacted_message_ids=[mid for m in ledger if (mid := _attr(m, "id", ""))],
         )
         deps.replace_session_messages(app, sid, [compact_message])
         memory_event = {
@@ -1144,7 +1145,47 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         if not _pending_user_questions(sid):
             sess = app.state.sessions.get(sid)
             should_resume = bool(updated.metadata.get("resume_on_answer")) and sess is not None
-            if should_resume and app.state.agent is not None:
+            # #948 S1: the within-session busy gate covers the RESUME producer too.
+            # If a turn is already in flight (an intervening POST staged one while
+            # this question was pending), staging the resume now would overwrite the
+            # running turn's slot and orphan it. DEFER it (never drop — losing the
+            # user's answer would be a silent-fallback bug): record the prepared
+            # resume; the turn-runner idle hook (_redrive_deferred_resume) re-drives
+            # it the instant the session frees. A typed event reaches the trace/API.
+            if should_resume and app.state.agent is not None and app.state.turn_runner.busy(sid):
+                app.state.deferred_resumes[sid] = {
+                    "text": deps.ask_user_resume_text(updated),
+                    "metadata": {
+                        "ask_user_question_id": updated.id,
+                        "ask_user_prompt": updated.prompt,
+                        "ask_user_answer": updated.answer,
+                        "ask_user_selected_options": updated.selected_options,
+                        "ask_user_source_turn_id": updated.turn_id,
+                        "ask_user_attempt_id": updated.attempt_id,
+                        "ask_user_caller": updated.metadata.get("caller", {}),
+                        "ask_user_resume": True,
+                    },
+                    "question_id": updated.id,
+                }
+                app.state.sessions.update(sid, metadata_patch={"pending_user_question_id": ""})
+                app.state.bus.publish(
+                    Event(
+                        type="user_question.resume_deferred",
+                        session_id=sid,
+                        payload={
+                            "question_id": updated.id,
+                            "session_id": sid,
+                            "reason": "session_busy",
+                        },
+                    )
+                )
+                logger.info(
+                    "user_question resume deferred reason=session_busy "
+                    "session_id=%s question_id=%s",
+                    sid,
+                    question_id,
+                )
+            elif should_resume and app.state.agent is not None:
                 app.state.sessions.update(
                     sid,
                     metadata_patch={"pending_user_question_id": ""},
@@ -1337,6 +1378,13 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                     status_code=422,
                     detail=envelope.model_dump(exclude_none=True),
                 )
+        # #948 S1: the within-session busy gate covers the retry producer too. A
+        # retry-execute while a turn is already in flight would double-stage a
+        # concurrent turn on this session (orphaning the running one, both writing
+        # the same session + ARC). Record the attempt with a typed blocked reason
+        # instead of staging; the client retries once the running turn finishes.
+        if req.execute and not execution_blocked_reason and app.state.turn_runner.busy(sid):
+            execution_blocked_reason = "session_busy"
         now_iso = datetime.now(timezone.utc).isoformat()
         attempt = TurnAttempt(
             id=_new_attempt_id(),
@@ -1442,6 +1490,11 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         event = app.state.cancel_events.get(sid)
         if event is not None:
             event.set()
+        # #948 S3: cancel cascade — a cancelled parent cancels its spawned children
+        # so no child turn outlives the parent that spawned it.
+        from clio_agent.gact.turn_spawn import cancel_children_of  # noqa: PLC0415
+
+        cancel_children_of(app, sid)
         in_flight = app.state.in_flight_turns.get(sid)
         cancellation_pending = False
         if in_flight is not None and not in_flight.done():

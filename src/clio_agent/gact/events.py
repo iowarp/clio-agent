@@ -331,6 +331,37 @@ class EventBus:
 
         return len(self._subs.get(session_id, []))
 
+    def session_events_since(self, session_id: str, *, cursor: int = 1) -> list["Event"]:
+        """Return ``session_id``'s recorded events with ``id >= cursor``, ordered by id.
+
+        Reads the SAME bounded per-session replay history the SSE feed at
+        ``GET /v1/sessions/{sid}/events`` replays (``subscribe`` drains
+        ``history[last_event_id + 1:]``), so an incremental reader — the
+        spawn-runtime ``observe_agent_tasks`` tool watching a child's progress
+        (iowarp/clio-agent#1000) — resumes from a monotonic cursor without missing
+        or re-reading events. It is a READ over the existing store, NOT a fifth
+        history (RULE 4).
+
+        The event ``id`` is a process-global monotonic counter (``_event_id_counter``),
+        so a cursor read against one session is coherent with the same counter used
+        across sessions; ``next_cursor`` is simply ``events[-1].id + 1``.
+
+        Thread-safe for a worker-thread caller (the observe tool runs off the owning
+        loop): the per-session history lists are only ever APPENDED to (never
+        reordered) on the owning loop, and a list slice is atomic under the GIL, so
+        the slice copy below is a consistent snapshot even under a concurrent append.
+        Bounded like the SSE replay: an event evicted from the ``history_per_session``
+        buffer is not returned (a very chatty child can outrun the buffer — the same
+        bound the SSE ``Last-Event-ID`` resume already carries).
+        """
+
+        events: list[Event] = []
+        keys = ("", session_id) if session_id else ("",)
+        for key in keys:
+            events.extend(self._history.get(key, ())[:])
+        events.sort(key=lambda event: event.id)
+        return [event for event in events if event.id >= cursor]
+
 
 def heartbeat_payload() -> dict[str, Any]:
     """SPEC §7.1 says emit a heartbeat every 15s so proxies don't

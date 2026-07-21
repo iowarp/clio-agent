@@ -25,6 +25,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from .test_turn_transcript_equivalence import (
@@ -33,6 +34,11 @@ from .test_turn_transcript_equivalence import (
     _PlainAgent,
     _Pred,
 )
+
+# #948 S4b: default sessions run the blueprint react ``main``; route it to each
+# test's ``build_app(agent=...)`` host fake (tests that monkeypatch
+# ``_try_streamed_forward`` are unaffected).
+pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 
 def _assistant_message(client: TestClient, sid: str) -> dict[str, Any]:

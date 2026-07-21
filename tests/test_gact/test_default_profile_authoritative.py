@@ -104,7 +104,11 @@ def test_clio_agent_falls_back_to_env_when_no_config(monkeypatch, tmp_path) -> N
     resolves its provider identity straight off the environment, exactly as before.
     """
     from clio_agent.agent import ClioAgent  # noqa: PLC0415
+    from tests._config_layer import delete_config
 
+    # ``lm.model`` is file-pinned by the autouse fixture (file > env); drop it so the
+    # env model is the sole source this env-fallback contract resolves (#985 residual).
+    delete_config("lm.model")
     monkeypatch.setenv("CLIO_LM_PROVIDER", "openai")
     monkeypatch.setenv("CLIO_LM_MODEL", "env-only-model")
     monkeypatch.setenv("CLIO_LM_API_KEY", "sk-env")
@@ -145,8 +149,13 @@ def test_boot_passes_one_config_and_store_default_drives_main_lm(monkeypatch, tm
     # it to keep the assertion about the authoritative store deterministic.
     monkeypatch.setattr(dspy, "configure", lambda **_kwargs: None)
 
+    from tests._config_layer import delete_config
+
     for key in _BOOT_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
+    # ``lm.model`` is file-pinned by the autouse fixture (file > env); drop it so the
+    # boot env read resolves the env model, not the fixture default (#985 residual).
+    delete_config("lm.model")
     monkeypatch.setenv("CLIO_LM_PROVIDER", "openai")
     monkeypatch.setenv("CLIO_LM_MODEL", "boot-authoritative-model")
     monkeypatch.setenv("CLIO_LM_API_BASE", "http://boot.example/v1")

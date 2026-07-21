@@ -20,6 +20,26 @@ from clio_agent.config import (
 from tests.env_isolation import isolated_environ
 
 
+@pytest.fixture(autouse=True)
+def _clean_model_file_layer(allow_pytest_tmp_path):
+    """Resolve this module's LM config from a clean file layer w.r.t. ``lm.model``.
+
+    #985 residual: the autouse ``allow_pytest_tmp_path`` fixture pins
+    ``lm.model: ibm/granite-4-h-tiny`` in the per-test config FILE (file > env) to
+    suppress LM discovery in agent-construction tests. This module, by contrast,
+    exercises ``load_config_from_env`` / ``has_explicit_model_override`` *resolution*
+    from a clean slate (env-layer and provider-default subjects). Dropping the
+    fixture's ``lm.model`` file value restores exactly the pre-residual behaviour
+    these tests assert — a config file without a pinned model — so their ENV and
+    provider-default expectations resolve as they always did. Depends on
+    ``allow_pytest_tmp_path`` so ``XDG_CONFIG_HOME`` is set before we edit the file.
+    """
+    from tests._config_layer import delete_config
+
+    delete_config("lm.model")
+    yield
+
+
 class TestLMProviderConfig:
     """Test LMProviderConfig dataclass."""
 
@@ -384,14 +404,17 @@ class TestLoadConfigFileLayerWins:
         config = load_config_from_env()
         assert config.environment == "production"
 
-    def test_planner_temperature_router_legacy_env_only(self, monkeypatch):
-        # No file/primary env → the legacy CLIO_LM_ROUTER_TEMPERATURE alias applies.
+    def test_router_temperature_legacy_env_alias_is_retired(self, monkeypatch):
+        # SABOTAGE twin (#985 move 1): the CLIO_LM_ROUTER_TEMPERATURE env alias was a
+        # pure fall-through to the migrated lm.planner_temperature and is now deleted.
+        # Setting it must be INERT — planner_temperature falls to its normal default,
+        # never 0.42, so the retired alias can never silently re-acquire a reader.
         monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")
         monkeypatch.setenv("CLIO_LM_MODEL", "plain/model")  # avoid a profile override
         monkeypatch.delenv("CLIO_LM_PLANNER_TEMPERATURE", raising=False)
         monkeypatch.setenv("CLIO_LM_ROUTER_TEMPERATURE", "0.42")
         config = load_config_from_env()
-        assert config.planner_temperature == 0.42
+        assert config.planner_temperature == 0.3
 
     def test_api_key_stays_env_only(self, monkeypatch):
         # A config file must NOT be able to supply the secret API key.

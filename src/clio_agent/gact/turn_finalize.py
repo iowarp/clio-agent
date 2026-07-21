@@ -47,7 +47,10 @@ from typing import TYPE_CHECKING, Any
 from clio_agent.gact.agents.resolution import (
     _runtime_active_agent_blueprint_id,
 )
-from clio_agent.gact.delegation import _workflow_state_from_handoff_rows
+from clio_agent.gact.delegation import (
+    _produced_turn_workflow_state,
+    _workflow_state_from_handoff_rows,
+)
 from clio_agent.gact.enrichment import _finalize_context_frame
 from clio_agent.gact.events import Event, EventBus, _publish_transcript_event
 from clio_agent.gact.evidence import (
@@ -76,12 +79,7 @@ from clio_agent.gact.tool_observer import (
     _sanitize_tools_called_metadata,
 )
 from clio_agent.gact.transcript_projection import final_message_embed
-from clio_agent.gact.turn_degradation import (
-    assemble_stream_and_degradation_metadata,
-    substitute_answer_from_delegation_evidence,
-)
-from clio_agent.gact.turn_nanoagents import spawn_nanoagents
-from clio_agent.gact.turn_stream import settle_turn_transcript
+from clio_agent.gact.turn_stream import assemble_stream_metadata, settle_turn_transcript
 from clio_agent.gact.types import (
     ErrorInfo,
     Message,
@@ -251,9 +249,6 @@ def finalize_turn(
         _enrich_cancellation_error_info,
     )
 
-    if state.error_info is None and not state.answer_text and state.expert_handoffs:
-        state.answer_text = substitute_answer_from_delegation_evidence(state)
-
     # Final user-facing text only: correct any fabricated local artifact path the
     # answer presents as produced — whether the synthesizing expert composed a
     # plausible-but-wrong filename or the delegation-fallback text carried a
@@ -409,10 +404,8 @@ def finalize_turn(
     # burst), the fallback is audited + ignored BY OP IDENTITY; otherwise ONE
     # batch added+completed burst lands now. Never both; never a text swap
     # (the streamed part's close already carried the cleaned buffer as
-    # final_text — there is nothing to swap). A responder whose typed ``answer``
-    # is NOT a visible deliverable (a ``workflow_state`` extract expert, not the
-    # final_responder) stays out of the visible transcript — decided STRUCTURALLY
-    # from ``state.answer_stream_visible`` (set in turn_forward), not by sniffing (#880).
+    # final_text — there is nothing to swap). The turn responder is a react main
+    # whose ``answer`` IS the user deliverable, so its batch fallback always lands.
     stream_fallback = _pop_stream_fallback(state.app, state.sid)
     batch_turn_text = current_stream_part_id is None
     if (
@@ -422,7 +415,7 @@ def finalize_turn(
     ):
         stream_fallback = _stream_fallback_payload("sync_execution_path")
     answer_channel.finish(
-        fallback_text=(str(state.answer_text or "") if state.answer_stream_visible else ""),
+        fallback_text=str(state.answer_text or ""),
         fallback_metadata=(
             {"stream_fallback": stream_fallback} if stream_fallback and batch_turn_text else {}
         ),
@@ -496,11 +489,9 @@ def finalize_turn(
             "effective_agent_id": state.selected_agent or state.turn_agent_id,
             "scope": "turn",
         }
-    # Stamp stream provenance (verbatim behaviour) AND drain the unified
-    # turn-degradation ledger onto ``.metadata.turn_degradations`` — the single
-    # reader of that ledger (see turn_degradation.py; delete its drain and the
-    # ledger becomes write-only again).
-    assemble_stream_and_degradation_metadata(
+    # Stamp stream provenance (verbatim behaviour): mark the turn's text live vs
+    # batch and, on a batch answer, record the delivery-path stream_fallback payload.
+    assemble_stream_metadata(
         state,
         stream_fallback=stream_fallback,
         current_stream_part_id=current_stream_part_id,
@@ -520,6 +511,14 @@ def finalize_turn(
             for row in state.expert_handoffs
         ]
         state.assistant_metadata["expert_handoffs"] = state.expert_handoffs
+    # #953: stamp the turn's produced typed workflow_state so a spawned child's
+    # completion hook (turn_spawn._child_workflow_state, reading metadata["workflow_state"])
+    # threads it back — root seam, all kinds (a chain_of_thought LEAF's field was dropped here).
+    produced_wf = _produced_turn_workflow_state(
+        state.pred, state.expert_handoffs, schema=state.workflow_schema
+    )
+    if produced_wf:
+        state.assistant_metadata["workflow_state"] = produced_wf
     if state.context_file_provenance["files"]:
         state.assistant_metadata["context_files"] = state.context_file_provenance
     if state.memory_search_metadata:
@@ -528,6 +527,9 @@ def finalize_turn(
         state.assistant_metadata["agent_runtime"] = state.agent_runtime
     if state.prompt_resolution:
         state.assistant_metadata["prompt_resolution"] = state.prompt_resolution
+    # #953 [5]: surface a declared variant's winner stamp (additive) on the metadata.
+    if getattr(state.pred, "variant_selection", None):
+        state.assistant_metadata["variant_selection"] = state.pred.variant_selection
     # Reasoning capture: persist per-call chain-of-thought onto the assistant
     # message metadata (owner: usage.capture_reasoning_log). Best-effort, gated
     # by CLIO_CAPTURE_REASONING; mutates state.assistant_metadata in place.
@@ -589,9 +591,6 @@ def finalize_turn(
             }
         )
     enforce_list_bound(state.app, bucket, "pending_diffs", session_id=state.sid)
-
-    # Materialise nanoagent spawns + publish their lifecycle events.
-    spawn_nanoagents(state, state.nanoagents, assistant_msg, state.sess)
 
     # #767 PR3: finalize re-publishes NOTHING — every part's message.created /
     # part.added / part.delta / part.completed already went out at append

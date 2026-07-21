@@ -22,6 +22,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
+from tests._config_layer import set_config
+
+# #948 S4b: default sessions run the blueprint react ``main``; route it to each
+# test's ``build_app(agent=...)`` host fake (agent=None ingress paths return their
+# structured 503 before any module is built, so they are unaffected).
+pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 
 @dataclass
@@ -342,9 +348,14 @@ def test_post_message_dispatches_image_parts_to_image_aware_agent(tmp_path: Path
     }
     assert assistant["parts"][-1]["text"] == "image seen"
     assert fake_agent.calls == [("describe this image", sid)]
-    assert len(fake_agent.image_calls) == 1
-    assert len(fake_agent.image_calls[0]) == 1
-    assert getattr(fake_agent.image_calls[0][0], "url", "").startswith("data:image/png;base64,")
+    # #948 S4b: ``native_model_dispatch`` still reflects the HOST agent's declared
+    # vision capability (``_agent_accepts_images(app.state.agent)``), but the
+    # blueprint runtime executes a compiled DSPy module whose ``forward`` takes no
+    # ``images`` kwarg (``BlueprintExpertModule.forward``); native images are
+    # threaded to the model through the streaming/adapter layer, not handed to a
+    # host-agent ``forward(images=)``. That host-forward dispatch was a
+    # legacy-planner mechanism, so the host fake no longer observes the images.
+    assert fake_agent.image_calls == [[]]
 
 
 def test_post_message_bumps_message_count_by_two(client: TestClient) -> None:
@@ -692,6 +703,95 @@ def test_post_message_unsupported_session_agent_sets_error_turn(
     assert assistant["error_info"]["details"]["agent_id"] == "code_reviewer"
     assert [part["type"] for part in assistant["parts"]] == ["routing_decision"]
     assert assistant["parts"][0]["selected_agent"] == "code_reviewer"
+    assert sess["status"] == "error"
+
+
+def test_post_message_disabled_blueprint_root_fails_typed(
+    tmp_path: Path,
+) -> None:
+    """#948 S4: an active blueprint whose declared root is DISABLED by validation
+    (e.g. a pre-migration pack: chain_of_thought main with children) fails the
+    turn typed — never a silently substituted root, never the legacy planner."""
+
+    from .conftest import complete_turn
+
+    source = tmp_path / "stale-pack"
+    (source / "experts").mkdir(parents=True)
+    source.joinpath("AGENT.md").write_text(
+        """---
+id: stale-pack
+version: 0.1.0
+title: Stale Pack
+root_expert: root
+---
+Pre-migration pack.
+""",
+        encoding="utf-8",
+    )
+    # Activation-time validation rejects a broken pack outright, so reproduce the
+    # STALE-INSTALL shape observed live: the pack is VALID when activated, then
+    # the on-disk root loses its react declaration (an old install re-validated
+    # under the new S4 hierarchy rules) — runtime resolution re-validates rows
+    # each turn and disables the root.
+    source.joinpath("experts", "root.md").write_text(
+        """---
+id: root
+title: Valid Root
+tier: 1
+module:
+  kind: react
+---
+Coordinate work.
+""",
+        encoding="utf-8",
+    )
+    source.joinpath("experts", "leaf.md").write_text(
+        """---
+id: leaf
+title: Enabled Leaf
+parent_id: root
+tier: 2
+module:
+  kind: react
+---
+Do leaf work.
+""",
+        encoding="utf-8",
+    )
+
+    agent = FakeClioAgent(answer="legacy planner must not run")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
+        assert (
+            c.post(
+                f"/v1/sessions/{sid}/agent-blueprint",
+                json={"path": str(source)},
+            ).status_code
+            == 200
+        )
+        # The stale-install mutation: the declared root is no longer react while
+        # it still has a declared child — disabled at the next runtime resolve.
+        source.joinpath("experts", "root.md").write_text(
+            """---
+id: root
+title: Stale Root
+tier: 1
+---
+Coordinate work.
+""",
+            encoding="utf-8",
+        )
+        assistant = complete_turn(c, sid, "hello")
+        sess = c.get(f"/v1/sessions/{sid}").json()
+
+    # The legacy ClioAgent planner NEVER ran (the observed live fall-through).
+    assert agent.calls == []
+    assert assistant["stop_reason"] == "error"
+    assert assistant["error_info"]["error"] == "blueprint_root_disabled"
+    details = assistant["error_info"]["details"]
+    assert details["root_id"] == "root"
+    assert any("module.kind: react" in err for err in details["validation_errors"])
     assert sess["status"] == "error"
 
 
@@ -1350,7 +1450,7 @@ def test_post_message_turn_timeout_surfaces_error(
 
     from .conftest import complete_turn
 
-    monkeypatch.setenv("CLIO_GACT_TURN_TIMEOUT_S", "0.2")
+    set_config("limits.turn_timeout_s", 0.2)  # file-layer (file > env); #985 config-first
     agent = SlowClioAgent(delay_s=0.5)
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=agent)
     with TestClient(app) as c:
@@ -1380,7 +1480,7 @@ def test_post_message_progressing_turn_outlives_no_progress_window(
 
     from .conftest import complete_turn
 
-    monkeypatch.setenv("CLIO_GACT_TURN_TIMEOUT_S", "0.2")
+    set_config("limits.turn_timeout_s", 0.2)  # file-layer (file > env); #985 config-first
     agent = ProgressingSlowClioAgent(steps=5, step_s=0.1)
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=agent)
     agent.bus = app.state.bus

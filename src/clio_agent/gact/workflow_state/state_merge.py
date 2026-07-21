@@ -31,7 +31,7 @@ Design decisions (each answering a named constraint):
   record`` recursion, §2.9).
 
 * **Recorded at the persist seam; ``produced`` is the merge site's OWN result.** The
-  merge already happened upstream (``turn_delegation`` / ``turn_finalize``): each
+  merge already happened upstream (the spawn runtime / ``turn_finalize``): each
   ``message.metadata["expert_handoffs"]`` row carries the merged ``workflow_state``
   the merge site produced. This slice does NOT re-run the merge — it CAPTURES that
   already-produced result as ``produced``, and captures the RAW carriers still visible

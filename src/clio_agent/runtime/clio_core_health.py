@@ -17,10 +17,18 @@ no row is produced (mirrors :meth:`RuntimeProbe._arc_backend`).
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
+from pathlib import Path
 from typing import TYPE_CHECKING
 
-from clio_agent.arc.clio_core_config import RamTierCap, effective_ram_cap, parse_capacity_bytes
+from clio_agent.arc.clio_core_config import (
+    RamTierCap,
+    cte_disk_warn_fraction,
+    cte_store_dir,
+    effective_ram_cap,
+    parse_capacity_bytes,
+)
 from clio_agent.runtime.humanize import format_bytes
 from clio_agent.runtime.status import IntegrationState, IntegrationStatus
 
@@ -369,9 +377,8 @@ def probe_clio_core_daemon_memory(
         "rss_critical_bytes": critical,
     }
     endpoint = f"127.0.0.1:{snap.port}"
-    clients = (
-        f"{snap.live_client_count} live client(s)"
-        + (f", {snap.stale_client_count} stale" if snap.stale_client_count else "")
+    clients = f"{snap.live_client_count} live client(s)" + (
+        f", {snap.stale_client_count} stale" if snap.stale_client_count else ""
     )
 
     if status == "ok":
@@ -423,8 +430,98 @@ def probe_clio_core_daemon_memory(
     ]
 
 
+def _cte_cold_tier_dir_size(store_dir: Path) -> int:
+    """Sum the on-disk size of the CTE cold-tier data directory (best-effort)."""
+    total = 0
+    for root, _dirs, files in os.walk(store_dir, followlinks=False):
+        for name in files:
+            fp = os.path.join(root, name)
+            try:
+                total += os.lstat(fp).st_size
+            except OSError:
+                continue
+    return total
+
+
+def probe_cte_cold_tier_disk(*, env: Mapping[str, str] | None = None) -> list[IntegrationStatus]:
+    """Warn when the CTE cold (file) tier exceeds a fraction of its capacity (#1001).
+
+    Visibility first: the CTE file tier has a large capacity bound (default 50GB,
+    ``arc.cte.file_capacity``) but clio-core does not yet trim it (upstream-gated). This
+    doctor row measures the cold-tier data directory and WARNS (DEGRADED) when it exceeds
+    :func:`cte_disk_warn_fraction` of that capacity, so the operator sees the growth long
+    before writes fail. Actual trimming is upstream (clio-core); this is the demand-side
+    visibility clio-agent can ship today.
+
+    Emitted only for the clio-core backend (``CLIO_ARC_STORE`` ``cte`` or unset).
+    """
+    env = env if env is not None else os.environ
+    backend = env.get("CLIO_ARC_STORE", "cte").strip().lower()
+    if backend != "cte":
+        return []
+
+    cap = effective_ram_cap(env=env)
+    if cap.final_tier_capacity is None:
+        return []
+    try:
+        capacity_bytes = parse_capacity_bytes(cap.final_tier_capacity)
+    except ValueError:
+        return []
+    if capacity_bytes <= 0:
+        return []
+
+    store_dir = cte_store_dir(env=env, config_path=cap.config_path)
+    used = _cte_cold_tier_dir_size(store_dir) if store_dir.is_dir() else 0
+    warn_fraction = cte_disk_warn_fraction()
+    fraction = used / capacity_bytes if capacity_bytes else 0.0
+    details = {
+        "store_dir": str(store_dir),
+        "used_bytes": used,
+        "capacity_bytes": capacity_bytes,
+        "capacity": cap.final_tier_capacity,
+        "used_fraction": round(fraction, 4),
+        "warn_fraction": warn_fraction,
+        "trim_status": "upstream_gated",
+    }
+    if fraction >= warn_fraction:
+        return [
+            IntegrationStatus(
+                name="cte_cold_tier_disk",
+                state=IntegrationState.DEGRADED,
+                summary=(
+                    f"CTE cold tier {format_bytes(used)} is {fraction:.0%} of its "
+                    f"{cap.final_tier_capacity} capacity (warn at {warn_fraction:.0%}). "
+                    "clio-core does not trim the cold tier yet (upstream-gated)."
+                ),
+                config_source="arc.cte.file_capacity, arc.cte.disk_warn_fraction",
+                next_action=(
+                    "Reclaim space (archive/remove old workspace CTE data) or raise "
+                    "arc.cte.file_capacity. Automatic cold-tier trim is tracked upstream "
+                    "(clio-core)."
+                ),
+                fallback="cold-tier-grows-until-writes-fail (PutBlob rc=13)",
+                details=details,
+                required=False,
+            )
+        ]
+    return [
+        IntegrationStatus(
+            name="cte_cold_tier_disk",
+            state=IntegrationState.READY,
+            summary=(
+                f"CTE cold tier {format_bytes(used)} is {fraction:.0%} of its "
+                f"{cap.final_tier_capacity} capacity (warn at {warn_fraction:.0%})."
+            ),
+            config_source="arc.cte.file_capacity, arc.cte.disk_warn_fraction",
+            next_action="No action required.",
+            details=details,
+            required=False,
+        )
+    ]
+
+
 def probe_clio_core_health(*, env: Mapping[str, str] | None = None) -> list[IntegrationStatus]:
-    """Aggregate the clio-core doctor rows: init (#897) + ram cap (#890) + liveness (#892) + daemon mem (#891).
+    """Aggregate the clio-core doctor rows: init (#897) + ram cap (#890) + liveness (#892) + daemon mem (#891) + cold-tier disk (#1001).
 
     A single collection seam so the doctor wires ONE call for all clio-core sub-checks.
 
@@ -432,12 +529,13 @@ def probe_clio_core_health(*, env: Mapping[str, str] | None = None) -> list[Inte
         env: Environment mapping forwarded to the sub-probes.
 
     Returns:
-        The concatenated init-degradation, ram-cap, liveness, and daemon-memory rows
-        (each may be empty).
+        The concatenated init-degradation, ram-cap, liveness, daemon-memory, and
+        cold-tier-disk rows (each may be empty).
     """
     return [
         *probe_clio_core_init_degradation(),
         *probe_clio_core_ram_cap(env=env),
         *probe_clio_core_liveness(),
         *probe_clio_core_daemon_memory(env=env),
+        *probe_cte_cold_tier_disk(env=env),
     ]

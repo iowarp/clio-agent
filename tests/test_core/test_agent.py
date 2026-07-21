@@ -20,14 +20,40 @@ class TestClioAgent:
         """Test ClioAgent agent can be initialized."""
         agent = ClioAgent()
         assert agent is not None
-        assert hasattr(agent, "forward")
         agent.shutdown()
 
-    def test_has_action_planner(self):
-        """Test ClioAgent has an action planner component."""
+    def test_planner_surface_deleted(self):
+        """#948 S4b: the Tier-1 planner half is DELETED — no forward, no planner
+        predicts. ClioAgent is a host; blueprint react mains are the only mains."""
         agent = ClioAgent()
-        assert hasattr(agent, "action_planner")
-        agent.shutdown()
+        try:
+            assert not hasattr(agent, "forward")
+            assert not hasattr(agent, "action_planner")
+            assert not hasattr(agent, "answer_synthesizer")
+        finally:
+            agent.shutdown()
+
+    def test_run_chat_agent_single_shot_synthesis(self):
+        """_run_chat_agent is plain single-shot LM synthesis (no tool loop).
+
+        The session-compaction summarizer (routes/sessions.py) depends on this
+        host helper folding a prompt into text via one chat_agent call.
+        """
+        agent = ClioAgent()
+        try:
+            calls: list[dict[str, object]] = []
+
+            def fake_chat_agent(**kwargs: object):
+                calls.append(kwargs)
+                return dspy.Prediction(answer="compact summary")
+
+            agent.chat_agent = fake_chat_agent
+            result = agent._run_chat_agent("summarise this transcript", "")
+            assert result == "compact summary"
+            # Single-shot: exactly one predictor call, no tool loop.
+            assert len(calls) == 1
+        finally:
+            agent.shutdown()
 
     def test_has_chat_agent(self):
         """Test ClioAgent has chat_agent component."""
@@ -59,22 +85,17 @@ class TestClioAgent:
         agent.shutdown()
 
     def test_core_registry_has_no_domain_experts(self):
-        """Test that built-in domain experts are not registered by core."""
+        """Core registers no agents at construction (#948 S4b).
+
+        The legacy 'utility' self-registration is deleted with the planner;
+        blueprint experts register through the pack bootstrap, not __init__.
+        """
         agent = ClioAgent()
         agents = agent.registry.list_agents()
-        assert "utility" in agents
+        assert "utility" not in agents
         assert "data" not in agents
         assert "analysis" not in agents
         assert "visualization" not in agents
-        agent.shutdown()
-
-    def test_utility_capabilities_are_loaded(self):
-        """Test runtime utility capabilities are loaded."""
-        agent = ClioAgent()
-        cap = agent.registry.get_capabilities("utility")
-        assert cap is not None
-        assert cap.description is not None
-        assert "shell" in cap.keywords
         agent.shutdown()
 
     def test_arc_stats(self):
@@ -134,10 +155,14 @@ class TestClioAgent:
         agent.shutdown()
 
     def test_lm_studio_explicit_model_skips_model_discovery(self, tmp_path, monkeypatch):
-        """Explicit CLIO_LM_MODEL should keep lm_studio pinned to one model."""
+        """An explicit ``lm.model`` should keep lm_studio pinned to one model."""
+        from tests._config_layer import set_config
+
         monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")
         monkeypatch.setenv("CLIO_LM_API_BASE", "http://192.168.86.143:1234/v1")
-        monkeypatch.setenv("CLIO_LM_MODEL", "nemotron-cascade-2-30b-a3b-i1")
+        # ``lm.model`` lives in the config FILE (file > env); pin it there so the
+        # explicit-override contract (skip discovery) is exercised (#985 residual).
+        set_config("lm.model", "nemotron-cascade-2-30b-a3b-i1")
 
         with patch(
             "clio_agent.agent.list_lm_studio_models",
@@ -166,8 +191,8 @@ class TestClioAgent:
         finally:
             agent.shutdown()
 
-    def test_planner_context_pins_provider_adapter(self, tmp_path, monkeypatch):
-        """Planner calls must use the agent-owned adapter, not DSPy's default."""
+    def test_chat_context_pins_provider_adapter(self, tmp_path, monkeypatch):
+        """Chat synthesis must use the agent-owned adapter, not DSPy's default."""
         monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")
         monkeypatch.setenv("CLIO_LM_API_BASE", "http://127.0.0.1:1234/v1")
         monkeypatch.setenv("CLIO_LM_MODEL", "ibm/granite-4-h-tiny")
@@ -181,20 +206,12 @@ class TestClioAgent:
             yield
 
         try:
-            agent.action_planner = lambda **_: dspy.Prediction(
-                action_json='{"action":"answer","answer":"ok"}'
-            )
+            agent.chat_agent = lambda **_: dspy.Prediction(answer="ok")
             with patch("clio_agent.agent.dspy.context", side_effect=fake_context):
-                action = agent._plan_next_action(
-                    question="hi",
-                    session_context="",
-                    file_context="",
-                    capabilities="",
-                    observations=[],
-                )
+                answer = agent._run_chat_agent("hi", "")
 
-            assert action["answer"] == "ok"
-            assert calls[0]["lm"] is agent._planner_lm
+            assert answer == "ok"
+            assert calls[0]["lm"] is agent._main_lm
             assert calls[0]["adapter"] is agent._dspy_adapter
             assert agent._dspy_adapter.use_json_adapter_fallback is False
         finally:
@@ -202,9 +219,13 @@ class TestClioAgent:
 
     def test_lm_studio_discovery_uses_configured_api_base(self, tmp_path, monkeypatch):
         """LM Studio discovery should use the configured remote endpoint."""
+        from tests._config_layer import delete_config
+
         monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")
         monkeypatch.setenv("CLIO_LM_API_BASE", "http://192.168.86.143:1234/v1")
-        monkeypatch.delenv("CLIO_LM_MODEL", raising=False)
+        # Drop the fixture's file-pinned ``lm.model`` so no explicit override exists
+        # and discovery triggers (the file-layer analogue of delenv; #985 residual).
+        delete_config("lm.model")
 
         seen: dict[str, str] = {}
 
@@ -227,9 +248,11 @@ class TestClioAgent:
 
     def test_lm_studio_empty_discovery_surfaces_configuration_error(self, tmp_path, monkeypatch):
         """No discovered LM Studio models should fail before creating a guessed LM."""
+        from tests._config_layer import delete_config
+
         monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")
         monkeypatch.setenv("CLIO_LM_API_BASE", "http://127.0.0.1:1234/v1")
-        monkeypatch.delenv("CLIO_LM_MODEL", raising=False)
+        delete_config("lm.model")
 
         with patch("clio_agent.agent.list_lm_studio_models", return_value=[]):
             with patch(
@@ -242,10 +265,11 @@ class TestClioAgent:
     def test_lm_studio_discovery_exception_surfaces_original_error(self, tmp_path, monkeypatch):
         """Discovery transport/schema errors should not become generic no-model errors."""
         from clio_agent.config import LMStudioDiscoveryError
+        from tests._config_layer import delete_config
 
         monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")
         monkeypatch.setenv("CLIO_LM_API_BASE", "http://127.0.0.1:1234/v1")
-        monkeypatch.delenv("CLIO_LM_MODEL", raising=False)
+        delete_config("lm.model")
 
         with patch(
             "clio_agent.agent.list_lm_studio_models",
@@ -258,69 +282,12 @@ class TestClioAgent:
                 with pytest.raises(LMStudioDiscoveryError, match="invalid JSON"):
                     ClioAgent(data_dir=str(tmp_path / "clio"))
 
-    def test_get_session_context_empty(self):
-        """Test session context retrieval with no history."""
+    def test_no_session_context_helper(self):
+        """#948 S4b: the planner's session/file context helpers are deleted with
+        the loop. ClioAgent no longer exposes _get_session_context."""
         agent = ClioAgent()
-        ctx = agent._get_session_context("test question", "empty_session")
-        assert isinstance(ctx, str)
-        agent.shutdown()
-
-
-class TestStoreExpertInvocation:
-    """#801: the per-turn invocation write is the future optimizer training
-    corpus (and feeds /metrics) — pin that it still persists to ARC."""
-
-    def test_store_expert_invocation_persists_training_corpus(self, tmp_path):
-        """A successful expert turn must land as a tier-2 ARC invocation."""
-        agent = ClioAgent(data_dir=str(tmp_path / "clio"))
         try:
-            prediction = dspy.Prediction(
-                analysis="mean displacement is 4.2 mm",
-                recommendations="plot the north component",
-            )
-            agent._store_expert_invocation(
-                question="what is the mean displacement?",
-                file_context="station MTA1 csv",
-                selected="data",
-                session_id="s-corpus",
-                expert_result=prediction,
-                success=True,
-                error_msg=None,
-                duration_ms=12.5,
-                trace=None,
-            )
-
-            invocations = agent.arc.get_invocations_by_agent("data", status="success")
-            assert len(invocations) == 1
-            inv = invocations[0]
-            assert inv.tier == 2
-            assert inv.agent_id == "data"
-            assert inv.session_id == "s-corpus"
-            assert inv.input["question"] == "what is the mean displacement?"
-            assert inv.input["file_context"] == "station MTA1 csv"
-            assert inv.output["analysis"] == "mean displacement is 4.2 mm"
-            assert inv.performance["success"] is True
-        finally:
-            agent.shutdown()
-
-    def test_store_expert_invocation_records_failures_too(self, tmp_path):
-        """Failed turns are corpus signal as well — status + error persist."""
-        agent = ClioAgent(data_dir=str(tmp_path / "clio"))
-        try:
-            agent._store_expert_invocation(
-                question="broken question",
-                file_context="",
-                selected="data",
-                session_id="s-corpus",
-                expert_result=None,
-                success=False,
-                error_msg="expert exploded",
-                duration_ms=3.0,
-                trace=None,
-            )
-
-            invocations = agent.arc.get_invocations_by_agent("data", status="failure")
-            assert len(invocations) == 1
-            assert invocations[0].output["error"] == "expert exploded"
+            assert not hasattr(agent, "_get_session_context")
+            assert not hasattr(agent, "_store_expert_invocation")
         finally:
             agent.shutdown()

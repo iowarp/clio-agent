@@ -484,6 +484,7 @@ def probe_process_tree(
     *,
     reaper: ChildReaperResult | None = None,
     children: Sequence[Mapping[str, Any]] | None = None,
+    include_live_census: bool = True,
     _reaper_unset: bool = True,
 ) -> list[IntegrationStatus]:
     """Report the child-tree reaper binding + a live child-process census (#900).
@@ -510,21 +511,40 @@ def probe_process_tree(
     """
     if reaper is None and _reaper_unset:
         reaper = child_reaper_status()
-    census = list(children) if children is not None else _live_children()
 
     rows: list[IntegrationStatus] = []
     if reaper is not None:
         rows.append(_reaper_row(reaper))
+    # child_processes: the server's OWN child subtree (psutil ``children()``, not a
+    # full-box walk) — cheap (~30ms) even cold, so always collected.
+    census = list(children) if children is not None else _live_children()
     rows.append(_census_row(census))
-    # Live mode only (no injected census): also report the parent-chain census, which
-    # flags any CLIO process orphaned from both roots (#900 PART B). Gated on
-    # ``children is None`` so the synthetic-census unit tests keep their exact row count.
-    # Imported lazily to avoid a module-load cycle (process_census imports this module).
-    if children is None:
+    # child_parentage: the full-box orphan scan — a psutil enumeration of EVERY
+    # process on the host to flag any CLIO process orphaned from both roots (#900
+    # PART B). ~9s on a COLD Windows enumeration (warm is sub-50ms). Deferred out
+    # of the polled /v1/health path (served from a background-refreshed cache — see
+    # routes/system.py) via ``include_live_census=False``; the CLI doctor still
+    # collects it fresh. Live mode only (no injected census), so the synthetic-
+    # census unit tests keep their exact row count.
+    if include_live_census and children is None:
         from clio_agent.runtime.process_census import probe_process_parentage  # noqa: PLC0415
 
         rows.append(probe_process_parentage())
     return rows
+
+
+def live_orphan_scan_rows() -> list[IntegrationStatus]:
+    """The single EXPENSIVE row only — ``child_parentage``, the full-box orphan
+    scan (~9s cold psutil enumeration of every process).
+
+    Split out of :func:`probe_process_tree` so a polled endpoint (/v1/health) can
+    serve it from a background-refreshed cache instead of paying the cold psutil
+    walk inline, while the CLI doctor keeps collecting it fresh. The cheap
+    ``child_processes`` / reaper rows are NOT here — they stay synchronous.
+    """
+    from clio_agent.runtime.process_census import probe_process_parentage  # noqa: PLC0415
+
+    return [probe_process_parentage()]
 
 
 def _reaper_row(reaper: ChildReaperResult) -> IntegrationStatus:

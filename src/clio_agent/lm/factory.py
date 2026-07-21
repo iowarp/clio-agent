@@ -21,6 +21,19 @@ from clio_agent.lm.io_logging import _io_logging_lm_cls
 _dspy_cache = None
 
 
+def _defer_tiktoken_enabled() -> bool:
+    """Whether to defer litellm's eager ~40 MB cl100k_base load (``lm.defer_tiktoken``).
+
+    Default on; a pure lazy-loading optimisation (see :mod:`clio_agent.lm.lazy_tiktoken`).
+    Operators can disable it with ``lm.defer_tiktoken`` / ``CLIO_LM_DEFER_TIKTOKEN``.
+    """
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    return conf.resolve(
+        "lm.defer_tiktoken", env="CLIO_LM_DEFER_TIKTOKEN", default=True, cast=conf.as_bool
+    )
+
+
 def _dspy():
     """Return the dspy module, importing it on first call (memoised).
 
@@ -60,7 +73,22 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     Returns:
         Configured dspy.LM instance
     """
+    # Defer litellm's eager ~40 MB cl100k_base tiktoken load until first real
+    # encode (see lm.lazy_tiktoken). MUST run before the provider import below,
+    # which is the first ``import litellm`` in the server. Config-gated so an
+    # operator can opt out; default on. Never raises.
+    if _defer_tiktoken_enabled():
+        from clio_agent.lm.lazy_tiktoken import install_lazy_cl100k  # noqa: PLC0415
+
+        install_lazy_cl100k()
     _ensure_provider_registered(config)
+    if _defer_tiktoken_enabled():
+        # After litellm is imported (by the provider registration above): stop its
+        # response-cost recount from re-materialising the ~40 MB cl100k vocab on the
+        # first turn. clio does not consume litellm's response_cost (#930).
+        from clio_agent.lm.lazy_tiktoken import disable_litellm_cost_recount  # noqa: PLC0415
+
+        disable_litellm_cost_recount()
     _resolve_lm_studio_model_if_needed(config)
     model_name = _resolve_model_name(config)
 
