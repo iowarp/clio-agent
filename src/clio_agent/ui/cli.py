@@ -56,7 +56,7 @@ _src_root = _current_file.parent.parent.parent  # src/clio_agent/ui/cli.py -> sr
 if str(_src_root) not in sys.path:
     sys.path.insert(0, str(_src_root))
 
-from clio_agent import serve
+from clio_agent import __version__, serve
 from clio_agent.sdk import (
     ClioClient,
     ClioSDKError,
@@ -1034,6 +1034,12 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(
         description="ClioAgent: Agent Framework for Scientific Computing (IOWarp Intelligence Layer)"
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+        help="Show the installed clio-agent version and exit",
     )
     parser.add_argument(
         "command",

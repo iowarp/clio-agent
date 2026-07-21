@@ -2,11 +2,14 @@
 
 import json
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from mcp.types import TextContent
+from pydantic import BaseModel, ConfigDict, Field
 
 from clio_agent import conf
 from clio_agent.errors import CancellationError
@@ -180,12 +183,29 @@ async def test_resource_read_is_pinned_to_exact_namespace_client() -> None:
     assert result[0].text == "resource"
 
 
-def test_raw_app_result_is_isolated_from_durable_tool_observer() -> None:
-    """Private result metadata reaches only the dedicated MCP App observer."""
+def test_root_data_result_is_publicly_projected_without_private_metadata() -> None:
+    """A bridge Root/data result reaches telemetry without its private metadata."""
+
+    class Root(BaseModel):
+        """Production-shaped validated FastMCP output-schema result."""
+
+        model_config = ConfigDict(populate_by_name=True)
+
+        schema_version: str
+        execution_id: str
+        scheduler_native_id: str | None = Field(alias="schedulerNativeId")
+
+    root = Root(
+        schema_version="jarvis.execution.v1",
+        execution_id="execution-live-root",
+        schedulerNativeId=None,
+    )
 
     private_result = SimpleNamespace(
-        data={"public": "ok"},
-        content=[SimpleNamespace(type="text", text="opened")],
+        data=root,
+        content=[TextContent(type="text", text=f"Root({root!s})")],
+        structured_content=None,
+        is_error=False,
         meta={"private": {"capability": "secret"}},
     )
 
@@ -200,7 +220,7 @@ def test_raw_app_result_is_isolated_from_durable_tool_observer() -> None:
                 )
             ]
 
-        async def call_tool(self, name: str, args: dict[str, Any]):
+        async def call_tool(self, name: str, arguments: dict[str, Any]):
             return private_result
 
     telemetry: list[Any] = []
@@ -212,7 +232,7 @@ def test_raw_app_result_is_isolated_from_durable_tool_observer() -> None:
         )
     )
     try:
-        with create_sync_tool_executor(
+        with SyncMCPToolExecutor(
             object(),
             timeout=1.0,
             client_factory=lambda _server: AppClient(),
@@ -221,10 +241,17 @@ def test_raw_app_result_is_isolated_from_durable_tool_observer() -> None:
     finally:
         set_tool_runtime_fallback(ToolRuntimeHooks())
 
-    assert result == '{"public": "ok"}'
+    assert result == str(root)
     completed = [row for row in telemetry if row[2] == "completed"]
     assert len(completed) == 1
-    assert completed[0][4] == '{"public": "ok"}'
+    assert completed[0][4] == {
+        "content": [{"type": "text", "text": f"Root({root!s})"}],
+        "structuredContent": {
+            "schema_version": "jarvis.execution.v1",
+            "execution_id": "execution-live-root",
+            "schedulerNativeId": None,
+        },
+    }
     assert "secret" not in str(completed)
     assert len(app_results) == 1
     assert app_results[0][3] is private_result
@@ -405,6 +432,92 @@ def test_sync_mcp_tool_executor_uses_late_fallback_hooks():
     finally:
         set_tool_runtime_fallback(ToolRuntimeHooks())
         executor.close()
+
+
+def test_declared_mcp_permission_gate_receives_annotations_before_transport() -> None:
+    """Configured MCP mutations must carry annotations into the pre-call gate."""
+
+    composite_server = object()
+    relay_server = object()
+    fake_client = FakeClient()
+    observed: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+
+    def gate(
+        name: str,
+        args: Mapping[str, Any],
+        context: Mapping[str, Any],
+    ) -> str:
+        observed.append((name, dict(args), dict(context)))
+        return "deny"
+
+    executor = SyncMCPToolExecutor(
+        composite_server,
+        timeout=1.0,
+        client_factory=lambda _server: fake_client,
+        permission_gate=gate,
+        preloaded_tools={
+            "relay_jarvis_run": SimpleNamespace(
+                name="relay_jarvis_run",
+                inputSchema={"properties": {"pipeline_id": {"type": "string"}}},
+                annotations={
+                    "readOnlyHint": False,
+                    "destructiveHint": False,
+                    "idempotentHint": False,
+                },
+            )
+        },
+        namespace_servers={"relay": relay_server},
+    )
+
+    try:
+        with pytest.raises(PermissionError, match="denied by permission gate"):
+            executor.call_tool("relay_jarvis_run", {"pipeline_id": "pipeline-1"})
+    finally:
+        executor.close()
+
+    assert fake_client.started_call is False
+    assert observed == [
+        (
+            "relay_jarvis_run",
+            {"pipeline_id": "pipeline-1"},
+            {
+                "kind": "external_mcp",
+                "annotations": {
+                    "readOnlyHint": False,
+                    "destructiveHint": False,
+                    "idempotentHint": False,
+                },
+            },
+        )
+    ]
+
+
+def test_declared_mcp_permission_gate_keeps_two_argument_hook_compatibility() -> None:
+    """Annotation propagation must not break existing two-argument gate hooks."""
+
+    fake_client = FakeClient()
+    executor = SyncMCPToolExecutor(
+        object(),
+        timeout=1.0,
+        client_factory=lambda _server: fake_client,
+        permission_gate=lambda _name, _args: "allow",
+        preloaded_tools={
+            "relay_lookup": SimpleNamespace(
+                name="relay_lookup",
+                inputSchema={"properties": {}},
+                annotations={"readOnlyHint": True},
+            )
+        },
+        namespace_servers={"relay": object()},
+    )
+
+    try:
+        result = executor.call_tool("relay_lookup", {})
+    finally:
+        executor.close()
+
+    assert '"name": "lookup"' in result
+    assert fake_client.started_call is True
 
 
 def test_sync_mcp_tool_executor_reports_structured_tool_error_result():
@@ -637,9 +750,7 @@ def test_sync_mcp_tool_executor_does_not_repair_ambiguous_missing_file_arg(
     assert Path(kept) != second.resolve()
 
 
-def test_repair_returns_records_for_each_substitution(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-):
+def test_repair_returns_records_for_each_substitution(tmp_path, monkeypatch: pytest.MonkeyPatch):
     """A unique repair yields a structured record ``{argument, requested, used}``."""
     good = tmp_path / "data" / "reference.fasta"
     good.parent.mkdir()
@@ -655,9 +766,7 @@ def test_repair_returns_records_for_each_substitution(
     ]
 
 
-def test_repair_scan_bound_leaves_args_unchanged(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-):
+def test_repair_scan_bound_leaves_args_unchanged(tmp_path, monkeypatch: pytest.MonkeyPatch):
     """Hitting the scan-entry bound aborts and leaves the argument untouched.
 
     A partial scan cannot prove a basename match is unique, so no substitution is
@@ -677,9 +786,7 @@ def test_repair_scan_bound_leaves_args_unchanged(
     assert records == []
 
 
-def test_repair_scan_bound_aborts_walk_with_no_matches(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-):
+def test_repair_scan_bound_aborts_walk_with_no_matches(tmp_path, monkeypatch: pytest.MonkeyPatch):
     """The scan bound stops the WALK itself, not just per-match bookkeeping.
 
     A no-match basename is the canonical repair trigger (the mistyped file does
@@ -718,9 +825,7 @@ def test_repair_scan_bound_aborts_walk_with_no_matches(
     assert 1 <= len(scanned_dirs) <= 2
 
 
-def test_repair_deadline_bound_leaves_args_unchanged(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-):
+def test_repair_deadline_bound_leaves_args_unchanged(tmp_path, monkeypatch: pytest.MonkeyPatch):
     """Hitting the wall-clock deadline aborts and leaves the argument untouched."""
     good = tmp_path / "data" / "reference.fasta"
     good.parent.mkdir()
@@ -744,9 +849,7 @@ def test_repair_logs_reason_when_file_policy_unavailable(
     def _boom(*_args, **_kwargs):
         raise RuntimeError("policy exploded")
 
-    monkeypatch.setattr(
-        "clio_agent.tools.execution.FileAccessPolicy.from_env", _boom
-    )
+    monkeypatch.setattr("clio_agent.tools.execution.FileAccessPolicy.from_env", _boom)
 
     requested = "/nowhere/reference.fasta"
     with caplog.at_level("WARNING", logger="clio_agent.tools.execution"):

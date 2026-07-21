@@ -20,6 +20,7 @@ from clio_agent.gact.mcp_apps import (
     MCPAppRecord,
     MCPAppRegistry,
     _resolve_app_tool,
+    call_tool_result_to_observer,
     call_tool_result_to_wire,
     cleanup_session_mcp_apps,
 )
@@ -113,6 +114,17 @@ def test_call_tool_result_wire_preserves_private_bridge_fields() -> None:
     assert wire["content"][0]["text"] == "opened"
     assert wire["structuredContent"]["session"]["state"] == "ready"
     assert wire["_meta"]["io.iowarp.vigil"]["admission"] == {"capability": "never-in-transcript"}
+
+
+def test_call_tool_result_observer_projection_excludes_private_meta() -> None:
+    """Ordinary telemetry receives public MCP fields and never private app metadata."""
+
+    observed = call_tool_result_to_observer(_open_result())
+
+    assert observed == {
+        "content": [{"type": "text", "text": "opened"}],
+        "structuredContent": {"session": {"state": "ready"}},
+    }
 
 
 def test_observer_emits_only_opaque_typed_part(tmp_path: Path) -> None:

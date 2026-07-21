@@ -1,6 +1,6 @@
 [project]
 name = "clio-agent"
-version = "0.7.4"
+version = "0.7.12"
 description = "CLIO Agent — Autonomous AI agent framework for scientific data management. Part of the IOWarp platform."
 authors = [
     { name = "Jaime Cernuda", email = "jcernudagarcia@illinoistech.edu" },
@@ -37,7 +37,14 @@ classifiers = [
 ]
 
 dependencies = [
-    "dspy>=3.3.0b1",
+    # Intentional exact prerelease: CLIO's retained ReActV2 runtime uses DSPy 3.3 APIs.
+    # Locked/source and direct-wheel installs resolve the exact dependency normally.
+    # uv's registry-backed `tool install clio-agent==...` path requires DSPy as an
+    # explicit `--with dspy==3.3.0b1` root because the top-level CLIO release is stable.
+    "dspy==3.3.0b1",
+    # DSPy permits a broad LiteLLM range. Pin the tested stable wheel so a global
+    # prerelease policy can never select a LiteLLM dev sdist on Windows.
+    "litellm==1.91.3",
     "fastmcp>=3.2.4",
     "requests>=2.31.0",
     "h5py>=3.10.0",

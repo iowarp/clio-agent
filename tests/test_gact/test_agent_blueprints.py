@@ -3046,6 +3046,7 @@ def test_enabled_agent_blueprint_mcp_descriptor_probes_and_calls_tool(
                     description="query EarthScope catalog",
                     inputSchema={"type": "object"},
                     outputSchema={"type": "object"},
+                    annotations={"readOnlyHint": True},
                 )
             ]
 
@@ -3109,6 +3110,7 @@ EarthScope descriptor.
     assert body["status"] == "ready"
     assert body["tools"][0]["enabled"] is True
     assert body["tools"][0]["input_schema"] == {"type": "object"}
+    assert body["tools"][0]["annotations"] == {"readOnlyHint": True}
     assert call.status_code == 200, call.text
     assert FakeClient.called_tool == "earthscope_query"
     assert call.json()["content"] == [{"type": "text", "text": "earthscope_query:ANMO"}]

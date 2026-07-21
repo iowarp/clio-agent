@@ -8,6 +8,10 @@ expirees and LRU overflow with typed reasons, and survive close failures.
 from __future__ import annotations
 
 import threading
+from pathlib import Path
+from typing import Any
+
+import pytest
 
 from clio_agent.tools.reaper import WorkspaceExecutorReaper
 
@@ -156,6 +160,7 @@ def test_agent_getter_rebuilds_reaped_executor(monkeypatch) -> None:
     built: list[str] = []
 
     def fake_build(*, cwd=None, set_catalog=False):
+        assert cwd is not None
         built.append(cwd)
         return f"gateway:{cwd}"
 
@@ -263,3 +268,62 @@ def test_turn_lease_wiring_pins_root_during_context(monkeypatch, tmp_path) -> No
     assert observed == {str(tmp_path): 1}, "lease not held during the turn context"
     _lock, _executors, leases = agent._workspace_state()
     assert leases == {}, "lease not released after the turn"
+
+
+def test_forward_turn_pins_workspace_across_sequential_delegations(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Catalog-to-runtime gaps remain pinned until the whole turn settles."""
+
+    import asyncio
+    from types import SimpleNamespace
+
+    from clio_agent.gact import context as _ctx
+    from clio_agent.gact import turn_forward
+    from tests.test_gact.test_workspace_tool_executor import (
+        _bare_agent,  # type: ignore[attr-defined]
+    )
+
+    root = str(tmp_path)
+    executor = FakeExecutor(idle_s=10_000)
+    agent = _bare_agent()
+    _lock, executors, leases = agent._workspace_state()
+    executors[root] = executor
+    session = SimpleNamespace(workspace_id="workspace-1")
+    workspace = SimpleNamespace(root_path=root)
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            agent=agent,
+            sessions=SimpleNamespace(get=lambda _sid: session),
+            workspaces=SimpleNamespace(get=lambda _wid: workspace),
+        )
+    )
+    state: Any = SimpleNamespace(app=app, sid="session-1")
+    observed: list[tuple[str, dict[str, int], list[str]]] = []
+
+    async def run_catalog_then_runtime(_state: Any) -> object:
+        for stage in ("catalog", "runtime"):
+            reaped = _reaper(
+                executors,
+                leases=leases,
+                ttl=0.0,
+            ).reap_once()
+            observed.append((stage, dict(leases), reaped))
+            await asyncio.sleep(0)
+        return object()
+
+    monkeypatch.setattr(turn_forward, "_forward_turn_leased", run_catalog_then_runtime)
+    token = _ctx.set_app(app)
+    try:
+        asyncio.run(turn_forward.forward_turn(state))
+    finally:
+        _ctx.reset(token)
+
+    assert observed == [
+        ("catalog", {root: 1}, []),
+        ("runtime", {root: 1}, []),
+    ]
+    assert executor.closed is False
+    assert leases == {}
+    assert _reaper(executors, leases=leases, ttl=0.0).reap_once() == [root]
+    assert executor.closed is True

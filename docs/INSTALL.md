@@ -64,6 +64,17 @@ cd clio-agent && uv sync --extra optimizers --extra argonne
 uv run src/clio_agent/ui/cli.py        # or: uv run clio-agent serve
 ```
 
+CLIO intentionally pins DSPy 3.3.0b1 for its retained ReActV2 runtime and pins the
+tested stable LiteLLM release. Registry-backed uv tool resolution requires the exact
+DSPy dependency as an explicit root, which avoids globally admitting unrelated
+prereleases. For a persistent backend-only installation, use `uv tool` (not the
+ephemeral `uvx` / `uv tool run` path):
+
+```sh
+uv tool install --with dspy==3.3.0b1 clio-agent==0.7.12
+clio-agent serve
+```
+
 ## ⚠️ Running more than one at once
 The CLI (`clio` / `clio --web`) and the desktop app each spawn a gact server and default
 to the **same port + the same `~/.config/clio-agent/` state dir**. Running two

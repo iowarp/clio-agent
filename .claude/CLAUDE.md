@@ -99,11 +99,11 @@ rules apply to every change:
 
 ## Actual Stack
 
-The dependency truth is `pyproject.toml`, not this list. As of 0.5.x the core is:
+The dependency truth is `pyproject.toml`, not this list. As of 0.7.x the core is:
 
 ```python
 # Engine + tools
-"dspy>=3.1.3"                # (package is `dspy`, NOT `dspy-ai`)
+"dspy>=3.3.0b1"              # intentional beta; uv installs need --prerelease allow
 "fastmcp>=3.2.4"
 
 # GACT server (shipped product surface, not optional)

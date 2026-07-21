@@ -47,6 +47,24 @@ Windows 10/11).
 
 That's it — no `git`, no `go`.
 
+### Persistent backend-only install with uv
+
+CLIO intentionally pins `dspy==3.3.0b1` for the retained ReActV2 runtime and
+`litellm==1.91.3` as its tested stable provider boundary. Registry-backed uv tool
+resolution requires the exact DSPy dependency as an explicit root, which keeps
+unrelated dependencies on stable releases.
+
+If you only need the long-running `clio-agent` backend, install it as a persistent uv
+tool rather than using the ephemeral `uvx` / `uv tool run` environment:
+
+```sh
+uv tool install --with dspy==3.3.0b1 clio-agent==0.7.12
+clio-agent serve
+```
+
+Use `uv tool upgrade clio-agent` for later upgrades. The full
+one-line installer remains the supported path when you also want the CLIO-branded TUI.
+
 ## Source-build mode (track unreleased work)
 
 Set `CLIO_REF` and optionally `GACT_REF` to a branch/tag to clone-and-build
@@ -85,7 +103,7 @@ CLIO_REF=develop CLIO_GIT_PROTOCOL=ssh \
 
 ```sh
 # Pin the PyPI version and matching clio-agent GitHub release tag
-CLIO_VERSION=0.7.4 \
+CLIO_VERSION=0.7.12 \
   curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
 ```
 

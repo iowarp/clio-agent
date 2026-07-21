@@ -53,6 +53,12 @@ from clio_agent.gact.agent_blueprints import (
 )
 from clio_agent.gact.agents.resolution import _runtime_workspace_catalog_cwd
 from clio_agent.gact.events import Event
+from clio_agent.gact.mcp_apps import call_tool_result_to_observer
+from clio_agent.gact.permission_gate import (
+    _external_mcp_permission_context,
+    _invoke_permission_gate,
+    _normalize_mcp_tool_annotations,
+)
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.runtime.globals import _tool_session_context
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
@@ -85,6 +91,30 @@ def _mcp_reconnect_timeout_s() -> float:
     except (ValueError, TypeError):
         return 15.0
     return value if value > 0 else 15.0
+
+
+def _external_mcp_tool_annotations(info: Mapping[str, Any], tool_name: str) -> Any:
+    """Return cached annotations for one external MCP tool, or ``None``.
+
+    Runtime-installed servers retain their compact string tool list and keep
+    annotations in a side mapping. Agent-blueprint servers use richer tool
+    rows. Supporting both shapes keeps the existing registry/API contract while
+    ensuring every external dispatch reaches the same fail-closed gate.
+    """
+
+    annotations_by_tool = info.get("tool_annotations")
+    if isinstance(annotations_by_tool, Mapping) and tool_name in annotations_by_tool:
+        return annotations_by_tool.get(tool_name)
+    tools = info.get("tools")
+    if not isinstance(tools, list):
+        return None
+    for tool in tools:
+        if not isinstance(tool, Mapping):
+            continue
+        name = str(tool.get("name") or tool.get("id") or "")
+        if name == tool_name:
+            return tool.get("annotations")
+    return None
 
 
 def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
@@ -340,11 +370,13 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
         # We re-create the Client per dispatch later (cheap for stdio,
         # no shared global state to worry about).
         tool_names: list[str] = []
+        tool_annotations: dict[str, dict[str, Any] | None] = {}
         connect_error: Optional[str] = None
         try:
             async with Client(transport) as client:
                 tools = await client.list_tools()
                 tool_names = [t.name for t in tools]
+                tool_annotations = {t.name: _normalize_mcp_tool_annotations(t) for t in tools}
         except Exception as exc:  # noqa: BLE001
             connect_error = repr(exc)
 
@@ -357,6 +389,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
             "status": "ready" if connect_error is None else "error",
             "transport": transport_kind,
             "tools": tool_names,
+            "tool_annotations": tool_annotations,
             "spec": spec,
         }
         if connect_error:
@@ -447,11 +480,20 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                 getattr(app.state, "pending_permission_gate", None)
                 or app.state.make_permission_gate()
             )
+            permission_context = _external_mcp_permission_context(
+                _external_mcp_tool_annotations(info, str(tool_name))
+            )
             tool_context = contextvars.copy_context()
             try:
                 decision = await asyncio.get_running_loop().run_in_executor(
                     None,
-                    lambda: tool_context.run(gate, observer_name, tool_args),
+                    lambda: tool_context.run(
+                        _invoke_permission_gate,
+                        gate,
+                        observer_name,
+                        tool_args,
+                        permission_context,
+                    ),
                 )
             except PermissionError as exc:
                 raise HTTPException(
@@ -547,7 +589,11 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                     else str(data if data is not None else result)
                 )
             notify_tool_observer(
-                tool_observer, observer_name, tool_args, "completed", result=tool_result_text
+                tool_observer,
+                observer_name,
+                tool_args,
+                "completed",
+                result=call_tool_result_to_observer(result),
             )
             return {
                 "server_id": sid,
@@ -658,16 +704,22 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
         # MCP server cannot hang the route.
         reconnect_timeout = _mcp_reconnect_timeout_s()
         tool_names: list[str] = []
+        tool_annotations: dict[str, dict[str, Any] | None] = {}
         connect_error: Optional[str] = None
         timed_out = False
 
-        async def _probe() -> list[str]:
+        async def _probe() -> tuple[list[str], dict[str, dict[str, Any] | None]]:
             async with Client(transport) as client:
                 tools = await client.list_tools()
-                return [t.name for t in tools]
+                return (
+                    [t.name for t in tools],
+                    {t.name: _normalize_mcp_tool_annotations(t) for t in tools},
+                )
 
         try:
-            tool_names = await asyncio.wait_for(_probe(), timeout=reconnect_timeout)
+            tool_names, tool_annotations = await asyncio.wait_for(
+                _probe(), timeout=reconnect_timeout
+            )
         except (asyncio.TimeoutError, TimeoutError):
             timed_out = True
         except Exception as exc:  # noqa: BLE001
@@ -714,6 +766,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
         # Update the registry row in place.
         info["status"] = "ready" if connect_error is None else "error"
         info["tools"] = tool_names
+        info["tool_annotations"] = tool_annotations
         if connect_error:
             info["error"] = connect_error
         else:
@@ -869,6 +922,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                                 "id": t.name,
                                 "name": t.name,
                                 "description": getattr(t, "description", "") or "",
+                                "annotations": _normalize_mcp_tool_annotations(t),
                             }
                         )
                 elif kind == "resources":

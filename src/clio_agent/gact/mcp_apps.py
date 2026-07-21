@@ -32,6 +32,9 @@ from clio_agent.gact.runtime.globals import (
 )
 from clio_agent.gact.turn_runner import session_busy_error_payload
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Part
+from clio_agent.tools.mcp_results import (
+    call_tool_result_to_observer as _call_tool_result_to_observer,
+)
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -133,6 +136,17 @@ def call_tool_result_to_wire(result: Any) -> dict[str, Any]:
     if is_error:
         wire["isError"] = True
     return wire
+
+
+def call_tool_result_to_observer(result: Any) -> dict[str, Any]:
+    """Return the public MCP result fields safe for ordinary tool telemetry.
+
+    MCP Apps may carry private ``_meta`` capability data.  The ordinary tool
+    observer needs exact public ``structuredContent`` for durable execution
+    evidence, but must never receive that private metadata.
+    """
+
+    return _call_tool_result_to_observer(result)
 
 
 def read_resource_result_to_wire(result: Any) -> dict[str, Any]:
@@ -888,6 +902,7 @@ __all__ = [
     "MCP_APP_MIME_TYPE",
     "MCPAppAdmissionError",
     "MCPAppRegistry",
+    "call_tool_result_to_observer",
     "call_tool_result_to_wire",
     "cleanup_all_mcp_apps",
     "cleanup_session_mcp_apps",

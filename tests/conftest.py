@@ -7,6 +7,7 @@ HDF5 and Parquet test data for MCP server testing.
 
 import contextlib
 import os
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,7 @@ from tests._cte_isolation import (
     eagerly_attach_private_daemon,
     isolate_cte_env,
     reap_private_daemon,
+    remove_private_cte_root,
 )
 from tests._process_hygiene import (
     SKIP_ENV,
@@ -29,7 +31,7 @@ from tests._process_hygiene import (
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _clio_private_cte_daemon(tmp_path_factory):
+def _clio_private_cte_daemon():
     """Point this suite run's cte-leg tests at a PRIVATE clio-core daemon.
 
     The host-shared daemon (port 9413) serves live CLIO servers; suites attaching to it
@@ -45,7 +47,8 @@ def _clio_private_cte_daemon(tmp_path_factory):
     if not cte_isolation_available():
         yield None
         return
-    isolation = isolate_cte_env(tmp_path_factory.mktemp("cte-private"), os.environ)
+    isolation_root = Path(tempfile.mkdtemp(prefix=f"clio-agent-cte-{os.getpid()}-"))
+    isolation = isolate_cte_env(isolation_root, os.environ)
     try:
         # Eager spawn+attach: boot the private daemon deterministically at session
         # start (not mid-suite under load) and hold a client so it stays up all
@@ -61,6 +64,7 @@ def _clio_private_cte_daemon(tmp_path_factory):
         yield isolation
     finally:
         reap_private_daemon(isolation.state_dir)
+        remove_private_cte_root(isolation.root)
 
 
 @pytest.fixture(scope="session", autouse=True)

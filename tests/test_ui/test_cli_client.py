@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 from rich.console import Console
 
-from clio_agent import serve
+from clio_agent import __version__, serve
 from clio_agent.sdk import ClioClient
 from clio_agent.ui.cli import ClioAgentCLI, boot_client, main
 
@@ -52,6 +52,26 @@ def test_cli_module_imports_without_clioagent() -> None:
     src = __import__("inspect").getsource(cli_mod)
     assert "from clio_agent.agent import ClioAgent" not in src
     assert "setup_dspy" not in src
+
+
+def test_main_version_reports_installed_version_without_booting(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``clio-agent --version`` reports identity without starting a server."""
+
+    import clio_agent.ui.cli as cli_mod
+
+    def _no_boot(*_args: Any, **_kwargs: Any) -> ClioClient:
+        raise AssertionError("--version must exit before booting a server")
+
+    monkeypatch.setattr(cli_mod, "boot_client", _no_boot)
+    monkeypatch.setattr(sys, "argv", ["clio-agent", "--version"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        main()
+
+    assert excinfo.value.code == 0
+    assert capsys.readouterr().out.strip() == f"clio-agent {__version__}"
 
 
 # --------------------------------------------------------------------------- #

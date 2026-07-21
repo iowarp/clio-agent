@@ -701,6 +701,11 @@ def _make_tool_observer(app: "FastAPI"):
                     "executor_work_may_continue": True,
                 }
             ok = completion_error is None
+            structured_content = (
+                result.get("structuredContent")
+                if isinstance(result, Mapping) and "structuredContent" in result
+                else None
+            )
             result_summary = f"Tool {name} {'completed' if ok else 'failed'}."
             # Served payload = the tool-response atom's FACTS (ok/duration/cached/result/
             # error). No ui_summary/result_summary captions — clio transmits, it does not
@@ -790,6 +795,11 @@ def _make_tool_observer(app: "FastAPI"):
                     metadata={
                         "stream_source": "live",
                         "telemetry_source": "live_observer",
+                        **(
+                            {"structured_content": structured_content}
+                            if structured_content is not None
+                            else {}
+                        ),
                         **(
                             {"result": _bounded_tool_call_result(result)}
                             if result is not None
