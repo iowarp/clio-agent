@@ -230,6 +230,9 @@ limits.turn_timeout_s: 900.0
 # CLIO_CODEX_TRANSPORT  (str)  <- src/clio_agent/config.py
 # lm.codex_transport:  # default unset; resolved in code
 
+# CLIO_LM_DEFER_TIKTOKEN  (bool)  <- src/clio_agent/lm/factory.py
+lm.defer_tiktoken: true
+
 # CLIO_DISABLE_JSON_ADAPTER_FALLBACK  (bool)  <- src/clio_agent/lm/adapters.py
 lm.disable_json_adapter_fallback: false
 

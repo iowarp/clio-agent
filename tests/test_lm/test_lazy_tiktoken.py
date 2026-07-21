@@ -80,7 +80,9 @@ def test_cost_recount_disabled():
     lazy_tiktoken._cost_recount_disabled = False
     try:
         assert lazy_tiktoken.disable_litellm_cost_recount() is True
-        assert litellm.response_cost_calculator is not original
+        # Order-independent: an earlier test/boot may already have installed the
+        # patch (making `original` the patched closure), so assert the MARKER +
+        # behavior, never object identity against a possibly-patched original.
         assert litellm.response_cost_calculator(anything=1) is None
         assert getattr(litellm.response_cost_calculator, "_clio_no_recount", False) is True
         # token_counter itself is NOT patched — OpenAI counting still works.

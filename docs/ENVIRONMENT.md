@@ -75,6 +75,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_LIVE_STREAMING` | `runtime.live_streaming` | bool | `true` | `src/clio_agent/lm/adapters.py` |
 | `CLIO_LMSTUDIO_FLASH_ATTENTION` | `lm.lmstudio_flash_attention` | bool | `true` | `src/clio_agent/gact/routes/providers.py` |
 | `CLIO_LM_API_BASE` | `lm.api_base` | str | _(unset)_ | `src/clio_agent/config.py` |
+| `CLIO_LM_DEFER_TIKTOKEN` | `lm.defer_tiktoken` | bool | `true` | `src/clio_agent/lm/factory.py` |
 | `CLIO_LM_DISABLE_THINKING` | `lm.disable_thinking` | bool | `false` | `src/clio_agent/lm/factory.py` |
 | `CLIO_LM_GUIDED_OUTPUT` | `lm.guided_output` | bool | `false` | `src/clio_agent/lm/adapters.py` |
 | `CLIO_LM_INTER_TOKEN_IDLE_S` | `limits.lm_inter_token_idle_s` | float | `120.0` | `src/clio_agent/runtime/lm_activity.py` |
