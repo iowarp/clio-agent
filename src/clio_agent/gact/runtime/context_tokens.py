@@ -22,6 +22,7 @@ Responsibilities:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from clio_agent import conf
@@ -73,6 +74,71 @@ def _autocompact_threshold() -> float:
     return v if 0.0 < v <= 1.0 else 0.85
 
 
+# OpenAI/tiktoken-native model markers. For these, ``litellm.token_counter`` uses a
+# tiktoken encoding that is EXACT and the correct tokenizer, so we spend it. For every
+# other model litellm falls back to the SAME ~40 MB OpenAI ``cl100k_base`` vocab to
+# produce an APPROXIMATE count — a disproportionate resident cost (the rank map is a
+# native CoreBPE the heap tools can't even see; #930) for an estimate the
+# auto-compaction threshold only needs to be non-zero and monotonic with context
+# growth (see ``_last_prompt_tokens``' docstring). So non-tiktoken models use the
+# ~4-chars/token heuristic that is already the declared fallback — same requirement,
+# no 40 MB vocab pinned in server-main for the subscription-CLI providers.
+_TIKTOKEN_MODEL_PREFIXES = (
+    "gpt",
+    "o1",
+    "o3",
+    "o4",
+    "chatgpt",
+    "text-",
+    "davinci",
+    "babbage",
+    "curie",
+    "ada",
+)
+
+
+def _model_uses_tiktoken(model: str) -> bool:
+    """Whether ``litellm.token_counter`` would tokenise ``model`` with a tiktoken
+    encoding that is *authoritative* for it (OpenAI family). Cheap string check —
+    never imports tiktoken/litellm (which would defeat the memory saving)."""
+    m = str(model or "").lower()
+    # Strip a litellm provider prefix ("openai/gpt-4o", "azure/gpt-4o").
+    if m.startswith("openai/") or m.startswith("azure/"):
+        return True
+    m = m.rsplit("/", 1)[-1].removeprefix("cc-")
+    return any(m.startswith(p) for p in _TIKTOKEN_MODEL_PREFIXES)
+
+
+def _heuristic_text_tokens(text: str) -> int:
+    """~4-chars/token estimate — non-zero and monotonic with length (the only
+    property the auto-compaction threshold needs for non-tiktoken models)."""
+    return max(1, len(text) // 4)
+
+
+def _heuristic_message_tokens(messages: Any) -> int:
+    """~4-chars/token estimate over a chat ``messages`` list. Sums the string
+    content of each message (dicts or objects), plus a small per-message framing
+    constant so an empty-content turn still counts > 0."""
+    total = 0
+    try:
+        for msg in messages or []:
+            content = msg.get("content") if isinstance(msg, Mapping) else getattr(msg, "content", "")
+            if isinstance(content, str):
+                total += len(content)
+            elif isinstance(content, (list, tuple)):
+                for block in content:
+                    if isinstance(block, Mapping):
+                        total += len(str(block.get("text", "")))
+                    else:
+                        total += len(str(block))
+            elif content is not None:
+                total += len(str(content))
+            total += 4  # per-message role/framing overhead
+    except Exception:  # noqa: BLE001,S110 - estimate is best-effort; monotonic is what matters
+        pass
+    return max(1, total // 4)
+
+
 def _last_prompt_tokens() -> int:
     """The LAST LM call's prompt-token count (0 if it cannot be determined).
 
@@ -117,9 +183,15 @@ def _last_prompt_tokens() -> int:
         history = getattr(lm, "history", None)
         messages = history[-1].get("messages") if history else None
         if messages:
-            import litellm  # noqa: PLC0415
+            # Only spend litellm's tiktoken counter for models it counts EXACTLY
+            # (OpenAI). Every other model would just pin the ~40 MB cl100k vocab to
+            # produce an approximate count; the heuristic gives the same non-zero,
+            # monotonic signal the threshold needs (#930).
+            if _model_uses_tiktoken(model):
+                import litellm  # noqa: PLC0415
 
-            return int(litellm.token_counter(model=model, messages=messages))
+                return int(litellm.token_counter(model=model, messages=messages))
+            return _heuristic_message_tokens(messages)
     except Exception:  # noqa: BLE001,S110 - litellm token_counter optional; returns 0
         pass
     return 0
@@ -158,23 +230,28 @@ def _bucket_context_categories(
 
 def _estimate_text_tokens(text: str) -> int:
     """Best-effort token count for a piece of text via the active model's tokenizer
-    (``litellm.token_counter``), falling back to a ~4-chars/token heuristic."""
+    (``litellm.token_counter`` for tiktoken-native models), falling back to a
+    ~4-chars/token heuristic. Non-tiktoken models use the heuristic directly so the
+    ~40 MB cl100k vocab is never pinned to produce an approximate count (#930)."""
     if not text:
         return 0
     try:
-        import litellm  # noqa: PLC0415
-
         from clio_agent.gact.runtime.ambient_lm import resolve_active_lm  # noqa: PLC0415
 
         # Bound profile LM inside a ``dspy.context``; boot default (recorded as an
         # ``ambient_lm_default`` reason) outside one — never a silent ambient read.
         lm = resolve_active_lm(site="context_tokens._estimate_text_tokens")
         model = str(getattr(lm, "model", "") or "")
-        if model:
+        # Resolve the model FIRST, then decide — importing litellm only when its
+        # tiktoken count is authoritative keeps the OpenAI vocab out of memory for
+        # every other provider.
+        if model and _model_uses_tiktoken(model):
+            import litellm  # noqa: PLC0415
+
             return int(litellm.token_counter(model=model, text=text))
     except Exception:  # noqa: BLE001,S110 - tokenizer optional; falls back to ~4-chars/token
         pass
-    return max(1, len(text) // 4)
+    return _heuristic_text_tokens(text)
 
 
 def _resolve_expert_context_window(cfg: Any) -> int:
