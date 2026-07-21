@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from clio_agent import conf
 from clio_agent.errors import CancellationError
+from clio_agent.gact.artifacts.designation import ground_output_paths
 from clio_agent.tools.execution import (
     AsyncMCPToolExecutor,
     MCPToolBridge,
@@ -976,7 +977,7 @@ _PLOT_SCHEMA = {
 
 def test_ground_output_paths_resolves_relative_emitted_path():
     """A relative output path the model emits resolves against the workspace root."""
-    grounded = _ground_output_paths(
+    grounded = ground_output_paths(
         {"data_path": "/data/in.csv", "output_path": "plot.png"},
         _PLOT_SCHEMA,
         "/work/space",
@@ -989,7 +990,7 @@ def test_ground_output_paths_resolves_relative_emitted_path():
 
 def test_ground_output_paths_injects_workspace_path_when_omitted():
     """An omitted output arg with a relative schema default is injected absolute."""
-    grounded = _ground_output_paths(
+    grounded = ground_output_paths(
         {"data_path": "/data/in.csv"},
         _PLOT_SCHEMA,
         "/work/space",
@@ -1002,7 +1003,7 @@ def test_ground_output_paths_leaves_absolute_emitted_path_untouched(tmp_path):
     # Only OS-native absolute paths are recognized as absolute by pathlib on
     # the running platform, so build one from tmp_path rather than a POSIX literal.
     absolute_out = str(tmp_path / "abs.png")
-    grounded = _ground_output_paths(
+    grounded = ground_output_paths(
         {"data_path": "/data/in.csv", "output_path": absolute_out},
         _PLOT_SCHEMA,
         "/work/space",
@@ -1013,10 +1014,10 @@ def test_ground_output_paths_leaves_absolute_emitted_path_untouched(tmp_path):
 def test_ground_output_paths_noop_without_workspace_root():
     """Without a bound workspace root the args pass through unchanged."""
     args = {"data_path": "/data/in.csv", "output_path": "plot.png"}
-    grounded = _ground_output_paths(args, _PLOT_SCHEMA, "")
+    grounded = ground_output_paths(args, _PLOT_SCHEMA, "")
     assert grounded == args
     # Omission injection is also gated on the workspace root.
-    grounded2 = _ground_output_paths({"data_path": "/data/in.csv"}, _PLOT_SCHEMA, "")
+    grounded2 = ground_output_paths({"data_path": "/data/in.csv"}, _PLOT_SCHEMA, "")
     assert "output_path" not in grounded2
 
 
@@ -1028,7 +1029,7 @@ def test_ground_output_paths_ignores_absolute_schema_default(tmp_path):
             "output_path": {"type": "string", "default": str(tmp_path / "fixed" / "out.png")},
         }
     }
-    grounded = _ground_output_paths({"data_path": "/data/in.csv"}, schema, "/work/space")
+    grounded = ground_output_paths({"data_path": "/data/in.csv"}, schema, "/work/space")
     assert "output_path" not in grounded
 
 
@@ -1039,8 +1040,26 @@ def test_ground_output_paths_ignores_non_artifact_default():
             "output": {"type": "string", "default": "stdout"},
         }
     }
-    grounded = _ground_output_paths({"data_path": "/data/in.csv"}, schema, "/work/space")
+    grounded = ground_output_paths({"data_path": "/data/in.csv"}, schema, "/work/space")
     assert "output" not in grounded
+
+
+def test_execution_grounding_thin_reexport_is_byte_identical():
+    """The execution.py thin re-export (#966 deletion item 2) grounds identically.
+
+    The grounding constants + logic MOVED to the artifacts designation module;
+    ``execution.py`` keeps a thin ``_ground_output_paths`` wrapper. This parity
+    test proves the tool boundary's behavior is byte-identical across a mix of
+    resolve/inject/absolute/no-root cases — the move changed no behavior.
+    """
+    cases = [
+        ({"data_path": "/data/in.csv", "output_path": "plot.png"}, _PLOT_SCHEMA, "/work/space"),
+        ({"data_path": "/data/in.csv"}, _PLOT_SCHEMA, "/work/space"),
+        ({"data_path": "/data/in.csv", "output_path": "plot.png"}, _PLOT_SCHEMA, ""),
+        ({"output": "stdout"}, {"properties": {"output": {"default": "stdout"}}}, "/w"),
+    ]
+    for args, schema, root in cases:
+        assert _ground_output_paths(args, schema, root) == ground_output_paths(args, schema, root)
 
 
 def test_sync_mcp_tool_executor_grounds_relative_output_path(tmp_path):

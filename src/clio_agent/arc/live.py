@@ -360,6 +360,25 @@ class LiveRuntimeContext:
             turns[turn_id] = turn
         return turns
 
+    def iter_event_contents(self) -> Iterator[dict[str, Any]]:
+        """Yield every persisted ``_events`` segment content dict, in record order.
+
+        A pure reader over the log for projections that fold ALL events at boot
+        (e.g. the artifact registry rebuild, #966 S1): iterate each session's
+        ``_events`` chunk family in chunk order and yield the ``semantic_event``
+        content dicts (the :func:`build_event_content` form). Categorization the
+        consumer needs (``event_type``/``payload``/``subject``) rides the content;
+        session/turn envelope fields ride the segment, not the content (§2.3), so a
+        consumer needing them reads per-session instead.
+        """
+        for session_id in self._event_session_ids():
+            for scope in self.events_scopes(session_id):
+                for seg in self._segments.render(session_id, scope):
+                    if seg.kind != "semantic_event":
+                        continue
+                    if isinstance(seg.content, dict):
+                        yield seg.content
+
     def view(self, session_id: str, *, max_turns: Optional[int] = None) -> dict[str, Any]:
         """Summary of a session's turns (for context_compiler). ``max_turns`` is an
         OPTIONAL recent-window the CALLER may pass (its own, configurable prompt budget);

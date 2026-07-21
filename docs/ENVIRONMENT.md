@@ -32,6 +32,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARC_LSM_MEMTABLE_SIZE` | `arc.lsm_memtable_size` | int | `1000` | `src/clio_agent/arc/memory.py` |
 | `CLIO_ARC_STORE` | `arc.store` | str | `cte` | `src/clio_agent/arc/storage.py` |
 | `CLIO_ARC_STORE_CONFIG` | `arc.store_config` | str | _(unset)_ | `src/clio_agent/arc/storage.py` |
+| `CLIO_ARTIFACTS_HASH_MAX_FILE_BYTES` | `artifacts.hash_max_file_bytes` | int | `67108864` | `src/clio_agent/gact/artifacts/minting.py` |
 | `CLIO_AUTOCOMPACT_PCT` | `autocompact.pct` | str | `0.85` | `src/clio_agent/gact/runtime/context_tokens.py` |
 | `CLIO_BLUEPRINT_REGISTRY_URL` | `gact.blueprint_registry.url` | str | `https://github.com/iowarp/clio-agent-marketplace.git` | `src/clio_agent/gact/agent_blueprints.py` |
 | `CLIO_CAPTURE_REASONING` | `runtime.capture_reasoning` | bool | `true` | `src/clio_agent/gact/usage.py` |
