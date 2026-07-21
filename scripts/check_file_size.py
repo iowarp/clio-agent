@@ -98,7 +98,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # #952 S4 Pass C: -9 (the dead delegation-helper re-export cluster was deleted
     # with the settle layer).
     # merge(main->develop): -3 ratchet down (2712 -> 2709).
-    "src/clio_agent/gact/app.py": 2709,
+    # #968 S2: +5 for the artifacts route registration (import + register call);
+    # the route body lives in its own owner module routes/artifacts.py.
+    "src/clio_agent/gact/app.py": 2714,
     # #948 S4: +10 for round-tripping the module: declaration in the overlay
     # export (an exported react parent re-loaded as predict and failed the new
     # hierarchy validation).
@@ -173,11 +175,17 @@ RATCHET_BASELINE: dict[str, int] = {
     # AgentTask result). The substantive merge lives in the owner module
     # (delegation._produced_turn_workflow_state); only the trivial import + stamp call
     # land here.
-    "src/clio_agent/gact/turn_finalize.py": 934,
+    # #968 S2: +12 for the resource_link finalize seam (item 2) — the append logic
+    # lives in the owner module artifacts/wire.py (append_turn_resource_links); only
+    # the import + one-line call land here. (A 34-line inline helper was moved out
+    # and the dead settle-path clear removed to keep this to the minimum.)
+    "src/clio_agent/gact/turn_finalize.py": 946,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (baseline 1143 -> actual); ratchet back below the pre-#947 count with the
     # mcp_app_* owner-module split (see the #947 DEBT block on mcp_apps.py).
-    "src/clio_agent/gact/types.py": 1154,
+    # #968 S2: +11 for the resource_link Part fields (uri/name/server_id) + the
+    # x_clio_artifacts capability flag — Part + CapabilityFlags are defined here.
+    "src/clio_agent/gact/types.py": 1165,
     # -120 (#891): the SDK-session machinery moved out to sibling owner modules —
     # the blocking-path pool to providers/claude_code_sdk_pool.py and the per-expert
     # streaming session/delta transport to providers/claude_code_sessions.py; this

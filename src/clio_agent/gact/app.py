@@ -482,6 +482,7 @@ from clio_agent.gact.routes.agent_tasks import (  # noqa: E402
 from clio_agent.gact.routes.agents import (  # noqa: E402
     register_agents_routes,
 )
+from clio_agent.gact.routes.artifacts import register_artifacts_routes  # noqa: E402
 from clio_agent.gact.routes.blueprints import (  # noqa: E402
     register_blueprints_routes,
 )
@@ -2331,6 +2332,10 @@ def build_app(
     # The AgentTask projection read + cancel routes, over
     # ``app.state.agent_task_registry`` (rebuilt at boot from agent-task sessions).
     register_agent_task_routes(app, deps)
+
+    # ---- /v1/artifacts + /v1/{sessions,workspaces}/{id}/artifacts (#966 S2/#968) ----
+    # Artifact registry read surface + user-pin channel, owned by routes/artifacts.py.
+    register_artifacts_routes(app, deps)
 
     # ---- /v1/workspaces -------------------------
     # Workspace store CRUD + file listing/reading are owned by

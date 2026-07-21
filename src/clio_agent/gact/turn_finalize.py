@@ -47,6 +47,7 @@ from typing import TYPE_CHECKING, Any
 from clio_agent.gact.agents.resolution import (
     _runtime_active_agent_blueprint_id,
 )
+from clio_agent.gact.artifacts.wire import append_turn_resource_links
 from clio_agent.gact.delegation import (
     _produced_turn_workflow_state,
     _workflow_state_from_handoff_rows,
@@ -472,6 +473,13 @@ def finalize_turn(
                 "lines_removed": lines_removed,
             },
         )
+
+    # #968 item 2: give every artifact GENERATED this turn outbound wire identity —
+    # one ``resource_link`` part per new version (owner decision #966.9), owned by
+    # the artifacts package so finalize stays a one-line caller.
+    append_turn_resource_links(
+        state.app, state.sid, state.turn_id, state.transcript, agent_id=responder_agent_id
+    )
 
     state.error_info = _enrich_cancellation_error_info(state.app, state.sid, state.error_info)
     state.cancelled_turn = state.error_info is not None and state.error_info.error == "cancelled"
@@ -913,6 +921,10 @@ def settle_failed_finalize(
     getattr(app.state, "live_assistant_message_ids", {}).pop(sid, None)
     getattr(app.state, "live_assistant_parts", {}).pop(sid, None)
     getattr(app.state, "live_assistant_part_keys", {}).pop(sid, None)
+    # No explicit artifact-buffer clear here: a failed turn never drains, but the
+    # NEXT finalize's drain pops the whole session list (returning only its own
+    # turn's entries), so a pre-failure mint self-clears then — and the buffer is
+    # capped per session, so it can never grow unbounded across repeated failures.
     if sess is not None:
         app.state.sessions.update(
             sid,

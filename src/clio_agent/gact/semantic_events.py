@@ -96,6 +96,19 @@ SSE_UI_EVENT_TYPES: frozenset[str] = frozenset(
         # A skill load is an agent ACTION with provenance the UI renders
         # (#920; gact-tui#315): which procedure the expert pulled in, from where.
         "skill.loaded",
+        # Artifacts (#966 S2 / #968): a generated output gains outbound wire
+        # identity. ``artifact.created`` fires per new immutable version;
+        # ``artifact.version.added`` / ``artifact.alias.moved`` are the version-chain
+        # + alias atoms (emit sites land in S4 — allow-listed now so the wire is
+        # ready). ``artifact.used`` / ``artifact.transform.recorded`` deliberately
+        # STAY trace-only (provenance substrate the UI does not render). All are
+        # captured FULL on the durable trace + ARC regardless; this only gates
+        # serving. Redaction is the same ``semantic`` detail path every UI event
+        # uses — an artifact record carries no ``SENSITIVE_KEYS`` field, so the SSE
+        # projection is the full record minus (absent) credentials.
+        "artifact.created",
+        "artifact.version.added",
+        "artifact.alias.moved",
     }
 )
 

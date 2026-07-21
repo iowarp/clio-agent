@@ -21,6 +21,7 @@ from clio_agent.gact.artifacts.designation import (
 )
 from clio_agent.gact.artifacts.minting import (
     compute_identity,
+    drain_turn_artifacts,
     hash_max_file_bytes,
     mint_artifact,
     mint_pack_declared_paths,
@@ -42,6 +43,11 @@ from clio_agent.gact.artifacts.registry import (
     get_registry,
     rebuild_registry_at_boot,
 )
+from clio_agent.gact.artifacts.wire import (
+    artifact_uri,
+    resource_link_part,
+    ui_payload_uri,
+)
 
 __all__ = [
     "ARTIFACT_SUFFIXES",
@@ -55,7 +61,9 @@ __all__ = [
     "FoldResult",
     "IdentityEvidence",
     "Mechanism",
+    "artifact_uri",
     "compute_identity",
+    "drain_turn_artifacts",
     "get_registry",
     "ground_output_paths",
     "hash_max_file_bytes",
@@ -65,4 +73,6 @@ __all__ = [
     "mint_tool_declared_outputs",
     "new_artifact_id",
     "rebuild_registry_at_boot",
+    "resource_link_part",
+    "ui_payload_uri",
 ]

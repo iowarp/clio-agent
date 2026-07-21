@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,6 +52,77 @@ logger = logging.getLogger(__name__)
 _DEFAULT_HASH_MAX_FILE_BYTES = 64 * 1024 * 1024
 
 _HASH_CHUNK_BYTES = 1024 * 1024
+
+#: Per-session turn-scoped buffer of the artifact versions minted THIS turn — the
+#: source for the one-``resource_link``-part-per-generated-artifact append at turn
+#: finalize (#968 item 2). Only genuinely NEW versions land here (a W&B same-sha
+#: dedup no-op mints nothing, so it contributes no part — matching "one part per
+#: artifact GENERATED this turn"). ``turn_finalize`` drains + filters by turn id
+#: and clears the session's list; ``settle_failed_finalize`` clears it on the
+#: failure path so a crashed turn never leaks its buffer into the next turn.
+#: Bounded per session so a pathological turn cannot grow it unboundedly.
+_TURN_ARTIFACT_CAP = 256
+_TURN_ARTIFACT_LOCK = threading.Lock()
+
+
+def _record_turn_artifact(
+    app: "FastAPI",
+    sid: str,
+    *,
+    workspace_id: str,
+    name: str,
+    version: "ArtifactVersion",
+    turn_id: str,
+) -> None:
+    """Buffer a freshly-minted version for the finalize ``resource_link`` append.
+
+    Thread-safe: the observer mint runs on a worker thread while a finalize on the
+    turn thread may drain concurrently. A single module lock guards the per-session
+    list so an append never races a drain-and-clear. Best-effort — a buffering
+    failure must never break a live mint, so the caller wraps the whole mint.
+    """
+    with _TURN_ARTIFACT_LOCK:
+        buffers = getattr(app.state, "turn_artifacts", None)
+        if buffers is None:
+            buffers = {}
+            app.state.turn_artifacts = buffers
+        entries = buffers.setdefault(sid, [])
+        if len(entries) >= _TURN_ARTIFACT_CAP:
+            logger.warning(
+                "artifact turn buffer at cap reason=turn_artifact_cap session=%s cap=%d",
+                sid,
+                _TURN_ARTIFACT_CAP,
+            )
+            return
+        entries.append(
+            {
+                "workspace_id": workspace_id,
+                "name": name,
+                "version": version,
+                "turn_id": turn_id,
+            }
+        )
+
+
+def drain_turn_artifacts(app: "FastAPI", sid: str, turn_id: str = "") -> list[dict[str, Any]]:
+    """Pop the turn's buffered artifact versions for ``sid`` (finalize seam).
+
+    Returns the buffered entries and CLEARS the session's list. When ``turn_id`` is
+    given, only entries stamped with that turn are returned — a defensive filter so
+    a stray mint from a prior (un-drained) turn never rides this turn's message;
+    entries for other turns are dropped with the list (a new turn re-buffers its
+    own). Empty list when nothing was minted this turn.
+    """
+    with _TURN_ARTIFACT_LOCK:
+        buffers = getattr(app.state, "turn_artifacts", None)
+        if not buffers:
+            return []
+        entries = buffers.pop(sid, [])
+    if not turn_id:
+        return entries
+    return [e for e in entries if str(e.get("turn_id") or "") == turn_id]
+
+
 
 
 def hash_max_file_bytes() -> int:
@@ -300,11 +372,20 @@ def mint_artifact(
         actor={"mechanism": mechanism.value},
         subject={"artifact_id": version.artifact_id, "name": name, "workspace_id": workspace_id},
         payload=payload,
-        # Trace-only this slice: keep it off the SSE detail lane (S2 adds the wire).
-        detail_level="off",
+        # S2 (#968): ``artifact.created`` rides the SSE allow-list at ``semantic``
+        # detail — the SAME redaction path every UI event uses. The durable trace +
+        # ARC still capture the FULL event (capture ignores detail_level); the SSE
+        # projection redacts only genuine credentials, of which an artifact record
+        # has none, so the wire carries the full record. ``artifact.created`` is in
+        # ``SSE_UI_EVENT_TYPES``; ``artifact.used`` / ``.transform.recorded`` are not.
+        detail_level="semantic",
     )
 
     patch_session_index(app, sid, registry, workspace_id)
+    # Buffer the new version for the finalize ``resource_link`` part append (item 2).
+    _record_turn_artifact(
+        app, sid, workspace_id=workspace_id, name=name, version=version, turn_id=turn_id
+    )
     return version
 
 
@@ -612,6 +693,7 @@ def _created_payload(
 __all__ = [
     "artifact_name_for_path",
     "compute_identity",
+    "drain_turn_artifacts",
     "hash_max_file_bytes",
     "mint_artifact",
     "mint_harness_write",

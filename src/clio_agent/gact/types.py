@@ -130,6 +130,9 @@ class CapabilityFlags(BaseModel):
     x_clio_retry_attempts: bool = False
     x_clio_context_frames: bool = False
     x_clio_semantic_events: bool = False
+    # #966 S2 / #968 — the /v1/artifacts read surface + user-pin channel, the
+    # artifact.* SSE family, and resource_link parts carrying artifact:// wire ids.
+    x_clio_artifacts: bool = False
     x_clio_semantic_trace_backend: str = ""
     x_clio_semantic_trace_detail: str = ""
     x_clio_hook_backend: str = ""
@@ -644,6 +647,14 @@ class Part(BaseModel):
     is_error: bool = False
     cached: bool = False
     duration_ms: float = 0.0
+
+    # resource_link (SPEC §4.5 core type; #968). Reused to give a generated ARTIFACT
+    # outbound wire identity (#966.9): ``uri`` is ``artifact://<ws>/<name>@vN`` (or
+    # ``ui://…`` for a ``ui_payload``), ``server_id`` the ``clio-artifacts`` sentinel,
+    # ``name`` the artifact name; the identity/provenance block rides ``metadata``.
+    uri: str = ""
+    name: str = ""
+    server_id: str = ""
 
     # mcp_app (MCP Apps 2026-01-26). This is a public capability reference,
     # never the tool result's private ``_meta``. The host resolves ``data_ref``
