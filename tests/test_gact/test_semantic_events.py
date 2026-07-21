@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import _make_tool_observer, build_app
 from clio_agent.runtime.hooks import HookRegistry, install_global_registry
+from tests._config_layer import set_config
 
 # #948 S4b: default sessions run the blueprint react ``main``; route it to each
 # test's ``build_app(agent=...)`` host fake.
@@ -51,8 +52,8 @@ def test_semantic_events_stream_and_trace_file(tmp_path: Path, monkeypatch) -> N
     from .conftest import complete_turn
 
     trace_dir = tmp_path / "traces"
-    monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "file")
-    monkeypatch.setenv("CLIO_SEMANTIC_TRACE_PATH", str(trace_dir))
+    set_config("trace.backend", "file")  # file-layer (file > env); #985 config-first
+    set_config("trace.path", str(trace_dir))
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     client = TestClient(app)
 
@@ -121,8 +122,8 @@ def test_full_debug_trace_includes_llm_payload(tmp_path: Path, monkeypatch) -> N
     from .conftest import complete_turn
 
     trace_file = tmp_path / "semantic.jsonl"
-    monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "file")
-    monkeypatch.setenv("CLIO_SEMANTIC_TRACE_PATH", str(trace_file))
+    set_config("trace.backend", "file")  # file-layer (file > env); #985 config-first
+    set_config("trace.path", str(trace_file))
     monkeypatch.setenv("CLIO_SEMANTIC_TRACE_DETAIL", "full_debug")
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     client = TestClient(app)
@@ -190,7 +191,7 @@ def build(default_root, config):
         encoding="utf-8",
     )
     monkeypatch.syspath_prepend(str(tmp_path))
-    monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "factory")
+    set_config("trace.backend", "factory")  # file-layer (file > env); #985 config-first
     monkeypatch.setenv("CLIO_SEMANTIC_TRACE_FACTORY", "trace_factory:build")
     monkeypatch.setenv("CLIO_SEMANTIC_TRACE_CONFIG", '{"sink": "test"}')
 
@@ -221,7 +222,7 @@ def semantic_event(event):
         f.write("\\n")
 """
     )
-    monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "none")
+    set_config("trace.backend", "none")  # file-layer (file > env); #985 config-first
     install_global_registry(HookRegistry(hooks_dir=hooks_dir))
     try:
         app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
@@ -237,7 +238,7 @@ def semantic_event(event):
 
 
 def test_tool_observer_emits_semantic_tool_events(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "none")
+    set_config("trace.backend", "none")  # file-layer (file > env); #985 config-first
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     client = TestClient(app)
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
@@ -270,7 +271,7 @@ def test_tool_observer_emits_semantic_tool_events(tmp_path: Path, monkeypatch) -
 def test_artifact_and_builtin_command_semantic_events(tmp_path: Path, monkeypatch) -> None:
     from .conftest import complete_turn
 
-    monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "none")
+    set_config("trace.backend", "none")  # file-layer (file > env); #985 config-first
     app = build_app(sessions_path=tmp_path / "s.json", agent=_DiffAgent())
     client = TestClient(app)
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]

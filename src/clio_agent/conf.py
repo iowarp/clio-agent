@@ -20,6 +20,13 @@ of truth and the environment is the fallback used only when a key is absent from
 the file. This is the inverse of the 12-factor "env overrides file" convention,
 and is a deliberate project decision (see the logging/config plan).
 
+Because the file layer is authoritative, the test suite varies configuration
+through a per-test ``config.yaml`` (written under a tmp ``XDG_CONFIG_HOME``), not
+through ambient process env — the autouse ``allow_pytest_tmp_path`` fixture writes
+the test-default knobs there, and ``tests._config_layer`` mutates them per test
+(#985: the conftest "env soup" was dissolved to config-first, since a ``setenv``
+on a file-backed knob would be shadowed by that file).
+
 The committed-defaults layer sits BELOW the environment (env still overrides it)
 and ABOVE the in-code default. Because ``config.defaults.yaml`` is generated
 from — and drift-tested against — the very same in-code ``default=`` arguments
@@ -283,7 +290,6 @@ class ConfigStore:
             return None
 
     def _load(self) -> dict[str, Any]:
-
         # The cwd snapshot is taken at reload()/construction time, NEVER here:
         # this lazy load can run inside a test's os.name monkeypatch window, and
         # Python 3.12's Path() selects WindowsPath/PosixPath by os.name AT CALL

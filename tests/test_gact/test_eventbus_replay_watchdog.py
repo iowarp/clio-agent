@@ -27,6 +27,7 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
 from clio_agent.gact.events import Event, EventBus, heartbeat_event
+from tests._config_layer import set_config
 
 # #948 S4b: default sessions run the blueprint react ``main``; route it to each
 # test's ``build_app(agent=...)`` host fake.
@@ -149,7 +150,7 @@ def test_wedged_session_times_out_while_another_session_is_busy(
 
     from .conftest import complete_turn
 
-    monkeypatch.setenv("CLIO_GACT_TURN_TIMEOUT_S", "0.2")
+    set_config("limits.turn_timeout_s", 0.2)  # file-layer (file > env); #985 config-first
     agent = _WedgedAgent(delay_s=2.0)
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=agent)
     with TestClient(app) as client:
@@ -208,7 +209,7 @@ def test_wedged_session_times_out_while_neighbor_holds_lm_call(
 
     from .conftest import complete_turn
 
-    monkeypatch.setenv("CLIO_GACT_TURN_TIMEOUT_S", "0.2")
+    set_config("limits.turn_timeout_s", 0.2)  # file-layer (file > env); #985 config-first
     agent = _WedgedAgent(delay_s=2.0)
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=agent)
     with TestClient(app) as client:

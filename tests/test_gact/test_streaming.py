@@ -25,6 +25,7 @@ from clio_agent.gact.app import (
     build_app,
 )
 from clio_agent.gact.types import AgentDef
+from tests._config_layer import set_config
 
 # #948 S4b: turns that POST through the engine now run the default blueprint react
 # ``main``; route that root to each test's ``build_app(agent=...)`` host fake.
@@ -647,8 +648,8 @@ def test_live_streamed_deltas_are_marked_live(
         return _Pred(answer="Hello", selected_expert="", routing_rationale="")
 
     monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
-    monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "file")
-    monkeypatch.setenv("CLIO_SEMANTIC_TRACE_PATH", str(tmp_path / "semantic_traces"))
+    set_config("trace.backend", "file")  # file-layer (file > env); #985 config-first
+    set_config("trace.path", str(tmp_path / "semantic_traces"))
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent("fallback"))
     client = TestClient(app)
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]

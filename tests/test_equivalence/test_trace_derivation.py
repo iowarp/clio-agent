@@ -43,6 +43,7 @@ from clio_agent.gact.trace_backfill import (
     backfill_events_from_trace,
     verify_events_roundtrip,
 )
+from tests._config_layer import set_config
 from tests.equivalence.normalizers import MASKED, first_divergence
 
 _MASK = EVENTS_CONTENT_UNCARRIED_TRACE_FIELDS
@@ -138,7 +139,9 @@ def _read_events_contents(arc: ARCMemory, sid: str) -> list[dict[str, Any]]:
 
 def _read_trace_lines(trace_dir: Path, sid: str) -> list[dict[str, Any]]:
     path = trace_dir / f"{sid}.semantic.jsonl"
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return [
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
 
 
 def _wire_real_arc(tmp_path: Path, backend: Any) -> tuple[ARCMemory, SemanticEventSink]:
@@ -293,14 +296,12 @@ def test_routing_arc_op_through_record_forms_the_loop(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def _record_with_file_trace(
-    tmp_path: Path, monkeypatch: Any
-) -> tuple[ARCMemory, Path]:
+def _record_with_file_trace(tmp_path: Path, monkeypatch: Any) -> tuple[ARCMemory, Path]:
     """Record the sample events with the FILE trace backend wired (so #762 erase is
     armed) and return (arc, trace_dir)."""
     from clio_agent.gact.semantic_events import FileSemanticTraceBackend
 
-    monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "file")
+    set_config("trace.backend", "file")  # file-layer (file > env); #985 config-first
     trace_dir = tmp_path / "traces"
     backend = FileSemanticTraceBackend(trace_dir)
     arc, _sink = _wire_real_arc(tmp_path, backend)

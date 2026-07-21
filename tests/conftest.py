@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 
 import pytest
+import yaml
 
 import clio_agent  # noqa: F401
 from tests._cte_isolation import (
@@ -191,61 +192,68 @@ def _reset_process_arc():
 
 @pytest.fixture(autouse=True)
 def allow_pytest_tmp_path(tmp_path, monkeypatch):
-    """Isolate tests from developer shell defaults.
+    """Isolate tests from developer shell defaults, config-file-first (#985).
 
-    Developer shells often set CLIO_ALLOWED_ROOTS narrowly for manual
-    use. Tests should not inherit that and then reject their own
-    tmp_path fixtures.
+    Developer shells often set ``CLIO_ALLOWED_ROOTS`` narrowly for manual use, and
+    unit tests must not depend on a live LM Studio server for model discovery. This
+    fixture establishes the four test-default knobs so neither leaks in.
 
-    Unit tests also should not depend on a live LM Studio server for
-    model discovery. Tests that need discovery unset CLIO_LM_MODEL
-    explicitly.
+    #985 move 3 (+ residual): the autouse *env soup* is fully dissolved. The only
+    env this fixture sets is ``XDG_CONFIG_HOME`` (legitimate isolation — it repoints
+    the user-config + skill discovery at a per-test tmp dir). All four test-default
+    knobs are written to the per-test user ``config.yaml`` — the config-FILE layer
+    :mod:`clio_agent.conf` resolves ABOVE the environment:
 
-    #985 move 3 — config-first dissolution of the autouse env soup: the
-    registry-bootstrap knob is now written as explicit config to the per-test
-    user ``config.yaml`` (the XDG-relative user-config layer ConfigStore reads)
-    instead of ``CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP`` in the env. It
-    resolves config-first through ``conf`` (``agents.disable_default_registry_bootstrap``),
-    has no env-direct reader, and its overriders escape the file cleanly (they
-    re-point ``XDG_CONFIG_HOME`` or overwrite ``config.yaml`` + ``conf.reload()``).
-    The other three (``CLIO_ALLOWED_ROOTS`` / ``CLIO_LM_MODEL`` / ``CLIO_ARC_STORE``)
-    stay env by necessity — each has a per-test override contract a winning config
-    file would break (subdir-restriction + dev-shell union for allowed_roots; the
-    ``delenv``-to-trigger-discovery + ``has_explicit_model_override`` file/env read
-    for lm.model; the ``CLIO_ARC_STORE=banana`` env-resolution-error test for
-    arc.store) — see #985 move 3 report. Migrating those means converting their
-    per-test setenv calls, which is out of scope for this slice.
+    - ``agents.disable_default_registry_bootstrap: true`` — no network git clone in
+      unit tests; ``_write_test_default_registry_blueprint`` writes the default
+      blueprint on disk so discovery still finds it. No env-direct reader.
+    - ``tools.file_policy.allowed_roots`` — ``tmp_path`` unioned with any dev-shell
+      ``CLIO_ALLOWED_ROOTS`` (the union that previously lived in the env value now
+      builds the file list). The stale env var is *deleted* so the file is the sole
+      source of truth.
+    - ``lm.model: ibm/granite-4-h-tiny`` — a pinned unit-test model that suppresses
+      LM-Studio discovery via ``has_explicit_model_override`` (which reads the file
+      layer).
+    - ``arc.store: local`` — the fast, isolated LocalFS backend (production defaults
+      to clio-core; the cte integration tests override via an explicit
+      ``backend="cte"`` arg, unaffected).
+
+    Because the file wins over the env, a test that needs to override one of these
+    knobs mutates the file layer (``tests._config_layer.set_config`` /
+    ``delete_config`` + the reload they perform) rather than ``monkeypatch.setenv``:
+    the subdir-restriction allowed_roots tests write a narrower list; the LM
+    discovery tests delete ``lm.model``; the ``arc.store=banana`` fail-loud test
+    writes ``banana`` into the file. See the #985 residual report.
     """
     from clio_agent import conf  # noqa: PLC0415 - avoid import cost at collection
 
-    existing = os.environ.get("CLIO_ALLOWED_ROOTS", "")
-    roots = [str(tmp_path)]
-    if existing.strip():
-        roots.extend(item for item in existing.split(os.pathsep) if item)
-    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", os.pathsep.join(roots))
-
-    if "CLIO_LM_MODEL" not in os.environ:
-        monkeypatch.setenv("CLIO_LM_MODEL", "ibm/granite-4-h-tiny")
-
-    # Tests use the fast, isolated LocalFS ARC store by default; production
-    # defaults to clio-core. The clio-core integration tests override via an
-    # explicit backend="cte" arg, so they are unaffected.
-    monkeypatch.setenv("CLIO_ARC_STORE", "local")
     xdg_root = tmp_path / "xdg"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_root))
 
+    # Union tmp_path with any dev-shell CLIO_ALLOWED_ROOTS, then build the FILE
+    # value from it and DELETE the stale env var so the file is authoritative.
+    existing = os.environ.get("CLIO_ALLOWED_ROOTS", "")
+    allowed_roots = [str(tmp_path)]
+    if existing.strip():
+        allowed_roots.extend(item for item in existing.split(os.pathsep) if item)
+    monkeypatch.delenv("CLIO_ALLOWED_ROOTS", raising=False)
+
     # #948 S4b: the legacy native-expert runtime (the deleted Tier-1 planner) is
     # gone, and its ``CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS`` knob is retired, so
-    # a default/main session MUST resolve an Agent Blueprint react main to run.
-    # ``_write_test_default_registry_blueprint`` writes that default registry
-    # blueprint (react ``main`` root + experts) directly on disk below, so leave
-    # the network git bootstrap DISABLED (no clone in unit tests) while still
-    # letting discovery find the pre-written default blueprint. #985 move 3:
-    # express that disable through the user config file, not the env.
+    # a default/main session MUST resolve an Agent Blueprint react main to run. The
+    # blueprint is written on disk below; keep the network git bootstrap DISABLED.
     config_dir = xdg_root / "clio-agent"
     config_dir.mkdir(parents=True, exist_ok=True)
     config_dir.joinpath("config.yaml").write_text(
-        "agents:\n  disable_default_registry_bootstrap: true\n",
+        yaml.safe_dump(
+            {
+                "agents": {"disable_default_registry_bootstrap": True},
+                "tools": {"file_policy": {"allowed_roots": allowed_roots}},
+                "lm": {"model": "ibm/granite-4-h-tiny"},
+                "arc": {"store": "local"},
+            },
+            sort_keys=False,
+        ),
         encoding="utf-8",
     )
     # The process-wide store caches its file layer; drop it so this test's

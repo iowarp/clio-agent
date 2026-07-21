@@ -125,7 +125,12 @@ async def test_shell_bash_rejects_cwd_outside_allowed_roots(
     outside = tmp_path / "outside"
     allowed.mkdir()
     outside.mkdir()
-    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(allowed))
+    # allowed_roots lives in the config FILE (file > env); write the NARROWER root
+    # there, overwriting the fixture's ``tmp_path`` list so ``outside`` is rejected
+    # (a bare setenv would be shadowed by the fixture file — #985 residual).
+    from tests._config_layer import set_config
+
+    set_config("tools.file_policy.allowed_roots", [str(allowed)])
 
     async with Client(shell_server) as client:
         result = await client.call_tool(

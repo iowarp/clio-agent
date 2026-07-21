@@ -26,6 +26,7 @@ from clio_agent.gact.semantic_events import (
     SemanticEvent,
     SemanticEventSink,
 )
+from tests._config_layer import set_config
 
 
 def _ev(event_type: str, *, sid: str = "s1", turn: str = "t1", **kw: Any) -> SemanticEvent:
@@ -232,7 +233,7 @@ def test_release_drops_events_scope(tmp_path, monkeypatch):
     The erase is gated on the durable trace keeping the full history (#762), so
     this test enables the file backend; retention under the default "none"
     backend is covered by test_events_log_retention.py."""
-    monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "file")
+    set_config("trace.backend", "file")  # file-layer (file > env); #985 config-first
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))
     arc.set_highway_sink(lambda e: {})
     arc.record_semantic_event(_turn_started())
@@ -245,7 +246,7 @@ def test_release_drops_events_scope(tmp_path, monkeypatch):
 def test_flush_and_release_drops_events_scope(tmp_path, monkeypatch):
     """flush_and_release erases the _events scope across all sessions (durable
     trace enabled — the erase is gated on it keeping the full history, #762)."""
-    monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "file")
+    set_config("trace.backend", "file")  # file-layer (file > env); #985 config-first
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))
     arc.set_highway_sink(lambda e: {})
     arc.record_semantic_event(_turn_started())

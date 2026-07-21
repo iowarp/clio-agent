@@ -20,6 +20,26 @@ from clio_agent.config import (
 from tests.env_isolation import isolated_environ
 
 
+@pytest.fixture(autouse=True)
+def _clean_model_file_layer(allow_pytest_tmp_path):
+    """Resolve this module's LM config from a clean file layer w.r.t. ``lm.model``.
+
+    #985 residual: the autouse ``allow_pytest_tmp_path`` fixture pins
+    ``lm.model: ibm/granite-4-h-tiny`` in the per-test config FILE (file > env) to
+    suppress LM discovery in agent-construction tests. This module, by contrast,
+    exercises ``load_config_from_env`` / ``has_explicit_model_override`` *resolution*
+    from a clean slate (env-layer and provider-default subjects). Dropping the
+    fixture's ``lm.model`` file value restores exactly the pre-residual behaviour
+    these tests assert — a config file without a pinned model — so their ENV and
+    provider-default expectations resolve as they always did. Depends on
+    ``allow_pytest_tmp_path`` so ``XDG_CONFIG_HOME`` is set before we edit the file.
+    """
+    from tests._config_layer import delete_config
+
+    delete_config("lm.model")
+    yield
+
+
 class TestLMProviderConfig:
     """Test LMProviderConfig dataclass."""
 
