@@ -17,6 +17,7 @@ sha for an existing ``(ws, name, version)`` keeps the FIRST and records a typed
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 from dataclasses import dataclass
@@ -45,6 +46,7 @@ ARTIFACT_CREATED_EVENT = "artifact.created"
 # per session before the index truncates (``names_truncated=True``). The index is
 # badges only — the full set always rebuilds from the event log, never from here.
 _SESSION_INDEX_NAME_CAP = 64
+
 
 #: Default ceiling on hashing a designated output at mint. Over this, the version
 #: is recorded ``stat-pinned`` (typed, permanent) rather than paying multi-GB I/O
@@ -140,6 +142,34 @@ class FoldResult:
     version: Optional[ArtifactVersion] = None
 
 
+@dataclass
+class MintOutcome:
+    """Typed outcome of an atomic :meth:`ArtifactRegistry.mint`.
+
+    ``created`` is ``True`` when a genuinely new version was assigned and appended;
+    ``False`` when the mint deduplicated onto an existing byte-identical version
+    (W&B ``same name + same sha256`` dedup, owner decision #966.3) — the caller
+    then emits NOTHING (the no-op is at the mint, not merely the fold). ``version``
+    is always the operative version (the new one, or the deduped-onto existing).
+    """
+
+    version: ArtifactVersion
+    created: bool
+    reason: str = ""
+
+
+class RegistryFoldOnLoopError(RuntimeError):
+    """Raised when a boot fold would run synchronously on the asyncio event loop.
+
+    The boot fold performs unbounded synchronous file / ARC I/O; running it on the
+    loop thread would stall every in-flight SSE stream and session (the Campaign-1
+    liveness lesson). The async mint seams (diffs/apply, pack-declared finalize)
+    MUST offload the mint to a worker thread (``asyncio.to_thread``); this typed
+    error is the backstop that makes an un-offloaded on-loop first access loud
+    rather than a silent stall.
+    """
+
+
 class ArtifactRegistry:
     """In-memory projection of the artifact event log, rebuilt at boot.
 
@@ -215,6 +245,65 @@ class ArtifactRegistry:
                 self._seen_event_ids.add(event.event_id)
             return FoldResult(applied=True, reason="", version=version)
 
+    # ---- mint (atomic version assignment) ----------------------------------
+
+    def mint(
+        self,
+        *,
+        workspace_id: str,
+        name: str,
+        event_id: str,
+        kind: ArtifactKind,
+        custody: Custody,
+        mechanism: Mechanism,
+        evidence: IdentityEvidence,
+        producer: dict[str, Any],
+        path: str,
+        created_at: str,
+        annotation: str,
+    ) -> MintOutcome:
+        """Atomically dedup-or-assign the next version for ``(workspace_id, name)``.
+
+        The single read-modify-write that assigns a version number runs under ONE
+        lock acquisition (owner decision, finding [3/10] — no TOCTOU across two
+        locks): consult the W&B same-sha dedup (finding [1/6] — content already in
+        the chain → return the existing version, ``created=False``), else assign
+        ``next_version_number()``, build the immutable version, append it, and mark
+        ``event_id`` seen so the durable event's boot replay is a ``duplicate_event_id``
+        no-op. Never emits — the caller emits the ``artifact.created`` event only
+        when ``created`` is ``True``.
+        """
+        with self._lock:
+            key = (workspace_id, name)
+            record = self._records.get(key)
+            if record is None:
+                record = ArtifactRecord(workspace_id=workspace_id, name=name)
+                self._records[key] = record
+
+            # W&B dedup: same (ws, name) + same content sha256 -> no new version.
+            # A stat-pinned version (sha256 is None) never dedups — identity unknown.
+            sha = evidence.sha256
+            if sha:
+                deduped = record.version_for_sha(sha)
+                if deduped is not None:
+                    return MintOutcome(version=deduped, created=False, reason="same_sha_dedup")
+
+            version = ArtifactVersion(
+                version=record.next_version_number(),
+                kind=kind,
+                custody=custody,
+                mechanism=mechanism,
+                evidence=evidence,
+                producer=dict(producer),
+                path=path,
+                created_at=created_at,
+                annotation=annotation,
+            )
+            record.add_version(version)
+            if event_id:
+                self._seen_event_ids.add(event_id)
+            return MintOutcome(version=version, created=True, reason="")
+
     # ---- queries -----------------------------------------------------------
 
     def get(self, workspace_id: str, name: str) -> Optional[ArtifactRecord]:
@@ -286,18 +375,49 @@ def _safe_mechanism(value: str) -> Mechanism:
         return Mechanism.TOOL_SCHEMA
 
 
+#: Guards the lazy first-access rebuild so two concurrent first-accessors build
+#: ONE registry, not two (finding [7]/[13] — the check-then-set race). Module
+#: scope: there is one registry per app, installed on ``app.state``.
+_REGISTRY_INIT_LOCK = threading.Lock()
+
+
 def get_registry(app: "FastAPI") -> ArtifactRegistry:
     """Return the app's artifact registry, rebuilding it from the log on first access.
 
     The projection rebuilds LAZILY (RULE 4 / #737): the first consumer — a mint
     or a query — triggers :func:`rebuild_registry_at_boot`, which folds the durable
-    ``artifact.created`` events (ARC ``_events``, else the JSONL trace; neither →
-    typed ``capture_released``). This keeps the boot seam out of the ``build_app``
-    god file while still rebuilding once, before first use.
+    ``artifact.created`` events (ARC ``_events`` UNION the JSONL trace; neither
+    reachable → typed ``capture_released``). This keeps the boot seam out of the
+    ``build_app`` god file while still rebuilding once, before first use.
+
+    Thread-safe via double-checked locking (finding [7]/[13]): concurrent first
+    accessors share the single installed instance instead of each building — and
+    overwriting — their own. Loop-safe (finding [9]): the rebuild does unbounded
+    synchronous I/O, so a first access ON the event loop raises the typed
+    :class:`RegistryFoldOnLoopError` — the async mint seams offload to a worker
+    thread; a built registry (the common case) is returned without touching the
+    lock or the loop check.
     """
     registry = getattr(app.state, "artifact_registry", None)
-    if registry is None:
-        registry = rebuild_registry_at_boot(app)
+    if registry is not None:
+        return registry
+    # First access — a rebuild is required. It must never run on the loop thread.
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        on_loop = False
+    else:
+        on_loop = True
+    if on_loop:
+        raise RegistryFoldOnLoopError(
+            "artifact registry boot fold would run on the asyncio event loop; the "
+            "calling seam must offload the mint to a worker thread (asyncio.to_thread)"
+        )
+    with _REGISTRY_INIT_LOCK:
+        # Double-check under the lock: a racing first-accessor may have built it.
+        registry = getattr(app.state, "artifact_registry", None)
+        if registry is None:
+            registry = rebuild_registry_at_boot(app)
     return registry
 
 
@@ -366,93 +486,142 @@ def rehydrate_session_index(app: "FastAPI", sid: str) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
+@dataclass(frozen=True)
+class _SourceFold:
+    """Reachability + fold outcome for one boot-fold source.
+
+    ``reachable`` distinguishes a source that was READ (present + readable, whether
+    or not it held any artifact events) from one that was ABSENT or UNREADABLE.
+    The empty-vs-unknown distinction (finding [11]): ``capture_released`` fires
+    only when NEITHER source was reachable — a reachable-but-empty source is a
+    clean empty registry, never a degrade.
+    """
+
+    reachable: bool
+    folded_any: bool
+
+
 def rebuild_registry_at_boot(app: "FastAPI") -> ArtifactRegistry:
     """Rebuild ``app.state.artifact_registry`` from the durable event log at boot.
 
-    Fold source precedence (owner decision #966): ARC ``_events`` first; JSONL
-    durable trace as the fallback; when NEITHER is reachable, the registry boots
-    empty and records a typed ``capture_released`` reason (never a silent empty).
+    UNION-folds BOTH fold sources (owner decision #966.8, finding [2]): ARC
+    ``_events`` AND the durable JSONL trace. The fold is idempotent (``event_id``
+    dedup + same-sha no-op + keep-first), so folding both is safe and recovers
+    deleted-session history the live ARC log no longer holds. Only when NEITHER
+    source is reachable does the registry boot empty and record a typed
+    ``capture_released`` reason (finding [11] — a reachable-but-empty source is a
+    clean empty registry, not a degrade). ``app.state`` is assigned only after the
+    fold completes, so a concurrent reader never sees a half-built projection.
     """
     registry = ArtifactRegistry()
-    app.state.artifact_registry = registry
 
-    folded = _fold_from_arc(app, registry)
-    if folded is None:
-        folded = _fold_from_jsonl(app, registry)
-    if folded is None:
+    arc_fold = _fold_from_arc(app, registry)
+    jsonl_fold = _fold_from_jsonl(app, registry)
+
+    if not arc_fold.reachable and not jsonl_fold.reachable:
         registry.capture_released = {
             "reason": "capture_released",
-            "detail": "no ARC _events and no durable JSONL trace reachable at boot",
+            "detail": "neither ARC _events nor the durable JSONL trace was reachable at boot",
         }
         logger.warning(
             "artifact registry boot fold skipped reason=capture_released "
-            "detail=no_arc_events_no_jsonl_trace"
+            "detail=no_reachable_fold_source"
         )
     else:
         logger.info(
-            "artifact registry boot fold source=%s records=%d conflicts=%d",
-            folded,
+            "artifact registry boot fold arc_reachable=%s jsonl_reachable=%s records=%d conflicts=%d",
+            arc_fold.reachable,
+            jsonl_fold.reachable,
             registry.count(),
             len(registry.fold_conflicts),
         )
+    app.state.artifact_registry = registry
     return registry
 
 
-def _fold_from_arc(app: "FastAPI", registry: ArtifactRegistry) -> Optional[str]:
-    """Fold artifact events from ARC's persisted ``_events`` log; ``None`` if absent."""
+def _fold_from_arc(app: "FastAPI", registry: ArtifactRegistry) -> _SourceFold:
+    """Fold artifact events from ARC's persisted ``_events`` log.
+
+    Returns ``reachable=False`` when ARC exposes no ``iter_event_contents`` reader
+    (absent) or the reader raises mid-iteration (configured but unreadable);
+    ``reachable=True`` when the log was read to completion, whether or not it held
+    any artifact events.
+    """
     from clio_agent.gact.runtime.globals import _PROCESS_ARC  # noqa: PLC0415
 
     arc = getattr(app.state, "arc", None) or _PROCESS_ARC
     observer = getattr(arc, "_live", None) or getattr(arc, "live", None)
     reader = getattr(observer, "iter_event_contents", None)
     if reader is None:
-        return None
-    found_any = False
-    for content in reader():
-        if str(content.get("event_type") or "") != ARTIFACT_CREATED_EVENT:
-            continue
-        payload = content.get("payload")
-        if isinstance(payload, dict):
-            registry.fold_payload(payload)
-            found_any = True
-    return "arc_events" if found_any else None
+        return _SourceFold(reachable=False, folded_any=False)
+    folded_any = False
+    try:
+        for content in reader():
+            if not isinstance(content, dict):
+                continue
+            if str(content.get("event_type") or "") != ARTIFACT_CREATED_EVENT:
+                continue
+            payload = content.get("payload")
+            if isinstance(payload, dict):
+                registry.fold_payload(payload)
+                folded_any = True
+    except Exception:  # noqa: BLE001 — a configured-but-unreadable source is unreachable
+        logger.warning(
+            "artifact boot fold ARC source unreadable reason=arc_iter_failed folded_any=%s",
+            folded_any,
+        )
+        return _SourceFold(reachable=False, folded_any=folded_any)
+    return _SourceFold(reachable=True, folded_any=folded_any)
 
 
-def _fold_from_jsonl(app: "FastAPI", registry: ArtifactRegistry) -> Optional[str]:
-    """Fold artifact events from the durable JSONL traces; ``None`` if none exist."""
+def _fold_from_jsonl(app: "FastAPI", registry: ArtifactRegistry) -> _SourceFold:
+    """Fold artifact events from the durable JSONL traces.
+
+    Streamed line-by-line with a cheap substring pre-filter (finding [4]): a line
+    that cannot contain an ``artifact.created`` event is skipped BEFORE
+    ``json.loads`` and the whole file is never read into memory, so a multi-GB
+    trace dominated by non-artifact events costs ~one decode per artifact line.
+    Returns ``reachable=False`` only when the trace directory is absent; a present
+    directory with no (or no artifact-bearing) traces is ``reachable=True``.
+    """
     root = _trace_dir(app)
     if root is None or not root.exists():
-        return None
+        return _SourceFold(reachable=False, folded_any=False)
     import json  # noqa: PLC0415
 
-    found_any = False
+    folded_any = False
     for path in sorted(root.glob("*.semantic.jsonl")):
         try:
-            text = path.read_text(encoding="utf-8")
+            with path.open(encoding="utf-8") as handle:
+                for raw in handle:
+                    # Cheap pre-filter: skip lines that cannot be an artifact event
+                    # before paying json.loads (finding [4] — >99% of trace lines).
+                    if ARTIFACT_CREATED_EVENT not in raw:
+                        continue
+                    stripped = raw.strip()
+                    if not stripped:
+                        continue
+                    try:
+                        obj = json.loads(stripped)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(obj, dict):
+                        continue
+                    if str(obj.get("event_type") or "") != ARTIFACT_CREATED_EVENT:
+                        continue
+                    payload = obj.get("payload")
+                    if isinstance(payload, dict):
+                        # The durable trace carries event_id at top level; thread it in.
+                        if not payload.get("event_id") and obj.get("event_id"):
+                            payload = {**payload, "event_id": str(obj["event_id"])}
+                        registry.fold_payload(payload)
+                        folded_any = True
         except OSError:
             logger.warning(
                 "artifact boot fold skipped a trace file reason=unreadable path=%s", path
             )
             continue
-        for raw in text.splitlines():
-            if not raw.strip():
-                continue
-            try:
-                obj = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(obj, dict):
-                continue
-            if str(obj.get("event_type") or "") != ARTIFACT_CREATED_EVENT:
-                continue
-            payload = obj.get("payload")
-            if isinstance(payload, dict):
-                # The durable trace carries event_id at top level; thread it in.
-                if not payload.get("event_id") and obj.get("event_id"):
-                    payload = {**payload, "event_id": str(obj["event_id"])}
-                registry.fold_payload(payload)
-                found_any = True
-    return "jsonl_trace" if found_any else None
+    return _SourceFold(reachable=True, folded_any=folded_any)
 
 
 def _trace_dir(app: "FastAPI") -> Optional[Path]:
@@ -472,6 +641,8 @@ __all__ = [
     "ARTIFACT_CREATED_EVENT",
     "ArtifactRegistry",
     "FoldResult",
+    "MintOutcome",
+    "RegistryFoldOnLoopError",
     "build_session_index",
     "get_registry",
     "patch_session_index",

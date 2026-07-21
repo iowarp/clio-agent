@@ -124,6 +124,87 @@ def _now_iso() -> str:
     return _iso_from_epoch(time.time())
 
 
+def _observer_call_started_at() -> float | None:
+    """The current tool call's start epoch from the observer thread-local, if set.
+
+    Seam (a) runs synchronously in the observer worker thread, where the observer
+    stamped ``_OBSERVER_CALL_T0`` at the ``started`` phase — so the pre-existing
+    untouched skip (finding [8]) reads it without threading it through the call.
+    """
+    try:
+        from clio_agent.gact.tool_observer import _OBSERVER_CALL_T0  # noqa: PLC0415
+
+        value = getattr(_OBSERVER_CALL_T0, "value", None)
+        return float(value) if value is not None else None
+    except Exception:  # noqa: BLE001 — the skip is an optimization, never load-bearing
+        return None
+
+
+def _workspace_root(app: "FastAPI", workspace_id: str) -> Optional[Path]:
+    """Resolve the bound workspace's root path, or ``None`` when unresolvable.
+
+    A ``None`` root means containment cannot be verified — the seams then skip the
+    mint (typed ``containment_unresolved``) rather than read an unbounded path
+    (precision over recall — owner decision 10).
+    """
+    store = getattr(app.state, "workspaces", None)
+    if store is None or not workspace_id:
+        return None
+    try:
+        ws = store.get(workspace_id)
+    except Exception:  # noqa: BLE001 — an unresolvable workspace is a skip, never a crash
+        return None
+    root = str(getattr(ws, "root_path", "") or "") if ws is not None else ""
+    if not root:
+        return None
+    return Path(root).expanduser().resolve(strict=False)
+
+
+def _contained(path: Path, root: Path) -> bool:
+    """Return whether ``path`` resolves inside the workspace ``root``.
+
+    Reuses the file-policy containment helper (``tools/file_policy._is_relative_to``)
+    so the mint seams and the tool boundary share one containment rule. Resolves
+    ``..`` traversal and symlink targets before the check (owner decision 10 — a
+    model-authored path must never read/hash a file outside the workspace).
+    """
+    from clio_agent.tools.file_policy import _is_relative_to  # noqa: PLC0415
+
+    try:
+        resolved = path.expanduser().resolve(strict=False)
+    except OSError:
+        return False
+    return _is_relative_to(resolved, root)
+
+
+def _is_pre_existing_untouched(
+    registry: Any,
+    workspace_id: str,
+    name: str,
+    evidence: IdentityEvidence,
+    call_started_at: float | None,
+) -> bool:
+    """Whether a designated output is a pre-existing file the call did not write.
+
+    Finding [8]: a tool that declares an output arg but reads (not writes) a
+    pre-existing file returns ``ok=True`` with that file untouched. Skip minting it
+    only when BOTH hold — its ``mtime`` predates ``call_started_at`` AND its content
+    already versions in the chain — so a genuinely new deliverable (no matching sha)
+    or one written during the call (``mtime`` at/after the call start) still mints.
+    The residual (content changed OUTSIDE the call window) still mints by design:
+    designation is designation.
+    """
+    if call_started_at is None or evidence.mtime is None:
+        return False
+    if evidence.mtime >= call_started_at:
+        return False
+    sha = evidence.sha256
+    if not sha:
+        return False
+    record = registry.get(workspace_id, name)
+    return record is not None and record.version_for_sha(sha) is not None
+
+
 def artifact_name_for_path(path: str | Path) -> str:
     """The logical artifact name for a designated output path (its basename).
 
@@ -151,14 +232,16 @@ def mint_artifact(
     turn_id: str = "",
     trace_id: str = "",
 ) -> Optional[ArtifactVersion]:
-    """Mint one artifact version: emit ``artifact.created`` (trace-only), then fold.
+    """Mint one artifact version: atomic dedup-or-assign, then emit + index.
 
-    The single mint funnel for all three S1 seams. Computes the next version
-    number against the registry's existing chain for ``(workspace_id, name)``,
-    emits the durable semantic event via ``_emit_semantic_event`` (the sole
-    artifact-event emitter), then folds the event back into the registry and
-    patches the SessionStore badge index. Returns the minted version, or the
-    already-known version when the fold was a replay/conflict.
+    The single mint funnel for all three S1 seams. Delegates the version decision
+    to :meth:`ArtifactRegistry.mint`, which — under ONE lock — dedups a
+    byte-identical re-designation onto the existing version (W&B same-sha dedup,
+    findings [1/6] + [3/10]) or assigns the next version and folds it. On a genuine
+    new version it emits the durable ``artifact.created`` event via
+    ``_emit_semantic_event`` (the sole artifact-event emitter; the pre-registered
+    ``event_id`` makes boot replay a no-op) and patches the SessionStore badge
+    index; on a dedup no-op it emits NOTHING and returns the existing version.
 
     ``plan`` kind is RESERVED — minting it raises ``ValueError`` (a reserved
     capability leaked; typed, not silently downgraded).
@@ -169,11 +252,15 @@ def mint_artifact(
         )
 
     registry = get_registry(app)
-    existing = registry.get(workspace_id, name)
-    version_number = existing.next_version_number() if existing is not None else 1
 
-    version = ArtifactVersion(
-        version=version_number,
+    from clio_agent.gact.semantic_events import _event_id  # noqa: PLC0415
+
+    event_id = _event_id()
+    # Atomic dedup-or-assign under ONE registry lock (findings [1/6] + [3/10]).
+    outcome = registry.mint(
+        workspace_id=workspace_id,
+        name=name,
+        event_id=event_id,
         kind=kind,
         custody=custody,
         mechanism=mechanism,
@@ -183,10 +270,21 @@ def mint_artifact(
         created_at=_now_iso(),
         annotation=annotation,
     )
+    version = outcome.version
+    if not outcome.created:
+        # W&B same-sha dedup: content already versioned — emit NOTHING (the no-op is
+        # at the mint, not merely the fold). Keep the badge index fresh (idempotent).
+        logger.info(
+            "artifact mint dedup no-op reason=%s ws=%s name=%s sha=%s existing_version=%d",
+            outcome.reason,
+            workspace_id,
+            name,
+            version.sha256,
+            version.version,
+        )
+        patch_session_index(app, sid, registry, workspace_id)
+        return version
 
-    from clio_agent.gact.semantic_events import _event_id  # noqa: PLC0415
-
-    event_id = _event_id()
     payload = _created_payload(event_id, workspace_id, name, version)
 
     from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
@@ -198,7 +296,7 @@ def mint_artifact(
         turn_id=turn_id,
         trace_id=trace_id,
         status="completed",
-        summary=f"Artifact {name} v{version_number} created.",
+        summary=f"Artifact {name} v{version.version} created.",
         actor={"mechanism": mechanism.value},
         subject={"artifact_id": version.artifact_id, "name": name, "workspace_id": workspace_id},
         payload=payload,
@@ -206,17 +304,7 @@ def mint_artifact(
         detail_level="off",
     )
 
-    result = registry.fold_payload(payload)
     patch_session_index(app, sid, registry, workspace_id)
-    if not result.applied:
-        logger.info(
-            "artifact mint fold non-applied reason=%s ws=%s name=%s version=%d",
-            result.reason,
-            workspace_id,
-            name,
-            version_number,
-        )
-        return result.version
     return version
 
 
@@ -230,25 +318,51 @@ def mint_tool_declared_outputs(
     workspace_id: str,
     turn_id: str = "",
     trace_id: str = "",
+    call_started_at: float | None = None,
 ) -> list[ArtifactVersion]:
     """Mint one artifact per grounded, existing tool-declared output path (seam a).
 
     Called from the gact tool observer's ``completed`` phase for a successful
     call. For each designated output arg (:func:`grounded_output_paths`) that
-    resolves to an existing file, stat + stream sha256 (over the threshold →
-    typed ``stat-pinned``) and mint an ``artifact.created`` with mechanism
-    ``tool-schema`` carrying the producing ``call_id``. A designated-but-absent
-    path (tool declared an out but wrote nothing) is skipped with a typed reason,
-    never an error — mint failures must never break a turn.
+    resolves to an existing file INSIDE the bound workspace, stat + stream sha256
+    (over the threshold → typed ``stat-pinned``) and mint an ``artifact.created``
+    with mechanism ``tool-schema`` carrying the producing ``call_id``.
+
+    Guards, each a typed skip (never an error — mint failures must never break a
+    turn): a designated-but-absent path (tool declared an out but wrote nothing);
+    a path outside the workspace root (owner decision 10 — containment before
+    stat/hash); and a pre-existing untouched file whose content already versions
+    in the chain (finding [8] — ``mtime`` predates ``call_started_at`` AND the
+    sha matches an existing version). The residual is honest: content CHANGED
+    outside the call still mints — designation is designation.
     """
     from clio_agent.gact.artifacts.designation import (  # noqa: PLC0415
         grounded_output_paths,
         kind_for_path,
     )
 
+    root = _workspace_root(app, workspace_id)
+    registry = get_registry(app)
     minted: list[ArtifactVersion] = []
     for arg_name, raw_path in grounded_output_paths(effective_args).items():
         path = Path(raw_path)
+        if root is None:
+            logger.warning(
+                "artifact mint skipped reason=containment_unresolved tool=%s arg=%s path=%s",
+                tool_name,
+                arg_name,
+                raw_path,
+            )
+            continue
+        if not _contained(path, root):
+            logger.warning(
+                "artifact mint skipped reason=containment_rejected tool=%s arg=%s path=%s root=%s",
+                tool_name,
+                arg_name,
+                raw_path,
+                root,
+            )
+            continue
         if not path.is_file():
             logger.info(
                 "artifact mint skipped reason=designated_path_absent tool=%s arg=%s path=%s",
@@ -267,10 +381,19 @@ def mint_tool_declared_outputs(
                 raw_path,
             )
             continue
+        name = artifact_name_for_path(path)
+        if _is_pre_existing_untouched(registry, workspace_id, name, evidence, call_started_at):
+            logger.info(
+                "artifact mint skipped reason=pre_existing_untouched tool=%s arg=%s path=%s",
+                tool_name,
+                arg_name,
+                raw_path,
+            )
+            continue
         version = mint_artifact(
             app,
             sid,
-            name=artifact_name_for_path(path),
+            name=name,
             workspace_id=workspace_id,
             evidence=evidence,
             kind=kind_for_path(path),
@@ -305,19 +428,34 @@ def mint_pack_declared_paths(
     """Mint artifacts for pack-declared ``workflow_state.artifact_paths`` (seam c).
 
     The secondary/optional designation channel (owner decision #966.1): at turn
-    finalize, hash any declared path that exists on disk and mint it (mechanism
-    ``harness`` — the harness hashes in-hand — with a ``designation=pack-declared``
-    producer note making the weaker basis visible). Never load-bearing: a path
-    already minted by seam (a) folds as a same-sha replay (no-op). Best-effort.
+    finalize, hash any declared path that exists on disk INSIDE the bound workspace
+    and mint it (mechanism ``harness`` — the harness hashes in-hand — with a
+    ``designation=pack-declared`` producer note making the weaker basis visible).
+    This is the model-influenced channel, so containment is enforced BEFORE any
+    stat/hash (owner decision 10): a declared path outside the workspace root is
+    skipped with a typed ``containment_rejected`` reason — no read, no mint. Never
+    load-bearing: a path already minted by seam (a) with identical content
+    deduplicates at the mint (no new version). Best-effort.
     """
     from clio_agent.gact.artifacts.designation import (  # noqa: PLC0415
         kind_for_path,
         pack_declared_paths,
     )
 
+    root = _workspace_root(app, workspace_id)
     minted: list[ArtifactVersion] = []
     for raw_path in pack_declared_paths(workflow_state, path_specs):
         path = Path(raw_path)
+        if root is None:
+            logger.warning("artifact mint skipped reason=containment_unresolved path=%s", raw_path)
+            continue
+        if not _contained(path, root):
+            logger.warning(
+                "artifact mint skipped reason=containment_rejected path=%s root=%s",
+                raw_path,
+                root,
+            )
+            continue
         try:
             if not path.is_file():
                 continue
@@ -366,12 +504,16 @@ def observe_tool_completion(
     tool_name: str,
     effective_args: dict[str, Any],
     call_id: str,
+    call_started_at: float | None = None,
 ) -> None:
     """Seam (a) entry point: mint tool-declared outputs for a completed call.
 
     Fully self-contained + guarded so the gact tool observer calls it in one line:
     resolves the workspace id + turn/trace ids, mints, and swallows any failure
     with a typed reason. A live artifact mint must never break a turn.
+    The observer's tool-start epoch (its ``_OBSERVER_CALL_T0`` thread-local — seam
+    (a) runs in the same observer worker thread) lets seam (a) skip a pre-existing
+    untouched designated file (finding [8]); ``call_started_at`` overrides it.
     """
     try:
         from clio_agent.gact import context as _ctx  # noqa: PLC0415
@@ -385,6 +527,9 @@ def observe_tool_completion(
             workspace_id=_session_workspace_id(app, sid),
             turn_id=_ctx.active_turn_id(),
             trace_id=_ctx.active_trace_id(),
+            call_started_at=call_started_at
+            if call_started_at is not None
+            else _observer_call_started_at(),
         )
     except Exception:  # noqa: BLE001 — a live artifact mint must never break a turn
         logger.warning(
@@ -395,7 +540,9 @@ def observe_tool_completion(
         )
 
 
-def mint_harness_write(app: "FastAPI", session: Any, target: str, write_result: dict[str, Any]) -> None:
+def mint_harness_write(
+    app: "FastAPI", session: Any, target: str, write_result: dict[str, Any]
+) -> None:
     """Seam (b) entry point: mint an ``artifact.created`` for a user-approved write.
 
     The bytes flowed through the harness (``write_text_with_policy``), so the write

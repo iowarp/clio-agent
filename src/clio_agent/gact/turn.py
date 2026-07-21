@@ -552,7 +552,7 @@ async def _run_turn_in_background(
                     "visibility": "hidden",
                 },
             )
-            _mint_pack_declared_artifacts(state, top_level_workflow_state)
+            await asyncio.to_thread(_mint_pack_declared_artifacts, state, top_level_workflow_state)
         raw_handoffs = getattr(state.pred, "expert_handoffs", None) or []
         if not state.expert_handoffs:
             state.expert_handoffs = _coerce_expert_handoff_rows(raw_handoffs)

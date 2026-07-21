@@ -11,13 +11,17 @@ named assertion red, proving the test binds the invariant (not a tautology).
 
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from clio_agent.arc.live import build_event_content
 from clio_agent.gact.artifacts import designation
 from clio_agent.gact.artifacts.minting import (
     compute_identity,
@@ -29,6 +33,7 @@ from clio_agent.gact.artifacts.records import (
     ArtifactKind,
     ArtifactRecord,
     ArtifactVersion,
+    Custody,
     EvidenceClass,
     IdentityEvidence,
     Mechanism,
@@ -36,7 +41,9 @@ from clio_agent.gact.artifacts.records import (
 )
 from clio_agent.gact.artifacts.registry import (
     ArtifactRegistry,
+    RegistryFoldOnLoopError,
     build_session_index,
+    get_registry,
     rebuild_registry_at_boot,
     rehydrate_session_index,
 )
@@ -58,18 +65,46 @@ class _CapturingArc:
         return event
 
 
-def _make_app(tmp_path: Path, *, with_sink: bool = True):
-    """Build a fake app with a real SessionStore + capturing arc.
+class _FakeWorkspaces:
+    """Minimal workspace store: maps ``workspace_id -> root_path`` for containment."""
+
+    def __init__(self, roots: dict[str, str]) -> None:
+        self._roots = roots
+
+    def get(self, wid: str) -> Any:
+        root = self._roots.get(wid)
+        return SimpleNamespace(root_path=root) if root else None
+
+
+class _FoldArc:
+    """Fake ARC exposing ``iter_event_contents`` in the ``build_event_content`` shape.
+
+    ``_fold_from_arc`` reaches ``arc._live.iter_event_contents()`` — this fake
+    yields the exact content dicts ARC's live observer persists per ``_events``
+    segment, so a boot fold reads the ARC primary source under test.
+    """
+
+    def __init__(self, contents: list[dict[str, Any]]) -> None:
+        self._contents = contents
+        self._live = SimpleNamespace(iter_event_contents=lambda: iter(self._contents))
+
+
+def _make_app(tmp_path: Path, *, with_sink: bool = True, workspace_root: Path | None = None):
+    """Build a fake app with a real SessionStore + capturing arc + workspaces.
 
     With ``with_sink=False`` the semantic sink is absent, so ``_emit_semantic_event``
-    short-circuits (mint still folds the payload it builds itself).
+    short-circuits (mint still folds the payload it builds itself). ``ws1``'s
+    containment root defaults to ``tmp_path`` so designated outputs written there
+    are inside the workspace (owner decision 10).
     """
     store = SessionStore(path=tmp_path / "sessions.json")
     sess = store.create(workspace_id="ws1", title="t")
     arc = _CapturingArc()
+    root = workspace_root if workspace_root is not None else tmp_path
     state = SimpleNamespace(
         sessions=store,
         arc=arc,
+        workspaces=_FakeWorkspaces({"ws1": str(root)}),
         semantic_event_sink=(object() if with_sink else None),
         semantic_trace_detail_level="semantic",
         semantic_trace_backend=None,
@@ -106,7 +141,9 @@ def test_version_relay_ref_carries_id_and_sha():
 def test_record_chain_increments_and_tracks_latest():
     rec = ArtifactRecord(workspace_id="ws1", name="plot.png")
     assert rec.next_version_number() == 1
-    v1 = ArtifactVersion(version=1, evidence=IdentityEvidence.stat_pinned(size_bytes=1), kind=ArtifactKind.IMAGE)
+    v1 = ArtifactVersion(
+        version=1, evidence=IdentityEvidence.stat_pinned(size_bytes=1), kind=ArtifactKind.IMAGE
+    )
     rec.add_version(v1)
     assert rec.next_version_number() == 2
     assert rec.aliases["latest"] == 1
@@ -118,8 +155,16 @@ def test_record_chain_increments_and_tracks_latest():
 # --------------------------------------------------------------------------- #
 
 
-def _payload(*, event_id: str, name: str, version: int, sha: str | None, ws: str = "ws1",
-             kind: str = "image", mechanism: str = "tool-schema") -> dict[str, Any]:
+def _payload(
+    *,
+    event_id: str,
+    name: str,
+    version: int,
+    sha: str | None,
+    ws: str = "ws1",
+    kind: str = "image",
+    mechanism: str = "tool-schema",
+) -> dict[str, Any]:
     return {
         "event_id": event_id,
         "artifact_id": new_artifact_id(),
@@ -265,8 +310,13 @@ def test_reserved_plan_kind_cannot_mint(tmp_path):
     ev = IdentityEvidence.stat_pinned(size_bytes=1)
     with pytest.raises(ValueError, match="reserved"):
         mint_artifact(
-            app, sess.id, name="p", workspace_id="ws1", evidence=ev,
-            kind=ArtifactKind.PLAN, mechanism=Mechanism.MODEL,
+            app,
+            sess.id,
+            name="p",
+            workspace_id="ws1",
+            evidence=ev,
+            kind=ArtifactKind.PLAN,
+            mechanism=Mechanism.MODEL,
         )
 
 
@@ -306,7 +356,8 @@ def test_mint_pack_declared_paths(tmp_path):
     report.write_text("# r", encoding="utf-8")
     ws_state = {"outputs": {"report_path": str(report)}}
     minted = mint_pack_declared_paths(
-        app, sess.id,
+        app,
+        sess.id,
         workflow_state=ws_state,
         path_specs=[("outputs", "report_path")],
         workspace_id="ws1",
@@ -328,8 +379,12 @@ def test_session_index_stamp_and_rehydrate_roundtrip(tmp_path):
     png = tmp_path / "plot.png"
     png.write_bytes(b"x")
     mint_tool_declared_outputs(
-        app, sess.id, tool_name="t",
-        effective_args={"output_path": str(png)}, call_id="c1", workspace_id="ws1",
+        app,
+        sess.id,
+        tool_name="t",
+        effective_args={"output_path": str(png)},
+        call_id="c1",
+        workspace_id="ws1",
     )
     index = rehydrate_session_index(app, sess.id)
     assert index["count"] == 1
@@ -341,7 +396,9 @@ def test_session_index_stamp_and_rehydrate_roundtrip(tmp_path):
 def test_session_index_is_bounded():
     reg = ArtifactRegistry()
     for i in range(70):
-        reg.fold_payload(_payload(event_id=f"e{i}", name=f"f{i:03d}.png", version=1, sha=f"{i:064x}"))
+        reg.fold_payload(
+            _payload(event_id=f"e{i}", name=f"f{i:03d}.png", version=1, sha=f"{i:064x}")
+        )
     index = build_session_index(reg, "ws1")
     assert index["count"] == 70
     assert len(index["names"]) == 64  # _SESSION_INDEX_NAME_CAP
@@ -353,7 +410,7 @@ def test_session_index_is_bounded():
 # --------------------------------------------------------------------------- #
 
 
-def test_boot_fold_from_jsonl_trace(tmp_path):
+def test_boot_fold_from_jsonl_trace(tmp_path, monkeypatch):
     trace_dir = tmp_path / "semantic_traces"
     trace_dir.mkdir()
     line = {
@@ -362,6 +419,7 @@ def test_boot_fold_from_jsonl_trace(tmp_path):
         "payload": _payload(event_id="", name="d.csv", version=1, sha="a" * 64, kind="dataset"),
     }
     (trace_dir / "sess_x.semantic.jsonl").write_text(json.dumps(line) + "\n", encoding="utf-8")
+    monkeypatch.setattr("clio_agent.gact.runtime.globals._PROCESS_ARC", None)
     state = SimpleNamespace(
         arc=None,
         semantic_trace_backend=SimpleNamespace(path=trace_dir),
@@ -374,7 +432,11 @@ def test_boot_fold_from_jsonl_trace(tmp_path):
     assert reg.capture_released is None
 
 
-def test_boot_fold_capture_released_when_no_source(tmp_path):
+def test_boot_fold_capture_released_when_no_source(tmp_path, monkeypatch):
+    # No process ARC + no trace backend => NEITHER source reachable (finding [11]:
+    # unreachable, not merely empty). Null _PROCESS_ARC so the fallback can't make
+    # ARC spuriously reachable when a prior suite test booted a real ARC.
+    monkeypatch.setattr("clio_agent.gact.runtime.globals._PROCESS_ARC", None)
     state = SimpleNamespace(arc=None, semantic_trace_backend=None, artifact_registry=None)
     app = SimpleNamespace(state=state)
     reg = rebuild_registry_at_boot(app)
@@ -382,3 +444,427 @@ def test_boot_fold_capture_released_when_no_source(tmp_path):
     # -> this typed-degrade assertion red (no-silent-fallback lock).
     assert reg.capture_released is not None
     assert reg.capture_released["reason"] == "capture_released"
+
+
+# --------------------------------------------------------------------------- #
+# Finding [1/6]: content-hash dedup is LIVE at the mint (no phantom v2)
+# --------------------------------------------------------------------------- #
+
+
+def test_same_sha_dedup_no_op_across_seam_a_and_seam_c(tmp_path):
+    """seam(a)+seam(c) on one byte-identical file => exactly ONE version + ONE event."""
+    app, sess, arc = _make_app(tmp_path)
+    report = tmp_path / "report.md"
+    report.write_text("# deliverable\n", encoding="utf-8")
+
+    # Seam (a): tool-declared output mints v1 and emits.
+    mint_tool_declared_outputs(
+        app,
+        sess.id,
+        tool_name="write_report",
+        effective_args={"output_path": str(report)},
+        call_id="c1",
+        workspace_id="ws1",
+    )
+    # Seam (c): pack declares the SAME unchanged path at finalize -> dedup no-op.
+    mint_pack_declared_paths(
+        app,
+        sess.id,
+        workflow_state={"outputs": {"report_path": str(report)}},
+        path_specs=[("outputs", "report_path")],
+        workspace_id="ws1",
+    )
+    reg = get_registry(app)
+    # Sabotage: revert mint_artifact to next_version_number() without registry.mint
+    # dedup -> seam (c) re-mints a phantom v2 with identical sha -> both assertions red.
+    assert len(reg.get("ws1", "report.md").versions) == 1
+    assert len(_artifact_events(arc)) == 1
+
+
+def test_idempotent_tool_rerun_does_not_grow_chain_but_changed_content_does(tmp_path):
+    app, sess, arc = _make_app(tmp_path)
+    csv = tmp_path / "out.csv"
+    csv.write_text("a,b\n1,2\n", encoding="utf-8")
+    args = {"output_path": str(csv)}
+    mint_tool_declared_outputs(
+        app, sess.id, tool_name="t", effective_args=args, call_id="c1", workspace_id="ws1"
+    )
+    mint_tool_declared_outputs(
+        app, sess.id, tool_name="t", effective_args=args, call_id="c2", workspace_id="ws1"
+    )
+    reg = get_registry(app)
+    assert len(reg.get("ws1", "out.csv").versions) == 1  # idempotent re-run: no growth
+    assert len(_artifact_events(arc)) == 1
+    # Changed content mints a genuine v2.
+    csv.write_text("a,b\n9,9\n", encoding="utf-8")
+    mint_tool_declared_outputs(
+        app, sess.id, tool_name="t", effective_args=args, call_id="c3", workspace_id="ws1"
+    )
+    assert [v.version for v in reg.get("ws1", "out.csv").versions] == [1, 2]
+    assert len(_artifact_events(arc)) == 2
+
+
+# --------------------------------------------------------------------------- #
+# Finding [3/10]: atomic version assignment under one lock (no TOCTOU)
+# --------------------------------------------------------------------------- #
+
+
+def test_registry_mint_concurrent_distinct_content_assigns_sequential_versions():
+    reg = ArtifactRegistry()
+    n = 24
+    barrier = threading.Barrier(n)
+    outcomes: list[Any] = []
+    guard = threading.Lock()
+
+    def worker(i: int) -> None:
+        ev = IdentityEvidence.hashed_at_use(sha256=f"{i:064x}", size_bytes=10)
+        barrier.wait()  # maximize contention on the read-modify-write
+        out = reg.mint(
+            workspace_id="ws1",
+            name="d.csv",
+            event_id=f"e{i}",
+            kind=ArtifactKind.DATASET,
+            custody=Custody.WORKSPACE_REFERENCED,
+            mechanism=Mechanism.TOOL_SCHEMA,
+            evidence=ev,
+            producer={},
+            path="",
+            created_at="",
+            annotation="",
+        )
+        with guard:
+            outcomes.append(out)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    rec = reg.get("ws1", "d.csv")
+    # Sabotage: split assignment across get()+fold() (the old TOCTOU) -> two threads
+    # compute the same version -> a version is lost/keep-first-dropped -> not 1..n.
+    assert sorted(v.version for v in rec.versions) == list(range(1, n + 1))
+    assert len({v.sha256 for v in rec.versions}) == n  # every distinct content kept
+    assert all(o.created for o in outcomes)
+
+
+def test_registry_mint_concurrent_same_content_collapses_to_one_version():
+    reg = ArtifactRegistry()
+    n = 16
+    barrier = threading.Barrier(n)
+
+    def worker(i: int) -> None:
+        ev = IdentityEvidence.hashed_at_use(sha256="a" * 64, size_bytes=10)
+        barrier.wait()
+        reg.mint(
+            workspace_id="ws1",
+            name="d.csv",
+            event_id=f"e{i}",
+            kind=ArtifactKind.DATASET,
+            custody=Custody.WORKSPACE_REFERENCED,
+            mechanism=Mechanism.TOOL_SCHEMA,
+            evidence=ev,
+            producer={},
+            path="",
+            created_at="",
+            annotation="",
+        )
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(reg.get("ws1", "d.csv").versions) == 1
+
+
+# --------------------------------------------------------------------------- #
+# Finding [2]: union-fold BOTH sources (deleted-session JSONL not shadowed)
+# --------------------------------------------------------------------------- #
+
+
+def test_boot_fold_unions_arc_and_jsonl_sources(tmp_path):
+    arc_payload = _payload(
+        event_id="a1", name="from_arc.csv", version=1, sha="a" * 64, kind="dataset"
+    )
+    arc_content = {"event_type": "artifact.created", "payload": arc_payload}
+    trace_dir = tmp_path / "traces"
+    trace_dir.mkdir()
+    jsonl_payload = _payload(
+        event_id="j1", name="from_jsonl.csv", version=1, sha="b" * 64, kind="dataset"
+    )
+    (trace_dir / "s.semantic.jsonl").write_text(
+        json.dumps({"event_type": "artifact.created", "event_id": "j1", "payload": jsonl_payload})
+        + "\n",
+        encoding="utf-8",
+    )
+    state = SimpleNamespace(
+        arc=_FoldArc([arc_content]),
+        semantic_trace_backend=SimpleNamespace(path=trace_dir),
+        artifact_registry=None,
+    )
+    app = SimpleNamespace(state=state)
+    reg = rebuild_registry_at_boot(app)
+    # Sabotage: restore ARC-first early return (skip JSONL when ARC folded any)
+    # -> from_jsonl.csv (a deleted-session artifact) vanishes -> this assertion red.
+    assert reg.get("ws1", "from_arc.csv") is not None
+    assert reg.get("ws1", "from_jsonl.csv") is not None
+    assert reg.count() == 2
+    assert reg.capture_released is None
+
+
+# --------------------------------------------------------------------------- #
+# Finding [11]: empty-vs-unknown (capture_released ONLY when unreachable)
+# --------------------------------------------------------------------------- #
+
+
+def test_boot_fold_reachable_but_empty_is_not_a_degrade(tmp_path):
+    trace_dir = tmp_path / "traces"
+    trace_dir.mkdir()  # present + readable, but holds no artifact traces
+    state = SimpleNamespace(
+        arc=_FoldArc([]),  # reachable ARC, zero artifact events
+        semantic_trace_backend=SimpleNamespace(path=trace_dir),
+        artifact_registry=None,
+    )
+    app = SimpleNamespace(state=state)
+    reg = rebuild_registry_at_boot(app)
+    # Sabotage: treat empty-iter as unreachable (old None conflation) -> a false
+    # capture_released fires on a healthy empty boot -> this assertion red.
+    assert reg.count() == 0
+    assert reg.capture_released is None
+
+
+def test_boot_fold_unreachable_source_is_a_degrade(tmp_path, monkeypatch):
+    monkeypatch.setattr("clio_agent.gact.runtime.globals._PROCESS_ARC", None)
+    missing = tmp_path / "does_not_exist"  # backend configured but dir absent
+    state = SimpleNamespace(
+        arc=None,
+        semantic_trace_backend=SimpleNamespace(path=missing),
+        artifact_registry=None,
+    )
+    app = SimpleNamespace(state=state)
+    reg = rebuild_registry_at_boot(app)
+    assert reg.capture_released is not None
+    assert reg.capture_released["reason"] == "capture_released"
+
+
+# --------------------------------------------------------------------------- #
+# Finding [5]: workspace containment before any stat/hash (owner decision 10)
+# --------------------------------------------------------------------------- #
+
+
+def test_pack_declared_containment_rejects_traversal_and_absolute_escape(tmp_path):
+    app, sess, arc = _make_app(tmp_path)  # ws1 root == tmp_path
+    outside = tmp_path.parent / "secret_outside.md"
+    outside.write_text("secret", encoding="utf-8")
+    ws_state = {"outputs": {"abs": str(outside), "trav": "../../etc/passwd"}}
+    minted = mint_pack_declared_paths(
+        app,
+        sess.id,
+        workflow_state=ws_state,
+        path_specs=[("outputs", "abs"), ("outputs", "trav")],
+        workspace_id="ws1",
+    )
+    # Sabotage: drop the _contained() gate in mint_pack_declared_paths -> the outside
+    # absolute path is read+hashed+minted -> minted non-empty / an event appears -> red.
+    assert minted == []
+    assert _artifact_events(arc) == []
+
+
+def test_tool_declared_containment_rejects_outside_path(tmp_path):
+    app, sess, arc = _make_app(tmp_path)
+    outside = tmp_path.parent / "escape.png"
+    outside.write_bytes(b"\x89PNG")
+    minted = mint_tool_declared_outputs(
+        app,
+        sess.id,
+        tool_name="plot",
+        effective_args={"output_path": str(outside)},
+        call_id="c1",
+        workspace_id="ws1",
+    )
+    assert minted == []
+    assert _artifact_events(arc) == []
+
+
+def test_containment_unresolved_workspace_skips_mint(tmp_path):
+    # No workspaces store on app.state => root unresolvable => skip (never read).
+    app, sess, arc = _make_app(tmp_path)
+    app.state.workspaces = None
+    png = tmp_path / "plot.png"
+    png.write_bytes(b"x")
+    minted = mint_tool_declared_outputs(
+        app,
+        sess.id,
+        tool_name="t",
+        effective_args={"output_path": str(png)},
+        call_id="c1",
+        workspace_id="ws1",
+    )
+    assert minted == []
+    assert _artifact_events(arc) == []
+
+
+# --------------------------------------------------------------------------- #
+# Finding [9]: boot fold is loop-safe (never runs on the event loop)
+# --------------------------------------------------------------------------- #
+
+
+def test_get_registry_on_event_loop_raises_typed(tmp_path):
+    app, _sess, _arc = _make_app(tmp_path)  # artifact_registry starts None
+
+    async def access() -> Any:
+        return get_registry(app)  # first access on the loop thread
+
+    with pytest.raises(RegistryFoldOnLoopError):
+        asyncio.run(access())
+
+
+def test_get_registry_offloaded_to_thread_builds_without_raising(tmp_path):
+    app, _sess, _arc = _make_app(tmp_path)
+
+    async def access() -> Any:
+        return await asyncio.to_thread(get_registry, app)  # off-loop worker
+
+    reg = asyncio.run(access())
+    assert reg is not None
+    assert getattr(app.state, "artifact_registry", None) is reg
+
+
+# --------------------------------------------------------------------------- #
+# Finding [4]: JSONL boot fold pre-filters before json.loads + streams
+# --------------------------------------------------------------------------- #
+
+
+def test_jsonl_boot_fold_prefilters_before_decode(tmp_path, monkeypatch):
+    trace_dir = tmp_path / "traces"
+    trace_dir.mkdir()
+    lines = [json.dumps({"event_type": "lm.call", "payload": {"i": i}}) for i in range(100_000)]
+    for i in range(10):
+        lines.append(
+            json.dumps(
+                {
+                    "event_type": "artifact.created",
+                    "event_id": f"e{i}",
+                    "payload": _payload(
+                        event_id="", name=f"a{i}.csv", version=1, sha=f"{i:064x}", kind="dataset"
+                    ),
+                }
+            )
+        )
+    (trace_dir / "s.semantic.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    calls = {"n": 0}
+    real_loads = json.loads
+
+    def counting_loads(s: Any, *a: Any, **k: Any) -> Any:
+        calls["n"] += 1
+        return real_loads(s, *a, **k)
+
+    monkeypatch.setattr("json.loads", counting_loads)
+    monkeypatch.setattr("clio_agent.gact.runtime.globals._PROCESS_ARC", None)
+    state = SimpleNamespace(
+        arc=None, semantic_trace_backend=SimpleNamespace(path=trace_dir), artifact_registry=None
+    )
+    app = SimpleNamespace(state=state)
+    reg = rebuild_registry_at_boot(app)
+    # Sabotage: remove the `if ARTIFACT_CREATED_EVENT not in raw: continue` pre-filter
+    # -> all 100_010 lines are decoded -> this bound blows past 12 -> red.
+    assert reg.count() == 10
+    assert calls["n"] <= 12
+
+
+# --------------------------------------------------------------------------- #
+# Finding [8]: seam (a) skips a pre-existing untouched designated file
+# --------------------------------------------------------------------------- #
+
+
+def test_seam_a_skips_pre_existing_untouched_file(tmp_path):
+    app, sess, arc = _make_app(tmp_path)
+    png = tmp_path / "plot.png"
+    png.write_bytes(b"\x89PNG")
+    # A first, genuine mint puts the content in the chain.
+    mint_tool_declared_outputs(
+        app,
+        sess.id,
+        tool_name="t",
+        effective_args={"output_path": str(png)},
+        call_id="c1",
+        workspace_id="ws1",
+    )
+    assert len(_artifact_events(arc)) == 1
+    # A later call whose start is AFTER the file's mtime, content already versioned.
+    later = time.time() + 60
+    minted = mint_tool_declared_outputs(
+        app,
+        sess.id,
+        tool_name="reader",
+        effective_args={"output_path": str(png)},
+        call_id="c2",
+        workspace_id="ws1",
+        call_started_at=later,
+    )
+    # Sabotage: drop the _is_pre_existing_untouched pre-check -> the file is re-hashed
+    # and deduped, appending the existing version to `minted` -> minted != [] -> red.
+    assert minted == []
+    assert len(_artifact_events(arc)) == 1
+    reg = get_registry(app)
+    assert len(reg.get("ws1", "plot.png").versions) == 1
+
+
+# --------------------------------------------------------------------------- #
+# Finding [12]: ARC-primary fold coverage + emitter<->folder parity
+# --------------------------------------------------------------------------- #
+
+
+def _artifact_event_obj(payload: dict[str, Any]) -> SimpleNamespace:
+    """An event object in the shape build_event_content consumes (emitter side)."""
+    return SimpleNamespace(
+        event_type="artifact.created",
+        payload=payload,
+        status="completed",
+        summary="",
+        actor={},
+        subject={},
+        provider={},
+        occurred_at="",
+        trace_id="",
+    )
+
+
+def test_boot_fold_from_arc_events_primary_source(tmp_path):
+    payload = _payload(event_id="a1", name="d.csv", version=1, sha="a" * 64, kind="dataset")
+    content = build_event_content(_artifact_event_obj(payload))
+    assert content is not None
+    state = SimpleNamespace(
+        arc=_FoldArc([content]), semantic_trace_backend=None, artifact_registry=None
+    )
+    app = SimpleNamespace(state=state)
+    reg = rebuild_registry_at_boot(app)
+    assert reg.get("ws1", "d.csv") is not None
+    assert reg.capture_released is None
+
+
+def test_arc_fold_matches_direct_fold_parity():
+    """The ARC content shape folds identically to the raw payload (emitter<->folder)."""
+    payload = _payload(event_id="a1", name="d.csv", version=1, sha="a" * 64, kind="dataset")
+    content = build_event_content(_artifact_event_obj(payload))
+    state = SimpleNamespace(
+        arc=_FoldArc([content]), semantic_trace_backend=None, artifact_registry=None
+    )
+    app = SimpleNamespace(state=state)
+    reg_arc = rebuild_registry_at_boot(app)
+
+    reg_direct = ArtifactRegistry()
+    reg_direct.fold_payload(payload)
+
+    va = reg_arc.get("ws1", "d.csv").head
+    vd = reg_direct.get("ws1", "d.csv").head
+    # Sabotage: if _fold_from_arc read the wrong nesting (payload not under content
+    # ['payload']) the ARC record would be missing -> va is None -> red.
+    assert (va.version, va.sha256, va.kind, va.artifact_id) == (
+        vd.version,
+        vd.sha256,
+        vd.kind,
+        vd.artifact_id,
+    )
