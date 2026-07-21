@@ -769,6 +769,15 @@ def _make_tool_observer(app: "FastAPI"):
                     payload=payload,
                 )
             )
+            # Seam (a), #966 S1: a successful tool call whose grounded args name a
+            # declared output path mints a durable, hash-pinned artifact.created with
+            # the producing call_id (trace-only; the owner module resolves ids + guards).
+            if ok and not completed_after_cancel:
+                from clio_agent.gact.artifacts.minting import (
+                    observe_tool_completion,  # noqa: PLC0415
+                )
+
+                observe_tool_completion(app, sid, tool_name=name, effective_args=dict(args), call_id=call_id)
             result_text = completion_error or (
                 _tool_result_preview(result) if result is not None else "completed"
             )

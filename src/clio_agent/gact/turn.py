@@ -131,9 +131,34 @@ from clio_agent.gact.usage import (
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
+    from clio_agent.gact.turn_state import TurnState  # noqa: F401
     from clio_agent.gact.types import AgentDef  # noqa: F401
 
 logger = logging.getLogger(__name__)
+
+
+def _mint_pack_declared_artifacts(state: "TurnState", workflow_state: dict[str, Any]) -> None:
+    """Register pack-declared ``workflow_state.artifact_paths`` at finalize (seam c).
+
+    Secondary/optional designation channel (#966 S1) — never load-bearing.
+    Best-effort with a typed reason: an artifact mint must never break the turn.
+    """
+    try:
+        from clio_agent.gact.artifacts.minting import mint_pack_declared_paths  # noqa: PLC0415
+
+        mint_pack_declared_paths(
+            state.app,
+            state.sid,
+            workflow_state=workflow_state,
+            path_specs=getattr(state.workflow_schema, "artifact_paths", ()),
+            workspace_id=str(getattr(state.sess, "workspace_id", "") or ""),
+            turn_id=state.turn_id,
+            trace_id=state.trace_id,
+        )
+    except Exception:  # noqa: BLE001 — a live artifact mint must never break a turn
+        logger.warning(
+            "artifact mint skipped reason=pack_declared_seam_failed session=%s", state.sid
+        )
 
 
 async def _run_turn_in_background(
@@ -527,6 +552,7 @@ async def _run_turn_in_background(
                     "visibility": "hidden",
                 },
             )
+            await asyncio.to_thread(_mint_pack_declared_artifacts, state, top_level_workflow_state)
         raw_handoffs = getattr(state.pred, "expert_handoffs", None) or []
         if not state.expert_handoffs:
             state.expert_handoffs = _coerce_expert_handoff_rows(raw_handoffs)

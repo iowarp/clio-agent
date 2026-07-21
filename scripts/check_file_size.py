@@ -142,7 +142,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # variant (context.run_keyed_scope; bare invoking_expert still owns attribution).
     # merge(main->develop): +10 (932 -> 942) integrating main's #964 structured
     # MCP-result preservation in the tool observer.
-    "src/clio_agent/gact/tool_observer.py": 942,
+    # #966 S1 (artifacts seam a): +9 for the mint call site in the observer's
+    # "completed" phase — the mint funnel + id/workspace resolution live in the
+    # artifacts owner module; only the guarded one-call seam lands here.
+    "src/clio_agent/gact/tool_observer.py": 951,
     "src/clio_agent/gact/transcript.py": 986,
     # #918: +17 for the typed SkillNotDelegatableError ladder arm (a skill-bound
     # turn fails typed, never as generic agent_error).
@@ -155,7 +158,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # injected task ids at enrichment + consuming/emitting each delegation terminal
     # immediately before forward dispatch (the fix for compose-time consumption +
     # dangling delegations). Load-bearing turn-orchestration wiring, comments minimized.
-    "src/clio_agent/gact/turn.py": 892,
+    # #966 S1 (artifacts seam c): +26 for the pack-declared artifact_paths finalize
+    # seam — the secondary/optional designation channel mints declared output paths at
+    # turn finalize. The mint funnel lives in the artifacts owner package; only the
+    # guarded finalize helper + its one call site land here (never load-bearing).
+    "src/clio_agent/gact/turn.py": 918,
     # #952 S4 Pass C: -9 (the answer-substitution finalize call + import were
     # removed with the settle layer's degradation ledger).
     # #953 [5]: +3 to surface the variant winner stamp (variant_selection) on the
@@ -205,7 +212,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # merge(main->develop): +257 (1490 -> 1747) integrating main's #964 sanitized
     # dual-projection (_MCPCallOutcome) + #965 mutating-tool timeout budget /
     # uncertain-timeout handling. Part of the #947 MCP-apps decomposition debt.
-    "src/clio_agent/tools/execution.py": 1747,
+    # #966 S1 (artifacts): -109 (1747 -> 1638) — the grounding-hook constants +
+    # _ground_output_paths moved to the artifacts designation owner module; only a
+    # thin re-export wrapper remains here (deletion inventory item 2).
+    "src/clio_agent/tools/execution.py": 1638,
     # #1001: doctor rendering + disk-GC surface moved to the ui/doctor.py owner module
     # (ratcheted 1156 -> 1135 in the same change).
     # merge(main->develop): +6 (1135 -> 1141) integrating main's release-stream cli deltas.

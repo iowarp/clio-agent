@@ -74,6 +74,9 @@ arc.store: "cte"
 # CLIO_ARC_STORE_CONFIG  (str)  <- src/clio_agent/arc/storage.py
 # arc.store_config:  # default unset; resolved in code
 
+# CLIO_ARTIFACTS_HASH_MAX_FILE_BYTES  (int)  <- src/clio_agent/gact/artifacts/minting.py
+artifacts.hash_max_file_bytes: 67108864
+
 # CLIO_AUTOCOMPACT_PCT  (str)  <- src/clio_agent/gact/runtime/context_tokens.py
 autocompact.pct: "0.85"
 
