@@ -6,6 +6,10 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+(nothing yet)
+
+## [0.8.0] — 2026-07-21
+
 The agents-creating-agents campaign (#948) accumulated its GACT-surface changes
 per slice; the sub-headers below are slice-scoped so the whole surface story reads
 top to bottom (S7 newest first, back to the S2–S3 substrate).

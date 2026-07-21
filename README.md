@@ -56,7 +56,7 @@ source-build mode with `CLIO_REF` or `GACT_REF`.
 
 CLIO pins its intentional DSPy 3.3 prerelease and the tested stable LiteLLM release.
 Registry-backed `uv tool install` needs that exact DSPy dependency declared as an
-explicit root: use `uv tool install --with dspy==3.3.0b1 clio-agent==0.7.12` for a
+explicit root: use `uv tool install --with dspy==3.3.0b1 clio-agent==0.8.0` for a
 persistent backend-only install. This keeps unrelated dependencies on stable releases.
 Reserve `uvx` / `uv tool run` for disposable checks. See
 [install/README.md](install/README.md) for the full contract.

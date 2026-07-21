@@ -12,7 +12,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_VERSION = "0.7.12"
+EXPECTED_VERSION = "0.8.0"
 EXPECTED_DSPY = "dspy==3.3.0b1"
 EXPECTED_LITELLM = "litellm==1.91.3"
 
@@ -107,7 +107,7 @@ def test_documented_persistent_uv_tool_install_has_the_same_policy() -> None:
 
 
 def test_package_init_and_lock_share_the_release_version() -> None:
-    """The package metadata, import surface, and lock all identify v0.7.12."""
+    """The package metadata, import surface, and lock all identify v0.8.0."""
 
     pyproject = tomllib.loads(_text("pyproject.toml"))
     assert pyproject["project"]["version"] == EXPECTED_VERSION
