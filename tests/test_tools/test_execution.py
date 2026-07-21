@@ -28,6 +28,7 @@ from clio_agent.tools.execution import (
     set_tool_runtime_fallback,
     tool_workspace_context,
 )
+from tests._config_layer import set_config
 
 
 class FakeClient:
@@ -732,7 +733,7 @@ def test_sync_mcp_tool_executor_repairs_unique_missing_file_arg(
     good = tmp_path / "data" / "pathogen_reference.fasta"
     good.parent.mkdir()
     good.write_text(">chrA\nACGT\n", encoding="utf-8")
-    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    set_config("tools.file_policy.allowed_roots", [str(tmp_path)])  # file layer wins (#985)
 
     fake_client = FakeClient()
     executor = SyncMCPToolExecutor(
@@ -785,7 +786,7 @@ def test_sync_mcp_tool_executor_does_not_repair_ambiguous_missing_file_arg(
     second.parent.mkdir()
     first.write_text(">a\nACGT\n", encoding="utf-8")
     second.write_text(">b\nTGCA\n", encoding="utf-8")
-    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    set_config("tools.file_policy.allowed_roots", [str(tmp_path)])  # file layer wins (#985)
 
     fake_client = FakeClient()
     executor = SyncMCPToolExecutor(
@@ -812,7 +813,7 @@ def test_repair_returns_records_for_each_substitution(tmp_path, monkeypatch: pyt
     good = tmp_path / "data" / "reference.fasta"
     good.parent.mkdir()
     good.write_text(">chrA\nACGT\n", encoding="utf-8")
-    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    set_config("tools.file_policy.allowed_roots", [str(tmp_path)])  # file layer wins (#985)
 
     requested = str(tmp_path / "typo" / "reference.fasta")
     repaired, records = _repair_missing_file_arguments({"filepath": requested})
@@ -832,7 +833,7 @@ def test_repair_scan_bound_leaves_args_unchanged(tmp_path, monkeypatch: pytest.M
     good = tmp_path / "data" / "reference.fasta"
     good.parent.mkdir()
     good.write_text(">chrA\nACGT\n", encoding="utf-8")
-    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    set_config("tools.file_policy.allowed_roots", [str(tmp_path)])  # file layer wins (#985)
     # Force the very first scanned entry to trip the ceiling.
     monkeypatch.setattr("clio_agent.tools.execution._REPAIR_SCAN_LIMIT", 0)
 
@@ -856,7 +857,7 @@ def test_repair_scan_bound_aborts_walk_with_no_matches(tmp_path, monkeypatch: py
         sub.mkdir()
         for f in range(5):
             (sub / f"file_{f}.txt").write_text("x", encoding="utf-8")
-    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    set_config("tools.file_policy.allowed_roots", [str(tmp_path)])  # file layer wins (#985)
     monkeypatch.setattr("clio_agent.tools.execution._REPAIR_SCAN_LIMIT", 5)
 
     real_scandir = os.scandir
@@ -887,7 +888,7 @@ def test_repair_deadline_bound_leaves_args_unchanged(tmp_path, monkeypatch: pyte
     good = tmp_path / "data" / "reference.fasta"
     good.parent.mkdir()
     good.write_text(">chrA\nACGT\n", encoding="utf-8")
-    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    set_config("tools.file_policy.allowed_roots", [str(tmp_path)])  # file layer wins (#985)
     # A negative budget puts the deadline in the past before the first scan entry.
     monkeypatch.setattr("clio_agent.tools.execution._REPAIR_DEADLINE_S", -1.0)
 
