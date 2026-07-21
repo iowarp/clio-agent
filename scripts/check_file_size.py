@@ -189,7 +189,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # (1304) beyond the #932/#933/#934 deltas is inherited MCP-apps landing growth;
     # ratchet down with the mcp_app_* owner-module split (see the #947 block on mcp_apps.py).
     "src/clio_agent/tools/execution.py": 1490,
-    "src/clio_agent/ui/cli.py": 1156,
+    # #1001: doctor rendering + disk-GC surface moved to the ui/doctor.py owner module
+    # (ratcheted 1156 -> 1135 in the same change).
+    "src/clio_agent/ui/cli.py": 1135,
 }
 
 # Root of the source tree to scan, relative to the repository root.

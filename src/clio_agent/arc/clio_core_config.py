@@ -81,6 +81,7 @@ def runtime_state_dir() -> Path:
     state.mkdir(parents=True, exist_ok=True)
     return state
 
+
 # Default clio-core CTE config: a self-managed DRAM↔disk hierarchy on the OS data
 # dir. The DRAM tier (score 1.0) is the hot working set; the file tier (score 0.0)
 # is the cold spill target. ``restart``/``metadata_log_path``/``transaction_log_capacity``
@@ -535,8 +536,7 @@ def boot_check_ram_cap(config_path: str | Path, *, env: Mapping[str, str]) -> Ra
         _is_bounded(cap.final_tier_capacity)
         and tier_ok
         and cap.cap is not None
-        and parse_capacity_bytes(cap.final_tier_capacity or "0")
-        <= parse_capacity_bytes(cap.cap)
+        and parse_capacity_bytes(cap.final_tier_capacity or "0") <= parse_capacity_bytes(cap.cap)
     ):
         topology.append(
             f"final tier capacity_limit {cap.final_tier_capacity!r} is <= the ram tier "
@@ -551,6 +551,47 @@ def boot_check_ram_cap(config_path: str | Path, *, env: Mapping[str, str]) -> Ra
             "; ".join(topology),
         )
     return cap
+
+
+def cte_disk_warn_fraction() -> float:
+    """The fraction of the CTE file-tier capacity that triggers a cold-tier disk warning.
+
+    Config ``arc.cte.disk_warn_fraction`` / env ``CLIO_ARC_CTE_DISK_WARN_FRACTION`` (#1001);
+    default 0.5 (warn at 50% of ``arc.cte.file_capacity``). A value outside ``(0, 1]`` is
+    rejected back to the default with a typed trace reason (no silent swap).
+    """
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle
+    from clio_agent.runtime import trace  # noqa: PLC0415
+
+    value = float(
+        conf.resolve(
+            "arc.cte.disk_warn_fraction",
+            env="CLIO_ARC_CTE_DISK_WARN_FRACTION",
+            default=0.5,
+            cast=conf.as_float,
+        )
+    )
+    if not 0.0 < value <= 1.0:
+        trace.event(
+            "CTE-DISK",
+            "config arc.cte.disk_warn_fraction=%r invalid (need 0<f<=1); using default 0.5",
+            value,
+        )
+        return 0.5
+    return value
+
+
+def cte_store_dir(*, env: Mapping[str, str], config_path: str | Path | None = None) -> Path:
+    """Return the directory the CTE cold (file) tier writes into (for the disk watch).
+
+    The cold tier's data (``storage.bin`` / ``metadata.log`` / ``conf/``) lives beside the
+    resolved ``cte.yaml``; that parent directory is the measurement target for the #1001
+    cold-tier disk watch. Read-only — never seeds a file.
+    """
+    if config_path is not None:
+        return Path(config_path).expanduser().parent
+    resolved = _resolve_config_path(env)
+    return resolved.parent if resolved.is_file() else _default_cte_dir()
 
 
 def _is_bounded(value: str | None) -> bool:

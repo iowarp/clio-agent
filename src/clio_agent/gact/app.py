@@ -940,6 +940,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.child_reaper = install_child_reaper()
 
+    # #1001: bound the clio-owned MCP uv spawn cache at boot (off-loop; SKIPS if a peer
+    # clio process is alive; never mid-session). Typed reasons emitted by the helper.
+    from clio_agent.tools.mcp_cache import boot_prune_off_loop  # noqa: PLC0415
+
+    app.state.mcp_cache_prune_task = asyncio.create_task(boot_prune_off_loop())
+
     task: Optional[asyncio.Task] = None
     if getattr(app.state, "schedules", None) is not None:
         task = asyncio.create_task(_scheduler_tick(app))

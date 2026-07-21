@@ -35,6 +35,9 @@ arc.clio_core.liveness_ttl_s: 3.0
 # CLIO_ARC_CTE_DIR  (str)  <- src/clio_agent/arc/clio_core_config.py
 # arc.cte.dir:  # default unset; resolved in code
 
+# CLIO_ARC_CTE_DISK_WARN_FRACTION  (float)  <- src/clio_agent/arc/clio_core_config.py
+arc.cte.disk_warn_fraction: 0.5
+
 # CLIO_ARC_CTE_FILE_CAPACITY  (str)  <- src/clio_agent/arc/clio_core_config.py
 arc.cte.file_capacity: "50GB"
 
@@ -343,6 +346,18 @@ tools.mcp.workspace_max_resident: 2
 
 # CLIO_MCP_WORKSPACE_TTL_S  (float)  <- src/clio_agent/tools/reaper.py
 tools.mcp.workspace_ttl_s: 120.0
+
+# CLIO_MCP_CACHE_MAX_AGE_DAYS  (float)  <- src/clio_agent/tools/mcp_cache.py
+tools.mcp_cache.max_age_days: 14.0
+
+# CLIO_MCP_CACHE_MAX_BYTES  (int)  <- src/clio_agent/tools/mcp_cache.py
+tools.mcp_cache.max_bytes: 2147483648
+
+# CLIO_MCP_CACHE_TEMP_MAX_AGE_DAYS  (float)  <- src/clio_agent/runtime/disk_gc.py
+tools.mcp_cache.temp_max_age_days: 3.0
+
+# CLIO_MCP_CACHE_TEMP_ROOTS  (str)  <- src/clio_agent/runtime/disk_gc.py
+# tools.mcp_cache.temp_roots:  # default unset; resolved in code
 
 # CLIO_WINDOWS_SHELL_BACKEND  (str)  <- src/clio_agent/tools/servers/shell_server.py
 tools.shell.windows_backend: "powershell"
