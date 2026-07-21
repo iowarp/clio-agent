@@ -21,6 +21,7 @@ import pytest
 from clio_agent import conf
 from clio_agent.arc.memory import EVENTS_SCOPE, ARCMemory
 from clio_agent.gact.semantic_events import SemanticEvent
+from tests._config_layer import set_config
 
 
 def _turn_started(sid: str = "s1") -> SemanticEvent:
@@ -67,7 +68,7 @@ class TestTraceDisabledRetainsEventsLog:
     def test_release_session_logs_retention_reason(
         self, tmp_path, monkeypatch, hermetic_conf, caplog
     ):
-        monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "none")
+        set_config("trace.backend", "none")  # file-layer (file > env); #985 config-first
         arc = _arc_with_one_event(tmp_path)
 
         with caplog.at_level("WARNING", logger="clio_agent.arc.memory"):
@@ -90,7 +91,7 @@ class TestTraceEnabledStillErases:
     """With a durable file trace enabled, the historical erase behavior runs."""
 
     def test_release_session_erases_events_log(self, tmp_path, monkeypatch, hermetic_conf):
-        monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "file")
+        set_config("trace.backend", "file")  # file-layer (file > env); #985 config-first
         arc = _arc_with_one_event(tmp_path)
 
         result = arc.release_session("s1")
@@ -99,7 +100,7 @@ class TestTraceEnabledStillErases:
         assert result["live"] == 1  # one turn erased (historical contract)
 
     def test_flush_and_release_erases_events_log(self, tmp_path, monkeypatch, hermetic_conf):
-        monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "file")
+        set_config("trace.backend", "file")  # file-layer (file > env); #985 config-first
         arc = _arc_with_one_event(tmp_path)
 
         arc.flush_and_release()
@@ -151,7 +152,7 @@ class TestRetentionSpansTheWholeChunkFamily:
         self, tmp_path, monkeypatch, hermetic_conf
     ):
         arc = self._arc_with_three_chunks(tmp_path, monkeypatch)
-        monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "file")
+        set_config("trace.backend", "file")  # file-layer (file > env); #985 config-first
 
         arc.release_session("s1")
 
@@ -164,7 +165,7 @@ class TestRetentionSpansTheWholeChunkFamily:
         self, tmp_path, monkeypatch, hermetic_conf
     ):
         arc = self._arc_with_three_chunks(tmp_path, monkeypatch)
-        monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "file")
+        set_config("trace.backend", "file")  # file-layer (file > env); #985 config-first
 
         arc.flush_and_release()
 

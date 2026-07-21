@@ -238,7 +238,12 @@ def test_apply_edit_refuses_outside_allowed_roots(
     allowed = tmp_path / "allowed"
     workspace.mkdir()
     allowed.mkdir()
-    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(allowed))
+    # allowed_roots is file-layer (file > env); write the NARROWER root there,
+    # overwriting the fixture's ``tmp_path`` list, so the workspace write must still
+    # fail file_policy (a bare setenv would be shadowed by the fixture — #985).
+    from tests._config_layer import set_config
+
+    set_config("tools.file_policy.allowed_roots", [str(allowed)])
 
     app = build_app(sessions_path=tmp_path / "s.json")
     app.state.workspaces.update("ws_default", root_path=str(workspace))

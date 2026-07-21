@@ -9,6 +9,7 @@ import pytest
 from clio_agent.arc.live import EVENTS_SCOPE, LiveRuntimeContext
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.gact.semantic_events import SemanticEvent
+from tests._config_layer import set_config
 
 
 def _ev(event_type, *, sid="s1", turn="t1", trace="trace_t1", occurred="", **kw):
@@ -147,7 +148,7 @@ class TestARCMemoryLiveWiring:
         # The _events erase is gated on the durable trace being enabled (#762);
         # retention under the default "none" backend is covered by
         # test_events_log_retention.py.
-        monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "file")
+        set_config("trace.backend", "file")  # file-layer (file > env); #985 config-first
         arc = ARCMemory(data_dir=str(tmp_path / "arc"))
         for e in _earthscope_turn_events():
             arc.on_semantic_event(e)
@@ -156,7 +157,7 @@ class TestARCMemoryLiveWiring:
         assert arc.get_live_context("s1") == {}
 
     def test_flush_and_release_clears_live(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "file")
+        set_config("trace.backend", "file")  # file-layer (file > env); #985 config-first
         arc = ARCMemory(data_dir=str(tmp_path / "arc"))
         for e in _earthscope_turn_events():
             arc.on_semantic_event(e)
@@ -183,7 +184,11 @@ def _multi_turn_corpus():
             payload={
                 "answer": "Found 71 stations.",
                 "reasoning": "thought about it",
-                "trajectory": {"thought_0": "x", "tool_name_0": "shell_bash", "observation_0": "ok"},
+                "trajectory": {
+                    "thought_0": "x",
+                    "tool_name_0": "shell_bash",
+                    "observation_0": "ok",
+                },
                 "tools_called": [{"name": "shell_bash", "ok": True}],
             },
         ),
@@ -346,7 +351,7 @@ class TestBufferBacked:
         """release erases the '_events' log scope from the buffer (idle -> baseline).
 
         The erase requires the durable trace to keep the full history (#762)."""
-        monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "file")
+        set_config("trace.backend", "file")  # file-layer (file > env); #985 config-first
         arc = ARCMemory(data_dir=str(tmp_path / "arc"))
         for e in _multi_turn_corpus():
             arc.on_semantic_event(e)

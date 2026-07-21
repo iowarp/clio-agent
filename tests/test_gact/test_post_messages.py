@@ -22,6 +22,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
+from tests._config_layer import set_config
 
 # #948 S4b: default sessions run the blueprint react ``main``; route it to each
 # test's ``build_app(agent=...)`` host fake (agent=None ingress paths return their
@@ -1449,7 +1450,7 @@ def test_post_message_turn_timeout_surfaces_error(
 
     from .conftest import complete_turn
 
-    monkeypatch.setenv("CLIO_GACT_TURN_TIMEOUT_S", "0.2")
+    set_config("limits.turn_timeout_s", 0.2)  # file-layer (file > env); #985 config-first
     agent = SlowClioAgent(delay_s=0.5)
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=agent)
     with TestClient(app) as c:
@@ -1479,7 +1480,7 @@ def test_post_message_progressing_turn_outlives_no_progress_window(
 
     from .conftest import complete_turn
 
-    monkeypatch.setenv("CLIO_GACT_TURN_TIMEOUT_S", "0.2")
+    set_config("limits.turn_timeout_s", 0.2)  # file-layer (file > env); #985 config-first
     agent = ProgressingSlowClioAgent(steps=5, step_s=0.1)
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=agent)
     agent.bus = app.state.bus

@@ -155,10 +155,14 @@ class TestClioAgent:
         agent.shutdown()
 
     def test_lm_studio_explicit_model_skips_model_discovery(self, tmp_path, monkeypatch):
-        """Explicit CLIO_LM_MODEL should keep lm_studio pinned to one model."""
+        """An explicit ``lm.model`` should keep lm_studio pinned to one model."""
+        from tests._config_layer import set_config
+
         monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")
         monkeypatch.setenv("CLIO_LM_API_BASE", "http://192.168.86.143:1234/v1")
-        monkeypatch.setenv("CLIO_LM_MODEL", "nemotron-cascade-2-30b-a3b-i1")
+        # ``lm.model`` lives in the config FILE (file > env); pin it there so the
+        # explicit-override contract (skip discovery) is exercised (#985 residual).
+        set_config("lm.model", "nemotron-cascade-2-30b-a3b-i1")
 
         with patch(
             "clio_agent.agent.list_lm_studio_models",
@@ -215,9 +219,13 @@ class TestClioAgent:
 
     def test_lm_studio_discovery_uses_configured_api_base(self, tmp_path, monkeypatch):
         """LM Studio discovery should use the configured remote endpoint."""
+        from tests._config_layer import delete_config
+
         monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")
         monkeypatch.setenv("CLIO_LM_API_BASE", "http://192.168.86.143:1234/v1")
-        monkeypatch.delenv("CLIO_LM_MODEL", raising=False)
+        # Drop the fixture's file-pinned ``lm.model`` so no explicit override exists
+        # and discovery triggers (the file-layer analogue of delenv; #985 residual).
+        delete_config("lm.model")
 
         seen: dict[str, str] = {}
 
@@ -240,9 +248,11 @@ class TestClioAgent:
 
     def test_lm_studio_empty_discovery_surfaces_configuration_error(self, tmp_path, monkeypatch):
         """No discovered LM Studio models should fail before creating a guessed LM."""
+        from tests._config_layer import delete_config
+
         monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")
         monkeypatch.setenv("CLIO_LM_API_BASE", "http://127.0.0.1:1234/v1")
-        monkeypatch.delenv("CLIO_LM_MODEL", raising=False)
+        delete_config("lm.model")
 
         with patch("clio_agent.agent.list_lm_studio_models", return_value=[]):
             with patch(
@@ -255,10 +265,11 @@ class TestClioAgent:
     def test_lm_studio_discovery_exception_surfaces_original_error(self, tmp_path, monkeypatch):
         """Discovery transport/schema errors should not become generic no-model errors."""
         from clio_agent.config import LMStudioDiscoveryError
+        from tests._config_layer import delete_config
 
         monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")
         monkeypatch.setenv("CLIO_LM_API_BASE", "http://127.0.0.1:1234/v1")
-        monkeypatch.delenv("CLIO_LM_MODEL", raising=False)
+        delete_config("lm.model")
 
         with patch(
             "clio_agent.agent.list_lm_studio_models",

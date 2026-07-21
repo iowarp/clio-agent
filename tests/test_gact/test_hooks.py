@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
 from clio_agent.runtime.hooks import HookRegistry, build_hook_registry, install_global_registry
+from tests._config_layer import set_config
 
 
 @dataclass
@@ -154,7 +155,7 @@ def post_tool(name, args, result=None, error=None):
     open({str(marker)!r}, "w", encoding="utf-8").write(name)
 """,
     )
-    monkeypatch.setenv("CLIO_HOOKS_BACKEND", "local_python")
+    set_config("hooks.backend", "local_python")  # file-layer (file > env); #985 config-first
     monkeypatch.setenv("CLIO_HOOKS_DIR", str(hooks_dir))
 
     reg = build_hook_registry()
@@ -166,7 +167,7 @@ def post_tool(name, args, result=None, error=None):
 
 
 def test_hook_registry_factory_can_disable_hooks(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CLIO_HOOKS_BACKEND", "none")
+    set_config("hooks.backend", "none")  # file-layer (file > env); #985 config-first
 
     reg = build_hook_registry()
 
@@ -300,7 +301,7 @@ def pre_tool(name, args):
     return None
 """,
     )
-    monkeypatch.setenv("CLIO_HOOKS_BACKEND", "local_python")
+    set_config("hooks.backend", "local_python")  # file-layer (file > env); #985 config-first
     monkeypatch.setenv("CLIO_HOOKS_DIR", str(hooks_dir))
     install_global_registry(None)
     try:

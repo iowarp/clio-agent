@@ -449,6 +449,11 @@ class TestArcStore:
     def test_env(self, monkeypatch, tmp_path):
         from clio_agent.arc.storage import LocalFSStore, make_arc_store
 
+        # Drop the fixture's file-layer ``arc.store`` so the env is the real source
+        # under test (file > env; a bare setenv would otherwise be shadowed).
+        from tests._config_layer import delete_config
+
+        delete_config("arc.store")
         monkeypatch.setenv("CLIO_ARC_STORE", "local")
         assert isinstance(make_arc_store(data_dir=tmp_path / "arc"), LocalFSStore)
 
@@ -469,7 +474,13 @@ class TestArcStore:
     def test_unknown_backend_fails_loud(self, monkeypatch, tmp_path):
         from clio_agent.arc.storage import make_arc_store
 
-        monkeypatch.setenv("CLIO_ARC_STORE", "banana")
+        # The autouse fixture pins ``arc.store: local`` in the config-FILE layer
+        # (file > env), so a ``setenv`` here could never reach the resolver. Express
+        # the fail-loud contract at the file layer instead: an unknown backend name
+        # in config.yaml must still raise (#985 residual re-expression).
+        from tests._config_layer import set_config
+
+        set_config("arc.store", "banana")
         with pytest.raises(ValueError, match="banana"):
             make_arc_store(data_dir=tmp_path / "arc")
 
@@ -493,6 +504,11 @@ class TestArcStoreConfig:
     def test_env(self, monkeypatch, tmp_path, _stub_clio_core):
         from clio_agent.arc.storage import make_arc_store
 
+        # Drop the fixture's file-pinned ``arc.store: local`` so the cte branch is
+        # reachable; the SUBJECT here is the ``store_config`` env resolution (#985).
+        from tests._config_layer import delete_config
+
+        delete_config("arc.store")
         monkeypatch.setenv("CLIO_ARC_STORE", "cte")
         monkeypatch.setenv("CLIO_ARC_STORE_CONFIG", str(tmp_path / "env-cte.yaml"))
         make_arc_store(data_dir=tmp_path / "arc")

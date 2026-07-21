@@ -17,6 +17,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from tests._config_layer import set_config
+
 # #735: run under the xdist-load flake-hunt CI job — this file is the one that
 # flaked on cross-app tool-observer contamination.
 # #948 S4b: default sessions run the blueprint react ``main``; route it to each
@@ -532,8 +534,8 @@ def test_tool_result_full_in_trace_but_bounded_in_ledger(tmp_path: Path, monkeyp
     import json as _json
 
     trace_dir = tmp_path / "traces"
-    monkeypatch.setenv("CLIO_SEMANTIC_TRACE_BACKEND", "file")
-    monkeypatch.setenv("CLIO_SEMANTIC_TRACE_PATH", str(trace_dir))
+    set_config("trace.backend", "file")  # file-layer (file > env); #985 config-first
+    set_config("trace.path", str(trace_dir))
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     client = TestClient(app)
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
