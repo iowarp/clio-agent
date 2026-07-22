@@ -167,11 +167,20 @@ def observe_policy_violations(
     """Detect + mint policy violations for one tool call (B2). Guarded, one-line from the observer.
 
     A NO-OP unless an OS write-fence is ACTIVE (on the floor an out-of-root write succeeds and
-    is an honest ``gap``, handled by the existing mint path — never a violation). Two signals:
-    (1) the result carries a fenced child's ``EROFS``/``EACCES`` → ``prevented``; (2) a
-    designated output path OUTSIDE the write territory — absent post-call → ``prevented``,
-    present + freshly changed → ``detected`` (the fence was escaped). Returns the minted
-    violations (also emitted trace-only + appended to the app ledger).
+    is an honest ``gap``, handled by the existing mint path — never a violation).
+
+    PRECISION OVER RECALL (#966.10 — a false attribution is worse than a missed one). Both
+    signals require the denied path to be PROVEN out-of-root before a mint:
+
+    * the result carries a fenced child's ``EROFS``/``EACCES`` AND a non-empty extracted path
+      that is OUTSIDE the effective write roots → ``prevented``. An in-root denial (srt's
+      mandatory ``.git/hooks`` protection), a read EACCES on an in-root file, or a bare
+      "permission denied" phrase with NO extractable path (SSH publickey) is a typed debug
+      skip (``violation_signal_unattributed``), never a fabricated out-of-root violation;
+    * a designated output path OUTSIDE the territory — absent post-call → ``prevented``;
+      present AND provably fresh within the call window → ``detected``. Without a call window
+      (``started_at is None``) a PRESENT file is NEVER upgraded to ``detected`` (F5) — a typed
+      skip, since escape cannot be proven.
     """
     resolved = state if state is not None else _current_sandbox_state()
     if resolved is None or not resolved.active:
@@ -179,27 +188,41 @@ def observe_policy_violations(
     mechanism = str(resolved.mechanism)
     started_iso = _iso(started_at)
     ended_iso = _iso(time.time())
+    roots = _effective_roots(app, workspace_id)
     violations: list[PolicyViolation] = []
 
     denial = write_denial_from_result(result)
     if denial is not None:
-        violations.append(
-            PolicyViolation(
-                kind=VIOLATION_PREVENTED,
-                mechanism=mechanism,
-                path=str(denial.get("path") or ""),
-                call_id=call_id,
-                tool=tool_name,
-                session_id=sid,
-                turn_id=turn_id,
-                workspace_id=workspace_id,
-                errno_name=str(denial.get("errno_name") or ""),
-                signal="result_errno",
-                started_at=started_iso,
-                ended_at=ended_iso,
-                detail=str(denial.get("detail") or ""),
+        dpath = str(denial.get("path") or "")
+        if dpath and not _within_roots(Path(dpath), roots):
+            violations.append(
+                PolicyViolation(
+                    kind=VIOLATION_PREVENTED,
+                    mechanism=mechanism,
+                    path=dpath,
+                    call_id=call_id,
+                    tool=tool_name,
+                    session_id=sid,
+                    turn_id=turn_id,
+                    workspace_id=workspace_id,
+                    errno_name=str(denial.get("errno_name") or ""),
+                    signal="result_errno",
+                    started_at=started_iso,
+                    ended_at=ended_iso,
+                    detail=str(denial.get("detail") or ""),
+                )
             )
-        )
+        else:
+            # In-root (mandatory protection / DAC read) or path-less denial: the fence did NOT
+            # prove an out-of-root WRITE, so attributing one would be false provenance.
+            logger.debug(
+                "policy violation skipped reason=violation_signal_unattributed errno=%s "
+                "path=%r in_root=%s tool=%s",
+                denial.get("errno_name"),
+                dpath,
+                bool(dpath and _within_roots(Path(dpath), roots)),
+                tool_name,
+            )
 
     violations.extend(
         _designated_out_of_root_violations(
@@ -212,6 +235,7 @@ def observe_policy_violations(
             workspace_id=workspace_id,
             turn_id=turn_id,
             mechanism=mechanism,
+            roots=roots,
             started_at=started_at,
             started_iso=started_iso,
             ended_iso=ended_iso,
@@ -221,6 +245,17 @@ def observe_policy_violations(
     for violation in violations:
         _mint_policy_violation(app, sid, violation, turn_id=turn_id, trace_id=trace_id)
     return violations
+
+
+def _effective_roots(app: "FastAPI", workspace_id: str) -> tuple[Path, ...]:
+    """The effective write territory for this call (the same boundary the fence enforces)."""
+    from clio_agent.gact.artifacts.minting import _workspace_root  # noqa: PLC0415
+    from clio_agent.runtime.sandbox import PROFILE_FLEET, effective_write_roots  # noqa: PLC0415
+
+    root = _workspace_root(app, workspace_id)
+    return effective_write_roots(
+        PROFILE_FLEET, workspace_root=str(root) if root is not None else None
+    )
 
 
 def _designated_out_of_root_violations(
@@ -234,6 +269,7 @@ def _designated_out_of_root_violations(
     workspace_id: str,
     turn_id: str,
     mechanism: str,
+    roots: tuple[Path, ...],
     started_at: Optional[float],
     started_iso: str,
     ended_iso: str,
@@ -241,34 +277,35 @@ def _designated_out_of_root_violations(
     """Post-call stat of designated output paths OUTSIDE the write territory (the fence's view).
 
     A tool that DECLARED an output path outside the effective write roots either had it
-    blocked (absent → ``prevented``) or somehow wrote it anyway (present + freshly changed →
+    blocked (absent → ``prevented``) or somehow wrote it anyway (present + provably fresh →
     ``detected``). A path INSIDE the territory is a normal deliverable (minted elsewhere), not
-    a violation.
+    a violation. Without a call window a present out-of-root file is NEVER called ``detected``
+    (F5) — escape is unproven, so it is a typed skip.
     """
     from clio_agent.gact.artifacts.designation import (  # noqa: PLC0415
         grounded_output_paths,
         result_declared_paths,
     )
-    from clio_agent.gact.artifacts.minting import _workspace_root  # noqa: PLC0415
-    from clio_agent.runtime.sandbox import PROFILE_FLEET, effective_write_roots  # noqa: PLC0415
 
-    root = _workspace_root(app, workspace_id)
-    roots = effective_write_roots(
-        PROFILE_FLEET, workspace_root=str(root) if root is not None else None
-    )
     designated = {**grounded_output_paths(args), **result_declared_paths(result)}
     out: list[PolicyViolation] = []
     for raw_path in designated.values():
         path = Path(raw_path)
         if _within_roots(path, roots):
             continue  # inside the write territory — a normal deliverable, not a violation
-        exists = _safe_is_file(path)
-        if not exists:
+        if not _safe_is_file(path):
             kind, signal = VIOLATION_PREVENTED, "designated_path_absent"
-        elif _changed_within_window(path, started_at):
+        elif started_at is not None and _changed_within_window(path, started_at):
             kind, signal = VIOLATION_DETECTED, "detected_change"
         else:
-            continue  # a pre-existing out-of-root file the call did not touch
+            # Present, but no proof it changed THIS call (no window, or a pre-existing file).
+            # Never upgrade to a 'detected' escape without a real fresh-change signal (F5).
+            logger.debug(
+                "policy violation skipped reason=violation_signal_unattributed "
+                "signal=designated_present_unproven path=%s",
+                path,
+            )
+            continue
         out.append(
             PolicyViolation(
                 kind=kind,
@@ -308,10 +345,12 @@ def _safe_is_file(path: Path) -> bool:
         return False
 
 
-def _changed_within_window(path: Path, started_at: Optional[float]) -> bool:
-    """Whether ``path``'s mtime is at/after the call start (the change happened this call)."""
-    if started_at is None:
-        return True  # no window to compare — treat a present out-of-root file as suspect
+def _changed_within_window(path: Path, started_at: float) -> bool:
+    """Whether ``path``'s mtime is at/after the call start (the change happened this call).
+
+    Only called with a real ``started_at`` — a missing call window is handled by the caller
+    (never minted as ``detected``, F5), so there is no "no-window ⇒ suspect" branch here.
+    """
     try:
         return path.stat().st_mtime >= (started_at - 1.0)
     except OSError:
