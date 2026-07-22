@@ -15,6 +15,7 @@ assertion red, proving the test binds the invariant (not a tautology).
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import sys
@@ -1519,3 +1520,177 @@ def test_route_session_artifacts_include_children(tmp_path, monkeypatch):
         assert row["name"] == "child_out.csv"
         assert child.id in row["producing_session_ids"]
         assert set(on["child_session_ids"]) == {child.id}
+
+
+# --------------------------------------------------------------------------- #
+# Boot-fold placement (#971 defects 1b + 2). The artifact registry projection is
+# folded ONCE at server boot, OFF the event loop, before the agent is announced
+# ready — NEVER lazily on the tool-completion hot path (defect 2) — and a wedged
+# ARC store surfaces as a LOUD, typed, actionable boot failure (defect 1b) rather
+# than a mid-turn whole-server GIL freeze (the S5 gate2 stall).
+# --------------------------------------------------------------------------- #
+
+
+class _StallingArc:
+    """A fake ARC whose ``_events`` reader stalls exactly as a hung native GetBlob does.
+
+    The per-RPC liveness ladder, once exhausted, raises
+    :class:`~clio_agent.arc.clio_core_liveness.ClioCoreRuntimeLostError`; this fake
+    raises it from ``iter_event_contents`` so the boot fold sees the same typed stall
+    the real store surfaces. ``data_dir`` is the on-disk store path the actionable
+    error must name.
+    """
+
+    def __init__(self, data_dir: Path) -> None:
+        self.data_dir = data_dir
+        self._live = SimpleNamespace(iter_event_contents=self._iter)
+
+    def _iter(self):
+        from clio_agent.arc.clio_core_liveness import ClioCoreRuntimeLostError
+
+        raise ClioCoreRuntimeLostError(
+            "clio-core RPC 'get' produced no response; the peer appears to be a zombie",
+            reason="clio_core_rpc_stalled",
+            port=9413,
+        )
+        yield {}  # pragma: no cover - makes _iter a generator (reader() is iterated)
+
+
+def test_boot_fold_then_observer_never_pays_the_fold(tmp_path, monkeypatch):
+    """Defect 2: after the boot fold stamps the projection, the tool observer reuses it
+    and pays ZERO additional folds — the O(corpus) rebuild is off the turn hot path."""
+    app, sess, _arc = _make_app(tmp_path)
+    import clio_agent.gact.artifacts.registry as reg_mod
+
+    calls = {"n": 0}
+    real = reg_mod.rebuild_registry_at_boot
+
+    def counting(a):
+        calls["n"] += 1
+        return real(a)
+
+    monkeypatch.setattr(reg_mod, "rebuild_registry_at_boot", counting)
+
+    # Boot fold, as the lifespan runs it: off the event loop, exactly once.
+    async def boot():
+        return await asyncio.to_thread(reg_mod.rebuild_registry_at_boot, app)
+
+    reg = asyncio.run(boot())
+    assert calls["n"] == 1
+    assert app.state.artifact_registry is reg
+
+    # The tool-completion hot path (twice) must find the pre-built projection and NOT
+    # trigger a lazy rebuild.
+    observe_tool_transform(app, sess.id, "plot", {"x": "y"}, "c1", True, None)
+    observe_tool_transform(app, sess.id, "plot2", {"a": "b"}, "c2", True, None)
+    # Sabotage: revert the boot-fold wiring so observe folds lazily -> n > 1 -> red.
+    assert calls["n"] == 1
+
+
+def test_get_registry_on_loop_guard_still_bites(tmp_path):
+    """The RegistryFoldOnLoopError backstop remains: a lazy first access on the loop
+    thread (the in-process/test fallback path) is still LOUD, not a silent loop stall."""
+    from clio_agent.gact.artifacts.registry import RegistryFoldOnLoopError, get_registry
+
+    app, _sess, _arc = _make_app(tmp_path)  # artifact_registry starts None
+
+    async def access():
+        return get_registry(app)
+
+    with pytest.raises(RegistryFoldOnLoopError):
+        asyncio.run(access())
+
+
+def test_arc_boot_fold_stall_raises_typed_actionable(tmp_path, monkeypatch):
+    """Defect 1b: a wedged ARC store (hung native RPC) makes the boot fold raise a TYPED,
+    actionable stall naming the store to rotate — NOT a silently-empty registry."""
+    monkeypatch.setattr("clio_agent.gact.runtime.globals._PROCESS_ARC", None)
+    from clio_agent.gact.artifacts.registry_boot import (
+        ArtifactRegistryBootStalled,
+        rebuild_registry_at_boot,
+    )
+
+    store_dir = tmp_path / ".clio" / "agent" / "arc"
+    state = SimpleNamespace(
+        arc=_StallingArc(store_dir),
+        semantic_trace_backend=None,
+        artifact_registry=None,
+    )
+    app = SimpleNamespace(state=state)
+
+    with pytest.raises(ArtifactRegistryBootStalled) as ei:
+        rebuild_registry_at_boot(app)
+    exc = ei.value
+    # Sabotage: revert _fold_from_arc to swallow ClioCoreRuntimeLostError into a
+    # reachable=False degrade -> rebuild returns an empty capture_released registry
+    # instead of raising -> pytest.raises red.
+    assert exc.store_path == str(store_dir)
+    assert exc.scope == "_events"
+    assert exc.reason == "arc_boot_fold_stalled"
+    assert "clio doctor" in str(exc)
+    assert app.state.artifact_registry is None  # never stamp a half/empty projection on a wedge
+
+
+def test_construct_agent_aborts_and_stays_unready_on_boot_fold_stall(tmp_path, monkeypatch):
+    """Defect 1b end-to-end: the boot-fold helper the lifespan calls returns False on a
+    wedged store, stamps an actionable agent_init_error, and never announces readiness."""
+    monkeypatch.setattr("clio_agent.gact.runtime.globals._PROCESS_ARC", None)
+    from clio_agent.gact.artifacts.registry_boot import boot_fold_artifact_registry_offloop
+
+    store_dir = tmp_path / ".clio" / "agent" / "arc"
+    state = SimpleNamespace(
+        arc=_StallingArc(store_dir),
+        semantic_trace_backend=None,
+        artifact_registry=None,
+        agent_init_error=None,
+    )
+    app = SimpleNamespace(state=state)
+
+    async def run():
+        loop = asyncio.get_running_loop()
+        return await boot_fold_artifact_registry_offloop(app, loop)
+
+    ok = asyncio.run(run())
+    # Sabotage: swallow the stall into a capture_released empty registry -> ok True -> red.
+    assert ok is False
+    assert app.state.artifact_registry is None  # readiness gated: no projection stamped
+    assert str(store_dir) in app.state.agent_init_error
+    assert "clio doctor" in app.state.agent_init_error
+
+
+def test_boot_fold_helper_returns_true_and_stamps_on_healthy_store(tmp_path, monkeypatch):
+    """The helper returns True (agent may be announced) and stamps the projection when the
+    fold completes — the normal boot path with a reachable store."""
+    import json
+
+    monkeypatch.setattr("clio_agent.gact.runtime.globals._PROCESS_ARC", None)
+    from clio_agent.gact.artifacts.registry_boot import boot_fold_artifact_registry_offloop
+
+    trace_dir = tmp_path / "semantic_traces"
+    trace_dir.mkdir()
+    line = {
+        "event_type": "artifact.created",
+        "event_id": "e1",
+        "payload": {
+            "workspace_id": "ws1",
+            "name": "d.csv",
+            "version": 1,
+            "sha256": "a" * 64,
+            "kind": "dataset",
+        },
+    }
+    (trace_dir / "sess_x.semantic.jsonl").write_text(json.dumps(line) + "\n", "utf-8")
+    state = SimpleNamespace(
+        arc=None,
+        semantic_trace_backend=SimpleNamespace(path=trace_dir),
+        artifact_registry=None,
+    )
+    app = SimpleNamespace(state=state)
+
+    async def run():
+        return await boot_fold_artifact_registry_offloop(app, asyncio.get_running_loop())
+
+    ok = asyncio.run(run())
+    assert ok is True
+    assert app.state.artifact_registry is not None
+    assert app.state.artifact_registry.count() == 1

@@ -19,12 +19,60 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
+from clio_agent.arc.clio_core_liveness import ClioCoreRuntimeLostError
 from clio_agent.gact.artifacts.registry import _FOLD_EVENT_TYPES, ArtifactRegistry
 
 if TYPE_CHECKING:
+    import asyncio
+
     from fastapi import FastAPI
 
 logger = logging.getLogger(__name__)
+
+#: The ARC segment scope the boot fold scans (the ``_events`` log). Named in the typed
+#: stall error so an operator knows exactly which ARC scope wedged.
+_ARC_FOLD_SCOPE = "_events"
+
+
+class ArtifactRegistryBootStalled(RuntimeError):
+    """The ARC ``_events`` boot fold wedged on a hung native clio-core RPC (#971).
+
+    A stalled ``GetBlob`` (the C-extension spins holding the GIL — see upstream
+    iowarp/clio-core#793) cannot be recovered in-process: the per-RPC liveness
+    ladder ABANDONS the hung worker, but the abandoned native call keeps the GIL, so
+    abandonment does not free the process. Rather than let that freeze a mid-turn tool
+    completion (the lazy first-access fold path), the BOOT fold raises this typed,
+    actionable error so the failure is LOUD and points at the wedged store: the caller
+    (agent construction) leaves the agent unready with the store path in the message,
+    so ``POST /messages`` 503s with an operator-actionable reason (rotate the ARC store
+    aside, or run ``clio doctor``) instead of the whole server going dark.
+
+    ``store_path`` is the on-disk ARC store directory to rotate; ``scope`` is the ARC
+    segment scope that wedged; ``reason`` is the machine tag.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        store_path: str,
+        scope: str = _ARC_FOLD_SCOPE,
+        reason: str = "arc_boot_fold_stalled",
+    ) -> None:
+        super().__init__(message)
+        self.store_path = store_path
+        self.scope = scope
+        self.reason = reason
+
+
+def _arc_store_path(arc: object) -> str:
+    """Best-effort on-disk path of an ARC store, for the actionable stall message.
+
+    Reads ``arc.data_dir`` (the :class:`~clio_agent.arc.memory.ARCMemory` store root);
+    returns ``"<unknown>"`` when the ARC exposes no path (a fake in a test).
+    """
+    data_dir = getattr(arc, "data_dir", None)
+    return str(data_dir) if data_dir else "<unknown>"
 
 
 @dataclass(frozen=True)
@@ -54,6 +102,18 @@ def rebuild_registry_at_boot(app: "FastAPI") -> ArtifactRegistry:
     completes, so a concurrent reader never sees a half-built projection.
     """
     registry = ArtifactRegistry()
+
+    # LOUD pre-fold marker (#971 defect 1b): emitted BEFORE the first native RPC so that,
+    # even if a clio-core GetBlob wedges holding the GIL and freezes the process, the LAST
+    # log line points squarely at the artifact-registry fold + the store to rotate.
+    from clio_agent.gact.runtime.globals import _PROCESS_ARC  # noqa: PLC0415
+
+    _arc = getattr(app.state, "arc", None) or _PROCESS_ARC
+    logger.info(
+        "artifact registry boot fold starting store=%s scope=%s",
+        _arc_store_path(_arc),
+        _ARC_FOLD_SCOPE,
+    )
 
     arc_fold = _fold_from_arc(app, registry)
     jsonl_fold = _fold_from_jsonl(app, registry)
@@ -106,6 +166,27 @@ def _fold_from_arc(app: "FastAPI", registry: ArtifactRegistry) -> _SourceFold:
             if isinstance(payload, dict):
                 registry.fold_event_by_type(event_type, payload)
                 folded_any = True
+    except ClioCoreRuntimeLostError as exc:
+        # #971 defect 1b: an EXHAUSTED per-RPC liveness ladder (a hung native GetBlob) is
+        # NOT a "configured-but-unreadable" degrade — it is a wedged store. Do NOT silently
+        # boot an empty registry: re-raise a typed, actionable stall naming the store to
+        # rotate so agent construction aborts LOUD (the boot-time placement converts a
+        # mid-turn whole-server freeze into a diagnosable boot failure).
+        store_path = _arc_store_path(arc)
+        logger.error(
+            "artifact registry boot fold STALLED reason=arc_boot_fold_stalled store=%s "
+            "scope=%s cause=%r",
+            store_path,
+            _ARC_FOLD_SCOPE,
+            exc,
+        )
+        raise ArtifactRegistryBootStalled(
+            f"artifact registry boot fold stalled reading ARC scope {_ARC_FOLD_SCOPE!r} "
+            f"from store {store_path}: a native clio-core RPC hung and the liveness "
+            "ladder could not recover it. Rotate the ARC store aside (rename it) or run "
+            "`clio doctor`, then restart.",
+            store_path=store_path,
+        ) from exc
     except Exception:  # noqa: BLE001 — a configured-but-unreadable source is unreachable
         logger.warning(
             "artifact boot fold ARC source unreadable reason=arc_iter_failed folded_any=%s",
@@ -164,6 +245,49 @@ def _fold_from_jsonl(app: "FastAPI", registry: ArtifactRegistry) -> _SourceFold:
     return _SourceFold(reachable=True, folded_any=folded_any)
 
 
+async def boot_fold_artifact_registry_offloop(
+    app: "FastAPI", loop: "asyncio.AbstractEventLoop"
+) -> bool:
+    """Fold the artifact registry projection ONCE at boot, OFF the event loop (#971).
+
+    The gact lifespan calls this from agent construction, before the agent is announced
+    ready. The registry is a projection over the ARC ``_events`` log; rebuilding it is an
+    O(corpus) native-RPC-heavy scan. Folding here — off-loop, once — means the
+    tool-completion hot path (``observe_tool_transform -> get_registry``) always finds a
+    PRE-BUILT projection and never pays the fold (defect 2); ``get_registry``'s lazy
+    first-access rebuild remains only as the in-process/test fallback for apps built
+    without this lifespan.
+
+    Returns ``True`` when the fold completed (registry stamped on ``app.state``) and the
+    agent may be announced ready. Returns ``False`` when the ARC store WEDGED on a hung
+    native RPC (defect 1b): the store path is stamped into ``app.state.agent_init_error``
+    and logged LOUD + actionable so ``POST /messages`` 503s with an operator-actionable
+    reason (rotate the ARC store aside / run ``clio doctor``) instead of the whole server
+    freezing mid-turn. The boot-time placement converts an unrecoverable in-process GIL
+    freeze into a diagnosable boot failure.
+    """
+    try:
+        await loop.run_in_executor(None, rebuild_registry_at_boot, app)
+    except ArtifactRegistryBootStalled as exc:
+        app.state.agent_init_error = str(exc)
+        logger.error(
+            "artifact registry boot fold stalled reason=%s store=%s scope=%s; the agent "
+            "will NOT come ready. Rotate the ARC store aside or run `clio doctor`, then "
+            "restart.",
+            exc.reason,
+            exc.store_path,
+            exc.scope,
+        )
+        print(
+            f"[clio-agent-gact] artifact registry boot fold STALLED on {exc.store_path} "
+            "(a clio-core GetBlob hung); POST /messages will keep returning 503. "
+            "Rotate the ARC store aside or run `clio doctor`.",
+            flush=True,
+        )
+        return False
+    return True
+
+
 def _trace_dir(app: "FastAPI") -> Optional[Path]:
     """Resolve the durable-trace directory the file backend writes into."""
     backend = getattr(app.state, "semantic_trace_backend", None)
@@ -177,4 +301,8 @@ def _trace_dir(app: "FastAPI") -> Optional[Path]:
     return candidate if candidate.suffix == "" else candidate.parent
 
 
-__all__ = ["rebuild_registry_at_boot"]
+__all__ = [
+    "ArtifactRegistryBootStalled",
+    "boot_fold_artifact_registry_offloop",
+    "rebuild_registry_at_boot",
+]

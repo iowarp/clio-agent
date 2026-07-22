@@ -1121,10 +1121,14 @@ async def _construct_agent_async(app: "FastAPI") -> None:
         app.state.agent_init_error = repr(exc)
         return
 
-    app.state.agent = agent
-    # The agent's ARCMemory is built HERE (async), after build_app ran with arc=None;
-    # _set_app_arc (re)wires the arc.op op-logger so ARC writes are observable.
+    # _set_app_arc must run before the boot fold (reads app.state.arc) and before ready.
     _set_app_arc(app, agent.arc)
+    # #971: boot-fold the artifact registry off-loop before ready (defects 2 + 1b; owner helper).
+    from clio_agent.gact.artifacts import registry_boot  # noqa: PLC0415
+
+    if not await registry_boot.boot_fold_artifact_registry_offloop(app, loop):
+        return  # wedged store — agent stays unready with a typed agent_init_error
+    app.state.agent = agent
 
     # Install the deferred permission gate + tool observer now that we
     # know an agent exists to gate. See build_app for why these aren't

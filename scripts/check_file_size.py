@@ -100,7 +100,13 @@ RATCHET_BASELINE: dict[str, int] = {
     # merge(main->develop): -3 ratchet down (2712 -> 2709).
     # #968 S2: +5 for the artifacts route registration (import + register call);
     # the route body lives in its own owner module routes/artifacts.py.
-    "src/clio_agent/gact/app.py": 2714,
+    # #971 (S5 boot-fold): +4 to wire the artifact-registry boot fold into agent
+    # construction (import + call + wedged-store early-return), gating agent readiness
+    # so the O(corpus) fold never lands on the tool hot path (defect 2) and a wedged ARC
+    # store fails loud at boot, not mid-turn (defect 1b). The fold + typed-stall + the
+    # boot_fold_artifact_registry_offloop helper all live in the owner module
+    # artifacts/registry_boot.py (no accretion); only the call site is here.
+    "src/clio_agent/gact/app.py": 2718,
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
