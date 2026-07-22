@@ -57,9 +57,7 @@ from clio_agent.runtime.status import IntegrationState, IntegrationStatus
 
 logger = logging.getLogger(__name__)
 
-# --------------------------------------------------------------------------- #
 # srt package identity (owner note #974) — pinned, never guessed.             #
-# --------------------------------------------------------------------------- #
 #: The npm package that provides the srt runtime.
 SRT_PACKAGE_NAME = "@anthropic-ai/sandbox-runtime"
 #: The CLI binary the package installs (resolved on PATH unless overridden by config).
@@ -70,9 +68,7 @@ SRT_LATEST_KNOWN_VERSION = "0.0.66"
 #: srt requires node >= 20.11 (owner note #974). A ``(major, minor)`` floor.
 SRT_MIN_NODE_VERSION = (20, 11)
 
-# --------------------------------------------------------------------------- #
 # Mechanism labels (typed, so the doctor / trace / provenance never guess).   #
-# --------------------------------------------------------------------------- #
 MECHANISM_SRT_SEATBELT = "srt_seatbelt"  # srt on macOS
 MECHANISM_SRT_BWRAP = "srt_bwrap"  # srt on Linux (bubblewrap + proxy)
 MECHANISM_SRT_WINDOWS = "srt_windows"  # srt on Windows (ACL/WFP)
@@ -90,9 +86,7 @@ KNOWN_MECHANISMS: frozenset[str] = frozenset(
     }
 )
 
-# --------------------------------------------------------------------------- #
 # Typed ladder reasons (no silent fallback — every rung explains itself).      #
-# --------------------------------------------------------------------------- #
 REASON_SRT_NOT_INSTALLED = "srt_not_installed"
 REASON_SRT_NODE_MISSING = "srt_node_missing"
 REASON_SRT_NODE_TOO_OLD = "srt_node_too_old"
@@ -106,9 +100,7 @@ REASON_WINDOWS_UNPROVISIONED = "windows_unprovisioned"  # B3 rung (needs `clio s
 REASON_DISABLED = "disabled_by_config"
 REASON_NOT_INSTALLED = "sandbox_not_installed"  # wrap_confined ran before install_sandbox()
 
-# --------------------------------------------------------------------------- #
 # Profiles + network policy (typed literals).                                  #
-# --------------------------------------------------------------------------- #
 #: ``fleet`` — the per-workspace, long-lived MCP servers (transport_for /
 #: transport_from_spec). ``shell`` — the per-invocation shell subprocess.
 Profile = Literal["fleet", "shell"]
@@ -121,12 +113,10 @@ NetPolicy = Literal["allow_record", "deny"]
 NET_ALLOW_RECORD: NetPolicy = "allow_record"
 NET_DENY: NetPolicy = "deny"
 
-# --------------------------------------------------------------------------- #
 # Confinement classification of a census child by its coarse kind (#975).      #
 # Makes the EXCLUDED seams visible policy in the process census, not an         #
 # invisible omission: the CTE daemon, provider CLI links and serve.py are       #
 # deliberately never wrapped (owner decision #974.5).                          #
-# --------------------------------------------------------------------------- #
 Confinement = Literal["wrapped", "excluded"]
 CONFINEMENT_WRAPPED: Confinement = "wrapped"
 CONFINEMENT_EXCLUDED: Confinement = "excluded"
@@ -215,9 +205,7 @@ class ConfinedSpawn:
     result: SandboxResult
 
 
-# --------------------------------------------------------------------------- #
 # Config knobs (config → env → default; the env reference is generated).        #
-# --------------------------------------------------------------------------- #
 def _sandbox_enabled(env: Optional[Mapping[str, str]] = None) -> bool:
     """Whether confinement resolution is enabled (config ``sandbox.enabled``).
 
@@ -253,9 +241,7 @@ def _srt_path_override(env: Optional[Mapping[str, str]] = None) -> str:
     ).strip()
 
 
-# --------------------------------------------------------------------------- #
 # srt detection (detection ONLY — never activates a fence this slice).          #
-# --------------------------------------------------------------------------- #
 def _srt_package_version(binary_path: str) -> str:
     """Read the srt package version from its ``package.json`` — NEVER ``srt --version``.
 
@@ -462,9 +448,7 @@ def _resolve_backend(
     )
 
 
-# --------------------------------------------------------------------------- #
 # Effective write roots — the ONE shared boundary (owner decision #974.6).      #
-# --------------------------------------------------------------------------- #
 def _platform_tool_cache_dirs() -> list[Path]:
     """Platform tool-cache dirs the MCP fleet must be able to write (false-positive guard).
 
@@ -544,9 +528,7 @@ def effective_write_roots(
     return tuple(roots)
 
 
-# --------------------------------------------------------------------------- #
 # The single spawn-composition point.                                          #
-# --------------------------------------------------------------------------- #
 def wrap_confined(
     command: str,
     args: Sequence[str],
@@ -615,9 +597,7 @@ def wrap_confined(
     )
 
 
-# --------------------------------------------------------------------------- #
 # Module state accessor (same pattern as process_tree.child_reaper_status).     #
-# --------------------------------------------------------------------------- #
 # The resolved backend for THIS process, cached at install. ``None`` until installed
 # (a standalone doctor CLI that never installed reports no standing state).
 _STATE: SandboxResult | None = None
@@ -691,9 +671,7 @@ def emit_boot_state_event(app: Any, state: SandboxResult | None) -> None:
         )
 
 
-# --------------------------------------------------------------------------- #
 # Doctor probe: the ``sandbox`` row (DEGRADED never ERROR — the floor is legal). #
-# --------------------------------------------------------------------------- #
 def probe_sandbox(*, state: SandboxResult | None = None) -> IntegrationStatus:
     """Report the confinement backend as a doctor row (#975).
 
