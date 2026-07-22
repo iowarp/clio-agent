@@ -591,7 +591,7 @@ def _compose_fence_prefix(
     running unconfined.
     """
     mechanism = state.mechanism
-    roots = list(write_roots)
+    roots: list[str] = [str(r) for r in write_roots]
     try:
         if mechanism in (MECHANISM_SRT_BWRAP, MECHANISM_SRT_SEATBELT):
             from clio_agent.runtime import sandbox_srt  # noqa: PLC0415
