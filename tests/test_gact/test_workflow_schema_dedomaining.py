@@ -26,7 +26,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from clio_agent.gact.app import (
-    _ground_fabricated_local_artifact_paths,
     _merge_workflow_state_mapping,
 )
 from clio_agent.gact.workflow_state.schema import (
@@ -123,29 +122,11 @@ def test_widget_sticky_true_field_survives_incoming_false() -> None:
     assert target["artwork"]["vector_true"] is True
 
 
-def test_widget_grounding_rewrites_svg_and_leaves_csv_png_untouched(tmp_path: Path) -> None:
-    """Grounding rewrites a fabricated ``.svg`` citation to the one verified
-    on-disk ``.svg`` (widget's only declared extension), while fabricated
-    ``.csv`` / ``.png`` paths — extensions this schema does NOT declare — are
-    left byte-for-byte untouched."""
-
-    real_svg = tmp_path / "widgets" / "gear.svg"
-    real_svg.parent.mkdir(parents=True)
-    real_svg.write_text("<svg></svg>", encoding="utf-8")
-    state = {"artwork": {"status": "drawn", "path": str(real_svg)}}
-    answer = (
-        "Diagram (SVG): /tmp/render/fabricated_gear.svg\n"
-        "Table (CSV): /tmp/render/fabricated_table.csv\n"
-        "Preview (PNG): /tmp/render/fabricated_preview.png"
-    )
-    grounded = _ground_fabricated_local_artifact_paths(answer, state, schema=WIDGET_FACTORY_SCHEMA)
-
-    # The fabricated SVG (not on disk) is rewritten to the verified one.
-    assert str(real_svg) in grounded
-    assert "/tmp/render/fabricated_gear.svg" not in grounded
-    # CSV and PNG are outside this schema's extensions: left completely alone.
-    assert "/tmp/render/fabricated_table.csv" in grounded
-    assert "/tmp/render/fabricated_preview.png" in grounded
+# The grounding de-domaining proof moved to the registry-sourced grounding-parity
+# suite (S7 #973, ``test_artifacts_s7_grounding.py``): answer grounding no longer
+# disk-scans ``workflow_state.artifact_paths`` — it rewrites against the session's
+# REGISTERED artifacts. The widget-schema grounding case is re-exercised there
+# (``test_parity_widget_schema_grounds_svg_and_leaves_csv_png_untouched``).
 
 
 def test_widget_failure_rule_stamps_molding_not_earthscope_sections() -> None:
@@ -200,6 +181,8 @@ _ENGINE_FILES = (
     "workflow_state/merge.py",
     "evidence.py",
     "delegation.py",
+    # S7 (#973): answer grounding re-sourced from the registry — must stay generic.
+    "artifacts/grounding.py",
 )
 
 _GACT_DIR = Path(__import__("clio_agent.gact.app", fromlist=["__file__"]).__file__).resolve().parent

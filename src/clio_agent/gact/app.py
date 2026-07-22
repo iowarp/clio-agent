@@ -420,15 +420,12 @@ from clio_agent.gact.evidence import (  # noqa: E402,F401
     _bounded_tool_call_result,
     _dynamic_agent_runtime_provenance,
     _extract_tools_called_from_trajectory,
-    _ground_fabricated_local_artifact_paths,
     _is_bounded_tool_result,
     _is_empty_dynamic_agent_answer_error,
-    _is_remote_artifact_ref,
     _propose_edit_diffs_from_pred,
     _tool_agent_empty_answer_fallback,
     _tool_result_is_error,
     _tool_result_preview,
-    _verified_local_artifact_paths_by_ext,
 )
 from clio_agent.gact.mcp_apps import (  # noqa: E402
     cleanup_all_mcp_apps,

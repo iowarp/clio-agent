@@ -106,7 +106,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # store fails loud at boot, not mid-turn (defect 1b). The fold + typed-stall + the
     # boot_fold_artifact_registry_offloop helper all live in the owner module
     # artifacts/registry_boot.py (no accretion); only the call site is here.
-    "src/clio_agent/gact/app.py": 2731,
+    "src/clio_agent/gact/app.py": 2728,
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -124,7 +124,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # children hold everything, so the flag unions descendant child-session
     # workspaces (resolved via the agent-task registry) and attributes each row.
     # Ratchets back with the #714 routes/artifacts decomposition.
-    "src/clio_agent/gact/routes/artifacts.py": 861,
+    "src/clio_agent/gact/routes/artifacts.py": 865,
     # #948 S4: +10 for round-tripping the module: declaration in the overlay
     # export (an exported react parent re-loaded as predict and failed the new
     # hierarchy validation).
@@ -206,7 +206,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # #968 S2 review: -3 (946 -> 943) — the artifact.proposed payload dict moved to
     # the owner module (artifacts/wire.proposed_diff_payload, finding [2]); the
     # settle-path buffer clear delegates to artifacts/minting.clear_turn_artifacts.
-    "src/clio_agent/gact/turn_finalize.py": 948,
+    "src/clio_agent/gact/turn_finalize.py": 946,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (baseline 1143 -> actual); ratchet back below the pre-#947 count with the
     # mcp_app_* owner-module split (see the #947 DEBT block on mcp_apps.py).

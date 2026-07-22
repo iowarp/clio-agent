@@ -6,7 +6,42 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
-(nothing yet)
+### Added — artifacts campaign (#966)
+
+The first-class artifacts campaign lands `b = transform(a)` provenance and gives
+every meaningful session output a durable, hash-pinned, versioned record. GACT
+surface (vendor `x_clio_artifacts`, SPEC §6.26):
+
+- **Artifact routes**: `GET /v1/sessions/{sid}/artifacts` (+ `?include_children`),
+  `GET /v1/workspaces/{wid}/artifacts`, `GET /v1/workspaces/{wid}/artifacts/{name}`
+  (`?ref=latest|vN|<alias>`), `GET /v1/artifacts/{id}`, `GET /v1/artifacts/{id}/bytes`
+  (hash-verified), `POST /v1/sessions/{sid}/artifacts/pin`,
+  `POST /v1/workspaces/{wid}/artifacts/{name}/aliases`,
+  `GET /v1/artifacts/{id}/lineage`, `GET /v1/sessions/{sid}/transforms`,
+  `GET /v1/transforms/{activity_id}`.
+- **RO-Crate export (S7)**: `GET /v1/artifacts/{id}/export` and
+  `GET /v1/sessions/{sid}/export/bundle` return an RO-Crate zip — File entities with
+  PROV lineage, TransformRecords serialized as schema.org `CreateAction`s, gap
+  versions attributed to an unknown Agent — plus a compiled `reproduce.py` /
+  `reproduce.ipynb` that re-runs the lineage with executable per-stage `sha256`
+  assertions and honest per-stage verdicts (deterministic / write-bytes /
+  re-runnable / agentic-only / gap-break). Exports register their content hashes as
+  CAS GC roots.
+- **Events**: the `artifact.created` / `artifact.version.added` /
+  `artifact.alias.moved` family on the SSE UI wire; `artifact.used` /
+  `artifact.transform.recorded` trace-only. `artifact.proposed` keeps its payload.
+- **Parts**: a `resource_link` part is emitted per generated artifact at turn
+  finalize (a plot/report now has outbound wire identity instead of a path string).
+
+### Changed — path-string mechanisms deleted (S7, #973)
+
+- Answer grounding no longer disk-scans `workflow_state.artifact_paths`; it
+  validates/rewrites a final answer's fabricated deliverable-path citations against
+  the session's **registered artifacts** (registry-sourced, `include_children`
+  reach). The `evidence.py` heuristics and the inert `structured_outputs.artifacts`
+  field are deleted; a baseline-0 CI guard
+  (`scripts/check_no_artifact_scraper_vocabulary.py`) keeps the retired vocabulary
+  out. No wire-shape change (grounding is server-internal answer hygiene).
 
 ## [0.8.0] — 2026-07-21
 

@@ -247,9 +247,20 @@ paths, currently:
 Model-selected disposable paths such as `/tmp/...` are rewritten to the active
 workspace artifact root for these staging tools. Explicit user- or tool-supplied
 paths outside the workspace are still allowed only when they pass file policy
-and should be reported with absolute provenance. Benchmark evidence must count
-only artifacts that exist on disk; stale requested paths and URL fragments are
-input references, not verified artifacts.
+and should be reported with absolute provenance.
+
+A produced file becomes a first-class **artifact** by **designation**, never by a
+filesystem scan (campaign #966). A tool that declares an output-path argument mints
+its artifact automatically at the observer seam; an expert designates a deliverable
+it authored (e.g. a report) with the `create_artifact` tool; a user pins one via
+`POST /v1/sessions/{sid}/artifacts/pin`. Each artifact carries a hash-pinned,
+versioned record (`b = transform(a)` lineage) and gains outbound wire identity as a
+`resource_link` part. Consumers — benchmark graders, answer grounding, export —
+therefore **query the artifact registry** (`GET /v1/sessions/{sid}/artifacts`,
+`.../lineage`, `.../export`), not hand-composed `/artifacts/...` path strings scraped
+from tool prose or `workflow_state`. Do NOT instruct a model to compose or cite a
+deliverable path string; the registry is the source of truth for which artifacts
+exist and where their verified bytes live.
 
 ## Fanout
 
