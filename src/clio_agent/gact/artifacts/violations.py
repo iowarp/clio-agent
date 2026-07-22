@@ -91,9 +91,12 @@ class PolicyViolation(BaseModel):
 _ERRNO_BRACKET = {code: re.compile(rf"\[Errno {code}\]") for code in _DENIAL_ERRNOS}
 #: strerror text form (``/bin/sh`` prints this, not the ``[Errno N]`` bracket).
 _ERRNO_STRERROR = {code: os.strerror(code).lower() for code in _DENIAL_ERRNOS}
-#: Best-effort path extractors from a denial message.
+#: Best-effort path extractors from a denial message, spanning the common shell/tool forms:
+#: coreutils/sh ("cannot create /p:"), bash redirect ("bash: line 1: /p: Read-only file
+#: system"), and Python OSError ("[Errno 30] ...: '/p'"). Ordered most-specific first.
 _PATH_PATTERNS = [
     re.compile(r"cannot (?:create|touch|open|write to) (?:directory )?(\S+?):", re.IGNORECASE),
+    re.compile(r"line \d+: (\S+?): (?:read-only file system|permission denied)", re.IGNORECASE),
     re.compile(r": '([^']+)'"),
     re.compile(r': "([^"]+)"'),
 ]
