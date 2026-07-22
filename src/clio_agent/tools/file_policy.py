@@ -1,4 +1,14 @@
-"""File access policy and validation for CLIO tools."""
+"""File access policy and validation for CLIO tools — the ADVISORY twin of the OS fence.
+
+This module is the pre-call, tool-boundary ADVISORY check: it produces typed,
+model-actionable errors (``outside_allowed_roots`` etc.) on EVERY platform, including the
+HPC/no-npm floor where no OS fence exists. It is the enforcing OS write-fence's twin, not its
+replacement (owner decision #974.6): :func:`clio_agent.runtime.sandbox.wrap_confined` fences
+what the advisory cannot SEE — the arbitrary writes a shell command or an MCP-server
+subprocess performs AFTER the boundary check. Both boundaries derive their territory from the
+ONE shared source :func:`clio_agent.runtime.sandbox.effective_write_roots` (whose base IS
+this policy's ``allowed_roots``), so the advisory and the fence can never drift apart.
+"""
 
 from __future__ import annotations
 

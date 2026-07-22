@@ -98,6 +98,12 @@ def _resolve_cwd(cwd: str | None) -> Path:
             path=str(resolved),
             next_action="Choose a directory inside CLIO_ALLOWED_ROOTS.",
         )
+    # Advisory boundary: this validates only the working DIRECTORY, not the arbitrary paths
+    # the command then writes (``> /etc/x``, ``python -c "open(...).write()"``). Those are
+    # covered by the OS write-fence the enforcing twin composes in ``bash`` below
+    # (:func:`clio_agent.runtime.sandbox.wrap_confined`, #976): on a fenced platform an
+    # out-of-root write is DENIED (EROFS/EACCES) and minted as a ``policy_violation``; on the
+    # floor it succeeds and is recorded as a ``gap``. This check remains the advisory twin.
     FileAccessPolicy.from_env()._ensure_allowed(resolved, field="cwd")
     return resolved
 
