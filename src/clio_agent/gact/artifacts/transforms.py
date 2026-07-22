@@ -587,6 +587,25 @@ def observe_tool_transform(
             started_at=started,
             agent_id=_ctx.active_react_scope() or "",
         )
+        # B2 (#976): on a FENCED platform, a denied (or fence-escaping) out-of-root write is a
+        # typed ``policy_violation`` — the enforced-tier variant of #966's ``gap`` node. No-op
+        # on the floor (the write succeeds → honest gap). Guarded above with the record.
+        from clio_agent.gact.artifacts.violations import (  # noqa: PLC0415
+            observe_policy_violations,
+        )
+
+        observe_policy_violations(
+            app,
+            sid,
+            tool_name=tool_name,
+            args=effective_args,
+            call_id=call_id,
+            result=result,
+            workspace_id=workspace_id,
+            turn_id=turn_id,
+            trace_id=trace_id,
+            started_at=started,
+        )
     except Exception as exc:  # noqa: BLE001 — a live provenance record must never break a turn
         # Finding [11]: the wiring's ONLY production path must not SWALLOW its own
         # failure silently — record a TYPED failure (queryable ledger + trace event)

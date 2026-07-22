@@ -138,6 +138,12 @@ SSE_TRACE_ONLY_EVENT_TYPES: frozenset[str] = frozenset(
         # trace-only here so a future non-"completed" emit cannot ride the
         # ``_SSE_ALWAYS_STATUSES`` override onto the wire.
         "sandbox.state",
+        # Policy violations (B2 #976): a fence-denied (or fence-escaping) out-of-root write
+        # is durable-trace provenance substrate — the typed ``policy_violation`` node that
+        # replaces #966's ``gap``. Trace-only initially; SSE listing waits for B5's SPEC
+        # rider. Declared here so its "failed"-status emit cannot ride ``_SSE_ALWAYS_STATUSES``
+        # onto the UI wire ahead of that contract.
+        "artifact.policy_violation",
     }
 )
 
