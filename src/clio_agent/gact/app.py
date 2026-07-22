@@ -938,6 +938,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.child_reaper = install_child_reaper()
 
+    # #975: resolve the OS write-confinement backend (floor-first `none` + typed reason;
+    # owner module runtime/sandbox.py). The boot `sandbox.state` event fires once ARC is
+    # live (in _construct_agent_async).
+    from clio_agent.runtime.sandbox import install_sandbox  # noqa: PLC0415
+
+    app.state.sandbox = install_sandbox()
+
     # #1001: bound the clio-owned MCP uv spawn cache at boot (off-loop; SKIPS if a peer
     # clio process is alive; never mid-session). Typed reasons emitted by the helper.
     from clio_agent.tools.mcp_cache import boot_prune_off_loop  # noqa: PLC0415
@@ -1120,6 +1127,10 @@ async def _construct_agent_async(app: "FastAPI") -> None:
 
     # _set_app_arc must run before the boot fold (reads app.state.arc) and before ready.
     _set_app_arc(app, agent.arc)
+    # #975: emit the boot `sandbox.state` conformance event (owner module owns the logic).
+    from clio_agent.runtime import sandbox  # noqa: PLC0415
+
+    sandbox.emit_boot_state_event(app, getattr(app.state, "sandbox", None))
     # #971: boot-fold the artifact registry off-loop before ready (defects 2 + 1b; owner helper).
     from clio_agent.gact.artifacts import registry_boot  # noqa: PLC0415
 
