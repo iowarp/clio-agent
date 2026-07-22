@@ -50,7 +50,15 @@ from clio_agent.gact.artifacts.transforms import (
     record_transform,
     transform_from_payload,
 )
-from clio_agent.gact.semantic_events import event_reaches_ui
+from clio_agent.gact.events import EventBus
+from clio_agent.gact.semantic_events import (
+    SSE_TRACE_ONLY_EVENT_TYPES,
+    SSE_UI_EVENT_TYPES,
+    NoopSemanticTraceBackend,
+    SemanticEvent,
+    SemanticEventSink,
+    event_reaches_ui,
+)
 from clio_agent.gact.sessions import SessionStore
 
 # --------------------------------------------------------------------------- #
@@ -1694,3 +1702,165 @@ def test_boot_fold_helper_returns_true_and_stamps_on_healthy_store(tmp_path, mon
     assert ok is True
     assert app.state.artifact_registry is not None
     assert app.state.artifact_registry.count() == 1
+
+
+# --------------------------------------------------------------------------- #
+# S5 gate3 C5 regression — trace-only provenance must NEVER reach the SSE wire,
+# even when its status is "failed". The gate3 canary caught ONE
+# ``artifact.transform.recorded`` frame leaking onto a child session's SSE
+# stream in run 6 (a FAILED/contended transform, status="failed") while run 5
+# leaked zero — a data-dependent clean-stream violation. Root cause: the
+# ``_SSE_ALWAYS_STATUSES`` override in ``event_reaches_ui`` lifted ANY event
+# onto the wire on a failure status, bypassing the allow-list; a transform that
+# failed (generated 0 outputs) tripped it. The fix excludes the trace-only
+# provenance substrate FIRST, so no status can lift it.
+# --------------------------------------------------------------------------- #
+
+
+def test_trace_only_provenance_never_reaches_ui_even_on_failure():
+    """Deterministic allow-list lock across EVERY status (the path the S2/S5
+    locks missed: they only called ``event_reaches_ui`` with the default status).
+
+    Sabotage: delete the ``SSE_TRACE_ONLY_EVENT_TYPES`` short-circuit in
+    ``event_reaches_ui`` -> the ``"failed"``/``"error"``/``"cancelled"`` rows go
+    red (the exact leak the gate3 canary observed).
+    """
+    trace_only = (
+        "artifact.used",
+        ARTIFACT_TRANSFORM_RECORDED_EVENT,  # "artifact.transform.recorded"
+        "artifact.transform.failed",
+        "artifact.proposed",
+    )
+    for et in trace_only:
+        assert et in SSE_TRACE_ONLY_EVENT_TYPES
+        assert et not in SSE_UI_EVENT_TYPES
+        # NO status lifts a provenance record onto the served wire.
+        for status in ("failed", "error", "cancelled", "completed", "", "FAILED"):
+            assert event_reaches_ui(et, status) is False, (et, status)
+
+    # Positive control: the ``_SSE_ALWAYS_STATUSES`` override is INTACT for real
+    # action/lifecycle errors (a failed step that is not otherwise allow-listed
+    # must still surface). Sabotage: over-broaden the exclusion -> these go red.
+    assert event_reaches_ui("turn.failed", "failed") is True
+    assert event_reaches_ui("lm.call", "error") is True
+    assert event_reaches_ui("tool.call", "cancelled") is True
+    # Allow-listed atoms still pass on their normal completion status.
+    assert event_reaches_ui("artifact.created", "completed") is True
+    assert event_reaches_ui("react.step.completed", "completed") is True
+
+
+def _sem_event_frames(bus: EventBus, sid: str):
+    """Every ``semantic.event`` frame recorded in the bus replay history."""
+    return [
+        ev
+        for ev in bus._history.get(sid, [])  # noqa: SLF001 - test asserts on served history
+        if getattr(ev, "type", "") == "semantic.event"
+    ]
+
+
+def _frame_event_type(ev) -> str:
+    payload = getattr(ev, "payload", None) or {}
+    return str(payload.get("event_type", ""))
+
+
+@pytest.mark.asyncio
+@pytest.mark.concurrency
+async def test_failed_transform_never_leaks_to_sse_under_attach_race():
+    """Hammer the child-session attach window with a REAL bus + sink.
+
+    Emit many FAILED ``artifact.transform.recorded`` events off worker threads
+    (as the executor emits them) concurrently with fresh SSE subscribers
+    attaching — each attach replays the bus history (the exact "just-attached
+    stream serving raw history" hypothesis). A failed provenance record must
+    reach NEITHER the live queue NOR the replay snapshot; the allow-listed
+    ``artifact.created`` frames must still get through (non-vacuous).
+
+    Sabotage: delete the ``SSE_TRACE_ONLY_EVENT_TYPES`` short-circuit in
+    ``event_reaches_ui`` -> the ``status="failed"`` transforms trip
+    ``_SSE_ALWAYS_STATUSES``, land in history, and the leak asserts go red.
+    """
+    bus = EventBus()
+    sink = SemanticEventSink(bus=bus, trace_backend=NoopSemanticTraceBackend(), capture=False)
+    sid = "sess_leakrace"
+    loop = asyncio.get_running_loop()
+    n = 150
+
+    def emit_failed_transform(i: int) -> None:
+        sink.emit(
+            SemanticEvent(
+                event_type=ARTIFACT_TRANSFORM_RECORDED_EVENT,
+                session_id=sid,
+                trace_id="trace_x",
+                turn_id="turn_x",
+                status="failed",
+                summary=f"Transform recorded ({i}).",
+                payload={"call_id": f"call_{i}", "status": "failed", "kind": "contended"},
+            )
+        )
+
+    def emit_created(i: int) -> None:
+        sink.emit(
+            SemanticEvent(
+                event_type="artifact.created",
+                session_id=sid,
+                trace_id="trace_x",
+                turn_id="turn_x",
+                status="completed",
+                payload={"name": f"a{i}.csv", "version": 1},
+            )
+        )
+
+    live_leaks: list[str] = []
+    replay_snapshots: list[list[str]] = []
+
+    async def attach_and_drain() -> None:
+        """Attach a fresh subscriber, drain its replay snapshot + any live tail."""
+        got: list[str] = []
+        agen = bus.subscribe(sid)
+        try:
+            while True:
+                try:
+                    ev = await asyncio.wait_for(agen.__anext__(), timeout=0.02)
+                except (asyncio.TimeoutError, StopAsyncIteration):
+                    break
+                if getattr(ev, "type", "") == "semantic.event":
+                    et = _frame_event_type(ev)
+                    got.append(et)
+                    if et in SSE_TRACE_ONLY_EVENT_TYPES:
+                        live_leaks.append(et)
+        finally:
+            await agen.aclose()
+        replay_snapshots.append(got)
+
+    # Interleave foreign-thread emits (bridged onto the loop) with fresh attaches.
+    emit_futs = []
+    attach_tasks = []
+    for i in range(n):
+        emit_futs.append(loop.run_in_executor(None, emit_failed_transform, i))
+        if i % 15 == 0:
+            emit_created(i)
+            attach_tasks.append(asyncio.create_task(attach_and_drain()))
+        await asyncio.sleep(0)
+    await asyncio.gather(*emit_futs)
+    # Drain any bridged publishes still queued on the loop.
+    for _ in range(5):
+        await asyncio.sleep(0)
+    # Final round of fresh attaches now that ALL history is present.
+    await asyncio.gather(*(attach_and_drain() for _ in range(8)))
+    await asyncio.gather(*attach_tasks)
+
+    # (1) Live queues never carried a trace-only frame.
+    assert live_leaks == [], f"trace-only frames leaked to live SSE: {live_leaks}"
+    # (2) The served replay history is clean of EVERY trace-only atom...
+    history_frames = _sem_event_frames(bus, sid)
+    history_types = [_frame_event_type(ev) for ev in history_frames]
+    assert not (set(history_types) & SSE_TRACE_ONLY_EVENT_TYPES), (
+        f"trace-only frame in replay history: {history_types}"
+    )
+    # (3) ...and no fresh-attach snapshot ever replayed one.
+    for snap in replay_snapshots:
+        assert not (set(snap) & SSE_TRACE_ONLY_EVENT_TYPES), snap
+    # (4) Non-vacuous: the allow-listed artifact.created frames DID reach the wire.
+    assert history_types.count("artifact.created") >= 1
+    # Every history frame is an allow-listed atom (or a failure of a listed type).
+    assert all(_frame_event_type(ev) not in SSE_TRACE_ONLY_EVENT_TYPES for ev in history_frames)
