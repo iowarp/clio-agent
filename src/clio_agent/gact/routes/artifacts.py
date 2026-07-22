@@ -188,6 +188,21 @@ def _record_wire(record: ArtifactRecord) -> dict[str, Any]:
     }
 
 
+def _record_wire_attributed(record: ArtifactRecord) -> dict[str, Any]:
+    """A record wire dict PLUS ``producing_session_ids`` (parent-aggregation, GAP B).
+
+    Additive over :func:`_record_wire` — used only by ``?include_children=true`` so a
+    caller sees WHICH session produced each merged artifact (the distinct producing
+    session ids across the record's versions; a chain can span sessions). The
+    flag-off listing uses the base :func:`_record_wire` unchanged.
+    """
+    wire = _record_wire(record)
+    wire["producing_session_ids"] = sorted(
+        {str((v.producer or {}).get("session_id") or "") for v in record.versions} - {""}
+    )
+    return wire
+
+
 def _paginate_records(
     records: list[ArtifactRecord], *, limit: int, before: Optional[str]
 ) -> tuple[list[ArtifactRecord], Optional[str]]:
@@ -293,9 +308,20 @@ def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.get("/v1/sessions/{sid}/artifacts")
     async def list_session_artifacts(
-        sid: str, limit: int | None = None, before: str | None = None
+        sid: str,
+        limit: int | None = None,
+        before: str | None = None,
+        include_children: bool = False,
     ) -> dict[str, Any]:
-        """List the artifacts of a session's workspace (newest-first, paginated)."""
+        """List the artifacts of a session's workspace (newest-first, paginated).
+
+        ``?include_children=true`` (GAP B, S5 #971) also lists the descendant child
+        sessions' workspaces so a parent ORCHESTRATOR sees its delegates' outputs:
+        children resolve via the agent-task registry (bounded), their workspaces
+        union with the parent's, records dedup by ``(workspace_id, name)``, and each
+        row carries its ``producing_session_ids``. Flag off → own workspace only,
+        byte-identical to before.
+        """
         workspace_id = _session_workspace_id(app, sid)
         if workspace_id is None:
             raise _artifact_error(
@@ -305,7 +331,26 @@ def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
                 details={"session_id": sid},
             )
         registry = await _registry(app)
-        records = registry.list_for_workspace(workspace_id)
+        child_ids: list[str] = []
+        if not include_children:
+            records = registry.list_for_workspace(workspace_id)
+        else:
+            from clio_agent.gact.agent_tasks import descendant_session_ids  # noqa: PLC0415
+
+            child_ids = descendant_session_ids(app, sid)
+            workspaces = [workspace_id]
+            for child in child_ids:
+                child_ws = _session_workspace_id(app, child)
+                if child_ws and child_ws not in workspaces:
+                    workspaces.append(child_ws)
+            records = []
+            seen_records: set[tuple[str, str]] = set()
+            for ws in workspaces:
+                for record in registry.list_for_workspace(ws):
+                    key = (record.workspace_id, record.name)
+                    if key not in seen_records:
+                        seen_records.add(key)
+                        records.append(record)
         page, next_cursor = _paginate_records(records, limit=_clamp_limit(limit), before=before)
         _audit(
             app,
@@ -313,12 +358,18 @@ def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
             session_id=sid,
             workspace_id=workspace_id,
             returned=len(page),
+            include_children=include_children,
         )
-        return {
-            "artifacts": [_record_wire(r) for r in page],
+        wire = _record_wire_attributed if include_children else _record_wire
+        body: dict[str, Any] = {
+            "artifacts": [wire(r) for r in page],
             "count": len(records),
             "next_cursor": next_cursor,
         }
+        if include_children:
+            body["include_children"] = True
+            body["child_session_ids"] = child_ids
+        return body
 
     @app.get("/v1/workspaces/{wid}/artifacts")
     async def list_workspace_artifacts(
@@ -381,8 +432,14 @@ def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
     from clio_agent.gact.routes.artifact_aliases import (  # noqa: PLC0415
         register_artifact_alias_routes,
     )
+    from clio_agent.gact.routes.artifact_lineage import (  # noqa: PLC0415
+        register_artifact_lineage_routes,
+    )
 
     register_artifact_alias_routes(app)
+    # S5 (#971): lineage + transform read routes ride the same ``x_clio_artifacts``
+    # surface (assembled in one place, no-accretion).
+    register_artifact_lineage_routes(app)
 
     @app.get("/v1/artifacts/{artifact_id}")
     async def get_artifact(artifact_id: str) -> dict[str, Any]:

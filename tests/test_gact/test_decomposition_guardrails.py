@@ -44,7 +44,10 @@ from clio_agent.gact.app import build_app
 # /bytes, POST .../pin.
 # 157 -> 158 (#970 S4): +1 alias-move route POST /v1/workspaces/{wid}/artifacts/
 # {name}/aliases, owned by routes/artifact_aliases.py.
-EXPECTED_ROUTE_METHOD_PAIRS = 158
+# 158 -> 161 (#971 S5): +3 lineage/transform routes owned by
+# routes/artifact_lineage.py — GET /v1/artifacts/{id}/lineage, GET
+# /v1/sessions/{sid}/transforms, GET /v1/transforms/{activity_id}.
+EXPECTED_ROUTE_METHOD_PAIRS = 161
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

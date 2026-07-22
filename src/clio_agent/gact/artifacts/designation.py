@@ -47,6 +47,30 @@ OUTPUT_PATH_ARG_NAMES: frozenset[str] = frozenset(
     }
 )
 
+# Result-declared output-path keys — the designation-by-RESULT channel (GAP A,
+# S5 live gate #971). Some tools carry NO full output path in any arg: they take a
+# destination DIRECTORY (``output_dir``) and/or a bare filename (``output_name``),
+# derive the concrete path internally, and return it in their structured result.
+# ``ndp_stage_resource`` is the canonical case — it stages a download and returns
+# the written file as ``local_path`` (no arg names it). These keys name the WRITTEN
+# output path in a tool result's ``structuredContent``; a value under one of them
+# is a designated generated output subject to the SAME containment + suffix +
+# freshness rules as the arg channel. Precision over recall (owner decision
+# #966.10): only keys that unambiguously denote a file the tool WROTE — never a
+# bare ``path``/``file`` that commonly echoes an INPUT.
+RESULT_PATH_KEYS: frozenset[str] = frozenset(
+    {
+        "local_path",
+        "output_path",
+        "output_file",
+        "saved_path",
+        "saved_to",
+        "written_path",
+        "result_path",
+        "out_path",
+    }
+)
+
 ARTIFACT_SUFFIXES: frozenset[str] = frozenset(
     {
         ".png",
@@ -211,6 +235,47 @@ def grounded_output_paths(effective_args: Mapping[str, Any]) -> dict[str, str]:
         if Path(value).suffix.lower() not in ARTIFACT_SUFFIXES:
             continue
         out[key] = value
+    return out
+
+
+def _structured_result(result: Any) -> dict[str, Any]:
+    """Return the structured-content dict of a raw tool result (``{}`` when none).
+
+    A tool result is either the MCP envelope ``{"structuredContent": {...}, ...}``
+    or a bare structured dict. Mirrors ``transform_edges._structured_result`` so the
+    result-path mint and the authority-edge detector read the SAME shape.
+    """
+    if not isinstance(result, Mapping):
+        return {}
+    structured = result.get("structuredContent")
+    if isinstance(structured, Mapping):
+        return dict(structured)
+    return dict(result)
+
+
+def result_declared_paths(result: Any) -> dict[str, str]:
+    """Return the output-path values a tool RESULT declares (designation-by-result).
+
+    The result-path designation channel (GAP A, S5 #971): scan the TOP-LEVEL keys
+    of a tool result's structured content for :data:`RESULT_PATH_KEYS`; return the
+    subset whose value is a non-empty string naming a recognized artifact suffix as
+    ``{result_key: path}``. Bounded — only recognized top-level keys, no recursion,
+    no filesystem scan. Containment + existence + freshness are enforced by the mint
+    caller (the same guards the arg channel uses), so this returns *candidates*, not
+    a mint decision. A value that is not a string, is blank, or carries an
+    unrecognized suffix is excluded (a tool returning ``output="stdout"`` yields
+    nothing).
+    """
+    structured = _structured_result(result)
+    out: dict[str, str] = {}
+    for key, value in structured.items():
+        if str(key) not in RESULT_PATH_KEYS:
+            continue
+        if not isinstance(value, str) or not value.strip():
+            continue
+        if Path(value).suffix.lower() not in ARTIFACT_SUFFIXES:
+            continue
+        out[str(key)] = value.strip()
     return out
 
 

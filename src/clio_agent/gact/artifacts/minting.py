@@ -471,54 +471,72 @@ def mint_tool_declared_outputs(
     turn_id: str = "",
     trace_id: str = "",
     call_started_at: float | None = None,
+    result: Any = None,
 ) -> list[ArtifactVersion]:
     """Mint one artifact per grounded, existing tool-declared output path (seam a).
 
-    Called from the gact tool observer's ``completed`` phase for a successful
-    call. For each designated output arg (:func:`grounded_output_paths`) that
-    resolves to an existing file INSIDE the bound workspace, stat + stream sha256
-    (over the threshold → typed ``stat-pinned``) and mint an ``artifact.created``
-    with mechanism ``tool-schema`` carrying the producing ``call_id``.
+    Called from the gact tool observer's ``completed`` phase. Two declaration
+    channels, identical containment + existence + freshness rules: the **arg**
+    channel (:func:`grounded_output_paths` — output-path ARG values) and, when no
+    arg carries the path, the **result** channel (:func:`result_declared_paths` —
+    GAP A, S5 #971): a tool taking a destination dir + derived filename
+    (``ndp_stage_resource`` → ``local_path``) writes an intermediate the arg channel
+    can't see, so reading the declared result path mints it and the downstream call
+    pins it as a hash-pair edge (not external-with-sha). Arg wins a dedup tie.
 
-    Guards, each a typed skip (never an error — mint failures must never break a
-    turn): a designated-but-absent path (tool declared an out but wrote nothing);
-    a path outside the workspace root (owner decision 10 — containment before
-    stat/hash); and a pre-existing untouched file whose content already versions
-    in the chain (finding [8] — ``mtime`` predates ``call_started_at`` AND the
-    sha matches an existing version). The residual is honest: content CHANGED
-    outside the call still mints — designation is designation.
+    For each, stat + stream sha256 (over the threshold → ``stat-pinned``) and mint an
+    ``artifact.created`` (mechanism ``tool-schema``, producing ``call_id``). Guards
+    are typed skips (a mint failure must never break a turn): absent path, path
+    outside the workspace root (owner decision 10), or a pre-existing untouched file
+    routed to the honest drift reconcile (finding [8]). Content CHANGED outside the
+    call still mints — designation is designation.
     """
     from clio_agent.gact.artifacts.designation import (  # noqa: PLC0415
         grounded_output_paths,
         kind_for_path,
+        result_declared_paths,
     )
 
     root = _workspace_root(app, workspace_id)
     minted: list[ArtifactVersion] = []
-    for arg_name, raw_path in grounded_output_paths(effective_args).items():
+    seen: set[str] = set()
+    # (channel, label, path) — arg channel FIRST so it wins a dedup tie over a
+    # result that merely echoes the same arg path.
+    designated = [("arg", k, v) for k, v in grounded_output_paths(effective_args).items()]
+    designated += [("result", k, v) for k, v in result_declared_paths(result).items()]
+    for channel, label, raw_path in designated:
         path = Path(raw_path)
         if root is None:
             logger.warning(
-                "artifact mint skipped reason=containment_unresolved tool=%s arg=%s path=%s",
+                "artifact mint skipped reason=containment_unresolved tool=%s %s=%s path=%s",
                 tool_name,
-                arg_name,
+                channel,
+                label,
                 raw_path,
             )
             continue
         if not _contained(path, root):
             logger.warning(
-                "artifact mint skipped reason=containment_rejected tool=%s arg=%s path=%s root=%s",
+                "artifact mint skipped reason=containment_rejected tool=%s %s=%s path=%s root=%s",
                 tool_name,
-                arg_name,
+                channel,
+                label,
                 raw_path,
                 root,
             )
             continue
+        try:
+            resolved = str(path.expanduser().resolve(strict=False))
+        except OSError:
+            resolved = str(path)
+        if resolved in seen:
+            continue
         if not path.is_file():
             logger.info(
-                "artifact mint skipped reason=designated_path_absent tool=%s arg=%s path=%s",
+                "artifact mint skipped reason=designated_path_absent tool=%s %s=%s path=%s",
                 tool_name,
-                arg_name,
+                channel,
+                label,
                 raw_path,
             )
             continue
@@ -526,12 +544,14 @@ def mint_tool_declared_outputs(
             evidence = compute_identity(path)
         except OSError:
             logger.warning(
-                "artifact mint skipped reason=stat_hash_failed tool=%s arg=%s path=%s",
+                "artifact mint skipped reason=stat_hash_failed tool=%s %s=%s path=%s",
                 tool_name,
-                arg_name,
+                channel,
+                label,
                 raw_path,
             )
             continue
+        seen.add(resolved)
         name = artifact_name_for_path(path)
         # A declared output the tool provably did NOT write this call (mtime predates
         # the call) is a DRIFT re-observation → the honest reconcile (producing=False),
@@ -552,6 +572,16 @@ def mint_tool_declared_outputs(
             if outcome is not None and outcome.created:
                 minted.append(outcome.version)
             continue
+        # The designation basis rides the producer: ``arg`` names the output-path arg;
+        # ``result_key`` names the structured-result key (GAP A, designation-by-result).
+        producer: dict[str, Any] = {
+            "call_id": call_id,
+            "tool": tool_name,
+            "session_id": sid,
+            "turn_id": turn_id,
+            "designation": f"tool-{channel}",
+            ("result_key" if channel == "result" else "arg"): label,
+        }
         version = mint_artifact(
             app,
             sid,
@@ -560,13 +590,7 @@ def mint_tool_declared_outputs(
             evidence=evidence,
             kind=kind_for_path(path),
             mechanism=Mechanism.TOOL_SCHEMA,
-            producer={
-                "call_id": call_id,
-                "tool": tool_name,
-                "session_id": sid,
-                "turn_id": turn_id,
-                "arg": arg_name,
-            },
+            producer=producer,
             custody=Custody.WORKSPACE_REFERENCED,
             path=str(path),
             turn_id=turn_id,

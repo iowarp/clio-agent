@@ -50,16 +50,24 @@ logger = logging.getLogger(__name__)
 
 ARTIFACT_CREATED_EVENT = "artifact.created"
 #: The version-chain + alias atoms of the ``artifact.*`` family (SSE-served, #968),
-#: emitted from S4 (#970). ``artifact.used`` / ``artifact.transform.recorded`` are
-#: deliberately absent — they stay trace-only.
+#: emitted from S4 (#970). ``artifact.used`` is deliberately absent — it stays
+#: trace-only. ``artifact.transform.recorded`` (S5 #971) IS folded (below) to
+#: rebuild the transform/lineage index, but stays OFF the SSE wire (the S2 split).
 ARTIFACT_VERSION_ADDED_EVENT = "artifact.version.added"
 ARTIFACT_ALIAS_MOVED_EVENT = "artifact.alias.moved"
+ARTIFACT_TRANSFORM_RECORDED_EVENT = "artifact.transform.recorded"
 
-#: The event types the boot fold rebuilds the registry from (S4 #970): v1 creation,
-#: v2+ revisions, and alias moves. ``artifact.used`` / ``.transform.recorded`` /
-#: ``.proposed`` are NOT here — provenance/proposal substrate the chain never folds.
+#: The event types the boot fold rebuilds the registry from: v1 creation (S1), v2+
+#: revisions + alias moves (S4 #970), and TransformRecords (S5 #971). ``artifact.used``
+#: / ``.proposed`` are NOT here. Transform events rebuild the lineage index only —
+#: they never touch the version chains.
 _FOLD_EVENT_TYPES: frozenset[str] = frozenset(
-    {ARTIFACT_CREATED_EVENT, ARTIFACT_VERSION_ADDED_EVENT, ARTIFACT_ALIAS_MOVED_EVENT}
+    {
+        ARTIFACT_CREATED_EVENT,
+        ARTIFACT_VERSION_ADDED_EVENT,
+        ARTIFACT_ALIAS_MOVED_EVENT,
+        ARTIFACT_TRANSFORM_RECORDED_EVENT,
+    }
 )
 
 
@@ -210,6 +218,10 @@ class ArtifactRegistry:
         self._lock = threading.Lock()
         self._records: dict[tuple[str, str], ArtifactRecord] = {}
         self._seen_event_ids: set[str] = set()
+        #: TransformRecords keyed by ``call_id`` (the activity id; S5 #971). Folded
+        #: idempotently by ``event_id`` then ``call_id`` — the first record for a
+        #: ``call_id`` wins (a coarse transform is one call).
+        self._transforms: dict[str, Any] = {}
         self.fold_conflicts: list[dict[str, Any]] = []
         #: Typed reason recorded when boot found no fold source at all.
         self.capture_released: Optional[dict[str, Any]] = None
@@ -240,9 +252,96 @@ class ArtifactRegistry:
         """
         if event_type == ARTIFACT_ALIAS_MOVED_EVENT:
             return self.fold_alias_moved(payload)
+        if event_type == ARTIFACT_TRANSFORM_RECORDED_EVENT:
+            return self.fold_transform_recorded(payload)
         if event_type in _FOLD_EVENT_TYPES:
             return self.fold_payload(payload)
         return FoldResult(applied=False, reason="unfolded_type")
+
+    def fold_transform_recorded(self, payload: dict[str, Any]) -> FoldResult:
+        """Fold one ``artifact.transform.recorded`` payload (S5 #971).
+
+        Idempotent: a duplicate ``event_id`` is a no-op; a second record for a
+        ``call_id`` already seen keeps the FIRST (a coarse transform is one call —
+        a re-emit is a replay, not a distinct activity). A malformed payload (no
+        ``call_id``) is dropped with a typed reason.
+        """
+        from clio_agent.gact.artifacts.transforms import transform_from_payload  # noqa: PLC0415
+
+        record = transform_from_payload(payload)
+        if record is None:
+            return FoldResult(applied=False, reason="malformed")
+        event_id = str(payload.get("event_id") or record.event_id or "")
+        with self._lock:
+            if event_id and event_id in self._seen_event_ids:
+                return FoldResult(applied=False, reason="duplicate_event_id")
+            if event_id:
+                self._seen_event_ids.add(event_id)
+            if record.call_id in self._transforms:
+                return FoldResult(applied=False, reason="duplicate_call_id")
+            self._transforms[record.call_id] = record
+            return FoldResult(applied=True, reason="")
+
+    def record_transform(self, record: Any) -> bool:
+        """Store a live-minted TransformRecord idempotently (S5 #971).
+
+        Marks the record's ``event_id`` seen so a boot replay of its
+        ``artifact.transform.recorded`` event is a ``duplicate_event_id`` no-op,
+        exactly like :meth:`mint`. Returns whether it was newly stored (``False``
+        when the ``call_id`` was already recorded).
+        """
+        with self._lock:
+            if record.event_id:
+                self._seen_event_ids.add(record.event_id)
+            if record.call_id in self._transforms:
+                return False
+            self._transforms[record.call_id] = record
+            return True
+
+    def get_transform(self, call_id: str) -> Optional[Any]:
+        """Return the TransformRecord for ``call_id`` (the activity id), or ``None``."""
+        with self._lock:
+            return self._transforms.get(call_id)
+
+    def transforms_for_session(self, session_id: str) -> list[Any]:
+        """Every TransformRecord produced in ``session_id`` (chronological by call)."""
+        with self._lock:
+            return [t for t in self._transforms.values() if t.session_id == session_id]
+
+    def all_transforms(self) -> list[Any]:
+        """A snapshot of every TransformRecord known (for lineage traversal / tests)."""
+        with self._lock:
+            return list(self._transforms.values())
+
+    def find_version_by_path(
+        self, workspace_id: str, path: str
+    ) -> Optional[tuple[ArtifactRecord, ArtifactVersion]]:
+        """Resolve a registered version by its referenced ``path`` (S5 used-edge match).
+
+        Returns the ``(record, version)`` whose ``version.path`` resolves to the
+        same absolute path within ``workspace_id`` — the HEAD version when several
+        of a chain share the path (the operative content). ``None`` when no version
+        references that path. Linear over the bounded fleet.
+        """
+        if not path:
+            return None
+        target = Path(str(path)).expanduser().resolve(strict=False)
+        with self._lock:
+            best: Optional[tuple[ArtifactRecord, ArtifactVersion]] = None
+            for (ws, _name), record in self._records.items():
+                if ws != workspace_id:
+                    continue
+                for version in record.versions:
+                    if not version.path:
+                        continue
+                    try:
+                        vpath = Path(version.path).expanduser().resolve(strict=False)
+                    except OSError:
+                        continue
+                    if vpath == target:
+                        if best is None or version.version >= best[1].version:
+                            best = (record, version)
+            return best
 
     def _fold_event(self, event: _ArtifactEvent) -> FoldResult:
         with self._lock:
@@ -609,164 +708,10 @@ def get_registry(app: "FastAPI") -> ArtifactRegistry:
     return registry
 
 
-# --------------------------------------------------------------------------- #
-# Boot fold — rebuild the registry from ARC _events (fallback: JSONL trace)
-# --------------------------------------------------------------------------- #
-
-
-@dataclass(frozen=True)
-class _SourceFold:
-    """Reachability + fold outcome for one boot-fold source.
-
-    ``reachable`` distinguishes a source that was READ (present + readable, whether
-    or not it held any artifact events) from one that was ABSENT or UNREADABLE.
-    The empty-vs-unknown distinction (finding [11]): ``capture_released`` fires
-    only when NEITHER source was reachable — a reachable-but-empty source is a
-    clean empty registry, never a degrade.
-    """
-
-    reachable: bool
-    folded_any: bool
-
-
-def rebuild_registry_at_boot(app: "FastAPI") -> ArtifactRegistry:
-    """Rebuild ``app.state.artifact_registry`` from the durable event log at boot.
-
-    UNION-folds BOTH sources (owner decision #966.8, finding [2]): ARC ``_events``
-    AND the durable JSONL trace. The fold is idempotent (``event_id`` dedup + same-sha
-    no-op + keep-first), so folding both is safe and recovers deleted-session history.
-    Only when NEITHER source is reachable does the registry boot empty with a typed
-    ``capture_released`` reason (finding [11] — a reachable-but-empty source is a clean
-    empty registry, not a degrade). ``app.state`` is assigned only after the fold
-    completes, so a concurrent reader never sees a half-built projection.
-    """
-    registry = ArtifactRegistry()
-
-    arc_fold = _fold_from_arc(app, registry)
-    jsonl_fold = _fold_from_jsonl(app, registry)
-
-    if not arc_fold.reachable and not jsonl_fold.reachable:
-        registry.capture_released = {
-            "reason": "capture_released",
-            "detail": "neither ARC _events nor the durable JSONL trace was reachable at boot",
-        }
-        logger.warning(
-            "artifact registry boot fold skipped reason=capture_released "
-            "detail=no_reachable_fold_source"
-        )
-    else:
-        logger.info(
-            "artifact registry boot fold arc_reachable=%s jsonl_reachable=%s records=%d conflicts=%d",
-            arc_fold.reachable,
-            jsonl_fold.reachable,
-            registry.count(),
-            len(registry.fold_conflicts),
-        )
-    app.state.artifact_registry = registry
-    return registry
-
-
-def _fold_from_arc(app: "FastAPI", registry: ArtifactRegistry) -> _SourceFold:
-    """Fold artifact events from ARC's persisted ``_events`` log.
-
-    Returns ``reachable=False`` when ARC exposes no ``iter_event_contents`` reader
-    (absent) or the reader raises mid-iteration (configured but unreadable);
-    ``reachable=True`` when the log was read to completion, whether or not it held
-    any artifact events.
-    """
-    from clio_agent.gact.runtime.globals import _PROCESS_ARC  # noqa: PLC0415
-
-    arc = getattr(app.state, "arc", None) or _PROCESS_ARC
-    observer = getattr(arc, "_live", None) or getattr(arc, "live", None)
-    reader = getattr(observer, "iter_event_contents", None)
-    if reader is None:
-        return _SourceFold(reachable=False, folded_any=False)
-    folded_any = False
-    try:
-        for content in reader():
-            if not isinstance(content, dict):
-                continue
-            event_type = str(content.get("event_type") or "")
-            if event_type not in _FOLD_EVENT_TYPES:
-                continue
-            payload = content.get("payload")
-            if isinstance(payload, dict):
-                registry.fold_event_by_type(event_type, payload)
-                folded_any = True
-    except Exception:  # noqa: BLE001 — a configured-but-unreadable source is unreachable
-        logger.warning(
-            "artifact boot fold ARC source unreadable reason=arc_iter_failed folded_any=%s",
-            folded_any,
-        )
-        return _SourceFold(reachable=False, folded_any=folded_any)
-    return _SourceFold(reachable=True, folded_any=folded_any)
-
-
-def _fold_from_jsonl(app: "FastAPI", registry: ArtifactRegistry) -> _SourceFold:
-    """Fold artifact events from the durable JSONL traces.
-
-    Streamed line-by-line with a cheap ``artifact.`` substring pre-filter (finding
-    [4]): a line that cannot hold a fold event is skipped BEFORE ``json.loads`` and
-    the file is never read whole, so a multi-GB non-artifact trace costs ~one decode
-    per artifact line. ``reachable=False`` only when the trace directory is absent.
-    """
-    root = _trace_dir(app)
-    if root is None or not root.exists():
-        return _SourceFold(reachable=False, folded_any=False)
-    import json  # noqa: PLC0415
-
-    folded_any = False
-    for path in sorted(root.glob("*.semantic.jsonl")):
-        try:
-            with path.open(encoding="utf-8") as handle:
-                for raw in handle:
-                    # Cheap pre-filter (finding [4]): every fold event type shares the
-                    # ``artifact.`` prefix, so a non-artifact line is rejected pre-decode.
-                    if "artifact." not in raw:
-                        continue
-                    stripped = raw.strip()
-                    if not stripped:
-                        continue
-                    try:
-                        obj = json.loads(stripped)
-                    except json.JSONDecodeError:
-                        continue
-                    if not isinstance(obj, dict):
-                        continue
-                    event_type = str(obj.get("event_type") or "")
-                    if event_type not in _FOLD_EVENT_TYPES:
-                        continue
-                    payload = obj.get("payload")
-                    if isinstance(payload, dict):
-                        # The durable trace carries event_id at top level; thread it in.
-                        if not payload.get("event_id") and obj.get("event_id"):
-                            payload = {**payload, "event_id": str(obj["event_id"])}
-                        registry.fold_event_by_type(event_type, payload)
-                        folded_any = True
-        except OSError:
-            logger.warning(
-                "artifact boot fold skipped a trace file reason=unreadable path=%s", path
-            )
-            continue
-    return _SourceFold(reachable=True, folded_any=folded_any)
-
-
-def _trace_dir(app: "FastAPI") -> Optional[Path]:
-    """Resolve the durable-trace directory the file backend writes into."""
-    backend = getattr(app.state, "semantic_trace_backend", None)
-    path = getattr(backend, "path", None)
-    if isinstance(path, Path):
-        return path if path.is_dir() or not path.suffix else path.parent
-    raw = str(path) if path else ""
-    if not raw:
-        return None
-    candidate = Path(raw)
-    return candidate if candidate.suffix == "" else candidate.parent
-
-
 __all__ = [
     "ARTIFACT_ALIAS_MOVED_EVENT",
     "ARTIFACT_CREATED_EVENT",
+    "ARTIFACT_TRANSFORM_RECORDED_EVENT",
     "ARTIFACT_VERSION_ADDED_EVENT",
     "ArtifactRegistry",
     "FoldResult",
@@ -779,3 +724,11 @@ __all__ = [
     "rebuild_registry_at_boot",
     "rehydrate_session_index",
 ]
+
+# Boot fold lives in its own owner module (no-accretion); re-exported here so the
+# lazy first-access rebuild + existing ``from registry import rebuild_registry_at_boot``
+# callers stay green. The bottom import is safe: ``ArtifactRegistry`` and
+# ``_FOLD_EVENT_TYPES`` are defined above, so ``registry_boot`` imports cleanly.
+from clio_agent.gact.artifacts.registry_boot import (  # noqa: E402,F401
+    rebuild_registry_at_boot,
+)

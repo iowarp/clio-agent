@@ -33,6 +33,8 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARC_STORE` | `arc.store` | str | `cte` | `src/clio_agent/arc/storage.py` |
 | `CLIO_ARC_STORE_CONFIG` | `arc.store_config` | str | _(unset)_ | `src/clio_agent/arc/storage.py` |
 | `CLIO_ARTIFACTS_HASH_MAX_FILE_BYTES` | `artifacts.hash_max_file_bytes` | int | `67108864` | `src/clio_agent/gact/artifacts/minting.py` |
+| `CLIO_ARTIFACTS_INSTRUMENT_ARG_MAX_BYTES` | `artifacts.instrument_arg_max_bytes` | int | `2048` | `src/clio_agent/gact/artifacts/transforms.py` |
+| `CLIO_ARTIFACTS_INSTRUMENT_TOTAL_MAX_BYTES` | `artifacts.instrument_total_max_bytes` | int | `16384` | `src/clio_agent/gact/artifacts/transforms.py` |
 | `CLIO_ARTIFACTS_PROPOSALS_BATCH_MAX` | `artifacts.proposals_batch_max` | int | `32` | `src/clio_agent/gact/artifacts/proposals.py` |
 | `CLIO_ARTIFACTS_PROPOSALS_PER_TURN` | `artifacts.proposals_per_turn` | int | `8` | `src/clio_agent/gact/artifacts/proposals.py` |
 | `CLIO_AUTOCOMPACT_PCT` | `autocompact.pct` | str | `0.85` | `src/clio_agent/gact/runtime/context_tokens.py` |
