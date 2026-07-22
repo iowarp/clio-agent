@@ -39,9 +39,14 @@ logger = logging.getLogger(__name__)
 #: clio will not trust a config shape it never validated.
 SRT_MIN_SUPPORTED_VERSION = (0, 0, 66)
 
-#: The per-profile settings filename written under the clio cache (one file per profile,
-#: overwritten each spawn with that call's write territory — cheap, deterministic).
+#: The clio-cache subdir holding srt settings files. Files are CONTENT-ADDRESSED
+#: (``{profile}-{sha8}.json``): one file per distinct (profile, write-territory) so two
+#: concurrent spawns in different workspaces never clobber a shared file. The set is bounded
+#: by :func:`prune_settings_dir` (keep-latest-N by mtime, pruned on each synth) so distinct
+#: workspaces over a long-lived server never leak files unboundedly.
 SRT_SETTINGS_DIRNAME = "srt-settings"
+#: Keep at most this many settings files (most-recently-written win); the rest are pruned.
+SRT_SETTINGS_KEEP = 32
 
 #: Typed reasons this module raises onto the ladder (no silent fallback).
 REASON_SRT_VERSION_UNSUPPORTED = "srt_version_unsupported"
@@ -188,7 +193,46 @@ def write_settings_file(config: dict[str, Any], path: Path) -> Path:
     tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_text(_config_json(config), encoding="utf-8")
     os.replace(tmp, path)
+    prune_settings_dir(path.parent)
     return path
+
+
+#: Only reap ``*.tmp`` older than this (seconds) — a live atomic write completes in ms, so an
+#: older ``.tmp`` is a crash orphan, never an in-flight write a peer thread is about to replace
+#: (deleting that races the peer's ``os.replace`` → a spurious failure).
+_TMP_ORPHAN_AGE_S = 60.0
+
+
+def prune_settings_dir(directory: Path, *, keep: int = SRT_SETTINGS_KEEP) -> None:
+    """Bound the content-addressed settings dir to ``keep`` most-recent files (F3, no leak).
+
+    Deletes the oldest ``*.json`` beyond ``keep`` (by mtime) plus CRASH-orphaned ``*.tmp``
+    (older than :data:`_TMP_ORPHAN_AGE_S` — never an in-flight peer write, so no rename race).
+    Best-effort + guarded — a prune failure must never break a spawn (the fence composes
+    regardless); a concurrent unlink race is ignored.
+    """
+    import time  # noqa: PLC0415 - only on the prune path
+
+    try:
+        files = sorted(
+            (p for p in directory.glob("*.json") if p.is_file()),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError:
+        return
+    now = time.time()
+    for stale in list(directory.glob("*.tmp")):
+        try:
+            if now - stale.stat().st_mtime >= _TMP_ORPHAN_AGE_S:
+                stale.unlink()
+        except OSError:
+            pass  # in-flight peer write or already gone — benign
+    for old in files[keep:]:
+        try:
+            old.unlink()
+        except OSError:
+            pass  # a peer spawn may have pruned it already — benign
 
 
 def srt_prefix(binary: str, settings_path: Path | str) -> list[str]:
@@ -231,6 +275,7 @@ __all__ = [
     "SrtConfigError",
     "is_srt_version_supported",
     "parse_version",
+    "prune_settings_dir",
     "settings_path_for",
     "srt_prefix",
     "synthesize_srt_config",
