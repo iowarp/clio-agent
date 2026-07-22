@@ -31,8 +31,15 @@ from clio_agent.gact.artifacts.records import (
     Custody,
     EvidenceClass,
     IdentityEvidence,
+    InvalidAliasError,
     Mechanism,
+    alias_rejection_reason,
     new_artifact_id,
+)
+from clio_agent.gact.artifacts.registry_index import (
+    build_session_index,
+    patch_session_index,
+    rehydrate_session_index,
 )
 from clio_agent.gact.artifacts.versions import VersionAction, decide_version
 
@@ -54,10 +61,6 @@ ARTIFACT_ALIAS_MOVED_EVENT = "artifact.alias.moved"
 _FOLD_EVENT_TYPES: frozenset[str] = frozenset(
     {ARTIFACT_CREATED_EVENT, ARTIFACT_VERSION_ADDED_EVENT, ARTIFACT_ALIAS_MOVED_EVENT}
 )
-
-# Bounded SessionStore badge index: at most this many named artifacts per session
-# before it truncates (``names_truncated=True``). Badges only; never a rebuild source.
-_SESSION_INDEX_NAME_CAP = 64
 
 
 @dataclass(frozen=True)
@@ -314,25 +317,46 @@ class ArtifactRegistry:
         with self._lock:
             if event_id and event_id in self._seen_event_ids:
                 return FoldResult(applied=False, reason="duplicate_event_id")
-            move_key = (at, event_id)
-            alias_id = (ws, name, alias)
-            best = self._alias_move_keys.get(alias_id)
-            if best is not None and move_key <= best:
-                if event_id:
-                    self._seen_event_ids.add(event_id)
-                return FoldResult(applied=False, reason="stale_alias_move")
             record = self._records.get((ws, name))
             if record is None:
                 record = ArtifactRecord(workspace_id=ws, name=name)
                 self._records[(ws, name)] = record
-            self._alias_move_keys[alias_id] = move_key
-            # ``latest`` is auto-maintained to the head by add_version; deriving it
-            # from the chain (not a possibly-lossy move log) keeps latest == head.
-            if alias != "latest":
-                record.aliases[alias] = to_version
+            applied = self._apply_alias_move_locked(
+                record, alias=alias, to_version=to_version, at=at, event_id=event_id
+            )
             if event_id:
                 self._seen_event_ids.add(event_id)
+            if not applied:
+                return FoldResult(applied=False, reason="stale_alias_move")
             return FoldResult(applied=True, reason="")
+
+    def _apply_alias_move_locked(
+        self,
+        record: ArtifactRecord,
+        *,
+        alias: str,
+        to_version: int,
+        at: str,
+        event_id: str,
+    ) -> bool:
+        """Apply one alias move under the ``(at, event_id)`` last-writer-wins order.
+
+        The ONE comparator shared by the boot fold (:meth:`fold_alias_moved`) and the
+        live route (:meth:`move_alias`) — finding [5]: a live stale move (older ``(at,
+        event_id)`` than the recorded winner) is refused exactly as the fold refuses a
+        replayed one, so a rebuild converges on the live state. Returns whether it was
+        applied (``False`` == stale no-op). Caller holds ``self._lock``; ``latest`` is
+        derived from the head, so its pointer is not stored but its key IS recorded.
+        """
+        alias_id = (record.workspace_id, record.name, alias)
+        move_key = (at, event_id)
+        best = self._alias_move_keys.get(alias_id)
+        if best is not None and move_key <= best:
+            return False
+        self._alias_move_keys[alias_id] = move_key
+        if alias != "latest":
+            record.aliases[alias] = to_version
+        return True
 
     # ---- mint (atomic version assignment) ----------------------------------
 
@@ -418,15 +442,27 @@ class ArtifactRegistry:
             )
 
     def move_alias(
-        self, workspace_id: str, name: str, *, alias: str, to_version: int
-    ) -> Optional[tuple[Optional[int], int]]:
-        """Live alias move under the lock — returns ``(from_version, to_version)``.
+        self,
+        workspace_id: str,
+        name: str,
+        *,
+        alias: str,
+        to_version: int,
+        at: str,
+        event_id: str,
+    ) -> Optional[tuple[Optional[int], int, bool]]:
+        """Live alias move under the lock — ``(from_version, to_version, applied)``.
 
-        Sets ``record.aliases[alias] = to_version``; the emitted ``artifact.alias.moved``
-        event carries ``(at, event_id)`` so a boot replay converges on the same map.
-        Returns ``None`` when the record or the target version is missing (the caller
-        surfaces a typed 404). The reserved ``latest`` alias is guarded at the route.
+        Finding [7]: refuses a ``latest`` / ``vN`` alias with a typed
+        :class:`InvalidAliasError` at the record layer (behind the route's own check).
+        Finding [5]: decided by the SAME ``(at, event_id)`` comparator the fold uses
+        (:meth:`_apply_alias_move_locked`), so a stale live move is a no-op
+        (``applied=False``) exactly as the fold refuses it. ``None`` when the record or
+        target version is missing; the emitted event MUST carry this ``at`` + ``event_id``.
         """
+        reason = alias_rejection_reason(alias)
+        if reason:
+            raise InvalidAliasError(f"alias {alias!r} is not a legal user alias", reason=reason)
         with self._lock:
             record = self._records.get((workspace_id, name))
             if record is None:
@@ -434,8 +470,10 @@ class ArtifactRegistry:
             if not any(v.version == to_version for v in record.versions):
                 return None
             from_version = record.aliases.get(alias)
-            record.aliases[alias] = to_version
-            return (from_version, to_version)
+            applied = self._apply_alias_move_locked(
+                record, alias=alias, to_version=to_version, at=at, event_id=event_id
+            )
+            return (from_version, to_version, applied)
 
     # ---- queries -----------------------------------------------------------
 
@@ -569,64 +607,6 @@ def get_registry(app: "FastAPI") -> ArtifactRegistry:
         if registry is None:
             registry = rebuild_registry_at_boot(app)
     return registry
-
-
-# --------------------------------------------------------------------------- #
-# SessionStore small badge index (badges only — NEVER the rebuild source)
-# --------------------------------------------------------------------------- #
-
-
-def build_session_index(registry: ArtifactRegistry, workspace_id: str) -> dict[str, Any]:
-    """Build the bounded per-workspace badge index.
-
-    Shape ``{count, names: {name: {v, id, kind}}, names_truncated}`` — small, bounded
-    (:data:`_SESSION_INDEX_NAME_CAP` names). The full set always rebuilds from the
-    event log; this is never read back as a source (owner decision #966.8 / #966.4).
-    """
-    records = sorted(registry.list_for_workspace(workspace_id), key=lambda r: r.name)
-    names: dict[str, Any] = {}
-    truncated = False
-    for record in records:
-        head = record.head
-        if head is None:
-            continue
-        if len(names) >= _SESSION_INDEX_NAME_CAP:
-            truncated = True
-            break
-        names[record.name] = {
-            "v": head.version,
-            "id": head.artifact_id,
-            "kind": head.kind.value,
-        }
-    return {"count": len(records), "names": names, "names_truncated": truncated}
-
-
-def patch_session_index(
-    app: "FastAPI", sid: str, registry: ArtifactRegistry, workspace_id: str
-) -> None:
-    """Stamp the bounded badge index onto the session's metadata (best-effort)."""
-    store = getattr(app.state, "sessions", None) or getattr(app.state, "session_store", None)
-    if store is None:
-        return
-    index = build_session_index(registry, workspace_id)
-    try:
-        store.update(sid, metadata_patch={"artifacts": index})
-    except Exception:  # noqa: BLE001 — a badge stamp must never break a turn
-        logger.warning(
-            "artifact session-index stamp skipped reason=store_update_failed sid=%s", sid
-        )
-
-
-def rehydrate_session_index(app: "FastAPI", sid: str) -> dict[str, Any]:
-    """Read back a session's stored badge index (badges only), ``{}`` if none."""
-    store = getattr(app.state, "sessions", None) or getattr(app.state, "session_store", None)
-    if store is None:
-        return {}
-    session = store.get(sid)
-    if session is None:
-        return {}
-    index = session.metadata.get("artifacts")
-    return dict(index) if isinstance(index, dict) else {}
 
 
 # --------------------------------------------------------------------------- #
@@ -790,6 +770,7 @@ __all__ = [
     "ARTIFACT_VERSION_ADDED_EVENT",
     "ArtifactRegistry",
     "FoldResult",
+    "InvalidAliasError",
     "MintOutcome",
     "RegistryFoldOnLoopError",
     "build_session_index",

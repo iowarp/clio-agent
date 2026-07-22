@@ -14,15 +14,20 @@ assertion red, proving the test binds the invariant (not a tautology).
 
 from __future__ import annotations
 
+import os
 import re
+import time
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
 from clio_agent.gact.artifacts.minting import (
+    compute_identity,
     mint_artifact,
     mint_tool_declared_outputs,
 )
@@ -34,11 +39,16 @@ from clio_agent.gact.artifacts.records import (
     Mechanism,
     new_artifact_id,
 )
-from clio_agent.gact.artifacts.registry import ArtifactRegistry, get_registry
+from clio_agent.gact.artifacts.registry import (
+    ArtifactRegistry,
+    InvalidAliasError,
+    get_registry,
+)
 from clio_agent.gact.artifacts.versions import (
     VersionAction,
     decide_version,
     reconcile_designated_path,
+    workspace_lease_clean,
 )
 from clio_agent.gact.semantic_events import event_reaches_ui
 from clio_agent.gact.sessions import SessionStore
@@ -80,6 +90,20 @@ def _make_app(tmp_path: Path):
         artifact_registry=None,
     )
     return SimpleNamespace(state=state), sess, arc
+
+
+@pytest.fixture(autouse=True)
+def _reset_observer_call_stamp():
+    """Isolate the observer thread-local across tests (it persists per worker thread).
+
+    The lease/drift tests read (and the lease tests set) ``_OBSERVER_CALL_T0``; a stamp
+    leaked from one test would make another's ``workspace_lease_clean`` non-deterministic.
+    """
+    from clio_agent.gact import tool_observer
+
+    tool_observer._OBSERVER_CALL_T0.value = None
+    yield
+    tool_observer._OBSERVER_CALL_T0.value = None
 
 
 def _events(arc: _CapturingArc, event_type: str) -> list[Any]:
@@ -631,6 +655,36 @@ def test_single_version_decision_point_no_number_assignment_elsewhere():
     assert defs == ["records.py"]
 
 
+def test_no_inline_version_number_arithmetic_outside_the_helper():
+    """Finding [9]: the grep-lock also forbids INLINE version-number arithmetic.
+
+    ``next_version_number`` being the only *named* call site does not stop a second
+    decision point from computing ``head.version + 1`` / ``max(v.version…) + 1`` /
+    ``len(versions) + 1`` inline. Scan the concrete inline forms across ``src`` and
+    allow-list only the ONE legitimate producer — ``records.py``'s
+    ``next_version_number`` (``self.head.version + 1``). Any other file that grows a
+    version number by arithmetic turns this red.
+    """
+    src = Path(__file__).resolve().parents[2] / "src" / "clio_agent"
+    # Inline "grow a version number by one" forms — the natural sabotage twins the
+    # named-helper lock misses (the finding's own failure scenario).
+    patterns = [
+        re.compile(r"\.version\s*\+\s*1"),  # head.version + 1
+        re.compile(r"max\([^)]*\.version[^)]*\)\s*\+\s*1"),  # max(v.version …) + 1
+        re.compile(r"len\([^)]*versions[^)]*\)\s*\+\s*1"),  # len(versions) + 1
+    ]
+    offenders: dict[str, list[str]] = {}
+    for py in src.rglob("*.py"):
+        text = py.read_text(encoding="utf-8")
+        hits = [m.group(0) for pat in patterns for m in pat.finditer(text)]
+        if hits:
+            offenders[py.name] = hits
+    # Allow-list: the sole arithmetic producer is records.next_version_number.
+    assert set(offenders) == {"records.py"}, offenders
+    # And that single legitimate site is exactly the helper's ``head.version + 1``.
+    assert offenders["records.py"] == [".version + 1"], offenders["records.py"]
+
+
 # --------------------------------------------------------------------------- #
 # 7. SSE allow-list + wire shapes
 # --------------------------------------------------------------------------- #
@@ -713,3 +767,369 @@ def test_version_wire_carries_revision_edge(tmp_path):
     assert resolved["prior_sha256"] is not None
     assert "kind_warning" in resolved
     assert "custody_gap" in resolved
+
+
+# --------------------------------------------------------------------------- #
+# 9. Finding [1]: relink re-observation is idempotent (chain grows by ONE)
+# --------------------------------------------------------------------------- #
+
+
+def test_relink_reobservation_is_idempotent_grows_by_exactly_one(tmp_path):
+    """Revert -> relink -> re-reconcile x3 grows the chain by exactly ONE version.
+
+    Finding [1]: the drift no-op is gated on ``head.sha256 == sha256`` (not on the
+    first-match version number). After a relink the head shares v1's hash; without the
+    fix each later reconcile of the stable file re-mints a spurious relink unbounded.
+    """
+    app, sess, _arc = _make_app(tmp_path)
+    f = _seed_v1(app, sess.id, tmp_path, name="s.csv", body="v1-bytes\n")
+    # A genuine v2 (new content).
+    f.write_text("v2-bytes\n", encoding="utf-8")
+    mint_artifact(
+        app,
+        sess.id,
+        name="s.csv",
+        workspace_id="ws1",
+        evidence=compute_identity(f),
+        kind=ArtifactKind.DATASET,
+        mechanism=Mechanism.TOOL_SCHEMA,
+        path=str(f),
+    )
+    # Revert to v1's bytes: the FIRST reconcile relinks to v3 (head now shares v1's sha).
+    f.write_text("v1-bytes\n", encoding="utf-8")
+
+    def _reconcile():
+        return reconcile_designated_path(
+            app,
+            sess.id,
+            name="s.csv",
+            workspace_id="ws1",
+            path=str(f),
+            mechanism=Mechanism.TOOL_SCHEMA,
+        )
+
+    first = _reconcile()
+    assert first is not None and first.created is True and first.version.version == 3
+    # Re-observe the STABLE reverted file three more times — each a clean no-op.
+    # Sabotage: gate the no-op on ``existing.version == head.version`` -> v1 binds and
+    # every reconcile mints a phantom v4, v5, v6 -> the length assertion goes red.
+    for _ in range(3):
+        out = _reconcile()
+        assert out is not None and out.created is False and out.reason == "unchanged_head"
+    reg = get_registry(app)
+    assert [v.version for v in reg.get("ws1", "s.csv").versions] == [1, 2, 3]
+
+
+# --------------------------------------------------------------------------- #
+# 10. Finding [2/6]: the observer seam WIRES reconcile — no false tool mint
+# --------------------------------------------------------------------------- #
+
+
+def test_seam_a_external_overwrite_reobservation_is_gap_not_false_tool_mint(tmp_path):
+    """External overwrite re-observed by a tool -> GAP, never a tool-schema mint.
+
+    Finding [2/6]: a designated path the tool did NOT write this call (mtime predates
+    the call, unknown content) must route through reconcile (producing=False) and
+    become a GAP — mechanism ``none``, no ``call_id`` — not a false producing
+    tool-schema version carrying the tool's call id (owner decision #966.10).
+    """
+    app, sess, _arc = _make_app(tmp_path)
+    csv = tmp_path / "d.csv"
+    csv.write_text("genuine-v1\n", encoding="utf-8")
+    args = {"output_path": str(csv)}
+    mint_tool_declared_outputs(
+        app, sess.id, tool_name="t", effective_args=args, call_id="c1", workspace_id="ws1"
+    )
+    # An external process overwrites with UNKNOWN content BEFORE the next call starts.
+    csv.write_text("external-mystery\n", encoding="utf-8")
+    past = time.time() - 100
+    os.utime(csv, (past, past))
+    minted = mint_tool_declared_outputs(
+        app,
+        sess.id,
+        tool_name="reader",
+        effective_args=args,
+        call_id="c2",
+        workspace_id="ws1",
+        call_started_at=time.time() + 100,
+    )
+    reg = get_registry(app)
+    versions = reg.get("ws1", "d.csv").versions
+    assert [v.version for v in versions] == [1, 2]
+    gap = versions[-1]
+    # Sabotage: mint the drifted path producing=True with the tool call -> mechanism is
+    # tool-schema and producer carries c2 -> these go red (the false-attribution lock).
+    assert gap.mechanism is Mechanism.NONE
+    assert gap.custody_gap["reason"] == "undesignated_overwrite"
+    assert gap.custody_gap["lease"] == "dirty"
+    assert "call_id" not in gap.producer
+    assert all(v.producer.get("call_id") != "c2" for v in versions)
+    assert minted == [gap]
+
+
+def test_seam_a_revert_reobservation_relinks_not_false_tool_mint(tmp_path):
+    """A tool re-observing a REVERTED file relinks by hash — never a false tool mint."""
+    app, sess, _arc = _make_app(tmp_path)
+    csv = tmp_path / "d.csv"
+    csv.write_text("A-bytes\n", encoding="utf-8")
+    args = {"output_path": str(csv)}
+    mint_tool_declared_outputs(
+        app, sess.id, tool_name="t", effective_args=args, call_id="c1", workspace_id="ws1"
+    )
+    v1_sha = get_registry(app).get("ws1", "d.csv").versions[0].sha256
+    # A genuine v2 (new content, no call window -> normal mint).
+    csv.write_text("B-bytes\n", encoding="utf-8")
+    mint_tool_declared_outputs(
+        app, sess.id, tool_name="t", effective_args=args, call_id="c2", workspace_id="ws1"
+    )
+    # The file reverts to v1's bytes BEFORE the next call -> a drift re-observation.
+    csv.write_text("A-bytes\n", encoding="utf-8")
+    past = time.time() - 100
+    os.utime(csv, (past, past))
+    mint_tool_declared_outputs(
+        app,
+        sess.id,
+        tool_name="reader",
+        effective_args=args,
+        call_id="c3",
+        workspace_id="ws1",
+        call_started_at=time.time() + 100,
+    )
+    reg = get_registry(app)
+    versions = reg.get("ws1", "d.csv").versions
+    assert [v.version for v in versions] == [1, 2, 3]
+    relink = versions[-1]
+    assert relink.custody_gap["reason"] == "relink_by_hash"
+    assert relink.custody_gap["matched_version"] == 1
+    assert relink.custody_gap["matched_sha256"] == v1_sha
+    assert "call_id" not in relink.producer  # never a false tool mint with c3
+
+
+def test_seam_a_genuine_write_during_call_mints_normally(tmp_path):
+    """A file (re)written DURING the call window keeps the ordinary producing mint."""
+    app, sess, _arc = _make_app(tmp_path)
+    csv = tmp_path / "d.csv"
+    csv.write_text("v1\n", encoding="utf-8")
+    args = {"output_path": str(csv)}
+    mint_tool_declared_outputs(
+        app, sess.id, tool_name="t", effective_args=args, call_id="c1", workspace_id="ws1"
+    )
+    # v2 genuinely written now (mtime >= a call that started in the past).
+    csv.write_text("v2\n", encoding="utf-8")
+    minted = mint_tool_declared_outputs(
+        app,
+        sess.id,
+        tool_name="t",
+        effective_args=args,
+        call_id="c2",
+        workspace_id="ws1",
+        call_started_at=time.time() - 100,
+    )
+    reg = get_registry(app)
+    versions = reg.get("ws1", "d.csv").versions
+    assert [v.version for v in versions] == [1, 2]
+    v2 = versions[-1]
+    assert v2.mechanism is Mechanism.TOOL_SCHEMA
+    assert v2.producer["call_id"] == "c2"  # genuine attribution preserved
+    assert v2.custody_gap is None
+    assert minted == [v2]
+
+
+# --------------------------------------------------------------------------- #
+# 11. Finding [3/4]+[8]: the REAL lease predicate (agent-task registry seams)
+# --------------------------------------------------------------------------- #
+
+
+def _lease_app(tmp_path):
+    from clio_agent.gact.agent_tasks import AgentTaskRegistry
+
+    app, sess, arc = _make_app(tmp_path)
+    app.state.in_flight_turns = {}
+    app.state.agent_task_registry = AgentTaskRegistry()
+    return app, sess, arc
+
+
+@contextmanager
+def _active_observer_call():
+    """Stamp the observer thread-local as if a tool call is running on this thread."""
+    from clio_agent.gact import tool_observer
+
+    tool_observer._OBSERVER_CALL_T0.value = time.time()
+    try:
+        yield
+    finally:
+        tool_observer._OBSERVER_CALL_T0.value = None
+
+
+def test_lease_clean_single_quiet_session(tmp_path):
+    app, sess, _arc = _lease_app(tmp_path)
+    app.state.in_flight_turns = {sess.id: object()}  # only the current writer
+    with _active_observer_call():
+        assert workspace_lease_clean(app, "ws1", session_id=sess.id) is True
+
+
+def test_lease_dirty_two_active_tasks_one_workspace(tmp_path):
+    from clio_agent.gact.agent_tasks import STATUS_RUNNING, AgentTask
+
+    app, sess, _arc = _lease_app(tmp_path)
+    # A genuine concurrent child task RUNNING in the SAME workspace (via the real
+    # agent-task registry seam, not an injected boolean) — a second writer.
+    child = app.state.sessions.create(workspace_id="ws1", title="child")
+    app.state.agent_task_registry.register(
+        AgentTask(
+            task_id="t1",
+            parent_session_id=sess.id,
+            child_session_id=child.id,
+            status=STATUS_RUNNING,
+        )
+    )
+    app.state.in_flight_turns = {sess.id: object()}
+    with _active_observer_call():
+        # Sabotage: return `_observer_call_started_at() is not None` (the old latch) ->
+        # the concurrent child is ignored and the lease reads CLEAN -> this goes red.
+        assert workspace_lease_clean(app, "ws1", session_id=sess.id) is False
+
+
+def test_lease_clean_ignores_terminal_task_and_other_workspace(tmp_path):
+    from clio_agent.gact.agent_tasks import STATUS_COMPLETED, STATUS_RUNNING, AgentTask
+
+    app, sess, _arc = _lease_app(tmp_path)
+    done_child = app.state.sessions.create(workspace_id="ws1", title="done")
+    app.state.agent_task_registry.register(
+        AgentTask(
+            task_id="t1",
+            parent_session_id=sess.id,
+            child_session_id=done_child.id,
+            status=STATUS_COMPLETED,  # terminal -> not a live writer
+        )
+    )
+    other_child = app.state.sessions.create(workspace_id="ws2", title="other")
+    app.state.agent_task_registry.register(
+        AgentTask(
+            task_id="t2",
+            parent_session_id=sess.id,
+            child_session_id=other_child.id,
+            status=STATUS_RUNNING,  # active but a DIFFERENT workspace
+        )
+    )
+    app.state.in_flight_turns = {sess.id: object(), other_child.id: object()}
+    with _active_observer_call():
+        assert workspace_lease_clean(app, "ws1", session_id=sess.id) is True
+
+
+def test_lease_dirty_concurrent_session_same_workspace(tmp_path):
+    app, sess, _arc = _lease_app(tmp_path)
+    peer = app.state.sessions.create(workspace_id="ws1", title="peer")
+    app.state.in_flight_turns = {sess.id: object(), peer.id: object()}
+    with _active_observer_call():
+        assert workspace_lease_clean(app, "ws1", session_id=sess.id) is False
+
+
+def test_lease_dirty_outside_active_call_is_not_latched(tmp_path):
+    """Finding [3] latch regression: no active call on this thread -> DIRTY.
+
+    The stamp is cleared at ``completed`` (never latched), so a warm worker thread with
+    no active call proves nothing and the lease is DIRTY even with no other writers.
+    """
+    from clio_agent.gact import tool_observer
+
+    app, sess, _arc = _lease_app(tmp_path)
+    app.state.in_flight_turns = {sess.id: object()}
+    tool_observer._OBSERVER_CALL_T0.value = None  # the call completed -> stamp cleared
+    assert workspace_lease_clean(app, "ws1", session_id=sess.id) is False
+
+
+def test_observer_completed_clears_the_call_stamp(tmp_path):
+    """Finding [3]: the observer's ``completed`` phase resets ``_OBSERVER_CALL_T0``.
+
+    Drives the real observer built by ``_make_tool_observer`` so the reset is bound to
+    the live seam, not just the predicate. Sabotage: drop the reset line -> the stamp
+    stays set after completion (the latch) -> the final assertion goes red.
+    """
+    from clio_agent.gact.tool_observer import _OBSERVER_CALL_T0, _make_tool_observer
+
+    c = _client(tmp_path)
+    wid, sid = _workspace_session(c, tmp_path)
+    app = c.app  # the FastAPI app behind the TestClient
+    observe = _make_tool_observer(app)
+    _OBSERVER_CALL_T0.value = None
+    observe("mytool", {}, "started", None)
+    assert _OBSERVER_CALL_T0.value is not None  # stamped at started
+    observe("mytool", {}, "completed", None, {"content": [{"type": "text", "text": "ok"}]})
+    assert _OBSERVER_CALL_T0.value is None  # cleared at completed (no latch)
+
+
+# --------------------------------------------------------------------------- #
+# 12. Finding [5]: the live alias move applies through the fold's comparator
+# --------------------------------------------------------------------------- #
+
+
+def _two_version_registry() -> ArtifactRegistry:
+    reg = ArtifactRegistry()
+    reg.fold_payload(_created_payload("d.csv", 1, "a" * 64, "e1"))
+    reg.fold_event_by_type(
+        "artifact.version.added",
+        _created_payload("d.csv", 2, "b" * 64, "e2", prior_version=1, prior_sha256="a" * 64),
+    )
+    return reg
+
+
+def test_live_alias_move_stale_refused_identically_to_fold():
+    """A live stale move (older (at,event_id)) is refused exactly as the fold refuses it."""
+    reg = _two_version_registry()
+    # A live move at a NEWER (at, event_id) wins and applies.
+    won = reg.move_alias(
+        "ws1", "d.csv", alias="rel", to_version=2, at="2026-07-21T02:00:00Z", event_id="m2"
+    )
+    assert won == (None, 2, True)
+    assert reg.get("ws1", "d.csv").aliases["rel"] == 2
+    # A live move with an OLDER (at, event_id) is a no-op (applied=False), state kept.
+    stale_live = reg.move_alias(
+        "ws1", "d.csv", alias="rel", to_version=1, at="2026-07-21T01:00:00Z", event_id="m1"
+    )
+    assert stale_live is not None and stale_live[2] is False
+    assert reg.get("ws1", "d.csv").aliases["rel"] == 2  # winner unchanged
+    # The FOLD makes the IDENTICAL decision on the very same older move.
+    reg2 = _two_version_registry()
+    reg2.fold_event_by_type(
+        "artifact.alias.moved", _alias_moved("d.csv", "rel", 2, "2026-07-21T02:00:00Z", "m2")
+    )
+    folded_stale = reg2.fold_alias_moved(
+        _alias_moved("d.csv", "rel", 1, "2026-07-21T01:00:00Z", "m1")
+    )
+    assert folded_stale.applied is False and folded_stale.reason == "stale_alias_move"
+    assert reg2.get("ws1", "d.csv").aliases["rel"] == 2
+
+
+# --------------------------------------------------------------------------- #
+# 13. Finding [7]: vN-grammar aliases refused at the route AND the record layer
+# --------------------------------------------------------------------------- #
+
+
+def test_vn_grammar_alias_rejected_at_route(tmp_path):
+    c = _client(tmp_path)
+    wid, sid = _workspace_session(c, tmp_path)
+    _pin_two_versions(c, tmp_path, wid, sid)
+    # A version-shaped alias would be shadowed by _resolve_ref's vN branch -> refused.
+    r = c.post(f"/v1/workspaces/{wid}/artifacts/d.csv/aliases", json={"alias": "v2", "ref": "v1"})
+    # Sabotage: reject only 'latest' at the route -> 'v2' is accepted 200 -> red.
+    assert r.status_code == 422
+    assert r.json()["error"]["error"] == "invalid_alias"
+    # A vN name past the chain end is equally refused (never advertised-but-unresolvable).
+    r2 = c.post(f"/v1/workspaces/{wid}/artifacts/d.csv/aliases", json={"alias": "v99", "ref": "v1"})
+    assert r2.status_code == 422
+    assert r2.json()["error"]["error"] == "invalid_alias"
+
+
+def test_vn_and_latest_alias_rejected_at_record_layer():
+    reg = _two_version_registry()
+    # Sabotage: drop the alias_rejection_reason guard in move_alias -> no raise -> red.
+    with pytest.raises(InvalidAliasError) as vn:
+        reg.move_alias("ws1", "d.csv", alias="v99", to_version=1, at="t", event_id="x")
+    assert vn.value.reason == "invalid_alias"
+    with pytest.raises(InvalidAliasError) as latest:
+        reg.move_alias("ws1", "d.csv", alias="latest", to_version=1, at="t", event_id="y")
+    assert latest.value.reason == "reserved_alias"
+    # A normal alias still moves.
+    ok = reg.move_alias("ws1", "d.csv", alias="release", to_version=1, at="t", event_id="z")
+    assert ok == (None, 1, True)

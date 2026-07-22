@@ -45,6 +45,8 @@ from clio_agent.gact.artifacts.registry import (
 from clio_agent.gact.artifacts.versions import (
     emit_alias_moved,
     emit_version_added,
+    reconcile_if_content_revert,
+    reconcile_if_tool_drift,
     version_record_payload,
 )
 
@@ -271,34 +273,6 @@ def _contained(path: Path, root: Path) -> bool:
     return _is_relative_to(resolved, root)
 
 
-def _is_pre_existing_untouched(
-    registry: Any,
-    workspace_id: str,
-    name: str,
-    evidence: IdentityEvidence,
-    call_started_at: float | None,
-) -> bool:
-    """Whether a designated output is a pre-existing file the call did not write.
-
-    Finding [8]: a tool that declares an output arg but reads (not writes) a
-    pre-existing file returns ``ok=True`` with that file untouched. Skip minting it
-    only when BOTH hold — its ``mtime`` predates ``call_started_at`` AND its content
-    already versions in the chain — so a genuinely new deliverable (no matching sha)
-    or one written during the call (``mtime`` at/after the call start) still mints.
-    The residual (content changed OUTSIDE the call window) still mints by design:
-    designation is designation.
-    """
-    if call_started_at is None or evidence.mtime is None:
-        return False
-    if evidence.mtime >= call_started_at:
-        return False
-    sha = evidence.sha256
-    if not sha:
-        return False
-    record = registry.get(workspace_id, name)
-    return record is not None and record.version_for_sha(sha) is not None
-
-
 def artifact_name_for_path(path: str | Path) -> str:
     """The logical artifact name for a designated output path (its basename).
 
@@ -520,7 +494,6 @@ def mint_tool_declared_outputs(
     )
 
     root = _workspace_root(app, workspace_id)
-    registry = get_registry(app)
     minted: list[ArtifactVersion] = []
     for arg_name, raw_path in grounded_output_paths(effective_args).items():
         path = Path(raw_path)
@@ -560,13 +533,24 @@ def mint_tool_declared_outputs(
             )
             continue
         name = artifact_name_for_path(path)
-        if _is_pre_existing_untouched(registry, workspace_id, name, evidence, call_started_at):
-            logger.info(
-                "artifact mint skipped reason=pre_existing_untouched tool=%s arg=%s path=%s",
-                tool_name,
-                arg_name,
-                raw_path,
-            )
+        # A declared output the tool provably did NOT write this call (mtime predates
+        # the call) is a DRIFT re-observation → the honest reconcile (producing=False),
+        # never a false producing tool-schema mint (finding [2/6], #966.10).
+        handled, outcome = reconcile_if_tool_drift(
+            app,
+            sid,
+            name=name,
+            workspace_id=workspace_id,
+            path=str(path),
+            evidence=evidence,
+            call_started_at=call_started_at,
+            mechanism=Mechanism.TOOL_SCHEMA,
+            turn_id=turn_id,
+            trace_id=trace_id,
+        )
+        if handled:
+            if outcome is not None and outcome.created:
+                minted.append(outcome.version)
             continue
         version = mint_artifact(
             app,
@@ -643,10 +627,29 @@ def mint_pack_declared_paths(
                 "artifact mint skipped reason=pack_declared_stat_failed path=%s", raw_path
             )
             continue
+        name = artifact_name_for_path(path)
+        # A declared file reverted to a KNOWN NON-HEAD version's bytes would DEDUP onto
+        # that old version and silently heal the gap under a producing mint → route it
+        # through the reconcile RE-LINK instead (finding [2/6], wired like seam a).
+        handled, outcome = reconcile_if_content_revert(
+            app,
+            sid,
+            name=name,
+            workspace_id=workspace_id,
+            path=str(path),
+            evidence=evidence,
+            mechanism=Mechanism.HARNESS,
+            turn_id=turn_id,
+            trace_id=trace_id,
+        )
+        if handled:
+            if outcome is not None and outcome.created:
+                minted.append(outcome.version)
+            continue
         version = mint_artifact(
             app,
             sid,
-            name=artifact_name_for_path(path),
+            name=name,
             workspace_id=workspace_id,
             evidence=evidence,
             kind=kind_for_path(path),

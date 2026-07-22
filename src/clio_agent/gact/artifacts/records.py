@@ -15,11 +15,47 @@ chain of custody (design §2.1). Model-provided intent is quarantined in
 
 from __future__ import annotations
 
+import re
 import uuid
 from enum import Enum
 from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
+
+#: A user alias shaped like the reserved version grammar (``v`` followed by digits).
+#: ``_resolve_ref`` tests the ``vN`` branch BEFORE the alias map, so such a name would
+#: be permanently shadowed by (or falsely advertise) a version — refused at write.
+_VERSION_ALIAS_RE = re.compile(r"^v\d+$")
+
+
+class InvalidAliasError(ValueError):
+    """A rejected alias name (reserved ``latest`` / ``vN``-grammar collision).
+
+    Carries a typed ``reason`` (``reserved_alias`` / ``invalid_alias``) so the record
+    layer (``ArtifactRegistry.move_alias``) refuses the write with the SAME code the
+    route surfaces — finding [7], enforced at both layers.
+    """
+
+    def __init__(self, message: str, *, reason: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+def alias_rejection_reason(alias: str) -> str:
+    """Return a typed rejection reason for an illegal user alias, else ``""``.
+
+    Owner decision #10 (honest available set). Two names may never be user aliases:
+    ``latest`` is auto-maintained to the head (``reserved_alias``); a ``vN``-shaped
+    name collides with the version grammar (``_resolve_ref`` resolves ``vN`` before
+    the alias map, so the alias is silently shadowed and advertised-but-unresolvable
+    — ``invalid_alias``). Enforced at BOTH the route and the record layer (S4 #970).
+    """
+    name = alias.strip()
+    if name == "latest":
+        return "reserved_alias"
+    if _VERSION_ALIAS_RE.match(name):
+        return "invalid_alias"
+    return ""
 
 
 class ArtifactKind(str, Enum):

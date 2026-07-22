@@ -157,11 +157,21 @@ def decide_version(
                 reason="same_sha_dedup",
             )
         # Drift observation whose on-disk content matches a KNOWN version.
-        if existing.version == head.version:
-            # On-disk == head: no drift at all, a clean no-op.
+        # Finding [1]: gate the no-op on the HEAD's content hash, not on the
+        # first-match version number. ``version_for_sha`` returns the EARLIEST
+        # version with the hash, so after a relink (head shares an old version's
+        # sha) ``existing`` binds to that older version and ``existing.version ==
+        # head.version`` would be false — re-minting a spurious relink on every
+        # re-observation of a stable file. Comparing ``head.sha256 == sha256`` makes
+        # a byte-identical, unchanged file a clean no-op regardless of which prior
+        # version also carries that hash (idempotent re-observation).
+        if head.sha256 == sha256:
+            # On-disk == head: no drift at all, a clean no-op. Dedup onto the HEAD
+            # (the operative version), not the earliest sha match — after a relink
+            # both carry this hash.
             return VersionDecision(
                 action=VersionAction.DEDUP,
-                deduped_onto=existing,
+                deduped_onto=head,
                 reason="unchanged_head",
             )
         # Content reverted to a known non-head state after a gap — re-link by hash.
@@ -376,18 +386,21 @@ def emit_alias_moved(
     at: str,
     turn_id: str = "",
     trace_id: str = "",
+    event_id: str = "",
 ) -> None:
     """Emit the durable ``artifact.alias.moved`` event for an alias pointer move.
 
     The sole emitter of the alias-moved event. Guarded — a wire emit must never
-    break a live mint.
+    break a live mint. ``event_id`` is threaded in by the live route (finding [5]) so
+    the emitted event carries the SAME ``(at, event_id)`` the move was decided under;
+    when omitted (the ``latest`` auto-move at mint) a fresh id is minted.
     """
     try:
         from clio_agent.gact.artifacts.registry import ARTIFACT_ALIAS_MOVED_EVENT  # noqa: PLC0415
         from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
         from clio_agent.gact.semantic_events import _event_id  # noqa: PLC0415
 
-        event_id = _event_id()
+        event_id = event_id or _event_id()
         payload = alias_moved_payload(
             event_id,
             workspace_id,
@@ -425,22 +438,97 @@ def emit_alias_moved(
 # --------------------------------------------------------------------------- #
 
 
-def workspace_lease_clean(app: "FastAPI", workspace_id: str) -> bool:
+def _session_workspace(app: "FastAPI", session_id: str) -> Optional[str]:
+    """Resolve a session's bound workspace id, or ``None`` when unresolvable.
+
+    ``None`` is the ambiguous answer: a peer writer whose workspace cannot be read
+    might share ours, so the lease treats it as a possible concurrent writer
+    (precision over recall — false-clean is the harm direction).
+    """
+    store = getattr(app.state, "sessions", None) or getattr(app.state, "session_store", None)
+    if store is None or not session_id:
+        return None
+    try:
+        session = store.get(session_id)
+    except Exception:  # noqa: BLE001 — an unresolvable session is ambiguous, not a crash
+        return None
+    if session is None:
+        return None
+    return str(getattr(session, "workspace_id", "") or "") or None
+
+
+def _workspace_single_writer(app: "FastAPI", workspace_id: str, session_id: str) -> bool:
+    """Whether NO OTHER active session/task can be writing ``workspace_id`` right now.
+
+    The real single-writer proof (finding [3/4]): the per-workspace-root executor
+    lock only serializes calls WITHIN one process AND one root — concurrent sessions
+    or spawned children on the SAME workspace each run their own executor and break
+    it. So we consult the two live registries that name every active writer:
+
+    * ``app.state.in_flight_turns`` — every session with a running turn (the child
+      task turns register here too);
+    * ``app.state.agent_task_registry`` — every non-terminal (queued/running) spawned
+      task, resolved to its child session's workspace.
+
+    CLEAN only when every OTHER active writer provably targets a DIFFERENT workspace.
+    Any ambiguity — an unresolvable peer workspace, a registry that raises, a peer on
+    the same workspace — is DIRTY (precision over recall, #966.10). ``session_id`` is
+    the current writer, excluded from the scan.
+    """
+    if not workspace_id:
+        return False  # cannot scope the proof to a workspace
+    in_flight = getattr(app.state, "in_flight_turns", None)
+    if in_flight:
+        try:
+            other_sids = [s for s in list(in_flight.keys()) if s and s != session_id]
+        except RuntimeError:
+            return False  # mutating concurrently — cannot enumerate, so cannot prove
+        for other_sid in other_sids:
+            ws = _session_workspace(app, other_sid)
+            if ws is None or ws == workspace_id:
+                return False
+    reg = getattr(app.state, "agent_task_registry", None)
+    if reg is not None:
+        try:
+            tasks = reg.snapshot()
+        except Exception:  # noqa: BLE001 — an unreadable registry cannot prove anything
+            return False
+        for task in tasks:
+            if getattr(task, "is_terminal", True):
+                continue
+            child_sid = str(getattr(task, "child_session_id", "") or "")
+            if not child_sid or child_sid == session_id:
+                continue
+            ws = _session_workspace(app, child_sid)
+            if ws is None or ws == workspace_id:
+                return False
+    return True
+
+
+def workspace_lease_clean(app: "FastAPI", workspace_id: str, *, session_id: str = "") -> bool:
     """Whether the workspace has a provably single writer right now (S4 #970, item 4).
 
-    The per-workspace-root MCP executor serializes every call under one
-    ``asyncio.Lock`` (owner decision #966.10 — same-root windows are exclusive by
-    construction). So while an observing seam runs INSIDE a tool call — the observer
-    worker thread, its ``_OBSERVER_CALL_T0`` thread-local stamped at ``started`` — the
-    lock is held and the workspace is single-writer: the lease is CLEAN. Outside any
-    active call (a boot / finalize / route scan) single-writer cannot be proven, so
-    the lease is DIRTY — conservative by design (precision over recall, #966.10: a GAP
-    version over a falsely-attributed one). ``workspace_id`` is accepted for a future
-    per-root refinement; today the proof is per active observer call.
+    Two conditions must BOTH hold for a CLEAN lease (finding [3/4] — honest, not a
+    latch):
+
+    1. This thread is INSIDE an active tool call — its ``_OBSERVER_CALL_T0``
+       thread-local is stamped at ``started`` and cleared at ``completed`` — so the
+       per-root executor lock is held and OUR root is exclusive right now. Outside any
+       active call (a boot / finalize / route scan) the thread-local is unset and the
+       lease is DIRTY.
+    2. No OTHER active session or spawned task targets the same workspace
+       (:func:`_workspace_single_writer`), since the per-root lock proves single-writer
+       only within one root — a concurrent session/child on the same workspace is a
+       second writer the lock does not cover.
+
+    Any doubt is DIRTY → a GAP version, never a falsely-attributed edge (precision over
+    recall, owner decision #966.10 — false-clean is the harm direction).
     """
     from clio_agent.gact.artifacts.minting import _observer_call_started_at  # noqa: PLC0415
 
-    return _observer_call_started_at() is not None
+    if _observer_call_started_at() is None:
+        return False
+    return _workspace_single_writer(app, workspace_id, session_id)
 
 
 def reconcile_designated_path(
@@ -454,6 +542,7 @@ def reconcile_designated_path(
     turn_id: str = "",
     trace_id: str = "",
     lease_clean: Optional[bool] = None,
+    session_id: str = "",
 ) -> Any:
     """Re-observe a KNOWN designated path and reconcile any undesignated drift.
 
@@ -508,7 +597,11 @@ def reconcile_designated_path(
     except OSError:
         logger.warning("artifact reconcile skipped reason=stat_hash_failed name=%s", name)
         return None
-    clean = workspace_lease_clean(app, workspace_id) if lease_clean is None else lease_clean
+    clean = (
+        workspace_lease_clean(app, workspace_id, session_id=session_id or sid)
+        if lease_clean is None
+        else lease_clean
+    )
     return mint_artifact_outcome(
         app,
         sid,
@@ -527,6 +620,97 @@ def reconcile_designated_path(
     )
 
 
+def reconcile_if_tool_drift(
+    app: "FastAPI",
+    sid: str,
+    *,
+    name: str,
+    workspace_id: str,
+    path: str,
+    evidence: Any,
+    call_started_at: Optional[float],
+    mechanism: Mechanism,
+    turn_id: str = "",
+    trace_id: str = "",
+) -> tuple[bool, Any]:
+    """Route a tool-declared output the tool did NOT write this call to reconcile.
+
+    Finding [2/6]: when the name is already tracked and the on-disk ``mtime`` strictly
+    predates ``call_started_at`` (the tool read, or an external writer overwrote, a
+    pre-existing file), a producing ``tool-schema`` mint would falsely attribute
+    external content to the tool's ``call_id`` (#966.10). Such a re-observation is
+    routed through :func:`reconcile_designated_path` (``producing=False``) instead.
+
+    Returns ``(handled, outcome)``: ``handled=True`` means the seam must NOT do its own
+    producing mint (the reconcile already recorded a no-op / relink / gap). ``False``
+    when the window is unknown or the file was (re)written during the call — a genuine
+    produced mint, designation is designation.
+    """
+    from clio_agent.gact.artifacts.registry import get_registry  # noqa: PLC0415
+
+    record = get_registry(app).get(workspace_id, name)
+    mtime = getattr(evidence, "mtime", None)
+    if record is None or record.head is None or call_started_at is None or mtime is None:
+        return (False, None)
+    if mtime >= call_started_at:
+        return (False, None)
+    outcome = reconcile_designated_path(
+        app,
+        sid,
+        name=name,
+        workspace_id=workspace_id,
+        path=path,
+        mechanism=mechanism,
+        turn_id=turn_id,
+        trace_id=trace_id,
+        session_id=sid,
+    )
+    return (True, outcome)
+
+
+def reconcile_if_content_revert(
+    app: "FastAPI",
+    sid: str,
+    *,
+    name: str,
+    workspace_id: str,
+    path: str,
+    evidence: Any,
+    mechanism: Mechanism,
+    turn_id: str = "",
+    trace_id: str = "",
+) -> tuple[bool, Any]:
+    """Route a declared path reverted to a KNOWN NON-HEAD version to the reconcile relink.
+
+    Finding [2/6], pack-declared seam: a declared file whose on-disk hash matches a
+    known version that is NOT the head is a revert after a gap; a producing mint would
+    DEDUP onto that old version and silently heal it, so it is routed through the
+    reconcile RE-LINK (custody gap recorded). Returns ``(handled, outcome)`` — ``False``
+    for new content or an unchanged head (ordinary designations).
+    """
+    from clio_agent.gact.artifacts.registry import get_registry  # noqa: PLC0415
+
+    record = get_registry(app).get(workspace_id, name)
+    sha = getattr(evidence, "sha256", None)
+    if record is None or record.head is None or not sha:
+        return (False, None)
+    matched = record.version_for_sha(sha)
+    if matched is None or matched.version == record.head.version:
+        return (False, None)
+    outcome = reconcile_designated_path(
+        app,
+        sid,
+        name=name,
+        workspace_id=workspace_id,
+        path=path,
+        mechanism=mechanism,
+        turn_id=turn_id,
+        trace_id=trace_id,
+        session_id=sid,
+    )
+    return (True, outcome)
+
+
 __all__ = [
     "VersionAction",
     "VersionDecision",
@@ -535,6 +719,8 @@ __all__ = [
     "emit_alias_moved",
     "emit_version_added",
     "reconcile_designated_path",
+    "reconcile_if_content_revert",
+    "reconcile_if_tool_drift",
     "version_record_payload",
     "workspace_lease_clean",
 ]

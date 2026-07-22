@@ -83,12 +83,30 @@ def register_artifact_alias_routes(app: FastAPI) -> None:
                 details={"workspace_id": wid, "name": name},
                 recoverable=True,
             )
-        if alias == "latest":
+        from clio_agent.gact.artifacts.records import alias_rejection_reason  # noqa: PLC0415
+
+        alias_reason = alias_rejection_reason(alias)
+        if alias_reason == "reserved_alias":
             raise _artifact_error(
                 status_code=422,
                 error="reserved_alias",
                 message="'latest' is auto-maintained to the head and cannot be moved by hand",
                 details={"workspace_id": wid, "name": name},
+                recoverable=True,
+            )
+        if alias_reason == "invalid_alias":
+            # Finding [7]: a ``vN``-shaped alias collides with the version grammar
+            # (``_resolve_ref`` tests ``vN`` before the alias map), so it would be
+            # silently shadowed and advertised-but-unresolvable — refuse it here AND
+            # at the record layer (``move_alias``).
+            raise _artifact_error(
+                status_code=422,
+                error="invalid_alias",
+                message=(
+                    f"alias {alias!r} collides with the reserved version grammar (vN); "
+                    "choose a name that is not version-shaped"
+                ),
+                details={"workspace_id": wid, "name": name, "alias": alias},
                 recoverable=True,
             )
         registry = await _registry(app)
@@ -113,7 +131,28 @@ def register_artifact_alias_routes(app: FastAPI) -> None:
                     "available": _available_refs(record),
                 },
             )
-        moved = registry.move_alias(wid, name, alias=alias, to_version=target.version)
+        from clio_agent.gact.artifacts.registry import InvalidAliasError  # noqa: PLC0415
+        from clio_agent.gact.artifacts.versions import emit_alias_moved  # noqa: PLC0415
+        from clio_agent.gact.runtime.globals import _iso_from_epoch  # noqa: PLC0415
+        from clio_agent.gact.semantic_events import _event_id  # noqa: PLC0415
+
+        # Finding [5]: compute the move's ``(at, event_id)`` BEFORE the move so the
+        # live apply is decided by the SAME last-writer-wins comparator the fold uses,
+        # and the emitted event carries the identical key.
+        at = _iso_from_epoch(time.time())
+        event_id = _event_id()
+        try:
+            moved = registry.move_alias(
+                wid, name, alias=alias, to_version=target.version, at=at, event_id=event_id
+            )
+        except InvalidAliasError as exc:
+            raise _artifact_error(
+                status_code=422,
+                error=exc.reason,
+                message=str(exc),
+                details={"workspace_id": wid, "name": name, "alias": alias},
+                recoverable=True,
+            ) from exc
         if moved is None:
             raise _artifact_error(
                 status_code=404,
@@ -121,9 +160,18 @@ def register_artifact_alias_routes(app: FastAPI) -> None:
                 message="alias could not be moved (record or version missing)",
                 details={"workspace_id": wid, "name": name, "alias": alias, "ref": ref},
             )
-        from_version, to_version = moved
-        from clio_agent.gact.artifacts.versions import emit_alias_moved  # noqa: PLC0415
-        from clio_agent.gact.runtime.globals import _iso_from_epoch  # noqa: PLC0415
+        from_version, to_version, applied = moved
+        if not applied:
+            # A stale live move (an older ``(at, event_id)`` than the recorded winner
+            # — clock regression / a racing pipelined move). Refused IDENTICALLY to the
+            # fold's ``stale_alias_move`` no-op: no state change, no event emitted.
+            raise _artifact_error(
+                status_code=409,
+                error="stale_alias_move",
+                message="alias move is stale (a newer move already won); ignored",
+                details={"workspace_id": wid, "name": name, "alias": alias, "ref": ref},
+                recoverable=True,
+            )
 
         emit_alias_moved(
             app,
@@ -133,7 +181,8 @@ def register_artifact_alias_routes(app: FastAPI) -> None:
             alias=alias,
             from_version=from_version,
             to_version=to_version,
-            at=_iso_from_epoch(time.time()),
+            at=at,
+            event_id=event_id,
         )
         _audit(app, route="move_artifact_alias", workspace_id=wid, name=name, alias=alias)
         return {
