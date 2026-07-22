@@ -47,11 +47,12 @@ _ABI_REFER = 2
 class LandlockProbe:
     """What the Landlock kernel probe found (probe only — never restricts this process).
 
-    ``available`` is ``True`` when the running kernel reports ABI ≥ 1 (an fs write-fence is
-    enforceable). ``abi`` is the raw supported ABI (0 when unavailable). ``refer_supported``
-    is ABI ≥ 2. ``reason`` is the typed ladder rung on failure (:data:`REASON_KERNEL_TOO_OLD`
-    when the syscall exists but reports no ABI, :data:`REASON_LANDLOCK_UNAVAILABLE` when the
-    syscall is absent / not Linux), else ``""``.
+    ``available`` is ``True`` only when the kernel reports ABI ≥ 1 AND a real ruleset can be
+    created (Landlock is in the active LSM — actually ENFORCEABLE, not merely present). ``abi``
+    is the raw supported ABI (still reported for the doctor even when not enforceable).
+    ``refer_supported`` is ABI ≥ 2. ``reason`` is the typed ladder rung on failure
+    (:data:`REASON_KERNEL_TOO_OLD` when the syscall is absent, :data:`REASON_LANDLOCK_UNAVAILABLE`
+    when not Linux, or when the syscall is present but Landlock cannot enforce), else ``""``.
     """
 
     available: bool
@@ -60,47 +61,113 @@ class LandlockProbe:
     reason: str
 
 
-def _create_ruleset_version() -> int:
-    """Return the kernel's supported Landlock ABI (>0), 0 if disabled, or <0 on ``ENOSYS``.
+#: A minimal ABI-1-safe handled-access bit (``LANDLOCK_ACCESS_FS_WRITE_FILE``) used ONLY to
+#: prove a ruleset can actually be CREATED (enforceability), never to restrict this process.
+_FS_WRITE_FILE = 1 << 1
 
-    Calls ``landlock_create_ruleset(NULL, 0, VERSION)`` — the sanctioned capability probe.
-    Never raises: a kernel without the syscall returns ``-1`` (``ENOSYS``), which the caller
-    maps to a typed unavailable reason.
+
+class _RulesetAttr(ctypes.Structure):
+    _fields_ = [("handled_access_fs", ctypes.c_uint64)]
+
+
+def _load_libc() -> Optional[ctypes.CDLL]:
+    """Load libc for the syscall probes, or ``None`` when unavailable (non-glibc / Windows).
+
+    ``ctypes.CDLL(None)`` raises ``OSError`` on some hosts and ``TypeError`` on Windows — both
+    mean "no libc to probe through", so both map to ``None`` (probe reports unavailable). An
+    injection seam for the unit tests, which exercise the enforceability branches without a
+    real kernel.
     """
     try:
-        libc = ctypes.CDLL(None, use_errno=True)
-    except OSError:
-        return -1
+        return ctypes.CDLL(None, use_errno=True)
+    except (OSError, TypeError):
+        return None
+
+
+def _syscall(libc: ctypes.CDLL, number: int, *args: object) -> int:
     libc.syscall.restype = ctypes.c_long
+    return int(libc.syscall(ctypes.c_long(number), *args))
+
+
+def _create_ruleset_version(libc: ctypes.CDLL) -> int:
+    """Return the kernel's supported Landlock ABI (>0), 0 if disabled, or <0 on ``ENOSYS``.
+
+    Calls ``landlock_create_ruleset(NULL, 0, VERSION)`` — the API-version probe. This proves
+    the SYSCALL exists but NOT that Landlock can enforce (see :func:`_can_create_ruleset`).
+    """
     try:
-        return int(
-            libc.syscall(
-                ctypes.c_long(_NR_LANDLOCK_CREATE_RULESET),
-                None,
-                ctypes.c_size_t(0),
-                ctypes.c_uint(_LANDLOCK_CREATE_RULESET_VERSION),
-            )
+        return _syscall(
+            libc,
+            _NR_LANDLOCK_CREATE_RULESET,
+            None,
+            ctypes.c_size_t(0),
+            ctypes.c_uint(_LANDLOCK_CREATE_RULESET_VERSION),
         )
     except Exception:  # noqa: BLE001 — a probe must never raise into boot; report unavailable
         return -1
 
 
-def probe_landlock(*, platform: str = sys.platform) -> LandlockProbe:
-    """Probe the running kernel for Landlock support (probe only, owner decision #974.1).
+def _can_create_ruleset(libc: ctypes.CDLL) -> bool:
+    """Whether a REAL ruleset can be created — the non-destructive ENFORCEABILITY probe.
 
-    Non-Linux hosts are :data:`REASON_LANDLOCK_UNAVAILABLE` without touching libc. On Linux
-    the ABI is read from the syscall: ABI ≥ 1 → available fs write-fence; ABI ≤ 0 → a typed
-    reason (``kernel_too_old`` when the syscall exists but Landlock is off/absent).
+    The version probe returns the ABI on any kernel where the syscall EXISTS, even when
+    Landlock is compiled but NOT in the active LSM stack (no ``lsm=…,landlock`` /
+    ``CONFIG_LSM``) — e.g. some CI/cloud kernels. On such a kernel ``landlock_restrict_self``
+    later fails ``EOPNOTSUPP``, so a fence "activated" off the version probe alone would make
+    the shim exit 127 on EVERY spawn (a silent, total fence break). Creating a real ruleset
+    with a minimal handled mask returns an fd ONLY when Landlock is actually enforceable
+    (it returns ``EOPNOTSUPP`` when the LSM is inactive) — and creating a ruleset restricts
+    NOTHING (only ``restrict_self`` does), so this is safe to run in the clio server process.
+    ``/sys/kernel/security/lsm`` is NOT used: securityfs is unmounted on some hosts (e.g. WSL)
+    where Landlock nonetheless works, so it would false-negative.
+    """
+    attr = _RulesetAttr(handled_access_fs=_FS_WRITE_FILE)
+    try:
+        fd = _syscall(
+            libc,
+            _NR_LANDLOCK_CREATE_RULESET,
+            ctypes.byref(attr),
+            ctypes.sizeof(attr),
+            ctypes.c_uint(0),
+        )
+    except Exception:  # noqa: BLE001 — a probe must never raise into boot
+        return False
+    if fd < 0:
+        return False
+    import os  # noqa: PLC0415 - only on the probe path
+
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+    return True
+
+
+def probe_landlock(*, platform: str = sys.platform) -> LandlockProbe:
+    """Probe the running kernel for an ENFORCEABLE Landlock write-fence (owner decision #974.1).
+
+    Non-Linux hosts are :data:`REASON_LANDLOCK_UNAVAILABLE` without touching libc. On Linux the
+    ABI is read from the version probe AND enforceability is confirmed by creating a real
+    ruleset (:func:`_can_create_ruleset`): a kernel where the syscall exists but Landlock is not
+    in the active LSM reports ``landlock_unavailable`` rather than a fence that would 127 every
+    spawn. ABI ≥ 1 AND creatable → available fs write-fence; else a typed reason
+    (``kernel_too_old`` when the syscall is absent, ``landlock_unavailable`` when present but
+    not enforceable).
     """
     if not platform.startswith("linux"):
         return LandlockProbe(False, 0, False, REASON_LANDLOCK_UNAVAILABLE)
-    abi = _create_ruleset_version()
-    if abi >= 1:
-        return LandlockProbe(True, abi, abi >= _ABI_REFER, "")
-    # abi == 0: syscall present but Landlock disabled (lockdown / not compiled in); abi < 0:
-    # ENOSYS (kernel < 5.13). Both are "no enforceable fence"; distinguish for the doctor.
-    reason = REASON_KERNEL_TOO_OLD if abi < 0 else REASON_LANDLOCK_UNAVAILABLE
-    return LandlockProbe(False, max(abi, 0), False, reason)
+    libc = _load_libc()
+    if libc is None:
+        return LandlockProbe(False, 0, False, REASON_LANDLOCK_UNAVAILABLE)
+    abi = _create_ruleset_version(libc)
+    if abi < 1:
+        # abi == 0: syscall present but disabled; abi < 0: ENOSYS (kernel < 5.13).
+        reason = REASON_KERNEL_TOO_OLD if abi < 0 else REASON_LANDLOCK_UNAVAILABLE
+        return LandlockProbe(False, max(abi, 0), False, reason)
+    if not _can_create_ruleset(libc):
+        # Syscall present (ABI reported) but Landlock is not in the active LSM — not enforceable.
+        return LandlockProbe(False, abi, abi >= _ABI_REFER, REASON_LANDLOCK_UNAVAILABLE)
+    return LandlockProbe(True, abi, abi >= _ABI_REFER, "")
 
 
 def landlock_shim_prefix(
