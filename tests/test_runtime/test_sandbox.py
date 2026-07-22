@@ -220,14 +220,27 @@ def _det(reason: str, *, installed: bool = False, version: str = "") -> sandbox.
     )
 
 
+def _ll(available: bool, *, abi: int = 0, reason: str = ""):
+    from clio_agent.runtime.sandbox_landlock import LandlockProbe
+
+    return LandlockProbe(available=available, abi=abi, refer_supported=abi >= 2, reason=reason)
+
+
 def test_resolve_backend_linux_floor_is_srt_not_installed() -> None:
-    """Linux, srt absent → floor ``none`` with the srt reason (Landlock is B2)."""
+    """Linux, srt absent AND Landlock absent → floor ``none`` (B2 ladder bottom).
+
+    The floor reason is the last-rung (Landlock) reason; the srt skip is preserved in
+    ``details.srt_skip_reason`` so both rungs are honest.
+    """
     result = sandbox._resolve_backend(
-        platform="linux", detection=_det(sandbox.REASON_SRT_NOT_INSTALLED)
+        platform="linux",
+        detection=_det(sandbox.REASON_SRT_NOT_INSTALLED),
+        landlock=_ll(False, reason=sandbox.REASON_LANDLOCK_UNAVAILABLE),
     )
     assert result.mechanism == sandbox.MECHANISM_NONE
     assert result.active is False
-    assert result.reason == sandbox.REASON_SRT_NOT_INSTALLED
+    assert result.reason == sandbox.REASON_LANDLOCK_UNAVAILABLE
+    assert result.details["srt_skip_reason"] == sandbox.REASON_SRT_NOT_INSTALLED
     assert result.details["target_mechanism"] == sandbox.MECHANISM_SRT_BWRAP
 
 
@@ -250,15 +263,20 @@ def test_resolve_backend_darwin_floor() -> None:
     assert result.reason == sandbox.REASON_SRT_NOT_INSTALLED
 
 
-def test_resolve_backend_detected_defers_but_stays_none() -> None:
-    """Even with srt fully present, this slice resolves ``none`` (activation deferred)."""
+def test_resolve_backend_srt_present_and_bwrap_ok_activates_srt() -> None:
+    """B2: srt viable + bwrap ok → ACTIVATE srt_bwrap (proxy started, net=proxy)."""
     result = sandbox._resolve_backend(
         platform="linux",
         detection=_det(sandbox.REASON_SRT_DETECTED_DEFERRED, installed=True, version="0.0.66"),
+        bwrap=(True, ""),
+        start_proxy=lambda: 51515,
     )
-    assert result.mechanism == sandbox.MECHANISM_NONE
-    assert result.active is False
-    assert result.reason == sandbox.REASON_SRT_DETECTED_DEFERRED
+    assert result.mechanism == sandbox.MECHANISM_SRT_BWRAP
+    assert result.active is True
+    assert result.reason == sandbox.REASON_FENCE_ACTIVE
+    assert result.details["proxy_port"] == 51515
+    assert result.details["net_enforcement"] == sandbox.NET_ENFORCEMENT_PROXY
+    assert result.details["srt_binary"] == "/opt/srt"
 
 
 def test_resolve_backend_disabled_by_config() -> None:
@@ -272,10 +290,14 @@ def test_resolve_backend_disabled_by_config() -> None:
 
 
 def test_install_and_current_state_cache() -> None:
-    """install_sandbox resolves + caches; current_state returns it; always floor this slice."""
+    """install_sandbox resolves + caches; current_state returns the cached result.
+
+    B2 may ACTIVATE a fence on a capable host (Linux+srt/Landlock), so this pins the
+    cache contract + a typed reason, not a floor mechanism (that is host-dependent now).
+    """
     result = sandbox.install_sandbox()
-    assert result.mechanism == sandbox.MECHANISM_NONE
-    assert result.active is False
+    assert result.mechanism in sandbox.KNOWN_MECHANISMS
+    assert result.reason  # a typed reason, never blank
     assert sandbox.current_state() is result
 
 
@@ -536,6 +558,18 @@ async def test_shell_out_of_root_write_succeeds_on_the_floor(
     from clio_agent import conf
 
     conf.reload()
+    # Force the honest FLOOR state so this floor test is deterministic regardless of host —
+    # on a fenced Linux CI box B2 would otherwise ACTIVATE a backend and deny the write.
+    monkeypatch.setattr(
+        sandbox,
+        "_STATE",
+        sandbox.SandboxResult(
+            mechanism=sandbox.MECHANISM_NONE,
+            active=False,
+            reason=sandbox.REASON_SRT_NOT_INSTALLED,
+            details={"platform": sys.platform},
+        ),
+    )
 
     target = outside / "escaped.txt"
     # Portable out-of-root write via the interpreter (avoids shell-dialect differences).
@@ -558,8 +592,10 @@ async def test_shell_out_of_root_write_succeeds_on_the_floor(
     if isinstance(data, str):
         data = json.loads(data)
     assert data["exit_code"] == 0, data
-    assert target.read_text(encoding="utf-8") == "escaped"  # the fence did NOT stop it
+    assert target.read_text(encoding="utf-8") == "escaped"  # the forced floor did NOT stop it
 
-    state = sandbox.install_sandbox()
+    # The forced floor state is what governed the spawn (no OS fence, honest reason).
+    state = sandbox.current_state()
+    assert state is not None
     assert state.mechanism == sandbox.MECHANISM_NONE
     assert state.reason  # a typed reason on the record, never blank

@@ -179,6 +179,7 @@ markers = [
     "real_case: end-to-end live CLIO blueprint case (a tier above unit/integration; needs CLIO_RUN_LIVE=1)",
     "live: hits a live gact server + external provider (slow; skipped unless CLIO_RUN_LIVE=1)",
     "concurrency: thread-safety / shared-state tests run under xdist load x3 in the flake-hunt CI job (#735)",
+    "linux_fence: OS write-fence sabotage suite (srt/Landlock); auto-skipped where the host cannot run it (#976 B2)",
 ]
 # Keep addopts empty: forcing --verbose + coverage (incl. 23MB htmlcov) on
 # every invocation — even --collect-only — punishes local runs. CI passes
