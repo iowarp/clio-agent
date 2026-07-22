@@ -570,6 +570,7 @@ def observe_tool_transform(
             turn_id=turn_id,
             trace_id=trace_id,
             call_started_at=started,
+            result=result,
         )
         record_transform(
             app,

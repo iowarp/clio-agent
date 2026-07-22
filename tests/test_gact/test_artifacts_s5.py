@@ -1265,3 +1265,257 @@ def test_transform_record_failure_is_typed_not_swallowed(tmp_path, monkeypatch):
     assert failures and failures[-1]["reason"] == "transform_record_failed"
     assert failures[-1]["call_id"] == "call_boom"
     assert failures[-1]["cause"] == "RuntimeError"
+
+
+# --------------------------------------------------------------------------- #
+# GAP A — designation-by-result (S5 live gate #971). An intermediate written by a
+# tool that carries the path ONLY in its RESULT (no output ARG names it — e.g.
+# ndp_stage_resource -> local_path) must MINT so the downstream call pins it as a
+# hash-pair edge, not external-with-sha.
+# --------------------------------------------------------------------------- #
+
+
+def test_result_declared_paths_extracts_recognized_keys():
+    from clio_agent.gact.artifacts.designation import result_declared_paths
+
+    # MCP envelope: reads under structuredContent AND a bare dict, identically.
+    env = {"structuredContent": {"ok": True, "local_path": "/ws/catalog.csv", "url": "https://x"}}
+    assert result_declared_paths(env) == {"local_path": "/ws/catalog.csv"}
+    assert result_declared_paths({"local_path": "/ws/catalog.csv"}) == {
+        "local_path": "/ws/catalog.csv"
+    }
+    # Precision over recall: a non-artifact-suffix value ("stdout"), and a remote url
+    # under a NON-recognized key, both yield nothing.
+    # Sabotage: add "url" to RESULT_PATH_KEYS -> the remote url is captured -> red.
+    assert result_declared_paths({"local_path": "stdout", "url": "https://x/y.csv"}) == {}
+    assert result_declared_paths({}) == {}
+    assert result_declared_paths(None) == {}
+
+
+def test_mint_result_declared_output_stage_resource(tmp_path):
+    app, sess, _arc = _make_app(tmp_path)
+    staged = tmp_path / "earthscope_converted_data.csv"
+    staged.write_bytes(b"Site,Latitude\nA,34.0\n")
+    # The tool takes a destination DIRECTORY only; the concrete path rides the result.
+    result = {
+        "ok": True,
+        "local_path": str(staged),
+        "url": "https://ndp/earthscope_converted_data.csv",
+        "_meta": {"tool": "stage_resource", "status": "success"},
+    }
+    minted = mint_tool_declared_outputs(
+        app,
+        sess.id,
+        tool_name="ndp.stage_resource",
+        effective_args={"url": "https://ndp/x", "output_dir": str(tmp_path)},
+        call_id="call_stage",
+        workspace_id="ws1",
+        result=result,
+    )
+    # Sabotage: drop the result channel from mint_tool_declared_outputs -> minted == [] -> red.
+    assert len(minted) == 1
+    assert minted[0].path == str(staged)
+    match = get_registry(app).find_version_by_path("ws1", str(staged))
+    assert match is not None
+    _rec, ver = match
+    # The designation basis is queryable: result channel + the exact result key.
+    assert ver.producer.get("designation") == "tool-result"
+    assert ver.producer.get("result_key") == "local_path"
+    assert ver.producer.get("call_id") == "call_stage"
+
+
+def test_result_declared_path_deduped_against_arg(tmp_path):
+    app, sess, _arc = _make_app(tmp_path)
+    out = tmp_path / "out.csv"
+    out.write_bytes(b"rows")
+    # The SAME path appears both as an output ARG and echoed in the result.
+    minted = mint_tool_declared_outputs(
+        app,
+        sess.id,
+        tool_name="t",
+        effective_args={"output_path": str(out)},
+        call_id="c",
+        workspace_id="ws1",
+        result={"local_path": str(out)},
+    )
+    # Minted exactly once (the arg channel wins); the result channel dedups by path.
+    # Sabotage: drop the `seen` dedup -> two versions minted -> red.
+    assert len(minted) == 1
+    assert minted[0].producer.get("designation") == "tool-arg"
+
+
+def test_result_declared_output_connects_downstream_hash_pair(tmp_path):
+    """The canary acceptance shape: an intermediate minted by RESULT designation lets
+    the downstream clean pin it as a hash-pair edge (not external-with-sha)."""
+    app, sess, _arc = _make_app(tmp_path)
+    # 1. stage_resource writes the intermediate catalog, declared ONLY in the result.
+    staged = tmp_path / "earthscope_converted_data.csv"
+    staged.write_bytes(b"Site,Latitude\nA,34.0\nB,33.0\n")
+    observe_tool_transform(
+        app,
+        sess.id,
+        tool_name="ndp.stage_resource",
+        effective_args={"url": "https://ndp/x", "output_dir": str(tmp_path)},
+        call_id="call_stage",
+        ok=True,
+        result={
+            "ok": True,
+            "local_path": str(staged),
+            "url": "https://ndp/earthscope_converted_data.csv",
+            "_meta": {"tool": "stage_resource"},
+        },
+    )
+    reg = get_registry(app)
+    # BEFORE the fix the intermediate stayed external (unregistered); now it is a
+    # registered artifact version.
+    match = reg.find_version_by_path("ws1", str(staged))
+    assert match is not None
+    staged_id = match[1].artifact_id
+
+    # 2. the downstream clean USES the intermediate as input.
+    clean = tmp_path / "earthscope_stations_clean.csv"
+    clean.write_bytes(b"Site,Latitude\nA,34.0\n")
+    observe_tool_transform(
+        app,
+        sess.id,
+        tool_name="pandas.filter_data",
+        effective_args={"file_path": str(staged), "output_file": str(clean)},
+        call_id="call_filter",
+        ok=True,
+        result=None,
+    )
+    rec = reg.get_transform("call_filter")
+    assert rec is not None
+    used_to_staged = [e for e in rec.used if e.path == str(staged)]
+    assert used_to_staged, "the clean must record a used edge to the intermediate"
+    edge = used_to_staged[0]
+    # Sabotage: revert the result-channel mint -> the intermediate stays unregistered
+    # -> this edge is external:schema-arg with an empty artifact_id -> red.
+    assert edge.evidence is EdgeEvidence.HASH_PAIR
+    assert edge.artifact_id == staged_id
+    assert not edge.external_ref
+
+
+# --------------------------------------------------------------------------- #
+# GAP B — parent aggregation (S5 live gate #971). A parent orchestrator's own
+# /transforms and /artifacts are empty while its spawned children hold everything;
+# ?include_children=true merges the descendants' records with per-row attribution.
+# --------------------------------------------------------------------------- #
+
+
+def test_descendant_session_ids_bfs_bounded_and_cycle_safe():
+    from clio_agent.gact.agent_tasks import AgentTask, AgentTaskRegistry, descendant_session_ids
+
+    reg = AgentTaskRegistry()
+    reg.register(
+        AgentTask(task_id="t1", parent_session_id="root", child_session_id="c1", created_at="1")
+    )
+    reg.register(
+        AgentTask(task_id="t2", parent_session_id="root", child_session_id="c2", created_at="2")
+    )
+    reg.register(
+        AgentTask(task_id="t3", parent_session_id="c1", child_session_id="g1", created_at="3")
+    )
+    app = SimpleNamespace(state=SimpleNamespace(agent_task_registry=reg))
+
+    # Full descendants: children + grandchildren.
+    assert set(descendant_session_ids(app, "root")) == {"c1", "c2", "g1"}
+    # depth 1 = direct children only (grandchild excluded).
+    # Sabotage: ignore max_depth -> g1 leaks in -> red.
+    assert set(descendant_session_ids(app, "root", max_depth=1)) == {"c1", "c2"}
+    # Cycle safety: a task pointing back to the root never re-includes it / loops.
+    reg.register(
+        AgentTask(task_id="t4", parent_session_id="g1", child_session_id="root", created_at="4")
+    )
+    got = descendant_session_ids(app, "root")
+    assert "root" not in got and set(got) == {"c1", "c2", "g1"}
+    # No registry -> empty.
+    empty = SimpleNamespace(state=SimpleNamespace(agent_task_registry=None))
+    assert descendant_session_ids(empty, "root") == []
+
+
+def test_route_session_transforms_include_children(tmp_path, monkeypatch):
+    from clio_agent.gact.agent_tasks import seed_agent_task
+
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    with TestClient(build_app(sessions_path=tmp_path / "s.json")) as client:
+        app = client.app
+        wid, parent = _workspace_session(client, tmp_path)
+        t1 = seed_agent_task(app, parent_session_id=parent, agent_ref={"expert_id": "ndp"})
+        t2 = seed_agent_task(app, parent_session_id=parent, agent_ref={"expert_id": "geo"})
+        for child, cid in ((t1.child_session_id, "cc1"), (t2.child_session_id, "cc2")):
+            record_transform(
+                app,
+                child,
+                tool_name="t",
+                args={},
+                call_id=cid,
+                ok=True,
+                result=None,
+                minted=[],
+                workspace_id=wid,
+            )
+
+        # Flag OFF: the parent's OWN transforms are empty, and the body is unchanged.
+        off = client.get(f"/v1/sessions/{parent}/transforms")
+        assert off.status_code == 200
+        assert off.json()["count"] == 0
+        assert "include_children" not in off.json()
+
+        # Flag ON: aggregated with per-row producing-session attribution.
+        on = client.get(f"/v1/sessions/{parent}/transforms?include_children=true").json()
+        # Sabotage: ignore include_children -> count stays 0 -> red.
+        assert on["count"] == 2
+        assert {t["session_id"] for t in on["transforms"]} == {
+            t1.child_session_id,
+            t2.child_session_id,
+        }
+        assert {t["call_id"] for t in on["transforms"]} == {"cc1", "cc2"}
+        assert set(on["child_session_ids"]) == {t1.child_session_id, t2.child_session_id}
+
+
+def test_route_session_artifacts_include_children(tmp_path, monkeypatch):
+    from clio_agent.gact.agent_tasks import AgentTask
+
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    ws2_dir = tmp_path / "ws2"
+    ws2_dir.mkdir()
+    with TestClient(build_app(sessions_path=tmp_path / "s.json")) as client:
+        app = client.app
+        wid, parent = _workspace_session(client, tmp_path)
+        # A child in a DIFFERENT workspace (the case workspace-scoped listing misses).
+        wid2 = client.post("/v1/workspaces", json={"name": "w2", "root_path": str(ws2_dir)}).json()[
+            "id"
+        ]
+        child = app.state.sessions.create(
+            workspace_id=wid2, title="child", parent_session_id=parent
+        )
+        app.state.agent_task_registry.register(
+            AgentTask(
+                task_id="t1", parent_session_id=parent, child_session_id=child.id, created_at="1"
+            )
+        )
+        f2 = ws2_dir / "child_out.csv"
+        f2.write_bytes(b"child rows")
+        mint_tool_declared_outputs(
+            app,
+            child.id,
+            tool_name="t",
+            effective_args={"output_path": str(f2)},
+            call_id="cm2",
+            workspace_id=wid2,
+        )
+
+        # Flag OFF: parent's own workspace has nothing; body unchanged.
+        off = client.get(f"/v1/sessions/{parent}/artifacts")
+        assert off.status_code == 200 and off.json()["count"] == 0
+        assert "include_children" not in off.json()
+
+        # Flag ON: the child's artifact appears, attributed to the child session.
+        on = client.get(f"/v1/sessions/{parent}/artifacts?include_children=true").json()
+        # Sabotage: ignore include_children -> count stays 0 -> red.
+        assert on["count"] == 1
+        row = on["artifacts"][0]
+        assert row["name"] == "child_out.csv"
+        assert child.id in row["producing_session_ids"]
+        assert set(on["child_session_ids"]) == {child.id}

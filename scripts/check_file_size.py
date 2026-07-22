@@ -101,6 +101,19 @@ RATCHET_BASELINE: dict[str, int] = {
     # #968 S2: +5 for the artifacts route registration (import + register call);
     # the route body lives in its own owner module routes/artifacts.py.
     "src/clio_agent/gact/app.py": 2714,
+    # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
+    # adds the designation-by-RESULT channel (ndp_stage_resource writes an
+    # intermediate whose path rides only ``local_path`` in the result — the arg
+    # channel can't see it, so the downstream clean recorded external-with-sha
+    # instead of a hash-pair edge). The combined single-loop over both channels is
+    # the minimal footprint; ratchets back with the #714 mint/registry split.
+    "src/clio_agent/gact/artifacts/minting.py": 824,
+    # #971 GAP B (S5 live gate): +51 for ``?include_children=true`` parent
+    # aggregation — a parent orchestrator's own listing is empty while its spawned
+    # children hold everything, so the flag unions descendant child-session
+    # workspaces (resolved via the agent-task registry) and attributes each row.
+    # Ratchets back with the #714 routes/artifacts decomposition.
+    "src/clio_agent/gact/routes/artifacts.py": 820,
     # #948 S4: +10 for round-tripping the module: declaration in the overlay
     # export (an exported react parent re-loaded as predict and failed the new
     # hierarchy validation).

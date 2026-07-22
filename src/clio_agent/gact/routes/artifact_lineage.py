@@ -114,8 +114,19 @@ def register_artifact_lineage_routes(app: FastAPI) -> None:
         return graph
 
     @app.get("/v1/sessions/{sid}/transforms")
-    async def session_transforms(sid: str) -> dict[str, Any]:
-        """The TransformRecords a session produced (activity records, trace-only)."""
+    async def session_transforms(sid: str, include_children: bool = False) -> dict[str, Any]:
+        """The TransformRecords a session produced (activity records, trace-only).
+
+        ``?include_children=true`` (GAP B, S5 #971) AGGREGATES the descendant child
+        sessions' records too: a parent ORCHESTRATOR session delegates the tool work
+        to spawned children, so its OWN records are empty while the children hold
+        everything. With the flag set, the child sessions are resolved via the
+        agent-task registry (``child_session_id`` on the parent's tasks, bounded
+        descendants) and their transforms merged. Each row already carries its
+        producing ``session_id``, so attribution is per-row; the body also lists the
+        aggregated ``child_session_ids``. Flag off → the session's own records only,
+        byte-identical to before.
+        """
         if _session_workspace_id(app, sid) is None:
             raise _lineage_error(
                 status_code=404,
@@ -124,11 +135,31 @@ def register_artifact_lineage_routes(app: FastAPI) -> None:
                 details={"session_id": sid},
             )
         registry = await _registry(app)
-        transforms = registry.transforms_for_session(sid)
-        _audit(app, route="session_transforms", session_id=sid, returned=len(transforms))
+        transforms = list(registry.transforms_for_session(sid))
+        if not include_children:
+            _audit(app, route="session_transforms", session_id=sid, returned=len(transforms))
+            return {
+                "transforms": [t.to_payload() for t in transforms],
+                "count": len(transforms),
+            }
+        from clio_agent.gact.agent_tasks import descendant_session_ids  # noqa: PLC0415
+
+        child_ids = descendant_session_ids(app, sid)
+        for child in child_ids:
+            transforms.extend(registry.transforms_for_session(child))
+        _audit(
+            app,
+            route="session_transforms",
+            session_id=sid,
+            returned=len(transforms),
+            include_children=True,
+            children=len(child_ids),
+        )
         return {
             "transforms": [t.to_payload() for t in transforms],
             "count": len(transforms),
+            "include_children": True,
+            "child_session_ids": child_ids,
         }
 
     @app.get("/v1/transforms/{activity_id}")
