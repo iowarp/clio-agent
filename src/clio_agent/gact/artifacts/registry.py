@@ -102,6 +102,8 @@ class _ArtifactEvent:
     prior_sha256: Optional[str]
     kind_warning: str
     custody_gap: Optional[dict[str, Any]]
+    #: S6 over-threshold non-ingestion marker (bytes; ``None`` when ingested/small).
+    not_ingested_size: Optional[int]
 
 
 def _artifact_event_from_payload(payload: dict[str, Any]) -> Optional[_ArtifactEvent]:
@@ -156,6 +158,11 @@ def _artifact_event_from_payload(payload: dict[str, Any]) -> Optional[_ArtifactE
         kind_warning=str(payload.get("kind_warning") or ""),
         custody_gap=(
             dict(payload["custody_gap"]) if isinstance(payload.get("custody_gap"), dict) else None
+        ),
+        not_ingested_size=(
+            int(payload["not_ingested_size"])
+            if payload.get("not_ingested_size") is not None
+            else None
         ),
     )
 
@@ -475,6 +482,7 @@ class ArtifactRegistry:
         annotation: str,
         producing: bool = True,
         lease_clean: bool = False,
+        not_ingested_size: Optional[int] = None,
     ) -> MintOutcome:
         """Atomically decide-and-append the next version for ``(workspace_id, name)``.
 
@@ -529,6 +537,7 @@ class ArtifactRegistry:
                 prior_sha256=decision.prior_sha256,
                 kind_warning=decision.kind_warning,
                 custody_gap=decision.custody_gap,
+                not_ingested_size=not_ingested_size,
             )
             record.add_version(version)
             if event_id:
@@ -585,6 +594,28 @@ class ArtifactRegistry:
         """Every logical artifact in a workspace."""
         with self._lock:
             return [r for (ws, _n), r in self._records.items() if ws == workspace_id]
+
+    def is_sha_alias_reachable(self, workspace_id: str, sha256: str) -> bool:
+        """Whether any pinned alias in ``workspace_id`` currently targets ``sha256``.
+
+        The cheap, lock-held re-check the CAS GC runs immediately before an unlink
+        (finding [4] TOCTOU): a version minted AFTER the GC read its records snapshot
+        auto-moves the ``latest`` alias onto its content, so an alias now targeting the
+        blob means it is live and must NOT be evicted. Evaluated under the registry
+        lock against the freshest chains, closing the snapshot-then-fold race.
+        """
+        if not sha256:
+            return False
+        with self._lock:
+            for (ws, _name), record in self._records.items():
+                if ws != workspace_id:
+                    continue
+                by_number = {v.version: v for v in record.versions}
+                for target in record.aliases.values():
+                    version = by_number.get(target)
+                    if version is not None and version.sha256 == sha256:
+                        return True
+        return False
 
     def count(self) -> int:
         """Total number of logical artifacts known."""
@@ -643,6 +674,7 @@ def _version_from_event(event: _ArtifactEvent) -> ArtifactVersion:
         prior_sha256=event.prior_sha256,
         kind_warning=event.kind_warning,
         custody_gap=event.custody_gap,
+        not_ingested_size=event.not_ingested_size,
     )
 
 

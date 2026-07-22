@@ -33,11 +33,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent import conf
+from clio_agent.gact.artifacts.cas import IngestedIdentity, ingest_identity
 from clio_agent.gact.artifacts.minting import (
     _contained,
     _workspace_root,
     artifact_name_for_path,
-    compute_identity,
     mint_artifact_outcome,
 )
 from clio_agent.gact.artifacts.proposal_effects import (
@@ -334,6 +334,9 @@ def promote_proposal(
 
     # Resolve the byte source: inline content (write it) or an existing path.
     source = "inline" if proposal.content else "path"
+    # The CAS ingestion outcome for the path channel (S6 #972); ``None`` for inline
+    # content, which stays workspace-referenced (its bytes were just staged in-place).
+    path_ingest: Optional[IngestedIdentity] = None
     if proposal.content:
         # A content write is destructive — gate it (mode/overwrite/policy) BEFORE
         # touching disk, so the native tool honors the same write discipline every
@@ -409,7 +412,11 @@ def promote_proposal(
             )
             return outcome
         try:
-            evidence = compute_identity(path)
+            # S6 (#972): a model-designated small deliverable is ingested into CAS
+            # (custody ``cas``) via the same single streamed read; over threshold →
+            # referenced + typed not_ingested_size.
+            path_ingest = ingest_identity(path, workspace_root=root)
+            evidence = path_ingest.evidence
         except OSError as exc:
             outcome = _rejected(name, RejectionReason.PATH_MISSING, f"stat/hash failed: {exc}")
             _emit_proposal_event(
@@ -499,11 +506,12 @@ def promote_proposal(
             "turn_id": turn_id,
             "agent_id": agent_id,
         },
-        custody=Custody.WORKSPACE_REFERENCED,
+        custody=path_ingest.custody if path_ingest is not None else Custody.WORKSPACE_REFERENCED,
         path=str(path),
         annotation=proposal.annotation,
         turn_id=turn_id,
         trace_id=trace_id,
+        not_ingested_size=(path_ingest.not_ingested_size if path_ingest is not None else None),
     )
     if mint is None or mint.version is None:
         outcome = _rejected(name, RejectionReason.WRITE_FAILED, "mint returned no version")

@@ -219,6 +219,11 @@ class ArtifactVersion(BaseModel):
     #: overwrite detected at observation (``{reason, ...}``) — never silently healed.
     #: ``None`` for an ordinary produced version.
     custody_gap: Optional[dict[str, Any]] = None
+    #: The byte size of a version whose bytes were NOT ingested into CAS because they
+    #: exceeded ``artifacts.cas_max_file_bytes`` (S6 #972) — a typed marker that this
+    #: version stayed referenced by size, never a silent non-ingestion. ``None`` for a
+    #: CAS-ingested or small referenced version.
+    not_ingested_size: Optional[int] = None
 
     @property
     def sha256(self) -> Optional[str]:

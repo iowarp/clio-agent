@@ -152,7 +152,9 @@ def test_accept_existing_path_mints_model_designation(tmp_path):
     # mechanism=model → designation=agent-proposed (owner #966.5)
     assert ver.mechanism == Mechanism.MODEL
     assert ver.producer.get("designation") == "agent-proposed"
-    assert ver.custody == Custody.WORKSPACE_REFERENCED
+    # S6 (#972): a small model-designated deliverable is ingested into CAS at mint —
+    # its bytes now survive workspace churn (custody `cas`, not workspace-referenced).
+    assert ver.custody == Custody.CAS
     assert ver.kind == ArtifactKind.REPORT
     # HARNESS hash, not the model's claim.
     assert ver.sha256 == hashlib.sha256(report.read_bytes()).hexdigest()

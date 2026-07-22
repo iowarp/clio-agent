@@ -357,14 +357,32 @@ def test_pin_outside_workspace_is_typed_403(tmp_path: Path):
 
 
 def test_bytes_workspace_referenced_intact_is_custody_not_cas(tmp_path: Path):
+    """A workspace-referenced (non-CAS) version 409s ``custody_not_cas`` on /bytes.
+
+    S6 (#972) note: pinning a small file now ingests it to CAS, so this constructs a
+    workspace-referenced version directly to pin the referenced-rung custody gate.
+    """
+    from clio_agent.gact.artifacts.minting import mint_artifact  # noqa: PLC0415
+
     c = _client(tmp_path)
     wid, sid = _workspace_session(c, tmp_path)
     f = tmp_path / "data.csv"
     f.write_text("a,b\n1,2\n", encoding="utf-8")
-    aid = c.post(f"/v1/sessions/{sid}/artifacts/pin", json={"path": "data.csv"}).json()["pinned"][
-        "artifact_id"
-    ]
-    r = c.get(f"/v1/artifacts/{aid}/bytes")
+    ev = IdentityEvidence.hashed_at_use(
+        sha256=hashlib.sha256(f.read_bytes()).hexdigest(), size_bytes=f.stat().st_size
+    )
+    version = mint_artifact(
+        c.app,
+        sid,
+        name="data.csv",
+        workspace_id=wid,
+        evidence=ev,
+        kind=ArtifactKind.DATASET,
+        mechanism=Mechanism.HARNESS,
+        custody=Custody.WORKSPACE_REFERENCED,
+        path=str(f),
+    )
+    r = c.get(f"/v1/artifacts/{version.artifact_id}/bytes")
     # Sabotage: serve workspace-referenced bytes instead of the custody gate -> the
     # 409 goes red (the custody_not_cas lock: bytes ride the workspace file route).
     assert r.status_code == 409
@@ -374,16 +392,36 @@ def test_bytes_workspace_referenced_intact_is_custody_not_cas(tmp_path: Path):
 
 
 def test_bytes_corrupted_file_is_integrity_violation(tmp_path: Path):
+    """Detection on the REFERENCED rung: a tampered workspace-referenced file 409s.
+
+    S6 (#972) note: this pins the referenced-custody integrity rung specifically —
+    constructing a workspace-referenced version so corrupting the workspace file is
+    the tamper (a CAS-custody artifact would survive workspace corruption from its
+    blob; the CAS-blob-tamper case is exercised in the S6 suite).
+    """
+    from clio_agent.gact.artifacts.minting import mint_artifact  # noqa: PLC0415
+
     c = _client(tmp_path)
-    _wid, sid = _workspace_session(c, tmp_path)
+    wid, sid = _workspace_session(c, tmp_path)
     f = tmp_path / "series.csv"
     f.write_text("original\n", encoding="utf-8")
-    aid = c.post(f"/v1/sessions/{sid}/artifacts/pin", json={"path": "series.csv"}).json()["pinned"][
-        "artifact_id"
-    ]
+    ev = IdentityEvidence.hashed_at_use(
+        sha256=hashlib.sha256(f.read_bytes()).hexdigest(), size_bytes=f.stat().st_size
+    )
+    version = mint_artifact(
+        c.app,
+        sid,
+        name="series.csv",
+        workspace_id=wid,
+        evidence=ev,
+        kind=ArtifactKind.DATASET,
+        mechanism=Mechanism.HARNESS,
+        custody=Custody.WORKSPACE_REFERENCED,
+        path=str(f),
+    )
     # Corrupt the on-disk bytes AFTER mint (content no longer matches recorded sha).
     f.write_text("tampered!!\n", encoding="utf-8")
-    r = c.get(f"/v1/artifacts/{aid}/bytes")
+    r = c.get(f"/v1/artifacts/{version.artifact_id}/bytes")
     # Sabotage: drop the re-hash comparison in _serve_bytes -> this goes red (the
     # integrity-detection lock: detection is the universal guarantee, §7).
     assert r.status_code == 409

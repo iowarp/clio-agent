@@ -36,7 +36,6 @@ from fastapi.responses import StreamingResponse
 
 from clio_agent.gact.artifacts.minting import (
     artifact_name_for_path,
-    compute_identity,
     mint_artifact,
 )
 from clio_agent.gact.artifacts.records import (
@@ -593,23 +592,25 @@ def _available_refs(record: ArtifactRecord) -> list[str]:
 
 
 def _serve_bytes(app: FastAPI, record: ArtifactRecord, version: ArtifactVersion) -> Response:
-    """Re-hash + custody-gate a version's bytes (runs on a worker thread).
+    """Serve a version's bytes through ONE typed resolution ladder (S6 #972).
 
-    Raising path is via :func:`_artifact_error`; the caller awaited us on a thread,
-    so the HTTPException propagates to FastAPI unchanged.
+    The single ladder — no second byte-serving path (review guard):
+
+    1. **CAS blob** (content-addressed, app-owned) — for a ``cas`` version the bytes
+       live in ``<root>/.clio/agent/artifacts/cas/<sha[:2]>/<sha>``, so they survive
+       a deleted/overwritten workspace file. Self-validating: the blob is re-hashed
+       on read and a mismatch is a 409 ``integrity_violation``.
+    2. **Referenced workspace path** — the fallback when a ``cas`` blob was evicted
+       (the workspace copy, still verified, is served) AND the source for a
+       ``workspace-referenced`` version (which 409s ``custody_not_cas`` after the
+       integrity re-hash, pointing the client at the workspace file route).
+
+    Detection (the re-hash) is the universal guarantee (design §7). Runs on a worker
+    thread; :func:`_artifact_error` HTTPExceptions propagate to FastAPI unchanged.
     """
-    source = Path(version.path) if version.path else None
-    if source is None or not source.is_file():
-        raise _artifact_error(
-            status_code=404,
-            error="not_found",
-            message="artifact bytes are not retrievable (source missing)",
-            details={"artifact_id": version.artifact_id, "path": version.path},
-        )
     # Defence in depth: never read outside the workspace root (owner decision 10).
     # An UNRESOLVABLE root REFUSES the serve (typed ``containment_unresolved``) —
-    # containment cannot be verified, so precision over recall: we do not read the
-    # path at all (finding [5]), rather than silently skipping the check.
+    # containment cannot be verified, so precision over recall (finding [5]).
     root = _workspace_root(app, record.workspace_id)
     if root is None:
         raise _artifact_error(
@@ -621,6 +622,28 @@ def _serve_bytes(app: FastAPI, record: ArtifactRecord, version: ArtifactVersion)
                 "workspace_id": record.workspace_id,
             },
         )
+    recorded_sha = version.sha256
+
+    # ---- Rung 1: CAS blob (the durable, app-owned source) --------------------
+    if version.custody == Custody.CAS and recorded_sha:
+        from clio_agent.gact.artifacts.cas import CASStore  # noqa: PLC0415
+
+        blob = CASStore(root).blob_path(recorded_sha)
+        if blob.is_file():
+            # The CAS blob is app-private; its address IS its hash, but re-validate on
+            # read anyway (detection is universal — self-heal/corruption is caught).
+            return _open_verify_stream(blob, recorded_sha, version, record.name)
+        # Blob absent (evicted / never ingested) — fall through to the referenced rung.
+
+    # ---- Rung 2: referenced workspace path -----------------------------------
+    source = Path(version.path) if version.path else None
+    if source is None or not source.is_file():
+        raise _artifact_error(
+            status_code=404,
+            error="not_found",
+            message="artifact bytes are not retrievable (source missing)",
+            details={"artifact_id": version.artifact_id, "path": version.path},
+        )
     from clio_agent.tools.file_policy import _is_relative_to  # noqa: PLC0415
 
     if not _is_relative_to(source.expanduser().resolve(strict=False), root):
@@ -630,55 +653,68 @@ def _serve_bytes(app: FastAPI, record: ArtifactRecord, version: ArtifactVersion)
             message="artifact path escapes its workspace root",
             details={"artifact_id": version.artifact_id},
         )
-    recorded_sha = version.sha256
-    if version.custody != Custody.CAS:
-        # Non-served custody (workspace-referenced/external). Detection is still the
-        # universal guarantee: re-hash the referenced file and 409 on a mismatch,
-        # then point the client at the workspace file route (the bytes live there).
-        if recorded_sha:
-            try:
-                actual = _sha256_file(source)
-            except OSError as exc:
-                raise _artifact_error(
-                    status_code=404,
-                    error="not_found",
-                    message="artifact bytes are not readable",
-                    details={"artifact_id": version.artifact_id},
-                ) from exc
-            if actual != recorded_sha:
-                raise _artifact_error(
-                    status_code=409,
-                    error="integrity_violation",
-                    message="artifact content no longer matches its recorded hash",
-                    details={
-                        "artifact_id": version.artifact_id,
-                        "recorded_sha256": recorded_sha,
-                        "actual_sha256": actual,
-                    },
-                )
+    if version.custody == Custody.CAS:
+        # A CAS version whose blob was evicted: the workspace copy is still the
+        # content — serve it, hash-verified, through the same streaming primitive.
+        return _open_verify_stream(source, recorded_sha, version, record.name)
+
+    # Non-served custody (workspace-referenced/external). Detection is still the
+    # universal guarantee: re-hash the referenced file and 409 on a mismatch, then
+    # point the client at the workspace file route (the bytes live there, not in CAS).
+    if recorded_sha:
         try:
-            rel = str(source.expanduser().resolve(strict=False).relative_to(root))
-        except ValueError:
-            rel = ""
-        raise _artifact_error(
-            status_code=409,
-            error="custody_not_cas",
-            message=(
-                "artifact bytes are workspace-referenced, not app-served; fetch via "
-                "the workspace file route"
-            ),
-            details={
-                "artifact_id": version.artifact_id,
-                "custody": version.custody.value,
-                "workspace_id": record.workspace_id,
-                "fetch_via": f"/v1/workspaces/{record.workspace_id}/files/read?path={rel}",
-            },
-        )
-    # CAS (app-served). Hash + serve from ONE open handle so the served bytes ARE the
-    # verified bytes — no read-then-send TOCTOU (the old ``read_bytes`` re-opened the
-    # path after a separate hash) — and stream chunked so a large blob never buffers
-    # whole in RAM. Residual TOCTOU: a same-fd truncation/rewrite between the hash
-    # and the stream is served as-is; CAS is the app-private store, documented limit.
+            actual = _sha256_file(source)
+        except OSError as exc:
+            raise _artifact_error(
+                status_code=404,
+                error="not_found",
+                message="artifact bytes are not readable",
+                details={"artifact_id": version.artifact_id},
+            ) from exc
+        if actual != recorded_sha:
+            raise _artifact_error(
+                status_code=409,
+                error="integrity_violation",
+                message="artifact content no longer matches its recorded hash",
+                details={
+                    "artifact_id": version.artifact_id,
+                    "recorded_sha256": recorded_sha,
+                    "actual_sha256": actual,
+                },
+            )
+    try:
+        rel = str(source.expanduser().resolve(strict=False).relative_to(root))
+    except ValueError:
+        rel = ""
+    raise _artifact_error(
+        status_code=409,
+        error="custody_not_cas",
+        message=(
+            "artifact bytes are workspace-referenced, not app-served; fetch via "
+            "the workspace file route"
+        ),
+        details={
+            "artifact_id": version.artifact_id,
+            "custody": version.custody.value,
+            "workspace_id": record.workspace_id,
+            "fetch_via": f"/v1/workspaces/{record.workspace_id}/files/read?path={rel}",
+        },
+    )
+
+
+def _open_verify_stream(
+    source: Path, recorded_sha: Optional[str], version: ArtifactVersion, record_name: str
+) -> Response:
+    """Open, hash-verify and stream a file through the SOLE byte-serving primitive.
+
+    The ONE ``StreamingResponse`` site in the artifact routes (the one-ladder review
+    guard): hash + serve from ONE open handle so the served bytes ARE the verified
+    bytes — no read-then-send TOCTOU — and stream chunked so a large blob never
+    buffers whole in RAM. A recorded-hash MISMATCH is a 409 ``integrity_violation``;
+    a stat-pinned version (no recorded sha) skips the check (identity was never
+    hashed). Residual TOCTOU: a same-fd truncation between hash and stream is a
+    documented limit of the app-private store.
+    """
     try:
         handle = open(source, "rb")
     except OSError as exc:
@@ -712,7 +748,7 @@ def _serve_bytes(app: FastAPI, record: ArtifactRecord, version: ArtifactVersion)
                 },
             )
         handle.seek(0)
-    return StreamingResponse(_stream_handle(handle), media_type=mime_for(version, record.name))
+    return StreamingResponse(_stream_handle(handle), media_type=mime_for(version, record_name))
 
 
 def _pin_mint(
@@ -731,6 +767,7 @@ def _pin_mint(
     caller re-raises (raising HTTP here would surface as a bare 500 through
     ``to_thread``).
     """
+    from clio_agent.gact.artifacts.cas import ingest_identity  # noqa: PLC0415
     from clio_agent.gact.artifacts.designation import kind_for_path  # noqa: PLC0415
     from clio_agent.tools.file_policy import _is_relative_to  # noqa: PLC0415
 
@@ -761,7 +798,9 @@ def _pin_mint(
             details={"workspace_id": workspace_id, "path": raw_path},
         )
     try:
-        evidence = compute_identity(resolved)
+        # S6 (#972): a user-pinned small file is ingested into CAS (custody ``cas``)
+        # via the single streamed read; over threshold → referenced + typed size.
+        ingested = ingest_identity(resolved, workspace_root=root)
     except OSError:
         return _artifact_error(
             status_code=409,
@@ -769,6 +808,7 @@ def _pin_mint(
             message="could not stat/hash the pin path",
             details={"workspace_id": workspace_id, "path": raw_path},
         )
+    evidence = ingested.evidence
     kind = kind_for_path(resolved)
     if kind_override:
         try:
@@ -795,9 +835,10 @@ def _pin_mint(
                 "designation": "user-pinned",
                 "session_id": sid,
             },
-            custody=Custody.WORKSPACE_REFERENCED,
+            custody=ingested.custody,
             path=str(resolved),
             annotation=annotation,
+            not_ingested_size=ingested.not_ingested_size,
         )
     except ValueError as exc:  # reserved kind (e.g. plan) — typed, not a 500
         return _artifact_error(

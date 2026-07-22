@@ -1130,6 +1130,19 @@ async def _construct_agent_async(app: "FastAPI") -> None:
         return  # wedged store — agent stays unready with a typed agent_init_error
     app.state.agent = agent
 
+    # #972: enforce the CAS store byte budget across every workspace at boot (off-loop,
+    # #1001 cadence — the registry is now folded, so the reachability scan is ready).
+    # Best-effort: a GC failure never blocks the agent coming ready.
+    async def _boot_cas_gc() -> None:
+        try:
+            from clio_agent.gact.artifacts.cas_gc import run_boot_cas_gc  # noqa: PLC0415
+
+            await loop.run_in_executor(None, run_boot_cas_gc, app)
+        except Exception as exc:  # noqa: BLE001 — boot CAS GC is best-effort
+            logger.warning("cas boot gc skipped reason=cas_boot_gc_failed error=%r", exc)
+
+    app.state.cas_boot_gc_task = asyncio.create_task(_boot_cas_gc())
+
     # Install the deferred permission gate + tool observer now that we
     # know an agent exists to gate. See build_app for why these aren't
     # installed at construction time.
