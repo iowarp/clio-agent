@@ -12,8 +12,11 @@ ruleset from INSIDE itself: the ladder composes a tiny python launcher shim
 (:mod:`clio_agent.runtime.landlock_exec`) that applies the ruleset then ``execvp``s the real
 argv. The kernel is probed via ``landlock_create_ruleset(NULL, 0, VERSION)`` (returns the
 supported ABI) rather than parsing ``uname`` — the syscall is the source of truth. ABI ≥ 1
-(kernel ≥ 5.13) = fs write-fence; ABI ≥ 2 (kernel ≥ 5.19) additionally supports
-``LANDLOCK_ACCESS_FS_REFER`` (reported, not required).
+(kernel ≥ 5.13) = fs write-fence; ABI ≥ 2 (kernel ≥ 5.19) additionally handles+grants
+``LANDLOCK_ACCESS_FS_REFER`` so a legitimate cross-directory ``rename``/``link`` between two
+allowed roots (the stage-then-``os.replace`` atomic-write pattern) is PERMITTED instead of
+failing ``EXDEV`` — the shim applies REFER whenever the running ABI supports it (never on
+ABI 1, where an unknown access bit is ``EINVAL``). ``refer_supported`` records that verdict.
 """
 
 from __future__ import annotations

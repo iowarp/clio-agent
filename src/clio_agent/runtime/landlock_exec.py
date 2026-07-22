@@ -7,6 +7,14 @@ module parses that argv, applies a Landlock fs **write** fence granting write ac
 beneath the given roots (reads/execs everywhere stay allowed — an fs-write fence, matching
 the rung's contract), then ``execvp``s the real command so the child runs confined.
 
+The handled write-access set is ABI-adaptive: on Landlock ABI >= 2 (kernel >= 5.19 — the
+common case, and precisely the Ubuntu 24.04+ hosts where bwrap is broken and this rung is THE
+fence) it ALSO handles + grants ``LANDLOCK_ACCESS_FS_REFER`` so a legitimate cross-directory
+``rename``/``link`` BETWEEN two allowed roots (the ubiquitous stage-then-``os.replace`` atomic
+write matplotlib/pandas use) succeeds instead of failing ``EXDEV`` — while an out-of-root
+reparent stays denied (REFER is only granted beneath the allowed roots). The bit is NEVER
+added on ABI 1 (``landlock_create_ruleset`` rejects an unknown access bit with ``EINVAL``).
+
 NO SILENT FALLBACK (house rule): if the ruleset cannot be applied, the shim prints a typed
 reason to stderr and exits non-zero — it NEVER ``exec``s unconfined (a silent fence hole is
 the exact defect the campaign forbids). ``prctl(PR_SET_NO_NEW_PRIVS)`` is set first so
@@ -28,6 +36,10 @@ _NR_CREATE_RULESET = 444
 _NR_ADD_RULE = 445
 _NR_RESTRICT_SELF = 446
 _LANDLOCK_RULE_PATH_BENEATH = 1
+#: create_ruleset(NULL, 0, VERSION) returns the kernel's supported ABI.
+_LANDLOCK_CREATE_RULESET_VERSION = 1
+#: The ABI at which LANDLOCK_ACCESS_FS_REFER (cross-dir rename/link) is available (5.19).
+_ABI_REFER = 2
 
 # prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) — required before an unprivileged restrict_self.
 _PR_SET_NO_NEW_PRIVS = 38
@@ -45,6 +57,9 @@ _FS_MAKE_SOCK = 1 << 9
 _FS_MAKE_FIFO = 1 << 10
 _FS_MAKE_BLOCK = 1 << 11
 _FS_MAKE_SYM = 1 << 12
+#: LANDLOCK_ACCESS_FS_REFER (ABI 2+): reparenting rename/link. Added to the handled+granted
+#: set ONLY on ABI >= 2 so cross-dir os.replace BETWEEN allowed roots works (never on ABI 1).
+_FS_REFER = 1 << 13
 _HANDLED_WRITE_ACCESS = (
     _FS_WRITE_FILE
     | _FS_REMOVE_DIR
@@ -94,20 +109,49 @@ def _syscall(libc: ctypes.CDLL, number: int, *args: object) -> int:
     return int(libc.syscall(ctypes.c_long(number), *args))
 
 
+def _supported_abi(libc: ctypes.CDLL) -> int:
+    """The kernel's supported Landlock ABI (>=1), else <=0 — via create_ruleset(NULL,0,VER)."""
+    return _syscall(
+        libc,
+        _NR_CREATE_RULESET,
+        None,
+        ctypes.c_size_t(0),
+        ctypes.c_uint(_LANDLOCK_CREATE_RULESET_VERSION),
+    )
+
+
+def handled_access_for_abi(abi: int) -> int:
+    """The write-access mask to handle+grant for ``abi``: WRITE family, plus REFER on ABI>=2.
+
+    REFER (cross-dir rename/link) is added ONLY on ABI >= 2 — on ABI 1 an unknown access bit
+    makes ``landlock_create_ruleset`` fail ``EINVAL``, so the mask must stay ABI-1-clean there.
+    """
+    if abi >= _ABI_REFER:
+        return _HANDLED_WRITE_ACCESS | _FS_REFER
+    return _HANDLED_WRITE_ACCESS
+
+
 def apply_write_fence(roots: list[str]) -> None:
     """Apply a Landlock fs WRITE fence granting write access only beneath ``roots``.
 
     Raises ``OSError`` on any syscall failure (the caller maps it to a loud, typed exit).
     Roots that do not exist on disk are skipped (a fence over a not-yet-created cache dir is
     not a failure); at least the ruleset itself is always applied, so an empty/incorrect root
-    set fences MORE, never less.
+    set fences MORE, never less. On ABI >= 2 the mask includes REFER so a cross-dir
+    ``os.replace`` between two allowed roots is permitted (containment preserved — REFER is
+    granted only beneath the roots, so an out-of-root reparent stays denied).
     """
     libc = ctypes.CDLL(None, use_errno=True)
     # No-new-privs first, or restrict_self is rejected for an unprivileged process.
     if libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
         raise OSError(ctypes.get_errno(), "prctl(PR_SET_NO_NEW_PRIVS) failed")
 
-    attr = _RulesetAttr(handled_access_fs=_HANDLED_WRITE_ACCESS)
+    abi = _supported_abi(libc)
+    if abi < 1:
+        raise OSError(ctypes.get_errno() or 38, "landlock unavailable (create_ruleset version)")
+    handled = handled_access_for_abi(abi)
+
+    attr = _RulesetAttr(handled_access_fs=handled)
     ruleset_fd = _syscall(
         libc, _NR_CREATE_RULESET, ctypes.byref(attr), ctypes.sizeof(attr), ctypes.c_uint(0)
     )
@@ -120,7 +164,7 @@ def apply_write_fence(roots: list[str]) -> None:
             except OSError:
                 continue  # a not-yet-created writable root fences nothing to grant; skip it
             try:
-                rule = _PathBeneathAttr(allowed_access=_HANDLED_WRITE_ACCESS, parent_fd=dir_fd)
+                rule = _PathBeneathAttr(allowed_access=handled, parent_fd=dir_fd)
                 rc = _syscall(
                     libc,
                     _NR_ADD_RULE,
