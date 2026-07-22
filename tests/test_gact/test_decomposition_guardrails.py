@@ -47,7 +47,10 @@ from clio_agent.gact.app import build_app
 # 158 -> 161 (#971 S5): +3 lineage/transform routes owned by
 # routes/artifact_lineage.py — GET /v1/artifacts/{id}/lineage, GET
 # /v1/sessions/{sid}/transforms, GET /v1/transforms/{activity_id}.
-EXPECTED_ROUTE_METHOD_PAIRS = 161
+# 161 -> 163 (#973 S7): +2 RO-Crate export routes owned by routes/artifact_export.py
+# — GET /v1/artifacts/{id}/export, GET /v1/sessions/{sid}/export/bundle. (The S7
+# slice added these route modules but left the fingerprint stale; recorded now.)
+EXPECTED_ROUTE_METHOD_PAIRS = 163
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

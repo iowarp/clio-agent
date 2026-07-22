@@ -26,10 +26,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from clio_agent.gact.artifacts.grounding import ground_answer_artifacts
-from clio_agent.gact.artifacts.minting import mint_artifact
+from clio_agent.gact.artifacts.minting import mint_artifact, mint_tool_declared_outputs
 from clio_agent.gact.artifacts.records import (
     ArtifactKind,
     Custody,
+    EvidenceClass,
     IdentityEvidence,
     Mechanism,
 )
@@ -89,24 +90,39 @@ def _register(
     workspace_id: str = "ws1",
     deliverable: bool = True,
 ) -> None:
-    """Register one artifact version — a produced deliverable or a staged input.
+    """Register one PRODUCTION-SHAPED artifact version — a deliverable or a staged input.
 
-    ``deliverable`` → ``hashed-at-use`` evidence (content hashed in the workspace,
-    the substitution-candidate class). Otherwise ``authority-asserted`` +
-    ``external-referenced`` custody (a staged remote input, e.g. the NDP metadata
-    catalog) which grounding must exclude from the candidate set.
+    The discriminator is the version's PRODUCER, not a hand-set evidence class (S7
+    review). Both classes carry the SAME real ``hashed-at-use`` evidence a small
+    on-disk file gets in production (a staged NDP catalog is hashed in-workspace too —
+    it is NOT ``authority-asserted``); what differs is the producing tool:
+
+    * ``deliverable`` → a PROCESSING tool's declared output (``pandas_filter_data``,
+      designation ``tool-arg``) — a candidate.
+    * otherwise → a STAGING tool's result (``ndp_stage_resource`` → ``local_path``,
+      designation ``tool-result``) — an input the run consumed, excluded by
+      :func:`_is_staging_tool`, regardless of its (identical) evidence class.
     """
     data = Path(path).read_bytes() if Path(path).is_file() else b""
+    evidence = IdentityEvidence.hashed_at_use(
+        sha256=hashlib.sha256(data).hexdigest(), size_bytes=len(data)
+    )
     if deliverable:
-        evidence = IdentityEvidence.hashed_at_use(
-            sha256=hashlib.sha256(data).hexdigest(), size_bytes=len(data)
-        )
-        custody = Custody.WORKSPACE_REFERENCED
+        producer = {
+            "tool": "pandas_filter_data",
+            "designation": "tool-arg",
+            "arg": "output_file",
+            "session_id": sid,
+            "call_id": f"call_{name}",
+        }
     else:
-        evidence = IdentityEvidence.authority_asserted(
-            authority="https://catalog.example/ndp/resource"
-        )
-        custody = Custody.EXTERNAL_REFERENCED
+        producer = {
+            "tool": "ndp_stage_resource",
+            "designation": "tool-result",
+            "result_key": "local_path",
+            "session_id": sid,
+            "call_id": f"stage_{name}",
+        }
     mint_artifact(
         app,
         sid,
@@ -114,15 +130,46 @@ def _register(
         workspace_id=workspace_id,
         evidence=evidence,
         kind=kind,
-        mechanism=Mechanism.TOOL_SCHEMA if deliverable else Mechanism.HARNESS,
-        custody=custody,
+        mechanism=Mechanism.TOOL_SCHEMA,
+        custody=Custody.WORKSPACE_REFERENCED,
         path=path,
-        producer={"session_id": sid, "call_id": f"call_{name}"},
+        producer=producer,
     )
 
 
 def _new_session(store: SessionStore, workspace_id: str = "ws1") -> str:
     return store.create(workspace_id=workspace_id, title="t").id
+
+
+def _seam_deliverable(app, sid: str, path: str, *, tool: str = "pandas_filter_data") -> None:
+    """Mint a produced deliverable through the REAL seam (tool-schema, arg channel)."""
+    mint_tool_declared_outputs(
+        app,
+        sid,
+        tool_name=tool,
+        effective_args={"output_file": path},
+        call_id=f"call_{Path(path).name}",
+        workspace_id="ws1",
+    )
+
+
+def _seam_staged(app, sid: str, path: str) -> None:
+    """Mint a STAGED input through the REAL staging seam (ndp_stage_resource result)."""
+    mint_tool_declared_outputs(
+        app,
+        sid,
+        tool_name="ndp_stage_resource",
+        effective_args={},
+        call_id=f"stage_{Path(path).name}",
+        workspace_id="ws1",
+        result={"structuredContent": {"local_path": path}},
+    )
+
+
+def _registry_version(app, sid: str, name: str):
+    """The head version of the ``ws1`` record named ``name`` (test introspection)."""
+    record = app.state.artifact_registry.get("ws1", name)
+    return record.head if record is not None else None
 
 
 # --------------------------------------------------------------------------- #
@@ -169,7 +216,9 @@ def test_parity_staged_authority_input_is_not_a_substitution_candidate(tmp_path:
     real_csv.write_text("time,east,north,up\n0,0,0,0\n")
     catalog = staging / "earthscope_converted_data.csv"
     catalog.write_text("Site,Latitude,Longitude\nP475,32,-117\n")
-    # The deliverable is hashed-at-use; the catalog is a staged authority input.
+    # BOTH are hashed-at-use CSVs (the real production shape); they differ ONLY by
+    # producer — the deliverable is a pandas output, the catalog is a staging-tool
+    # result. The discriminator excludes the catalog by its producer, not its class.
     _register(app, sid, name="station.csv", path=str(real_csv), kind=ArtifactKind.DATASET)
     _register(
         app,
@@ -185,9 +234,10 @@ def test_parity_staged_authority_input_is_not_a_substitution_candidate(tmp_path:
         app, sid, answer, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA
     )
 
-    # Exactly ONE deliverable CSV candidate (the catalog excluded by evidence class),
-    # so the fabricated citation grounds to it. Sabotage: count the catalog as a
-    # candidate and the set becomes ambiguous → no rewrite → this reddens.
+    # Exactly ONE deliverable CSV candidate (the catalog excluded by its STAGING-TOOL
+    # producer, though it is byte-hashed just like the deliverable), so the fabricated
+    # citation grounds to it. Sabotage: count the catalog as a candidate and the set
+    # becomes ambiguous → no rewrite → this reddens.
     assert str(real_csv) in grounded
     assert "/tmp/SAN_timeseries.csv" not in grounded
     assert str(catalog) not in grounded
@@ -397,3 +447,91 @@ def test_include_children_grounds_against_delegate_output(tmp_path: Path) -> Non
         app, parent_sid, answer, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA, include_children=False
     )
     assert "no local png artifact was produced" in off
+
+
+# --------------------------------------------------------------------------- #
+# The producer discriminator on PRODUCTION-SHAPED records (S7 review).
+# --------------------------------------------------------------------------- #
+
+
+def test_stat_pinned_over_ceiling_deliverable_is_a_candidate(tmp_path: Path, monkeypatch) -> None:
+    """A produced deliverable over the hash ceiling is stat-pinned — and STILL a candidate.
+
+    Finding [1]: keying the candidate set on ``evidence_class == hashed-at-use``
+    EXCLUDED a genuine >64MB produced deliverable (production mints it ``stat-pinned``),
+    so the server then falsely authored "no artifact was produced" over a real
+    deliverable. Minted here through the REAL tool-schema seam with the hash ceiling
+    lowered so a small file stat-pins exactly as a >64MB one does in production.
+    """
+    monkeypatch.setenv("CLIO_ARTIFACTS_HASH_MAX_FILE_BYTES", "4")
+    app, store = _grounding_app(tmp_path)
+    sid = _new_session(store)
+    big = tmp_path / "huge_series.csv"
+    big.write_text("time,east\n0,1\n1,2\n")  # > 4 bytes → stat-pinned via the seam
+    _seam_deliverable(app, sid, str(big))
+
+    version = _registry_version(app, sid, "huge_series.csv")
+    # Production shape, not hand-set: the seam really stat-pinned it (no sha256).
+    assert version is not None
+    assert version.evidence.evidence_class is EvidenceClass.STAT_PINNED
+    assert version.sha256 is None
+
+    answer = "Filtered CSV: /tmp/SAN_over_ceiling.csv"
+    grounded = ground_answer_artifacts(app, sid, answer, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
+    # The stat-pinned deliverable IS a substitution candidate. Sabotage: gate the
+    # candidate set on hashed-at-use again and this reddens (fabricated survives, or
+    # is neutralized as "no artifact produced").
+    assert str(big) in grounded
+    assert "/tmp/SAN_over_ceiling.csv" not in grounded
+    assert "no local csv artifact was produced" not in grounded
+
+
+def test_seam_minted_staged_catalog_is_excluded(tmp_path: Path) -> None:
+    """Discriminator on REAL seam shapes: a staged catalog + a deliverable, same ext.
+
+    Both minted through the real seams — the deliverable via the pandas tool-schema
+    arg channel, the catalog via ``ndp_stage_resource``'s ``local_path`` result. Both
+    are hashed-at-use; only the producer distinguishes them, so the fabricated CSV
+    grounds to the single deliverable, never the staged catalog.
+    """
+    app, store = _grounding_app(tmp_path)
+    sid = _new_session(store)
+    deliverable = tmp_path / "clean.csv"
+    deliverable.write_text("time,east\n0,1\n")
+    catalog = tmp_path / "earthscope_converted_data.csv"
+    catalog.write_text("Site,Latitude,Longitude\nP475,32,-117\n")
+    _seam_deliverable(app, sid, str(deliverable))
+    _seam_staged(app, sid, str(catalog))
+
+    # Both were minted hashed-at-use through the real seams (no hand-set class).
+    assert _registry_version(app, sid, "clean.csv").sha256 is not None
+    assert _registry_version(app, sid, "earthscope_converted_data.csv").sha256 is not None
+
+    answer = "Filtered station CSV: /tmp/SAN_timeseries.csv"
+    grounded = ground_answer_artifacts(app, sid, answer, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
+    assert str(deliverable) in grounded
+    assert str(catalog) not in grounded
+    assert "/tmp/SAN_timeseries.csv" not in grounded
+
+
+def test_produced_deliverable_off_disk_is_not_falsely_neutralized(tmp_path: Path) -> None:
+    """A produced deliverable whose bytes are gone is NEVER declared "not produced".
+
+    Finding [1] guard: when a deliverable of the cited ext WAS produced (registered)
+    but its file no longer resolves on disk (a scratch file cleaned up), the citation
+    is left unchanged — the server must not author the affirmatively-false "no local
+    csv artifact was produced" note over a deliverable that genuinely existed.
+    """
+    app, store = _grounding_app(tmp_path)
+    sid = _new_session(store)
+    gone = tmp_path / "produced_then_deleted.csv"
+    gone.write_text("time,east\n0,1\n")
+    _seam_deliverable(app, sid, str(gone))
+    gone.unlink()  # the deliverable was produced, but its bytes are now gone
+
+    answer = "Filtered CSV: /tmp/SAN_missing.csv"
+    grounded = ground_answer_artifacts(app, sid, answer, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
+    # Ambiguity (produced but off-disk) → unchanged, NEVER the false not-produced note.
+    # Sabotage: drop the produced_deliverable_extensions guard and this reddens.
+    assert "no local csv artifact was produced" not in grounded
+    assert "/tmp/SAN_missing.csv" in grounded

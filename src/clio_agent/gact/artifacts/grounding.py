@@ -10,14 +10,21 @@ truth (ids + content hashes) the registry holds — reached with the same
 answer grounds against its delegates' outputs too.
 
 What re-sourcing buys (precision over the old field-scan): the registry's
-per-version **evidence class** distinguishes a locally-PRODUCED deliverable
-(``hashed-at-use`` — content hashed in the workspace) from a **staged remote
-input** (``authority-asserted`` / ``external-referenced`` — the NDP metadata
-catalog's class, owner decision #966.7). Only produced deliverables are
-substitution candidates, so an incidental staged input can never be mistaken for
-the run's deliverable — the exact ambiguity the old ``artifact_paths`` field
-restriction guarded against, now grounded in provenance rather than a declared
-path list.
+per-version **producer** distinguishes a locally-PRODUCED deliverable from a
+**staged input** the run consumed. A staging tool's output (``ndp_stage_resource``
+and any ``stage_*`` family — the NDP metadata catalog is downloaded this way) is an
+input, never the deliverable the answer cites, so it is excluded from the
+substitution candidate set. Every OTHER producer — a processing tool's declared
+output (``tool-schema``), an agent proposal, a user pin, a harness write — is a
+deliverable REGARDLESS of its evidence class: a stat-pinned (>64MB) produced output
+is still a real deliverable, so it is a candidate too. The discriminator is the
+version's producer, not its evidence class (S7 review): keying on
+``evidence_class == hashed-at-use`` both EXCLUDED genuine stat-pinned deliverables
+(the server would then falsely author "no artifact was produced") AND relied on a
+staged-input class (``authority-asserted``) production never actually mints — so the
+old precision claim was synthetic. This is the exact ambiguity the old
+``artifact_paths`` field restriction guarded against, now grounded in the producing
+provenance rather than a declared path list.
 
 The pack schema's ``artifact_extensions`` still scopes WHICH fabricated-path
 *types* to check (a pack that declares no deliverable types grounds nothing —
@@ -35,11 +42,11 @@ filesystem existence check; no mutation, no I/O beyond ``Path.is_file``.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from clio_agent.gact.artifacts.records import Custody, EvidenceClass
 from clio_agent.gact.artifacts.registry import get_registry
 
 if TYPE_CHECKING:
@@ -79,19 +86,30 @@ def _is_remote_ref(value: str) -> bool:
     return value.startswith(("http://", "https://", "ftp://", "//")) or "://" in value
 
 
-def _produced_deliverable(custody: Custody, evidence_class: EvidenceClass) -> bool:
+def _is_staging_tool(tool: str) -> bool:
+    """Whether a producing tool name is a STAGING tool (produces a consumed input).
+
+    Segment-exact on the ``stage`` verb — never a substring, so ``backstage`` /
+    ``multistaged`` / ``get_stage_status`` do NOT match — covering the ``stage_*``
+    family and the canonical ``ndp_stage_resource``. A staging tool downloads/stages
+    a remote input the run then consumes (the NDP metadata catalog), so its output is
+    never the deliverable an answer cites.
+    """
+    segments = [s for s in re.split(r"[^a-z0-9]+", (tool or "").strip().lower()) if s]
+    return "stage" in segments
+
+
+def _produced_deliverable(producer: Mapping[str, Any]) -> bool:
     """Whether a registered version is a locally-produced deliverable, not a staged input.
 
-    A produced deliverable had its content hashed in the workspace
-    (``hashed-at-use``). A staged remote input is pinned by an authority locator
-    (``authority-asserted``, the NDP metadata catalog's class) or its bytes live
-    outside the workspace (``external-referenced``) — those are inputs the run
-    consumed, never the deliverable the answer cites, so they are excluded from
-    the substitution candidate set (precision over recall, owner decision #966.10).
+    The discriminator is the version's PRODUCER, not its evidence class (S7 review).
+    A staging tool's output (:func:`_is_staging_tool`) is an input the run consumed —
+    excluded from the substitution candidate set. Every other producer — a processing
+    tool's declared output (``tool-schema``), an agent proposal, a user pin, a harness
+    write — is a deliverable REGARDLESS of its evidence class, so a stat-pinned (>64MB)
+    produced output is a candidate too (precision over recall, owner decision #966.10).
     """
-    if custody is Custody.EXTERNAL_REFERENCED:
-        return False
-    return evidence_class is EvidenceClass.HASHED_AT_USE
+    return not _is_staging_tool(str((producer or {}).get("tool") or ""))
 
 
 def _session_workspace_id(app: "FastAPI", sid: str) -> str:
@@ -155,7 +173,7 @@ def registered_deliverable_paths_by_ext(
                 path = str(version.path or "").strip()
                 if not path or _is_remote_ref(path):
                     continue
-                if not _produced_deliverable(version.custody, version.evidence.evidence_class):
+                if not _produced_deliverable(version.producer):
                     continue
                 lowered = path.lower()
                 for ext in ext_set:
@@ -168,6 +186,44 @@ def registered_deliverable_paths_by_ext(
                     if on_disk and path not in found[ext]:
                         found[ext].append(path)
                     break
+    return found
+
+
+def produced_deliverable_extensions(
+    app: "FastAPI",
+    sid: str,
+    *,
+    extensions: tuple[str, ...],
+    include_children: bool = True,
+) -> set[str]:
+    """The declared extensions with a PRODUCED deliverable registered — on disk or not.
+
+    Same producer discriminator as :func:`registered_deliverable_paths_by_ext`, but
+    WITHOUT the on-disk filter. It answers "was a deliverable of this type produced
+    this run?" independent of whether its bytes still resolve on disk (a scratch file
+    may have been cleaned up). :func:`ground_answer_artifacts` uses it to guard the
+    neutralize path: it must NEVER author a "no local <ext> artifact was produced"
+    note while a produced deliverable of that ext exists in the registry — that would
+    be an affirmatively false statement authored into the answer (S7 review).
+    """
+    found: set[str] = set()
+    if not extensions:
+        return found
+    registry = get_registry(app)
+    ext_set = {ext.lower() for ext in extensions}
+    for workspace_id in _grounding_workspaces(app, sid, include_children=include_children):
+        for record in registry.list_for_workspace(workspace_id):
+            for version in record.versions:
+                path = str(version.path or "").strip()
+                if not path or _is_remote_ref(path):
+                    continue
+                if not _produced_deliverable(version.producer):
+                    continue
+                lowered = path.lower()
+                for ext in ext_set:
+                    if lowered.endswith("." + ext):
+                        found.add(ext)
+                        break
     return found
 
 
@@ -205,6 +261,9 @@ def ground_answer_artifacts(
     verified = registered_deliverable_paths_by_ext(
         app, sid, extensions=schema.artifact_extensions, include_children=include_children
     )
+    produced_exts = produced_deliverable_extensions(
+        app, sid, extensions=schema.artifact_extensions, include_children=include_children
+    )
     token_re = _artifact_path_token_re(schema.artifact_extensions)
     framing_re = _artifact_path_missing_framing_re(schema.artifact_extensions)
 
@@ -239,8 +298,14 @@ def ground_answer_artifacts(
         if len(candidates) == 1:
             # Exactly one verified deliverable of this type: correct the citation.
             result = result.replace(token, candidates[0])
+        elif ext in produced_exts:
+            # A produced deliverable of this type IS registered but its bytes do not
+            # resolve on disk right now (a scratch file cleaned up). Authoring a
+            # "no artifact was produced" note here would be an affirmatively false
+            # statement — leave the citation unchanged (ambiguity, typed note).
+            continue
         else:
-            # No real local deliverable of this type exists this run: drop the
+            # No local deliverable of this type was produced this run: drop the
             # fabricated path rather than present an unproduced file as real.
             result = result.replace(token, f"[no local {ext} artifact was produced this run]")
     return result
@@ -248,5 +313,6 @@ def ground_answer_artifacts(
 
 __all__ = [
     "ground_answer_artifacts",
+    "produced_deliverable_extensions",
     "registered_deliverable_paths_by_ext",
 ]

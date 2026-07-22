@@ -3319,3 +3319,96 @@ def test_render_report_from_multiple_jsonls_combines_marketplace_evidence(tmp_pa
     assert "at least five distinct marketplace Agent Blueprints | 5 | 5 | pass" in report_text
     assert "seismic-waveform-review" in report_text
     assert "genomics-review" in report_text
+
+
+# --------------------------------------------------------------------------- #
+# Registry wire-query coverage (finding [13]): _registry_artifact_paths against a
+# live gact app + a seeded registry, exercised through the real artifacts route.
+# --------------------------------------------------------------------------- #
+
+
+def _seed_gact_app(tmp_path: Path):
+    """A live gact app + TestClient with a workspace + session (registry source).
+
+    A real in-memory ARC is passed explicitly (ARC is the source of the highway; the
+    artifact-mint emit fails loud without one — the test_gact autouse fixture that
+    injects it does not run under tests/test_scripts).
+    """
+    from fastapi.testclient import TestClient
+
+    from clio_agent.arc.live import _MemoryStore
+    from clio_agent.arc.memory import ARCMemory
+    from clio_agent.gact.app import build_app
+
+    app = build_app(
+        sessions_path=tmp_path / "sessions.json",
+        arc=ARCMemory(data_dir=str(tmp_path / "arc"), store=_MemoryStore()),
+    )
+    client = TestClient(app)
+    client.__enter__()
+    wid = client.post(
+        "/v1/workspaces", json={"name": "w", "root_path": str(tmp_path)}
+    ).json()["id"]
+    sid = client.post("/v1/sessions", json={"workspace_id": wid}).json()["id"]
+    return app, client, wid, sid
+
+
+def _mint_registry_artifact(client, sid, tmp_path: Path, name: str, *, on_disk: bool = True) -> str:
+    """Register an artifact through the real user-pin route; return its on-disk path.
+
+    ``on_disk=False`` registers it (bytes exist at pin time) then DELETES the file, so
+    the registry keeps the version but ``_registry_artifact_paths``' is_file filter
+    must exclude it.
+    """
+    path = tmp_path / name
+    path.write_bytes(b"x\n")
+    resp = client.post(f"/v1/sessions/{sid}/artifacts/pin", json={"path": name})
+    assert resp.status_code == 200, resp.text
+    if not on_disk:
+        path.unlink()
+    return str(path)
+
+
+def test_registry_artifact_paths_extracts_and_filters(tmp_path: Path) -> None:
+    """The wire query pulls on-disk version paths from the artifacts route, deduped —
+    and a registered-but-missing path is excluded by the is_file filter."""
+    _app, client, _wid, sid = _seed_gact_app(tmp_path)
+    try:
+        _mint_registry_artifact(client, sid, tmp_path, "one.csv")
+        _mint_registry_artifact(client, sid, tmp_path, "two.png")
+        # A registered version whose bytes are gone → excluded (is_file filter).
+        _mint_registry_artifact(client, sid, tmp_path, "gone.csv", on_disk=False)
+
+        paths = bench._registry_artifact_paths(client, sid)
+    finally:
+        client.__exit__(None, None, None)
+
+    # Extracts the version paths, deduped; the missing file is filtered out. Sabotage:
+    # drop the is_file filter and "gone.csv" leaks in → reddens.
+    assert {Path(p).name for p in paths} == {"one.csv", "two.png"}
+    assert len(paths) == len(set(paths)) == 2
+
+
+def test_registry_artifact_paths_walks_multiple_pages(tmp_path: Path) -> None:
+    """The cursor walk crosses the 200-item page boundary (bounded pagination) — a
+    seed of 205 on-disk artifacts must ALL be returned, proving both pages walked."""
+    _app, client, _wid, sid = _seed_gact_app(tmp_path)
+    try:
+        for i in range(205):
+            _mint_registry_artifact(client, sid, tmp_path, f"a{i:03d}.csv")
+        paths = bench._registry_artifact_paths(client, sid)
+    finally:
+        client.__exit__(None, None, None)
+
+    # All 205 across both pages (page 1 = 200, page 2 = 5). Sabotage: drop the
+    # next_cursor walk and only the first 200 come back → reddens.
+    assert len(paths) == 205
+
+
+def test_registry_artifact_paths_unknown_session_is_empty(tmp_path: Path) -> None:
+    """A 404 (unknown session) stops the walk cleanly → empty list, never a crash."""
+    _app, client, _wid, sid = _seed_gact_app(tmp_path)
+    try:
+        assert bench._registry_artifact_paths(client, "sess_missing") == []
+    finally:
+        client.__exit__(None, None, None)

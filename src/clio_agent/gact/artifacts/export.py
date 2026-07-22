@@ -50,6 +50,9 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
 #: RO-Crate 1.1 context + the clio/prov/sha256 vocabulary the crate uses.
+#: Both PROV lineage terms are mapped (finding [5]): ``wasGeneratedBy`` is NOT in the
+#: RO-Crate 1.1 base context and there is no ``@vocab``, so without this mapping a
+#: strict JSON-LD expansion would DROP every File→producing-Activity edge.
 _RO_CRATE_CONTEXT: list[Any] = [
     "https://w3id.org/ro/crate/1.1/context",
     {
@@ -57,8 +60,33 @@ _RO_CRATE_CONTEXT: list[Any] = [
         "prov": "http://www.w3.org/ns/prov#",
         "sha256": "https://w3id.org/security#sha256",
         "wasRevisionOf": "prov:wasRevisionOf",
+        "wasGeneratedBy": "prov:wasGeneratedBy",
     },
 ]
+
+#: Default license for the RO-Crate root Dataset (finding [10]). RO-Crate 1.1 marks
+#: ``license`` as SHOULD; ``NOASSERTION`` (SPDX) honestly declares "no license
+#: asserted" rather than omitting the field. Config-first (#985) via the knob below.
+_DEFAULT_EXPORT_LICENSE = "NOASSERTION"
+
+
+def _export_license() -> str:
+    """Resolve the crate root license (finding [10]) from config; default NOASSERTION."""
+    from clio_agent import conf  # noqa: PLC0415
+
+    return conf.resolve(
+        "artifacts.export_license",
+        env="CLIO_ARTIFACTS_EXPORT_LICENSE",
+        default=_DEFAULT_EXPORT_LICENSE,
+        cast=conf.as_str,
+    )
+
+
+def _now_date_iso() -> str:
+    """The crate publication date (finding [10]) — ISO 8601 ``YYYY-MM-DD``, UTC."""
+    from datetime import datetime, timezone  # noqa: PLC0415
+
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
 class ExportBundle:
@@ -135,12 +163,26 @@ def _version_bytes(
     return None
 
 
-def _safe_bundle_name(name: str, version: int, artifact_id: str) -> str:
-    """A crate-safe ``data/`` filename for a version (collision-free per version)."""
+def _safe_segment(value: str) -> str:
+    """Sanitize an id to a single filesystem/@id-safe path segment (no separators)."""
+    cleaned = "".join(c if c.isalnum() or c in "._-" else "_" for c in str(value))
+    return cleaned.strip("._-") or "ws"
+
+
+def _safe_bundle_name(name: str, version: int, artifact_id: str, workspace_id: str) -> str:
+    """A crate-relative ``data/`` path for a version, NAMESPACED by workspace (finding [11]).
+
+    A bundle can union artifacts from several workspaces (a parent orchestrator carries
+    its delegates'), where two DIFFERENT records legitimately share a name+version.
+    Keying the ``data/`` path on name+version alone silently overwrote one record's
+    bytes with another's and minted two File entities with the identical ``@id`` (a
+    malformed crate). Prefixing the workspace segment keeps cross-workspace same-name
+    artifacts distinct in both the archive and the JSON-LD graph.
+    """
     stem = Path(name).name or artifact_id
     suffix = Path(stem).suffix
     base = stem[: len(stem) - len(suffix)] if suffix else stem
-    return f"{base}.v{version}{suffix}"
+    return f"data/{_safe_segment(workspace_id)}/{base}.v{version}{suffix}"
 
 
 def _build_nodes(
@@ -157,7 +199,9 @@ def _build_nodes(
             bundle_path = ""
             data = _version_bytes(app, root, version, max_bytes=max_bytes)
             if data is not None:
-                rel = f"data/{_safe_bundle_name(record.name, version.version, version.artifact_id)}"
+                rel = _safe_bundle_name(
+                    record.name, version.version, version.artifact_id, record.workspace_id
+                )
                 bundle.add_file(rel, data)
                 bundle_path = rel
                 if version.sha256:
@@ -349,6 +393,12 @@ def _ro_crate_metadata(
             "PROV lineage; TransformRecords are CreateActions. reproduce.py compiles the "
             "lineage into a deterministic re-run with per-stage sha256 assertions."
         ),
+        # RO-Crate 1.1 Root Data Entity recommended fields (finding [10]):
+        # ``datePublished`` (ISO 8601, ``date`` granularity) is a MUST; ``license`` is
+        # a SHOULD (``NOASSERTION`` when none is configured). Their absence made the
+        # crate formally non-conformant to the profile it declares.
+        "datePublished": _now_date_iso(),
+        "license": _export_license(),
         "clio:workspace_id": workspace_id,
         "hasPart": [
             *file_ids,

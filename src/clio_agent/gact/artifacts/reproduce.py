@@ -148,21 +148,48 @@ def _primary_output(outputs: list[ArtifactNode]) -> Optional[ArtifactNode]:
     return outputs[0] if outputs else None
 
 
+# Translator kinds — the plain-tool family a recognized tool maps to.
+_TR_DOWNLOAD = "download"
+_TR_PANDAS = "pandas"
+_TR_PLOT = "plot"
+
+#: EXACT tool-name → translator kind (frozen; NO substring matching — finding [3]).
+#: Substring dispatch mis-routed unrelated tools (``reconfigure_workspace`` matched
+#: ``figure``; ``get_stage_status`` matched ``stage``) and stamped them with a false
+#: verdict + an un-passable sha assert. An unrecognized tool is AGENTIC-ONLY, never
+#: mis-translated — precision over recall (owner decision #966.10). Add a tool here
+#: (with a verified translator) rather than widen the match.
+_TOOL_TRANSLATORS: dict[str, str] = {
+    "ndp_stage_resource": _TR_DOWNLOAD,
+    "stage_resource": _TR_DOWNLOAD,
+    "pandas_filter_data": _TR_PANDAS,
+    "plot_plot_timeseries": _TR_PLOT,
+    "plot_timeseries": _TR_PLOT,
+}
+
+
 def _translate_stage(
     tool: str, args: dict, inputs: list[ArtifactNode], outputs: list[ArtifactNode]
-) -> tuple[StageVerdict, str, list[str]]:
+) -> tuple[StageVerdict, str, list[str], bool]:
     """Translate a tool call to code + a base verdict (before pin/env gating).
 
-    Returns ``(verdict, reason, code_lines)``. The verdict here reflects only
-    *translatability*; :func:`compile_reproduce` downgrades a DETERMINISTIC stage to
-    RE_RUNNABLE when an input is not content-pinned or the env tier is too weak.
+    Returns ``(verdict, reason, code_lines, sha_assertable)``. Dispatch is by EXACT
+    tool name (:data:`_TOOL_TRANSLATORS`), never a substring. The verdict here reflects
+    only *translatability*; :func:`compile_reproduce` downgrades a DETERMINISTIC stage
+    to RE_RUNNABLE when an input is not content-pinned or the env tier is too weak.
+    ``sha_assertable`` is ``False`` when the emitted code does NOT actually write the
+    output (an MCP-invocation reference), so no sha assert it can't back is appended.
+
+    SECURITY: every recorded arg value interpolated into the generated source goes
+    through ``repr`` / ``json.dumps`` — model/data-derived text (a query expression, a
+    url, a column name) can never break out of its string literal into live code.
     """
-    lname = tool.lower()
+    kind = _TOOL_TRANSLATORS.get(tool.strip().lower())
     out = _primary_output(outputs)
     out_path = out.name if out is not None else "output.bin"
 
-    # ---- staged download (stage_resource / fetch / download) ----------------
-    if any(tok in lname for tok in ("stage_resource", "stage", "download", "fetch")):
+    # ---- staged download (ndp_stage_resource / stage_resource) --------------
+    if kind == _TR_DOWNLOAD:
         url = _pick(args, "source_url", "url", "resource_url", "metadata_source_url", "href")
         if url:
             code = [
@@ -177,29 +204,44 @@ def _translate_stage(
             ]
             # A staged download's input is a mutable remote locator (authority),
             # never bit-pinned — re-runnable, but the output sha assert guards it.
-            return StageVerdict.RE_RUNNABLE, "staged_download_authority_input", code
-        return StageVerdict.AGENTIC_ONLY, "stage_missing_source_url", []
+            return StageVerdict.RE_RUNNABLE, "staged_download_authority_input", code, True
+        return StageVerdict.AGENTIC_ONLY, "stage_missing_source_url", [], False
 
-    # ---- pandas filter (pandas_filter_data / filter / query) ----------------
-    if any(tok in lname for tok in ("pandas", "filter_data", "filter", "query")):
+    # ---- pandas filter (pandas_filter_data) ---------------------------------
+    if kind == _TR_PANDAS:
         in_path = inputs[0].name if inputs else _pick(args, "input_path", "path", "csv")
-        expr = _pick(args, "expression", "query", "filter", "pandas_expression", "where")
-        if in_path:
+        expr = _pick(args, "expression", "query", "pandas_expression", "where")
+        # DETERMINISTIC only when the recorded args match the query-expression shape
+        # the translator ACTUALLY reproduces (finding [9]). A structured filter DSL
+        # (``filter_conditions`` dict, etc.) is NOT that shape — dropping it silently
+        # and stamping DETERMINISTIC would ship an un-passable sha assert, so the
+        # stage becomes a re-runnable MCP reference with NO sha assert.
+        if in_path and expr:
             code = [
                 "import pandas as pd",
                 f"_df = pd.read_csv({in_path!r})",
+                f"_df = _df.query({expr!r})  # recorded filter expression",
             ]
-            if expr:
-                code.append(f"_df = _df.query({expr!r})  # recorded filter expression")
             columns = args.get("columns")
             if isinstance(columns, list) and columns:
                 code.append(f"_df = _df[{list(columns)!r}]  # recorded column projection")
             code.append(f"_df.to_csv({out_path!r}, index=False)")
-            return StageVerdict.DETERMINISTIC, "", code
-        return StageVerdict.AGENTIC_ONLY, "filter_missing_input", []
+            return StageVerdict.DETERMINISTIC, "", code, True
+        return (
+            StageVerdict.RE_RUNNABLE,
+            "pandas_filter_shape_not_reproduced",
+            _mcp_reference(
+                tool,
+                args,
+                outputs,
+                reason="pandas_filter_shape_not_reproduced",
+                label="NOT REPRODUCED",
+            ),
+            False,
+        )
 
-    # ---- timeseries plot (plot_timeseries / plot / chart / figure) ----------
-    if any(tok in lname for tok in ("plot_timeseries", "plot", "chart", "figure", "timeseries")):
+    # ---- timeseries plot (plot_plot_timeseries / plot_timeseries) -----------
+    if kind == _TR_PLOT:
         in_path = inputs[0].name if inputs else _pick(args, "input_path", "path", "csv")
         if in_path:
             x = _pick(args, "x", "x_col", "time_col") or "index"
@@ -220,17 +262,30 @@ def _translate_stage(
             code.append(f"_fig.savefig({out_path!r})")
             # A raster plot's bytes depend on the matplotlib/freetype stack even
             # with pinned inputs — translatable but re-runnable, not bit-identical.
-            return StageVerdict.RE_RUNNABLE, "raster_render_env_sensitive", code
-        return StageVerdict.AGENTIC_ONLY, "plot_missing_input", []
+            return StageVerdict.RE_RUNNABLE, "raster_render_env_sensitive", code, True
+        return StageVerdict.AGENTIC_ONLY, "plot_missing_input", [], False
 
     # ---- unknown tool -> agentic-only reference -----------------------------
-    return StageVerdict.AGENTIC_ONLY, "no_registry_translation", []
+    return StageVerdict.AGENTIC_ONLY, "no_registry_translation", [], False
 
 
-def _agentic_reference(
-    tool: str, args: dict, outputs: list[ArtifactNode], reason: str
+def _mcp_reference(
+    tool: str,
+    args: dict,
+    outputs: list[ArtifactNode],
+    *,
+    reason: str,
+    label: str = "AGENTIC-ONLY",
 ) -> list[str]:
-    """The non-executable MCP-invocation reference for an untranslatable stage."""
+    """A non-executable MCP-invocation reference (recorded tool + args) for a stage.
+
+    Shared by AGENTIC-ONLY stages (no translation) and a translatable tool whose
+    recorded args do NOT match the reproduced shape (finding [9], ``label`` =
+    ``NOT REPRODUCED``). The recorded args are serialized via ``json.dumps`` (safe,
+    never interpolated as code) into a comment block, then a ``raise SystemExit``
+    breaks the chain deterministically — the stage cannot be reproduced here, so it
+    never silently produces wrong bytes.
+    """
     out = _primary_output(outputs)
     out_name = out.name if out is not None else "(no output)"
     try:
@@ -238,7 +293,7 @@ def _agentic_reference(
     except (TypeError, ValueError):
         args_repr = repr(args)
     lines = [
-        f"# AGENTIC-ONLY ({reason}): no registry translation for tool {tool!r}.",
+        f"# {label} ({reason}): re-run tool {tool!r} via its MCP invocation.",
         "# Re-hand the recorded task to a live agent, or invoke the MCP tool directly:",
         f"#   tool: {tool}",
     ]
@@ -246,8 +301,8 @@ def _agentic_reference(
     lines.append(f"#   -> produces: {out_name}")
     lines.append(
         _raise_line(
-            f"[reproduce] agentic-only stage: cannot reproduce {out_name} "
-            f"deterministically (tool {tool} has no translation)"
+            f"[reproduce] {reason}: cannot reproduce {out_name} deterministically "
+            f"(tool {tool}); re-run it via its MCP invocation"
         )
     )
     return lines
@@ -304,7 +359,7 @@ def _topological_order(transforms: list[TransformRecord]) -> list[TransformRecor
     return [by_id[cid] for cid in ordered]
 
 
-_PREAMBLE = '''\
+_PREAMBLE_DOC = '''\
 """Deterministic reproduction of an exported clio artifact lineage.
 
 Auto-generated by clio-agent (S7 #973). Each stage translates one recorded tool
@@ -314,16 +369,14 @@ stages run but may not be bit-identical; AGENTIC-ONLY / GAP stages break the cha
 
 Run from the crate root (the directory holding this file and ``data/``):
     python reproduce.py
-"""
+"""'''
 
-import hashlib
+_PREAMBLE_IMPORTS = """import hashlib
 import os
 import shutil
-import sys
+import sys"""
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-os.chdir(_HERE)
-
+_SHA_HELPERS = '''
 
 def _sha256(path):
     h = hashlib.sha256()
@@ -345,6 +398,35 @@ def _assert_sha(path, expected, name):
     print("[reproduce] %s: sha256 OK %s" % (name, expected))
 '''
 
+#: The ``reproduce.py`` preamble: anchor on the SCRIPT's own directory via
+#: ``__file__`` (valid in a run script), then the sha helpers.
+_PREAMBLE = (
+    _PREAMBLE_DOC
+    + "\n\n"
+    + _PREAMBLE_IMPORTS
+    + "\n\n_HERE = os.path.dirname(os.path.abspath(__file__))\nos.chdir(_HERE)\n"
+    + _SHA_HELPERS
+)
+
+#: The notebook's first code cell (finding [4]): a Jupyter kernel has NO ``__file__``,
+#: so the script preamble's ``os.path.abspath(__file__)`` bootstrap raises ``NameError``
+#: on the very first cell and the whole notebook is dead. This variant is cwd-anchored
+#: and asserts the expected crate layout up front instead — the user runs the notebook
+#: FROM the crate root, and a missing ``data/`` is a clear, immediate error.
+_NOTEBOOK_PREAMBLE = (
+    _PREAMBLE_IMPORTS
+    + "\n\n"
+    + "# Jupyter kernels have no __file__: anchor on the working directory. Run this\n"
+    + "# notebook FROM the crate root (the folder holding reproduce.ipynb and data/).\n"
+    + 'if not os.path.isdir("data"):\n'
+    + "    raise RuntimeError(\n"
+    + '        "run this notebook from the crate root: expected a ./data directory next "\n'
+    + '        "to reproduce.ipynb (cwd=%s); in Jupyter run os.chdir(\\"/path/to/crate\\")."\n'
+    + "        % os.getcwd()\n"
+    + "    )\n"
+    + _SHA_HELPERS
+)
+
 
 def compile_reproduce(
     transforms: list[TransformRecord],
@@ -360,8 +442,10 @@ def compile_reproduce(
     ``lockfile-hash``); when omitted the first transform's environment is used.
     """
     ordered = _topological_order(transforms)
+    # The ``environment`` param is a fallback for the header banner + an empty lineage
+    # only; per-stage determinism is gated by THAT stage's OWN transform environment
+    # (finding [6]), never a blanket tier taken from the first transform.
     env = environment or (ordered[0].environment if ordered else EnvironmentRecord())
-    env_ok = tier_at_least(env.tier, EnvironmentTier.LOCKFILE_HASH)
 
     stages: list[CompiledStage] = []
     emitted_write_bytes: set[str] = set()
@@ -369,9 +453,9 @@ def compile_reproduce(
     def _emit_write_bytes_stage(node: ArtifactNode, index: int) -> CompiledStage:
         """A model-designated inline artifact: write the recorded bytes from CAS."""
         code = [
-            f"_src = os.path.join('data', {node.bundle_path.split('/')[-1]!r})"
-            if node.bundle_path
-            else "_src = None",
+            # ``bundle_path`` is the full crate-relative path (``data/<ws>/<file>``,
+            # workspace-namespaced — finding [11]); use it verbatim, never a basename.
+            f"_src = {node.bundle_path!r}" if node.bundle_path else "_src = None",
             f"_out = {node.name!r}",
         ]
         if node.bundle_path:
@@ -418,33 +502,49 @@ def compile_reproduce(
                 )
             ]
         else:
-            verdict, reason, code = _translate_stage(
+            verdict, reason, code, assertable = _translate_stage(
                 transform.instrument.tool, dict(transform.instrument.args), inputs, outputs
             )
             if not code and verdict is StageVerdict.AGENTIC_ONLY:
-                code = _agentic_reference(
-                    transform.instrument.tool, dict(transform.instrument.args), outputs, reason
+                code = _mcp_reference(
+                    transform.instrument.tool,
+                    dict(transform.instrument.args),
+                    outputs,
+                    reason=reason,
                 )
             elif verdict is StageVerdict.DETERMINISTIC:
-                # Downgrade honestly: an unpinned/authority input or a weak env tier
-                # means the run is described but not bit-identical-guaranteed.
+                # Downgrade honestly from THIS stage's OWN environment tier (finding
+                # [6]) + its own input pinning — never a blanket first-transform gate.
                 inputs_pinned = all(
                     e.evidence in (EdgeEvidence.HASH_PAIR,) and e.sha256
                     for e in transform.used
                     if e.artifact_id
                 )
-                if not env_ok:
+                if not tier_at_least(transform.environment.tier, EnvironmentTier.LOCKFILE_HASH):
                     verdict, reason = StageVerdict.RE_RUNNABLE, "env_below_lockfile_hash"
                 elif transform.used and not inputs_pinned:
                     verdict, reason = StageVerdict.RE_RUNNABLE, "inputs_not_hash_pinned"
-            # Append the sha assert for every executable (non-agentic, non-gap) stage.
-            if verdict in (
+            # Append the sha assert ONLY for the output the translation actually writes
+            # (the primary output), and only when the code writes bytes (``assertable``).
+            # A secondary generated output the stage does NOT write gets a typed note,
+            # never an ``_assert_sha`` against a file the code never created (findings
+            # [8]/[14] — that would crash with FileNotFoundError, not a clean verdict).
+            if assertable and verdict in (
                 StageVerdict.DETERMINISTIC,
                 StageVerdict.RE_RUNNABLE,
                 StageVerdict.WRITE_BYTES,
             ):
+                primary = _primary_output(outputs)
+                primary_id = primary.artifact_id if primary is not None else ""
                 for node in outputs:
-                    code.append(f"_assert_sha({node.name!r}, {node.sha256!r}, {node.name!r})")
+                    if node.artifact_id == primary_id:
+                        code.append(f"_assert_sha({node.name!r}, {node.sha256!r}, {node.name!r})")
+                    else:
+                        code.append(
+                            f"# unreproduced_output: {node.name} "
+                            f"(this stage's translation writes only "
+                            f"{primary.name if primary is not None else '?'})"
+                        )
 
         stages.append(
             CompiledStage(
@@ -503,7 +603,8 @@ def compile_notebook(script: ReproduceScript) -> dict:
 
     The staged variant the owner extension asks for: a markdown header, then one
     code cell per stage with its verdict banner, so a user can run/inspect stages
-    individually. The preamble (hash helpers) is its own first code cell.
+    individually. The first code cell is the KERNEL-SAFE preamble (finding [4]): it
+    has no ``__file__`` (undefined in Jupyter) and asserts the crate layout instead.
     """
     cells: list[dict] = [
         {
@@ -522,7 +623,7 @@ def compile_notebook(script: ReproduceScript) -> dict:
             "execution_count": None,
             "metadata": {},
             "outputs": [],
-            "source": [_PREAMBLE],
+            "source": [_NOTEBOOK_PREAMBLE],
         },
     ]
     for stage in script.stages:

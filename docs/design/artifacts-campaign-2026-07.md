@@ -38,11 +38,20 @@ visible, never silent.
    against the session's **registered artifacts** (registry-sourced, `sha256`,
    `include_children` reach), scoped to the pack schema's declared deliverable
    *extension* vocabulary (a cheap type list, never a path scan). Precision gain:
-   the registry's evidence class separates a produced deliverable (`hashed-at-use`)
-   from a staged remote input (`authority-asserted` / `external-referenced`), so an
-   incidental staged input is never a substitution candidate. A grounding-parity
-   suite proves registry-sourced ≥ the old heuristics on the six recorded EarthScope
-   corpora + the widget de-domaining case.
+   the version's **producer** separates a produced deliverable (a processing tool's
+   `tool-schema` output, an agent proposal, a user pin, a harness write) from a
+   staged input (a staging tool — `ndp_stage_resource` / any `stage_*` — whose result
+   the run consumed), so an incidental staged input is never a substitution candidate
+   *regardless of evidence class* — a stat-pinned (>64MB) produced deliverable is
+   still a candidate. (S7 review correction: keying on `evidence_class ==
+   hashed-at-use` both EXCLUDED genuine stat-pinned deliverables — the server then
+   falsely authored "no artifact was produced" — and leaned on `authority-asserted`,
+   a class production never actually mints, making the precision claim synthetic.)
+   The neutralize path never authors a "no local artifact" note while a produced
+   deliverable of that ext exists in the registry (ambiguity → left unchanged). A
+   grounding-parity suite proves registry-sourced ≥ the old heuristics on the six
+   recorded EarthScope corpora + the widget de-domaining case, on production-shaped
+   records minted through the real seams.
 
 2. **Harness / benchmark graders re-sourced (deletion item 5).** `clio_sut._artifacts`
    (the tool-output path scraper), `run_demo_benchmark._artifact_paths` /
