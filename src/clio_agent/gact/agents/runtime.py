@@ -42,7 +42,7 @@ __all__ = [
 def _prediction_structured_metadata(result: Any) -> dict[str, Any]:
     return {
         key: getattr(result, key)
-        for key in ("workflow_state", "evidence", "artifacts", "errors", "delegation")
+        for key in ("workflow_state", "evidence", "errors", "delegation")
         if getattr(result, key, None) not in (None, "")
     }
 

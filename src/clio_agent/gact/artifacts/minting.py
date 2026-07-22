@@ -38,6 +38,7 @@ from clio_agent.gact.artifacts.records import (
 )
 from clio_agent.gact.artifacts.registry import (
     ARTIFACT_CREATED_EVENT,
+    MintOutcome,
     get_registry,
     patch_session_index,
 )
@@ -304,7 +305,7 @@ def artifact_name_for_path(path: str | Path) -> str:
     return Path(str(path)).name
 
 
-def mint_artifact(
+def mint_artifact_outcome(
     app: "FastAPI",
     sid: str,
     *,
@@ -319,7 +320,7 @@ def mint_artifact(
     annotation: str = "",
     turn_id: str = "",
     trace_id: str = "",
-) -> Optional[ArtifactVersion]:
+) -> Optional[MintOutcome]:
     """Mint one artifact version: atomic dedup-or-assign, then emit + index.
 
     The single mint funnel for all three S1 seams. Delegates the version decision
@@ -330,6 +331,13 @@ def mint_artifact(
     ``_emit_semantic_event`` (the sole artifact-event emitter; the pre-registered
     ``event_id`` makes boot replay a no-op) and patches the SessionStore badge
     index; on a dedup no-op it emits NOTHING and returns the existing version.
+
+    Returns the full :class:`MintOutcome` so a caller can read ``created`` — finding
+    [7]: ``promote_proposal`` must NOT report ``created=True`` or consume a per-turn
+    cap slot when :meth:`ArtifactRegistry.mint` deduped under a concurrent race (its
+    own pre-mint dedup check passed, but a parallel promote minted the same bytes
+    first). ``mint_artifact`` is the back-compat projection returning just the
+    version.
 
     ``plan`` kind is RESERVED — minting it raises ``ValueError`` (a reserved
     capability leaked; typed, not silently downgraded).
@@ -371,7 +379,7 @@ def mint_artifact(
             version.version,
         )
         patch_session_index(app, sid, registry, workspace_id)
-        return version
+        return outcome
 
     payload = _created_payload(event_id, workspace_id, name, version)
 
@@ -402,7 +410,48 @@ def mint_artifact(
     _record_turn_artifact(
         app, sid, workspace_id=workspace_id, name=name, version=version, turn_id=turn_id
     )
-    return version
+    return outcome
+
+
+def mint_artifact(
+    app: "FastAPI",
+    sid: str,
+    *,
+    name: str,
+    workspace_id: str,
+    evidence: IdentityEvidence,
+    kind: ArtifactKind,
+    mechanism: Mechanism,
+    producer: dict[str, Any] | None = None,
+    custody: Custody = Custody.WORKSPACE_REFERENCED,
+    path: str = "",
+    annotation: str = "",
+    turn_id: str = "",
+    trace_id: str = "",
+) -> Optional[ArtifactVersion]:
+    """Back-compat projection over :func:`mint_artifact_outcome`.
+
+    Returns the operative :class:`ArtifactVersion` (the freshly-minted one, or the
+    byte-identical version deduped onto) or ``None``. Callers that need to know
+    whether a NEW version was assigned (finding [7]) call
+    :func:`mint_artifact_outcome` and read ``outcome.created``.
+    """
+    outcome = mint_artifact_outcome(
+        app,
+        sid,
+        name=name,
+        workspace_id=workspace_id,
+        evidence=evidence,
+        kind=kind,
+        mechanism=mechanism,
+        producer=producer,
+        custody=custody,
+        path=path,
+        annotation=annotation,
+        turn_id=turn_id,
+        trace_id=trace_id,
+    )
+    return outcome.version if outcome is not None else None
 
 
 def mint_tool_declared_outputs(
@@ -722,6 +771,7 @@ __all__ = [
     "drain_turn_artifacts",
     "hash_max_file_bytes",
     "mint_artifact",
+    "mint_artifact_outcome",
     "mint_harness_write",
     "mint_pack_declared_paths",
     "mint_tool_declared_outputs",
