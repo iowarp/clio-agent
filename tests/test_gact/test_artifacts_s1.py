@@ -495,13 +495,16 @@ def test_idempotent_tool_rerun_does_not_grow_chain_but_changed_content_does(tmp_
     reg = get_registry(app)
     assert len(reg.get("ws1", "out.csv").versions) == 1  # idempotent re-run: no growth
     assert len(_artifact_events(arc)) == 1
-    # Changed content mints a genuine v2.
+    # Changed content mints a genuine v2. Under S4 (#970) v1 stays artifact.created
+    # while v2+ emits artifact.version.added, so the created count stays 1.
     csv.write_text("a,b\n9,9\n", encoding="utf-8")
     mint_tool_declared_outputs(
         app, sess.id, tool_name="t", effective_args=args, call_id="c3", workspace_id="ws1"
     )
     assert [v.version for v in reg.get("ws1", "out.csv").versions] == [1, 2]
-    assert len(_artifact_events(arc)) == 2
+    assert len(_artifact_events(arc)) == 1  # only v1 emits artifact.created
+    added = [e for e in arc.events if getattr(e, "event_type", "") == "artifact.version.added"]
+    assert len(added) == 1  # v2 emits artifact.version.added
 
 
 # --------------------------------------------------------------------------- #
