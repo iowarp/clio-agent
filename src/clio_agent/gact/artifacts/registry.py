@@ -595,6 +595,28 @@ class ArtifactRegistry:
         with self._lock:
             return [r for (ws, _n), r in self._records.items() if ws == workspace_id]
 
+    def is_sha_alias_reachable(self, workspace_id: str, sha256: str) -> bool:
+        """Whether any pinned alias in ``workspace_id`` currently targets ``sha256``.
+
+        The cheap, lock-held re-check the CAS GC runs immediately before an unlink
+        (finding [4] TOCTOU): a version minted AFTER the GC read its records snapshot
+        auto-moves the ``latest`` alias onto its content, so an alias now targeting the
+        blob means it is live and must NOT be evicted. Evaluated under the registry
+        lock against the freshest chains, closing the snapshot-then-fold race.
+        """
+        if not sha256:
+            return False
+        with self._lock:
+            for (ws, _name), record in self._records.items():
+                if ws != workspace_id:
+                    continue
+                by_number = {v.version: v for v in record.versions}
+                for target in record.aliases.values():
+                    version = by_number.get(target)
+                    if version is not None and version.sha256 == sha256:
+                        return True
+        return False
+
     def count(self) -> int:
         """Total number of logical artifacts known."""
         with self._lock:

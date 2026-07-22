@@ -33,6 +33,7 @@ import hashlib
 import logging
 import os
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Optional
@@ -188,11 +189,63 @@ class CASStore:
             return False
 
     def total_bytes(self) -> int:
-        """Sum the on-disk size of every published blob (the ``.tmp`` scratch aside)."""
+        """Sum the on-disk size of every published blob PLUS the ``.tmp`` scratch.
+
+        The budget must see reality (owner decision, finding [2]): a crash-orphaned
+        ``.tmp`` ingest file consumes real disk, so it counts toward the total the GC
+        gates on. The boot sweep (:meth:`sweep_tmp_orphans`) reclaims stale orphans;
+        an in-flight ingest's sub-second temp is transient noise well under budget.
+        """
         total = 0
         for entry in self.iter_blobs():
             total += entry.size_bytes
+        return total + self._tmp_bytes()
+
+    def _tmp_bytes(self) -> int:
+        """Sum the on-disk size of every file in the ``.tmp`` staging shard."""
+        tmp = self._root / ".tmp"
+        if not tmp.is_dir():
+            return 0
+        total = 0
+        for entry in tmp.iterdir():
+            if not entry.is_file():
+                continue
+            try:
+                total += int(entry.stat().st_size)
+            except OSError:
+                continue
         return total
+
+    def sweep_tmp_orphans(self, *, grace_seconds: float) -> tuple[int, int]:
+        """Delete stale ``.tmp`` ingest scratch (age > grace); return ``(count, bytes)``.
+
+        A crash/kill/power-loss between ``mkstemp`` and ``os.replace`` leaves a
+        permanent, uncounted ``ingest-*`` orphan (finding [2]). An in-flight ingest is
+        sub-second, so a temp older than ``grace_seconds`` is provably orphaned and safe
+        to reclaim; a fresh temp (a concurrent ingest) is inside the grace and left
+        alone. Only bytes for files CONFIRMED gone after the unlink are counted.
+        """
+        tmp = self._root / ".tmp"
+        if not tmp.is_dir():
+            return (0, 0)
+        now = time.time()
+        count = 0
+        freed = 0
+        for entry in sorted(tmp.iterdir()):
+            if not entry.is_file():
+                continue
+            try:
+                stat = entry.stat()
+            except OSError:
+                continue
+            if now - float(stat.st_mtime) <= grace_seconds:
+                continue  # inside the in-flight grace — a concurrent ingest, leave it
+            size = int(stat.st_size)
+            _silent_unlink(entry)
+            if not entry.exists():
+                count += 1
+                freed += size
+        return (count, freed)
 
     def iter_blobs(self) -> Iterator[BlobEntry]:
         """Yield every published blob as a :class:`BlobEntry` (``.tmp`` excluded)."""
@@ -216,13 +269,25 @@ class CASStore:
                 )
 
     def evict(self, sha256: str) -> int:
-        """Delete a blob, returning the bytes freed (0 when it was already absent)."""
+        """Delete a blob, returning the bytes ACTUALLY freed (verified).
+
+        Returns 0 when the blob was already absent OR when the unlink did NOT remove
+        it — a Windows open-handle (a concurrent ``/bytes`` stream), an AV lock, or an
+        ACL denial makes ``unlink`` raise ``PermissionError`` which
+        :func:`_silent_unlink` swallows (finding [1]). The post-unlink existence check
+        means a still-present blob reports 0 freed, so the GC never counts a phantom
+        free nor emits a false eviction event for a live blob; the caller distinguishes
+        "gone" from "still here" via :meth:`has_blob` and emits a typed skip.
+        """
         blob = self.blob_path(sha256)
         try:
             size = blob.stat().st_size
         except OSError:
             return 0
         _silent_unlink(blob)
+        if blob.exists():
+            # Unlink failed (blob still on disk) — report zero freed, never the size.
+            return 0
         return int(size)
 
 
@@ -341,9 +406,12 @@ def ingest_identity(
         with os.fdopen(fd, "wb") as tmp_handle:
             sha, streamed = _stream_hash_tee(resolved, tmp_handle)
         blob, reason = store.finalize_temp(tmp_path, sha, streamed, trust_stat=trust)
-    except OSError:
+    finally:
+        # finally-based cleanup (finding [2]): covers a hard interrupt
+        # (KeyboardInterrupt) or any error between mkstemp and finalize, not just
+        # OSError. A consumed temp (renamed into place / deduped away) makes this a
+        # no-op, so the successful path is unaffected.
         _silent_unlink(tmp_path)
-        raise
     evidence = IdentityEvidence.hashed_at_use(sha256=sha, size_bytes=streamed, mtime=mtime)
     return IngestedIdentity(
         evidence=evidence,
@@ -351,6 +419,35 @@ def ingest_identity(
         reason=reason,
         blob_path=blob,
     )
+
+
+def harness_write_identity(
+    target: str | Path,
+    *,
+    workspace_root: Optional[str | Path],
+    in_hand_sha: str,
+    in_hand_size: int,
+) -> IngestedIdentity:
+    """Resolve a just-written (diffs-apply / harness) file's identity + custody.
+
+    Owner decision, finding [3]: a user-approved harness write is a paradigm deliverable
+    (``report.md`` via diffs/apply), so its bytes get the same CAS durability as every
+    other path-mint seam — :func:`ingest_identity` streams them into the store (custody
+    ``cas``; over threshold → referenced + typed size). On a stat/hash failure it falls
+    back to the writer's in-hand sha256 (typed workspace-referenced, no disk read).
+    Raises ``OSError`` only when the ingest fails AND no in-hand sha is available.
+    """
+    try:
+        return ingest_identity(target, workspace_root=workspace_root)
+    except OSError:
+        if not in_hand_sha:
+            raise
+        logger.warning("cas harness ingest fell back reason=harness_ingest_failed path=%s", target)
+        return IngestedIdentity(
+            evidence=IdentityEvidence.hashed_at_use(sha256=in_hand_sha, size_bytes=in_hand_size),
+            custody=Custody.WORKSPACE_REFERENCED,
+            reason="harness_in_hand_fallback",
+        )
 
 
 def _silent_unlink(path: Path) -> None:
@@ -368,6 +465,7 @@ __all__ = [
     "cas_budget_bytes",
     "cas_max_file_bytes",
     "cas_root_for",
+    "harness_write_identity",
     "hash_stat_cache",
     "ingest_identity",
     "sha256_file",

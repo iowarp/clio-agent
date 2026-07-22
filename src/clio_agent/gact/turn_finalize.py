@@ -47,8 +47,8 @@ from typing import TYPE_CHECKING, Any
 from clio_agent.gact.agents.resolution import (
     _runtime_active_agent_blueprint_id,
 )
-from clio_agent.gact.artifacts.minting import clear_turn_artifacts
 from clio_agent.gact.artifacts.cas_gc import finalize_cas_budget_check
+from clio_agent.gact.artifacts.minting import clear_turn_artifacts
 from clio_agent.gact.artifacts.wire import append_turn_resource_links, proposed_diff_payload
 from clio_agent.gact.delegation import (
     _produced_turn_workflow_state,

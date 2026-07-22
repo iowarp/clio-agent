@@ -15,8 +15,12 @@ named assertion red, proving the test binds the invariant (not a tautology).
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import os
 import re
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -31,14 +35,25 @@ from clio_agent.gact.artifacts.cas import (
     hash_stat_cache,
     ingest_identity,
 )
+from clio_agent.gact.artifacts import cas_gc as _cas_gc
 from clio_agent.gact.artifacts.cas_gc import (
+    CAS_EVICT_SKIPPED_REASON,
     CAS_EVICTED_EVENT,
+    CAS_TMP_SWEPT_EVENT,
+    RACED_MINT_REASON,
     USED_BY_RETAINED_REASON,
     alias_reachable_shas,
     enforce_cas_budget,
+    finalize_cas_budget_check,
+    get_cas_bytes,
     run_boot_cas_gc,
+    set_cas_bytes,
 )
-from clio_agent.gact.artifacts.minting import mint_artifact, mint_tool_declared_outputs
+from clio_agent.gact.artifacts.minting import (
+    mint_artifact,
+    mint_harness_write,
+    mint_tool_declared_outputs,
+)
 from clio_agent.gact.artifacts.records import (
     ArtifactKind,
     Custody,
@@ -503,3 +518,228 @@ def test_one_ladder_no_second_byte_serving_path():
     assert len(re.findall(r"StreamingResponse\(", text)) == 1
     # And that sole site lives in the shared verify+stream primitive.
     assert "def _open_verify_stream(" in text
+
+
+# --------------------------------------------------------------------------- #
+# 7. Review-hardening: the seven confirmed S6 findings
+# --------------------------------------------------------------------------- #
+
+
+def test_evict_failed_unlink_is_typed_skip_not_a_lie(tmp_path: Path, monkeypatch):
+    """Finding [1]: a blob whose unlink is swallowed (held-open handle) reports ZERO
+    freed with a typed ``cas_evict_skipped`` skip — no eviction event, honest residual.
+
+    Sabotage: restore the swallow (drop ``if blob.exists(): return 0`` in ``evict``)
+    and evict returns the full size again -> the store believes it dropped under budget,
+    ``evicted`` gains a phantom entry, a false event fires -> every assertion here reds.
+    """
+    app, store, arc = _mint_app(tmp_path)
+    reg = app.state.artifact_registry
+    # v1 unreachable (non-head, producer not retained); v2 is the latest (reachable).
+    _mint_cas_version(app, reg, tmp_path, name="scratch.csv", content=b"S1", producer_sid="gone")
+    _mint_cas_version(app, reg, tmp_path, name="scratch.csv", content=b"S2", producer_sid="gone")
+    sha_v1 = _sha(b"S1")
+
+    from clio_agent.gact.artifacts import cas as cas_mod
+
+    # Simulate the Windows open-handle: the unlink is silently swallowed, blob stays.
+    monkeypatch.setattr(cas_mod, "_silent_unlink", lambda _p: None)
+
+    store_cas = CASStore(tmp_path)
+    result = enforce_cas_budget(app, "ws1", tmp_path, sid="s", budget_bytes=0)
+
+    # No phantom free: the loop counts only VERIFIED frees.
+    assert result.evicted == []
+    # A typed skip carries the reason + the blob-in-use detail (never a silent drop).
+    skips = [r for r in result.refused if r["reason"] == CAS_EVICT_SKIPPED_REASON]
+    assert len(skips) == 1 and skips[0]["detail"] == "blob_in_use"
+    # No false eviction event for a blob that is still on disk.
+    assert not [e for e in arc.events if getattr(e, "event_type", "") == CAS_EVICTED_EVENT]
+    # The live blob survived, and the residual is honest (re-measured from disk).
+    assert store_cas.has_blob(sha_v1)
+    assert result.over_budget_residual is True
+    assert result.total_after == store_cas.total_bytes()
+
+
+def test_tmp_orphan_counted_pre_sweep_and_swept_with_grace(tmp_path: Path):
+    """Finding [2]: a crash-orphaned ``.tmp`` file counts toward the budget and is
+    swept once past the grace; a fresh in-flight temp inside the grace is left alone.
+
+    Sabotage: exclude ``.tmp`` from ``total_bytes`` again -> the pre-sweep count assertion
+    (==800) reds; drop the age gate in ``sweep_tmp_orphans`` -> the fresh-temp survival reds.
+    """
+    store = CASStore(tmp_path)
+    tmp_dir = store.root / ".tmp"
+    tmp_dir.mkdir(parents=True)
+    orphan = tmp_dir / "ingest-old"
+    orphan.write_bytes(b"\0" * 500)
+    fresh = tmp_dir / "ingest-fresh"
+    fresh.write_bytes(b"\0" * 300)
+    old = time.time() - 7200  # 2h — well past the 1h grace
+    os.utime(orphan, (old, old))
+
+    # The budget sees reality: BOTH .tmp files count BEFORE any sweep.
+    assert store.total_bytes() == 800
+
+    count, freed = store.sweep_tmp_orphans(grace_seconds=3600)
+    assert (count, freed) == (1, 500)
+    assert not orphan.exists()
+    assert fresh.exists()  # in-flight grace respected — a sub-second live ingest survives
+
+
+def test_boot_gc_sweeps_tmp_orphans_typed(tmp_path: Path):
+    """Finding [2]: boot GC reclaims the orphan with a typed count/bytes result + event."""
+    app, _store, arc = _mint_app(tmp_path)
+    cas = CASStore(tmp_path)
+    tmp_dir = cas.root / ".tmp"
+    tmp_dir.mkdir(parents=True)
+    orphan = tmp_dir / "ingest-crash"
+    orphan.write_bytes(b"\0" * 1234)
+    old = time.time() - 7200
+    os.utime(orphan, (old, old))
+
+    results = run_boot_cas_gc(app, budget_bytes=10 * 1024 * 1024)
+    assert len(results) == 1
+    assert results[0].tmp_orphans_swept == 1
+    assert results[0].tmp_orphan_bytes == 1234
+    assert not orphan.exists()
+    # Typed, trace-only signal (never a silent reclaim).
+    assert [e for e in arc.events if getattr(e, "event_type", "") == CAS_TMP_SWEPT_EVENT]
+
+
+def test_gc_toctou_recheck_saves_a_concurrently_minted_blob(tmp_path: Path, monkeypatch):
+    """Finding [4]: a version that folds AFTER the GC's records snapshot pins its blob;
+    the pre-unlink re-check against the freshest chains REFUSES the eviction.
+
+    The stale snapshot is simulated by forcing the initial alias-reachable set empty
+    (as if it were read before the concurrent mint folded). Only the fresh, lock-held
+    re-check (``is_sha_alias_reachable``) can save the blob.
+
+    Sabotage: drop the ``registry.is_sha_alias_reachable(...)`` clause in
+    ``enforce_cas_budget`` -> the raced blob is evicted -> ``has_blob`` reds and the
+    ``artifact_raced_concurrent_mint`` refusal disappears.
+    """
+    app, _store, _arc = _mint_app(tmp_path)
+    reg = app.state.artifact_registry
+    _mint_cas_version(app, reg, tmp_path, name="raced.csv", content=b"RACE", producer_sid="gone")
+    sha = _sha(b"RACE")
+
+    # The records snapshot PREDATES the mint's fold: the reachable set computed from it
+    # misses the sha. The real registry (used by the re-check) already knows it.
+    monkeypatch.setattr(_cas_gc, "alias_reachable_shas", lambda _records: set())
+
+    store_cas = CASStore(tmp_path)
+    result = enforce_cas_budget(app, "ws1", tmp_path, budget_bytes=0)
+
+    assert store_cas.has_blob(sha)  # the live, just-minted blob survived
+    assert any(r["reason"] == RACED_MINT_REASON for r in result.refused)
+    assert not any(e["sha256"] == sha for e in result.evicted)
+
+
+def test_finalize_budget_check_is_zero_fs_on_the_loop_and_schedules_offloop(
+    tmp_path: Path, monkeypatch
+):
+    """Finding [6/7]: on the event loop the finalize check touches ZERO filesystem — it
+    reads only the in-memory counter — and, on a breach, schedules the scan OFF-loop.
+
+    Sabotage: run the blocking ``post_turn_cas_budget_check`` inline in
+    ``finalize_cas_budget_check`` (the old on-loop behavior) -> the loop thread appears
+    in ``fs_threads`` -> the zero-fs assertion reds.
+    """
+    app, _store, _arc = _mint_app(tmp_path)
+    reg = app.state.artifact_registry
+    _mint_cas_version(app, reg, tmp_path, name="big.csv", content=b"X" * 4096, producer_sid="gone")
+    # The running counter says WAY over budget, so the trigger must fire.
+    set_cas_bytes(app, "ws1", 10**9)
+    session = SimpleNamespace(workspace_id="ws1", id="s1")
+
+    fs_threads: list[int] = []
+    real_scandir, real_stat = os.scandir, os.stat
+    monkeypatch.setattr(
+        os, "scandir", lambda *a, **k: (fs_threads.append(threading.get_ident()), real_scandir(*a, **k))[1]
+    )
+    monkeypatch.setattr(
+        os, "stat", lambda *a, **k: (fs_threads.append(threading.get_ident()), real_stat(*a, **k))[1]
+    )
+
+    done = threading.Event()
+    worker_threads: list[int] = []
+    real_worker = _cas_gc._offloop_budget_worker
+
+    def _wrapped(a, w, s):
+        worker_threads.append(threading.get_ident())
+        try:
+            real_worker(a, w, s)
+        finally:
+            done.set()
+
+    monkeypatch.setattr(_cas_gc, "_offloop_budget_worker", _wrapped)
+
+    async def _run() -> int:
+        fs_threads.clear()  # ignore any fs from setup on this thread
+        finalize_cas_budget_check(app, session, "s1")
+        return threading.get_ident()
+
+    loop_thread = asyncio.run(_run())
+    assert done.wait(timeout=10), "the off-loop budget worker never ran"
+
+    # The scan was scheduled OFF the loop (a distinct executor thread).
+    assert worker_threads and all(t != loop_thread for t in worker_threads)
+    # ZERO filesystem calls happened ON the loop thread.
+    assert loop_thread not in fs_threads
+    # The off-loop worker re-synced the counter authoritatively from disk (well under 1e9).
+    assert get_cas_bytes(app, "ws1") < 10**9
+
+
+def test_finalize_under_budget_counter_is_pure_dict_lookup(tmp_path: Path, monkeypatch):
+    """Finding [6/7]: under budget per the counter, finalize does NOTHING off-loop and
+    touches no filesystem — the cheap common path is a single dict read."""
+    app, _store, _arc = _mint_app(tmp_path)
+    set_cas_bytes(app, "ws1", 10)  # comfortably under the default budget
+    session = SimpleNamespace(workspace_id="ws1", id="s1")
+
+    scheduled: list[int] = []
+    monkeypatch.setattr(
+        _cas_gc, "_schedule_offloop_budget_check", lambda *a, **k: scheduled.append(1)
+    )
+    fs_threads: list[int] = []
+    real_scandir = os.scandir
+    monkeypatch.setattr(
+        os, "scandir", lambda *a, **k: (fs_threads.append(1), real_scandir(*a, **k))[1]
+    )
+
+    async def _run() -> None:
+        fs_threads.clear()
+        finalize_cas_budget_check(app, session, "s1")
+
+    asyncio.run(_run())
+    assert scheduled == []  # under budget -> no off-loop scan scheduled
+    assert fs_threads == []  # and zero directory walks
+
+
+def test_harness_write_ingests_into_cas_and_survives_workspace_deletion(tmp_path: Path):
+    """Finding [3]: the diffs-apply / harness write is ingested (custody ``cas``), so
+    its bytes survive a later deletion of the workspace file.
+
+    Sabotage: revert ``mint_harness_write`` to hardcode WORKSPACE_REFERENCED (no ingest)
+    -> the custody assertion reds and the blob is absent from CAS.
+    """
+    app, store, _arc = _mint_app(tmp_path)
+    reg = app.state.artifact_registry
+    s = store.create(workspace_id="ws1", title="t")
+    target = tmp_path / "report.md"
+    content = b"# Report\n\nParadigm deliverable authored via diffs/apply.\n"
+    target.write_bytes(content)
+    sha = _sha(content)
+    session = SimpleNamespace(id=s.id, workspace_id="ws1")
+
+    mint_harness_write(app, session, str(target), {"sha256": sha, "size_bytes": len(content)})
+
+    versions = [v for rec in reg.list_for_workspace("ws1") for v in rec.versions if v.sha256 == sha]
+    assert versions, "the harness write minted no version"
+    assert versions[0].custody == Custody.CAS
+    store_cas = CASStore(tmp_path)
+    assert store_cas.has_blob(sha)
+    # The durability guarantee: delete the workspace file, the app-owned bytes remain.
+    target.unlink()
+    assert store_cas.has_blob(sha)

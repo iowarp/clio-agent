@@ -113,7 +113,12 @@ RATCHET_BASELINE: dict[str, int] = {
     # channel can't see it, so the downstream clean recorded external-with-sha
     # instead of a hash-pair edge). The combined single-loop over both channels is
     # the minimal footprint; ratchets back with the #714 mint/registry split.
-    "src/clio_agent/gact/artifacts/minting.py": 836,
+    # #972 S6 review fixes: +6 for two owner-mandated features glued at the funnel —
+    # the harness-write CAS ingest (finding [3]; its 26-line resolver was RELOCATED to
+    # cas.harness_write_identity, not added here) and the single-site running-byte
+    # counter bump (finding [6/7], one call at the mint funnel). Ratchets back with
+    # the #714 mint/registry split.
+    "src/clio_agent/gact/artifacts/minting.py": 842,
     # #971 GAP B (S5 live gate): +51 for ``?include_children=true`` parent
     # aggregation — a parent orchestrator's own listing is empty while its spawned
     # children hold everything, so the flag unions descendant child-session

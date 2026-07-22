@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent import conf
+from clio_agent.gact.artifacts.cas_gc import record_cas_version
 from clio_agent.gact.artifacts.records import (
     RESERVED_KINDS,
     ArtifactKind,
@@ -414,6 +415,9 @@ def mint_artifact_outcome(
         )
 
     patch_session_index(app, sid, registry, workspace_id)
+    # finding [6/7]: bump the in-memory CAS byte counter at this single mint funnel so the
+    # on-loop post-turn budget trigger sees store growth without a filesystem walk.
+    record_cas_version(app, workspace_id, custody, int(getattr(evidence, "size_bytes", 0) or 0))
     # Buffer the new version for the finalize ``resource_link`` part append (item 2).
     _record_turn_artifact(
         app, sid, workspace_id=workspace_id, name=name, version=version, turn_id=turn_id
@@ -762,36 +766,37 @@ def mint_harness_write(
 ) -> None:
     """Seam (b) entry point: mint an ``artifact.created`` for a user-approved write.
 
-    The bytes flowed through the harness (``write_text_with_policy``), so the write
-    itself is the evidence: mechanism ``harness``, ``hashed-at-use`` from the
-    ``sha256`` the writer returned in-hand. The mint rides the SSE wire like every
-    other (S2 #968). The ACTIVE turn id is threaded from the turn-identity
-    contextvar (:func:`context.active_turn_id`) so that when this write happens
-    DURING a turn its version is buffered under that turn and drains to a
-    ``resource_link`` part at finalize — parity with seams (a)/(c); an out-of-turn
-    apply leaves it empty and simply buffers nothing that drains. Fully guarded so
-    the gact-side ``fs_apply_edit_write`` caller invokes it in one line — an
+    Finding [3]: the just-written bytes are ingested into CAS for durable custody
+    (delegated to :func:`cas.harness_write_identity`, which falls back to the writer's
+    in-hand ``sha256`` on a stat/hash failure). The ACTIVE turn id is threaded from the
+    turn-identity contextvar so a write DURING a turn buffers its version and drains to
+    a ``resource_link`` part at finalize — parity with seams (a)/(c). Fully guarded: an
     artifact mint must never break the approved write.
     """
     try:
         from clio_agent.gact import context as _ctx  # noqa: PLC0415
+        from clio_agent.gact.artifacts.cas import harness_write_identity  # noqa: PLC0415
         from clio_agent.gact.artifacts.designation import kind_for_path  # noqa: PLC0415
 
-        sha256 = str(write_result.get("sha256") or "")
-        if not sha256:
+        workspace_id = str(getattr(session, "workspace_id", "") or "")
+        try:
+            ingested = harness_write_identity(
+                target,
+                workspace_root=_workspace_root(app, workspace_id),
+                in_hand_sha=str(write_result.get("sha256") or ""),
+                in_hand_size=int(write_result.get("size_bytes") or 0),
+            )
+        except OSError:
             logger.warning(
                 "artifact mint skipped reason=harness_write_missing_sha256 path=%s", target
             )
             return
-        evidence = IdentityEvidence.hashed_at_use(
-            sha256=sha256, size_bytes=int(write_result.get("size_bytes") or 0)
-        )
         mint_artifact(
             app,
             str(getattr(session, "id", "") or ""),
             name=artifact_name_for_path(target),
-            workspace_id=str(getattr(session, "workspace_id", "") or ""),
-            evidence=evidence,
+            workspace_id=workspace_id,
+            evidence=ingested.evidence,
             kind=kind_for_path(target),
             mechanism=Mechanism.HARNESS,
             producer={
@@ -799,10 +804,11 @@ def mint_harness_write(
                 "tool": "fs_apply_edit_write",
                 "turn_id": _ctx.active_turn_id(),
             },
-            custody=Custody.WORKSPACE_REFERENCED,
+            custody=ingested.custody,
             path=target,
             turn_id=_ctx.active_turn_id(),
             trace_id=_ctx.active_trace_id(),
+            not_ingested_size=ingested.not_ingested_size,
         )
     except Exception:  # noqa: BLE001 — an artifact mint must never break an approved write
         logger.warning("artifact mint skipped reason=harness_mint_failed path=%s", target)
