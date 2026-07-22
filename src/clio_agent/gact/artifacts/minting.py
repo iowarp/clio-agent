@@ -42,6 +42,13 @@ from clio_agent.gact.artifacts.registry import (
     get_registry,
     patch_session_index,
 )
+from clio_agent.gact.artifacts.versions import (
+    emit_alias_moved,
+    emit_version_added,
+    reconcile_if_content_revert,
+    reconcile_if_tool_drift,
+    version_record_payload,
+)
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -266,34 +273,6 @@ def _contained(path: Path, root: Path) -> bool:
     return _is_relative_to(resolved, root)
 
 
-def _is_pre_existing_untouched(
-    registry: Any,
-    workspace_id: str,
-    name: str,
-    evidence: IdentityEvidence,
-    call_started_at: float | None,
-) -> bool:
-    """Whether a designated output is a pre-existing file the call did not write.
-
-    Finding [8]: a tool that declares an output arg but reads (not writes) a
-    pre-existing file returns ``ok=True`` with that file untouched. Skip minting it
-    only when BOTH hold — its ``mtime`` predates ``call_started_at`` AND its content
-    already versions in the chain — so a genuinely new deliverable (no matching sha)
-    or one written during the call (``mtime`` at/after the call start) still mints.
-    The residual (content changed OUTSIDE the call window) still mints by design:
-    designation is designation.
-    """
-    if call_started_at is None or evidence.mtime is None:
-        return False
-    if evidence.mtime >= call_started_at:
-        return False
-    sha = evidence.sha256
-    if not sha:
-        return False
-    record = registry.get(workspace_id, name)
-    return record is not None and record.version_for_sha(sha) is not None
-
-
 def artifact_name_for_path(path: str | Path) -> str:
     """The logical artifact name for a designated output path (its basename).
 
@@ -320,8 +299,10 @@ def mint_artifact_outcome(
     annotation: str = "",
     turn_id: str = "",
     trace_id: str = "",
+    producing: bool = True,
+    lease_clean: bool = False,
 ) -> Optional[MintOutcome]:
-    """Mint one artifact version: atomic dedup-or-assign, then emit + index.
+    """Mint one artifact version: atomic decide-and-append, then emit + index.
 
     The single mint funnel for all three S1 seams. Delegates the version decision
     to :meth:`ArtifactRegistry.mint`, which — under ONE lock — dedups a
@@ -334,13 +315,9 @@ def mint_artifact_outcome(
 
     Returns the full :class:`MintOutcome` so a caller can read ``created`` — finding
     [7]: ``promote_proposal`` must NOT report ``created=True`` or consume a per-turn
-    cap slot when :meth:`ArtifactRegistry.mint` deduped under a concurrent race (its
-    own pre-mint dedup check passed, but a parallel promote minted the same bytes
-    first). ``mint_artifact`` is the back-compat projection returning just the
-    version.
-
-    ``plan`` kind is RESERVED — minting it raises ``ValueError`` (a reserved
-    capability leaked; typed, not silently downgraded).
+    cap slot when the mint deduped under a concurrent race. ``mint_artifact`` is the
+    back-compat projection returning just the version. ``plan`` kind is RESERVED —
+    minting it raises ``ValueError`` (typed, not silently downgraded).
     """
     if kind in RESERVED_KINDS:
         raise ValueError(
@@ -352,7 +329,8 @@ def mint_artifact_outcome(
     from clio_agent.gact.semantic_events import _event_id  # noqa: PLC0415
 
     event_id = _event_id()
-    # Atomic dedup-or-assign under ONE registry lock (findings [1/6] + [3/10]).
+    # Atomic decide-and-append under ONE registry lock (findings [1/6] + [3/10]); the
+    # version decision itself is the single decision point (versions.decide_version).
     outcome = registry.mint(
         workspace_id=workspace_id,
         name=name,
@@ -365,6 +343,8 @@ def mint_artifact_outcome(
         path=path,
         created_at=_now_iso(),
         annotation=annotation,
+        producing=producing,
+        lease_clean=lease_clean,
     )
     version = outcome.version
     if not outcome.created:
@@ -381,29 +361,55 @@ def mint_artifact_outcome(
         patch_session_index(app, sid, registry, workspace_id)
         return outcome
 
-    payload = _created_payload(event_id, workspace_id, name, version)
+    # v1 emits ``artifact.created``; v2+ revisions (incl. re-link / gap) emit
+    # ``artifact.version.added`` carrying the ``wasRevisionOf`` edge, and move the
+    # ``latest`` alias with ``artifact.alias.moved`` (S4 #970) — all on the S2 SSE
+    # allow-list at ``semantic`` detail; capture stays FULL on the trace + ARC.
+    is_v1 = version.version == 1 and version.prior_version is None
+    if is_v1:
+        payload = _created_payload(event_id, workspace_id, name, version)
 
-    from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
+        from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
 
-    _emit_semantic_event(
-        app,
-        sid,
-        ARTIFACT_CREATED_EVENT,
-        turn_id=turn_id,
-        trace_id=trace_id,
-        status="completed",
-        summary=f"Artifact {name} v{version.version} created.",
-        actor={"mechanism": mechanism.value},
-        subject={"artifact_id": version.artifact_id, "name": name, "workspace_id": workspace_id},
-        payload=payload,
-        # S2 (#968): ``artifact.created`` rides the SSE allow-list at ``semantic``
-        # detail — the SAME redaction path every UI event uses. The durable trace +
-        # ARC still capture the FULL event (capture ignores detail_level); the SSE
-        # projection redacts only genuine credentials, of which an artifact record
-        # has none, so the wire carries the full record. ``artifact.created`` is in
-        # ``SSE_UI_EVENT_TYPES``; ``artifact.used`` / ``.transform.recorded`` are not.
-        detail_level="semantic",
-    )
+        _emit_semantic_event(
+            app,
+            sid,
+            ARTIFACT_CREATED_EVENT,
+            turn_id=turn_id,
+            trace_id=trace_id,
+            status="completed",
+            summary=f"Artifact {name} v{version.version} created.",
+            actor={"mechanism": version.mechanism.value},
+            subject={
+                "artifact_id": version.artifact_id,
+                "name": name,
+                "workspace_id": workspace_id,
+            },
+            payload=payload,
+            detail_level="semantic",
+        )
+    else:
+        emit_version_added(
+            app,
+            sid,
+            workspace_id=workspace_id,
+            name=name,
+            version=version,
+            turn_id=turn_id,
+            trace_id=trace_id,
+        )
+        emit_alias_moved(
+            app,
+            sid,
+            workspace_id=workspace_id,
+            name=name,
+            alias="latest",
+            from_version=version.prior_version,
+            to_version=version.version,
+            at=version.created_at,
+            turn_id=turn_id,
+            trace_id=trace_id,
+        )
 
     patch_session_index(app, sid, registry, workspace_id)
     # Buffer the new version for the finalize ``resource_link`` part append (item 2).
@@ -488,7 +494,6 @@ def mint_tool_declared_outputs(
     )
 
     root = _workspace_root(app, workspace_id)
-    registry = get_registry(app)
     minted: list[ArtifactVersion] = []
     for arg_name, raw_path in grounded_output_paths(effective_args).items():
         path = Path(raw_path)
@@ -528,13 +533,24 @@ def mint_tool_declared_outputs(
             )
             continue
         name = artifact_name_for_path(path)
-        if _is_pre_existing_untouched(registry, workspace_id, name, evidence, call_started_at):
-            logger.info(
-                "artifact mint skipped reason=pre_existing_untouched tool=%s arg=%s path=%s",
-                tool_name,
-                arg_name,
-                raw_path,
-            )
+        # A declared output the tool provably did NOT write this call (mtime predates
+        # the call) is a DRIFT re-observation → the honest reconcile (producing=False),
+        # never a false producing tool-schema mint (finding [2/6], #966.10).
+        handled, outcome = reconcile_if_tool_drift(
+            app,
+            sid,
+            name=name,
+            workspace_id=workspace_id,
+            path=str(path),
+            evidence=evidence,
+            call_started_at=call_started_at,
+            mechanism=Mechanism.TOOL_SCHEMA,
+            turn_id=turn_id,
+            trace_id=trace_id,
+        )
+        if handled:
+            if outcome is not None and outcome.created:
+                minted.append(outcome.version)
             continue
         version = mint_artifact(
             app,
@@ -611,10 +627,29 @@ def mint_pack_declared_paths(
                 "artifact mint skipped reason=pack_declared_stat_failed path=%s", raw_path
             )
             continue
+        name = artifact_name_for_path(path)
+        # A declared file reverted to a KNOWN NON-HEAD version's bytes would DEDUP onto
+        # that old version and silently heal the gap under a producing mint → route it
+        # through the reconcile RE-LINK instead (finding [2/6], wired like seam a).
+        handled, outcome = reconcile_if_content_revert(
+            app,
+            sid,
+            name=name,
+            workspace_id=workspace_id,
+            path=str(path),
+            evidence=evidence,
+            mechanism=Mechanism.HARNESS,
+            turn_id=turn_id,
+            trace_id=trace_id,
+        )
+        if handled:
+            if outcome is not None and outcome.created:
+                minted.append(outcome.version)
+            continue
         version = mint_artifact(
             app,
             sid,
-            name=artifact_name_for_path(path),
+            name=name,
             workspace_id=workspace_id,
             evidence=evidence,
             kind=kind_for_path(path),
@@ -740,28 +775,14 @@ def mint_harness_write(
 def _created_payload(
     event_id: str, workspace_id: str, name: str, version: ArtifactVersion
 ) -> dict[str, Any]:
-    """Build the durable ``artifact.created`` payload (the fold-source of truth)."""
-    return {
-        "event_id": event_id,
-        "artifact_id": version.artifact_id,
-        "workspace_id": workspace_id,
-        "name": name,
-        "version": version.version,
-        "kind": version.kind.value,
-        "custody": version.custody.value,
-        "mechanism": version.mechanism.value,
-        "sha256": version.sha256,
-        "size_bytes": version.size_bytes,
-        "path": version.path,
-        "created_at": version.created_at,
-        "annotation": version.annotation,
-        "producer": dict(version.producer),
-        "evidence": {
-            "evidence_class": version.evidence.evidence_class.value,
-            "authority": version.evidence.authority,
-            "mtime": version.evidence.mtime,
-        },
-    }
+    """Build the durable ``artifact.created`` payload (the v1 fold-source of truth).
+
+    Delegates to the single version-record payload builder with the revision edge
+    OFF, so the v1 ``created`` payload stays byte-identical to S1/S2 (SPEC §7.6) and
+    the v2+ ``version.added`` payload — which adds the four edge/marker fields —
+    shares the exact same base shape.
+    """
+    return version_record_payload(event_id, workspace_id, name, version, revision_edge=False)
 
 
 __all__ = [

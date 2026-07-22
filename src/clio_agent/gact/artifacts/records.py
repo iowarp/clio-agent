@@ -15,11 +15,47 @@ chain of custody (design §2.1). Model-provided intent is quarantined in
 
 from __future__ import annotations
 
+import re
 import uuid
 from enum import Enum
 from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
+
+#: A user alias shaped like the reserved version grammar (``v`` followed by digits).
+#: ``_resolve_ref`` tests the ``vN`` branch BEFORE the alias map, so such a name would
+#: be permanently shadowed by (or falsely advertise) a version — refused at write.
+_VERSION_ALIAS_RE = re.compile(r"^v\d+$")
+
+
+class InvalidAliasError(ValueError):
+    """A rejected alias name (reserved ``latest`` / ``vN``-grammar collision).
+
+    Carries a typed ``reason`` (``reserved_alias`` / ``invalid_alias``) so the record
+    layer (``ArtifactRegistry.move_alias``) refuses the write with the SAME code the
+    route surfaces — finding [7], enforced at both layers.
+    """
+
+    def __init__(self, message: str, *, reason: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+def alias_rejection_reason(alias: str) -> str:
+    """Return a typed rejection reason for an illegal user alias, else ``""``.
+
+    Owner decision #10 (honest available set). Two names may never be user aliases:
+    ``latest`` is auto-maintained to the head (``reserved_alias``); a ``vN``-shaped
+    name collides with the version grammar (``_resolve_ref`` resolves ``vN`` before
+    the alias map, so the alias is silently shadowed and advertised-but-unresolvable
+    — ``invalid_alias``). Enforced at BOTH the route and the record layer (S4 #970).
+    """
+    name = alias.strip()
+    if name == "latest":
+        return "reserved_alias"
+    if _VERSION_ALIAS_RE.match(name):
+        return "invalid_alias"
+    return ""
 
 
 class ArtifactKind(str, Enum):
@@ -168,6 +204,21 @@ class ArtifactVersion(BaseModel):
     created_at: str = ""
     #: Model-provided intent (deliverable-vs-scratch, a label). Untrusted (§2.1).
     annotation: str = ""
+    #: The version this one revises — the PROV ``wasRevisionOf`` edge (S4 #970). The
+    #: prior head's version number + content hash, stamped at the single
+    #: version-decision point. ``None`` for v1 (nothing to revise).
+    prior_version: Optional[int] = None
+    prior_sha256: Optional[str] = None
+    #: A structured warning when this mint's requested kind differed from the kind
+    #: locked at v1 (owner decision #966.4 — kind is immutable across the chain).
+    #: Empty when the kind matched. The version ALWAYS carries the locked kind; the
+    #: mismatch is surfaced here, never silently applied and never a new kind.
+    kind_warning: str = ""
+    #: A custody-gap marker (S4 #970) recorded when this version came from a re-link
+    #: by hash (content reverted to a known state after a gap) or an undesignated
+    #: overwrite detected at observation (``{reason, ...}``) — never silently healed.
+    #: ``None`` for an ordinary produced version.
+    custody_gap: Optional[dict[str, Any]] = None
 
     @property
     def sha256(self) -> Optional[str]:
@@ -227,6 +278,16 @@ class ArtifactRecord(BaseModel):
         return head.kind if head is not None else ArtifactKind.OTHER
 
     @property
+    def locked_kind(self) -> Optional[ArtifactKind]:
+        """The kind locked at v1 — the FIRST version's kind (owner decision #966.4).
+
+        ``None`` for an empty chain. Every later version carries this kind; a mint
+        requesting a different kind keeps this one and records a ``kind_warning``.
+        The chain is kept sorted by version number, so ``versions[0]`` is always v1.
+        """
+        return self.versions[0].kind if self.versions else None
+
+    @property
     def head(self) -> Optional[ArtifactVersion]:
         """The newest version, or ``None`` for an empty chain."""
         return self.versions[-1] if self.versions else None
@@ -245,15 +306,25 @@ class ArtifactRecord(BaseModel):
         return None
 
     def add_version(self, version: ArtifactVersion) -> ArtifactVersion:
-        """Append ``version`` as the new head and move the ``latest`` alias.
+        """Insert ``version`` keeping the chain sorted, and move ``latest`` to the head.
 
-        The caller sets ``version.version``; this only maintains the chain + the
-        ``latest`` alias. Returns the appended version.
+        The caller (the single version-decision point) sets ``version.version``; this
+        only maintains the chain + the reserved ``latest`` alias. Insertion keeps the
+        list ordered by version number and ``latest`` points at the MAX version, so a
+        replay that folds events out of order rebuilds the identical chain + head
+        (fold determinism, S4 #970) — ``latest`` is never left on a stale head when a
+        later version folds before an earlier one. Returns the appended version.
         """
         self.versions.append(version)
-        self.aliases["latest"] = version.version
+        self.versions.sort(key=lambda v: v.version)
+        self.aliases["latest"] = self.versions[-1].version
         return version
 
     def next_version_number(self) -> int:
-        """The version number a new head would take (1-based)."""
+        """The version number a new head would take (1-based).
+
+        The sole version-number arithmetic in the model; only the single
+        version-decision point (:mod:`clio_agent.gact.artifacts.versions`) may call
+        it, so version assignment lives in exactly one place (structural lock, S4).
+        """
         return (self.head.version + 1) if self.head is not None else 1

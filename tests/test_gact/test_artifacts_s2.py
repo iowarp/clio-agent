@@ -453,23 +453,24 @@ def test_get_unknown_artifact_is_typed_404(tmp_path: Path):
     assert r.json()["error"]["error"] == "not_found"
 
 
-def test_resolve_unknown_alias_is_typed_409_not_cacheable_404(tmp_path: Path):
-    """Finding [4]: an unknown alias pre-S4 is a typed 409, not a cacheable 404."""
+def test_resolve_unknown_alias_is_honest_404_with_available_set(tmp_path: Path):
+    """S4 (#970): the 409 placeholder DIES — resolution is complete, so an unknown
+    ref is an honest 404 listing the resolvable set (latest + vN + tracked aliases)."""
     c = _client(tmp_path)
     wid, sid = _workspace_session(c, tmp_path)
     f = tmp_path / "plot.png"
     f.write_bytes(b"\x89PNG\r\n")
     c.post(f"/v1/sessions/{sid}/artifacts/pin", json={"path": "plot.png"})
-    # An unknown alias (not latest, not vN, not tracked) -> typed 409 not_yet signal.
+    # An unknown alias (not latest, not vN, not tracked) -> honest 404, no 409.
     r = c.get(f"/v1/workspaces/{wid}/artifacts/plot.png", params={"ref": "final"})
-    # Sabotage: revert resolve_artifact_by_name to raise a 404 not_found for an
-    # unknown alias -> this goes red (the non-cacheable typed-signal lock).
-    assert r.status_code == 409
+    # Sabotage: re-raise the S2 409 alias_resolution_not_available -> this goes red
+    # (the 409 must be gone now that alias resolution is live).
+    assert r.status_code == 404
     body = r.json()["error"]
-    assert body["error"] == "alias_resolution_not_available"
-    assert body["details"]["available"] == ["latest", "vN"]
-    assert body["recoverable"] is True
-    # A vN naming a version that does not exist stays a genuine 404 not_found.
+    assert body["error"] == "not_found"
+    # Honest available set: full resolvable refs, not the pre-S4 ["latest","vN"] hint.
+    assert body["details"]["available"] == ["latest", "v1"]
+    # A vN naming a version that does not exist is the same honest 404 not_found.
     missing = c.get(f"/v1/workspaces/{wid}/artifacts/plot.png", params={"ref": "v99"})
     assert missing.status_code == 404
     assert missing.json()["error"]["error"] == "not_found"

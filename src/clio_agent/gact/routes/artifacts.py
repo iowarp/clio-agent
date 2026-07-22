@@ -164,6 +164,11 @@ def _version_wire(workspace_id: str, name: str, version: ArtifactVersion) -> dic
         "created_at": version.created_at,
         "annotation": version.annotation,
         "producer": dict(version.producer),
+        # S4 (#970): the ``wasRevisionOf`` edge + honest custody/kind markers.
+        "prior_version": version.prior_version,
+        "prior_sha256": version.prior_sha256,
+        "kind_warning": version.kind_warning,
+        "custody_gap": version.custody_gap,
         "uri": _version_uri(workspace_id, name, version),
         "fetch_url": fetch_url_for(version.artifact_id),
     }
@@ -334,14 +339,13 @@ def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
     async def resolve_artifact_by_name(wid: str, name: str, ref: str = "latest") -> dict[str, Any]:
         """Resolve one version by name + ``ref`` (``latest`` | ``vN`` | alias).
 
-        Full alias resolution activates in S4 (#970): ``latest`` (maintained since
-        S1) and ``vN`` resolve now. An unknown alias (anything that is neither
-        ``latest`` nor a ``vN`` form nor an already-tracked alias) returns a typed
-        ``409 alias_resolution_not_available`` — a stable, non-cacheable signal
-        (``details.available: ["latest", "vN"]``) that the ref is valid but not yet
-        resolvable, distinct from a ``404`` a caching layer might treat as
-        permanently absent. A ``vN`` naming a version that does not exist stays a
-        genuine ``404 not_found``.
+        Full alias resolution is LIVE (S4 #970): ``latest`` (the auto-maintained head
+        alias), ``vN``, and ANY tracked alias resolve. The S2 placeholder ``409
+        alias_resolution_not_available`` is gone — resolution is complete, so an
+        unknown ref is now an honest ``404 not_found`` carrying the full set of
+        resolvable refs in ``details.available`` (``latest``, every ``v1..vN``, and
+        every named alias). A ``vN`` naming a version that does not exist is the same
+        honest ``404``.
         """
         registry = await _registry(app)
         record = registry.get(wid, name)
@@ -354,32 +358,16 @@ def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         version = _resolve_ref(record, ref)
         if version is None:
-            normalized = (ref or "latest").strip()
-            is_version_form = normalized == "latest" or (
-                normalized.startswith("v") and normalized[1:].isdigit()
-            )
-            if not is_version_form and normalized not in record.aliases:
-                # Unknown alias, pre-S4: typed + non-cacheable, never a 404 to cache.
-                raise _artifact_error(
-                    status_code=409,
-                    error="alias_resolution_not_available",
-                    message=(
-                        f"alias {ref!r} is not resolvable yet; full alias resolution "
-                        "lands with version chains (S4)"
-                    ),
-                    details={
-                        "workspace_id": wid,
-                        "name": name,
-                        "ref": ref,
-                        "available": ["latest", "vN"],
-                    },
-                    recoverable=True,
-                )
             raise _artifact_error(
                 status_code=404,
                 error="not_found",
-                message=f"artifact version not found for ref: {ref}",
-                details={"workspace_id": wid, "name": name, "ref": ref},
+                message=f"artifact ref not resolvable: {ref}",
+                details={
+                    "workspace_id": wid,
+                    "name": name,
+                    "ref": ref,
+                    "available": _available_refs(record),
+                },
             )
         _audit(app, route="resolve_artifact_by_name", workspace_id=wid, name=name, ref=ref)
         return {
@@ -387,6 +375,14 @@ def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
             "resolved": _version_wire(wid, name, version),
             "ref": ref,
         }
+
+    # The mutable alias-move route lives in its own owner module (no-accretion, S4);
+    # register it here so the ``x_clio_artifacts`` surface is assembled in one place.
+    from clio_agent.gact.routes.artifact_aliases import (  # noqa: PLC0415
+        register_artifact_alias_routes,
+    )
+
+    register_artifact_alias_routes(app)
 
     @app.get("/v1/artifacts/{artifact_id}")
     async def get_artifact(artifact_id: str) -> dict[str, Any]:
@@ -509,8 +505,9 @@ def _resolve_ref(record: ArtifactRecord, ref: str) -> Optional[ArtifactVersion]:
     """Resolve a ``latest`` | ``vN`` | alias ``ref`` to a version (or ``None``).
 
     ``latest`` → the head; ``vN`` → the version numbered N; any other alias present
-    in ``record.aliases`` → its target. A non-``latest`` alias that is NOT already
-    tracked is left to the caller (S4 lands full alias resolution).
+    in ``record.aliases`` → its target (full alias resolution, live in S4). An
+    unknown ref returns ``None`` and the caller surfaces an honest ``404`` with the
+    resolvable set.
     """
     ref = (ref or "latest").strip()
     if ref == "latest":
@@ -522,6 +519,20 @@ def _resolve_ref(record: ArtifactRecord, ref: str) -> Optional[ArtifactVersion]:
     if alias_target is not None:
         return next((v for v in record.versions if v.version == alias_target), None)
     return None
+
+
+def _available_refs(record: ArtifactRecord) -> list[str]:
+    """The full set of resolvable refs for a record — the honest 404 ``available``.
+
+    ``latest`` + every ``v1..vN`` + every tracked alias name (``latest`` de-duped),
+    sorted stably so the wire is deterministic. This is what makes an unknown-ref
+    ``404`` honest now that resolution is complete (S4): the client is told exactly
+    what WOULD resolve, not merely that its guess failed.
+    """
+    refs = {"latest"}
+    refs.update(f"v{v.version}" for v in record.versions)
+    refs.update(record.aliases.keys())
+    return sorted(refs)
 
 
 def _serve_bytes(app: FastAPI, record: ArtifactRecord, version: ArtifactVersion) -> Response:

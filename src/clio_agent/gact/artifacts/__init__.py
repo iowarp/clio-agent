@@ -53,6 +53,13 @@ from clio_agent.gact.artifacts.registry import (
     get_registry,
     rebuild_registry_at_boot,
 )
+from clio_agent.gact.artifacts.versions import (
+    VersionAction,
+    VersionDecision,
+    decide_version,
+    reconcile_designated_path,
+    workspace_lease_clean,
+)
 from clio_agent.gact.artifacts.wire import (
     artifact_uri,
     resource_link_part,
@@ -72,6 +79,11 @@ __all__ = [
     "IdentityEvidence",
     "Mechanism",
     "Proposal",
+    "VersionAction",
+    "VersionDecision",
+    "decide_version",
+    "reconcile_designated_path",
+    "workspace_lease_clean",
     "ProposalOutcome",
     "RejectionReason",
     "artifact_uri",
