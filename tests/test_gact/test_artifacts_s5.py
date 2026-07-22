@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import os
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -179,7 +180,7 @@ def test_replay_rerunnable_when_an_input_is_unpinned():
         ProvEdge(role=EdgeRole.USED, evidence=EdgeEvidence.SCHEMA_ARG, external_ref="external:/x")
     ]
     contract, reason = compute_replay_contract(env, used)
-    # Sabotage: treat schema-arg-without-sha as pinned in _edge_is_pinned -> red.
+    # Sabotage: treat schema-arg-without-sha as pinned in _edge_pin_class -> red.
     assert contract is ReplayContract.RE_RUNNABLE
     assert reason.startswith("inputs_unpinned:")
 
@@ -196,7 +197,9 @@ def test_tier_order_total():
 
 
 def _detect(app, sess, args):
-    return _detect_used_edges(app, sess.id, args=args, workspace_id="ws1", turn_id="", trace_id="")
+    return _detect_used_edges(
+        app, sess.id, args=args, workspace_id="ws1", turn_id="", trace_id=""
+    ).edges
 
 
 def test_used_edge_match_hash_pair(tmp_path):
@@ -221,9 +224,11 @@ def test_used_edge_changed_input_mints_gap_first(tmp_path):
     assert len(edges) == 1
     e = edges[0]
     # A NEW (gap) version was minted first; the edge points at it, never the stale v1.
+    # No active observer call on this thread -> DIRTY lease -> a custody GAP (finding [3]:
+    # the note reports the ACTUAL reconcile class, not an unconditional "gap_first").
     # Sabotage: in _matched_used_edge point the edge at `version` (the stale match) on
-    # a hash mismatch instead of gap.artifact_id -> the id-inequality assertion goes red.
-    assert e.note == "gap_first"
+    # a hash mismatch instead of the reconcile outcome -> the id-inequality assertion goes red.
+    assert e.note == "gap"
     assert e.artifact_id != version.artifact_id
     assert e.evidence is EdgeEvidence.HASH_PAIR
     # The gap version is a real second version in the chain.
@@ -804,3 +809,459 @@ def test_transform_extras_ride_relay_artifact_ref_metadata(tmp_path):
     )
     assert ref.metadata["clio.provenance.v1"]["activity_id"] == "call_relay"
     assert "used_artifact_refs" in ref.metadata["clio.provenance.v1"]
+
+
+# --------------------------------------------------------------------------- #
+# 8b. Relay convergence — ALWAYS-run compat against the VENDORED relay mirror
+#     (finding [12]): the real-repo tests above skip in default CI; this fixture
+#     layer catches a clio-side to_artifact_use/to_relay_provenance regression on
+#     every run, and pins the relay commit it mirrors.
+# --------------------------------------------------------------------------- #
+
+
+def test_used_edge_serializes_as_relay_artifact_use_fixture():
+    from clio_agent.gact.artifacts.records import new_artifact_id
+    from tests.test_gact.relay_compat_fixture import ArtifactUse as FixtureArtifactUse
+
+    artifact_id = new_artifact_id()
+    edge = ProvEdge(
+        role=EdgeRole.USED,
+        evidence=EdgeEvidence.HASH_PAIR,
+        artifact_id=artifact_id,
+        sha256="a" * 64,
+    )
+    use = edge.to_artifact_use()
+    assert use is not None
+    # ALWAYS-run: the vendored mirror is frozen + extra='forbid' + 64-hex sha, so a
+    # clio-side key/shape drift reddens in default CI (no sibling checkout needed).
+    # Sabotage: rename to_artifact_use's keys ('sha' for 'sha256') -> extra='forbid' -> red.
+    relay_use = FixtureArtifactUse(**use)
+    assert relay_use.artifact_id == artifact_id
+    assert relay_use.sha256 == "a" * 64
+
+
+def test_transform_extras_ride_relay_artifact_ref_metadata_fixture(tmp_path):
+    from tests.test_gact.relay_compat_fixture import ArtifactRef as FixtureArtifactRef
+
+    app, sess, _arc = _make_app(tmp_path)
+    in_path, _v = _register_file(app, sess, tmp_path, "in.csv", b"seed", "call_seed")
+    rec = record_transform(
+        app,
+        sess.id,
+        tool_name="plot",
+        args={"data_path": str(in_path)},
+        call_id="call_relay_fx",
+        ok=True,
+        result=None,
+        minted=[],
+        workspace_id="ws1",
+    )
+    assert rec is not None
+    ref = FixtureArtifactRef(
+        artifact_id="artifact_" + "a" * 32,
+        job_id="job_test0001",
+        uri="artifact://ws1/in.csv@v1",
+        kind="dataset",
+        sha256="d" * 64,
+        metadata={"clio.provenance.v1": rec.to_relay_provenance()},
+    )
+    assert ref.metadata["clio.provenance.v1"]["activity_id"] == "call_relay_fx"
+    assert "used_artifact_refs" in ref.metadata["clio.provenance.v1"]
+
+
+def test_relay_fixture_pins_the_mirrored_commit():
+    from tests.test_gact.relay_compat_fixture import RELAY_PINNED_COMMIT
+
+    # The fixture must carry the relay commit it mirrors (finding [12]) so a re-mirror
+    # is auditable. Sabotage: blank the pin -> red.
+    assert len(RELAY_PINNED_COMMIT) == 40 and all(
+        c in "0123456789abcdef" for c in RELAY_PINNED_COMMIT
+    )
+
+
+# --------------------------------------------------------------------------- #
+# 9. Finding [1] — freshness guard: a freshly-written output under a non-designation
+#    arg is NEVER a used input of the same call (a typed note makes the miss visible).
+# --------------------------------------------------------------------------- #
+
+
+def test_used_edge_freshness_guard_skips_freshly_written_output(tmp_path):
+    app, sess, _arc = _make_app(tmp_path)
+    call_start = 1_000_000.0
+    # A genuinely pre-existing INPUT (mtime before the call) STILL edges.
+    in_path = tmp_path / "input.csv"
+    in_path.write_bytes(b"rows")
+    os.utime(in_path, (call_start - 100, call_start - 100))
+    # A freshly-WRITTEN output under a NON-designation arg (filename=) — mtime AFTER the
+    # call start. Designation did not mint it; the used-detector must NOT record it as a
+    # used INPUT of the same call (finding [1] — the self-dependency false edge).
+    out_path = tmp_path / "out.png"
+    out_path.write_bytes(b"\x89PNG plot")
+    os.utime(out_path, (call_start + 100, call_start + 100))
+    scan = _detect_used_edges(
+        app,
+        sess.id,
+        args={"data_path": str(in_path), "filename": str(out_path)},
+        workspace_id="ws1",
+        turn_id="",
+        trace_id="",
+        call_started_at=call_start,
+    )
+    edge_paths = {e.path for e in scan.edges}
+    resolved_out = str(out_path.resolve())
+    resolved_in = str(in_path.resolve())
+    # Sabotage: drop the mtime>=call_started_at freshness guard -> out.png becomes a
+    # used edge (the call consumes its own output) -> this assertion red.
+    assert resolved_out not in edge_paths
+    assert resolved_in in edge_paths
+    # The miss is DETECTABLE: a typed note names the freshly-written candidate.
+    assert any(
+        n["reason"] == "unminted_output_candidate" and n["path"] == resolved_out for n in scan.notes
+    )
+
+
+def test_used_edge_freshness_guard_off_when_no_call_start(tmp_path):
+    app, sess, _arc = _make_app(tmp_path)
+    q = tmp_path / "x.csv"
+    q.write_bytes(b"data")
+    # With no call_started_at (a direct detector call), the guard is inert — an ordinary
+    # existing input still edges (the guard never suppresses a legitimate input).
+    scan = _detect_used_edges(
+        app, sess.id, args={"data_path": str(q)}, workspace_id="ws1", turn_id="", trace_id=""
+    )
+    assert len(scan.edges) == 1 and not scan.notes
+
+
+# --------------------------------------------------------------------------- #
+# 10. Finding [4] — relative/bare path args resolve against the WORKSPACE ROOT;
+#     an unresolved path-looking arg records a typed miss (a bare query does not).
+# --------------------------------------------------------------------------- #
+
+
+def test_used_edge_relative_bare_path_resolves_against_workspace_root(tmp_path):
+    app, sess, _arc = _make_app(tmp_path)
+    (tmp_path / "in.csv").write_bytes(b"rows")
+    scan = _detect_used_edges(
+        app, sess.id, args={"data_path": "in.csv"}, workspace_id="ws1", turn_id="", trace_id=""
+    )
+    # Sabotage: resolve relative args against the process CWD (not the workspace root)
+    # -> the bare filename is not a file -> zero edges -> red.
+    assert len(scan.edges) == 1
+    assert scan.edges[0].path == str((tmp_path / "in.csv").resolve())
+
+
+def test_used_edge_unresolved_path_arg_is_noted_bare_query_is_not(tmp_path):
+    app, sess, _arc = _make_app(tmp_path)
+    scan = _detect_used_edges(
+        app,
+        sess.id,
+        args={"data_path": "missing.csv", "city": "Los Angeles", "fmt": "png"},
+        workspace_id="ws1",
+        turn_id="",
+        trace_id="",
+    )
+    assert scan.edges == []
+    # A path-looking miss ('missing.csv') is DETECTABLE; a bare non-path string
+    # ('Los Angeles') and a bare format ('png', no dot) are not noise (finding [4]).
+    # Sabotage: drop the unresolved_path_arg note -> the missed input is undetectable -> red.
+    assert [n["reason"] for n in scan.notes] == ["unresolved_path_arg"]
+    assert scan.notes[0]["value"] == "missing.csv"
+
+
+# --------------------------------------------------------------------------- #
+# 11. Finding [3] — the changed-input edge note reports the ACTUAL reconcile class.
+# --------------------------------------------------------------------------- #
+
+
+def test_used_edge_note_auto_revision_when_lease_clean(tmp_path):
+    from clio_agent.gact import tool_observer
+
+    app, sess, _arc = _make_app(tmp_path)
+    path, version = _register_file(app, sess, tmp_path, "in.csv", b"v1", "call_p1")
+    path.write_bytes(b"v2-changed")
+    # Inside an active tool call (stamp set) with a single writer -> a provably-clean
+    # lease -> an auto-revision, NOT a custody gap (finding [3]).
+    tool_observer._OBSERVER_CALL_T0.value = time.time()
+    try:
+        scan = _detect_used_edges(
+            app, sess.id, args={"data_path": str(path)}, workspace_id="ws1", turn_id="", trace_id=""
+        )
+    finally:
+        tool_observer._OBSERVER_CALL_T0.value = None
+    e = scan.edges[0]
+    # Sabotage: stamp note="gap_first" unconditionally -> a clean auto-revision is
+    # mislabelled as a gap -> red.
+    assert e.note == "auto_revision"
+    assert e.artifact_id != version.artifact_id
+
+
+# --------------------------------------------------------------------------- #
+# 12. Finding [2] — a broad search LISTS hits (never consumes them): no authority
+#     USED edges, a typed catalog_hits_not_consumed note instead.
+# --------------------------------------------------------------------------- #
+
+
+def test_search_datasets_notes_hits_not_consumed(tmp_path):
+    app, sess, _arc = _make_app(tmp_path)
+    result = {
+        "datasets": [
+            {
+                "id": "d1",
+                "resources": [
+                    {"id": "r1", "url": "https://ndp/r1", "name": "a.csv"},
+                    {"id": "r2", "url": "https://ndp/r2", "name": "b.csv"},
+                ],
+            }
+        ],
+        "_meta": {"tool": "search_datasets", "status": "success"},
+    }
+    rec = record_transform(
+        app,
+        sess.id,
+        tool_name="ndp.search_datasets",
+        args={},
+        call_id="call_search",
+        ok=True,
+        result=result,
+        minted=[],
+        workspace_id="ws1",
+    )
+    assert rec is not None
+    # Sabotage: keep search_datasets in the authority-edge set -> the 2 listed
+    # resources become 'used' authority inputs -> this assertion red.
+    assert [e for e in rec.used if e.evidence is EdgeEvidence.AUTHORITY] == []
+    notes = [n for n in rec.notes if n["reason"] == "catalog_hits_not_consumed"]
+    assert notes and notes[0]["hits"] == 2 and notes[0]["tool"] == "search_datasets"
+
+
+# --------------------------------------------------------------------------- #
+# 13. Finding [5] — authority-without-hash is re-runnable (identity pin, not bits);
+#     authority-WITH-hash (a staged download) is reproducible.
+# --------------------------------------------------------------------------- #
+
+
+def test_replay_rerunnable_authority_without_hash():
+    env = EnvironmentRecord(tier=EnvironmentTier.LOCKFILE_HASH, lockfile_sha256="a" * 64)
+    used = [
+        ProvEdge(
+            role=EdgeRole.USED,
+            evidence=EdgeEvidence.AUTHORITY,
+            authority="https://ndp/resource/123",
+        )
+    ]
+    contract, reason = compute_replay_contract(env, used)
+    # A mutable catalog URL pins IDENTITY, not the bytes -> never a false bit-identical
+    # guarantee. Sabotage: treat authority-without-sha as content-pinned -> REPRODUCIBLE -> red.
+    assert contract is ReplayContract.RE_RUNNABLE
+    assert reason == "inputs_authority_asserted:1"
+
+
+def test_replay_reproducible_authority_with_hash():
+    env = EnvironmentRecord(tier=EnvironmentTier.LOCKFILE_HASH, lockfile_sha256="a" * 64)
+    used = [
+        ProvEdge(
+            role=EdgeRole.USED,
+            evidence=EdgeEvidence.AUTHORITY,
+            authority="https://ndp/resource/123",
+            sha256="c" * 64,
+        )
+    ]
+    contract, reason = compute_replay_contract(env, used)
+    # A staged download hashed in-workspace DOES pin the bytes -> reproducible.
+    assert contract is ReplayContract.REPRODUCIBLE and reason == ""
+
+
+# --------------------------------------------------------------------------- #
+# 14. Finding [6] — the lockfile hash resolves ONLY at the clio-agent repo anchor.
+# --------------------------------------------------------------------------- #
+
+
+def test_lockfile_anchor_ignores_foreign_uv_lock(tmp_path):
+    from clio_agent.gact.artifacts.environment import _lockfile_path
+
+    # A packaged install: a FOREIGN uv.lock at an ancestor, NO clio-agent pyproject.
+    (tmp_path / "uv.lock").write_text("foreign-lock", encoding="utf-8")
+    env_py = (
+        tmp_path
+        / ".venv"
+        / "lib"
+        / "site-packages"
+        / "clio_agent"
+        / "gact"
+        / "artifacts"
+        / "environment.py"
+    )
+    env_py.parent.mkdir(parents=True)
+    env_py.write_text("# stub", encoding="utf-8")
+    # Sabotage: revert to the first-uv.lock directory walk -> the foreign lock is
+    # hashed as clio's environment identity -> red.
+    assert _lockfile_path(start=env_py) is None
+
+
+def test_lockfile_anchor_resolves_clio_repo_root(tmp_path):
+    from clio_agent.gact.artifacts.environment import _lockfile_path
+
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "clio-agent"\nversion = "0.0.0"\n', encoding="utf-8"
+    )
+    (tmp_path / "uv.lock").write_text("clio-lock", encoding="utf-8")
+    env_py = tmp_path / "src" / "clio_agent" / "gact" / "artifacts" / "environment.py"
+    env_py.parent.mkdir(parents=True)
+    env_py.write_text("# stub", encoding="utf-8")
+    assert _lockfile_path(start=env_py) == tmp_path / "uv.lock"
+
+
+# --------------------------------------------------------------------------- #
+# 15. Finding [7] — a large inline arg is bounded to its content digest.
+# --------------------------------------------------------------------------- #
+
+
+def test_instrument_args_bounded_for_large_inline_content(tmp_path):
+    app, sess, _arc = _make_app(tmp_path)
+    big = "x" * (5 * 1024 * 1024)
+    rec = record_transform(
+        app,
+        sess.id,
+        tool_name="create_artifact",
+        args={"content": big, "name": "r.md"},
+        call_id="call_big",
+        ok=True,
+        result=None,
+        minted=[],
+        workspace_id="ws1",
+    )
+    assert rec is not None
+    stored = rec.instrument.args["content"]
+    # Sabotage: store args verbatim (dict(args)) -> content is the full 5MB string ->
+    # the truncated-dict assertions red (and the registry/trace grow unbounded).
+    assert isinstance(stored, dict) and stored["truncated"] is True
+    assert stored["sha256"] == hashlib.sha256(big.encode("utf-8")).hexdigest()
+    assert stored["size"] == 5 * 1024 * 1024 and len(stored["head"]) == 256
+    # A small arg is kept verbatim (only over-bound values are elided).
+    assert rec.instrument.args["name"] == "r.md"
+
+
+# --------------------------------------------------------------------------- #
+# 16. Finding [8] — the environment stamps the EXECUTING expert's bound LM.
+# --------------------------------------------------------------------------- #
+
+
+def test_environment_model_ref_from_executing_expert_lm(tmp_path):
+    import dspy
+
+    app, _sess, _arc = _make_app(tmp_path)
+    expert_lm = dspy.LM("openai/expert-model-x")
+    with dspy.context(lm=expert_lm):
+        env = capture_environment(app)
+    # The stamp names the EXECUTING expert's per-context LM, not the app-bound global.
+    # Sabotage: read only _active_lm_model_ref(app) -> model_id is the global "" -> red.
+    assert env.model_id == "openai/expert-model-x"
+    assert env.provider_id == "openai"
+    assert env.model_source == "executing_lm"
+
+
+def test_environment_model_ref_typed_global_fallback(tmp_path):
+    app, _sess, _arc = _make_app(tmp_path)
+    env = capture_environment(app)  # no per-profile dspy.context bound
+    # No executing-LM context -> a TYPED fallback to the global, never a silent wrong stamp.
+    assert env.model_source == "global_fallback"
+
+
+# --------------------------------------------------------------------------- #
+# 17. Findings [9]/[10] — lineage truncation is typed AND well-formed (no dangling).
+# --------------------------------------------------------------------------- #
+
+
+def test_lineage_node_cap_has_no_dangling_edges(tmp_path, monkeypatch):
+    import clio_agent.gact.artifacts.lineage as lin
+
+    monkeypatch.setattr(lin, "_MAX_NODES", 2)
+    app, sess, _arc = _make_app(tmp_path)
+    _in_v, _mid_v, plot_v = _build_chain(app, sess, tmp_path)
+    graph = build_lineage(get_registry(app), plot_v.artifact_id, direction="both", depth=5)
+    assert graph is not None
+    node_ids = {n["id"] for n in graph["nodes"]}
+    # Sabotage: ignore add_node's return before add_edge -> a boundary edge references
+    # a node clipped by the cap -> this well-formedness assertion red.
+    for e in graph["edges"]:
+        assert e["from"] in node_ids, e
+        assert e["to"] in node_ids, e
+    assert graph["truncated"] == {"reason": "node_cap", "nodes": 2}
+
+
+def test_lineage_depth_horizon_is_typed(tmp_path):
+    app, sess, _arc = _make_app(tmp_path)
+    _in_v, _mid_v, plot_v = _build_chain(app, sess, tmp_path)
+    graph = build_lineage(get_registry(app), plot_v.artifact_id, direction="upstream", depth=1)
+    assert graph is not None
+    # depth=1 clips before input.csv -> the graph continues past the requested horizon.
+    # Sabotage: leave truncated=None on a depth clip -> a UI reads it as complete -> red.
+    assert graph["truncated"] == {"reason": "depth_horizon", "at_depth": 1}
+
+
+def test_lineage_complete_graph_is_not_truncated(tmp_path):
+    app, sess, _arc = _make_app(tmp_path)
+    _in_v, _mid_v, plot_v = _build_chain(app, sess, tmp_path)
+    graph = build_lineage(get_registry(app), plot_v.artifact_id, direction="upstream", depth=9)
+    assert graph is not None and graph["truncated"] is None
+
+
+# --------------------------------------------------------------------------- #
+# 18. Finding [11] — the REAL observer->transform wiring, and its typed failure.
+# --------------------------------------------------------------------------- #
+
+
+def test_observe_tool_transform_drives_real_observer_seam(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    from clio_agent.gact.tool_observer import _OBSERVER_CALL_IDS, _make_tool_observer
+
+    with TestClient(build_app(sessions_path=tmp_path / "s.json")) as client:
+        app = client.app
+        wid, sid = _workspace_session(client, tmp_path)
+        in_path = tmp_path / "in.csv"
+        in_path.write_bytes(b"rows")
+        mint_tool_declared_outputs(
+            app,
+            sid,
+            tool_name="seed",
+            effective_args={"output_path": str(in_path)},
+            call_id="seed",
+            workspace_id=wid,
+        )
+        out_path = tmp_path / "chart.png"
+        observe = _make_tool_observer(app)
+        # Drive the REAL observer seam POSITIONALLY, exactly as production does.
+        observe("plot", {"data_path": str(in_path)}, "started", None)
+        out_path.write_bytes(b"\x89PNG chart")
+        call_id = _OBSERVER_CALL_IDS.value
+        observe(
+            "plot",
+            {"data_path": str(in_path), "output_path": str(out_path)},
+            "completed",
+            None,
+            {"content": [{"type": "text", "text": "ok"}]},
+        )
+        rec = get_registry(app).get_transform(call_id)
+        # Sabotage: swap/insert a positional arg at tool_observer.py's
+        # observe_tool_transform(...) call -> the record never lands -> red.
+        assert rec is not None
+        assert any(e.path == str(out_path) or e.name == "chart.png" for e in rec.generated)
+
+
+def test_transform_record_failure_is_typed_not_swallowed(tmp_path, monkeypatch):
+    import clio_agent.gact.artifacts.transforms as tmod
+
+    app, sess, _arc = _make_app(tmp_path)
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("sabotage-inside-record")
+
+    monkeypatch.setattr(tmod, "record_transform", _boom)
+    # The turn must be UNHARMED (no exception escapes) AND the failure must be TYPED +
+    # queryable — never a bare swallow (finding [11]).
+    observe_tool_transform(app, sess.id, "plot", {"x": "y"}, "call_boom", True, None)
+    failures = tmod.transform_record_failures(app)
+    # Sabotage: revert the except to a bare logger.warning swallow -> ledger empty -> red.
+    assert failures and failures[-1]["reason"] == "transform_record_failed"
+    assert failures[-1]["call_id"] == "call_boom"
+    assert failures[-1]["cause"] == "RuntimeError"

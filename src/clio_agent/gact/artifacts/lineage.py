@@ -9,7 +9,13 @@ Nodes are ``artifact | activity | gap`` (a ``gap`` is a version minted with
 mechanism ``none`` — an undesignated overwrite whose actor is unknown). Edges are
 ``used | generated | revision_of``, each carrying its evidence. The traversal is
 BFS bounded by a caller ``depth`` (in activity hops) and a hard node cap so a
-pathological graph can never produce an unbounded response (``truncated=True``).
+pathological graph can never produce an unbounded response.
+
+Truncation is TYPED and the graph stays well-formed (findings [9]/[10]): when the
+node cap or the caller's depth horizon clips the walk, ``truncated`` carries
+``{reason, nodes|at_depth}`` (``None`` when the lineage is complete), and NO edge
+is ever emitted that references a node absent from ``nodes`` — a boundary edge is
+dropped with the node it could not add, so a strict graph consumer never dangles.
 
 W&B's four verbs / Pachyderm subvenance: ``upstream`` answers "what produced
 this" (its activity + inputs, recursively); ``downstream`` answers "what did this
@@ -130,9 +136,11 @@ def build_lineage(
 
     ``direction`` ∈ ``{upstream, downstream, both}``; ``depth`` bounds the activity
     hops. Returns ``{root, direction, depth, nodes, edges, truncated}`` or ``None``
-    when the root artifact id is unknown. Deterministic + idempotent: nodes and
-    edges are de-duplicated by id, and the BFS visits each artifact once at its
-    shallowest depth.
+    when the root artifact id is unknown. ``truncated`` is ``None`` for a complete
+    graph, else ``{reason: "node_cap", nodes}`` or ``{reason: "depth_horizon",
+    at_depth}`` (findings [9]/[10]). Deterministic + idempotent: nodes and edges are
+    de-duplicated by id, the BFS visits each artifact once at its shallowest depth,
+    and no edge is emitted whose endpoint node was clipped by the cap (no dangling).
     """
     if direction not in ("upstream", "downstream", "both"):
         direction = "both"
@@ -145,7 +153,7 @@ def build_lineage(
     nodes: dict[str, dict[str, Any]] = {}
     edges: list[dict[str, Any]] = []
     edge_keys: set[tuple[str, str, str]] = set()
-    truncated = False
+    truncated: Optional[dict[str, Any]] = None
 
     def add_node(node: dict[str, Any]) -> bool:
         nonlocal truncated
@@ -153,7 +161,9 @@ def build_lineage(
         if node_id in nodes:
             return True
         if len(nodes) >= _MAX_NODES:
-            truncated = True
+            # Node cap wins over a depth horizon (the harder bound). Only a node
+            # that was actually ADDED can be an edge endpoint (finding [9]).
+            truncated = {"reason": "node_cap", "nodes": _MAX_NODES}
             return False
         nodes[node_id] = node
         return True
@@ -165,6 +175,11 @@ def build_lineage(
         edge_keys.add(key)
         edges.append({"from": src, "to": dst, "type": etype, "evidence": evidence})
 
+    def note_depth_horizon() -> None:
+        nonlocal truncated
+        if truncated is None:
+            truncated = {"reason": "depth_horizon", "at_depth": depth}
+
     rec0, ver0 = root
     add_node(_artifact_node(rec0, ver0))
     frontier: deque[tuple[str, int]] = deque([(artifact_id, 0)])
@@ -173,14 +188,20 @@ def build_lineage(
     while frontier:
         current_id, current_depth = frontier.popleft()
         resolved = index.version(current_id)
-        if resolved is None or current_depth >= depth:
+        if resolved is None:
+            continue
+        if current_depth >= depth:
+            # At the caller's depth horizon: if this node still has neighbours in the
+            # requested direction, the graph CONTINUES past the bound (finding [10]).
+            if _has_frontier_beyond(index, resolved, direction=direction):
+                note_depth_horizon()
             continue
         record, version = resolved
 
         # --- revision_of (version chain) ---
         for neighbour in _revision_neighbours(index, record, version, direction=direction):
             if not add_node(_artifact_node(record, neighbour)):
-                break
+                break  # node cap — drop the edge with the node it references
             if neighbour.version < version.version:
                 add_edge(current_id, neighbour.artifact_id, "revision_of", "hash-pair")
             else:
@@ -192,8 +213,9 @@ def build_lineage(
         # --- upstream: the producing activity + its used inputs ---
         if direction in ("upstream", "both"):
             producer = index.produced_by(current_id)
-            if producer is not None:
-                add_node(_activity_node(producer))
+            # Only emit the activity's edge + expand its inputs when its node was
+            # actually added (finding [9] — never an edge to an absent activity).
+            if producer is not None and add_node(_activity_node(producer)):
                 gen_ev = _edge_evidence(producer.generated, current_id)
                 add_edge(f"activity:{producer.call_id}", current_id, "generated", gen_ev)
                 _expand_activity_inputs(
@@ -203,7 +225,8 @@ def build_lineage(
         # --- downstream: activities that consumed this + their outputs ---
         if direction in ("downstream", "both"):
             for consumer in index.used_by(current_id):
-                add_node(_activity_node(consumer))
+                if not add_node(_activity_node(consumer)):
+                    break  # node cap — drop this consumer's edge + expansion
                 used_ev = _edge_evidence(consumer.used, current_id)
                 add_edge(current_id, f"activity:{consumer.call_id}", "used", used_ev)
                 _expand_activity_outputs(
@@ -218,6 +241,27 @@ def build_lineage(
         "edges": edges,
         "truncated": truncated,
     }
+
+
+def _has_frontier_beyond(
+    index: _LineageIndex,
+    resolved: tuple[ArtifactRecord, ArtifactVersion],
+    *,
+    direction: str,
+) -> bool:
+    """Whether a node at the depth horizon still has neighbours (graph continues)."""
+    record, version = resolved
+    if direction in ("upstream", "both"):
+        if index.produced_by(version.artifact_id) is not None:
+            return True
+        if version.prior_version is not None:
+            return True
+    if direction in ("downstream", "both"):
+        if index.used_by(version.artifact_id):
+            return True
+        if any(cand.prior_version == version.version for cand in record.versions):
+            return True
+    return False
 
 
 def _edge_evidence(edges: list[Any], artifact_id: str) -> str:
@@ -241,8 +285,8 @@ def _expand_activity_inputs(
     for edge in activity.used:
         if not edge.artifact_id:
             # External / authority-only input — surface it as a leaf node, no recursion.
-            _add_external_node(edge, add_node)
-            if edge.external_ref:
+            # Emit the edge ONLY when the leaf node was actually added (finding [9]).
+            if _add_external_node(edge, add_node) and edge.external_ref:
                 add_edge(
                     edge.external_ref, f"activity:{activity.call_id}", "used", edge.evidence.value
                 )
@@ -284,21 +328,27 @@ def _expand_activity_outputs(
             frontier.append((edge.artifact_id, depth + 1))
 
 
-def _add_external_node(edge: Any, add_node: Any) -> None:
-    """Add a leaf node for an external / authority-asserted input (no recursion)."""
+def _add_external_node(edge: Any, add_node: Any) -> bool:
+    """Add a leaf node for an external / authority-asserted input (no recursion).
+
+    Returns whether the node is present (added or already there) so the caller only
+    emits the edge when its endpoint exists (finding [9] — never a dangling edge).
+    """
     ref = edge.external_ref or edge.authority
     if not ref:
-        return
-    add_node(
-        {
-            "id": ref,
-            "type": "artifact",
-            "external": True,
-            "authority": edge.authority,
-            "sha256": edge.sha256,
-            "evidence": edge.evidence.value,
-            "name": edge.name,
-        }
+        return False
+    return bool(
+        add_node(
+            {
+                "id": ref,
+                "type": "artifact",
+                "external": True,
+                "authority": edge.authority,
+                "sha256": edge.sha256,
+                "evidence": edge.evidence.value,
+                "name": edge.name,
+            }
+        )
     )
 
 

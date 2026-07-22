@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import platform
+import re
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
@@ -81,8 +82,8 @@ class EnvironmentRecord(BaseModel):
 
     tier: EnvironmentTier = EnvironmentTier.DECLARED
     clio_version: str = ""
-    #: ``sha256(uv.lock)`` when the lockfile was reachable, else ``""`` (a typed
-    #: ``lockfile_unreachable`` reason is logged and the tier stays ``declared``).
+    #: ``sha256(uv.lock)`` resolved at clio's repo-root anchor, else ``""`` (a typed
+    #: ``lockfile_unavailable`` reason is logged and the tier stays ``declared``).
     lockfile_sha256: str = ""
     #: The MCP listing-cache ``size:mtime`` fingerprint — a clio-kit launcher/
     #: tool-fleet proxy; ``""`` when the cache file is absent.
@@ -90,6 +91,10 @@ class EnvironmentRecord(BaseModel):
     provider_id: str = ""
     model_id: str = ""
     model_variant: str = ""
+    #: How the model ref was resolved (finding [8]): ``executing_lm`` — the LM bound
+    #: by the executing expert's ``dspy.context``; ``global_fallback`` — the app-bound
+    #: global LM (no per-profile context was active on the recording thread).
+    model_source: str = ""
     os: str = ""
     arch: str = ""
     python_version: str = ""
@@ -97,20 +102,60 @@ class EnvironmentRecord(BaseModel):
     image_digest: str = ""
 
 
-def _lockfile_path() -> Optional[Path]:
-    """Locate ``uv.lock`` relative to the installed package, or ``None``.
+_CLIO_PACKAGE_NAME = "clio-agent"
 
-    ``src/clio_agent/gact/artifacts/environment.py`` → repo root is ``parents[4]``.
-    A source checkout ships ``uv.lock`` there; a wheel install does not, so the
-    tier honestly falls back to ``declared`` (typed) when it is absent.
+
+def _pyproject_names_clio(text: str) -> bool:
+    """Whether a ``pyproject.toml``'s ``[project]`` declares ``name = "clio-agent"``.
+
+    A tolerant line match (no TOML parser dep): the first ``name = "..."`` assignment
+    is the project name under ``[project]`` in clio's own root pyproject.
     """
-    here = Path(__file__).resolve()
-    # environment.py[0] artifacts[1] gact[2] clio_agent[3] src[4] repo-root[5]
+    for line in text.splitlines():
+        match = re.match(r"""\s*name\s*=\s*["']([^"']+)["']""", line)
+        if match:
+            return match.group(1).strip() == _CLIO_PACKAGE_NAME
+    return False
+
+
+def _clio_repo_root(start: Optional[Path] = None) -> Optional[Path]:
+    """The clio-agent repo root — the ``__file__`` ancestor whose pyproject names clio.
+
+    An EXPLICIT anchor (finding [6]), never a first-``uv.lock`` directory walk: only a
+    directory carrying a ``pyproject.toml`` with ``name = "clio-agent"`` is clio's own
+    root, so a nested/packaged install can never mistake an unrelated ancestor's
+    lockfile for clio's environment identity. Returns ``None`` when no such anchor
+    exists above this module (a wheel/pip install). ``start`` overrides the module
+    path for testing a synthetic install layout.
+    """
+    here = (start or Path(__file__)).resolve()
     for parent in here.parents:
-        candidate = parent / "uv.lock"
-        if candidate.is_file():
-            return candidate
+        pyproject = parent / "pyproject.toml"
+        if not pyproject.is_file():
+            continue
+        try:
+            text = pyproject.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if _pyproject_names_clio(text):
+            return parent
     return None
+
+
+def _lockfile_path(start: Optional[Path] = None) -> Optional[Path]:
+    """Locate clio's OWN ``uv.lock`` at its repo-root anchor, or ``None`` (finding [6]).
+
+    Resolved ONLY at the explicit clio-agent repo-root anchor
+    (:func:`_clio_repo_root`), NEVER by a directory walk that could hash an unrelated
+    ancestor lockfile in a nested/packaged install. A wheel/pip install (no
+    clio-agent pyproject anchor) → ``None`` → the tier honestly falls back to
+    ``declared`` with a typed ``lockfile_unavailable`` reason.
+    """
+    root = _clio_repo_root(start)
+    if root is None:
+        return None
+    candidate = root / "uv.lock"
+    return candidate if candidate.is_file() else None
 
 
 def _sha256_file(path: Path) -> Optional[str]:
@@ -132,7 +177,7 @@ def _lockfile_hash() -> str:
     """Return ``sha256(uv.lock)`` or ``""`` (with a typed reason logged)."""
     path = _lockfile_path()
     if path is None:
-        logger.info("environment tier declared reason=lockfile_unreachable detail=uv_lock_absent")
+        logger.info("environment tier declared reason=lockfile_unavailable detail=no_clio_anchor")
         return ""
     digest = _sha256_file(path)
     if digest is None:
@@ -159,14 +204,43 @@ def _launcher_fingerprint() -> str:
         return ""
 
 
+def _model_ref_from_lm(lm: Any) -> dict[str, str]:
+    """Project a bound dspy LM object to a provider/model ref (``model`` is ``prov/id``)."""
+    model = str(getattr(lm, "model", "") or "")
+    provider, _, ident = model.partition("/")
+    if ident:
+        return {"provider_id": provider, "model_id": model, "variant": ""}
+    return {"provider_id": "", "model_id": model, "variant": ""}
+
+
 def _active_model(app: "FastAPI") -> dict[str, str]:
-    """The active provider/model ref (``_active_lm_model_ref`` shape), guarded."""
+    """The EXECUTING model ref, preferring the expert's bound LM (finding [8]).
+
+    A leaf expert runs its own model via ``dspy.context(lm=...)`` (per-expert
+    provider), which does NOT mutate the app-bound global. So we first read the LM
+    actually bound on this thread (:func:`ambient_lm.active_lm`, ``ambient=False``);
+    only when no per-profile context is active do we fall back to the global ref —
+    a TYPED fallback (``model_source=global_fallback``), never a silent wrong stamp.
+    """
+    try:
+        from clio_agent.gact.runtime.ambient_lm import active_lm  # noqa: PLC0415
+
+        lm, ambient = active_lm()
+        if lm is not None and not ambient:
+            ref = _model_ref_from_lm(lm)
+            if ref.get("model_id"):
+                return {**ref, "source": "executing_lm"}
+    except Exception:  # noqa: BLE001 — executing-LM read is best-effort → typed global fallback
+        logger.debug(
+            "environment model ref reason=executing_lm_unreadable falling_back=global",
+            exc_info=True,
+        )
     try:
         from clio_agent.gact.providers.config import _active_lm_model_ref  # noqa: PLC0415
 
-        return _active_lm_model_ref(app)
+        return {**_active_lm_model_ref(app), "source": "global_fallback"}
     except Exception:  # noqa: BLE001 — model provenance is best-effort, never load-bearing
-        return {"provider_id": "", "model_id": "", "variant": ""}
+        return {"provider_id": "", "model_id": "", "variant": "", "source": "global_fallback"}
 
 
 def capture_environment(app: "FastAPI") -> EnvironmentRecord:
@@ -190,6 +264,7 @@ def capture_environment(app: "FastAPI") -> EnvironmentRecord:
         provider_id=str(model.get("provider_id") or ""),
         model_id=str(model.get("model_id") or ""),
         model_variant=str(model.get("variant") or ""),
+        model_source=str(model.get("source") or ""),
         os=platform.system(),
         arch=platform.machine(),
         python_version=platform.python_version(),
@@ -214,6 +289,7 @@ def environment_from_payload(raw: Any) -> EnvironmentRecord:
         provider_id=str(data.get("provider_id") or ""),
         model_id=str(data.get("model_id") or ""),
         model_variant=str(data.get("model_variant") or ""),
+        model_source=str(data.get("model_source") or ""),
         os=str(data.get("os") or ""),
         arch=str(data.get("arch") or ""),
         python_version=str(data.get("python_version") or ""),

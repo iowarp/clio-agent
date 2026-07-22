@@ -10,20 +10,25 @@ detectors, both **precision over recall** (owner decision #966.10):
   hash differs → mint a GAP version FIRST and point the edge at it; over threshold
   → ``stat-pinned`` labeled). An existing contained file NOT in the registry → an
   ``external:<path>`` edge; anything else → no edge.
-* :func:`detect_authority_edges` — NDP catalog inputs (``stage_resource`` /
-  ``search_datasets`` / ``get_dataset_details``) register their catalog resource
-  ``url`` / ``id`` as ``authority``-asserted inputs. NDP results carry no
-  checksum/ETag/DOI (verified against the real server), so the catalog URL/UUID IS
-  the authority; absent any recognized NDP shape → a typed skip.
+* :func:`detect_authority_edges` — a SPECIFIC catalog input (``stage_resource`` /
+  ``get_dataset_details``) registers its catalog resource ``url`` / ``id`` as an
+  ``authority``-asserted input. NDP results carry no checksum/ETag/DOI (verified
+  against the real server), so the catalog URL/UUID IS the authority. A broad
+  ``search_datasets`` / ``list_organizations`` is DISCOVERY — its hits were listed,
+  not consumed (finding [2]) — so it edges nothing and records a typed
+  ``catalog_hits_not_consumed`` note; absent any recognized NDP shape → a typed skip.
+
+Both detectors return an :class:`EdgeScan` (edges + typed notes) so a deliberate
+non-edge (precision over recall) stays DETECTABLE on the record, never silent.
 """
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, NamedTuple, Optional
 
-from clio_agent.gact.artifacts.designation import OUTPUT_PATH_ARG_NAMES
+from clio_agent.gact.artifacts.designation import ARTIFACT_SUFFIXES, OUTPUT_PATH_ARG_NAMES
 from clio_agent.gact.artifacts.records import ArtifactVersion, Mechanism
 from clio_agent.gact.artifacts.transform_types import EdgeEvidence, EdgeRole, ProvEdge
 
@@ -32,14 +37,31 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: The NDP MCP tool names whose results carry authoritative catalog identity
-#: (item 4). Verified against the real server
-#: (``clio-kit/.../ndp/src/ndp_mcp/server.py``): these return dataset/resource
-#: dicts with ``id`` + download ``url`` (no checksum/ETag/DOI — the URL/UUID is the
-#: authority). ``stage_resource`` additionally downloads to a local path.
-_NDP_CATALOG_TOOLS: frozenset[str] = frozenset(
-    {"search_datasets", "get_dataset_details", "list_organizations"}
-)
+
+class EdgeScan(NamedTuple):
+    """One detector pass: the edges it minted plus typed notes (detectable misses).
+
+    ``notes`` are the honest, queryable residue of precision-over-recall (owner
+    decision #966.10): a candidate the detector deliberately did NOT edge — a
+    freshly-written output under a non-designation arg name
+    (``unminted_output_candidate``), a path-looking arg that never resolved to a
+    workspace file (``unresolved_path_arg``), or a broad catalog search whose hits
+    were listed, not consumed (``catalog_hits_not_consumed``). The record carries
+    them so the miss is DETECTABLE in the trace, never a silent drop.
+    """
+
+    edges: list[ProvEdge]
+    notes: list[dict[str, Any]]
+
+
+#: The NDP MCP tool that names a SPECIFIC catalog resource the agent asked for →
+#: its ``url`` / ``id`` is an ``authority``-asserted USED input.
+_NDP_DETAILS_TOOLS: frozenset[str] = frozenset({"get_dataset_details"})
+#: NDP DISCOVERY tools — a broad ``search_datasets`` / ``list_organizations``
+#: returns RESULTS the agent listed, NOT inputs it consumed (finding [2]). Their
+#: hits never become ``used`` authority edges; the record instead notes
+#: ``catalog_hits_not_consumed`` so the discovery is honestly recorded.
+_NDP_SEARCH_TOOLS: frozenset[str] = frozenset({"search_datasets", "list_organizations"})
 _NDP_STAGE_TOOL = "stage_resource"
 
 #: Bound on how many authority-asserted catalog resources one result contributes,
@@ -48,6 +70,10 @@ _MAX_AUTHORITY_EDGES = 32
 #: Bound on recursion + fan-out when walking call args for candidate paths.
 _MAX_ARG_STRINGS = 64
 _MAX_ARG_DEPTH = 4
+#: A path arg is never megabytes — a large inline value (``content`` / ``cmd``
+#: heredoc) can exceed the OS path limit and is NEVER a candidate path, so it is
+#: skipped before any ``Path()``/``resolve()`` (which raises on an over-long path).
+_MAX_CANDIDATE_STRLEN = 4096
 
 
 # --------------------------------------------------------------------------- #
@@ -69,7 +95,7 @@ def _candidate_arg_strings(args: Any) -> list[tuple[str, str]]:
         if len(out) >= _MAX_ARG_STRINGS or depth > _MAX_ARG_DEPTH:
             return
         if isinstance(value, str):
-            if value.strip():
+            if value.strip() and len(value) <= _MAX_CANDIDATE_STRLEN:
                 out.append((name, value))
             return
         if isinstance(value, dict):
@@ -89,6 +115,19 @@ def _candidate_arg_strings(args: Any) -> list[tuple[str, str]]:
     return out
 
 
+def _looks_like_path(raw: str) -> bool:
+    """Whether a bare arg string plausibly NAMES a file (separator/suffix heuristic).
+
+    Gates the ``unresolved_path_arg`` note (finding [4]) so ordinary non-path string
+    args (queries, city names, formats like ``"png"``) never emit a spurious miss —
+    only a value that carries a path separator or a recognized artifact suffix is
+    treated as a would-be input whose non-resolution is worth recording.
+    """
+    if "/" in raw or "\\" in raw:
+        return True
+    return Path(raw).suffix.lower() in ARTIFACT_SUFFIXES
+
+
 def detect_used_edges(
     app: "FastAPI",
     sid: str,
@@ -97,16 +136,22 @@ def detect_used_edges(
     workspace_id: str,
     turn_id: str,
     trace_id: str,
-) -> list[ProvEdge]:
+    call_started_at: Optional[float] = None,
+) -> EdgeScan:
     """Detect ``used`` edges from call args (item 3 — precision over recall).
 
-    For each candidate arg string: it must resolve to an existing file INSIDE the
-    workspace root (else NO edge). A registry match by path re-hashes under the
-    threshold — hash equal → ``schema-arg`` + ``hash-pair``; hash differs → mint a
-    GAP version FIRST (S4 machinery) and point the edge at the gap; over threshold
-    → ``stat-pinned`` labeled. An existing contained file NOT in the registry →
-    an ``external:<path>`` edge (hashed when under threshold). Everything else →
-    no edge.
+    For each candidate arg string: a RELATIVE/bare value is resolved against the
+    WORKSPACE ROOT (the base the gateway gives the tool subprocess — finding [4]),
+    NOT the server CWD; it must then resolve to an existing file INSIDE the root
+    (else NO edge, and a path-looking miss records ``unresolved_path_arg``). A file
+    whose ``mtime`` is at/after ``call_started_at`` was plausibly WRITTEN by this
+    call, so it is NEVER a used input (finding [1] — the mint side's freshness
+    guard, mirrored here); the miss records ``unminted_output_candidate`` so it is
+    detectable (designation stays the only mint path). A registry match re-hashes
+    under the threshold — hash equal → ``hash-pair``; hash differs → mint a GAP
+    version FIRST and point the edge at it (the ``note`` carries the ACTUAL
+    reconcile class — finding [3]); over threshold → ``stat-pinned`` labeled. An
+    existing contained file NOT in the registry → an ``external:<path>`` edge.
     """
     from clio_agent.gact.artifacts.minting import (  # noqa: PLC0415
         _contained,
@@ -117,26 +162,48 @@ def detect_used_edges(
 
     root = _workspace_root(app, workspace_id)
     if root is None:
-        return []
+        return EdgeScan([], [])
     registry = get_registry(app)
     edges: list[ProvEdge] = []
+    notes: list[dict[str, Any]] = []
     seen: set[str] = set()
     for arg_name, raw in _candidate_arg_strings(args):
         try:
-            path = Path(raw)
-        except (TypeError, ValueError):
+            candidate = Path(raw)
+            # Resolve a relative/bare value against the WORKSPACE ROOT, not the server
+            # CWD (finding [4] — the tool subprocess reads it inside the workspace).
+            if not candidate.is_absolute():
+                candidate = root / raw
+            contained = _contained(candidate, root)
+        except (TypeError, ValueError, OSError):
+            # An over-long / malformed value is never a workspace path (defensive).
             continue
-        if not _contained(path, root):
+        if not contained:
             continue
         try:
-            if not path.is_file():
-                continue
-        except OSError:
+            is_file = candidate.is_file()
+        except (OSError, ValueError):
+            is_file = False
+        if not is_file:
+            # A path-looking arg that never resolved to a workspace file is a
+            # DETECTABLE miss (finding [4]); a bare query string is not.
+            if _looks_like_path(raw):
+                notes.append({"reason": "unresolved_path_arg", "arg": arg_name, "value": raw})
             continue
-        resolved = str(path.expanduser().resolve(strict=False))
+        resolved = str(candidate.expanduser().resolve(strict=False))
         if resolved in seen:
             continue
         seen.add(resolved)
+        # Freshness guard (finding [1]): a file whose mtime is at/after the call's
+        # start was plausibly WRITTEN by this call — never a used input. Record the
+        # miss so it is detectable; designation remains the only mint path.
+        try:
+            mtime = candidate.stat().st_mtime
+        except OSError:
+            continue
+        if call_started_at is not None and mtime >= call_started_at:
+            notes.append({"reason": "unminted_output_candidate", "arg": arg_name, "path": resolved})
+            continue
         try:
             evidence = compute_identity(resolved)
         except OSError:
@@ -171,7 +238,7 @@ def detect_used_edges(
                 trace_id=trace_id,
             )
         )
-    return edges
+    return EdgeScan(edges, notes)
 
 
 def _matched_used_edge(
@@ -214,8 +281,10 @@ def _matched_used_edge(
             arg=arg,
         )
     # Content DIFFERS — never silently pin the stale registered version. Mint a GAP
-    # version FIRST (S4 reconcile machinery) and point the edge at the gap.
-    gap = _mint_gap_for_changed_input(
+    # version FIRST (S4 reconcile machinery) and point the edge at it. The note
+    # carries the ACTUAL reconcile class (finding [3]) — never an unconditional
+    # ``gap_first`` that mislabels a clean auto-revision / re-link / stale fallback.
+    outcome = _mint_gap_for_changed_input(
         app,
         sid,
         name=record_name,
@@ -224,7 +293,21 @@ def _matched_used_edge(
         turn_id=turn_id,
         trace_id=trace_id,
     )
-    target = gap if gap is not None else version
+    if outcome is None:
+        # Reconcile skipped → the edge falls back to the STALE registered version;
+        # say so honestly rather than claiming a gap was minted.
+        return ProvEdge(
+            role=EdgeRole.USED,
+            evidence=EdgeEvidence.HASH_PAIR,
+            artifact_id=version.artifact_id,
+            sha256=version.sha256 or disk_sha,
+            name=record_name,
+            version=version.version,
+            path=path,
+            arg=arg,
+            note="stale_fallback",
+        )
+    target = outcome.version
     return ProvEdge(
         role=EdgeRole.USED,
         evidence=EdgeEvidence.HASH_PAIR,
@@ -234,8 +317,26 @@ def _matched_used_edge(
         version=target.version,
         path=path,
         arg=arg,
-        note="gap_first",
+        note=_reconcile_note(str(getattr(outcome, "action", "") or "")),
     )
+
+
+#: Map the ONE-decision-point action (``VersionAction``) recorded by the reconcile
+#: onto the edge's typed ``note`` (finding [3]). A hash-mismatch used edge is no
+#: longer unconditionally ``gap_first``: a dirty-lease GAP is ``gap``, a provably-
+#: clean single-writer auto-mint is ``auto_revision``, a revert-to-known-version is
+#: ``relink`` (the vocabulary ``ProvEdge.note`` already declared but never emitted).
+_RECONCILE_NOTE: dict[str, str] = {
+    "gap": "gap",
+    "new_version": "auto_revision",
+    "relink": "relink",
+    "dedup": "unchanged",
+}
+
+
+def _reconcile_note(action: str) -> str:
+    """The edge note for a reconcile outcome's ``VersionAction`` (default ``gap``)."""
+    return _RECONCILE_NOTE.get(action, "gap")
 
 
 def _mint_gap_for_changed_input(
@@ -247,14 +348,15 @@ def _mint_gap_for_changed_input(
     path: str,
     turn_id: str,
     trace_id: str,
-) -> Optional[ArtifactVersion]:
+) -> Any:
     """Mint a GAP/new version for an input that changed since registration (S4).
 
     Routes through :func:`reconcile_designated_path` with ``producing=False``: the
     content is an undesignated overwrite observed at use, so it becomes a GAP
     version (dirty lease) / auto revision (clean lease) / re-link (known non-head)
     — never a false producing mint, and the old version is never mutated. Returns
-    the operative version to point the used edge at, or ``None`` on a typed skip.
+    the full :class:`MintOutcome` (so the caller reads the reconcile CLASS via
+    ``outcome.action`` — finding [3]), or ``None`` on a typed skip.
     """
     from clio_agent.gact.artifacts.versions import reconcile_designated_path  # noqa: PLC0415
 
@@ -274,7 +376,7 @@ def _mint_gap_for_changed_input(
             "used-edge gap mint skipped reason=reconcile_skipped session=%s name=%s", sid, name
         )
         return None
-    return outcome.version
+    return outcome
 
 
 # --------------------------------------------------------------------------- #
@@ -298,25 +400,51 @@ def detect_authority_edges(
     tool_name: str,
     result: Any,
     workspace_id: str,
-) -> list[ProvEdge]:
+) -> EdgeScan:
     """Register NDP catalog inputs as ``authority-asserted`` used edges (item 4).
 
     NDP tool results carry NO checksum/ETag/DOI (verified against the real
     server); the catalog resource ``url`` / ``id`` IS the authority. A
     ``stage_resource`` result names a downloaded ``local_path`` (hashed when it
-    lands in the workspace) plus its source ``url``; ``search_datasets`` /
-    ``get_dataset_details`` name catalog resources by ``url`` + ``id``. Absent any
-    recognized NDP shape → a typed skip (no edges).
+    lands in the workspace) plus its source ``url``; ``get_dataset_details`` names
+    the SPECIFIC catalog resource the agent asked for by ``url`` + ``id`` → an
+    authority USED edge. A broad ``search_datasets`` / ``list_organizations`` is
+    DISCOVERY — its hits are RESULTS the agent listed, not inputs it consumed
+    (finding [2]) — so it edges NOTHING and instead records a typed
+    ``catalog_hits_not_consumed`` note. Absent any recognized NDP shape → a typed
+    skip (no edges, no notes).
     """
     structured = _structured_result(result)
     if structured is None:
-        return []
+        return EdgeScan([], [])
     short = tool_name.rsplit(".", 1)[-1] if "." in tool_name else tool_name
     if short == _NDP_STAGE_TOOL:
-        return _stage_resource_edges(app, structured, workspace_id)
-    if short in _NDP_CATALOG_TOOLS:
-        return _catalog_resource_edges(structured)
-    return []
+        return EdgeScan(_stage_resource_edges(app, structured, workspace_id), [])
+    if short in _NDP_DETAILS_TOOLS:
+        return EdgeScan(_catalog_resource_edges(structured), [])
+    if short in _NDP_SEARCH_TOOLS:
+        hits = _count_catalog_hits(structured)
+        notes = (
+            [{"reason": "catalog_hits_not_consumed", "tool": short, "hits": hits}] if hits else []
+        )
+        return EdgeScan([], notes)
+    return EdgeScan([], [])
+
+
+def _count_catalog_hits(structured: dict[str, Any]) -> int:
+    """Count catalog resources a discovery result LISTED (never consumed)."""
+    datasets: list[Any] = []
+    if isinstance(structured.get("datasets"), list):
+        datasets = list(structured["datasets"])
+    elif isinstance(structured.get("dataset"), dict):
+        datasets = [structured["dataset"]]
+    total = 0
+    for dataset in datasets:
+        if isinstance(dataset, dict):
+            total += sum(1 for r in (dataset.get("resources") or ()) if isinstance(r, dict))
+    if isinstance(structured.get("organizations"), list):
+        total += len(structured["organizations"])
+    return total
 
 
 def _stage_resource_edges(
@@ -397,4 +525,4 @@ def _hash_if_contained(app: "FastAPI", raw_path: str, workspace_id: str) -> Opti
         return None
 
 
-__all__ = ["detect_authority_edges", "detect_used_edges"]
+__all__ = ["EdgeScan", "detect_authority_edges", "detect_used_edges"]

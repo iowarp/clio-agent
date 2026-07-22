@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from clio_agent import conf
 from clio_agent.gact.artifacts.environment import (
     EnvironmentRecord,
     EnvironmentTier,
@@ -52,6 +53,7 @@ from clio_agent.gact.artifacts.transform_types import (
     ReplayContract,
     TransformKind,
     TransformStatus,
+    bound_instrument_args,
 )
 
 if TYPE_CHECKING:
@@ -60,9 +62,38 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 ARTIFACT_TRANSFORM_RECORDED_EVENT = "artifact.transform.recorded"
+#: Trace-only event a wiring failure emits so the swallow is DETECTABLE (finding [11]).
+ARTIFACT_TRANSFORM_FAILED_EVENT = "artifact.transform.failed"
 
 #: Re-exported so ``tests`` + callers can reach the detector via ``transforms``.
 _detect_used_edges = detect_used_edges
+
+#: Per-arg bound on the instrument args stored in the process-lifetime registry +
+#: the durable trace event (finding [7]). An arg over this is elided to its content
+#: digest (identity kept, bytes dropped). Config-first (#985 conventions).
+_DEFAULT_INSTRUMENT_ARG_MAX_BYTES = 2 * 1024
+#: Whole-instrument ceiling: over this the args collapse to one digest (finding [7]).
+_DEFAULT_INSTRUMENT_TOTAL_MAX_BYTES = 16 * 1024
+
+
+def instrument_arg_max_bytes() -> int:
+    """Resolve the per-arg instrument bound (bytes) from config (finding [7])."""
+    return conf.resolve(
+        "artifacts.instrument_arg_max_bytes",
+        env="CLIO_ARTIFACTS_INSTRUMENT_ARG_MAX_BYTES",
+        default=_DEFAULT_INSTRUMENT_ARG_MAX_BYTES,
+        cast=conf.as_int,
+    )
+
+
+def instrument_total_max_bytes() -> int:
+    """Resolve the whole-instrument args bound (bytes) from config (finding [7])."""
+    return conf.resolve(
+        "artifacts.instrument_total_max_bytes",
+        env="CLIO_ARTIFACTS_INSTRUMENT_TOTAL_MAX_BYTES",
+        default=_DEFAULT_INSTRUMENT_TOTAL_MAX_BYTES,
+        cast=conf.as_int,
+    )
 
 
 class TransformRecord(BaseModel):
@@ -98,6 +129,12 @@ class TransformRecord(BaseModel):
     annotation: str = ""
     #: The contended candidate set (other active session ids on the workspace).
     candidates: list[str] = Field(default_factory=list)
+    #: Typed notes for DETECTABLE non-edges (precision over recall, #966.10): a
+    #: freshly-written output under a non-designation arg (``unminted_output_candidate``,
+    #: finding [1]), a path-looking arg that never resolved (``unresolved_path_arg``,
+    #: finding [4]), a discovery search whose hits were listed not consumed
+    #: (``catalog_hits_not_consumed``, finding [2]). Each ``{reason, ...}``.
+    notes: list[dict[str, Any]] = Field(default_factory=list)
 
     def to_payload(self) -> dict[str, Any]:
         """The durable ``artifact.transform.recorded`` payload (fold source of truth)."""
@@ -121,6 +158,7 @@ class TransformRecord(BaseModel):
             "ended_at": self.ended_at,
             "annotation": self.annotation,
             "candidates": list(self.candidates),
+            "notes": [dict(n) for n in self.notes],
         }
 
     def to_relay_provenance(self) -> dict[str, Any]:
@@ -217,6 +255,7 @@ def transform_from_payload(payload: dict[str, Any]) -> Optional[TransformRecord]
         ended_at=str(payload.get("ended_at") or ""),
         annotation=str(payload.get("annotation") or ""),
         candidates=[str(c) for c in (payload.get("candidates") or []) if c],
+        notes=[dict(n) for n in (payload.get("notes") or []) if isinstance(n, dict)],
     )
 
 
@@ -225,37 +264,53 @@ def transform_from_payload(payload: dict[str, Any]) -> Optional[TransformRecord]
 # --------------------------------------------------------------------------- #
 
 
-def _edge_is_pinned(edge: ProvEdge) -> bool:
-    """Whether a used edge pins its input's content (hash-pair or a real authority).
+def _edge_pin_class(edge: ProvEdge) -> str:
+    """Classify a used edge for the replay contract (finding [5] — honest, never false).
 
-    A ``hash-pair`` edge carries a content sha; an ``authority`` edge carries a
-    catalog/registry reference (often stronger than a local hash for big data).
-    A ``stat-pinned`` / bare ``schema-arg`` edge with no sha and no authority is
-    NOT pinned — the transform is re-runnable, not reproducible.
+    * ``pinned`` — a content sha proves the exact BITS: a ``hash-pair`` edge, OR an
+      ``authority`` edge that ALSO carries a real sha (a staged download hashed
+      in-workspace). A bit-identical replay is guaranteed for this input.
+    * ``authority`` — an ``authority`` edge WITHOUT a sha: a mutable catalog URL /
+      registry id / DOI pins the input's IDENTITY but not its bytes (NDP carries no
+      checksum/ETag/DOI). Re-runnable, never reproducible — the remote resource can
+      be re-published at the same locator.
+    * ``unpinned`` — a ``stat-pinned`` / bare ``schema-arg`` / external edge with no
+      sha and no authority. Neither bits nor identity are pinned.
     """
     if edge.evidence is EdgeEvidence.HASH_PAIR and edge.sha256:
-        return True
+        return "pinned"
     if edge.evidence is EdgeEvidence.AUTHORITY and edge.authority:
-        return True
-    return False
+        return "pinned" if edge.sha256 else "authority"
+    return "unpinned"
 
 
 def compute_replay_contract(
     environment: EnvironmentRecord, used: list[ProvEdge]
 ) -> tuple[ReplayContract, str]:
-    """Derive the permanent replay contract (owner decision #966.6).
+    """Derive the permanent replay contract (owner decision #966.6, finding [5]).
 
     ``reproducible`` iff the environment tier is at least ``lockfile-hash`` AND
-    every used input is content-pinned; otherwise ``re-runnable`` with a typed
-    reason (``env_below_lockfile_hash`` / ``inputs_unpinned:<n>``). No silent
-    upgrade — an empty used set with a pinned environment IS reproducible (nothing
-    unpinned to break it).
+    every used input carries hash-pair (or authority-with-hash) evidence — i.e. the
+    exact bits are pinned. Otherwise ``re-runnable`` with a typed reason, never a
+    false bit-identical guarantee:
+
+    * ``env_below_lockfile_hash`` — the environment tier is too weak;
+    * ``inputs_unpinned:<n>`` — ``n`` inputs pin neither bits nor identity;
+    * ``inputs_authority_asserted:<n>`` — ``n`` inputs are authority-asserted
+      (identity pinned by a mutable catalog locator, NOT the bytes).
+
+    No silent upgrade — an empty used set with a pinned environment IS reproducible.
+    Unpinned dominates authority-asserted in the reason (the weaker basis wins).
     """
     if not tier_at_least(environment.tier, EnvironmentTier.LOCKFILE_HASH):
         return ReplayContract.RE_RUNNABLE, "env_below_lockfile_hash"
-    unpinned = [e for e in used if not _edge_is_pinned(e)]
+    classes = [_edge_pin_class(e) for e in used]
+    unpinned = sum(1 for c in classes if c == "unpinned")
     if unpinned:
-        return ReplayContract.RE_RUNNABLE, f"inputs_unpinned:{len(unpinned)}"
+        return ReplayContract.RE_RUNNABLE, f"inputs_unpinned:{unpinned}"
+    authority = sum(1 for c in classes if c == "authority")
+    if authority:
+        return ReplayContract.RE_RUNNABLE, f"inputs_authority_asserted:{authority}"
     return ReplayContract.REPRODUCIBLE, ""
 
 
@@ -337,7 +392,11 @@ def _script_instrument(tool_name: str, args: dict[str, Any], used: list[ProvEdge
             break
     return Instrument(
         tool=tool_name,
-        args=dict(args),
+        args=bound_instrument_args(
+            dict(args),
+            arg_max_bytes=instrument_arg_max_bytes(),
+            total_max_bytes=instrument_total_max_bytes(),
+        ),
         cmd=cmd,
         script_hash=script_hash,
         script_artifact_id=script_artifact_id,
@@ -377,12 +436,20 @@ def record_transform(
     from clio_agent.gact.artifacts.registry import get_registry  # noqa: PLC0415
     from clio_agent.gact.semantic_events import _event_id  # noqa: PLC0415
 
-    used = _detect_used_edges(
-        app, sid, args=args, workspace_id=workspace_id, turn_id=turn_id, trace_id=trace_id
+    used_scan = _detect_used_edges(
+        app,
+        sid,
+        args=args,
+        workspace_id=workspace_id,
+        turn_id=turn_id,
+        trace_id=trace_id,
+        call_started_at=started_at,
     )
-    used.extend(
-        detect_authority_edges(app, tool_name=tool_name, result=result, workspace_id=workspace_id)
+    authority_scan = detect_authority_edges(
+        app, tool_name=tool_name, result=result, workspace_id=workspace_id
     )
+    used = [*used_scan.edges, *authority_scan.edges]
+    notes = [*used_scan.notes, *authority_scan.notes]
     generated = _generated_edges(minted)
     environment = capture_environment(app)
     replay, replay_reason = compute_replay_contract(environment, used)
@@ -408,6 +475,7 @@ def record_transform(
         started_at=started_iso,
         ended_at=_now_iso(),
         candidates=candidates,
+        notes=notes,
     )
     _emit_transform_recorded(app, sid, record, turn_id=turn_id, trace_id=trace_id)
     get_registry(app).record_transform(record)
@@ -518,16 +586,92 @@ def observe_tool_transform(
             started_at=started,
             agent_id=_ctx.active_react_scope() or "",
         )
-    except Exception:  # noqa: BLE001 — a live provenance record must never break a turn
-        logger.warning(
-            "transform record skipped reason=observe_transform_failed session=%s tool=%s call_id=%s",
+    except Exception as exc:  # noqa: BLE001 — a live provenance record must never break a turn
+        # Finding [11]: the wiring's ONLY production path must not SWALLOW its own
+        # failure silently — record a TYPED failure (queryable ledger + trace event)
+        # so "all provenance silently empty" is detectable, the turn unharmed.
+        _record_transform_failure(
+            app,
             sid,
-            tool_name,
-            call_id,
+            tool_name=tool_name,
+            call_id=call_id,
+            reason=type(exc).__name__,
+            detail=str(exc),
         )
 
 
+def _record_transform_failure(
+    app: "FastAPI",
+    sid: str,
+    *,
+    tool_name: str,
+    call_id: str,
+    reason: str,
+    detail: str,
+) -> None:
+    """Record a TYPED ``transform_record_failed`` (finding [11]) — never a bare swallow.
+
+    Appends to a bounded per-app ledger (``app.state.artifact_transform_failures``)
+    so a regression that empties all provenance is DETECTABLE after the fact, emits
+    a trace-only ``artifact.transform.failed`` event, and logs. Every step is itself
+    guarded so the failure recorder can never re-raise into the turn.
+    """
+    logger.warning(
+        "transform record failed reason=transform_record_failed session=%s tool=%s "
+        "call_id=%s cause=%s detail=%s",
+        sid,
+        tool_name,
+        call_id,
+        reason,
+        detail,
+    )
+    entry = {
+        "reason": "transform_record_failed",
+        "session_id": sid,
+        "tool": tool_name,
+        "call_id": call_id,
+        "cause": reason,
+        "detail": detail[:512],
+    }
+    try:
+        ledger = getattr(app.state, "artifact_transform_failures", None)
+        if not isinstance(ledger, list):
+            ledger = []
+            app.state.artifact_transform_failures = ledger
+        ledger.append(entry)
+        del ledger[:-256]  # bounded — a pathological session cannot grow it unboundedly
+    except Exception:  # noqa: BLE001 — the failure recorder must never re-raise
+        logger.debug(
+            "transform failure ledger append skipped reason=ledger_unwritable", exc_info=True
+        )
+    try:
+        from clio_agent.gact import context as _ctx  # noqa: PLC0415
+        from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
+
+        _emit_semantic_event(
+            app,
+            sid,
+            ARTIFACT_TRANSFORM_FAILED_EVENT,
+            turn_id=_ctx.active_turn_id(),
+            trace_id=_ctx.active_trace_id(),
+            status="failed",
+            summary=f"Transform record for {tool_name} failed ({reason}).",
+            actor={"tool": tool_name, "mechanism": "harness"},
+            subject={"call_id": call_id},
+            payload=entry,
+        )
+    except Exception:  # noqa: BLE001 — a failure emit must never break the turn either
+        logger.debug("transform failure event emit skipped reason=emit_unavailable", exc_info=True)
+
+
+def transform_record_failures(app: "FastAPI") -> list[dict[str, Any]]:
+    """Return the bounded typed-failure ledger (finding [11]), empty when unset."""
+    ledger = getattr(app.state, "artifact_transform_failures", None)
+    return list(ledger) if isinstance(ledger, list) else []
+
+
 __all__ = [
+    "ARTIFACT_TRANSFORM_FAILED_EVENT",
     "ARTIFACT_TRANSFORM_RECORDED_EVENT",
     "AgentRole",
     "EdgeEvidence",
@@ -542,4 +686,5 @@ __all__ = [
     "observe_tool_transform",
     "record_transform",
     "transform_from_payload",
+    "transform_record_failures",
 ]

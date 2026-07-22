@@ -8,10 +8,15 @@ no app state.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from enum import Enum
 from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
+
+#: How many chars of an over-bound value are kept as a human-readable ``head``.
+_INSTRUMENT_HEAD_CHARS = 256
 
 
 class EdgeRole(str, Enum):
@@ -85,8 +90,13 @@ class ProvEdge(BaseModel):
     exact :class:`~clio_agent.gact.artifacts.records.ArtifactVersion` pair relay's
     ``ArtifactUse`` keys on); an external edge carries ``external_ref``
     (``external:<path>`` or a catalog URL) instead. ``evidence`` is the per-edge
-    basis; ``note`` records a typed qualifier (``gap_first`` / ``stat_pinned`` /
-    ``over_threshold`` / ``relink``) so no downgrade is silent.
+    basis; ``note`` records a typed qualifier for a changed/degraded input so no
+    downgrade is silent. On a hash-mismatch used edge it names the ACTUAL reconcile
+    class (finding [3]): ``gap`` (dirty-lease custody gap), ``auto_revision``
+    (provably-clean single-writer auto-mint), ``relink`` (revert to a known
+    non-head version), or ``stale_fallback`` (reconcile skipped, edge kept the
+    stale registered version) — never an unconditional ``gap_first``. Other notes:
+    ``stat_pinned`` / ``over_threshold`` (no content hash).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -137,6 +147,62 @@ class Instrument(BaseModel):
     script_artifact_id: str = ""
 
 
+def _value_blob(value: Any) -> tuple[bytes, str]:
+    """Return ``(utf8_bytes, head_text)`` for one arg value (str or JSON-encoded)."""
+    if isinstance(value, str):
+        text = value
+    else:
+        try:
+            text = json.dumps(value, default=str, sort_keys=True)
+        except (TypeError, ValueError):
+            text = str(value)
+    return text.encode("utf-8", "replace"), text
+
+
+def _bound_value(value: Any, arg_max_bytes: int) -> Any:
+    """Bound one instrument arg value to ``arg_max_bytes`` (finding [7]).
+
+    A value whose UTF-8/JSON size exceeds the per-arg bound is replaced by
+    ``{sha256, size, truncated: true, head}`` — the full-content hash keeps the
+    arg's IDENTITY (so a replay/dedup is still exact) without retaining the bytes in
+    the process-lifetime registry or the durable trace event.
+    """
+    raw, text = _value_blob(value)
+    if len(raw) <= arg_max_bytes:
+        return value
+    return {
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "size": len(raw),
+        "truncated": True,
+        "head": text[:_INSTRUMENT_HEAD_CHARS],
+    }
+
+
+def bound_instrument_args(
+    args: dict[str, Any], *, arg_max_bytes: int, total_max_bytes: int
+) -> dict[str, Any]:
+    """Bound instrument args per-arg AND as a whole (finding [7] — bounded memory).
+
+    Every over-bound arg is elided to its content digest (:func:`_bound_value`).
+    If the bounded dict is STILL over the whole-instrument ceiling (many medium
+    args), it collapses to a single digest of the full args — identity preserved,
+    bytes dropped — so one pathological call can never grow the registry / trace
+    without bound.
+    """
+    bounded: dict[str, Any] = {str(k): _bound_value(v, arg_max_bytes) for k, v in args.items()}
+    whole, _ = _value_blob(bounded)
+    if len(whole) <= total_max_bytes:
+        return bounded
+    full, _ = _value_blob(args)
+    return {
+        "__args_truncated__": True,
+        "sha256": hashlib.sha256(full).hexdigest(),
+        "size": len(full),
+        "truncated": True,
+        "keys": sorted(str(k) for k in args)[:64],
+    }
+
+
 __all__ = [
     "AgentRole",
     "EdgeEvidence",
@@ -146,4 +212,5 @@ __all__ = [
     "ReplayContract",
     "TransformKind",
     "TransformStatus",
+    "bound_instrument_args",
 ]
