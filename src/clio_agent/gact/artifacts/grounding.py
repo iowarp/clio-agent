@@ -60,8 +60,8 @@ def _artifact_path_token_re(extensions: tuple[str, ...]) -> re.Pattern[str]:
     """Compile the fabricated-artifact token matcher for the declared extensions.
 
     The optional ``[A-Za-z]:`` head keeps a Windows drive spec INSIDE the token:
-    without it ``C:/Users/x/real.png`` tokenizes as ``/Users/x/real.png`` (drive
-    stripped), a REAL on-disk citation fails ``is_file()`` and the "correction"
+    without it a ``C:/Users/x/...`` citation tokenizes drive-stripped
+    (``/Users/x/...``), a REAL on-disk citation fails ``is_file()`` and the "correction"
     string-replace doubles the drive (``C:C:/...``).
     """
 
