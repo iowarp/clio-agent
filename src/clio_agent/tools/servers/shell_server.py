@@ -322,14 +322,35 @@ def bash(
     except Exception as exc:  # noqa: BLE001
         return _error("shell_unavailable", str(exc))
 
+    # #975: route the shell subprocess through the single confinement composer with the
+    # per-invocation `shell` profile (write territory computed from THIS command's cwd).
+    # Floor-first — the backend is passthrough this slice, so argv/env are byte-identical;
+    # the shell seam carries no pdeathsig today, so it stays off here.
+    from clio_agent.runtime import sandbox  # noqa: PLC0415 - avoid import cycle
+
+    confined = sandbox.wrap_confined(
+        argv[0],
+        argv[1:],
+        write_roots=sandbox.effective_write_roots(
+            sandbox.PROFILE_SHELL, workspace_root=str(safe_cwd)
+        ),
+        net_policy=sandbox.NET_ALLOW_RECORD,
+        profile=sandbox.PROFILE_SHELL,
+        pdeathsig=False,
+    )
+    run_argv = [confined.command, *confined.args]
+    run_env = {**os.environ, **confined.env_overlay} if confined.env_overlay else None
+
     try:
         completed = subprocess.run(
-            argv,
+            run_argv,
             cwd=str(safe_cwd),
             capture_output=True,
             text=True,
             timeout=timeout,
             check=False,
+            env=run_env,
+            **confined.popen_kwargs,
             # Give the child an immediately-EOF stdin. Without this the spawned
             # shell inherits clio-agent's own stdin (a pipe the parent holds open
             # and never closes), and PowerShell/cmd block at startup waiting on

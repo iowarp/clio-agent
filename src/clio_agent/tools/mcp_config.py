@@ -492,17 +492,29 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
         diet = spawn_diet.diet_transport_args(spec.name, resolved, tuple(spec.args), env)
         if diet is not None:
             diet_command, diet_args, env = diet
-            return StdioTransport(
-                command=diet_command,
-                args=diet_args,
-                env=env,
-                cwd=cwd,
-            )
+            final_command, final_args = diet_command, diet_args
+        else:
+            final_command, final_args = resolved, list(spec.args)
+        # #975: route the FINAL argv (post spawn-diet) through the single confinement
+        # composer. Floor-first — the `fleet` profile resolves to passthrough this slice,
+        # so command/args/env are byte-identical; only the recorded confinement intent
+        # is added. transport_for carries no pdeathsig today, so pdeathsig stays off here.
+        from clio_agent.runtime import sandbox  # noqa: PLC0415 - avoid import cycle
+
+        confined = sandbox.wrap_confined(
+            final_command,
+            final_args,
+            write_roots=sandbox.effective_write_roots(sandbox.PROFILE_FLEET, workspace_root=cwd),
+            net_policy=sandbox.NET_ALLOW_RECORD,
+            profile=sandbox.PROFILE_FLEET,
+            pdeathsig=False,
+        )
         return StdioTransport(
-            command=resolved,
-            args=list(spec.args),
-            env=env,
+            command=confined.command,
+            args=confined.args,
+            env={**env, **confined.env_overlay},
             cwd=cwd,
+            **confined.popen_kwargs,
         )
     return spec.url
 
@@ -537,9 +549,10 @@ def transport_from_spec(spec: Mapping[str, Any]) -> Any:
     protocol and connects via ``SSETransport(url)`` — the same class FastMCP's own
     ``infer_transport`` selects for an ``/sse`` URL, so a real SSE MCP server's
     tools are actually reachable. ``stdio`` spawns a subprocess whose command is
-    first wrapped by :func:`pdeathsig_wrapped_command` so a REST-installed stdio
-    child dies with the clio server instead of orphaning on a hard kill (Linux
-    only; a no-op passthrough on Windows/macOS, exactly as that helper guards).
+    composed by :func:`clio_agent.runtime.sandbox.wrap_confined` — the single
+    argv-prefix owner (#975) — with ``pdeathsig`` folded in so a REST-installed
+    stdio child dies with the clio server instead of orphaning on a hard kill
+    (Linux only; a no-op passthrough on Windows/macOS, exactly as that helper guards).
 
     Args:
         spec: The stored dict spec. ``transport`` selects the branch; ``command``
@@ -569,11 +582,28 @@ def transport_from_spec(spec: Mapping[str, Any]) -> Any:
             raise MCPTransportError("stdio MCP transport spec requires a 'command'")
         raw_args = spec.get("args") or []
         raw_env = spec.get("env") or None
-        cmd, cmd_args = pdeathsig_wrapped_command(command, list(raw_args))
+        # #975: the pdeathsig argv-prefix folds INTO the single confinement composer
+        # (owner decision #974.5 — one prefix owner, no second site). pdeathsig=True
+        # preserves the exact Linux setpriv behavior this dict-spec path had before; the
+        # `fleet` backend is passthrough this slice, so the composed argv is identical.
+        from clio_agent.runtime import sandbox  # noqa: PLC0415 - avoid import cycle
+
+        confined = sandbox.wrap_confined(
+            command,
+            list(raw_args),
+            write_roots=sandbox.effective_write_roots(sandbox.PROFILE_FLEET),
+            net_policy=sandbox.NET_ALLOW_RECORD,
+            profile=sandbox.PROFILE_FLEET,
+            pdeathsig=True,
+        )
+        base_env = dict(raw_env) if raw_env else None
+        if confined.env_overlay:
+            base_env = {**(base_env or {}), **confined.env_overlay}
         return StdioTransport(
-            command=cmd,
-            args=cmd_args,
-            env=dict(raw_env) if raw_env else None,
+            command=confined.command,
+            args=confined.args,
+            env=base_env,
+            **confined.popen_kwargs,
         )
     if transport_kind in _HTTP_TRANSPORTS:
         url = str(spec.get("url") or "").strip()
