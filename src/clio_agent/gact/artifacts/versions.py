@@ -291,6 +291,10 @@ def version_record_payload(
         payload["prior_sha256"] = version.prior_sha256
         payload["kind_warning"] = version.kind_warning
         payload["custody_gap"] = version.custody_gap
+    # S6 (#972): the over-threshold non-ingestion marker rides ONLY when present, so a
+    # CAS-ingested / small version's ``created`` payload stays byte-identical to S1/S2.
+    if version.not_ingested_size is not None:
+        payload["not_ingested_size"] = version.not_ingested_size
     return payload
 
 

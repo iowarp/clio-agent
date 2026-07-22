@@ -129,6 +129,9 @@ SSE_TRACE_ONLY_EVENT_TYPES: frozenset[str] = frozenset(
         "artifact.transform.recorded",
         "artifact.transform.failed",
         "artifact.proposed",
+        # CAS budget housekeeping (S6 #972): an evicted blob is durable-trace
+        # substrate the UI never renders — never lift it onto the SSE wire.
+        "artifact.cas.evicted",
     }
 )
 

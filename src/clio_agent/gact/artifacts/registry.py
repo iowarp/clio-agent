@@ -102,6 +102,8 @@ class _ArtifactEvent:
     prior_sha256: Optional[str]
     kind_warning: str
     custody_gap: Optional[dict[str, Any]]
+    #: S6 over-threshold non-ingestion marker (bytes; ``None`` when ingested/small).
+    not_ingested_size: Optional[int]
 
 
 def _artifact_event_from_payload(payload: dict[str, Any]) -> Optional[_ArtifactEvent]:
@@ -156,6 +158,11 @@ def _artifact_event_from_payload(payload: dict[str, Any]) -> Optional[_ArtifactE
         kind_warning=str(payload.get("kind_warning") or ""),
         custody_gap=(
             dict(payload["custody_gap"]) if isinstance(payload.get("custody_gap"), dict) else None
+        ),
+        not_ingested_size=(
+            int(payload["not_ingested_size"])
+            if payload.get("not_ingested_size") is not None
+            else None
         ),
     )
 
@@ -475,6 +482,7 @@ class ArtifactRegistry:
         annotation: str,
         producing: bool = True,
         lease_clean: bool = False,
+        not_ingested_size: Optional[int] = None,
     ) -> MintOutcome:
         """Atomically decide-and-append the next version for ``(workspace_id, name)``.
 
@@ -529,6 +537,7 @@ class ArtifactRegistry:
                 prior_sha256=decision.prior_sha256,
                 kind_warning=decision.kind_warning,
                 custody_gap=decision.custody_gap,
+                not_ingested_size=not_ingested_size,
             )
             record.add_version(version)
             if event_id:
@@ -643,6 +652,7 @@ def _version_from_event(event: _ArtifactEvent) -> ArtifactVersion:
         prior_sha256=event.prior_sha256,
         kind_warning=event.kind_warning,
         custody_gap=event.custody_gap,
+        not_ingested_size=event.not_ingested_size,
     )
 
 

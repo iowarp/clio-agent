@@ -48,6 +48,7 @@ from clio_agent.gact.agents.resolution import (
     _runtime_active_agent_blueprint_id,
 )
 from clio_agent.gact.artifacts.minting import clear_turn_artifacts
+from clio_agent.gact.artifacts.cas_gc import finalize_cas_budget_check
 from clio_agent.gact.artifacts.wire import append_turn_resource_links, proposed_diff_payload
 from clio_agent.gact.delegation import (
     _produced_turn_workflow_state,
@@ -476,6 +477,10 @@ def finalize_turn(
     append_turn_resource_links(
         state.app, state.sid, state.turn_id, state.transcript, agent_id=responder_agent_id
     )
+
+    # #972: cheap post-turn CAS budget check (owner-module guarded one-liner) — a
+    # running total vs the budget; the reachability eviction scan runs ONLY on a breach.
+    finalize_cas_budget_check(state.app, state.sess, state.sid)
 
     state.error_info = _enrich_cancellation_error_info(state.app, state.sid, state.error_info)
     state.cancelled_turn = state.error_info is not None and state.error_info.error == "cancelled"

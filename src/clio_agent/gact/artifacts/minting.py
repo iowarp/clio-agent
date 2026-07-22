@@ -301,6 +301,7 @@ def mint_artifact_outcome(
     trace_id: str = "",
     producing: bool = True,
     lease_clean: bool = False,
+    not_ingested_size: int | None = None,
 ) -> Optional[MintOutcome]:
     """Mint one artifact version: atomic decide-and-append, then emit + index.
 
@@ -345,6 +346,7 @@ def mint_artifact_outcome(
         annotation=annotation,
         producing=producing,
         lease_clean=lease_clean,
+        not_ingested_size=not_ingested_size,
     )
     version = outcome.version
     if not outcome.created:
@@ -434,6 +436,7 @@ def mint_artifact(
     annotation: str = "",
     turn_id: str = "",
     trace_id: str = "",
+    not_ingested_size: int | None = None,
 ) -> Optional[ArtifactVersion]:
     """Back-compat projection over :func:`mint_artifact_outcome`.
 
@@ -456,6 +459,7 @@ def mint_artifact(
         annotation=annotation,
         turn_id=turn_id,
         trace_id=trace_id,
+        not_ingested_size=not_ingested_size,
     )
     return outcome.version if outcome is not None else None
 
@@ -491,6 +495,7 @@ def mint_tool_declared_outputs(
     routed to the honest drift reconcile (finding [8]). Content CHANGED outside the
     call still mints — designation is designation.
     """
+    from clio_agent.gact.artifacts.cas import ingest_identity  # noqa: PLC0415
     from clio_agent.gact.artifacts.designation import (  # noqa: PLC0415
         grounded_output_paths,
         kind_for_path,
@@ -541,7 +546,9 @@ def mint_tool_declared_outputs(
             )
             continue
         try:
-            evidence = compute_identity(path)
+            # S6 (#972): stream the identity hash ONCE and tee small bytes into CAS
+            # (custody ``cas``); over threshold → referenced + typed not_ingested_size.
+            ingested = ingest_identity(path, workspace_root=root)
         except OSError:
             logger.warning(
                 "artifact mint skipped reason=stat_hash_failed tool=%s %s=%s path=%s",
@@ -551,6 +558,7 @@ def mint_tool_declared_outputs(
                 raw_path,
             )
             continue
+        evidence = ingested.evidence
         seen.add(resolved)
         name = artifact_name_for_path(path)
         # A declared output the tool provably did NOT write this call (mtime predates
@@ -591,10 +599,11 @@ def mint_tool_declared_outputs(
             kind=kind_for_path(path),
             mechanism=Mechanism.TOOL_SCHEMA,
             producer=producer,
-            custody=Custody.WORKSPACE_REFERENCED,
+            custody=ingested.custody,
             path=str(path),
             turn_id=turn_id,
             trace_id=trace_id,
+            not_ingested_size=ingested.not_ingested_size,
         )
         if version is not None:
             minted.append(version)
@@ -623,6 +632,7 @@ def mint_pack_declared_paths(
     load-bearing: a path already minted by seam (a) with identical content
     deduplicates at the mint (no new version). Best-effort.
     """
+    from clio_agent.gact.artifacts.cas import ingest_identity  # noqa: PLC0415
     from clio_agent.gact.artifacts.designation import (  # noqa: PLC0415
         kind_for_path,
         pack_declared_paths,
@@ -645,12 +655,13 @@ def mint_pack_declared_paths(
         try:
             if not path.is_file():
                 continue
-            evidence = compute_identity(path)
+            ingested = ingest_identity(path, workspace_root=root)
         except OSError:
             logger.warning(
                 "artifact mint skipped reason=pack_declared_stat_failed path=%s", raw_path
             )
             continue
+        evidence = ingested.evidence
         name = artifact_name_for_path(path)
         # A declared file reverted to a KNOWN NON-HEAD version's bytes would DEDUP onto
         # that old version and silently heal the gap under a producing mint → route it
@@ -683,10 +694,11 @@ def mint_pack_declared_paths(
                 "session_id": sid,
                 "turn_id": turn_id,
             },
-            custody=Custody.WORKSPACE_REFERENCED,
+            custody=ingested.custody,
             path=str(path),
             turn_id=turn_id,
             trace_id=trace_id,
+            not_ingested_size=ingested.not_ingested_size,
         )
         if version is not None:
             minted.append(version)

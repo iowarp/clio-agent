@@ -13,6 +13,21 @@ Events are trace-only this slice; the wire lights up in S2 (#968).
 
 from __future__ import annotations
 
+from clio_agent.gact.artifacts.cas import (
+    CASStore,
+    IngestedIdentity,
+    cas_budget_bytes,
+    cas_max_file_bytes,
+    cas_root_for,
+    hash_stat_cache,
+    ingest_identity,
+)
+from clio_agent.gact.artifacts.cas_gc import (
+    CASGCResult,
+    enforce_cas_budget,
+    post_turn_cas_budget_check,
+    run_boot_cas_gc,
+)
 from clio_agent.gact.artifacts.designation import (
     ARTIFACT_SUFFIXES,
     OUTPUT_PATH_ARG_NAMES,
@@ -90,6 +105,17 @@ __all__ = [
     "ARTIFACT_SUFFIXES",
     "OUTPUT_PATH_ARG_NAMES",
     "AgentRole",
+    "CASGCResult",
+    "CASStore",
+    "IngestedIdentity",
+    "cas_budget_bytes",
+    "cas_max_file_bytes",
+    "cas_root_for",
+    "enforce_cas_budget",
+    "hash_stat_cache",
+    "ingest_identity",
+    "post_turn_cas_budget_check",
+    "run_boot_cas_gc",
     "ArtifactKind",
     "ArtifactRecord",
     "ArtifactRegistry",

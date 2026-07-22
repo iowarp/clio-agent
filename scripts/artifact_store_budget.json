@@ -1,0 +1,7 @@
+{
+  "_comment": "Per-workspace CAS store byte budget for the artifacts campaign (iowarp/clio-agent#972, parent #966 decision 8). CAS is the ONLY new artifact storage: small artifacts (<= artifacts.cas_max_file_bytes, 16 MiB) are copied sha256-addressed under <workspace>/.clio/agent/artifacts/cas so their bytes survive workspace churn. Like bounded RAM (#930) and bounded disk (#1001), the store is release-gated: a desktop agent must not let its content-addressed store grow without bound. The reachability GC in src/clio_agent/gact/artifacts/cas_gc.py enforces this budget at boot + post-turn, evicting unreachable blobs oldest-first (roots = pinned aliases + export manifests + artifacts used by retained sessions). This file records the budget; scripts/artifact_store_footprint.py measures a store and exits nonzero over budget (CI-runnable: near-empty on a fresh box). RATCHET: steady_state_mb only goes DOWN. campaign_target_mb is the #966.8 line the recorded budget must stay at or under, pinned by tests/test_scripts/test_artifact_store_budget.py so a footprint regression cannot be smuggled in by raising the recorded number. Mirrors the artifacts.cas_budget_bytes default (512 MiB).",
+  "scope": "per-workspace CAS store: <workspace_root>/.clio/agent/artifacts/cas",
+  "steady_state_mb": 512,
+  "campaign_target_mb": 512,
+  "recorded": "2026-07-22"
+}
