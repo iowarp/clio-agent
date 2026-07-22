@@ -1910,7 +1910,6 @@ def test_prediction_structured_metadata_omits_empty_values() -> None:
     result = SimpleNamespace(
         workflow_state={"acquisition": {"status": "staged"}},
         evidence="evidence rows",
-        artifacts="",
         errors=None,
         delegation='{"next":"root"}',
     )

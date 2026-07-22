@@ -53,6 +53,7 @@ from clio_agent.gact.agents.resolution import (
 from clio_agent.gact.agents.runtime import (
     _retaining_react_cls,
 )
+from clio_agent.gact.artifacts.proposals import build_create_artifact_tool
 from clio_agent.gact.events import Event
 from clio_agent.gact.permission_gate import (
     _external_mcp_permission_context,
@@ -851,7 +852,6 @@ def _recover_blueprint_react_tool_intent(
         answer="\n\n".join(answer_parts),
         workflow_state=workflow_state,
         evidence=preview,
-        artifacts="",
         errors=error or "",
         delegation="",
         trajectory=trajectory,
@@ -1086,17 +1086,15 @@ def _blueprint_runtime_signature(agent_def: "AgentDef", *, app: Any = None) -> A
     # a TYPED dict the adapter forces the model to emit, and the channel the
     # agent->agent handoff actually travels on (carried STRUCTURALLY on every
     # Prediction / handoff row, never re-parsed from prose). The former companions
-    # (evidence/artifacts/errors/delegation) were a redundant second copy that
-    # nothing authoritative consumed: `artifacts` is tool-tracked on disk
-    # (clio_sut._artifacts) and its handoff rides in workflow_state; `evidence`
-    # was merged-then-stripped from display; `errors` was logging-only; clio
-    # BUILDS `delegation` state itself and ignored the LM's field. Declaring them
-    # *required* only enlarged the contract and made strict-adapter models (the
-    # remote JSONAdapter path: nemotron) hard-fail an otherwise-correct run when
-    # they sensibly omitted an empty one. A smaller contract is easier for every
-    # model to satisfy -- so we no longer auto-inject them. (A blueprint that
-    # genuinely needs one can still declare it explicitly in its signature
-    # `outputs:`.)
+    # (evidence/errors/delegation) were a redundant second copy nothing authoritative
+    # consumed (`evidence` merged-then-stripped from display; `errors` logging-only;
+    # `delegation` clio builds itself). The legacy `artifacts` field was DELETED
+    # wholesale in #969 -- the model now designates via the create_artifact tool, not
+    # a typed output field; nothing injects or reads an inert artifacts structured key.
+    # Declaring them *required* only enlarged the contract and made strict-adapter
+    # models (nemotron's remote JSONAdapter path) hard-fail an otherwise-correct run
+    # when they sensibly omitted an empty one -- so we no longer auto-inject them. (A
+    # blueprint that genuinely needs one can still declare it in its `outputs:`.)
     # Resolve the session's active workflow_state schema once. Consumer A (#648): the injected
     # workflow_state field is TYPED FROM THE PACK SCHEMA -- a GENERIC (no declared
     # sections) schema keeps the historical free ``dict[str, Any]`` byte-identically,
@@ -1276,6 +1274,8 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     # Auto-attached infra (like child-delegation tools), not a
                     # curated domain tool (#919).
                     tools.append(_skill_runtime.build_load_skill_tool(agent_def, skill_rt))
+                # create_artifact (#969): auto-attached for EVERY react expert (#966.2).
+                tools.append(build_create_artifact_tool(agent_def))
                 self.tools = tools
                 # The iteration default scales with the declared children — an
                 # orchestrator pays spawn+wait per child inside this loop (#948 S4).
@@ -1517,7 +1517,6 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                             answer="The workflow reached a terminal typed state.",
                             workflow_state=terminal_mapping,
                             evidence=[terminal_exc.result],
-                            artifacts=[],
                             errors=[],
                             delegation={},
                             trajectory=None,
@@ -1685,7 +1684,6 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 expert_handoffs=handoff_rows,
                 workflow_state=getattr(result, "workflow_state", ""),
                 evidence=getattr(result, "evidence", ""),
-                artifacts=getattr(result, "artifacts", ""),
                 errors=getattr(result, "errors", ""),
                 delegation=getattr(result, "delegation", ""),
                 trajectory=getattr(result, "trajectory", None),
@@ -1737,6 +1735,8 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             if skill_rt.resolved:
                 # Same react tier-1 + load_skill contract as blueprint experts (#919).
                 self.tools.append(_skill_runtime.build_load_skill_tool(agent_def, skill_rt))
+            # create_artifact (#969): auto-attached for EVERY react expert (#966.2).
+            self.tools.append(build_create_artifact_tool(agent_def))
             runtime = PromptRegistry().resolve("clio.runtime.tool_user_agent")
             runtime_text = str(getattr(runtime, "text", "") or "").strip()
             agent_prompt = agent_def.system_prompt.strip() or agent_def.description

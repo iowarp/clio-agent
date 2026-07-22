@@ -27,6 +27,16 @@ from clio_agent.gact.artifacts.minting import (
     mint_pack_declared_paths,
     mint_tool_declared_outputs,
 )
+from clio_agent.gact.artifacts.proposals import (
+    Proposal,
+    ProposalOutcome,
+    RejectionReason,
+    build_create_artifact_tool,
+    promote_proposal,
+    promote_proposals,
+    proposals_per_turn,
+    validate_kind,
+)
 from clio_agent.gact.artifacts.records import (
     ArtifactKind,
     ArtifactRecord,
@@ -61,7 +71,11 @@ __all__ = [
     "FoldResult",
     "IdentityEvidence",
     "Mechanism",
+    "Proposal",
+    "ProposalOutcome",
+    "RejectionReason",
     "artifact_uri",
+    "build_create_artifact_tool",
     "compute_identity",
     "drain_turn_artifacts",
     "get_registry",
@@ -72,7 +86,11 @@ __all__ = [
     "mint_pack_declared_paths",
     "mint_tool_declared_outputs",
     "new_artifact_id",
+    "promote_proposal",
+    "promote_proposals",
+    "proposals_per_turn",
     "rebuild_registry_at_boot",
     "resource_link_part",
     "ui_payload_uri",
+    "validate_kind",
 ]
