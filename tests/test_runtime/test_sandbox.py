@@ -306,7 +306,7 @@ def test_install_and_current_state_cache() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_wrap_confined_passthrough_is_byte_identical() -> None:
+def test_wrap_confined_passthrough_is_byte_identical(floor_sandbox) -> None:
     """On the floor, no fence prefix, no env overlay, no extra popen kwargs."""
     confined = sandbox.wrap_confined("mytool", ["--x", "1"], profile=sandbox.PROFILE_FLEET)
     assert confined.command == "mytool"
@@ -320,7 +320,9 @@ def test_wrap_confined_passthrough_is_byte_identical() -> None:
     assert confined.result.details["pdeathsig"] is False
 
 
-def test_pdeathsig_fold_preserves_argv_exactly(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_pdeathsig_fold_preserves_argv_exactly(
+    monkeypatch: pytest.MonkeyPatch, floor_sandbox
+) -> None:
     """The folded pdeathsig prefix is IDENTICAL to the legacy helper, on every platform.
 
     Owner decision #974.5: pdeathsig folds into wrap_confined as the OUTERMOST composer
@@ -356,7 +358,7 @@ def test_pdeathsig_fold_preserves_argv_exactly(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_transport_for_wraps_the_spawn_diet_final_argv(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, floor_sandbox
 ) -> None:
     """The fence wraps the FINAL (post-diet) argv, not the deleted launcher chain (#975).
 
@@ -384,7 +386,7 @@ def test_transport_for_wraps_the_spawn_diet_final_argv(
     assert "setpriv" not in transport.command  # transport_for carries no pdeathsig today
 
 
-def test_transport_from_spec_matches_legacy_pdeathsig_exactly() -> None:
+def test_transport_from_spec_matches_legacy_pdeathsig_exactly(floor_sandbox) -> None:
     """The dict-spec seam produces the SAME argv the direct pdeathsig helper did (parity)."""
     from clio_agent.tools.mcp_config import pdeathsig_wrapped_command, transport_from_spec
 
@@ -501,7 +503,7 @@ def test_census_classify_stamps_confinement_column() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_capture_environment_stamps_sandbox_floor(tmp_path: Path) -> None:
+def test_capture_environment_stamps_sandbox_floor(tmp_path: Path, floor_sandbox) -> None:
     """A transform's environment carries the resolved ``none/<reason>`` — the honest floor.
 
     This is what turns #966's ``gap`` node into an attributable record without inventing

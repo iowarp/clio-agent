@@ -381,28 +381,72 @@ def test_landlock_probe_non_linux_is_unavailable() -> None:
     assert probe.reason == sandbox_landlock.REASON_LANDLOCK_UNAVAILABLE
 
 
+def test_landlock_probe_syscall_present_but_not_enforceable_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The version probe alone is a false positive — a real ruleset must be creatable (CI fix).
+
+    A kernel where ``landlock_create_ruleset(NULL,0,VERSION)`` returns an ABI but Landlock is
+    NOT in the active LSM (some CI/cloud kernels) would ``EOPNOTSUPP`` at ``restrict_self`` and
+    127 every spawn. probe_landlock must report ``landlock_unavailable`` there, not activate a
+    non-enforcing fence.
+    """
+    monkeypatch.setattr(sandbox_landlock, "_load_libc", lambda: object())  # dummy (host-agnostic)
+    monkeypatch.setattr(sandbox_landlock, "_create_ruleset_version", lambda _libc: 3)  # ABI says 3
+    monkeypatch.setattr(
+        sandbox_landlock, "_can_create_ruleset", lambda _libc: False
+    )  # can't enforce
+    probe = sandbox_landlock.probe_landlock(platform="linux")
+    assert probe.available is False
+    assert probe.reason == sandbox_landlock.REASON_LANDLOCK_UNAVAILABLE
+    assert probe.abi == 3  # the ABI is still reported for the doctor
+
+
+def test_landlock_probe_enforceable_is_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Version ABI>=1 AND a creatable ruleset → available (REFER tracked on ABI>=2)."""
+    monkeypatch.setattr(sandbox_landlock, "_load_libc", lambda: object())  # dummy (host-agnostic)
+    monkeypatch.setattr(sandbox_landlock, "_create_ruleset_version", lambda _libc: 3)
+    monkeypatch.setattr(sandbox_landlock, "_can_create_ruleset", lambda _libc: True)
+    probe = sandbox_landlock.probe_landlock(platform="linux")
+    assert probe.available is True
+    assert probe.refer_supported is True
+    assert probe.reason == ""
+
+
 # --------------------------------------------------------------------------- #
 # gap → policy_violation: EROFS/EACCES mapping + the observer mint            #
 # --------------------------------------------------------------------------- #
 
 
 @pytest.mark.parametrize(
-    ("text", "expected"),
+    ("text", "expected", "path"),
     [
-        # bwrap denial (the spike's confirmed shape — strerror text, not the bracket).
-        ("/bin/sh: 1: cannot create /home/u/out.txt: Read-only file system", "EROFS"),
+        # sh/coreutils denial (the spike's confirmed shape — strerror text, not the bracket).
+        (
+            "/bin/sh: 1: cannot create /home/u/out.txt: Read-only file system",
+            "EROFS",
+            "/home/u/out.txt",
+        ),
+        # bash redirect denial ("bash: line N: /p: Read-only file system") — the REAL shell the
+        # fence tests use; its path form differs from sh's "cannot create" (CI-caught).
+        (
+            "/usr/bin/bash: line 1: /home/u/out.txt: Read-only file system",
+            "EROFS",
+            "/home/u/out.txt",
+        ),
+        ("/usr/bin/bash: line 1: /home/u/x.txt: Permission denied", "EACCES", "/home/u/x.txt"),
         # Python OSError bracket form.
-        (f"[Errno {errno.EROFS}] Read-only file system: '/etc/x'", "EROFS"),
-        (f"[Errno {errno.EACCES}] Permission denied: '/root/y'", "EACCES"),
-        ("PermissionError: [Errno 13] Permission denied", "EACCES"),
+        (f"[Errno {errno.EROFS}] Read-only file system: '/etc/x'", "EROFS", "/etc/x"),
+        (f"[Errno {errno.EACCES}] Permission denied: '/root/y'", "EACCES", "/root/y"),
     ],
 )
-def test_write_denial_mapping_catches_erofs_and_eacces(text: str, expected: str) -> None:
+def test_write_denial_mapping_catches_erofs_and_eacces(text: str, expected: str, path: str) -> None:
     from clio_agent.gact.artifacts.violations import write_denial_from_result
 
     denial = write_denial_from_result({"stderr": text, "exit_code": 1})
     assert denial is not None
     assert denial["errno_name"] == expected
+    assert denial["path"] == path  # the out-of-root path is extracted for attribution
 
 
 def test_write_denial_mapping_ignores_clean_result() -> None:

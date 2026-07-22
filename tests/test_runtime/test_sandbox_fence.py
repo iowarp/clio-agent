@@ -71,6 +71,17 @@ def _landlock_state() -> sandbox.SandboxResult:
     )
 
 
+def _require_fence_enforced(result: subprocess.CompletedProcess) -> None:
+    """Backstop the capability gate: if the shim reports it could not APPLY the fence, the
+    rung is not enforceable on this host despite the probe — skip with the TYPED reason rather
+    than assert a silent ``[]`` (Class 2, #976 review). A real enforced denial never hits this.
+    """
+    from clio_agent.runtime.landlock_exec import EXIT_FENCE_FAILED
+
+    if result.returncode == EXIT_FENCE_FAILED and "landlock_apply_failed" in (result.stderr or ""):
+        pytest.skip(f"landlock rung not enforceable on this host: {result.stderr.strip()[:160]}")
+
+
 def _run(confined: sandbox.ConfinedSpawn, *, cwd: Path) -> subprocess.CompletedProcess:
     import os
 
@@ -220,6 +231,7 @@ def test_landlock_shell_out_of_root_write_denied(
     state = _landlock_state()
     confined = _shell_confined(state, f"echo bad > {outside}", tmp_path)
     result = _run(confined, cwd=tmp_path)
+    _require_fence_enforced(result)
     assert result.returncode != 0
     assert not outside.exists()  # Landlock fs-write fence prevented it
     # F7: the REAL Landlock EACCES stderr parses to a REAL prevented policy_violation.
@@ -247,6 +259,7 @@ def test_landlock_cross_dir_rename_in_root_succeeds(tmp_path: Path) -> None:
         sys.executable, ["-c", code], write_roots=roots, profile=sandbox.PROFILE_FLEET, state=state
     )
     result = _run(confined, cwd=tmp_path)
+    _require_fence_enforced(result)
     assert result.returncode == 0, result.stderr  # REFER lets the in-root reparent through
     assert dst.exists() and not src.exists()
 
@@ -268,6 +281,7 @@ def test_landlock_out_of_root_rename_still_denied(tmp_path: Path) -> None:
         sys.executable, ["-c", code], write_roots=roots, profile=sandbox.PROFILE_FLEET, state=state
     )
     result = _run(confined, cwd=tmp_path)
+    _require_fence_enforced(result)
     assert result.returncode != 0
     assert not outside.exists()  # containment preserved despite REFER
 
@@ -278,5 +292,21 @@ def test_landlock_in_workspace_write_succeeds(tmp_path: Path) -> None:
     target = tmp_path / "ll_ok.txt"
     confined = _shell_confined(state, f"echo ok > {target}", tmp_path)
     result = _run(confined, cwd=tmp_path)
+    _require_fence_enforced(result)
     assert result.returncode == 0, result.stderr
     assert target.read_text().strip() == "ok"
+
+
+@_LANDLOCK
+def test_landlock_dev_null_write_succeeds(tmp_path: Path) -> None:
+    """False-positive guard: writing to /dev/null MUST succeed under the Landlock fence.
+
+    Nearly every child redirects to ``/dev/null``; the native rung must grant it (srt/bwrap
+    bind it automatically). Without the dev-node allowance the fence breaks ordinary commands.
+    """
+    state = _landlock_state()
+    confined = _shell_confined(state, "echo discarded > /dev/null; echo lives", tmp_path)
+    result = _run(confined, cwd=tmp_path)
+    _require_fence_enforced(result)
+    assert result.returncode == 0, result.stderr
+    assert "lives" in result.stdout
