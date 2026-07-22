@@ -366,6 +366,67 @@ class AgentTaskRegistry:
             return n
 
 
+#: Default ceiling on descendant-session traversal (:func:`descendant_session_ids`).
+#: Spawn depth is already bounded (``spawn_depth_exceeded``), but the aggregation
+#: walk carries its own cap so a pathological / cyclic task graph can never loop
+#: unboundedly. ``1`` restricts to direct children only.
+_DEFAULT_DESCENDANT_DEPTH = 8
+
+
+def child_session_ids(app: "FastAPI", parent_session_id: str) -> list[str]:
+    """Return the direct child session ids a parent spawned (via the task registry).
+
+    Each :class:`AgentTask` carries the ``child_session_id`` of the real child
+    SESSION it projects (#948 S2 substrate). Empty when the registry is absent or
+    the session spawned nothing.
+    """
+    reg = getattr(app.state, "agent_task_registry", None)
+    if reg is None:
+        return []
+    out: list[str] = []
+    for task in reg.for_parent(parent_session_id):
+        child = str(getattr(task, "child_session_id", "") or "")
+        if child:
+            out.append(child)
+    return out
+
+
+def descendant_session_ids(
+    app: "FastAPI", root_session_id: str, *, max_depth: int = _DEFAULT_DESCENDANT_DEPTH
+) -> list[str]:
+    """Return the descendant child session ids of ``root_session_id`` (BFS, bounded).
+
+    Walks the agent-task registry's per-parent index breadth-first: direct children
+    at depth 1, their children at depth 2, and so on up to ``max_depth`` (``1`` =
+    children only). The root is NOT included; each descendant appears once (a
+    ``seen`` set makes a repeated / cyclic task graph terminate). Order is
+    breadth-first, siblings newest-created first (the registry's ``for_parent``
+    order). This is the substrate for parent-orchestrator provenance aggregation
+    (GAP B, S5 #971): a parent session whose children executed the tools can merge
+    their transform/artifact records with per-row session attribution.
+    """
+    reg = getattr(app.state, "agent_task_registry", None)
+    if reg is None or max_depth < 1:
+        return []
+    out: list[str] = []
+    seen: set[str] = {root_session_id}
+    frontier = [root_session_id]
+    depth = 0
+    while frontier and depth < max_depth:
+        next_frontier: list[str] = []
+        for parent in frontier:
+            for task in reg.for_parent(parent):
+                child = str(getattr(task, "child_session_id", "") or "")
+                if not child or child in seen:
+                    continue
+                seen.add(child)
+                out.append(child)
+                next_frontier.append(child)
+        frontier = next_frontier
+        depth += 1
+    return out
+
+
 def install_agent_task_registry(app: "FastAPI") -> AgentTaskRegistry:
     """Create the registry, fold existing agent-task sessions into it, and stash it
     on ``app.state.agent_task_registry``. Call once from ``build_app`` after the

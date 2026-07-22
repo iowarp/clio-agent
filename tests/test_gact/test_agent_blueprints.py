@@ -40,7 +40,6 @@ from clio_agent.gact.app import (
     _extract_tools_called_from_trajectory,
     _gact_app_context,
     _gact_turn_timeout_s,
-    _ground_fabricated_local_artifact_paths,
     _merge_tool_call_rows,
     _prediction_structured_metadata,
     _prediction_workflow_state,
@@ -983,129 +982,6 @@ def test_workflow_state_merge_preserves_staged_acquisition_over_metadata_only(
     assert state["acquisition"]["local_path"] == str(staged_csv)
 
 
-def test_ground_fabricated_local_artifact_path_rewrites_to_verified(tmp_path) -> None:
-    real_csv = tmp_path / "ndp-staging" / "P475.CI.LY_.20.csv"
-    real_png = tmp_path / "ndp-staging" / "P475.CI.LY_.20_plot.png"
-    real_csv.parent.mkdir(parents=True)
-    real_csv.write_text("time,east,north,up\n0,0,0,0\n")
-    real_png.write_bytes(b"\x89PNG" + b"0" * 64)
-    state = {
-        "acquisition": {"status": "staged", "local_path": str(real_csv)},
-        "artifact": {"status": "ready", "path": str(real_png)},
-    }
-    answer = (
-        "Staged CSV: /home/x/.clio/artifacts/ndp-staging/P475.CI.LY_.20.csv\n"
-        "Plot (PNG): /home/x/.clio/artifacts/plots/P475_CI_LY_timeseries.png\n"
-        "Source URL: https://ds2.datacollaboratory.org/raw_csv/P475.CI.LY_.20.csv"
-    )
-    grounded = _ground_fabricated_local_artifact_paths(
-        answer, state, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA
-    )
-
-    # The fabricated PNG path (not on disk) is rewritten to the verified one.
-    assert str(real_png) in grounded
-    assert "plots/P475_CI_LY_timeseries.png" not in grounded
-    # The fabricated CSV citation is rewritten to the verified staged CSV.
-    assert str(real_csv) in grounded
-    # The remote source URL is left untouched.
-    assert "https://ds2.datacollaboratory.org/raw_csv/P475.CI.LY_.20.csv" in grounded
-
-
-def test_ground_fabricated_csv_path_ignores_metadata_catalog_for_substitution(tmp_path) -> None:
-    # The staged metadata catalog exists on disk too, but must NOT make the
-    # verified-CSV set ambiguous: the deliverable CSV is acquisition.local_path,
-    # so a fabricated csv citation is still grounded to it.
-    staging = tmp_path / "ndp-staging"
-    staging.mkdir()
-    real_csv = staging / "P475.CI.LY_.20.csv"
-    real_csv.write_text("time,east,north,up\n0,0,0,0\n")
-    catalog = staging / "earthscope_converted_data.csv"
-    catalog.write_text("Site,Latitude,Longitude\nP475,32,-117\n")
-    state = {
-        "acquisition": {
-            "status": "staged",
-            "local_path": str(real_csv),
-            "metadata_path": str(catalog),
-        },
-    }
-    answer = "Staged station CSV: /tmp/SAN_timeseries.csv"
-    grounded = _ground_fabricated_local_artifact_paths(
-        answer, state, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA
-    )
-
-    assert str(real_csv) in grounded
-    assert "/tmp/SAN_timeseries.csv" not in grounded
-    assert str(catalog) not in grounded
-
-
-def test_ground_fabricated_local_artifact_path_respects_missing_framing(tmp_path) -> None:
-    real_png = tmp_path / "ndp-staging" / "P475.CI.LY_.20_plot.png"
-    real_png.parent.mkdir(parents=True)
-    real_png.write_bytes(b"\x89PNG" + b"0" * 64)
-    state = {"artifact": {"status": "ready", "path": str(real_png)}}
-    answer = "No figure was produced; a PNG has not been staged at /tmp/expected/P475_plot.png yet."
-    grounded = _ground_fabricated_local_artifact_paths(
-        answer, state, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA
-    )
-
-    # An honestly-framed missing/expected path must not be rewritten.
-    assert grounded == answer
-
-
-def test_ground_fabricated_local_artifact_path_no_verified_neutralizes() -> None:
-    # With no verified on-disk artifact in state (a data-blocked run), a fabricated
-    # local artifact path must be neutralized rather than presented as real.
-    answer = "Plot (PNG): /home/x/.clio/artifacts/plots/SAN_timeseries.png"
-    grounded = _ground_fabricated_local_artifact_paths(
-        answer,
-        {"acquisition": {"status": "blocked"}},
-        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
-    )
-
-    assert "SAN_timeseries.png" not in grounded
-    assert ".png" not in grounded
-    assert "no local png artifact was produced" in grounded
-
-
-def test_ground_fabricated_local_artifact_path_collapses_doubled_prefix(tmp_path) -> None:
-    # Path-doubling: the model emits a REAL (on-disk) path with a duplicated
-    # prefix. Even with multiple verified artifacts present, collapse the
-    # malformed token to the embedded real path. The verified set is filesystem-
-    # backed, so the real artifacts must actually exist on disk.
-    staging = tmp_path / ".clio" / "artifacts" / "ndp-staging"
-    staging.mkdir(parents=True)
-    real = staging / "P473.PW.LY_.00.csv"
-    real.write_text("time,east,north,up\n0,0,0,0\n")
-    (staging / "catalog.csv").write_text("Site,Latitude,Longitude\nP473,1,2\n")
-    real_s = str(real)
-    # Duplicated-prefix mangling: ".../artifacts/ndp-" + the full real path.
-    doubled = f"{staging.parent}/ndp-{real_s}"
-    state = {
-        "acquisition": {"local_path": real_s},
-        "catalog": {"metadata_path": str(staging / "catalog.csv")},
-    }
-    grounded = _ground_fabricated_local_artifact_paths(
-        f"Staged CSV: {doubled}.", state, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA
-    )
-    assert real_s in grounded
-    assert doubled not in grounded
-
-
-def test_ground_fabricated_local_artifact_path_keeps_honest_blocked_prose() -> None:
-    # An honestly-framed absence in a data-blocked answer is left intact.
-    answer = (
-        "No PNG was produced because staging was blocked; a figure would be "
-        "written to /tmp/expected/figure.png once a station CSV is staged."
-    )
-    grounded = _ground_fabricated_local_artifact_paths(
-        answer,
-        {"acquisition": {"status": "blocked"}},
-        schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
-    )
-
-    assert grounded == answer
-
-
 def test_workflow_state_merge_preserves_non_empty_tool_provenance(tmp_path: Path) -> None:
     staged_csv = tmp_path / "MTA1.CI.LY_.30.csv"
     staged_csv.write_text("time,east,north,up\n2026-01-01,0,0,0\n", encoding="utf-8")
@@ -1910,7 +1786,6 @@ def test_prediction_structured_metadata_omits_empty_values() -> None:
     result = SimpleNamespace(
         workflow_state={"acquisition": {"status": "staged"}},
         evidence="evidence rows",
-        artifacts="",
         errors=None,
         delegation='{"next":"root"}',
     )

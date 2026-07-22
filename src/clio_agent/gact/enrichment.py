@@ -341,7 +341,14 @@ def _apply_edit_to_disk(
         reason="user_clicked_apply",
     )
 
-    return write_text_with_policy(str(target), new_content)
+    write_result = write_text_with_policy(str(target), new_content)
+    # Seam (b), #966 S1: mint an artifact.created for the user-approved harness write
+    # (mechanism harness, hashed-at-use from the sha256 the writer returned in-hand).
+    # The owner module is fully guarded — a mint must never break the approved write.
+    from clio_agent.gact.artifacts.minting import mint_harness_write  # noqa: PLC0415
+
+    mint_harness_write(app, session, str(target), write_result)
+    return write_result
 
 
 def _enrich_with_context_files(app: "FastAPI", sid: str, user_text: str) -> str:

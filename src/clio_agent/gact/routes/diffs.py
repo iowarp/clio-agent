@@ -44,6 +44,7 @@ packages and never loads :mod:`clio_agent.gact.app`.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -191,7 +192,11 @@ def register_diffs_routes(app: FastAPI, deps: "GactDeps") -> None:
             new_content = r.get("new_content")
             if new_content is not None:
                 try:
-                    deps.apply_edit_to_disk(
+                    # Offload the sync write+mint off the event loop: the mint's
+                    # lazy first-access boot fold does unbounded I/O and must never
+                    # run on the loop (finding [9] — RegistryFoldOnLoopError).
+                    await asyncio.to_thread(
+                        deps.apply_edit_to_disk,
                         path=r["path"],
                         new_content=new_content,
                         session=sess,

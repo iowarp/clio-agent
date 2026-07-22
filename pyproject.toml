@@ -125,6 +125,7 @@ dev = [
     "pytest-xdist>=3.5.0",  # -n / --dist loadfile for the concurrency flake-hunt (#735)
     "pytest-repeat>=0.9.3",  # --count for the flake-hunt (#735)
     "hypothesis>=6",  # property-based tests (parser invariants pilot, #773 Slice 16)
+    "pandas>=2.0.0",  # executable reproduce-chain proof (S7 #973): the pandas stage
     "ruff>=0.1.0",
     "mypy>=1.7.0",
 ]

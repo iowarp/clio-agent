@@ -35,13 +35,11 @@ _REAL_ORCHESTRATOR_FORBIDDEN_SOURCES = ("guard", "user_agent_keyword", "recovery
 _MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH = 3
 _MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT = 2
 _MARKETPLACE_COMPLEX_REQUIRED_CASES = 3
-_ARTIFACT_SUFFIXES = (".png", ".json", ".geojson", ".csv")
-_ARTIFACT_PATH_RE = re.compile(
-    r"[A-Za-z]:\\[^\n\r\"'`]+?\.(?:png|json|geojson|csv)"
-    r"|(?<![\w.-])/(?:[^\s,\"'`]|\\ )+?\.(?:png|json|geojson|csv)"
-    r"|(?<![\w.-])(?:\.?[\w.-]+/)+(?:[^\s,\"'`]|\\ )+?\.(?:png|json|geojson|csv)",
-    re.I,
-)
+# The path-string artifact scraper (``_artifact_paths`` + its regex/validators) was
+# DELETED in S7 (#973, item 5): produced artifacts are re-sourced from the artifact
+# registry wire (``GET /v1/sessions/{sid}/artifacts``) so every benchmark run
+# live-tests the artifact contract instead of guessing paths out of tool prose.
+_VISUAL_ARTIFACT_SUFFIXES = {".png", ".jpg", ".jpeg", ".svg", ".pdf", ".html"}
 _SEMANTIC_REGRESSION_REQUIRED_PROOFS = {
     "no_shortcuts": "no deterministic or keyword-forced route sources",
     "root_delegation": "root Agent delegates through declared experts",
@@ -154,6 +152,9 @@ class DemoResult:
     benchmark_lane: str = "default"
     agent_blueprint: dict[str, Any] = field(default_factory=dict)
     semantic_events: list[dict[str, Any]] = field(default_factory=list)
+    #: Registry-sourced (S7 #973): the produced artifact paths from the artifact
+    #: registry wire, populated at run/replay time (never a tool-output path scrape).
+    registry_artifacts: list[str] = field(default_factory=list)
 
     @property
     def selected_agent(self) -> str:
@@ -190,8 +191,17 @@ class DemoResult:
 
     @property
     def artifacts(self) -> list[str]:
-        """Return artifact path candidates found in tools or text."""
-        return _artifact_paths(self.message)
+        """Return the session's registered artifact paths (registry-sourced, S7 #973)."""
+        return list(self.registry_artifacts)
+
+    @property
+    def visualization_artifacts(self) -> list[str]:
+        """Return the registered artifacts that are visualizations/reports (by suffix)."""
+        return [
+            path
+            for path in self.registry_artifacts
+            if Path(_clean_path_candidate(path)).suffix.lower() in _VISUAL_ARTIFACT_SUFFIXES
+        ]
 
     @property
     def expert_handoffs(self) -> list[dict[str, Any]]:
@@ -392,9 +402,17 @@ class DemoResult:
     ) -> bool:
         """Return whether visible prose cites a different path for a verified artifact."""
 
-        visible_paths = _artifact_paths(
-            {"parts": [{"type": "text", "text": self.observed_excerpt_text}]}
-        )
+        # Path-like tokens the visible ANSWER PROSE cites (a text scrape of the
+        # user-facing excerpt — distinct from artifact discovery, which is now
+        # registry-sourced). Strip URLs first so a remote source url's path
+        # fragment (e.g. .../raw_csv/MTA1.CI.LY_.30.csv) is never mistaken for a
+        # local citation of a same-named verified artifact. We only compare these
+        # against the registry-verified artifacts below.
+        excerpt_no_urls = re.sub(r"https?://\S+", " ", self.observed_excerpt_text)
+        visible_paths = [
+            _clean_path_candidate(token) for token in _path_like_strings(excerpt_no_urls)
+        ]
+        visible_paths = [p for p in visible_paths if p]
         if not visible_paths:
             return False
         verified_by_name = {
@@ -1223,119 +1241,42 @@ def _partial_error(message: dict[str, Any]) -> dict[str, Any] | None:
     return error_info
 
 
-def _artifact_paths(message: dict[str, Any]) -> list[str]:
-    def _artifact_strings(value: Any, *, trusted: bool = False) -> list[str]:
-        if isinstance(value, str):
-            return _ARTIFACT_PATH_RE.findall(value)
-        if isinstance(value, dict):
-            paths: list[str] = []
-            for key, item in value.items():
-                key_text = str(key).lower()
-                if "url" in key_text or key_text in {"resource_name", "resource"}:
+def _registry_artifact_paths(http: httpx.Client, session_id: str) -> list[str]:
+    """The session's REGISTERED artifact paths, queried from the wire (S7 #973).
+
+    Replaces the deleted ``_artifact_paths`` regex/prose scraper: queries the
+    artifact-registry route ``GET /v1/sessions/{sid}/artifacts?include_children=true``
+    (the designation truth) so every benchmark run LIVE-TESTS the artifact contract.
+    ``include_children`` unions the delegates' workspaces so an orchestrator run sees
+    its children's outputs. Returns on-disk artifact paths, deduped, order-preserved.
+    Bounded pagination; a non-200 stops the walk (best-effort provenance).
+    """
+    seen: set[str] = set()
+    result: list[str] = []
+    cursor: str | None = None
+    for _ in range(50):
+        params: dict[str, Any] = {"include_children": True, "limit": 200}
+        if cursor:
+            params["before"] = cursor
+        try:
+            resp = http.get(f"/v1/sessions/{session_id}/artifacts", params=params)
+        except httpx.HTTPError:
+            break
+        if resp.status_code != 200:
+            break
+        body = resp.json()
+        for record in body.get("artifacts") or []:
+            for version in record.get("versions") or []:
+                path = str(version.get("path") or "")
+                if not path or path in seen:
                     continue
-                item_trusted = trusted or any(
-                    token in key_text for token in ("artifact", "output", "plot", "path", "file")
-                )
-                if item_trusted:
-                    paths.extend(_artifact_strings(item, trusted=True))
-                elif isinstance(item, (dict, list)):
-                    paths.extend(_artifact_strings(item, trusted=False))
-            return paths
-        if isinstance(value, list):
-            paths = []
-            for item in value:
-                paths.extend(_artifact_strings(item, trusted=trusted))
-            return paths
-        return []
-
-    candidates: list[str] = []
-    for row in _tools(message):
-        for candidate in _artifact_strings(row.get("args") or row.get("arguments") or {}):
-            path = _clean_path_candidate(candidate)
-            if path.startswith(("/", "~")) and not Path(path).expanduser().exists():
-                continue
-            candidates.append(candidate)
-        result = row.get("result")
-        if isinstance(result, str):
-            candidates.extend(_ARTIFACT_PATH_RE.findall(result))
-        elif isinstance(result, dict):
-            candidates.extend(_artifact_strings(result))
-    candidates.extend(_ARTIFACT_PATH_RE.findall(_message_text(message)))
-    cleaned_candidates: list[str] = []
-    metadata_input_candidates: list[str] = []
-    for candidate in candidates:
-        path = _clean_path_candidate(candidate)
-        if _is_staged_metadata_input_path(path):
-            metadata_input_candidates.append(path)
-            continue
-        if not _is_valid_artifact_path_candidate(path):
-            continue
-        cleaned_candidates.append(path)
-    existing_basenames = {
-        Path(path).name
-        for path in cleaned_candidates
-        if Path(path).name and Path(path).expanduser().exists()
-    }
-    deduped: list[str] = []
-    seen_normalized: set[str] = set()
-    for path in cleaned_candidates:
-        basename = Path(path).name
-        if basename in existing_basenames and not Path(path).expanduser().exists():
-            continue
-        normalized = str(Path(path).expanduser())
-        if normalized not in seen_normalized:
-            seen_normalized.add(normalized)
-            deduped.append(path)
-    if deduped:
-        return deduped
-    existing_metadata_basenames = {
-        Path(path).name
-        for path in metadata_input_candidates
-        if Path(path).name and Path(path).expanduser().exists()
-    }
-    for path in metadata_input_candidates:
-        basename = Path(path).name
-        if basename in existing_metadata_basenames and not Path(path).expanduser().exists():
-            continue
-        normalized = str(Path(path).expanduser())
-        if normalized not in seen_normalized:
-            seen_normalized.add(normalized)
-            deduped.append(path)
-    return deduped
-
-
-def _is_valid_artifact_path_candidate(path: str) -> bool:
-    """Return whether a regex path candidate is a usable artifact reference."""
-
-    if not path or path.startswith("//") or re.match(r"^[a-z]+://", path, re.I):
-        return False
-    if path.startswith(("/nationaldataplatform.org/", "/catalog/", "/dataset/", "/resource/")):
-        return False
-    if re.match(r"^(?:[a-f0-9-]+/)?download/", path.lstrip("/"), re.I):
-        return False
-    if re.match(r"^(?:earthscope_api_)?dec\d{4}/raw_csv/", path, re.I):
-        return False
-    if re.match(r"^clio/artifacts/", path, re.I):
-        return False
-    if re.match(r"^[^/]+/resource/", path, re.I):
-        return False
-    if re.match(r"^(station|stations|resource|resources)/", path, re.I):
-        return False
-    # Compacted retained evidence can start in the middle of an absolute path,
-    # producing fragments like "/.clio/..." or "io-agent/.clio/...". Those are
-    # not meaningful artifact paths and should not pollute report evidence.
-    if path.startswith("/.clio/"):
-        return False
-    if re.match(r"^[^./][^/]+/\.clio/", path):
-        return False
-    return True
-
-
-def _is_staged_metadata_input_path(path: str) -> bool:
-    """Return whether a staged path is acquisition metadata, not a produced artifact."""
-
-    candidate = Path(_clean_path_candidate(path))
-    return candidate.name == "earthscope_converted_data.csv" and "ndp-staging" in candidate.parts
+                seen.add(path)
+                if Path(path).is_file():
+                    result.append(path)
+        cursor = body.get("next_cursor")
+        if not cursor:
+            break
+    return result
 
 
 def _path_like_strings(value: Any, *, ignored_keys: set[str] | None = None) -> list[str]:
@@ -1408,17 +1349,6 @@ def _artifact_evidence(artifacts: list[str]) -> list[dict[str, Any]]:
         size_bytes = Path(path).stat().st_size if exists and Path(path).is_file() else 0
         rows.append({"path": path, "exists": exists, "size_bytes": size_bytes})
     return rows
-
-
-def _visualization_artifact_paths(artifacts: list[str]) -> list[str]:
-    """Return generated visualization/report artifacts, not staged input data."""
-
-    visual_suffixes = {".png", ".jpg", ".jpeg", ".svg", ".pdf", ".html"}
-    return [
-        path
-        for path in artifacts
-        if Path(_clean_path_candidate(path)).suffix.lower() in visual_suffixes
-    ]
 
 
 def _extract_lat_lon_radius_km(prompt: str) -> tuple[float, float, float] | None:
@@ -2927,6 +2857,8 @@ def _result_from_case_row(row: dict[str, Any]) -> DemoResult:
         benchmark_lane=str(row.get("benchmark_lane") or "recorded"),
         agent_blueprint=dict(row.get("agent_blueprint") or {}),
         semantic_events=list(row.get("semantic_events") or []),
+        # Restore the registry-sourced artifacts recorded at live-run time (S7 #973).
+        registry_artifacts=[str(p) for p in (row.get("artifacts") or []) if p],
     )
 
 
@@ -5159,6 +5091,7 @@ def run_benchmark(
                     benchmark_lane=lane,
                     agent_blueprint=agent_blueprint,
                     semantic_events=semantic_events,
+                    registry_artifacts=_registry_artifact_paths(http, session_id),
                 )
                 results.append(result)
                 log.write(json.dumps(_case_row(result), ensure_ascii=False, default=str) + "\n")
@@ -5200,7 +5133,7 @@ def _stress_audit(results: list[DemoResult]) -> list[dict[str, Any]]:
         or {"ndp_catalog", "sac_format"}.intersection(result.handoff_agent_ids)
     ]
     visualization_artifact_runs = [
-        result for result in results if _visualization_artifact_paths(result.artifacts)
+        result for result in results if result.visualization_artifacts
     ]
     expected_errors = [result for result in results if result.outcome == "expected_error"]
     compaction_runs = [

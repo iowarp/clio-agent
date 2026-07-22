@@ -5,12 +5,6 @@ the cohesive cluster that *grounds a turn's output in verifiable reality* and
 *recovers bounded tool evidence* from agent trajectories. It is the single source
 of truth for:
 
-* **Artifact grounding** -- replacing fabricated local artifact path citations in a
-  final answer with the run's verified on-disk artifact of the same type, driven
-  only by the pack-declared ``workflow_state`` schema and the filesystem (no
-  domain heuristics): :func:`_ground_fabricated_local_artifact_paths` and its
-  support (:func:`_verified_local_artifact_paths_by_ext`,
-  :func:`_is_remote_artifact_ref`).
 * **Tool-result inspection** -- previewing, error-classifying, and idempotently
   bounding individual tool results (:func:`_tool_result_preview`,
   :func:`_tool_result_is_error`, :func:`_is_bounded_tool_result`,
@@ -37,10 +31,7 @@ duplicated here.
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Mapping
-from functools import lru_cache
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.workflow_state.merge import (
@@ -54,150 +45,6 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
     from clio_agent.gact.types import AgentDef
-    from clio_agent.gact.workflow_state.schema import WorkflowStateSchema
-
-
-# ------------------------------------------------------------------------- #
-# Artifact grounding #
-# ------------------------------------------------------------------------- #
-
-
-@lru_cache(maxsize=None)
-def _artifact_path_token_re(extensions: tuple[str, ...]) -> re.Pattern[str]:
-    """Compile the fabricated-artifact token matcher for the declared extensions."""
-
-    ext_alternation = "|".join(re.escape(ext) for ext in extensions)
-    return re.compile(rf"[A-Za-z0-9_./~+-]+\.(?:{ext_alternation})", re.IGNORECASE)
-
-
-@lru_cache(maxsize=None)
-def _artifact_path_missing_framing_re(extensions: tuple[str, ...]) -> re.Pattern[str]:
-    """Compile the honest-not-produced framing matcher for the declared extensions."""
-
-    ext_alternation = "|".join(re.escape(ext) for ext in extensions)
-    return re.compile(
-        r"(not\s+(?:been\s+)?(?:staged|downloaded|available|present|found|created|generated|produced)|"
-        rf"no\s+(?:{ext_alternation}|plot|figure|file|artifact|local)\b|"
-        r"does\s+not\s+exist|doesn'?t\s+exist|not\s+yet|is\s+blocked|blocked\s+because|"
-        r"cannot\s+be|could\s+not\s+be|no\s+such\s+file|would\s+(?:need|be)|will\s+be|"
-        r"written\s+to|saved\s+to|expected\s+(?:location|at)|placeholder|hypothetical|"
-        r"once\s+(?:the|a)\b|to\s+be\s+(?:created|generated|written))",
-        re.IGNORECASE,
-    )
-
-
-def _is_remote_artifact_ref(value: str) -> bool:
-    """Whether a path string is a remote/URL reference (never a local artifact)."""
-
-    value = str(value or "")
-    return value.startswith(("http://", "https://", "ftp://", "//")) or "://" in value
-
-
-def _verified_local_artifact_paths_by_ext(
-    state: Mapping[str, Any],
-    *,
-    schema: "WorkflowStateSchema",
-) -> dict[str, list[str]]:
-    """Collect the run's authoritative on-disk artifact paths from the specific
-    typed workflow_state fields the pack schema declares as produced deliverables,
-    bucketed by lowercase extension.
-
-    Only the schema's declared ``artifact_paths`` fields are consulted — not an
-    arbitrary walk — so that incidental on-disk files (e.g. a discovery metadata
-    catalog recorded under a separate field) never count as the deliverable
-    artifact and never make the substitution ambiguous. These are the only
-    artifact paths a final answer may legitimately cite; any other local artifact
-    path it presents as a produced deliverable is a model confabulation."""
-
-    found: dict[str, list[str]] = {ext: [] for ext in schema.artifact_extensions}
-    for section, key in schema.artifact_paths:
-        section_obj = state.get(section)
-        if not isinstance(section_obj, Mapping):
-            continue
-        token = section_obj.get(key)
-        if not isinstance(token, str):
-            continue
-        token = token.strip()
-        if not token or _is_remote_artifact_ref(token):
-            continue
-        lowered = token.lower()
-        for ext in schema.artifact_extensions:
-            if lowered.endswith("." + ext):
-                try:
-                    on_disk = Path(token).is_file()
-                except OSError:
-                    on_disk = False
-                if on_disk and token not in found[ext]:
-                    found[ext].append(token)
-    return found
-
-
-def _ground_fabricated_local_artifact_paths(
-    answer: str,
-    state: Mapping[str, Any],
-    *,
-    schema: "WorkflowStateSchema",
-) -> str:
-    """Replace fabricated local artifact path citations in a final answer with the
-    run's verified on-disk artifact of the same declared type.
-
-    The synthesis model sometimes derives a plausible-but-wrong local artifact
-    filename (e.g. an invented plot path or an extension swap) instead of copying
-    the exact tool-returned path, and on a data-blocked run it can cite a local
-    artifact that was never produced at all. Such a path does not exist on disk
-    and misrepresents the deliverable. This generic pass — driven only by the
-    pack-declared workflow_state schema and the filesystem, with no domain
-    heuristics — corrects a non-existent local artifact citation: it rewrites it
-    to the single verified artifact of that type when exactly one exists,
-    otherwise (nothing real to point at, e.g. a data-blocked run) it neutralizes
-    the fabricated path with an explicit not-produced note. Remote source URLs and
-    paths the answer honestly frames as missing/not-yet-created are left
-    untouched. A schema that declares no artifact extensions (the generic default)
-    grounds nothing and returns the answer unchanged."""
-
-    if not answer or not schema.artifact_extensions:
-        return answer
-    verified = _verified_local_artifact_paths_by_ext(state, schema=schema)
-    token_re = _artifact_path_token_re(schema.artifact_extensions)
-    framing_re = _artifact_path_missing_framing_re(schema.artifact_extensions)
-
-    result = answer
-    for match in list(token_re.finditer(answer)):
-        token = match.group(0)
-        if _is_remote_artifact_ref(token):
-            continue
-        try:
-            if Path(token).is_file():
-                continue
-        except OSError:
-            continue
-        ext = token.rsplit(".", 1)[-1].lower()
-        candidates = verified.get(ext) or []
-        # Path-doubling / prefix-mangling: if the non-existent token EMBEDS exactly
-        # one verified artifact path as a substring (e.g. the model emitted a real
-        # staged path with a duplicated directory prefix), collapse to that
-        # verified path. Generic; runs before the ambiguity check so it still
-        # corrects when several artifacts exist.
-        embedded = [c for c in candidates if c and c in token and c != token]
-        if len(embedded) == 1:
-            result = result.replace(token, embedded[0])
-            continue
-        if len(candidates) > 1:
-            # Ambiguous which verified artifact was meant; leave text unchanged.
-            continue
-        # Respect honest "not produced / would be at <path>" framing.
-        lo = max(0, match.start() - 160)
-        hi = min(len(answer), match.end() + 160)
-        if framing_re.search(answer[lo:hi]):
-            continue
-        if len(candidates) == 1:
-            # Exactly one verified artifact of this type: correct the citation.
-            result = result.replace(token, candidates[0])
-        else:
-            # No real local artifact of this type exists this run: drop the
-            # fabricated path rather than present an unproduced file as real.
-            result = result.replace(token, f"[no local {ext} artifact was produced this run]")
-    return result
 
 
 # ------------------------------------------------------------------------- #
