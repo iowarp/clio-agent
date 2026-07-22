@@ -39,6 +39,16 @@ from clio_agent.gact.artifacts.environment import (
     EnvironmentTier,
     capture_environment,
 )
+from clio_agent.gact.artifacts.export import (
+    ExportBundle,
+    build_artifact_bundle,
+    build_session_bundle,
+    register_export_gc_roots,
+)
+from clio_agent.gact.artifacts.grounding import (
+    ground_answer_artifacts,
+    registered_deliverable_paths_by_ext,
+)
 from clio_agent.gact.artifacts.lineage import build_lineage
 from clio_agent.gact.artifacts.minting import (
     compute_identity,
@@ -73,6 +83,13 @@ from clio_agent.gact.artifacts.registry import (
     FoldResult,
     get_registry,
     rebuild_registry_at_boot,
+)
+from clio_agent.gact.artifacts.reproduce import (
+    ArtifactNode,
+    ReproduceScript,
+    StageVerdict,
+    compile_notebook,
+    compile_reproduce,
 )
 from clio_agent.gact.artifacts.transforms import (
     AgentRole,
@@ -152,9 +169,20 @@ __all__ = [
     "build_create_artifact_tool",
     "compute_identity",
     "drain_turn_artifacts",
+    "ArtifactNode",
+    "ExportBundle",
+    "ReproduceScript",
+    "StageVerdict",
+    "build_artifact_bundle",
+    "build_session_bundle",
+    "compile_notebook",
+    "compile_reproduce",
     "get_registry",
+    "ground_answer_artifacts",
     "ground_output_paths",
     "hash_max_file_bytes",
+    "register_export_gc_roots",
+    "registered_deliverable_paths_by_ext",
     "kind_for_path",
     "mint_artifact",
     "mint_pack_declared_paths",

@@ -277,6 +277,8 @@ def test_case_row_records_route_file_and_artifact_evidence(tmp_path) -> None:
         elapsed_s=2.0,
         message=message,
         provider={"provider": "claude_code", "model": "sonnet", "api_base": ""},
+        # Registry-sourced (S7 #973): the produced artifact the registry holds.
+        registry_artifacts=[str(artifact)],
         semantic_events=[
             {
                 "event_type": "turn.started",
@@ -383,8 +385,9 @@ def test_live_event_watch_starts_before_turn_and_stops_after(monkeypatch) -> Non
             calls.append("watch_exit")
 
     class FakeResponse:
-        def __init__(self, payload: dict[str, object]) -> None:
+        def __init__(self, payload: dict[str, object], status_code: int = 200) -> None:
             self._payload = payload
+            self.status_code = status_code
 
         def raise_for_status(self) -> None:
             return None
@@ -415,9 +418,12 @@ def test_live_event_watch_starts_before_turn_and_stops_after(monkeypatch) -> Non
         def __exit__(self, *_exc: object) -> None:
             return None
 
-        def get(self, path: str) -> FakeResponse:
+        def get(self, path: str, **_kwargs: object) -> FakeResponse:
             if path == "/v1/health":
                 return FakeResponse({})
+            # The run loop registry-sources artifacts (S7 #973): an empty listing.
+            if path.endswith("/artifacts"):
+                return FakeResponse({"artifacts": [], "count": 0, "next_cursor": None})
             raise AssertionError(path)
 
     case = bench.DemoCase(
@@ -891,6 +897,7 @@ def test_nested_expert_handoffs_count_for_case_expectations(tmp_path: Path) -> N
         message=message,
         provider={},
         agent_blueprint={"active_agent_blueprint_id": "seismic-waveform-review"},
+        registry_artifacts=[str(png)],
     )
 
     assert result.handoff_agent_ids == [
@@ -974,85 +981,12 @@ def test_route_metrics_count_sync_handoff_edges() -> None:
     assert result.route_metrics["branch_count"] == 3
 
 
-def test_remote_png_urls_do_not_count_as_local_artifacts(tmp_path: Path) -> None:
-    png = tmp_path / "local.png"
-    png.write_bytes(b"png")
-    message = _message(
-        text=(f"Remote reference https://example.org/generated.png and local artifact {png}"),
-        tools=[],
-    )
-
-    assert bench._artifact_paths(message) == [str(png)]
-
-
-def test_relative_json_and_geojson_paths_count_as_durable_artifacts(tmp_path: Path) -> None:
-    message = _message(
-        text=(
-            "Persisted compact evidence to .clio-agent-artifacts/ndp/current_wildfires_ca.json "
-            "and map features to outputs/hazards.geojson."
-        ),
-        tools=[
-            {
-                "name": "ndp_query_arcgis_features",
-                "args": {"output_path": "run/evidence/from_args.geojson"},
-                "result": {
-                    "output_path": str(tmp_path / "feature_evidence.json"),
-                    "source_url": "https://example.org/FeatureServer",
-                },
-            }
-        ],
-    )
-
-    assert bench._artifact_paths(message) == [
-        "run/evidence/from_args.geojson",
-        str(tmp_path / "feature_evidence.json"),
-        ".clio-agent-artifacts/ndp/current_wildfires_ca.json",
-        "outputs/hazards.geojson",
-    ]
-
-
-def test_compacted_partial_workspace_paths_do_not_count_as_artifacts(tmp_path: Path) -> None:
-    artifact = tmp_path / ".clio" / "artifacts" / "ndp-staging" / "WWMT.CI.LY_.40.csv"
-    artifact.parent.mkdir(parents=True)
-    artifact.write_text("time,east,north,up\n", encoding="utf-8")
-    message = _message(
-        text=(
-            f"Valid staged path: `{artifact}`\n"
-            "[tail]\n"
-            "/.clio/artifacts/ndp-staging/WWMT.CI.LY_.40.csv\n"
-            "io-agent/.clio/artifacts/ndp-staging/WWMT.CI.LY_.40.csv\n"
-        )
-    )
-
-    assert bench._artifact_paths(message) == [str(artifact)]
-
-
-def test_download_url_path_fragments_do_not_count_as_artifacts(tmp_path: Path) -> None:
-    artifact = tmp_path / ".clio" / "artifacts" / "ndp-staging" / "earthscope.csv"
-    artifact.parent.mkdir(parents=True)
-    artifact.write_text("station,lat,lon\n", encoding="utf-8")
-    message = _message(
-        text=(
-            f"Staged station metadata at {artifact}.\n"
-            "Source URL: https://nationaldataplatform.org/catalog/dataset/"
-            "811f0bcc-99e5-455c-bcf6-7c63c2634f41/resource/"
-            "a420cc30-2262-423a-8c63-3ad8d91f2a8f/download/"
-            "earthscope_converted_data.csv\n"
-            "Short download fragment: /download/earthscope_converted_data.csv\n"
-            "UUID download fragment: f2a8f/download/earthscope_converted_data.csv\n"
-            "Compacted fragment: /resource/a420cc30-2262-423a-8c63-3ad8d91f2a8f/"
-            "download/earthscope_converted_data.csv\n"
-            "Relative fragment: resource/a420cc30-2262-423a-8c63-3ad8d91f2a8f/"
-            "download/earthscope_converted_data.csv\n"
-            "Tail fragment: 6-7c63c2634f41/resource/"
-            "a420cc30-2262-423a-8c63-3ad8d91f2a8f/download/"
-            "earthscope_converted_data.csv\n"
-            "Remote path fragment: dec2024/raw_csv/MTA1.CI.LY_.30.csv\n"
-            "Compacted local fragment: clio/artifacts/ndp-staging/MTA1_time_series.png\n"
-        )
-    )
-
-    assert bench._artifact_paths(message) == [str(artifact)]
+# The path-string ``_artifact_paths`` scraper was DELETED in S7 (#973): artifact
+# discovery is registry-sourced (see ``tests/test_gact/test_artifacts_s7_export.py``
+# and the registry minting suites). The unit tests that pinned the scraper's
+# remote-URL / relative-path / compacted-fragment / download-fragment parsing rules
+# were removed with the function; the two below survive ONLY for the still-live
+# ``_data_file_paths`` INPUT-path extractor.
 
 
 def test_earthscope_station_metadata_csv_counts_as_input_not_artifact(tmp_path: Path) -> None:
@@ -1094,7 +1028,6 @@ def test_earthscope_station_metadata_csv_counts_as_input_not_artifact(tmp_path: 
         ],
     )
 
-    assert bench._artifact_paths(message) == [str(station_csv), str(png)]
     assert bench._data_file_paths("", message["metadata"]["tools_called"]) == [
         str(metadata),
         str(station_csv),
@@ -1131,7 +1064,6 @@ def test_missing_absolute_tool_output_arg_does_not_count_as_artifact(
 
     tools = message["metadata"]["tools_called"]
 
-    assert bench._artifact_paths(message) == [str(csv_path), str(png_path)]
     assert bench._data_file_paths("", tools) == [str(csv_path)]
 
 
@@ -2360,6 +2292,7 @@ def test_artifact_case_requires_user_visible_png_reference(tmp_path: Path) -> No
         message=message,
         provider={"provider": "argonne", "model": "openai/gpt-oss-120b", "api_base": ""},
         benchmark_lane="marketplace_earthscope",
+        registry_artifacts=[str(png)],
     )
 
     assert result.artifact_evidence[0]["exists"] is True
@@ -2466,6 +2399,7 @@ def test_visible_answer_misstating_verified_artifact_path_fails(tmp_path: Path) 
         message=message,
         provider={"provider": "argonne", "model": "openai/gpt-oss-120b", "api_base": ""},
         benchmark_lane="marketplace_earthscope",
+        registry_artifacts=[str(workspace_csv)],
     )
 
     assert result.artifact_evidence[0]["path"] == str(workspace_csv)
@@ -2652,6 +2586,7 @@ def test_earthscope_region_station_csv_must_match_requested_radius(tmp_path: Pat
         provider={"provider": "argonne", "model": "openai/gpt-oss-120b", "api_base": ""},
         benchmark_lane="marketplace_earthscope",
         agent_blueprint={"active_agent_blueprint_id": "earthscope-gnss-region-depth"},
+        registry_artifacts=[str(catalog), str(station_csv), str(png)],
     )
 
     assert result.passed is False
@@ -2871,6 +2806,7 @@ def test_earthscope_positive_scientific_final_brief_passes(tmp_path: Path) -> No
         provider={"provider": "argonne", "model": "openai/gpt-oss-120b", "api_base": ""},
         benchmark_lane="marketplace_earthscope",
         agent_blueprint={"active_agent_blueprint_id": "earthscope-gnss-region-depth"},
+        registry_artifacts=[str(catalog), str(station_csv), str(png)],
     )
 
     assert result.failure_reasons() == []
@@ -2971,6 +2907,7 @@ def test_earthscope_region_station_csv_requires_metadata_catalog(tmp_path: Path)
         provider={"provider": "argonne", "model": "openai/gpt-oss-120b", "api_base": ""},
         benchmark_lane="marketplace_earthscope",
         agent_blueprint={"active_agent_blueprint_id": "earthscope-gnss-region-depth"},
+        registry_artifacts=[str(station_csv), str(png)],
     )
 
     assert result.passed is False
@@ -3045,6 +2982,10 @@ def test_earthscope_region_verifier_uses_metadata_data_file_for_station_csv(
         provider={"provider": "argonne", "model": "openai/gpt-oss-120b", "api_base": ""},
         benchmark_lane="marketplace_earthscope",
         agent_blueprint={"active_agent_blueprint_id": "earthscope-gnss-region-depth"},
+        # The staged metadata catalog is an INPUT (data_file), not a produced
+        # deliverable — the registry-sourced artifacts carry only the station CSV
+        # + plot; the catalog is reached via data_files (its filepath arg).
+        registry_artifacts=[str(station_csv), str(png)],
     )
 
     assert str(catalog) not in result.artifacts
@@ -3105,6 +3046,7 @@ def test_earthscope_region_station_csv_within_radius_passes(tmp_path: Path) -> N
         provider={"provider": "argonne", "model": "openai/gpt-oss-120b", "api_base": ""},
         benchmark_lane="marketplace_earthscope",
         agent_blueprint={"active_agent_blueprint_id": "earthscope-gnss-region-depth"},
+        registry_artifacts=[str(catalog), str(station_csv), str(png)],
     )
 
     assert result.passed is True

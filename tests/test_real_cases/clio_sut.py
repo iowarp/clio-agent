@@ -445,14 +445,31 @@ class ClioAgent(SUT):
             prompts = [str(t) for t in turns] if turns else [prompt]
             turn_runs: list[Run] = []
             seen_ids: set[str] = set()
+            seen_artifact_ids: set[str] = set()
             assistant: dict[str, Any] = {}
             for turn_prompt in prompts:
                 assistant = self._post_turn(http, session_id, turn_prompt, timeout_s)
                 snapshot = http.get(f"/v1/sessions/{session_id}/messages").json()["messages"]
                 if turns:
                     fresh = [m for m in snapshot if str(m.get("id")) not in seen_ids]
+                    # Per-turn artifacts: the registry versions NEW since the prior
+                    # turn (diff by artifact_id) — sourced from the registry wire.
+                    reg_items = self._registry_artifacts(http, session_id)
+                    turn_items = [
+                        it for it in reg_items if it["artifact_id"] not in seen_artifact_ids
+                    ]
+                    seen_artifact_ids.update(it["artifact_id"] for it in reg_items)
                     turn_runs.append(
-                        self._to_run(assistant, fresh, [], {}, session_id, blueprint_id, None)
+                        self._to_run(
+                            assistant,
+                            fresh,
+                            [],
+                            {},
+                            session_id,
+                            blueprint_id,
+                            None,
+                            artifacts=self._existing_paths(turn_items),
+                        )
                     )
                 seen_ids.update(str(m.get("id")) for m in snapshot)
             messages = http.get(f"/v1/sessions/{session_id}/messages").json()["messages"]
@@ -462,10 +479,18 @@ class ClioAgent(SUT):
                 if r.get("parent_session_id") == session_id
             ]
             active = http.get(f"/v1/sessions/{session_id}/agent-blueprint").json()
+            run_artifacts = self._existing_paths(self._registry_artifacts(http, session_id))
 
         trace_path = self._resolve_trace_path(spec)
         run = self._to_run(
-            assistant, messages, children, active, session_id, blueprint_id, trace_path
+            assistant,
+            messages,
+            children,
+            active,
+            session_id,
+            blueprint_id,
+            trace_path,
+            artifacts=run_artifacts,
         )
         # Per-turn sub-runs (multi-turn case): each carries that turn's own
         # tool_calls / steps / artifacts so a test can assert turn-by-turn
@@ -607,6 +632,8 @@ class ClioAgent(SUT):
         session_id: str,
         blueprint_id: str,
         trace_path: Path | None = None,
+        *,
+        artifacts: list[str] | None = None,
     ) -> Run:
         import json as _json
 
@@ -666,7 +693,9 @@ class ClioAgent(SUT):
                 "model": self._model,
                 "workflow_state": workflow_state,
                 "structured_outputs": structured,
-                "artifacts": self._artifacts(tool_calls),
+                # Registry-sourced (S7 #973): the produced artifacts come from the
+                # artifact-registry wire, not a tool-output path scrape.
+                "artifacts": list(artifacts or []),
                 "trace_path": str(trace_path) if trace_path else "",
             },
         )
@@ -718,27 +747,56 @@ class ClioAgent(SUT):
                 idx = end
         return merged
 
+    def _registry_artifacts(self, http: httpx.Client, session_id: str) -> list[dict[str, Any]]:
+        """The session's REGISTERED artifact versions, queried from the wire (S7 #973).
+
+        Replaces the deleted tool-output path scraper: instead of guessing artifact
+        paths out of tool-call outputs, this queries the artifact registry route
+        ``GET /v1/sessions/{sid}/artifacts?include_children=true`` — the designation
+        truth — so every benchmark run LIVE-TESTS the artifact contract (the registry
+        actually recorded what the agent produced, with typed kind/custody/sha256).
+        ``include_children`` unions the delegates' workspaces so an orchestrator run
+        sees its children's outputs. Returns one flat item per immutable version.
+        """
+        items: list[dict[str, Any]] = []
+        cursor: str | None = None
+        for _ in range(50):  # bounded pagination (never an unbounded dump)
+            params: dict[str, Any] = {"include_children": True, "limit": 200}
+            if cursor:
+                params["before"] = cursor
+            resp = http.get(f"/v1/sessions/{session_id}/artifacts", params=params)
+            if resp.status_code != 200:
+                break
+            body = resp.json()
+            for record in body.get("artifacts") or []:
+                for version in record.get("versions") or []:
+                    items.append(
+                        {
+                            "artifact_id": str(version.get("artifact_id") or ""),
+                            "name": str(record.get("name") or ""),
+                            "path": str(version.get("path") or ""),
+                            "kind": str(version.get("kind") or ""),
+                            "sha256": version.get("sha256"),
+                            "custody": str(version.get("custody") or ""),
+                        }
+                    )
+            cursor = body.get("next_cursor")
+            if not cursor:
+                break
+        return items
+
     @staticmethod
-    def _artifacts(tool_calls: list[ToolCall]) -> list[str]:
-        """Collect produced artifact paths from tool outputs (e.g. the rendered
-        map's ``output_path``), keeping only ones that exist on disk."""
-        paths: list[str] = []
-        for call in tool_calls:
-            out = call.output
-            if not isinstance(out, dict):
-                continue
-            for key in ("output_path", "artifact", "path", "png", "plot_path", "map_artifact"):
-                value = out.get(key)
-                if isinstance(value, str) and value:
-                    paths.append(value)
+    def _existing_paths(items: list[dict[str, Any]]) -> list[str]:
+        """The on-disk artifact paths from registry items (deduped, order-preserved)."""
         seen: set[str] = set()
         result: list[str] = []
-        for p in paths:
-            if p in seen:
+        for item in items:
+            path = str(item.get("path") or "")
+            if not path or path in seen:
                 continue
-            seen.add(p)
-            if Path(p).is_file():
-                result.append(p)
+            seen.add(path)
+            if Path(path).is_file():
+                result.append(path)
         return result
 
     def _dump_trace(

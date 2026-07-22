@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shlex
 import shutil
 import time
@@ -184,18 +183,42 @@ def _child_messages(
     return messages
 
 
-def _artifact_paths(message: dict[str, Any]) -> list[str]:
-    candidates: list[str] = []
-    for row in _tools(message):
-        result = row.get("result")
-        if isinstance(result, str):
-            candidates.extend(re.findall(r"[A-Za-z]:\\[^\n\r]+?\.png|/[^\s]+?\.png", result))
-        elif isinstance(result, dict):
-            for value in result.values():
-                if isinstance(value, str) and value.endswith(".png"):
-                    candidates.append(value)
-    candidates.extend(re.findall(r"[A-Za-z]:\\[^\n\r]+?\.png|/[^\s]+?\.png", _text(message)))
-    return candidates
+def _registry_artifact_paths(http: httpx.Client, session_id: str) -> list[str]:
+    """The session's REGISTERED artifact paths, from the wire (S7 #973).
+
+    Replaces the deleted ``_artifact_paths`` regex scraper: queries the artifact
+    registry route ``GET /v1/sessions/{sid}/artifacts?include_children=true`` (the
+    designation truth) so the stress benchmark LIVE-TESTS the artifact contract on
+    every run. Returns on-disk artifact paths, deduped, order-preserved.
+    """
+    if not session_id:
+        return []
+    seen: set[str] = set()
+    result: list[str] = []
+    cursor: str | None = None
+    for _ in range(50):
+        params: dict[str, Any] = {"include_children": True, "limit": 200}
+        if cursor:
+            params["before"] = cursor
+        try:
+            resp = http.get(f"/v1/sessions/{session_id}/artifacts", params=params)
+        except httpx.HTTPError:
+            break
+        if resp.status_code != 200:
+            break
+        body = resp.json()
+        for record in body.get("artifacts") or []:
+            for version in record.get("versions") or []:
+                path = str(version.get("path") or "")
+                if not path or path in seen:
+                    continue
+                seen.add(path)
+                if Path(path).is_file():
+                    result.append(path)
+        cursor = body.get("next_cursor")
+        if not cursor:
+            break
+    return result
 
 
 def _clio_kit_stdio_spec(server_name: str) -> dict[str, Any]:
@@ -294,7 +317,8 @@ def _record_case(
         "routing_decision": _routing_decision(message),
         "tools_called": _tools(message),
         "expert_handoffs": _expert_handoffs(message),
-        "artifacts": _artifact_paths(message),
+        # Registry-sourced (S7 #973): the session id rides the assistant message.
+        "artifacts": _registry_artifact_paths(http, str(message.get("session_id") or "")),
         "nanoagents_spawned": child_sessions or [],
         "error_info": message.get("error_info"),
         "stream_metadata": _stream_metadata(message),
@@ -423,7 +447,11 @@ def test_local_multistage_scientific_workflow_records_grounded_evidence(
         expected_tool_prefix="plot_",
         expected_terms=("dashboard", ".png"),
     )
-    artifacts = _artifact_paths(visualization_answer)
+    artifacts = [
+        path
+        for path in _registry_artifact_paths(http, session_id)
+        if path.lower().endswith(".png")
+    ]
     assert artifacts, _text(visualization_answer)
     assert any(Path(path).exists() for path in artifacts), artifacts
     _record_case(

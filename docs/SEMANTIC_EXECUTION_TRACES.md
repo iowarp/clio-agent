@@ -22,7 +22,9 @@ Required top-level fields:
 - `status`: `running`, `completed`, `failed`, `blocked`, `pending`, or similar.
 - `summary`: short user-safe description.
 - `actor`: caller/producer, for example expert id, hook name, or tool name.
-- `subject`: target object, for example message id, command id, artifact path.
+- `subject`: target object, for example message id, command id, or artifact id
+  (a designated artifact is referenced by its registry `artifact_id` + `sha256`,
+  not a hand-composed path string).
 - `blueprint`: active Agent Blueprint/pack provenance when known.
 - `provider`: provider/model/config provenance when relevant.
 - `payload`: event-specific structured details.
@@ -46,7 +48,10 @@ Current CLIO events include:
 - `memory.search.completed`, `memory.compacted`
 - `permission.requested`
 - `user_question.created`
-- `artifact.proposed`
+- `artifact.proposed`, `artifact.created`, `artifact.version.added`,
+  `artifact.alias.moved` (the artifact `.created` family reaches the SSE UI wire),
+  and the trace-only `artifact.used` / `artifact.transform.recorded` provenance
+  events (`b = transform(a)` lineage — never a scraped path string)
 - `command.invocation.completed`, `command.invocation.failed`,
   `command.invocation.denied`
 - `subagent.started`, `subagent.completed`
