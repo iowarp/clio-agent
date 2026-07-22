@@ -769,14 +769,14 @@ def _make_tool_observer(app: "FastAPI"):
                     payload=payload,
                 )
             )
-            # Seam (a), #966: a successful call whose grounded args name a declared output
-            # path mints a hash-pinned artifact version (owner module guards + drift-routes).
-            if ok and not completed_after_cancel:
-                from clio_agent.gact.artifacts.minting import (
-                    observe_tool_completion,  # noqa: PLC0415
+            # Seam #966 S1+S5 (#971): mint generated versions + record the coarse
+            # TransformRecord (success AND failure — a failed write is provenance).
+            if not completed_after_cancel:
+                from clio_agent.gact.artifacts.transforms import (  # noqa: PLC0415
+                    observe_tool_transform,
                 )
 
-                observe_tool_completion(app, sid, tool_name=name, effective_args=dict(args), call_id=call_id)
+                observe_tool_transform(app, sid, name, dict(args), call_id, ok, result)
             _OBSERVER_CALL_T0.value = None  # finding [3]: clear the latch (idle thread -> DIRTY lease)
             result_text = completion_error or (
                 _tool_result_preview(result) if result is not None else "completed"

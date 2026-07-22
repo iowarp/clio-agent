@@ -1,0 +1,545 @@
+"""TransformRecords — ``b = transform(a)`` made real (owner decision #966.6 / S5).
+
+One coarse :class:`TransformRecord` per producing tool call, keyed by the tool
+observer's ``call_id`` (NO second id namespace — the activity id IS the call id).
+It carries: the session/turn/workspace, the time span, the status (``success``
+AND ``failed`` — a failed run that wrote outputs is real provenance), the agent
+(executing vs annotating), the instrument (tool + args, or ``{cmd, script_hash}``
+— a generated script is itself a ``script``-kind artifact and its own hashed dep,
+DVC's move), the tiered environment (:mod:`environment`), and the ``used[]`` /
+``generated[]`` edges, each carrying its own evidence
+(``schema-arg | hash-pair | lease-window | authority | assertion``).
+
+Used-edge detection is **precision over recall** (owner decision #966.10): at
+observer completion we walk the call args for strings that (1) resolve to an
+existing file, (2) sit inside the workspace root, (3) match a registered artifact
+by path — then re-hash under the threshold (hash equal → ``schema-arg`` +
+``hash-pair``; hash differs → mint a GAP version FIRST and point the edge at the
+gap, never silently pin stale; over threshold → ``stat-pinned`` labeled).
+Existing-file args NOT in the registry become ``external:path`` objects; anything
+else yields NO edge. NDP tool results carrying catalog resource urls/ids register
+those inputs ``authority-asserted`` (item 4 — NDP results carry no checksum/ETag/
+DOI, so the catalog URL/UUID IS the authority).
+
+The record is emitted as ``artifact.transform.recorded`` — TRACE-ONLY (NOT on the
+SSE UI wire, per the S2 split) — via ``_emit_semantic_event`` and folded into the
+registry projection (idempotent by ``event_id`` + ``call_id``).
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from clio_agent.gact.artifacts.environment import (
+    EnvironmentRecord,
+    EnvironmentTier,
+    environment_from_payload,
+    tier_at_least,
+)
+from clio_agent.gact.artifacts.records import ArtifactVersion
+from clio_agent.gact.artifacts.transform_edges import detect_authority_edges, detect_used_edges
+from clio_agent.gact.artifacts.transform_types import (
+    AgentRole,
+    EdgeEvidence,
+    EdgeRole,
+    Instrument,
+    ProvEdge,
+    ReplayContract,
+    TransformKind,
+    TransformStatus,
+)
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
+
+logger = logging.getLogger(__name__)
+
+ARTIFACT_TRANSFORM_RECORDED_EVENT = "artifact.transform.recorded"
+
+#: Re-exported so ``tests`` + callers can reach the detector via ``transforms``.
+_detect_used_edges = detect_used_edges
+
+
+class TransformRecord(BaseModel):
+    """One coarse transform keyed by the observer ``call_id`` (owner decision #966.6).
+
+    Immutable value: the harness builds it; the model is never load-bearing (its
+    intent is quarantined in ``annotation``). ``environment`` stamps the tiered
+    identity; ``replay`` stamps the permanent guarantee derived from the tier and
+    the used-edge pinning.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    #: THE key — the tool observer's ``call_id`` (the activity id).
+    call_id: str
+    event_id: str = ""
+    session_id: str = ""
+    turn_id: str = ""
+    workspace_id: str = ""
+    status: TransformStatus = TransformStatus.SUCCESS
+    kind: TransformKind = TransformKind.ORDINARY
+    agent_role: AgentRole = AgentRole.EXECUTING
+    agent_id: str = ""
+    instrument: Instrument = Field(default_factory=Instrument)
+    environment: EnvironmentRecord = Field(default_factory=EnvironmentRecord)
+    replay: ReplayContract = ReplayContract.RE_RUNNABLE
+    replay_reason: str = ""
+    used: list[ProvEdge] = Field(default_factory=list)
+    generated: list[ProvEdge] = Field(default_factory=list)
+    started_at: str = ""
+    ended_at: str = ""
+    #: Model-provided intent (untrusted, quarantined — never merged into evidence).
+    annotation: str = ""
+    #: The contended candidate set (other active session ids on the workspace).
+    candidates: list[str] = Field(default_factory=list)
+
+    def to_payload(self) -> dict[str, Any]:
+        """The durable ``artifact.transform.recorded`` payload (fold source of truth)."""
+        return {
+            "event_id": self.event_id,
+            "call_id": self.call_id,
+            "session_id": self.session_id,
+            "turn_id": self.turn_id,
+            "workspace_id": self.workspace_id,
+            "status": self.status.value,
+            "kind": self.kind.value,
+            "agent_role": self.agent_role.value,
+            "agent_id": self.agent_id,
+            "instrument": self.instrument.model_dump(),
+            "environment": self.environment.model_dump(),
+            "replay": self.replay.value,
+            "replay_reason": self.replay_reason,
+            "used": [e.model_dump() for e in self.used],
+            "generated": [e.model_dump() for e in self.generated],
+            "started_at": self.started_at,
+            "ended_at": self.ended_at,
+            "annotation": self.annotation,
+            "candidates": list(self.candidates),
+        }
+
+    def to_relay_provenance(self) -> dict[str, Any]:
+        """The extras block that rides relay ``ArtifactRef.metadata['clio.provenance.v1']``.
+
+        Relay's ``ArtifactUse`` is frozen + ``extra='forbid'`` with no metadata
+        field, so our mechanism/evidence/environment extras cannot ride the edge
+        itself — they ride the producing artifact's ``ArtifactRef.metadata`` under
+        this versioned key until relay's schema converges (the S5 convergence
+        issue). ``used_artifact_refs`` is the list of relay ``ArtifactUse`` dicts
+        for the hash-pinned used edges (the shape relay lands unchanged).
+        """
+        return {
+            "activity_id": self.call_id,
+            "instrument": self.instrument.model_dump(),
+            "environment": self.environment.model_dump(),
+            "replay": self.replay.value,
+            "used_evidence": [
+                {
+                    "artifact_id": e.artifact_id,
+                    "external_ref": e.external_ref,
+                    "authority": e.authority,
+                    "evidence": e.evidence.value,
+                    "note": e.note,
+                }
+                for e in self.used
+            ],
+            "used_artifact_refs": [
+                use for e in self.used if (use := e.to_artifact_use()) is not None
+            ],
+        }
+
+
+def transform_from_payload(payload: dict[str, Any]) -> Optional[TransformRecord]:
+    """Rebuild a :class:`TransformRecord` from a folded payload, or ``None`` if malformed.
+
+    A payload with no ``call_id`` cannot be keyed — dropped from the fold with a
+    typed reason by the caller, never a crash.
+    """
+    call_id = str(payload.get("call_id") or "")
+    if not call_id:
+        return None
+
+    def _edges(raw: Any) -> list[ProvEdge]:
+        out: list[ProvEdge] = []
+        for item in raw if isinstance(raw, list) else ():
+            if not isinstance(item, dict):
+                continue
+            try:
+                out.append(ProvEdge.model_validate(item))
+            except Exception:  # noqa: BLE001 — a malformed edge is dropped, never a crash
+                continue
+        return out
+
+    try:
+        status = TransformStatus(str(payload.get("status") or TransformStatus.SUCCESS.value))
+    except ValueError:
+        status = TransformStatus.SUCCESS
+    try:
+        kind = TransformKind(str(payload.get("kind") or TransformKind.ORDINARY.value))
+    except ValueError:
+        kind = TransformKind.ORDINARY
+    try:
+        agent_role = AgentRole(str(payload.get("agent_role") or AgentRole.EXECUTING.value))
+    except ValueError:
+        agent_role = AgentRole.EXECUTING
+    try:
+        replay = ReplayContract(str(payload.get("replay") or ReplayContract.RE_RUNNABLE.value))
+    except ValueError:
+        replay = ReplayContract.RE_RUNNABLE
+    raw_instrument = payload.get("instrument")
+    instrument = (
+        Instrument.model_validate(raw_instrument)
+        if isinstance(raw_instrument, dict)
+        else Instrument()
+    )
+    return TransformRecord(
+        call_id=call_id,
+        event_id=str(payload.get("event_id") or ""),
+        session_id=str(payload.get("session_id") or ""),
+        turn_id=str(payload.get("turn_id") or ""),
+        workspace_id=str(payload.get("workspace_id") or ""),
+        status=status,
+        kind=kind,
+        agent_role=agent_role,
+        agent_id=str(payload.get("agent_id") or ""),
+        instrument=instrument,
+        environment=environment_from_payload(payload.get("environment")),
+        replay=replay,
+        replay_reason=str(payload.get("replay_reason") or ""),
+        used=_edges(payload.get("used")),
+        generated=_edges(payload.get("generated")),
+        started_at=str(payload.get("started_at") or ""),
+        ended_at=str(payload.get("ended_at") or ""),
+        annotation=str(payload.get("annotation") or ""),
+        candidates=[str(c) for c in (payload.get("candidates") or []) if c],
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Replay contract (owner decision #966.6) — permanent, honest, never upgraded.
+# --------------------------------------------------------------------------- #
+
+
+def _edge_is_pinned(edge: ProvEdge) -> bool:
+    """Whether a used edge pins its input's content (hash-pair or a real authority).
+
+    A ``hash-pair`` edge carries a content sha; an ``authority`` edge carries a
+    catalog/registry reference (often stronger than a local hash for big data).
+    A ``stat-pinned`` / bare ``schema-arg`` edge with no sha and no authority is
+    NOT pinned — the transform is re-runnable, not reproducible.
+    """
+    if edge.evidence is EdgeEvidence.HASH_PAIR and edge.sha256:
+        return True
+    if edge.evidence is EdgeEvidence.AUTHORITY and edge.authority:
+        return True
+    return False
+
+
+def compute_replay_contract(
+    environment: EnvironmentRecord, used: list[ProvEdge]
+) -> tuple[ReplayContract, str]:
+    """Derive the permanent replay contract (owner decision #966.6).
+
+    ``reproducible`` iff the environment tier is at least ``lockfile-hash`` AND
+    every used input is content-pinned; otherwise ``re-runnable`` with a typed
+    reason (``env_below_lockfile_hash`` / ``inputs_unpinned:<n>``). No silent
+    upgrade — an empty used set with a pinned environment IS reproducible (nothing
+    unpinned to break it).
+    """
+    if not tier_at_least(environment.tier, EnvironmentTier.LOCKFILE_HASH):
+        return ReplayContract.RE_RUNNABLE, "env_below_lockfile_hash"
+    unpinned = [e for e in used if not _edge_is_pinned(e)]
+    if unpinned:
+        return ReplayContract.RE_RUNNABLE, f"inputs_unpinned:{len(unpinned)}"
+    return ReplayContract.REPRODUCIBLE, ""
+
+
+# --------------------------------------------------------------------------- #
+# Contended candidate set (owner decision #966.10).
+# --------------------------------------------------------------------------- #
+
+
+def _contended_candidates(app: "FastAPI", workspace_id: str, session_id: str) -> list[str]:
+    """Return other active session ids that could be writing the same workspace.
+
+    Reuses the honest single-writer proof (:func:`workspace_lease_clean`'s peer
+    scan): when the lease is clean the set is empty (``ordinary`` record); when it
+    is dirty the candidate sessions are surfaced (``contended`` record) rather than
+    a false single-writer certainty. Best-effort; an unreadable registry yields no
+    candidates (the lease already went dirty separately).
+    """
+    from clio_agent.gact.artifacts.versions import _session_workspace  # noqa: PLC0415
+
+    out: list[str] = []
+    in_flight = getattr(app.state, "in_flight_turns", None)
+    if in_flight:
+        try:
+            others = [s for s in list(in_flight.keys()) if s and s != session_id]
+        except RuntimeError:
+            return out
+        for other in others:
+            if _session_workspace(app, other) == workspace_id:
+                out.append(other)
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Recording orchestration (the observer seam).
+# --------------------------------------------------------------------------- #
+
+
+def _now_iso() -> str:
+    from clio_agent.gact.runtime.globals import _iso_from_epoch  # noqa: PLC0415
+
+    return _iso_from_epoch(time.time())
+
+
+def _generated_edges(minted: list[ArtifactVersion]) -> list[ProvEdge]:
+    """Project the versions minted this call to ``generated`` edges."""
+    edges: list[ProvEdge] = []
+    for version in minted:
+        edges.append(
+            ProvEdge(
+                role=EdgeRole.GENERATED,
+                evidence=(EdgeEvidence.HASH_PAIR if version.sha256 else EdgeEvidence.SCHEMA_ARG),
+                artifact_id=version.artifact_id,
+                sha256=version.sha256,
+                name="",
+                version=version.version,
+                path=version.path,
+                note=("" if version.sha256 else "stat_pinned"),
+            )
+        )
+    return edges
+
+
+def _script_instrument(tool_name: str, args: dict[str, Any], used: list[ProvEdge]) -> Instrument:
+    """Build the instrument, promoting a used script to ``{cmd, script_hash}`` (DVC).
+
+    When a used edge is a ``script`` artifact (a generated ``.py``/``.sh`` the tool
+    executed), its hash becomes the instrument's own ``script_hash`` +
+    ``script_artifact_id`` so the script is pinned as its own dependency.
+    """
+    script_hash = ""
+    script_artifact_id = ""
+    cmd = ""
+    for edge in used:
+        suffix = Path(edge.path or edge.name or "").suffix.lower()
+        if suffix in {".py", ".sh"} and edge.sha256:
+            script_hash = edge.sha256
+            script_artifact_id = edge.artifact_id
+            cmd = f"{tool_name} {edge.path or edge.name}".strip()
+            break
+    return Instrument(
+        tool=tool_name,
+        args=dict(args),
+        cmd=cmd,
+        script_hash=script_hash,
+        script_artifact_id=script_artifact_id,
+    )
+
+
+def record_transform(
+    app: "FastAPI",
+    sid: str,
+    *,
+    tool_name: str,
+    args: dict[str, Any],
+    call_id: str,
+    ok: bool,
+    result: Any,
+    minted: list[ArtifactVersion],
+    workspace_id: str,
+    turn_id: str = "",
+    trace_id: str = "",
+    started_at: Optional[float] = None,
+    agent_id: str = "",
+) -> Optional[TransformRecord]:
+    """Build, emit (trace-only), and fold one :class:`TransformRecord` (owner #966.6).
+
+    ``minted`` are the generated versions the mint seam produced this call (for
+    ``generated`` edges). Used edges are detected from ``args``; authority edges
+    from ``result``. The record is emitted as ``artifact.transform.recorded``
+    (TRACE-ONLY — NOT on the SSE wire, per the S2 split) and folded into the
+    registry projection. Returns the record, or ``None`` when it cannot be keyed.
+    """
+    if not call_id:
+        logger.info(
+            "transform record skipped reason=missing_call_id session=%s tool=%s", sid, tool_name
+        )
+        return None
+    from clio_agent.gact.artifacts.environment import capture_environment  # noqa: PLC0415
+    from clio_agent.gact.artifacts.registry import get_registry  # noqa: PLC0415
+    from clio_agent.gact.semantic_events import _event_id  # noqa: PLC0415
+
+    used = _detect_used_edges(
+        app, sid, args=args, workspace_id=workspace_id, turn_id=turn_id, trace_id=trace_id
+    )
+    used.extend(
+        detect_authority_edges(app, tool_name=tool_name, result=result, workspace_id=workspace_id)
+    )
+    generated = _generated_edges(minted)
+    environment = capture_environment(app)
+    replay, replay_reason = compute_replay_contract(environment, used)
+    candidates = _contended_candidates(app, workspace_id, sid)
+    kind = TransformKind.CONTENDED if candidates else TransformKind.ORDINARY
+    started_iso = _iso_from_epoch_opt(started_at)
+    record = TransformRecord(
+        call_id=call_id,
+        event_id=_event_id(),
+        session_id=sid,
+        turn_id=turn_id,
+        workspace_id=workspace_id,
+        status=TransformStatus.SUCCESS if ok else TransformStatus.FAILED,
+        kind=kind,
+        agent_role=AgentRole.EXECUTING,
+        agent_id=agent_id,
+        instrument=_script_instrument(tool_name, args, used),
+        environment=environment,
+        replay=replay,
+        replay_reason=replay_reason,
+        used=used,
+        generated=generated,
+        started_at=started_iso,
+        ended_at=_now_iso(),
+        candidates=candidates,
+    )
+    _emit_transform_recorded(app, sid, record, turn_id=turn_id, trace_id=trace_id)
+    get_registry(app).record_transform(record)
+    return record
+
+
+def _iso_from_epoch_opt(started_at: Optional[float]) -> str:
+    if started_at is None:
+        return ""
+    from clio_agent.gact.runtime.globals import _iso_from_epoch  # noqa: PLC0415
+
+    return _iso_from_epoch(started_at)
+
+
+def _emit_transform_recorded(
+    app: "FastAPI",
+    sid: str,
+    record: TransformRecord,
+    *,
+    turn_id: str = "",
+    trace_id: str = "",
+) -> None:
+    """Emit ``artifact.transform.recorded`` — TRACE-ONLY (never on the SSE wire).
+
+    Guarded — a provenance emit must never break a turn. The event type is
+    deliberately absent from ``SSE_UI_EVENT_TYPES`` (the S2 split): it is captured
+    FULL on the durable trace + ARC and folded at boot, but never served to the UI.
+    """
+    try:
+        from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
+
+        _emit_semantic_event(
+            app,
+            sid,
+            ARTIFACT_TRANSFORM_RECORDED_EVENT,
+            turn_id=turn_id,
+            trace_id=trace_id,
+            status="completed" if record.status is TransformStatus.SUCCESS else "failed",
+            summary=(
+                f"Transform {record.instrument.tool} recorded "
+                f"({len(record.used)} used, {len(record.generated)} generated)."
+            ),
+            actor={"tool": record.instrument.tool, "mechanism": "harness"},
+            subject={"call_id": record.call_id, "workspace_id": record.workspace_id},
+            payload=record.to_payload(),
+        )
+    except Exception:  # noqa: BLE001 — a provenance emit must never break a turn
+        logger.warning(
+            "transform record emit skipped reason=transform_emit_failed session=%s call_id=%s",
+            sid,
+            record.call_id,
+        )
+
+
+def observe_tool_transform(
+    app: "FastAPI",
+    sid: str,
+    tool_name: str,
+    effective_args: dict[str, Any],
+    call_id: str,
+    ok: bool,
+    result: Any = None,
+    call_started_at: Optional[float] = None,
+) -> None:
+    """Observer seam entry: mint generated outputs + record the transform (S5).
+
+    Fully self-contained + guarded so the gact tool observer calls it in one line.
+    Mints tool-declared generated outputs (for BOTH success and failure — a failed
+    run that wrote outputs is real provenance), then records one TransformRecord
+    keyed by ``call_id`` carrying the used/generated edges, environment tier, and
+    replay contract. A live provenance record must never break a turn.
+    """
+    try:
+        from clio_agent.gact import context as _ctx  # noqa: PLC0415
+        from clio_agent.gact.artifacts.minting import (  # noqa: PLC0415
+            _observer_call_started_at,
+            _session_workspace_id,
+            mint_tool_declared_outputs,
+        )
+
+        workspace_id = _session_workspace_id(app, sid)
+        turn_id = _ctx.active_turn_id()
+        trace_id = _ctx.active_trace_id()
+        started = call_started_at if call_started_at is not None else _observer_call_started_at()
+        minted = mint_tool_declared_outputs(
+            app,
+            sid,
+            tool_name=tool_name,
+            effective_args=effective_args,
+            call_id=call_id,
+            workspace_id=workspace_id,
+            turn_id=turn_id,
+            trace_id=trace_id,
+            call_started_at=started,
+        )
+        record_transform(
+            app,
+            sid,
+            tool_name=tool_name,
+            args=effective_args,
+            call_id=call_id,
+            ok=ok,
+            result=result,
+            minted=minted,
+            workspace_id=workspace_id,
+            turn_id=turn_id,
+            trace_id=trace_id,
+            started_at=started,
+            agent_id=_ctx.active_react_scope() or "",
+        )
+    except Exception:  # noqa: BLE001 — a live provenance record must never break a turn
+        logger.warning(
+            "transform record skipped reason=observe_transform_failed session=%s tool=%s call_id=%s",
+            sid,
+            tool_name,
+            call_id,
+        )
+
+
+__all__ = [
+    "ARTIFACT_TRANSFORM_RECORDED_EVENT",
+    "AgentRole",
+    "EdgeEvidence",
+    "EdgeRole",
+    "Instrument",
+    "ProvEdge",
+    "ReplayContract",
+    "TransformKind",
+    "TransformRecord",
+    "TransformStatus",
+    "compute_replay_contract",
+    "observe_tool_transform",
+    "record_transform",
+    "transform_from_payload",
+]

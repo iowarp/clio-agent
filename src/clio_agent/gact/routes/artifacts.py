@@ -381,8 +381,14 @@ def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
     from clio_agent.gact.routes.artifact_aliases import (  # noqa: PLC0415
         register_artifact_alias_routes,
     )
+    from clio_agent.gact.routes.artifact_lineage import (  # noqa: PLC0415
+        register_artifact_lineage_routes,
+    )
 
     register_artifact_alias_routes(app)
+    # S5 (#971): lineage + transform read routes ride the same ``x_clio_artifacts``
+    # surface (assembled in one place, no-accretion).
+    register_artifact_lineage_routes(app)
 
     @app.get("/v1/artifacts/{artifact_id}")
     async def get_artifact(artifact_id: str) -> dict[str, Any]:
