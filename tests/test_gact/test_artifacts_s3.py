@@ -59,9 +59,23 @@ class _FakeWorkspaces:
         return SimpleNamespace(root_path=root) if root else None
 
 
-def _make_app(tmp_path: Path, *, workspace_root: Path | None = None):
+class _FakeBus:
+    def __init__(self) -> None:
+        self.events: list[Any] = []
+
+    def publish(self, event: Any) -> None:
+        self.events.append(event)
+
+
+def _make_app(
+    tmp_path: Path,
+    *,
+    workspace_root: Path | None = None,
+    mode: str = "chat",
+    policies: list[dict[str, Any]] | None = None,
+):
     store = SessionStore(path=tmp_path / "sessions.json")
-    sess = store.create(workspace_id="ws1", title="t")
+    sess = store.create(workspace_id="ws1", title="t", mode=mode)
     arc = _CapturingArc()
     root = workspace_root if workspace_root is not None else tmp_path
     state = SimpleNamespace(
@@ -74,6 +88,12 @@ def _make_app(tmp_path: Path, *, workspace_root: Path | None = None):
         artifact_registry=None,
         turn_artifacts={},
         artifact_proposal_counts={},
+        # Permission machinery (finding [2]): the inline-content write consults the
+        # same policy layer + audit ledger every other write path does.
+        permissions={},
+        permission_events={},
+        permission_policies=list(policies or []),
+        bus=_FakeBus(),
     )
     return SimpleNamespace(state=state), sess, arc
 
@@ -144,20 +164,36 @@ def test_accept_existing_path_mints_model_designation(tmp_path):
 
 
 def test_model_supplied_hash_is_ignored_harness_wins(tmp_path):
-    app, sess, arc = _make_app(tmp_path)
+    app, sess, _ = _make_app(tmp_path)
     report = tmp_path / "r.md"
     report.write_text("real bytes", encoding="utf-8")
     real = hashlib.sha256(report.read_bytes()).hexdigest()
     fake = "0" * 64
-    # A model that puts a sha256 in the args — it MUST be ignored.
-    proposal = Proposal.from_mapping(
-        {"path": str(report), "kind": "report", "sha256": fake, "hash": fake}
+    # Feed a POPULATED model sha256 through the exact args path a batch tool call
+    # takes (finding [10]): parse_proposals -> promote_proposals. The harness MUST
+    # override it. Assert on the RECORDED evidence hash the registry stores/serves —
+    # proving the harness value wins, not merely that the parse layer dropped the key.
+    # Sabotage: carry a proposal-supplied sha into evidence -> the recorded hash
+    # below flips to `fake` and this reddens.
+    result = promote_proposals(
+        app,
+        sess.id,
+        parse_proposals(
+            name="",
+            kind="",
+            path="",
+            content="",
+            annotation="",
+            artifacts=[{"path": str(report), "kind": "report", "sha256": fake, "hash": fake}],
+        ),
+        workspace_id="ws1",
     )
-    # Sabotage: read proposal.sha into evidence -> assertion flips to `fake`.
-    out = promote_proposal(app, sess.id, proposal, workspace_id="ws1")
-    assert out.version is not None
-    assert out.version.sha256 == real
-    assert out.version.sha256 != fake
+    assert result["accepted"] == 1
+    rec = get_registry(app).get("ws1", "r.md")
+    assert rec is not None and rec.head is not None
+    recorded = rec.head.sha256
+    assert recorded == real
+    assert recorded != fake
 
 
 def test_proposal_from_mapping_has_no_hash_field():
@@ -390,15 +426,104 @@ def test_create_artifact_tool_shape():
         assert arg in tool.args
 
 
-def test_react_branches_attach_create_artifact_unconditionally():
-    """Both react builder branches attach create_artifact — NOT skill-gated (#969)."""
-    src = Path("src/clio_agent/gact/agents/builders.py").read_text(encoding="utf-8")
-    # Exactly the two react sites (blueprint experts + tool-user agents).
-    calls = re.findall(r"build_create_artifact_tool\(agent_def\)", src)
-    assert len(calls) == 2, f"expected 2 react-site attachments, found {len(calls)}"
-    # It must NOT be nested only under an `if skill_rt.resolved:` guard: the
-    # attach lines are dedented to the branch body, not the skill-gated block.
-    assert "if skill_rt.resolved:\n                    # Auto-attached" in src
+SKILL_BODY = "PROCEDURE_BODY_MARKER"
+
+
+@pytest.fixture
+def skill_pack(tmp_path: Path) -> Path:
+    """A pack root shipping one resolvable skill (for the with-skills assertion)."""
+    skill_dir = tmp_path / "pack" / "skills" / "quality-rubric"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: quality-rubric\ndescription: Judge data quality\n---\n\n{SKILL_BODY}\n",
+        encoding="utf-8",
+    )
+    return tmp_path / "pack"
+
+
+def _react_agent(
+    pack: Path,
+    *,
+    skills: list[str],
+    source: str = "expert_pack",
+    module: dict[str, Any] | None = None,
+) -> Any:
+    from clio_agent.gact.types import AgentDef
+
+    return AgentDef(
+        id="analyst",
+        source=source,
+        title="Analyst",
+        system_prompt="Analyze things.",
+        skills=list(skills),
+        module=module if module is not None else {"kind": "react"},
+        metadata={"pack_definition_path": str(pack / "AGENT.md")},
+    )
+
+
+def _patch_lm(monkeypatch: Any) -> None:
+    monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object(), raising=True)
+    monkeypatch.setattr(
+        "clio_agent.config.create_chat_adapter", lambda config: object(), raising=True
+    )
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
+        lambda base_agent, agent_def: SimpleNamespace(
+            materialize=lambda cred=None: SimpleNamespace(
+                provider="openai", model="m", temperature=0.0
+            )
+        ),
+        raising=True,
+    )
+
+
+def _tool_names(module: Any) -> set[str]:
+    return {str(getattr(t, "name", "")) for t in module.tools}
+
+
+def test_react_branches_attach_create_artifact_unconditionally(skill_pack, monkeypatch):
+    """Finding [8]: both react builder branches attach create_artifact REGARDLESS
+    of whether a skill resolved — proven on the REAL built module, not a source grep.
+
+    Sabotage: indent the create_artifact append INSIDE the ``if skill_rt.resolved:``
+    guard (builders.py, either react site) → the skills-less assertions below go red
+    (the tool vanishes when no skill resolves, the exact regression this guards)."""
+    from clio_agent.gact.agents.builders import (
+        _build_blueprint_dspy_module,
+        _build_tool_user_agent_module,
+    )
+
+    _patch_lm(monkeypatch)
+    base = SimpleNamespace(tool_executor=None)
+
+    # (1) Blueprint react expert with NO resolvable skill: load_skill is absent, but
+    # create_artifact MUST still be attached (un-nested from the skill guard).
+    bp_noskill = _tool_names(
+        _build_blueprint_dspy_module(base, _react_agent(skill_pack, skills=[]))
+    )
+    assert "create_artifact" in bp_noskill
+    assert "load_skill" not in bp_noskill
+    # With a resolved skill: BOTH the skill tool AND create_artifact are present.
+    bp_skill = _tool_names(
+        _build_blueprint_dspy_module(base, _react_agent(skill_pack, skills=["quality-rubric"]))
+    )
+    assert {"create_artifact", "load_skill"} <= bp_skill
+
+    # (2) The second react site (tool-declaring user agents) honors the same contract.
+    tu_noskill = _tool_names(
+        _build_tool_user_agent_module(
+            base, _react_agent(skill_pack, skills=[], source="user", module={})
+        )
+    )
+    assert "create_artifact" in tu_noskill
+    assert "load_skill" not in tu_noskill
+    tu_skill = _tool_names(
+        _build_tool_user_agent_module(
+            base,
+            _react_agent(skill_pack, skills=["quality-rubric"], source="user", module={}),
+        )
+    )
+    assert {"create_artifact", "load_skill"} <= tu_skill
 
 
 # --------------------------------------------------------------------------- #
@@ -428,3 +553,286 @@ def test_structured_field_specs_has_no_artifacts_entry():
     assert m is not None
     assert "artifacts" not in m.group(1)
     assert "workflow_state" in m.group(1)
+
+
+# --------------------------------------------------------------------------- #
+# Finding [2]: inline-content write discipline (mode / overwrite / policy)
+# --------------------------------------------------------------------------- #
+
+
+def test_content_write_refused_would_overwrite_unregistered_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    app, sess, _ = _make_app(tmp_path)
+    # Real user data already in the workspace — NOT a registered artifact.
+    victim = tmp_path / "results.csv"
+    victim.write_text("real,data\n1,2\n", encoding="utf-8")
+    out = promote_proposal(
+        app,
+        sess.id,
+        Proposal(name="results.csv", kind="report", content="junk"),
+        workspace_id="ws1",
+    )
+    # Sabotage: drop the overwrite guard -> write clobbers results.csv, accepted -> red.
+    assert out.accepted is False
+    assert out.reason == RejectionReason.WOULD_OVERWRITE.value
+    # The user's bytes are intact — nothing was written.
+    assert victim.read_text(encoding="utf-8") == "real,data\n1,2\n"
+
+
+def test_content_write_reversions_own_registered_artifact(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    app, sess, _ = _make_app(tmp_path)
+    first = promote_proposal(
+        app,
+        sess.id,
+        Proposal(name="report.md", kind="report", content="v1\n"),
+        workspace_id="ws1",
+    )
+    assert first.accepted and first.created and first.version.version == 1
+    # Re-versioning YOUR OWN registered artifact of the same (workspace,name) is a
+    # legitimate overwrite — it is allowed and mints a NEW version.
+    second = promote_proposal(
+        app,
+        sess.id,
+        Proposal(name="report.md", kind="report", content="v2 changed\n"),
+        workspace_id="ws1",
+    )
+    assert second.accepted and second.created
+    assert second.version.version == 2
+    assert (tmp_path / "report.md").read_text(encoding="utf-8") == "v2 changed\n"
+
+
+def test_content_write_refused_in_plan_mode(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    app, sess, _ = _make_app(tmp_path, mode="plan")
+    out = promote_proposal(
+        app,
+        sess.id,
+        Proposal(name="report.md", kind="report", content="x"),
+        workspace_id="ws1",
+    )
+    # Sabotage: drop the mode gate -> write proceeds in read-only mode -> red.
+    assert out.accepted is False
+    assert out.reason == RejectionReason.MODE_READ_ONLY.value
+    assert not (tmp_path / "report.md").exists()
+
+
+def test_path_proposal_not_mode_gated_in_plan_mode(tmp_path, monkeypatch):
+    # Registering an EXISTING file (path channel) stays NON-destructive: plan/
+    # architect mode must NOT refuse it (only content writes are gated).
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    app, sess, _ = _make_app(tmp_path, mode="plan")
+    f = tmp_path / "existing.md"
+    f.write_text("already here", encoding="utf-8")
+    out = promote_proposal(app, sess.id, Proposal(path=str(f), kind="report"), workspace_id="ws1")
+    assert out.accepted and out.created
+
+
+def test_content_write_policy_deny_gated_with_audit_row(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    app, sess, _ = _make_app(
+        tmp_path,
+        policies=[{"scope": "session", "tool_name_pattern": "create_artifact", "action": "deny"}],
+    )
+    out = promote_proposal(
+        app,
+        sess.id,
+        Proposal(name="report.md", kind="report", content="x"),
+        workspace_id="ws1",
+    )
+    assert out.accepted is False
+    assert out.reason == RejectionReason.POLICY_DENIED.value
+    assert not (tmp_path / "report.md").exists()
+    # An audit row landed in /v1/permissions (auto_denied) — same as bridge writes.
+    rows = list(app.state.permissions.values())
+    assert any(
+        r["action"] == "deny" and r["tool_call"]["tool_name"] == "create_artifact" for r in rows
+    )
+
+
+def test_content_write_policy_ask_is_gated(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    app, sess, _ = _make_app(
+        tmp_path,
+        policies=[{"scope": "session", "tool_name_pattern": "create_artifact", "action": "ask"}],
+    )
+    out = promote_proposal(
+        app,
+        sess.id,
+        Proposal(name="report.md", kind="report", content="x"),
+        workspace_id="ws1",
+    )
+    # No inline approver on the native tool path -> ask is refused typed (fail-safe).
+    assert out.accepted is False
+    assert out.reason == RejectionReason.PERMISSION_REQUIRED.value
+    assert not (tmp_path / "report.md").exists()
+
+
+def test_content_write_policy_allow_records_audit_row(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    app, sess, _ = _make_app(
+        tmp_path,
+        policies=[{"scope": "session", "tool_name_pattern": "create_artifact", "action": "allow"}],
+    )
+    out = promote_proposal(
+        app,
+        sess.id,
+        Proposal(name="report.md", kind="report", content="ok\n"),
+        workspace_id="ws1",
+    )
+    assert out.accepted and out.created
+    rows = list(app.state.permissions.values())
+    assert any(
+        r["action"] == "allow" and r["tool_call"]["tool_name"] == "create_artifact" for r in rows
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Finding [4/5/9]: path channel grounds relative paths against the workspace root
+# --------------------------------------------------------------------------- #
+
+
+def test_relative_path_registers_workspace_file_not_cwd(tmp_path, monkeypatch):
+    # The workspace root differs from the process CWD (the normal deployed case).
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "analysis.md").write_text("workspace findings", encoding="utf-8")
+    app, sess, _ = _make_app(tmp_path, workspace_root=ws)
+    monkeypatch.chdir(tmp_path)  # cwd != workspace root
+    out = promote_proposal(
+        app, sess.id, Proposal(path="analysis.md", kind="report"), workspace_id="ws1"
+    )
+    # Sabotage: resolve proposal.path against CWD (drop the root-join) -> the
+    # workspace file is not found -> path_missing -> red.
+    assert out.accepted and out.created
+    assert out.version.sha256 == hashlib.sha256((ws / "analysis.md").read_bytes()).hexdigest()
+
+
+def test_relative_path_cannot_register_cwd_pollution(tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    # A file that exists ONLY in the process CWD, not in the workspace root.
+    (cwd / "leak.md").write_text("cwd pollution", encoding="utf-8")
+    app, sess, _ = _make_app(tmp_path, workspace_root=ws)
+    monkeypatch.chdir(cwd)
+    out = promote_proposal(
+        app, sess.id, Proposal(path="leak.md", kind="report"), workspace_id="ws1"
+    )
+    # Grounded against the workspace root, leak.md is absent there -> typed reject,
+    # and the CWD file is never hashed/registered.
+    assert out.accepted is False
+    assert out.reason == RejectionReason.PATH_MISSING.value
+    assert get_registry(app).get("ws1", "leak.md") is None
+
+
+# --------------------------------------------------------------------------- #
+# Finding [1]: batch length bound (one typed over_batch event, at the boundary)
+# --------------------------------------------------------------------------- #
+
+
+def test_batch_over_max_rejected_with_single_event(tmp_path, monkeypatch):
+    monkeypatch.setattr(P, "proposals_batch_max", lambda: 3)
+    app, sess, arc = _make_app(tmp_path)
+    # At the boundary: EXACTLY max items is allowed (each validated independently).
+    ok_items = []
+    for i in range(3):
+        f = tmp_path / f"b{i}.md"
+        f.write_text(f"b{i}", encoding="utf-8")
+        ok_items.append(Proposal(path=str(f), kind="report"))
+    res_ok = promote_proposals(app, sess.id, ok_items, workspace_id="ws1")
+    assert res_ok["accepted"] == 3
+    # One over the max -> the WHOLE batch is rejected with ONE typed over_batch event.
+    before = len(_proposal_events(arc))
+    over = [Proposal(kind="report") for _ in range(4)]
+    res = promote_proposals(app, sess.id, over, workspace_id="ws1")
+    # Sabotage: drop the batch bound -> each of the 4 items emits an event and
+    # rejected==4 -> these assertions redden.
+    assert res["accepted"] == 0
+    assert res["rejected"] == 1
+    assert len(res["artifacts"]) == 1
+    assert res["artifacts"][0]["reason"] == RejectionReason.OVER_BATCH.value
+    assert len(_proposal_events(arc)) - before == 1
+
+
+# --------------------------------------------------------------------------- #
+# Finding [3]: artifact.proposed designation vs file_diff shapes coexist
+# --------------------------------------------------------------------------- #
+
+
+def test_designation_and_file_diff_proposal_events_coexist(tmp_path):
+    # Both producers share the type string 'artifact.proposed'; a consumer keys on
+    # the additive 'stage' discriminator to tell them apart without mis-parse.
+    app, sess, arc = _make_app(tmp_path)
+    f = tmp_path / "a.md"
+    f.write_text("x", encoding="utf-8")
+    promote_proposal(app, sess.id, Proposal(path=str(f), kind="report"), workspace_id="ws1")
+    designation = _proposal_events(arc)
+    assert designation
+    payload = designation[-1].payload
+    # Sabotage: drop the 'stage' discriminator from the designation payload -> a
+    # type-filtering consumer can't distinguish the two producers -> red.
+    assert payload["stage"] == "designation"
+    assert "designation" in payload
+    assert "unified_diff" not in payload  # NOT the file_diff shape
+
+    from clio_agent.gact.artifacts.wire import PROPOSED_ARTIFACT_EVENT, proposed_diff_payload
+
+    # Same type string, disjoint (file_diff) shape — no 'stage', its own keys.
+    assert PROPOSED_ARTIFACT_EVENT == P.PROPOSED_ARTIFACT_EVENT
+    file_diff = proposed_diff_payload(
+        path="n.py",
+        unified_diff="@@",
+        new_content="x\n",
+        edit_mode="diff",
+        lines_added=1,
+        lines_removed=0,
+    )
+    assert file_diff.get("stage") is None
+    assert "unified_diff" in file_diff
+
+
+# --------------------------------------------------------------------------- #
+# Finding [7]: created-flag honesty under a concurrent (racing) dedup
+# --------------------------------------------------------------------------- #
+
+
+def test_concurrent_dedup_reports_created_false_and_consumes_no_cap(tmp_path, monkeypatch):
+    monkeypatch.setattr(P, "proposals_per_turn", lambda: 5)
+    app, sess, _ = _make_app(tmp_path)
+    f = tmp_path / "race.md"
+    f.write_text("identical bytes", encoding="utf-8")
+    # First designation mints v1 normally and consumes one cap slot.
+    first = promote_proposal(
+        app, sess.id, Proposal(path=str(f), kind="report"), workspace_id="ws1", turn_id="t1"
+    )
+    assert first.accepted and first.created
+    assert P.proposal_count(app, sess.id, "t1") == 1
+
+    # Simulate the race: the pre-mint dedup READ misses (a parallel promote had not
+    # yet folded), so promote proceeds into registry.mint — whose authoritative
+    # same-sha dedup fires. Force the first registry.get to miss, then restore.
+    registry = get_registry(app)
+    real_get = registry.get
+    calls = {"n": 0}
+
+    def racing_get(ws, name):
+        calls["n"] += 1
+        if calls["n"] == 1:  # the promote_proposal pre-check read
+            return None
+        return real_get(ws, name)
+
+    monkeypatch.setattr(registry, "get", racing_get)
+    second = promote_proposal(
+        app, sess.id, Proposal(path=str(f), kind="report"), workspace_id="ws1", turn_id="t1"
+    )
+    # Sabotage: build ProposalOutcome(created=True) + increment cap unconditionally
+    # (ignore mint.created) -> created/reason/cap assertions redden.
+    assert second.accepted is True
+    assert second.created is False
+    assert second.reason == "already_registered"
+    # No cap slot consumed on the concurrent dedup.
+    assert P.proposal_count(app, sess.id, "t1") == 1
+    # Still exactly one version in the chain.
+    assert len(real_get("ws1", "race.md").versions) == 1

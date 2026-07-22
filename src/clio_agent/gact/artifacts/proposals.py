@@ -38,14 +38,19 @@ from clio_agent.gact.artifacts.minting import (
     _workspace_root,
     artifact_name_for_path,
     compute_identity,
-    mint_artifact,
+    mint_artifact_outcome,
+)
+from clio_agent.gact.artifacts.proposal_effects import (
+    PROPOSED_ARTIFACT_EVENT,
+    _emit_proposal_event,
+    _gate_content_write,
+    _write_inline_content,
 )
 from clio_agent.gact.artifacts.records import (
     RESERVED_KINDS,
     ArtifactKind,
     ArtifactVersion,
     Custody,
-    IdentityEvidence,
     Mechanism,
 )
 from clio_agent.gact.artifacts.registry import get_registry
@@ -65,16 +70,24 @@ logger = logging.getLogger(__name__)
 #: re-designation of the same bytes.
 _DEFAULT_PROPOSALS_PER_TURN = 8
 
+#: Default ceiling on the number of proposals ONE ``create_artifact`` call may carry
+#: (finding [1]: the batch list is model-controlled and each item durably emits an
+#: ``artifact.proposed`` event regardless of outcome — the per-turn promotion cap
+#: gates only genuinely-new mints, not the event/ARC-store growth an oversized batch
+#: causes). A batch over this bound is rejected with ONE typed ``over_batch`` event
+#: instead of fanning out N durable records. Config-first (#985 conventions):
+#: ``artifacts.proposals_batch_max`` / ``CLIO_ARTIFACTS_PROPOSALS_BATCH_MAX``.
+_DEFAULT_PROPOSALS_BATCH_MAX = 32
+
 #: Bound on the per-turn counter map so a pathological long-lived process cannot
 #: grow it unboundedly (turn ids accrete). Evicts oldest insertion first.
 _COUNTER_MAP_CAP = 4096
 _COUNTER_LOCK = threading.Lock()
 
-#: The proposal event type — trace-visible, deliberately OFF the SSE UI wire
-#: (parity with ``artifact.proposed`` for file diffs, #968). Every proposal
-#: outcome — accepted, deduplicated, or rejected — emits one so no decision is
-#: silently dropped (no-silent-fallback ground rule).
-PROPOSED_ARTIFACT_EVENT = "artifact.proposed"
+#: ``PROPOSED_ARTIFACT_EVENT`` and the ``_emit_proposal_event`` / ``_gate_content_write``
+#: / ``_write_inline_content`` helpers now live in the ``proposal_effects`` owner
+#: module (no-accretion); they are imported above so this module + its tests still
+#: reference them by their original names.
 
 
 def proposals_per_turn() -> int:
@@ -83,6 +96,16 @@ def proposals_per_turn() -> int:
         "artifacts.proposals_per_turn",
         env="CLIO_ARTIFACTS_PROPOSALS_PER_TURN",
         default=_DEFAULT_PROPOSALS_PER_TURN,
+        cast=conf.as_int,
+    )
+
+
+def proposals_batch_max() -> int:
+    """Resolve the max proposals per ``create_artifact`` call (file → env → default)."""
+    return conf.resolve(
+        "artifacts.proposals_batch_max",
+        env="CLIO_ARTIFACTS_PROPOSALS_BATCH_MAX",
+        default=_DEFAULT_PROPOSALS_BATCH_MAX,
         cast=conf.as_int,
     )
 
@@ -102,7 +125,12 @@ class RejectionReason(str, Enum):
     ESCAPES_ROOT = "escapes_root"  # path resolves OUTSIDE the bound workspace root
     CONTAINMENT_UNRESOLVED = "containment_unresolved"  # workspace root unresolvable
     OVER_CAP = "over_cap"  # this turn already hit the per-turn promotion cap
+    OVER_BATCH = "over_batch"  # this call carried more proposals than the batch max
     WRITE_FAILED = "write_failed"  # inline content could not be written under policy
+    MODE_READ_ONLY = "mode_read_only"  # content write refused under plan/architect mode
+    WOULD_OVERWRITE = "would_overwrite"  # inline content would clobber a non-owned file
+    POLICY_DENIED = "policy_denied"  # a permission policy denied the content write
+    PERMISSION_REQUIRED = "permission_required"  # policy=ask, no inline approver
 
 
 @dataclass(frozen=True)
@@ -250,120 +278,6 @@ def _increment_proposal_count(app: "FastAPI", sid: str, turn_id: str) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def _emit_proposal_event(
-    app: "FastAPI",
-    sid: str,
-    *,
-    turn_id: str,
-    trace_id: str,
-    agent_id: str,
-    outcome: ProposalOutcome,
-    proposal: Proposal,
-    source: str,
-) -> None:
-    """Emit one ``artifact.proposed`` event for a proposal outcome (trace-only).
-
-    Every outcome — accepted / deduplicated / rejected — is recorded so no
-    proposal decision is silently dropped. Guarded: capture must never break a
-    tool call that already ran.
-    """
-    try:
-        from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
-
-        ver = outcome.version
-        status = "completed" if outcome.accepted else "rejected"
-        summary = (
-            f"{agent_id or 'agent'} proposed artifact {outcome.name!r}: "
-            + ("created" if outcome.created else "already registered")
-            if outcome.accepted
-            else f"{agent_id or 'agent'} artifact proposal {outcome.name!r} rejected: {outcome.reason}"
-        )
-        _emit_semantic_event(
-            app,
-            sid,
-            PROPOSED_ARTIFACT_EVENT,
-            turn_id=turn_id,
-            trace_id=trace_id,
-            status=status,
-            summary=summary,
-            actor={"agent_id": agent_id, "mechanism": Mechanism.MODEL.value},
-            subject={
-                "artifact_id": ver.artifact_id if ver is not None else "",
-                "name": outcome.name,
-                "workspace_id": outcome.workspace_id,
-            },
-            payload={
-                "designation": "agent-proposed",
-                "source": source,
-                "name": outcome.name,
-                "kind": proposal.kind,
-                "annotation": proposal.annotation,
-                "accepted": outcome.accepted,
-                "created": outcome.created,
-                "reason": outcome.reason,
-                "detail": outcome.detail,
-                "artifact_id": ver.artifact_id if ver is not None else "",
-                "sha256": ver.sha256 if ver is not None else None,
-                "version": ver.version if ver is not None else 0,
-            },
-        )
-    except Exception:  # noqa: BLE001 — capture never breaks a tool call
-        logger.warning(
-            "artifact proposal event skipped reason=proposal_event_failed session=%s name=%s",
-            sid,
-            outcome.name,
-        )
-
-
-def _write_inline_content(
-    proposal: Proposal, root: Path
-) -> tuple[Optional[Path], Optional[IdentityEvidence], Optional[ProposalOutcome]]:
-    """Write inline ``content`` as a workspace file; return (path, evidence, reject).
-
-    The target is ``root/name`` (name may nest); it MUST resolve inside the
-    workspace root (owner decision 10) before any write. The policy-checked writer
-    (mechanism ``harness``) returns the on-disk sha256 — the harness hash, used
-    directly as ``hashed-at-use`` evidence. Returns a typed rejection outcome
-    (third slot) on containment or policy failure; never raises.
-    """
-    from clio_agent.tools.file_policy import FilePolicyError  # noqa: PLC0415
-    from clio_agent.tools.fs_write import write_text_with_policy  # noqa: PLC0415
-
-    if not proposal.name:
-        return (
-            None,
-            None,
-            _rejected(
-                proposal.name, RejectionReason.MISSING_INPUT, "inline content requires a name"
-            ),
-        )
-    target = (root / proposal.name).resolve(strict=False)
-    if not _contained(target, root):
-        return (
-            None,
-            None,
-            _rejected(
-                proposal.name,
-                RejectionReason.ESCAPES_ROOT,
-                f"{proposal.name!r} escapes the workspace",
-            ),
-        )
-    target.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        result = write_text_with_policy(str(target), proposal.content)
-    except (FilePolicyError, OSError, ValueError) as exc:
-        return (
-            None,
-            None,
-            _rejected(proposal.name, RejectionReason.WRITE_FAILED, f"write refused: {exc}"),
-        )
-    evidence = IdentityEvidence.hashed_at_use(
-        sha256=str(result.get("sha256") or ""),
-        size_bytes=int(result.get("size_bytes") or 0),
-    )
-    return target, evidence, None
-
-
 def promote_proposal(
     app: "FastAPI",
     sid: str,
@@ -421,6 +335,22 @@ def promote_proposal(
     # Resolve the byte source: inline content (write it) or an existing path.
     source = "inline" if proposal.content else "path"
     if proposal.content:
+        # A content write is destructive — gate it (mode/overwrite/policy) BEFORE
+        # touching disk, so the native tool honors the same write discipline every
+        # other write path does (finding [2]).
+        gate_reject = _gate_content_write(app, sid, proposal, root, workspace_id=workspace_id)
+        if gate_reject is not None:
+            _emit_proposal_event(
+                app,
+                sid,
+                turn_id=turn_id,
+                trace_id=trace_id,
+                agent_id=agent_id,
+                outcome=gate_reject,
+                proposal=proposal,
+                source=source,
+            )
+            return gate_reject
         target, evidence, reject = _write_inline_content(proposal, root)
         if reject is not None:
             _emit_proposal_event(
@@ -438,7 +368,13 @@ def promote_proposal(
         name = proposal.name or artifact_name_for_path(target)
         path = target
     elif proposal.path:
-        path = Path(proposal.path)
+        # Ground BOTH channels against the workspace root (finding [4/5/9]): a
+        # relative path is root-relative (symmetric with inline content, which
+        # targets root/name) and an absolute path keeps today's containment check.
+        # Resolve ONCE and hash the SAME resolved object — closing the
+        # check-here/hash-there TOCTOU seam (a symlink is followed exactly once).
+        raw = Path(proposal.path)
+        path = (raw if raw.is_absolute() else (root / raw)).resolve(strict=False)
         if not _contained(path, root):
             outcome = _rejected(
                 proposal.name or artifact_name_for_path(path),
@@ -549,7 +485,7 @@ def promote_proposal(
         )
         return outcome
 
-    version = mint_artifact(
+    mint = mint_artifact_outcome(
         app,
         sid,
         name=name,
@@ -569,8 +505,33 @@ def promote_proposal(
         turn_id=turn_id,
         trace_id=trace_id,
     )
-    if version is None:
+    if mint is None or mint.version is None:
         outcome = _rejected(name, RejectionReason.WRITE_FAILED, "mint returned no version")
+        _emit_proposal_event(
+            app,
+            sid,
+            turn_id=turn_id,
+            trace_id=trace_id,
+            agent_id=agent_id,
+            outcome=outcome,
+            proposal=proposal,
+            source=source,
+        )
+        return outcome
+    if not mint.created:
+        # Concurrent dedup (finding [7]): the pre-mint check above passed, but a
+        # parallel promote (fan-out child / observer worker) minted these exact
+        # bytes first. Report created=False and consume NO cap budget — a
+        # re-designation of identical bytes is never a new promotion, even under a
+        # race — instead of the stale created=True + cap consumption.
+        outcome = ProposalOutcome(
+            accepted=True,
+            name=name,
+            reason="already_registered",
+            created=False,
+            version=mint.version,
+            workspace_id=workspace_id,
+        )
         _emit_proposal_event(
             app,
             sid,
@@ -587,7 +548,7 @@ def promote_proposal(
         accepted=True,
         name=name,
         created=True,
-        version=version,
+        version=mint.version,
         workspace_id=workspace_id,
     )
     _emit_proposal_event(
@@ -618,7 +579,37 @@ def promote_proposals(
     Each item is validated + minted independently (one over-cap item does not abort
     the rest — the model sees exactly which succeeded). The summary counts make the
     turn's designation footprint legible for bounded repair.
+
+    A batch carrying more than ``proposals_batch_max()`` items is rejected WHOLE
+    with ONE typed ``over_batch`` event (finding [1]): otherwise every item — even
+    empty/dedup/reject ones that never consume the per-turn promotion cap — durably
+    emits an ``artifact.proposed`` record, so a model-controlled batch length is an
+    unbounded ARC/event write the promotion cap does not gate. The bound closes that
+    without fanning out N durable records.
     """
+    batch_max = proposals_batch_max()
+    if len(proposals) > batch_max:
+        outcome = _rejected(
+            "",
+            RejectionReason.OVER_BATCH,
+            f"batch of {len(proposals)} proposals exceeds the max {batch_max} per call",
+        )
+        _emit_proposal_event(
+            app,
+            sid,
+            turn_id=turn_id,
+            trace_id=trace_id,
+            agent_id=agent_id,
+            outcome=outcome,
+            proposal=Proposal(),
+            source="none",
+        )
+        return {
+            "artifacts": [outcome.to_wire()],
+            "accepted": 0,
+            "deduplicated": 0,
+            "rejected": 1,
+        }
     outcomes = [
         promote_proposal(
             app,
@@ -782,6 +773,7 @@ __all__ = [
     "promote_proposal",
     "promote_proposals",
     "proposal_count",
+    "proposals_batch_max",
     "proposals_per_turn",
     "validate_kind",
 ]
