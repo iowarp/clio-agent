@@ -412,6 +412,27 @@ def test_fleet_roots_include_the_mcp_uv_cache() -> None:
     assert _mcp_uv_cache_dir() in roots
 
 
+def test_fleet_roots_include_the_uv_tool_install_and_clio_kit_dirs() -> None:
+    """The fleet fence must grant the uv DATA dir + clio-kit dirs (B2 live-gate regression).
+
+    The shipped fleet launcher is ``clio-kit`` (``uv tool install``), and launching an MCP
+    server builds that server's package IN-PLACE inside the uv tool install tree and writes
+    uv temp files there — an active fence that granted only the caches denied the build
+    (EROFS) and the whole fleet failed to start. The unit false-positive suite used a fixture
+    server and missed it; the Linux live gate caught it. This pins the fix.
+    """
+    import platformdirs
+
+    roots = set(sandbox.effective_write_roots(sandbox.PROFILE_FLEET))
+    uv_data = Path(platformdirs.user_data_dir("uv", appauthor=False))
+    clio_kit_cache = Path(platformdirs.user_cache_dir("clio-kit", appauthor=False))
+    assert uv_data in roots, f"uv data/tools dir not in fleet territory: {sorted(map(str, roots))}"
+    assert clio_kit_cache in roots, "clio-kit cache dir not in fleet territory"
+    # The shell profile stays narrow — the launcher toolchain dirs are a fleet concern only.
+    shell_roots = set(sandbox.effective_write_roots(sandbox.PROFILE_SHELL))
+    assert uv_data not in shell_roots
+
+
 def test_effective_write_roots_share_file_policy_source() -> None:
     """The advisory allowed_roots and the fence write_roots derive from ONE source (#974.6).
 
