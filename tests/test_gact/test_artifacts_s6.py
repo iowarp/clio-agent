@@ -27,6 +27,7 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
+from clio_agent.gact.artifacts import cas_gc as _cas_gc
 from clio_agent.gact.artifacts.cas import (
     CASStore,
     cas_budget_bytes,
@@ -35,7 +36,6 @@ from clio_agent.gact.artifacts.cas import (
     hash_stat_cache,
     ingest_identity,
 )
-from clio_agent.gact.artifacts import cas_gc as _cas_gc
 from clio_agent.gact.artifacts.cas_gc import (
     CAS_EVICT_SKIPPED_REASON,
     CAS_EVICTED_EVENT,
