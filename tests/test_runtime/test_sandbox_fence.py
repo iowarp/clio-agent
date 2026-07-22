@@ -103,8 +103,46 @@ def _shell_confined(
 # --------------------------------------------------------------------------- #
 
 
+def _assert_mints_real_violation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    result: subprocess.CompletedProcess,
+    *,
+    mechanism: str,
+    outside: Path,
+) -> None:
+    """F7: feed the REAL fenced stderr through the observer + assert a real PolicyViolation."""
+    from fastapi import FastAPI
+
+    roots = sandbox.effective_write_roots(sandbox.PROFILE_SHELL, workspace_root=str(tmp_path))
+    monkeypatch.setattr(v, "_effective_roots", lambda _app, _ws: roots)
+    app = FastAPI()
+    out = v.observe_policy_violations(
+        app,
+        "sess",
+        tool_name="bash",
+        args={},
+        call_id="c1",
+        result={"stderr": result.stderr, "exit_code": result.returncode},
+        workspace_id="ws",
+        state=sandbox.SandboxResult(
+            mechanism=mechanism, active=True, reason=sandbox.REASON_FENCE_ACTIVE
+        ),
+        started_at=1000.0,
+    )
+    assert len(out) == 1, out
+    viol = out[0]
+    assert viol.kind == v.VIOLATION_PREVENTED
+    assert viol.mechanism == mechanism
+    assert str(outside) in viol.path  # the extracted out-of-root path
+    ledger = v.policy_violations(app)
+    assert ledger and ledger[0]["kind"] == v.VIOLATION_PREVENTED
+
+
 @_SRT
-def test_srt_shell_out_of_root_write_denied_and_minted(tmp_path: Path) -> None:
+def test_srt_shell_out_of_root_write_denied_and_minted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     outside = Path.home() / "clio_b2_outside.txt"
     if outside.exists():
         outside.unlink()
@@ -114,9 +152,10 @@ def test_srt_shell_out_of_root_write_denied_and_minted(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "read-only file system" in result.stderr.lower()
     assert not outside.exists()  # the fence PREVENTED the write
-    # And it mints a `prevented` policy_violation with the mechanism label (gap → violation).
-    denial = v.write_denial_from_result({"stderr": result.stderr})
-    assert denial is not None and denial["errno_name"] == "EROFS"
+    # F7: the REAL fenced stderr parses to a REAL prevented policy_violation in the ledger.
+    _assert_mints_real_violation(
+        monkeypatch, tmp_path, result, mechanism=sandbox.MECHANISM_SRT_BWRAP, outside=outside
+    )
 
 
 @_SRT
@@ -172,7 +211,9 @@ def test_srt_stdio_child_out_of_root_write_denied(tmp_path: Path) -> None:
 
 
 @_LANDLOCK
-def test_landlock_shell_out_of_root_write_denied(tmp_path: Path) -> None:
+def test_landlock_shell_out_of_root_write_denied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     outside = Path.home() / "clio_b2_ll_outside.txt"
     if outside.exists():
         outside.unlink()
@@ -181,8 +222,54 @@ def test_landlock_shell_out_of_root_write_denied(tmp_path: Path) -> None:
     result = _run(confined, cwd=tmp_path)
     assert result.returncode != 0
     assert not outside.exists()  # Landlock fs-write fence prevented it
-    # Landlock denial surfaces as EACCES (Permission denied).
-    assert v.write_denial_from_result({"stderr": result.stderr}) is not None
+    # F7: the REAL Landlock EACCES stderr parses to a REAL prevented policy_violation.
+    _assert_mints_real_violation(
+        monkeypatch, tmp_path, result, mechanism=sandbox.MECHANISM_LANDLOCK, outside=outside
+    )
+
+
+@_LANDLOCK
+def test_landlock_cross_dir_rename_in_root_succeeds(tmp_path: Path) -> None:
+    """F1 regression: a cross-dir os.replace BETWEEN two allowed roots succeeds (REFER on ABI>=2).
+
+    The ubiquitous stage-then-atomic-replace pattern (matplotlib/pandas): write into
+    ``ws/stage``, ``os.replace`` into ``ws/out`` — both inside the workspace root. Without the
+    ABI>=2 REFER grant Landlock denies this with EXDEV, a false in-territory fence break.
+    """
+    (tmp_path / "stage").mkdir()
+    (tmp_path / "out").mkdir()
+    src = tmp_path / "stage" / "f.txt"
+    dst = tmp_path / "out" / "f.txt"
+    state = _landlock_state()
+    roots = sandbox.effective_write_roots(sandbox.PROFILE_FLEET, workspace_root=str(tmp_path))
+    code = f"import os; open({str(src)!r},'w').write('x'); os.replace({str(src)!r}, {str(dst)!r})"
+    confined = sandbox.wrap_confined(
+        sys.executable, ["-c", code], write_roots=roots, profile=sandbox.PROFILE_FLEET, state=state
+    )
+    result = _run(confined, cwd=tmp_path)
+    assert result.returncode == 0, result.stderr  # REFER lets the in-root reparent through
+    assert dst.exists() and not src.exists()
+
+
+@_LANDLOCK
+def test_landlock_out_of_root_rename_still_denied(tmp_path: Path) -> None:
+    """F1 containment: REFER is granted only beneath the roots — an out-of-root reparent fails."""
+    (tmp_path / "stage").mkdir()
+    src = tmp_path / "stage" / "g.txt"
+    outside = Path.home() / "clio_b2_refer_escape.txt"
+    if outside.exists():
+        outside.unlink()
+    state = _landlock_state()
+    roots = sandbox.effective_write_roots(sandbox.PROFILE_FLEET, workspace_root=str(tmp_path))
+    code = (
+        f"import os; open({str(src)!r},'w').write('x'); os.replace({str(src)!r}, {str(outside)!r})"
+    )
+    confined = sandbox.wrap_confined(
+        sys.executable, ["-c", code], write_roots=roots, profile=sandbox.PROFILE_FLEET, state=state
+    )
+    result = _run(confined, cwd=tmp_path)
+    assert result.returncode != 0
+    assert not outside.exists()  # containment preserved despite REFER
 
 
 @_LANDLOCK

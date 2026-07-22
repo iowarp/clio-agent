@@ -483,3 +483,265 @@ def test_probe_sandbox_active_is_ready() -> None:
     assert row.state == IntegrationState.READY
     assert "srt_bwrap" in row.summary
     assert "write-fence" in (row.capabilities or [])
+
+
+# --------------------------------------------------------------------------- #
+# F6 — violation errno-signal PRECISION: only an out-of-root, non-empty path    #
+# mints; in-root / read / path-less denials are typed skips (no false mint).    #
+# --------------------------------------------------------------------------- #
+
+
+def _active_srt() -> sandbox.SandboxResult:
+    return sandbox.SandboxResult(
+        mechanism=sandbox.MECHANISM_SRT_BWRAP, active=True, reason=sandbox.REASON_FENCE_ACTIVE
+    )
+
+
+# The errno signal fires only under a live srt/Landlock fence, i.e. on Linux/macOS, so the
+# denial messages carry POSIX paths — the fixtures use POSIX roots to mirror that reality.
+@pytest.mark.parametrize(
+    ("stderr", "mints"),
+    [
+        # (a) read EACCES on a file (cat a 0600 file) — no create/quoted path → no extract → NO mint.
+        ("cat: /ws/secret.txt: Permission denied", False),
+        # (b) bare SSH/publickey 'Permission denied' with no extractable path → NO mint.
+        ("git@github.com: Permission denied (publickey).", False),
+        # (c) IN-ROOT EROFS (srt mandatory .git/hooks protection) → path in-root → NO mint.
+        ("cannot create /ws/.git/hooks/pre-commit: Read-only file system", False),
+        # (d) genuine OUT-OF-ROOT EROFS write denial with a path → MINT (prevented).
+        ("cannot create /totally/outside/escaped.txt: Read-only file system", True),
+    ],
+)
+def test_errno_signal_precision_battery(
+    stderr: str, mints: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Precision over recall (#966.10): only a proven out-of-root write mints (F2/F4/F6)."""
+    from fastapi import FastAPI
+
+    from clio_agent.gact.artifacts import violations as v
+
+    monkeypatch.setattr(v, "_effective_roots", lambda _app, _ws: (Path("/ws"),))
+    app = FastAPI()
+    out = v.observe_policy_violations(
+        app,
+        "s",
+        tool_name="bash",
+        args={},
+        call_id="c",
+        result={"stderr": stderr, "exit_code": 1},
+        workspace_id="ws",
+        state=_active_srt(),
+        started_at=1000.0,
+    )
+    assert bool(out) is mints
+    assert (len(v.policy_violations(app)) == 1) is mints
+    if mints:
+        assert out[0].kind == v.VIOLATION_PREVENTED
+        assert out[0].path == "/totally/outside/escaped.txt"
+
+
+# --------------------------------------------------------------------------- #
+# F5 — no call window never upgrades a present out-of-root file to 'detected'.  #
+# --------------------------------------------------------------------------- #
+
+
+def test_designated_no_window_is_never_detected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A present out-of-root designated file with started_at=None is NOT a 'detected' escape."""
+    from fastapi import FastAPI
+
+    from clio_agent.gact.artifacts import violations as v
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = outside / "out.png"
+    target.write_text("x")
+    monkeypatch.setattr(v, "_effective_roots", lambda _app, _ws: (ws,))
+    monkeypatch.setattr(
+        "clio_agent.gact.artifacts.designation.grounded_output_paths",
+        lambda _a: {"out": str(target)},
+    )
+    monkeypatch.setattr(
+        "clio_agent.gact.artifacts.designation.result_declared_paths", lambda _r: {}
+    )
+    app = FastAPI()
+    common = {
+        "tool_name": "t",
+        "args": {"out": str(target)},
+        "call_id": "c",
+        "result": {},
+        "workspace_id": "ws",
+    }
+
+    # No window → present file is UNPROVEN → skipped, never 'detected'.
+    assert (
+        v.observe_policy_violations(app, "s", **common, state=_active_srt(), started_at=None) == []
+    )
+    # A real fresh window → 'detected' (the fence was escaped).
+    fresh = v.observe_policy_violations(
+        app, "s", **common, state=_active_srt(), started_at=target.stat().st_mtime - 1
+    )
+    assert len(fresh) == 1 and fresh[0].kind == v.VIOLATION_DETECTED
+    # Absent file → 'prevented' regardless of window (the fence blocked it).
+    target.unlink()
+    prevented = v.observe_policy_violations(
+        app, "s", **common, state=_active_srt(), started_at=None
+    )
+    assert len(prevented) == 1 and prevented[0].kind == v.VIOLATION_PREVENTED
+
+
+# --------------------------------------------------------------------------- #
+# F9 — concurrent settings writes: distinct territory -> distinct files, no torn #
+# read, no leftover .tmp.                                                        #
+# --------------------------------------------------------------------------- #
+
+
+def test_concurrent_settings_writes_no_clobber(tmp_path: Path) -> None:
+    """Two threads with DIFFERENT roots land in DIFFERENT digest files, each intact (F9)."""
+    import json
+    import threading
+
+    cfg_a = sandbox_srt.synthesize_srt_config([str(tmp_path / "a")], http_proxy_port=1)
+    cfg_b = sandbox_srt.synthesize_srt_config([str(tmp_path / "b")], http_proxy_port=2)
+    paths: dict[str, Path] = {}
+    barrier = threading.Barrier(2)
+
+    def _write(name: str, cfg: dict) -> None:
+        p = sandbox_srt.settings_path_for("fleet", config=cfg, cache_dir=tmp_path)
+        barrier.wait()
+        for _ in range(20):
+            sandbox_srt.write_settings_file(cfg, p)
+        paths[name] = p
+
+    threads = [
+        threading.Thread(target=_write, args=("a", cfg_a)),
+        threading.Thread(target=_write, args=("b", cfg_b)),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert paths["a"] != paths["b"]  # distinct digests → distinct files, no clobber
+    assert json.loads(paths["a"].read_text(encoding="utf-8")) == cfg_a
+    assert json.loads(paths["b"].read_text(encoding="utf-8")) == cfg_b
+    assert list((tmp_path / sandbox_srt.SRT_SETTINGS_DIRNAME).glob("*.tmp")) == []
+
+
+def test_settings_dir_pruned_to_keep_bound(tmp_path: Path) -> None:
+    """The content-addressed settings dir is bounded — old files are pruned (F3, no leak)."""
+    keep = sandbox_srt.SRT_SETTINGS_KEEP
+    for i in range(keep + 10):
+        cfg = sandbox_srt.synthesize_srt_config([str(tmp_path / f"ws{i}")], http_proxy_port=i + 1)
+        p = sandbox_srt.settings_path_for("fleet", config=cfg, cache_dir=tmp_path)
+        sandbox_srt.write_settings_file(cfg, p)
+    remaining = list((tmp_path / sandbox_srt.SRT_SETTINGS_DIRNAME).glob("*.json"))
+    assert len(remaining) <= keep
+
+
+# --------------------------------------------------------------------------- #
+# F8 — net_chokepoint: real socket start, CONNECT round-trip, typed degrade,    #
+# parse, idempotency, shutdown.                                                 #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("CONNECT example.com:443 HTTP/1.1", ("example.com", 443)),
+        ("connect host:80 HTTP/1.0", ("host", 80)),
+        ("GET http://x/ HTTP/1.1", None),  # non-CONNECT
+        ("CONNECT hostonly HTTP/1.1", None),  # missing port
+        ("CONNECT host:notaport HTTP/1.1", None),  # non-numeric port
+        ("CONNECT host:99999 HTTP/1.1", None),  # out of range
+    ],
+)
+def test_parse_connect_target(line: str, expected) -> None:
+    from clio_agent.runtime.net_chokepoint import _parse_connect_target
+
+    assert _parse_connect_target((line + "\r\n\r\n").encode()) == expected
+
+
+def test_chokepoint_connect_round_trip() -> None:
+    """A real CONNECT tunnel through the chokepoint reaches an upstream TCP echo server (F8)."""
+    import socket
+    import threading
+
+    from clio_agent.runtime.net_chokepoint import Chokepoint
+
+    # Upstream: a one-shot TCP echo server on loopback.
+    upstream = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    upstream.bind(("127.0.0.1", 0))
+    upstream.listen(1)
+    up_port = upstream.getsockname()[1]
+
+    def _echo() -> None:
+        conn, _ = upstream.accept()
+        with conn:
+            data = conn.recv(64)
+            conn.sendall(data)
+
+    threading.Thread(target=_echo, daemon=True).start()
+
+    cp = Chokepoint().start()
+    try:
+        assert cp.port > 0
+        client = socket.create_connection(("127.0.0.1", cp.port), timeout=5)
+        client.sendall(f"CONNECT 127.0.0.1:{up_port} HTTP/1.1\r\n\r\n".encode())
+        head = client.recv(128)
+        assert b"200" in head  # tunnel established
+        client.sendall(b"ping")
+        assert client.recv(16) == b"ping"  # round-trip through the passthrough proxy
+        client.close()
+    finally:
+        cp.stop()
+        upstream.close()
+
+
+def test_chokepoint_bind_failure_is_typed() -> None:
+    """A bind/listen failure raises the typed ChokepointStartError (no silent net loss, F8)."""
+    import socket as _socket
+
+    from clio_agent.runtime import net_chokepoint as nc
+
+    class _Boom:
+        def setsockopt(self, *_a):  # noqa: D401
+            pass
+
+        def bind(self, *_a):
+            raise OSError("address in use")
+
+        def close(self):
+            pass
+
+    def _fake_socket(*_a, **_k):
+        return _Boom()
+
+    orig = nc.socket.socket
+    nc.socket.socket = _fake_socket  # type: ignore[assignment]
+    try:
+        with pytest.raises(nc.ChokepointStartError) as exc:
+            nc.Chokepoint().start()
+        assert exc.value.reason == nc.REASON_CHOKEPOINT_START_FAILED
+    finally:
+        nc.socket.socket = orig  # type: ignore[assignment]
+    assert _socket.socket is not _Boom  # sanity: real socket restored
+
+
+def test_install_chokepoint_idempotent_and_shutdown_clears() -> None:
+    from clio_agent.runtime import net_chokepoint as nc
+
+    nc.shutdown_chokepoint()  # clean slate
+    try:
+        cp1 = nc.install_chokepoint()
+        cp2 = nc.install_chokepoint()
+        assert cp1 is cp2  # idempotent singleton
+        assert nc.current_chokepoint() is cp1
+        assert nc.chokepoint_port() == cp1.port
+    finally:
+        nc.shutdown_chokepoint()
+    assert nc.current_chokepoint() is None
+    assert nc.chokepoint_port() is None
