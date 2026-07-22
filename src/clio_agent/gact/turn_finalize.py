@@ -47,6 +47,8 @@ from typing import TYPE_CHECKING, Any
 from clio_agent.gact.agents.resolution import (
     _runtime_active_agent_blueprint_id,
 )
+from clio_agent.gact.artifacts.minting import clear_turn_artifacts
+from clio_agent.gact.artifacts.wire import append_turn_resource_links, proposed_diff_payload
 from clio_agent.gact.delegation import (
     _produced_turn_workflow_state,
     _workflow_state_from_handoff_rows,
@@ -463,15 +465,17 @@ def finalize_turn(
             summary=f"Agent proposed a file diff for {path}.",
             actor={"agent_id": state.selected_agent or state.invocation_agent_id},
             subject={"path": path, "part_id": diff_part.id, "artifact_type": "file_diff"},
-            payload={
-                "path": path,
-                "unified_diff": udiff,
-                "new_content": new_content,
-                "edit_mode": edit_mode,
-                "lines_added": lines_added,
-                "lines_removed": lines_removed,
-            },
+            payload=proposed_diff_payload(
+                path, udiff, new_content, edit_mode, lines_added, lines_removed
+            ),
         )
+
+    # #968 item 2: give every artifact GENERATED this turn outbound wire identity —
+    # one ``resource_link`` part per new version (owner decision #966.9), owned by
+    # the artifacts package so finalize stays a one-line caller.
+    append_turn_resource_links(
+        state.app, state.sid, state.turn_id, state.transcript, agent_id=responder_agent_id
+    )
 
     state.error_info = _enrich_cancellation_error_info(state.app, state.sid, state.error_info)
     state.cancelled_turn = state.error_info is not None and state.error_info.error == "cancelled"
@@ -815,6 +819,11 @@ def settle_failed_finalize(
         if transcript is not None:
             transcript.abandon()
         registry.close(sid)
+
+    # A crashed finalize never reaches the resource_link drain; clear the turn's
+    # artifact buffer so a retry of the SAME turn cannot emit each part twice (#968
+    # finding [7]). Unconditional, before the already-settled early return.
+    clear_turn_artifacts(app, sid)
 
     sess = app.state.sessions.get(sid)
     if sess is not None and getattr(sess, "status", "") != "running":

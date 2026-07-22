@@ -11,8 +11,9 @@ the rebuild source.
 Fold idempotency (owner decision #966): dedupe by ``event_id`` first, then by
 ``(workspace_id, name, version)``; a same-sha replay is a no-op; a conflicting
 sha for an existing ``(ws, name, version)`` keeps the FIRST and records a typed
-``fold_conflict``. Events are trace-only this slice — minting does NOT add
-``artifact.created`` to ``SSE_UI_EVENT_TYPES`` (that is S2).
+``fold_conflict``. As of S2 (#968) ``artifact.created`` is on the SSE UI wire
+(``SSE_UI_EVENT_TYPES``) and mints emit it at ``semantic`` detail; the durable
+fold source is unchanged (capture ignores ``detail_level``).
 """
 
 from __future__ import annotations
@@ -41,6 +42,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 ARTIFACT_CREATED_EVENT = "artifact.created"
+#: The version-chain + alias atoms of the ``artifact.*`` family (SSE-served, #968).
+#: Emit sites land in S4 (#970); the names are pinned here so the SSE allow-list and
+#: SPEC §7.6 co-edit reference one source. ``artifact.used`` /
+#: ``artifact.transform.recorded`` are deliberately absent — they stay trace-only.
+ARTIFACT_VERSION_ADDED_EVENT = "artifact.version.added"
+ARTIFACT_ALIAS_MOVED_EVENT = "artifact.alias.moved"
 
 # Bounded SessionStore badge index: at most this many named artifacts are listed
 # per session before the index truncates (``names_truncated=True``). The index is
@@ -325,6 +332,26 @@ class ArtifactRegistry:
         """A snapshot of every logical record (for introspection / tests)."""
         with self._lock:
             return list(self._records.values())
+
+    def get_by_artifact_id(
+        self, artifact_id: str
+    ) -> Optional[tuple[ArtifactRecord, ArtifactVersion]]:
+        """Resolve a version by its relay ``artifact_id`` (``artifact_<hex>``).
+
+        Returns the ``(record, version)`` pair whose version carries that id, or
+        ``None`` when no version matches. Each version's ``artifact_id`` is unique
+        (one per immutable version — owner decision #966.3), so the first match is
+        the only match. Linear over the chains; the fleet is bounded and this is a
+        by-id lookup route, not a hot loop.
+        """
+        if not artifact_id:
+            return None
+        with self._lock:
+            for record in self._records.values():
+                for version in record.versions:
+                    if version.artifact_id == artifact_id:
+                        return (record, version)
+        return None
 
 
 def _version_from_event(event: _ArtifactEvent) -> ArtifactVersion:
@@ -638,7 +665,9 @@ def _trace_dir(app: "FastAPI") -> Optional[Path]:
 
 
 __all__ = [
+    "ARTIFACT_ALIAS_MOVED_EVENT",
     "ARTIFACT_CREATED_EVENT",
+    "ARTIFACT_VERSION_ADDED_EVENT",
     "ArtifactRegistry",
     "FoldResult",
     "MintOutcome",

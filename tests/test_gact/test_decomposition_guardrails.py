@@ -39,7 +39,10 @@ from clio_agent.gact.app import build_app
 # paths in S4 — the original same-path claim shadowed the #18 session-task GET)
 # + the MCP-app/session-lifecycle routes landed by the campaign's route modules.
 # Duplicate-free verified: zero (path, method) pairs register twice.
-EXPECTED_ROUTE_METHOD_PAIRS = 151
+# 151 -> 157 (#968 S2): +6 artifact routes owned by routes/artifacts.py — GET
+# session/workspace artifact lists, GET by-name+ref, GET by artifact_id, GET
+# /bytes, POST .../pin.
+EXPECTED_ROUTE_METHOD_PAIRS = 157
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary
