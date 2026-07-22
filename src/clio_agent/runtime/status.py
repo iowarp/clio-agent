@@ -242,6 +242,7 @@ class RuntimeProbe:
         from clio_agent.runtime.clio_core_health import probe_clio_core_health  # noqa: PLC0415
         from clio_agent.runtime.mcp_launcher import probe_mcp_launchers  # noqa: PLC0415
         from clio_agent.runtime.process_tree import probe_process_tree  # noqa: PLC0415
+        from clio_agent.runtime.sandbox import probe_sandbox  # noqa: PLC0415
 
         gateway_status = self.probe_gateway()
         integrations = [
@@ -254,6 +255,7 @@ class RuntimeProbe:
             self.probe_api(api_state=api_state, api_error=api_error),
             self.probe_clio_core(),
             *probe_mcp_launchers(env=self.env),
+            probe_sandbox(),
             *probe_process_tree(include_live_census=include_process_census),
         ]
         return RuntimeReport(integrations=integrations)

@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from clio_agent.runtime.process_tree import _classify_child
+from clio_agent.runtime.sandbox import confinement_for_kind
 from clio_agent.runtime.status import IntegrationState, IntegrationStatus
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,7 @@ class ParentageRow:
     kind: str
     parent_chain: tuple[int, ...]
     descends_from: str
+    confinement: str = "excluded"
 
 
 def classify_parentage(
@@ -129,6 +131,7 @@ def classify_parentage(
                 kind=node.kind,
                 parent_chain=tuple(chain),
                 descends_from=verdict,
+                confinement=confinement_for_kind(node.kind),
             )
         )
     rows.sort(key=lambda r: r.pid)
@@ -254,6 +257,7 @@ def probe_process_parentage(
             "kind": r.kind,
             "parent_chain": list(r.parent_chain),
             "descends_from": r.descends_from,
+            "confinement": r.confinement,
         }
         for r in rows
     ]

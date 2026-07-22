@@ -106,7 +106,12 @@ RATCHET_BASELINE: dict[str, int] = {
     # store fails loud at boot, not mid-turn (defect 1b). The fold + typed-stall + the
     # boot_fold_artifact_registry_offloop helper all live in the owner module
     # artifacts/registry_boot.py (no accretion); only the call site is here.
-    "src/clio_agent/gact/app.py": 2728,
+    # #975 (B1 sandbox): +11 to wire the OS write-confinement backend at boot — the
+    # install_sandbox() call in the lifespan + the emit_boot_state_event() call after
+    # _set_app_arc. All logic (ladder, detection, doctor probe, boot-event emit) lives in
+    # the owner module runtime/sandbox.py; only the two call sites are here (the #900
+    # child-reaper precedent). Ratchets back with the #714 lifespan split.
+    "src/clio_agent/gact/app.py": 2739,
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -230,7 +235,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # calls stay inline so the env-reference generator discovers each knob directly).
     # Real new functionality (env-only → config-first); ratchets down when the doctor's
     # probe methods are extracted to an owner module.
-    "src/clio_agent/runtime/status.py": 1238,
+    # #975 (B1 sandbox): +2 to register the `sandbox` doctor row in collect() (the import
+    # + the probe_sandbox() call); the probe logic lives in the owner module
+    # runtime/sandbox.py. Ratchets down when the probe methods are extracted.
+    "src/clio_agent/runtime/status.py": 1240,
     # #932: +62 for preloaded tool definitions (start() without the list_tools
     # fan-out) and namespace-direct call routing with lazy per-namespace
     # clients — the executor IS the owner module for this.
