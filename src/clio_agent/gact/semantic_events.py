@@ -133,6 +133,11 @@ SSE_TRACE_ONLY_EVENT_TYPES: frozenset[str] = frozenset(
         # temp is durable-trace substrate the UI never renders — never on the SSE wire.
         "artifact.cas.evicted",
         "artifact.cas.tmp_swept",
+        # Sandbox boot conformance (B1 #975): the resolved write-confinement mechanism
+        # is durable-trace substrate (the conformance floor), never a UI row — declared
+        # trace-only here so a future non-"completed" emit cannot ride the
+        # ``_SSE_ALWAYS_STATUSES`` override onto the wire.
+        "sandbox.state",
     }
 )
 

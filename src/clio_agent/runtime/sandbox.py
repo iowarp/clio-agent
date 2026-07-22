@@ -96,6 +96,7 @@ KNOWN_MECHANISMS: frozenset[str] = frozenset(
 REASON_SRT_NOT_INSTALLED = "srt_not_installed"
 REASON_SRT_NODE_MISSING = "srt_node_missing"
 REASON_SRT_NODE_TOO_OLD = "srt_node_too_old"
+REASON_SRT_NODE_VERSION_UNREADABLE = "srt_node_version_unreadable"
 REASON_SRT_SOCAT_MISSING = "srt_socat_missing"
 REASON_SRT_DETECTED_DEFERRED = "srt_detected_activation_deferred"
 REASON_BWRAP_USERNS_RESTRICTED = "bwrap_userns_restricted"  # B2 rung (Ubuntu 24.04+)
@@ -322,7 +323,8 @@ def _read_node_version() -> str:
             timeout=5,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("node version probe failed reason=srt_node_version_unreadable error=%r", exc)
         return ""
     return (out.stdout or "").strip()
 
@@ -364,6 +366,10 @@ def detect_srt(
 
     if not node_present:
         reason = REASON_SRT_NODE_MISSING
+    elif not node_version:
+        # node is on PATH but its version could not be read (probe failure, logged by
+        # the reader) — an unreadable version is NOT the same claim as "too old".
+        reason = REASON_SRT_NODE_VERSION_UNREADABLE
     elif not node_ok:
         reason = REASON_SRT_NODE_TOO_OLD
     elif platform.startswith("linux") and not socat_present:
@@ -623,8 +629,11 @@ def install_sandbox(*, env: Optional[Mapping[str, str]] = None) -> SandboxResult
     Mirrors :func:`clio_agent.runtime.process_tree.install_child_reaper`. Recomputes the
     ladder each call (cheap — a few ``which`` probes + one ``node --version``) and caches
     the result for :func:`current_state`. This slice always resolves to
-    :data:`MECHANISM_NONE` with a typed reason; it never raises (a locked-down host still
-    boots — the doctor row makes the missing fence visible).
+    :data:`MECHANISM_NONE` with a typed reason; missing/broken host tooling never raises
+    (a locked-down host still boots — the doctor row makes the missing fence visible). A
+    *malformed config value* (``sandbox.enabled`` / ``CLIO_SANDBOX_ENABLED``) DOES raise,
+    exactly like every other config knob — a config typo fails boot loud, per the
+    boot-time environment-conformance rule, and is not a host condition to degrade over.
     """
     global _STATE
     result = _resolve_backend(env=env)
@@ -770,6 +779,7 @@ __all__ = [
     "REASON_SRT_NOT_INSTALLED",
     "REASON_SRT_NODE_MISSING",
     "REASON_SRT_NODE_TOO_OLD",
+    "REASON_SRT_NODE_VERSION_UNREADABLE",
     "REASON_SRT_SOCAT_MISSING",
     "REASON_SRT_DETECTED_DEFERRED",
     "REASON_BWRAP_USERNS_RESTRICTED",

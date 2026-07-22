@@ -109,6 +109,43 @@ def test_detect_srt_node_too_old() -> None:
     assert det.reason == sandbox.REASON_SRT_NODE_TOO_OLD
 
 
+def test_detect_srt_node_version_unreadable_is_not_too_old() -> None:
+    """node on PATH but its version unreadable → ``srt_node_version_unreadable``.
+
+    An unreadable version is NOT the claim "too old" (review fix, #975): the probe
+    failure is logged by the reader and the typed reason says what actually happened.
+    """
+    which = {"srt": "/opt/srt", "node": "/usr/bin/node", "socat": "/usr/bin/socat"}.get
+    det = sandbox.detect_srt(
+        which=lambda n: which(n),
+        package_version=lambda _p: "0.0.66",
+        node_version_reader=lambda: "",
+        platform="linux",
+    )
+    assert det.node_present is True
+    assert det.node_ok is False
+    assert det.reason == sandbox.REASON_SRT_NODE_VERSION_UNREADABLE
+    assert det.reason != sandbox.REASON_SRT_NODE_TOO_OLD
+
+
+def test_sandbox_state_event_is_declared_trace_only() -> None:
+    """``sandbox.state`` is in ``SSE_TRACE_ONLY_EVENT_TYPES`` — trace-only by declaration.
+
+    Without this registration the boot event stays off SSE only by accident of its
+    hardcoded ``completed`` status; a future ``failed`` emit would ride the
+    ``_SSE_ALWAYS_STATUSES`` override onto the live wire (the S5-gate3-C5 leak class).
+    """
+    from clio_agent.gact.semantic_events import (
+        SSE_TRACE_ONLY_EVENT_TYPES,
+        event_reaches_ui,
+    )
+
+    assert "sandbox.state" in SSE_TRACE_ONLY_EVENT_TYPES
+    assert event_reaches_ui("sandbox.state") is False
+    # The sharp edge: even a failure-status emit must NOT reach the UI wire.
+    assert event_reaches_ui("sandbox.state", status="failed") is False
+
+
 def test_detect_srt_socat_missing_on_linux() -> None:
     """On Linux, srt + modern node but no socat → ``srt_socat_missing``."""
     which = {"srt": "/opt/srt", "node": "/usr/bin/node"}.get
