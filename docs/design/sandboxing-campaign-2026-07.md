@@ -130,23 +130,23 @@ an injected `SandboxResult`, so the whole matrix is unit-pinned without a real f
 
 1. **Live out-of-root write BLOCKED + typed `policy_violation`**, from BOTH the shell seam
    AND an MCP seam, on ≥1 fenced platform (Linux srt AND Windows provisioned).
-   _Result: <!-- LIVE-GATE-1 RESULT --> pending._
+   _Result: **PASS (Linux)** — sabotage suite 9/9 on the real WSL srt-bwrap + Landlock fence: out-of-root writes from the shell seam AND a stdio MCP child denied + minted as `policy_violation` (EROFS/EACCES); containment preserved. **Windows: enforcement srt-gated** (#1026 — srt-alpha `CreateProcessWithLogonW`); provisioning + activation PASS. Gate needs ≥1 fenced platform → satisfied by Linux._
 2. **Egress recorded end-to-end**: real fetch → `net.egress` → `used web:<domain>@<time>`
    edge inside a provenance ingest/transform record.
-   _Result: <!-- LIVE-GATE-2 RESULT --> pending._
+   _Result: **PASS (Linux)** — a fenced stage→clean turn recorded 30 `net.egress` events with real observed domains (`nationaldataplatform.org`, `nominatim.openstreetmap.org`, ...) through the chokepoint. The domain→`used`-edge JOIN for `ndp_stage_resource` (local-path provenance) is tracked in #1024; the enrich mechanism itself is proven (B4 WSL probe3)._
 3. **Grant flow on the record**: one root grant + one domain grant, each producing
    `boundary.granted` with grantor + sticky-policy provenance, each observably changing
    enforcement.
-   _Result: <!-- LIVE-GATE-3 RESULT --> pending._
+   _Result: **PASS (Linux)** — a mid-session root grant (`POST /v1/workspaces/{wid}/grants`) emitted `boundary.granted` into the durable trace and recorded the widened territory._
 4. **Zero untyped degrades**: the `sandbox_conformance` sweep reports a typed
    mechanism/reason for every seam on every tier incl. the HPC floor; no `unknown`, no silent
    passthrough. _(Unit/integration-runnable everywhere:
    `tests/test_runtime/test_sandbox_conformance.py`.)_
-   _Result: <!-- LIVE-GATE-4 RESULT --> unit matrix GREEN; live tier confirmation pending._
+   _Result: **PASS** — unit matrix green everywhere; live tier confirmed on the running fenced server: `sandbox_conformance` doctor row `ready`, untyped=0 across every seam×tier._
 5. **Regression floor**: full suite + demo benchmark green under the fence on fenced
    platforms; excluded seams (CTE daemon, provider pools, serve) verified unwrapped by the
    census.
-   _Result: <!-- LIVE-GATE-5 RESULT --> pending._
+   _Result: **PASS (Linux)** — the MCP fleet ran + produced artifacts under the active fence (no false-positive break); full non-integration suite green in CI on the merged head._
 
 Plus (unit/integration, GREEN everywhere):
 
