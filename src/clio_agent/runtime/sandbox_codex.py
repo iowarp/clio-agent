@@ -92,6 +92,14 @@ class CodexProfileError(ValueError):
         self.reason = reason
 
 
+class CodexSpawnError(ValueError):
+    """A codex spawn could not be composed (e.g. no write territory) — typed, never silent.
+
+    The ladder wraps this in :class:`~clio_agent.runtime.sandbox.SandboxCompositionError` so a
+    fence that cannot compose fails loud rather than spawning a child with no write territory.
+    """
+
+
 @dataclass(frozen=True)
 class CodexDetection:
     """What the codex probe found (detection only — never activates anything).
@@ -427,6 +435,53 @@ def codex_prefix(
     ]
 
 
+def compose_codex_spawn(
+    write_roots: Sequence[Path] | Sequence[str],
+    command: str,
+    args: Sequence[str],
+    *,
+    binary: str,
+    platform: str = sys.platform,
+    codex_home: Optional[Path | str] = None,
+) -> tuple[str, list[str]]:
+    """Compose the Codex ``sandbox`` argv wrapping ``(command, args)`` (the ladder's spawn hook).
+
+    Synthesizes the read-anywhere / write-fence profile for ``write_roots``, materializes it as a
+    ``-p`` layer file in the DEFAULT codex home (``[windows] sandbox = "elevated"`` gated on win32),
+    pins the primary write root ``write_roots[0]`` as the workspace (``-C``), and returns
+    ``(binary, ["sandbox", … , "--", command, *args])``.
+
+    Args:
+        write_roots: The child's writable territory; the first root is the workspace cwd.
+        command: The final resolved child executable (wrapped AFTER any spawn-diet).
+        args: The child's arguments, threaded through verbatim past the ``--`` separator.
+        binary: The resolved codex binary (``codex`` / ``codex.cmd`` / ``codex.exe``).
+        platform: Injectable platform string (drives the win32 elevated gate + read-anywhere roots).
+        codex_home: Override for the codex home the ``-p`` layer is written into (tests inject a
+            tmp dir); ``None`` uses ``$CODEX_HOME`` else the real ``~/.codex``.
+
+    Returns:
+        The ``(command, args)`` pair to launch — the codex binary and its sandbox argv.
+
+    Raises:
+        CodexSpawnError: There is no write territory (an empty fence would confine nothing).
+        CodexProfileError: The synthesized profile failed clio's pinned validation (upstream).
+    """
+    roots = [str(Path(r)) for r in write_roots]
+    if not roots:
+        raise CodexSpawnError("codex spawn requires at least one write root (no empty fence)")
+    profile = synthesize_codex_profile(roots, platform=platform)
+    layer = write_codex_layer(
+        "clio",
+        profile,
+        elevated=platform.startswith("win"),
+        codex_home=codex_home,
+        platform=platform,
+    )
+    prefix = codex_prefix(binary, "clio", roots[0], layer_name=layer)
+    return prefix[0], [*prefix[1:], command, *args]
+
+
 __all__ = [
     "CODEX_BINARY_NAME",
     "CODEX_MIN_SUPPORTED_VERSION",
@@ -436,8 +491,10 @@ __all__ = [
     "REASON_CODEX_VERSION_UNSUPPORTED",
     "CodexDetection",
     "CodexProfileError",
+    "CodexSpawnError",
     "codex_layer_name",
     "codex_prefix",
+    "compose_codex_spawn",
     "detect_codex",
     "is_codex_version_supported",
     "parse_version",

@@ -33,13 +33,14 @@ from clio_agent.runtime.status import IntegrationState
 
 
 def test_known_mechanisms_are_exactly_the_ladder_rungs() -> None:
-    """The typed mechanism set is the whole ladder (srt family + Landlock + none)."""
+    """The typed mechanism set is the whole ladder (srt family + Codex + Landlock + none)."""
     assert sandbox.KNOWN_MECHANISMS == frozenset(
         {
             sandbox.MECHANISM_SRT_SEATBELT,
             sandbox.MECHANISM_SRT_BWRAP,
             sandbox.MECHANISM_SRT_WINDOWS,
             sandbox.MECHANISM_LANDLOCK,
+            sandbox.MECHANISM_CODEX,
             sandbox.MECHANISM_NONE,
         }
     )

@@ -103,10 +103,14 @@ def probe_sandbox(*, state: sb.SandboxResult | None = None) -> IntegrationStatus
             required=False,
         )
 
+    from clio_agent.runtime import sandbox_codex as sc  # noqa: PLC0415
     from clio_agent.runtime import sandbox_verify as sv  # noqa: PLC0415
 
     srt = resolved.details.get("srt", {}) if isinstance(resolved.details, dict) else {}
-    if resolved.reason == sb.REASON_WINDOWS_UNPROVISIONED:
+    if resolved.reason in (sc.REASON_CODEX_NOT_INSTALLED, sc.REASON_CODEX_VERSION_UNSUPPORTED):
+        # Codex backend floor (flag-gated): guide the operator to install/upgrade codex.
+        next_action = "Install codex: npm install -g @openai/codex"
+    elif resolved.reason == sb.REASON_WINDOWS_UNPROVISIONED:
         next_action = "Run `clio sandbox setup` (B3) to provision the Windows write fence."
     elif resolved.reason == sv.REASON_WINDOWS_ENFORCEMENT_UNVERIFIED:
         next_action = (

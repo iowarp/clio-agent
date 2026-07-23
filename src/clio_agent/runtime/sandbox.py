@@ -1,29 +1,17 @@
 """Confine every agent-driven child spawn behind one typed backend ladder (#974).
 
-Sibling + stylistic twin of :mod:`clio_agent.runtime.process_tree`: that owns "the child
-tree dies with the server", THIS owns "the child writes only inside its territory". The
-single composition point every agent-driven ``Popen`` / ``StdioTransport`` routes through —
-:func:`wrap_confined` takes a resolved ``(command, args)`` and returns a :class:`ConfinedSpawn`.
+Sibling + stylistic twin of :mod:`clio_agent.runtime.process_tree`: that owns "the child tree
+dies with the server", THIS owns "the child writes only inside its territory". The single
+composition point every agent-driven ``Popen`` / ``StdioTransport`` routes through —
+:func:`wrap_confined` — takes a resolved ``(command, args)`` and returns a :class:`ConfinedSpawn`.
 
-BACKEND LADDER (owner decision #974.1), strongest first — **srt → Landlock → none**:
-
-* **srt** — ``@anthropic-ai/sandbox-runtime`` (npm; CLI ``srt``, pinned ``v0.0.66``). Library
-  mode = macOS Seatbelt (:data:`MECHANISM_SRT_SEATBELT`), Linux bwrap+proxy
-  (:data:`MECHANISM_SRT_BWRAP`), Windows ACL/WFP (:data:`MECHANISM_SRT_WINDOWS` — srt IS the
-  Windows path, provisioned once via ``clio sandbox setup``; no native impl). Needs
-  **node >= 20.11** and, on Linux, **socat**; each missing precondition is its own reason.
-* **native Landlock** (:data:`MECHANISM_LANDLOCK`) — Linux-only fs-fence; the answer to bwrap
-  broken by the Ubuntu 24.04+ AppArmor userns restriction.
-* **none** (:data:`MECHANISM_NONE`) — the honest floor: no OS fence + a typed reason;
-  :mod:`clio_agent.tools.file_policy` survives as the ADVISORY twin at the tool boundary.
-
-srt VERSION PROBE: ``srt --version`` LIES (stale ``1.0.0`` banner) → :func:`_srt_package_version`
-reads the npm ``package.json``. COMPOSITION (#974.5): fence prefix INNER, ``pdeathsig`` OUTERMOST
-(one argv-prefix owner); a per-child egress channel (B4, :mod:`clio_agent.runtime.sandbox_net`)
-attaches here too. DENIAL: an active fence refuses an out-of-territory write as ``EROFS`` /
-``EACCES`` / ``WinError 5`` (never a bare ``PermissionError``); the floor lets it happen and
-#966's ``gap`` node records ``sandbox: none/<reason>`` — fenced tiers upgrade it to
-``policy_violation``.
+BACKENDS (owner decision #974.1): **srt** (default; Seatbelt/bwrap+proxy/Windows ACL-WFP —
+:mod:`~clio_agent.runtime.sandbox_srt`), **Codex** (flag-gated ``CLIO_SANDBOX_BACKEND=codex``, all
+platforms — :mod:`~clio_agent.runtime.sandbox_codex`), **native Landlock** (the bwrap-broken rung),
+and **none** (the honest floor: no OS fence; :mod:`clio_agent.tools.file_policy` is the ADVISORY
+twin). COMPOSITION (#974.5): fence prefix INNER, ``pdeathsig`` OUTERMOST. DENIAL: an active fence
+refuses an out-of-territory write as ``EROFS`` / ``EACCES`` / ``WinError 5``; the floor lets it
+happen and #966's ``gap`` node records ``sandbox: none/<reason>`` (fenced tiers upgrade it).
 """
 
 from __future__ import annotations
@@ -52,6 +40,7 @@ MECHANISM_SRT_SEATBELT = "srt_seatbelt"  # srt on macOS
 MECHANISM_SRT_BWRAP = "srt_bwrap"  # srt on Linux (bubblewrap + proxy)
 MECHANISM_SRT_WINDOWS = "srt_windows"  # srt on Windows (ACL/WFP)
 MECHANISM_LANDLOCK = "landlock"  # native Linux Landlock fs-fence (B2)
+MECHANISM_CODEX = "codex"  # OpenAI Codex sandbox (restricted-token/AppContainer + Seatbelt/bwrap)
 MECHANISM_NONE = "none"  # the honest floor: no OS fence
 
 #: All mechanism labels this ladder can ever report (the doctor validates against it).
@@ -61,6 +50,7 @@ KNOWN_MECHANISMS: frozenset[str] = frozenset(
         MECHANISM_SRT_BWRAP,
         MECHANISM_SRT_WINDOWS,
         MECHANISM_LANDLOCK,
+        MECHANISM_CODEX,
         MECHANISM_NONE,
     }
 )
@@ -84,15 +74,14 @@ REASON_NOT_INSTALLED = "sandbox_not_installed"  # wrap_confined ran before insta
 #: Positive reason token stamped on an ACTIVE fence (reason is never blank — house rule).
 REASON_FENCE_ACTIVE = "fence_active"
 
-# Network-enforcement labels (owner decision #974.3/#974.7 — honest per tier).           #
+# Network-enforcement labels (owner decision #974.3/#974.7 — honest per tier).
 #: On an srt tier the OS fence FORCES children through the clio proxy → real enforcement.
 NET_ENFORCEMENT_PROXY = "proxy"
-#: On the Landlock/floor tier egress is proxy-ENV cooperation only (raw sockets bypass) —
-#: the record says so, per-edge (never claim enforcement off the srt tier).
+#: On the Codex/Landlock/floor tier egress is proxy-ENV cooperation only (raw sockets bypass) —
+#: the record says so, per-edge (never claim proxy enforcement off the srt tier).
 NET_ENFORCEMENT_ENV_COOPERATIVE = "env-cooperative"
 
-# Profiles live in the sandbox_roots sibling (the shared-boundary owner); re-exported
-# here so the seams keep reaching them as ``sandbox.PROFILE_FLEET`` etc.
+# Profiles live in the sandbox_roots sibling (the shared-boundary owner); re-exported here.
 from clio_agent.runtime.sandbox_roots import (  # noqa: E402
     PROFILE_FLEET,
     PROFILE_SHELL,
@@ -120,11 +109,8 @@ _EXCLUDED_KINDS: frozenset[str] = frozenset({"clio_core_daemon", "sdk_cli", "cod
 
 
 def confinement_for_kind(kind: str) -> Confinement:
-    """Classify a census child ``kind`` as ``wrapped`` or ``excluded`` (#974.5).
-
-    ``wrapped`` — spawned through a :func:`wrap_confined` seam (MCP fleet / python MCP
-    servers). ``excluded`` — the CTE daemon, provider CLI links (and anything unknown),
-    which are verifiably never wrapped so the census makes the exclusion visible policy.
+    """Classify a census child ``kind`` as ``wrapped`` (via a :func:`wrap_confined` seam: MCP
+    fleet / python MCP servers) or ``excluded`` (CTE daemon, provider CLI links, unknown) (#974.5).
     """
     if kind in _WRAPPED_KINDS:
         return CONFINEMENT_WRAPPED
@@ -135,18 +121,9 @@ def confinement_for_kind(kind: str) -> Confinement:
 class SandboxResult:
     """Outcome of resolving the confinement backend (a typed, loggable reason).
 
-    Copies the :class:`clio_agent.runtime.process_tree.ChildReaperResult` shape verbatim
-    in spirit so the doctor / provenance render both the same way.
-
-    Attributes:
-        mechanism: Which fence governs child writes — one of :data:`KNOWN_MECHANISMS`.
-            :data:`MECHANISM_NONE` on the floor (this slice always).
-        active: Whether an OS-level write fence is actually enforcing (``True`` only for
-            a live srt/Landlock backend). Always ``False`` this slice — detection never
-            activates.
-        reason: A short machine-stable reason token (e.g. :data:`REASON_SRT_NOT_INSTALLED`,
-            :data:`REASON_SRT_DETECTED_DEFERRED`, :data:`REASON_WINDOWS_UNPROVISIONED`).
-        details: Structured evidence (platform, srt detection, write_roots, net_policy...).
+    ``mechanism`` is one of :data:`KNOWN_MECHANISMS` (:data:`MECHANISM_NONE` on the floor);
+    ``active`` is ``True`` only for a live srt / Codex / Landlock backend; ``reason`` is a
+    machine-stable token (e.g. :data:`REASON_FENCE_ACTIVE`); ``details`` is structured evidence.
     """
 
     mechanism: str
@@ -159,10 +136,8 @@ class SandboxResult:
 class SrtDetection:
     """What the srt probe found (detection only — never activates anything).
 
-    ``version`` is read from the npm ``package.json`` (NEVER the lying ``srt --version``
-    banner). ``node_ok`` is ``node_version`` vs :data:`SRT_MIN_NODE_VERSION`; ``reason`` is
-    the typed ladder rung the verdict implies (:data:`REASON_SRT_NOT_INSTALLED`,
-    :data:`REASON_SRT_NODE_TOO_OLD`, :data:`REASON_SRT_SOCAT_MISSING`, ...).
+    ``version`` is from the npm ``package.json`` (NEVER the lying ``srt --version`` banner);
+    ``node_ok`` is ``node_version`` vs :data:`SRT_MIN_NODE_VERSION`; ``reason`` is the typed rung.
     """
 
     installed: bool
@@ -179,12 +154,8 @@ class SrtDetection:
 class ConfinedSpawn:
     """A resolved spawn plan under confinement — what to actually launch (#975).
 
-    ``command``/``args`` are the (possibly wrapped) argv — byte-identical to the input this
-    slice unless ``pdeathsig`` applied (then the ``setpriv`` launcher, exactly as today).
-    ``env_overlay`` are env keys the fence adds on top of the caller's env (empty on the
-    floor); ``popen_kwargs`` are extra ``subprocess`` kwargs (empty on the floor).
-    ``result`` is the per-spawn :class:`SandboxResult` (mechanism + reason + the per-call
-    profile / write_roots / net_policy).
+    ``command``/``args`` are the (possibly wrapped) argv; ``env_overlay`` are env keys the fence
+    adds; ``popen_kwargs`` are extra ``subprocess`` kwargs; ``result`` is the :class:`SandboxResult`.
     """
 
     command: str
@@ -197,8 +168,7 @@ class ConfinedSpawn:
 def _sandbox_enabled(env: Optional[Mapping[str, str]] = None) -> bool:
     """Whether confinement resolution is enabled (config ``sandbox.enabled``).
 
-    Detection-only this slice, so ``false`` simply stamps :data:`REASON_DISABLED` on the
-    floor result — it changes no spawn behavior yet. B2+ gate activation on it.
+    ``false`` stamps :data:`REASON_DISABLED` on the floor result (no fence resolves).
     """
     from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
 
@@ -215,11 +185,28 @@ def _sandbox_enabled(env: Optional[Mapping[str, str]] = None) -> bool:
     )
 
 
-def _srt_path_override(env: Optional[Mapping[str, str]] = None) -> str:
-    """An explicit ``srt`` binary path (config ``sandbox.srt_path``), else ``""``.
+def _sandbox_backend(env: Optional[Mapping[str, str]] = None) -> str:
+    """Which OS-fence backend the ladder resolves (config ``sandbox.backend``).
 
-    For hosts where ``srt`` is installed off PATH; ``""`` means "resolve on PATH".
+    ``"codex"`` selects the flag-gated Codex fence (opt-in, all platforms); ``"srt"`` (the default)
+    keeps the existing srt→Landlock ladder UNCHANGED. Mirrors :func:`_sandbox_enabled`'s env/config
+    read; an unrecognized value falls to ``"srt"``.
     """
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    if env is not None:
+        raw = (env.get("CLIO_SANDBOX_BACKEND", "") or "").strip().lower()
+        return raw if raw in ("codex", "srt") else "srt"
+    value = (
+        conf.resolve("sandbox.backend", env="CLIO_SANDBOX_BACKEND", default="srt", cast=conf.as_str)
+        .strip()
+        .lower()
+    )
+    return value if value in ("codex", "srt") else "srt"
+
+
+def _srt_path_override(env: Optional[Mapping[str, str]] = None) -> str:
+    """An explicit ``srt`` binary path (config ``sandbox.srt_path``), else ``""`` (resolve PATH)."""
     from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
 
     if env is not None:
@@ -232,11 +219,9 @@ def _srt_path_override(env: Optional[Mapping[str, str]] = None) -> str:
 def _srt_package_version(binary_path: str) -> str:
     """Read the srt package version from its ``package.json`` — NEVER ``srt --version``.
 
-    ``srt --version`` prints a stale ``1.0.0`` banner (owner note #974), so trusting it
-    would be a defect. The installed binary is (usually) a shim/symlink under a node
-    ``bin`` dir pointing into ``.../node_modules/@anthropic-ai/sandbox-runtime/``; walk
-    the real path's ancestors for that package's ``package.json`` and read its ``version``.
-    Returns ``""`` when no matching ``package.json`` is found (an honest empty, logged).
+    ``srt --version`` prints a stale ``1.0.0`` banner (owner note #974). The binary is (usually) a
+    shim under a node ``bin`` dir into ``.../node_modules/@anthropic-ai/sandbox-runtime/``; walk
+    the real path's ancestors for that ``package.json`` (``""`` when none — an honest empty).
     """
     if not binary_path:
         return ""
@@ -312,14 +297,13 @@ def detect_srt(
 ) -> SrtDetection:
     """Probe for the srt runtime + its preconditions (node/socat). DETECTION ONLY.
 
-    Never spawns srt and never activates a fence. Every dependency is injectable so the
-    ladder is unit-testable without a real srt/node install. The returned
-    :attr:`SrtDetection.reason` is the typed ladder reason the missing/present fence
-    implies; :func:`_resolve_backend` maps it onto the final (always ``none``) result.
+    Never spawns srt and never activates a fence. Every dependency is injectable so the ladder is
+    unit-testable without a real srt/node install. The returned :attr:`SrtDetection.reason` is the
+    typed ladder reason the missing/present fence implies (:func:`_resolve_backend` maps it).
     """
     override = _srt_path_override(env)
-    # win32: prefer the launchable ``srt.cmd``/``srt.exe`` — the npm bin's extensionless ``srt``
-    # (a POSIX shim ``which`` returns first) can't be exec'd by CreateProcess (WinError 193).
+    # win32: prefer the launchable ``srt.cmd``/``srt.exe`` — the extensionless POSIX shim ``which``
+    # returns first can't be exec'd by CreateProcess (WinError 193).
     _names = (
         ("srt.cmd", "srt.exe", SRT_BINARY_NAME)
         if platform.startswith("win")
@@ -383,10 +367,9 @@ def _target_mechanism_for_platform(platform: str) -> str:
 def _probe_bwrap_userns(platform: str) -> tuple[bool, str]:
     """Whether srt's Linux bwrap substrate can run unprivileged (owner decision #974.3).
 
-    Non-Linux is not-applicable (Seatbelt/Windows use no bwrap). On Linux the two known
-    breakers are a missing ``bwrap`` binary (:data:`REASON_BWRAP_UNAVAILABLE`) and the Ubuntu
-    24.04+ AppArmor knob ``kernel.apparmor_restrict_unprivileged_userns == 1``
-    (:data:`REASON_BWRAP_USERNS_RESTRICTED`) — either drops the ladder to the Landlock rung.
+    Non-Linux is not-applicable. On Linux the two known breakers — a missing ``bwrap`` binary
+    (:data:`REASON_BWRAP_UNAVAILABLE`) and the Ubuntu 24.04+ AppArmor userns knob
+    (:data:`REASON_BWRAP_USERNS_RESTRICTED`) — each drop the ladder to the Landlock rung.
     """
     if not platform.startswith("linux"):
         return True, ""
@@ -411,10 +394,8 @@ def _default_start_proxy() -> int:
 def _srt_viability(det: SrtDetection) -> tuple[bool, str]:
     """Whether srt is activatable + the typed skip reason when not (B2).
 
-    Viable iff every precondition is met (``srt_detected_activation_deferred``) AND the
-    installed version is at/above the schema-validated floor. Otherwise the typed skip
-    reason is the version gate (:data:`REASON_SRT_VERSION_UNSUPPORTED`) or the detection
-    verdict itself.
+    Viable iff every precondition is met AND the installed version is at/above the validated floor;
+    else the skip reason is :data:`REASON_SRT_VERSION_UNSUPPORTED` or the detection verdict.
     """
     from clio_agent.runtime.sandbox_srt import is_srt_version_supported  # noqa: PLC0415
 
@@ -430,6 +411,7 @@ def _resolve_backend(
     env: Optional[Mapping[str, str]] = None,
     platform: str = sys.platform,
     detection: Optional[SrtDetection] = None,
+    codex_detection: Any = None,
     bwrap: Optional[tuple[bool, str]] = None,
     landlock: Any = None,
     start_proxy: Any = None,
@@ -437,17 +419,14 @@ def _resolve_backend(
 ) -> SandboxResult:
     """Resolve + ACTIVATE the confinement backend down the typed ladder (#976, B2).
 
-    Ladder (strongest first): **srt** (macOS Seatbelt / Linux bwrap+proxy) → **Landlock**
-    (Linux fs-fence, the bwrap-broken rung) → **none** (floor). Every rung change carries a
-    typed reason (no silent fallback). All probes are injectable so the (platform, srt,
-    bwrap, landlock, enabled) matrix is unit-pinnable without a real host; ``start_proxy`` is
-    invoked only when an srt tier is chosen (its network must route through the chokepoint),
-    and a typed :class:`~clio_agent.runtime.net_chokepoint.ChokepointStartError` drops the srt
-    rung to Landlock/floor rather than starting children that silently lose all network.
-
-    Windows (B3, #977): a three-way branch on the provisioning verdict (``win_state`` /
-    ``sandbox_provision.windows_sandbox_state``) — provisioned→srt_windows, srt_absent→typed
-    reason, unprovisioned→the floor gate (needs ``clio sandbox setup``).
+    When ``CLIO_SANDBOX_BACKEND=codex`` (flag-gated), the Codex rung resolves FIRST on all
+    platforms (via injectable ``codex_detection``), else a typed ``codex_*`` floor. The DEFAULT
+    ``srt`` ladder is UNCHANGED: **srt** (Seatbelt / bwrap+proxy) → **Landlock** → **none**. Every
+    rung change carries a typed reason; all probes are injectable so the matrix is unit-pinnable.
+    ``start_proxy`` runs only for an srt tier, and a typed
+    :class:`~clio_agent.runtime.net_chokepoint.ChokepointStartError` drops the srt rung rather than
+    losing all network. Windows (B3, #977): a three-way ``win_state`` branch (provisioned→
+    srt_windows, srt_absent→typed reason, unprovisioned→floor).
     """
     det = detection if detection is not None else detect_srt(env=env, platform=platform)
     base_details: dict[str, Any] = {
@@ -473,6 +452,18 @@ def _resolve_backend(
     if not _sandbox_enabled(env):
         return floor(REASON_DISABLED)
 
+    # Codex backend (flag-gated, all platforms): resolve BEFORE the srt/Landlock ladder — activates
+    # when detect_codex is viable, else a typed codex_* floor. srt stays the DEFAULT (flag-only).
+    if _sandbox_backend(env) == "codex":
+        from clio_agent.runtime import sandbox_codex as scx  # noqa: PLC0415
+
+        cdet = (
+            codex_detection if codex_detection is not None else scx.detect_codex(platform=platform)
+        )
+        if cdet.installed and cdet.reason == scx.REASON_CODEX_DETECTED:
+            return _activate_codex(cdet, base_details)
+        return floor(cdet.reason)  # typed: codex_not_installed / codex_version_unsupported
+
     # Windows (B3): the provisioning verdict drives the rung (see the docstring's 3-way branch).
     if platform.startswith("win"):
         from clio_agent.runtime import sandbox_provision as swp  # noqa: PLC0415
@@ -482,7 +473,9 @@ def _resolve_backend(
             activated = _activate_srt(MECHANISM_SRT_WINDOWS, det, base_details, start_proxy)
             return activated if activated is not None else floor(REASON_CHOKEPOINT_START_FAILED)
         if win.status in (swp.STATUS_SRT_ABSENT, swp.STATUS_ENFORCEMENT_UNVERIFIED):
-            return floor(win.reason)  # typed floor: srt gap OR provisioned-but-cannot-enforce (#1026)
+            return floor(
+                win.reason
+            )  # typed floor: srt gap OR provisioned-but-cannot-enforce (#1026)
         return floor(REASON_WINDOWS_UNPROVISIONED)
 
     srt_ok, srt_skip = _srt_viability(det)
@@ -537,9 +530,8 @@ def _activate_srt(
 ) -> Optional[SandboxResult]:
     """Activate an srt tier — start the chokepoint, stamp the active result (or ``None``).
 
-    Returns ``None`` (so the caller drops to the next rung with a typed
-    :data:`REASON_CHOKEPOINT_START_FAILED`) when the network chokepoint cannot start: an srt
-    child with no proxy would silently lose all network, which the campaign forbids.
+    Returns ``None`` (caller drops a rung with :data:`REASON_CHOKEPOINT_START_FAILED`) when the
+    chokepoint cannot start: an srt child with no proxy would silently lose all network.
     """
     from clio_agent.runtime.net_chokepoint import ChokepointStartError  # noqa: PLC0415
 
@@ -563,6 +555,25 @@ def _activate_srt(
     )
 
 
+def _activate_codex(det: Any, base_details: dict[str, Any]) -> SandboxResult:
+    """Stamp an ACTIVE Codex write-fence result (network egress DEFERRED to a later slice).
+
+    Unlike :func:`_activate_srt` this needs NO chokepoint proxy; the write-fence activates now and
+    ``net_enforcement`` honestly records ``codex-net-deferred`` (a typed value, never a silent gap).
+    """
+    return SandboxResult(
+        mechanism=MECHANISM_CODEX,
+        active=True,
+        reason=REASON_FENCE_ACTIVE,
+        details={
+            **base_details,
+            "codex_binary": det.binary_path,
+            "codex_version": det.version,
+            "net_enforcement": "codex-net-deferred",
+        },
+    )
+
+
 class SandboxCompositionError(RuntimeError):
     """A fence prefix could not be composed at spawn time — typed, loud (no silent hole)."""
 
@@ -578,12 +589,9 @@ def _compose_fence_prefix(
 ) -> tuple[str, list[str]]:
     """Compose the active fence's argv prefix around ``(command, args)`` (B2/B4).
 
-    srt: synthesize + schema-validate + write the per-profile settings (write territory =
-    ``write_roots``, ``httpProxyPort`` = the per-child chokepoint channel — B4, for
-    deterministic egress attribution — else the shared chokepoint port), then prepend
-    ``srt -s <settings> --``. Landlock: prepend the ``landlock_exec`` shim over the roots.
-    Any failure raises :class:`SandboxCompositionError` so the spawn fails loud rather than
-    running unconfined.
+    Per active mechanism: srt writes/validates the settings then prepends ``srt -s <cfg> --``;
+    Codex delegates to :func:`sandbox_codex.compose_codex_spawn`; Landlock prepends its shim. Any
+    failure raises :class:`SandboxCompositionError` so the spawn fails loud, never unconfined.
     """
     mechanism = state.mechanism
     roots: list[str] = [str(r) for r in write_roots]
@@ -591,9 +599,8 @@ def _compose_fence_prefix(
         if mechanism in (MECHANISM_SRT_BWRAP, MECHANISM_SRT_SEATBELT, MECHANISM_SRT_WINDOWS):
             from clio_agent.runtime import sandbox_srt  # noqa: PLC0415
 
-            # B4: the child's ``httpProxyPort`` is its OWN chokepoint channel port (so the
-            # listener a connection arrives on names the child). Falls back to the shared
-            # port only if no per-child channel could be opened (typed upstream).
+            # B4: the child's ``httpProxyPort`` is its OWN chokepoint channel port (the listener a
+            # connection arrives on names the child); else the shared port (typed upstream).
             port = proxy_port if proxy_port is not None else state.details.get("proxy_port")
             config = sandbox_srt.synthesize_srt_config(roots, http_proxy_port=port)
             settings = sandbox_srt.settings_path_for(profile, config=config)
@@ -601,6 +608,11 @@ def _compose_fence_prefix(
             binary = str(state.details.get("srt_binary") or SRT_BINARY_NAME)
             prefix = sandbox_srt.srt_prefix(binary, settings)
             return prefix[0], [*prefix[1:], command, *args]
+        if mechanism == MECHANISM_CODEX:
+            from clio_agent.runtime import sandbox_codex  # noqa: PLC0415
+
+            binary = str(state.details.get("codex_binary") or sandbox_codex.CODEX_BINARY_NAME)
+            return sandbox_codex.compose_codex_spawn(roots, command, args, binary=binary)
         if mechanism == MECHANISM_LANDLOCK:
             from clio_agent.runtime import sandbox_landlock  # noqa: PLC0415
 
@@ -613,7 +625,7 @@ def _compose_fence_prefix(
     raise SandboxCompositionError(f"unknown active mechanism for composition: {mechanism}")
 
 
-# The single spawn-composition point.                                          #
+# The single spawn-composition point.
 def wrap_confined(
     command: str,
     args: Sequence[str],
@@ -626,18 +638,12 @@ def wrap_confined(
 ) -> ConfinedSpawn:
     """Compose the confined spawn plan for a resolved ``(command, args)`` (#975/#976).
 
-    THE single argv-composition owner (owner decision #974.5). On the floor the returned argv
-    is byte-identical to the input (only ``pdeathsig`` where requested); on an ACTIVE srt /
-    Landlock backend (B2) the fence prefix composes INNER and ``pdeathsig`` stays OUTERMOST,
-    so the launch order is ``pdeathsig( fence( real-argv ) )``.
-
-    ``command``/``args`` MUST be the FINAL resolved argv (wrap AFTER spawn-diet, so the
-    fence wraps the real argv, not a launcher chain the diet deletes). ``write_roots`` is the
-    child's writable territory (:func:`effective_write_roots`); ``net_policy`` rides the
-    record (B4 enforces). Pass ``pdeathsig=True`` ONLY where it was applied before (preserve
-    exact behavior). ``state`` defaults to the cached :func:`current_state`, else a typed
-    :data:`REASON_NOT_INSTALLED` floor result. A fence that cannot compose at spawn time
-    RAISES (typed) rather than silently spawning unconfined (no silent fence hole).
+    THE single argv-composition owner (#974.5). On the floor the argv is byte-identical to the
+    input (only ``pdeathsig`` where requested); on an ACTIVE backend the fence prefix composes
+    INNER and ``pdeathsig`` stays OUTERMOST — ``pdeathsig( fence( argv ) )``. ``command``/``args``
+    MUST be the FINAL resolved argv (wrap AFTER spawn-diet); ``write_roots`` is the writable
+    territory. ``state`` defaults to :func:`current_state`, else a :data:`REASON_NOT_INSTALLED`
+    floor; a fence that cannot compose RAISES (typed), never spawning unconfined.
     """
     resolved_state = state or current_state()
     if resolved_state is None:
@@ -662,24 +668,24 @@ def wrap_confined(
         windows_note = "shell reuses fleet (srt Windows fs policy is session-wide)"
         write_roots = (*effective_write_roots(PROFILE_FLEET), *(Path(r) for r in write_roots))
 
-    # Active backend (B2/B4): fence prefix INNER (pdeathsig stays outermost below). B4 opens a
-    # PER-CHILD egress channel — its port is the srt ``httpProxyPort`` (srt tier, via srt's
-    # socat bridge) AND the child's ``HTTP(S)_PROXY``/``ALL_PROXY`` env (floor/Landlock tier),
-    # so egress is recorded + attributed. A per-child PORT (not a token — srt strips tokens).
+    # Active backend: fence prefix INNER (pdeathsig outermost below). B4's per-child egress channel
+    # (proxy env, egress recorded) is srt/Landlock ONLY; codex net is DEFERRED — skip the proxy (one
+    # the codex fence blocks would hang the child) and just compose its fence.
     if resolved_state.active and resolved_state.mechanism != MECHANISM_NONE:
-        from clio_agent.runtime import sandbox_net  # noqa: PLC0415 - B4 egress-wiring sibling
+        proxy_port: Optional[int] = None
+        if resolved_state.mechanism != MECHANISM_CODEX:
+            from clio_agent.runtime import sandbox_net  # noqa: PLC0415 - B4 egress-wiring sibling
 
-        net_child_id, proxy_port, net_env = sandbox_net.open_child_egress(
-            resolved_state, write_roots
-        )
-        env_overlay.update(net_env)
+            net_child_id, proxy_port, net_env = sandbox_net.open_child_egress(
+                resolved_state, write_roots
+            )
+            env_overlay.update(net_env)
         cmd, arg_list = _compose_fence_prefix(
             resolved_state, compose_profile, cmd, arg_list, write_roots, proxy_port=proxy_port
         )
 
-    # pdeathsig OUTERMOST (owner decision #974.5): fold the pre-existing argv-prefix helper
-    # in as the last composer step so there is exactly one prefix owner. Passthrough on
-    # non-Linux / where setpriv is absent, exactly as the helper guards.
+    # pdeathsig OUTERMOST (owner decision #974.5): the pre-existing argv-prefix helper folds in as
+    # the last composer step (one prefix owner). Passthrough where setpriv is absent, as it guards.
     if pdeathsig:
         from clio_agent.tools.mcp_config import pdeathsig_wrapped_command  # noqa: PLC0415 - cycle
 
@@ -695,8 +701,7 @@ def wrap_confined(
             "pdeathsig": pdeathsig,
             "write_roots": [str(r) for r in write_roots],
             **({"windows_profile_reuse": windows_note} if windows_note else {}),
-            # B4: the per-child egress channel id (empty on the floor / when no channel could
-            # be opened) — so a caller can close the channel when the child is reaped.
+            # B4: the per-child egress channel id (empty on the floor) — so a caller can close it.
             "net_child_id": net_child_id,
         },
     )
@@ -709,23 +714,18 @@ def wrap_confined(
     )
 
 
-# Module state accessor (same pattern as process_tree.child_reaper_status).     #
-# The resolved backend for THIS process, cached at install. ``None`` until installed
-# (a standalone doctor CLI that never installed reports no standing state).
+# The resolved backend for THIS process, cached at install (same pattern as
+# process_tree.child_reaper_status). ``None`` until installed.
 _STATE: SandboxResult | None = None
 
 
 def install_sandbox(*, env: Optional[Mapping[str, str]] = None) -> SandboxResult:
     """Resolve + cache the confinement backend for this process (call at server boot).
 
-    Mirrors :func:`clio_agent.runtime.process_tree.install_child_reaper`. Recomputes the
-    ladder each call (cheap — a few ``which`` probes + one ``node --version``) and caches
-    the result for :func:`current_state`. This slice always resolves to
-    :data:`MECHANISM_NONE` with a typed reason; missing/broken host tooling never raises
-    (a locked-down host still boots — the doctor row makes the missing fence visible). A
-    *malformed config value* (``sandbox.enabled`` / ``CLIO_SANDBOX_ENABLED``) DOES raise,
-    exactly like every other config knob — a config typo fails boot loud, per the
-    boot-time environment-conformance rule, and is not a host condition to degrade over.
+    Mirrors :func:`clio_agent.runtime.process_tree.install_child_reaper`. Recomputes the ladder
+    each call (cheap probes) and caches it for :func:`current_state`. Missing/broken host tooling
+    never raises (a locked-down host still boots), but a *malformed config value* DOES raise, like
+    every config knob (a typo fails boot loud).
     """
     global _STATE
     result = _resolve_backend(env=env)
@@ -745,8 +745,7 @@ def current_state() -> SandboxResult | None:
     return _STATE
 
 
-# Doctor probe: the ``sandbox`` row lives in the sandbox_doctor sibling (keeps this owner
-# module under the ratchet); re-exported so callers keep reaching ``sandbox.probe_sandbox``.
+# Doctor probe: the ``sandbox`` row lives in the sandbox_doctor sibling (ratchet); re-exported.
 from clio_agent.runtime.sandbox_doctor import emit_boot_state_event, probe_sandbox  # noqa: E402
 
 __all__ = [
@@ -758,6 +757,7 @@ __all__ = [
     "MECHANISM_SRT_BWRAP",
     "MECHANISM_SRT_WINDOWS",
     "MECHANISM_LANDLOCK",
+    "MECHANISM_CODEX",
     "MECHANISM_NONE",
     "KNOWN_MECHANISMS",
     "REASON_SRT_NOT_INSTALLED",
