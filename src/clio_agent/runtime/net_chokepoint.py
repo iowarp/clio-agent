@@ -107,6 +107,15 @@ class EgressRecord:
 _RECORDER: Optional[Callable[[EgressRecord], None]] = None
 _RECORDER_LOCK = threading.Lock()
 
+#: The registered deny-mode egress GATE (B5 #979.5), consulted at CONNECT before the upstream
+#: dial. ``None`` (default, or a plain runtime/test process) → allow-all passthrough (the B4
+#: default is ALLOW + RECORD). Wired from the gact lifespan to a closure that consults the
+#: workspace's opt-in deny mode + ``host_pattern`` policies and, on an unknown domain, opens
+#: the interactive permission gate. Returns ``"allow"``/``"deny"``; anything else = allow (the
+#: gate must never fail CLOSED on a wiring bug — deny mode is opt-in and gated separately).
+_GATE: Optional[Callable[[EgressRecord], str]] = None
+_GATE_LOCK = threading.Lock()
+
 
 def set_egress_recorder(recorder: Optional[Callable[[EgressRecord], None]]) -> None:
     """Register (or clear with ``None``) the process egress recorder.
@@ -119,6 +128,20 @@ def set_egress_recorder(recorder: Optional[Callable[[EgressRecord], None]]) -> N
     global _RECORDER
     with _RECORDER_LOCK:
         _RECORDER = recorder
+
+
+def set_egress_gate(gate: Optional[Callable[[EgressRecord], str]]) -> None:
+    """Register (or clear with ``None``) the deny-mode CONNECT gate (B5 #979.5).
+
+    Wired from the gact lifespan to a closure over ``app`` (so this module never imports the
+    god app). Consulted at connection OPEN, before the upstream dial: a workspace NOT in deny
+    mode returns ``"allow"`` (the B4 default), so wiring the gate is inert until a workspace
+    opts in. A gate that raises is treated as allow (fail-open on a wiring bug — the deny
+    decision itself is the only thing that blocks).
+    """
+    global _GATE
+    with _GATE_LOCK:
+        _GATE = gate
 
 
 class ChokepointStartError(RuntimeError):
@@ -289,6 +312,11 @@ class Chokepoint:
             if target is not None:
                 # HTTPS: open the tunnel, then pump opaque TLS bytes (domain-level only).
                 host, port = target
+                # Deny-mode gate (B5 #979.5): consult BEFORE dialing so a blocked domain never
+                # opens an upstream socket. Allow-all when no gate is wired (B4 default).
+                if not self._gate_allows(child_id, host, port, "connect"):
+                    client.sendall(b"HTTP/1.1 403 Forbidden\r\n\r\n")
+                    return
                 upstream = socket.create_connection((host, port), timeout=_CONNECT_READ_TIMEOUT_S)
                 self._record_open(child_id, host, port, upstream, "connect")
                 client.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
@@ -303,6 +331,9 @@ class Chokepoint:
                 return
             # Plain HTTP: dial the origin, replay the head rewritten to origin-form, pump.
             host, port, origin_head = forward
+            if not self._gate_allows(child_id, host, port, "http"):
+                client.sendall(b"HTTP/1.1 403 Forbidden\r\n\r\n")
+                return
             upstream = socket.create_connection((host, port), timeout=_CONNECT_READ_TIMEOUT_S)
             self._record_open(child_id, host, port, upstream, "http")
             upstream.sendall(origin_head)
@@ -361,6 +392,40 @@ class Chokepoint:
                 host,
                 exc,
             )
+
+    def _gate_allows(self, child_id: str, host: str, port: int, transport: str) -> bool:
+        """Consult the deny-mode gate for one CONNECT (B5 #979.5). ``True`` = allow (fail-open).
+
+        Builds the pre-dial :class:`EgressRecord` the gate decides on (``resolved_ip=""`` — not
+        dialed yet), attributed to the child's channel. No gate wired → allow (B4 default). A
+        gate that RAISES is treated as allow: the deny decision itself is the only blocker, and
+        deny mode is opt-in + gated inside the closure, so a wiring bug must never sever egress.
+        """
+        gate = _GATE
+        if gate is None:
+            return True
+        mechanism, workspace_root = self._channel_attribution(child_id)
+        try:
+            decision = gate(
+                EgressRecord(
+                    child_id=child_id,
+                    host=host,
+                    port=int(port),
+                    resolved_ip="",
+                    transport=transport,
+                    mechanism=mechanism,
+                    workspace_root=workspace_root,
+                    at=_utcnow_iso(),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — a gate wiring bug must never sever egress
+            logger.debug(
+                "net egress gate errored (allowing) reason=egress_gate_failed host=%s error=%r",
+                host,
+                exc,
+            )
+            return True
+        return decision != "deny"
 
     def _channel_attribution(self, child_id: str) -> tuple[str, str]:
         """The ``(mechanism, workspace_root)`` recorded for ``child_id`` (``("","")`` if none)."""
@@ -593,6 +658,7 @@ __all__ = [
     "current_chokepoint",
     "install_chokepoint",
     "open_child_channel",
+    "set_egress_gate",
     "set_egress_recorder",
     "shutdown_chokepoint",
 ]

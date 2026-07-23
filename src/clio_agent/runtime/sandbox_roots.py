@@ -12,6 +12,7 @@ confinement never false-positives on a legitimate ``uv``/``npm`` cache write.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal, Optional
@@ -21,6 +22,63 @@ from typing import Any, Literal, Optional
 Profile = Literal["fleet", "shell"]
 PROFILE_FLEET: Profile = "fleet"
 PROFILE_SHELL: Profile = "shell"
+
+
+# --------------------------------------------------------------------------- #
+# Mid-session root grants (B5 #979.3) — the ONE process registry both the fence
+# (:func:`effective_write_roots`) and the advisory twin (``file_policy``) consult so a
+# recorded root grant takes effect LIVE on the next spawn/tool-boundary check, and the two
+# can never drift (owner decision #974.6). Keyed by the workspace ROOT PATH — the same key
+# both territory consumers already carry (the seams pass ``workspace_root``; file_policy
+# resolves the active workspace root) — so no workspace_id has to be threaded through the
+# runtime seams. A grant is a DECISION recorded through the route layer + persisted on the
+# workspace record; this registry is the live in-process projection replayed at boot.
+_GRANTED_WRITE_ROOTS: dict[str, tuple[Path, ...]] = {}
+_GRANTS_LOCK = threading.Lock()
+
+
+def _normalize_root_key(workspace_root: Optional[str]) -> str:
+    if not workspace_root:
+        return ""
+    try:
+        return str(Path(workspace_root).expanduser().resolve(strict=False))
+    except OSError:
+        return str(Path(workspace_root).expanduser())
+
+
+def register_write_root_grant(workspace_root: str, granted: str) -> Path:
+    """Register a granted writable root for ``workspace_root`` (idempotent). Returns the path.
+
+    The live projection of a recorded workspace root grant: the next confined spawn's
+    :func:`effective_write_roots` and the next advisory ``file_policy`` check both include it.
+    Fenced children already spawned keep their compile-time territory until they respawn — the
+    route layer reports that as a typed ``grant_pending_respawn`` rather than silently.
+    """
+    key = _normalize_root_key(workspace_root)
+    resolved = Path(granted).expanduser()
+    try:
+        resolved = resolved.resolve(strict=False)
+    except OSError:
+        pass
+    with _GRANTS_LOCK:
+        current = list(_GRANTED_WRITE_ROOTS.get(key, ()))
+        if resolved not in current:
+            current.append(resolved)
+        _GRANTED_WRITE_ROOTS[key] = tuple(current)
+    return resolved
+
+
+def granted_write_roots(workspace_root: Optional[str]) -> tuple[Path, ...]:
+    """Return the roots granted for ``workspace_root`` (empty when none). Never raises."""
+    key = _normalize_root_key(workspace_root)
+    with _GRANTS_LOCK:
+        return _GRANTED_WRITE_ROOTS.get(key, ())
+
+
+def clear_write_root_grants() -> None:
+    """Drop all registered root grants (test isolation seam)."""
+    with _GRANTS_LOCK:
+        _GRANTED_WRITE_ROOTS.clear()
 
 
 def _platform_tool_cache_dirs() -> list[Path]:
@@ -104,6 +162,10 @@ def effective_write_roots(
 
     if workspace_root:
         _add(Path(workspace_root))
+    # Mid-session root grants (B5 #979.3): a recorded workspace root grant takes effect on the
+    # NEXT spawn — union the live registry so the fence territory widens without a restart.
+    for granted in granted_write_roots(workspace_root):
+        _add(granted)
     _add(Path(tempfile.gettempdir()))
 
     from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
@@ -125,5 +187,8 @@ __all__ = [
     "PROFILE_FLEET",
     "PROFILE_SHELL",
     "Profile",
+    "clear_write_root_grants",
     "effective_write_roots",
+    "granted_write_roots",
+    "register_write_root_grant",
 ]
