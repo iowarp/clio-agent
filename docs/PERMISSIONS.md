@@ -116,3 +116,41 @@ permission audit row in the GACT layer, then delegates the actual disk write
 to the same policy-enforced implementation used by `fs_apply_edit_write`.
 This keeps direct tool calls and user-approved diff applies aligned on path
 validation, text encoding, and structured failure behavior.
+
+## OS write fence (sandbox) — enforcement below the advisory gate
+
+The permission gate + `file_policy` are the **advisory** layer: they produce
+typed, model-actionable errors at the tool boundary on every platform. Beneath
+them, the **OS write fence** (`runtime/sandbox.py`, campaign #974) confines
+every process the agent spawns so a child cannot write outside its territory
+even if it bypasses the tool boundary (`> /etc/x`, a subprocess `open().write`).
+The fence is `@anthropic-ai/sandbox-runtime` (`srt`); the advisory `allowed_roots`
+and the fence `write_roots` derive from one shared source so they cannot drift.
+
+The two layers are complementary, not redundant: on the advisory floor (no
+fence — an HPC login node, a host without `srt`) an out-of-root write succeeds
+and is recorded as a provenance `gap`; under an active fence the same write is
+DENIED at the OS (`EROFS`/`EACCES` on Linux/macOS, `WinError 5 /
+ERROR_ACCESS_DENIED` on Windows) and minted as a typed `policy_violation`
+attributed to the child, path, and call window. Every degradation is labeled —
+no fence is ever *silently* absent.
+
+### Windows setup (one-time UAC)
+
+srt is the Windows fence path (no native restricted-token implementation is
+built). Unlike Linux/macOS — where the fence activates automatically per
+process — Windows needs a **one-time, self-elevating, idempotent** provisioning
+step that creates the `srt-sandbox` principal + WFP filters:
+
+```powershell
+clio sandbox setup      # ONE UAC prompt; per-session use afterward is unprivileged
+clio sandbox status     # mechanism + typed reason + next action (no elevation)
+```
+
+`setup` self-elevates exactly once. A re-run detects the already-provisioned
+state and no-ops with **zero prompts** (safe to run twice). Preconditions are
+typed and guided: if `srt` or Node.js (>= 20.11) is missing, `setup`/`status`
+print the exact install pointer (`npm install -g @anthropic-ai/sandbox-runtime`)
+rather than a raw error. Enterprise policy that blocks elevation leaves the
+advisory floor in place, honestly labeled. `clio sandbox` is reachable from both
+the `clio-agent` console entry point and the desktop `clio` launcher.

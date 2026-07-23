@@ -12,6 +12,8 @@
 #   clio status | ps     PID / port / health
 #   clio logs [N]        tail the server + gact stderr logs
 #   clio doctor          check prerequisites and install layout
+#   clio sandbox status  show the OS write-fence (sandbox) status row
+#   clio sandbox setup   provision the OS write fence (one UAC prompt; idempotent re-run no-ops)
 #   clio report          print a diagnostics bundle for GitHub issues
 #   clio completion SH   print shell completion (powershell)
 #   clio uninstall [...] run the uninstaller
@@ -229,7 +231,7 @@ function Write-Completion ($shell) {
 @'
 Register-ArgumentCompleter -CommandName clio -ScriptBlock {
     param($wordToComplete, $commandAst, $cursorPosition)
-    @('web','start','stop','restart','status','ps','logs','doctor','report','completion','uninstall','attach','help') |
+    @('web','start','stop','restart','status','ps','logs','sandbox','doctor','report','completion','uninstall','attach','help') |
         Where-Object { $_ -like "$wordToComplete*" } |
         ForEach-Object { [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }
 }
@@ -307,6 +309,13 @@ switch ($Command) {
     "restart" { Stop-Server; if (Start-Server) { exit 0 } else { exit 1 } }
     { $_ -eq "status" -or $_ -eq "ps" } { Get-Status; exit 0 }
     "logs"    { Show-Logs $Rest[0]; exit 0 }
+    "sandbox" {
+        # Passthrough to the installed clio-agent CLI's `sandbox` verb (setup/status). On
+        # Windows `clio sandbox setup` self-elevates once (one UAC) to provision the write fence.
+        if (-not (Test-Path $ServerBin)) { Err "server binary not found: $ServerBin"; exit 1 }
+        & $ServerBin sandbox @Rest
+        exit $LASTEXITCODE
+    }
     "doctor"  { exit (Invoke-Doctor) }
     "report"  { Invoke-Report; exit 0 }
     "completion" { Write-Completion $Rest[0]; exit 0 }
