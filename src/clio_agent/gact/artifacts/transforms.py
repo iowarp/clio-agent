@@ -361,8 +361,8 @@ def _generated_edges(
 
     ``fence_proven`` (B6 #980) stamps the per-edge lease-window → fence_proven upgrade on
     every generated edge when an active OS fence proved this call's output territory exclusive
-    by construction (:func:`_generated_fence_proven`). Identity evidence (``hash-pair`` /
-    ``schema-arg``) is unchanged — the marker is a separate attribution axis.
+    by construction (``transform_exclusivity.generated_fence_proven``). Identity evidence
+    (``hash-pair`` / ``schema-arg``) is unchanged — the marker is a separate attribution axis.
     """
     edges: list[ProvEdge] = []
     for version in minted:
