@@ -592,11 +592,14 @@ def _compose_fence_prefix(
     command: str,
     args: list[str],
     write_roots: Sequence[Path] | Sequence[str],
+    *,
+    proxy_port: Optional[int] = None,
 ) -> tuple[str, list[str]]:
-    """Compose the active fence's argv prefix around ``(command, args)`` (B2).
+    """Compose the active fence's argv prefix around ``(command, args)`` (B2/B4).
 
     srt: synthesize + schema-validate + write the per-profile settings (write territory =
-    ``write_roots``, ``httpProxyPort`` = the chokepoint), then prepend
+    ``write_roots``, ``httpProxyPort`` = the per-child chokepoint channel — B4, for
+    deterministic egress attribution — else the shared chokepoint port), then prepend
     ``srt -s <settings> --``. Landlock: prepend the ``landlock_exec`` shim over the roots.
     Any failure raises :class:`SandboxCompositionError` so the spawn fails loud rather than
     running unconfined.
@@ -607,8 +610,11 @@ def _compose_fence_prefix(
         if mechanism in (MECHANISM_SRT_BWRAP, MECHANISM_SRT_SEATBELT, MECHANISM_SRT_WINDOWS):
             from clio_agent.runtime import sandbox_srt  # noqa: PLC0415
 
-            proxy_port = state.details.get("proxy_port")
-            config = sandbox_srt.synthesize_srt_config(roots, http_proxy_port=proxy_port)
+            # B4: the child's ``httpProxyPort`` is its OWN chokepoint channel port (so the
+            # listener a connection arrives on names the child). Falls back to the shared
+            # port only if no per-child channel could be opened (typed upstream).
+            port = proxy_port if proxy_port is not None else state.details.get("proxy_port")
+            config = sandbox_srt.synthesize_srt_config(roots, http_proxy_port=port)
             settings = sandbox_srt.settings_path_for(profile, config=config)
             sandbox_srt.write_settings_file(config, settings)  # validates (typed on reject)
             binary = str(state.details.get("srt_binary") or SRT_BINARY_NAME)
@@ -665,6 +671,7 @@ def wrap_confined(
     arg_list: list[str] = list(args)
     env_overlay: dict[str, str] = {}
     popen_kwargs: dict[str, Any] = {}
+    net_child_id = ""
 
     # srt Windows fs policy is SESSION-WIDE (#977): shell can't narrow below fleet → REUSES it.
     compose_profile: Profile = profile
@@ -674,10 +681,21 @@ def wrap_confined(
         windows_note = "shell reuses fleet (srt Windows fs policy is session-wide)"
         write_roots = (*effective_write_roots(PROFILE_FLEET), *(Path(r) for r in write_roots))
 
-    # Active backend (B2): compose the fence prefix INNER (pdeathsig stays outermost below).
+    # Active backend (B2/B4): compose the fence prefix INNER (pdeathsig stays outermost
+    # below). B4: open a PER-CHILD egress channel so this child's network egress is recorded
+    # + attributed deterministically — its port becomes the srt ``httpProxyPort`` (srt tier,
+    # reached via srt's socat bridge) AND the child's ``HTTP(S)_PROXY``/``ALL_PROXY`` env
+    # (floor/Landlock tier). A per-child TOKEN cannot survive srt (it strips it for an
+    # external proxy); a per-child PORT does — hence the port, not a credential.
     if resolved_state.active and resolved_state.mechanism != MECHANISM_NONE:
+        from clio_agent.runtime import sandbox_net  # noqa: PLC0415 - B4 egress-wiring sibling
+
+        net_child_id, proxy_port, net_env = sandbox_net.open_child_egress(
+            resolved_state, write_roots
+        )
+        env_overlay.update(net_env)
         cmd, arg_list = _compose_fence_prefix(
-            resolved_state, compose_profile, cmd, arg_list, write_roots
+            resolved_state, compose_profile, cmd, arg_list, write_roots, proxy_port=proxy_port
         )
 
     # pdeathsig OUTERMOST (owner decision #974.5): fold the pre-existing argv-prefix helper
@@ -698,6 +716,9 @@ def wrap_confined(
             "pdeathsig": pdeathsig,
             "write_roots": [str(r) for r in write_roots],
             **({"windows_profile_reuse": windows_note} if windows_note else {}),
+            # B4: the per-child egress channel id (empty on the floor / when no channel could
+            # be opened) — so a caller can close the channel when the child is reaped.
+            "net_child_id": net_child_id,
         },
     )
     return ConfinedSpawn(
