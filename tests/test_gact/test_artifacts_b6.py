@@ -135,6 +135,25 @@ def test_generated_fence_proven_false_on_floor(tmp_path, monkeypatch):
     assert generated_fence_proven(app, "ws1", sess.id, kind=TransformKind.ORDINARY) is False
 
 
+def test_generated_fence_proven_false_when_peer_enumeration_races(tmp_path, monkeypatch):
+    """A concurrent mutation of in_flight_turns must fail SAFE to lease-window (review finding).
+
+    ``list(in_flight.keys())`` racing a mutation raises ``RuntimeError`` — peers EXIST but
+    cannot be enumerated (maximal ambiguity). That must NEVER resolve to ``fence_proven`` (a
+    false single-writer proof); the outer guard fails safe to plain lease-window. Sabotage:
+    swallow the RuntimeError into an empty peer list → this reddens (the pre-fix defect).
+    """
+    app, sess, _store, _arc = _make_app(tmp_path)
+    monkeypatch.setattr(sb, "current_state", lambda: _fence())
+
+    class _RacingMap(dict):
+        def keys(self):  # noqa: D401 - a live map mutated mid-iteration
+            raise RuntimeError("dictionary changed size during iteration")
+
+    app.state.in_flight_turns = _RacingMap({sess.id: object(), "sess_peer": object()})
+    assert generated_fence_proven(app, "ws1", sess.id, kind=TransformKind.ORDINARY) is False
+
+
 def test_generated_fence_proven_false_when_contended(tmp_path, monkeypatch):
     app, sess, _store, _arc = _make_app(tmp_path)
     monkeypatch.setattr(sb, "current_state", lambda: _fence())

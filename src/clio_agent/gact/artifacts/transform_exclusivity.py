@@ -44,10 +44,13 @@ def _other_actor_write_roots(app: "FastAPI", session_id: str) -> list[list[Path]
     in_flight = getattr(app.state, "in_flight_turns", None)
     if not in_flight:
         return out
-    try:
-        others = [s for s in list(in_flight.keys()) if s and s != session_id]
-    except RuntimeError:
-        return out
+    # A ``RuntimeError`` here means the in-flight map MUTATED during enumeration — i.e. peers
+    # exist but could not be listed (maximal ambiguity). It MUST NOT be swallowed into the
+    # empty accumulator (which the caller reads as "no other actors → vacuously exclusive → a
+    # FALSE fence_proven"). Let it propagate to :func:`generated_fence_proven`'s outer guard,
+    # which fails safe to plain lease-window (precision over recall #966.10 — the same posture
+    # as ``versions.py::_workspace_single_writer``). "Cannot enumerate" ≠ "no peers".
+    others = [s for s in list(in_flight.keys()) if s and s != session_id]
     for other in others:
         other_ws = _session_workspace(app, other)
         other_root = _workspace_root(app, other_ws) if other_ws else None

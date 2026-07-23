@@ -333,10 +333,17 @@ def _contended_candidates(app: "FastAPI", workspace_id: str, session_id: str) ->
     out: list[str] = []
     in_flight = getattr(app.state, "in_flight_turns", None)
     if in_flight:
-        try:
-            others = [s for s in list(in_flight.keys()) if s and s != session_id]
-        except RuntimeError:
-            return out
+        # A ``RuntimeError`` means the in-flight map mutated mid-enumeration — a transient race,
+        # NOT "no peers". Swallowing it into an empty result would mis-classify a possibly-
+        # contended record as clean/``ordinary``. Retry the snapshot (races settle in a tick);
+        # a persistent race is backstopped by the separate lease-dirty guard (docstring).
+        others: list[str] = []
+        for _attempt in range(3):
+            try:
+                others = [s for s in list(in_flight.keys()) if s and s != session_id]
+                break
+            except RuntimeError:
+                continue
         for other in others:
             if _session_workspace(app, other) == workspace_id:
                 out.append(other)
