@@ -112,12 +112,10 @@ Confinement = Literal["wrapped", "excluded"]
 CONFINEMENT_WRAPPED: Confinement = "wrapped"
 CONFINEMENT_EXCLUDED: Confinement = "excluded"
 
-#: Child kinds (:func:`clio_agent.runtime.process_tree._classify_child`) that descend
-#: from a wrapped seam (the MCP fleet + python MCP servers).
+#: Census child kinds descending from a wrapped seam (the MCP fleet + python MCP servers).
 _WRAPPED_KINDS: frozenset[str] = frozenset({"mcp_stdio", "mcp_launcher", "python_child"})
-#: Child kinds deliberately EXCLUDED from confinement: the shared clio-core daemon
-#: (breakaway is load-bearing), and the provider LLM CLI links (claude/codex need the
-#: network + their own auth/cache territory).
+#: Kinds EXCLUDED from confinement: the clio-core daemon (breakaway is load-bearing) + the
+#: provider LLM CLI links (claude/codex need the network + their own cache territory).
 _EXCLUDED_KINDS: frozenset[str] = frozenset({"clio_core_daemon", "sdk_cli", "codex_cli"})
 
 
