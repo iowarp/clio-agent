@@ -24,6 +24,7 @@ events, types, stdlib) and never loads :mod:`clio_agent.gact.app`.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -43,6 +44,8 @@ from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
+
+logger = logging.getLogger(__name__)
 
 
 def register_permissions_routes(app: FastAPI, deps: "GactDeps") -> None:
@@ -174,8 +177,13 @@ def register_permissions_routes(app: FastAPI, deps: "GactDeps") -> None:
                     subject={"permission_id": pid, "action": action},
                     payload={"permission_id": pid, "action": action, "kind": row.get("kind") or ""},
                 )
-            except Exception:  # noqa: BLE001 - observability, never fatal to a resolution
-                pass
+            except Exception as exc:  # noqa: BLE001 - observability, never fatal to a resolution
+                logger.warning(
+                    "permission.resolved semantic emit skipped reason=resolved_emit_failed "
+                    "permission_id=%s error=%r",
+                    pid,
+                    exc,
+                )
             app.state.bus.publish(
                 Event(
                     type="permission.resolved",
