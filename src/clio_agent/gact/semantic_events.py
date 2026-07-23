@@ -144,6 +144,12 @@ SSE_TRACE_ONLY_EVENT_TYPES: frozenset[str] = frozenset(
         # rider. Declared here so its "failed"-status emit cannot ride ``_SSE_ALWAYS_STATUSES``
         # onto the UI wire ahead of that contract.
         "artifact.policy_violation",
+        # Network egress (B4 #978): every forwarded child connection through the clio
+        # chokepoint is a ``net.egress`` record — high-volume, durable-only provenance
+        # substrate that feeds the ``used web:domain@time`` ingest edge. NEVER on the SSE
+        # wire this slice (SSE listing waits for the B5 SPEC rider); declared trace-only so
+        # no status can lift it onto the UI stream.
+        "net.egress",
     }
 )
 
