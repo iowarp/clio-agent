@@ -1,46 +1,34 @@
-"""Confine every agent-driven child spawn behind one typed backend ladder (#974/#975).
+"""Confine every agent-driven child spawn behind one typed backend ladder (#974).
 
-Sibling + stylistic twin of :mod:`clio_agent.runtime.process_tree`: that module owns "the
-child tree dies with the server", THIS one owns "the child writes only inside its
-territory". It is the single composition point every agent-driven ``Popen`` /
-``StdioTransport`` routes through — :func:`wrap_confined` takes a resolved
-``(command, args)`` and returns a :class:`ConfinedSpawn`.
-
-FLOOR-FIRST (#975, this slice): all the plumbing lands with **zero behavioral change**.
-:func:`wrap_confined` always resolves to the passthrough :data:`MECHANISM_NONE` backend on
-every platform, so mechanism labels, the doctor row and the provenance ``environment``
-field populate *before* any fence exists. The ladder is DETECTION-ONLY here — it probes
-for srt + records a typed reason for the missing fence, never activating one. B2/B3
-(#976/#977) turn the detected rungs into real fences; because #966 labels every
-degradation permanently, nothing is silently wrong on the way there.
+Sibling + stylistic twin of :mod:`clio_agent.runtime.process_tree`: that owns "the child
+tree dies with the server", THIS owns "the child writes only inside its territory". The
+single composition point every agent-driven ``Popen`` / ``StdioTransport`` routes through —
+:func:`wrap_confined` takes a resolved ``(command, args)`` and returns a :class:`ConfinedSpawn`.
 
 BACKEND LADDER (owner decision #974.1), strongest first — **srt → Landlock → none**:
 
-* **srt** — ``@anthropic-ai/sandbox-runtime`` (Apache-2.0, npm; CLI ``srt``, latest
-  ``v0.0.66``). Library mode = macOS Seatbelt (:data:`MECHANISM_SRT_SEATBELT`), Linux
-  bwrap+proxy (:data:`MECHANISM_SRT_BWRAP`), Windows ACL/WFP (:data:`MECHANISM_SRT_WINDOWS`
-  — srt IS the Windows path; no native restricted-token impl is built). Needs
+* **srt** — ``@anthropic-ai/sandbox-runtime`` (npm; CLI ``srt``, pinned ``v0.0.66``). Library
+  mode = macOS Seatbelt (:data:`MECHANISM_SRT_SEATBELT`), Linux bwrap+proxy
+  (:data:`MECHANISM_SRT_BWRAP`), Windows ACL/WFP (:data:`MECHANISM_SRT_WINDOWS` — srt IS the
+  Windows path, provisioned once via ``clio sandbox setup``; no native impl). Needs
   **node >= 20.11** and, on Linux, **socat**; each missing precondition is its own reason.
-* **native Landlock** (:data:`MECHANISM_LANDLOCK`) — Linux-only fs-fence, the answer to
-  bwrap broken by the Ubuntu 24.04+ AppArmor userns restriction. Deferred to B2.
+* **native Landlock** (:data:`MECHANISM_LANDLOCK`) — Linux-only fs-fence; the answer to bwrap
+  broken by the Ubuntu 24.04+ AppArmor userns restriction.
 * **none** (:data:`MECHANISM_NONE`) — the honest floor: no OS fence + a typed reason;
   :mod:`clio_agent.tools.file_policy` survives as the ADVISORY twin at the tool boundary.
 
-srt VERSION PROBE (owner note #974): ``srt --version`` LIES (a stale ``1.0.0`` banner), so
-:func:`_srt_package_version` reads the npm package ``package.json`` version, NEVER the CLI
-banner — a probe that trusted ``--version`` would be a defect (pinned by a unit test).
+srt VERSION PROBE: ``srt --version`` LIES (a stale ``1.0.0`` banner), so
+:func:`_srt_package_version` reads the npm ``package.json`` version, never the CLI banner.
 
-WRAP COMPOSITION (owner decision #974.5): ``pdeathsig``
-(:func:`clio_agent.tools.mcp_config.pdeathsig_wrapped_command`) folds INTO this pipeline as
-the **outermost** composer step, so :func:`wrap_confined` is the single argv-prefix owner
-(no second prefix site). This slice adds no fence prefix, so the composed argv is
-byte-identical to today wherever ``pdeathsig`` was (and was not) applied.
+COMPOSITION (#974.5): an active backend's fence prefix composes INNER, then ``pdeathsig``
+(:func:`clio_agent.tools.mcp_config.pdeathsig_wrapped_command`) OUTERMOST, so
+:func:`wrap_confined` is the single argv-prefix owner. On the floor the argv is byte-identical.
+B4: a per-child egress channel (:mod:`clio_agent.runtime.sandbox_net`) also attaches here.
 
-DENIAL SEMANTICS (B2/B3 forward note): an active fence refuses an out-of-territory write at
-the OS as ``EROFS`` (Linux bwrap read-only bind), ``EACCES`` (ACL) or
-``WinError 5 / ERROR_ACCESS_DENIED`` (Windows) — never a bare ``PermissionError`` with no
-mechanism. This slice observes none of it (the floor lets the write happen); #966's ``gap``
-node carries ``sandbox: none/<reason>`` as the honest record.
+DENIAL SEMANTICS: an active fence refuses an out-of-territory write at the OS as ``EROFS``
+(Linux bwrap read-only bind), ``EACCES`` (ACL) or ``WinError 5`` (Windows) — never a bare
+``PermissionError``. On the floor the write happens; #966's ``gap`` node records
+``sandbox: none/<reason>``. Fenced tiers upgrade that ``gap`` to a typed ``policy_violation``.
 """
 
 from __future__ import annotations
@@ -55,7 +43,6 @@ from typing import Any, Literal, Optional
 
 logger = logging.getLogger(__name__)
 
-# srt package identity (owner note #974) — pinned, never guessed.             #
 #: The npm package that provides the srt runtime.
 SRT_PACKAGE_NAME = "@anthropic-ai/sandbox-runtime"
 #: The CLI binary the package installs (resolved on PATH unless overridden by config).
@@ -66,7 +53,6 @@ SRT_LATEST_KNOWN_VERSION = "0.0.66"
 #: srt requires node >= 20.11 (owner note #974). A ``(major, minor)`` floor.
 SRT_MIN_NODE_VERSION = (20, 11)
 
-# Mechanism labels (typed, so the doctor / trace / provenance never guess).   #
 MECHANISM_SRT_SEATBELT = "srt_seatbelt"  # srt on macOS
 MECHANISM_SRT_BWRAP = "srt_bwrap"  # srt on Linux (bubblewrap + proxy)
 MECHANISM_SRT_WINDOWS = "srt_windows"  # srt on Windows (ACL/WFP)
@@ -84,7 +70,6 @@ KNOWN_MECHANISMS: frozenset[str] = frozenset(
     }
 )
 
-# Typed ladder reasons (no silent fallback — every rung explains itself).      #
 REASON_SRT_NOT_INSTALLED = "srt_not_installed"
 REASON_SRT_NODE_MISSING = "srt_node_missing"
 REASON_SRT_NODE_TOO_OLD = "srt_node_too_old"
@@ -126,10 +111,8 @@ NetPolicy = Literal["allow_record", "deny"]
 NET_ALLOW_RECORD: NetPolicy = "allow_record"
 NET_DENY: NetPolicy = "deny"
 
-# Confinement classification of a census child by its coarse kind (#975).      #
-# Makes the EXCLUDED seams visible policy in the process census, not an         #
-# invisible omission: the CTE daemon, provider CLI links and serve.py are       #
-# deliberately never wrapped (owner decision #974.5).                          #
+# Confinement classification of a census child by kind (#975): makes the EXCLUDED seams
+# (CTE daemon, provider CLI links, serve.py — never wrapped, #974.5) visible policy.
 Confinement = Literal["wrapped", "excluded"]
 CONFINEMENT_WRAPPED: Confinement = "wrapped"
 CONFINEMENT_EXCLUDED: Confinement = "excluded"
@@ -218,7 +201,6 @@ class ConfinedSpawn:
     result: SandboxResult
 
 
-# Config knobs (config → env → default; the env reference is generated).        #
 def _sandbox_enabled(env: Optional[Mapping[str, str]] = None) -> bool:
     """Whether confinement resolution is enabled (config ``sandbox.enabled``).
 
@@ -254,7 +236,6 @@ def _srt_path_override(env: Optional[Mapping[str, str]] = None) -> str:
     ).strip()
 
 
-# srt detection (detection ONLY — never activates a fence this slice).          #
 def _srt_package_version(binary_path: str) -> str:
     """Read the srt package version from its ``package.json`` — NEVER ``srt --version``.
 
@@ -681,12 +662,10 @@ def wrap_confined(
         windows_note = "shell reuses fleet (srt Windows fs policy is session-wide)"
         write_roots = (*effective_write_roots(PROFILE_FLEET), *(Path(r) for r in write_roots))
 
-    # Active backend (B2/B4): compose the fence prefix INNER (pdeathsig stays outermost
-    # below). B4: open a PER-CHILD egress channel so this child's network egress is recorded
-    # + attributed deterministically — its port becomes the srt ``httpProxyPort`` (srt tier,
-    # reached via srt's socat bridge) AND the child's ``HTTP(S)_PROXY``/``ALL_PROXY`` env
-    # (floor/Landlock tier). A per-child TOKEN cannot survive srt (it strips it for an
-    # external proxy); a per-child PORT does — hence the port, not a credential.
+    # Active backend (B2/B4): fence prefix INNER (pdeathsig stays outermost below). B4 opens a
+    # PER-CHILD egress channel — its port is the srt ``httpProxyPort`` (srt tier, via srt's
+    # socat bridge) AND the child's ``HTTP(S)_PROXY``/``ALL_PROXY`` env (floor/Landlock tier),
+    # so egress is recorded + attributed. A per-child PORT (not a token — srt strips tokens).
     if resolved_state.active and resolved_state.mechanism != MECHANISM_NONE:
         from clio_agent.runtime import sandbox_net  # noqa: PLC0415 - B4 egress-wiring sibling
 
