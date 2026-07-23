@@ -294,10 +294,12 @@ def _srt_absent_next_action(reason: str) -> str:
 # The self-elevating provisioning step (guarded — win32 only, never unit-run).  #
 # --------------------------------------------------------------------------- #
 
-# The ``ShellExecuteExW`` SEE_MASK + info struct live at MODULE scope (never inside a
-# function — the no-class-in-function ratchet stays at 0). They are defined ONLY on win32
-# because ``ctypes.wintypes`` is Windows-only; on any other OS the elevation is unreachable
-# (the function raises first), so the names are never referenced there.
+# The ``ShellExecuteExW`` SEE_MASK + info struct + the elevation function live at MODULE
+# scope inside a win32 guard (the struct is never inside a *function* — the
+# no-class-in-function ratchet stays at 0). ``ctypes.wintypes`` is Windows-only, so the whole
+# real implementation is defined ONLY on win32; the non-win32 branch defines a raising stub of
+# the SAME name so the module-scope caller resolves it on every platform (mypy analyses the
+# Linux branch) while the win32 names are never referenced off Windows.
 _SEE_MASK_NOCLOSEPROCESS = 0x00000040
 if sys.platform == "win32":  # pragma: no cover - win32 live gate only (CI runs on Linux)
     import ctypes as _ctypes
@@ -324,40 +326,43 @@ if sys.platform == "win32":  # pragma: no cover - win32 live gate only (CI runs 
             ("hProcess", _wintypes.HANDLE),
         ]
 
+    def _elevated_srt_windows_install(srt_binary: str) -> tuple[bool, str]:
+        """Run ``srt windows-install`` under a SINGLE self-elevation (one UAC). win32 only.
 
-def _elevated_srt_windows_install(srt_binary: str) -> tuple[bool, str]:
-    """Run ``srt windows-install`` under a SINGLE self-elevation (one UAC). GUARDED: win32 only.
+        THE machine-mutating, UAC-popping step — provisions the ``srt-sandbox`` principal + WFP
+        filters via ``ShellExecuteExW`` with the ``runas`` verb, waits for the elevated process,
+        and reports its exit code. Returns ``(ok, detail)``; never raises for a non-zero exit.
+        The owner-gated MANUAL LIVE GATE (`clio sandbox setup`) — never exercised by CI (unit
+        tests inject a fake ``installer``).
+        """
+        # srt on Windows resolves via a .cmd shim; elevate cmd.exe running it so a shim works.
+        params = f'/c ""{srt_binary}" {SRT_WINDOWS_INSTALL_SUBCOMMAND}"'
+        info = _ShellExecuteInfoW()
+        info.cbSize = _ctypes.sizeof(info)
+        info.fMask = _SEE_MASK_NOCLOSEPROCESS
+        info.lpVerb = "runas"
+        info.lpFile = "cmd.exe"
+        info.lpParameters = params
+        info.nShow = 0  # SW_HIDE
+        if not _ctypes.windll.shell32.ShellExecuteExW(_ctypes.byref(info)):
+            return False, (
+                f"self-elevation refused or failed (GetLastError={_ctypes.get_last_error()})"
+            )
+        _ctypes.windll.kernel32.WaitForSingleObject(info.hProcess, 0xFFFFFFFF)
+        code = _wintypes.DWORD()
+        _ctypes.windll.kernel32.GetExitCodeProcess(info.hProcess, _ctypes.byref(code))
+        _ctypes.windll.kernel32.CloseHandle(info.hProcess)
+        if code.value != 0:
+            return False, f"srt windows-install exited {code.value}"
+        return True, "srt windows-install completed under elevation"
 
-    THE machine-mutating, UAC-popping step — provisions the ``srt-sandbox`` principal + WFP
-    filters. It asserts ``sys.platform == 'win32'`` so it can never fire on Linux/macOS or from
-    a unit test (which inject a fake ``installer`` instead). Uses ``ShellExecuteExW`` with the
-    ``runas`` verb (the standard Windows self-elevation), waits for the elevated process, and
-    reports its exit code. Returns ``(ok, detail)``; never raises for a non-zero exit.
+else:
 
-    This is the owner-gated MANUAL LIVE GATE (`clio sandbox setup`) — not exercised by CI.
-    """
-    if sys.platform != "win32":  # guarded; never reached off win32 (nor from unit tests)
+    def _elevated_srt_windows_install(srt_binary: str) -> tuple[bool, str]:  # pragma: no cover
+        """Non-win32 stub: the self-elevation is win32-only and the caller guards on platform."""
         raise RuntimeError(
             "srt windows-install self-elevation is win32-only (owner decision #974.2)"
         )
-    # srt on Windows resolves via a .cmd shim; elevate cmd.exe running it so a shim works too.
-    params = f'/c ""{srt_binary}" {SRT_WINDOWS_INSTALL_SUBCOMMAND}"'
-    info = _ShellExecuteInfoW()
-    info.cbSize = _ctypes.sizeof(info)
-    info.fMask = _SEE_MASK_NOCLOSEPROCESS
-    info.lpVerb = "runas"
-    info.lpFile = "cmd.exe"
-    info.lpParameters = params
-    info.nShow = 0  # SW_HIDE
-    if not _ctypes.windll.shell32.ShellExecuteExW(_ctypes.byref(info)):
-        return False, f"self-elevation refused or failed (GetLastError={_ctypes.get_last_error()})"
-    _ctypes.windll.kernel32.WaitForSingleObject(info.hProcess, 0xFFFFFFFF)
-    code = _wintypes.DWORD()
-    _ctypes.windll.kernel32.GetExitCodeProcess(info.hProcess, _ctypes.byref(code))
-    _ctypes.windll.kernel32.CloseHandle(info.hProcess)
-    if code.value != 0:
-        return False, f"srt windows-install exited {code.value}"
-    return True, "srt windows-install completed under elevation"
 
 
 def _npm_install_srt() -> tuple[bool, str]:

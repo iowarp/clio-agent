@@ -230,17 +230,19 @@ def test_provision_verify_failure_is_typed() -> None:
     assert result.status == swp.OUTCOME_PROVISION_VERIFY_FAILED
 
 
-def test_default_installer_is_the_elevation_and_is_guarded(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The default installer IS the self-elevation, and it is win32-guarded (never off-win32).
+def test_default_installer_is_the_elevation_and_is_guarded() -> None:
+    """The default installer IS the self-elevation, structurally guarded off-win32.
 
-    The real ShellExecute is the owner-gated manual live gate; this proves the guard fires
-    BEFORE any ctypes call by forcing the module's platform to linux and asserting it raises.
+    The win32/non-win32 implementation is chosen at IMPORT time (so ``ctypes.wintypes`` is
+    never imported off Windows and mypy stays green on the Linux runner). Off win32 the bound
+    function is the raising stub — calling it raises BEFORE any ctypes touch. On win32 it is the
+    real ShellExecute impl, which must NOT be invoked here (it pops a UAC prompt — the
+    owner-gated manual live gate); we assert its identity only.
     """
-    # The unprovisioned flow dispatches to the real elevation by default (identity check only).
     assert swp._elevated_srt_windows_install.__name__ == "_elevated_srt_windows_install"
-    monkeypatch.setattr(swp.sys, "platform", "linux")
-    with pytest.raises(RuntimeError):
-        swp._elevated_srt_windows_install("C:\\srt\\srt.cmd")
+    if swp.sys.platform != "win32":
+        with pytest.raises(RuntimeError):
+            swp._elevated_srt_windows_install("C:\\srt\\srt.cmd")
 
 
 # --------------------------------------------------------------------------- #
