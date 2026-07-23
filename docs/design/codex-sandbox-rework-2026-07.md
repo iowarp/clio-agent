@@ -35,13 +35,33 @@ granted workspace succeeded; a write outside was `Access is denied`. That is cli
 (**read-anywhere, write-fence to the workspace**). Codex uses Seatbelt/bubblewrap on mac/Linux,
 so the same backend is genuinely cross-platform.
 
-Invocation (validated):
+### Invocation recipe (VERIFIED live end-to-end, module-driven)
+
+The injection mechanism took three live iterations to pin — recorded so it is never re-litigated:
+
+- ✗ **Custom minimal `CODEX_HOME`** (a fresh dir with only `config.toml`): elevated backend
+  activates but the per-workspace grant silently does NOT apply (a fresh home lacks codex's
+  per-home sandbox state) → writes fail `ERROR_INVALID_NAME`.
+- ✗ **`-c KEY=VALUE` inline overrides**: codex's `-c` parser does NOT strip the TOML key-quotes
+  from a `permissions.<p>.filesystem."<path>"` segment → `filesystem path "C:\\" must be
+  absolute`. Fragile across shells; abandoned.
+- ✓ **`-p` layered profile FILE in the DEFAULT `CODEX_HOME`**: a real TOML file (proper
+  escaping, no shell mangling) written as `~/.codex/clio-sb-<sha8>.config.toml`, loaded with
+  `-p`, leaving the user's `config.toml` untouched and reusing the real home's sandbox state.
 
 ```
-# config.toml:  [windows] sandbox = "elevated"
-# [permissions.<p>].filesystem:  "C:\\"="read", "D:\\"="read", "<workspace>"="write"
-codex sandbox --permission-profile <p> -C <workspace> -- <command> <args...>
+# ~/.codex/clio-sb-<sha8>.config.toml  (a -p LAYER file, not the user's config.toml):
+#   [windows]
+#   sandbox = "elevated"                       # win32 + elevated only
+#   [permissions.clio.filesystem]
+#   "C:\\" = "read"                            # read-anywhere = drive-root read grants
+#   "C:\\Users\\...\\<workspace>" = "write"    # write-fence to the workspace
+codex sandbox -p clio-sb-<sha8> --permission-profile clio -C <workspace> -- <command> <args...>
 ```
+
+`codex.cmd` (the npm shim) is fine for the real argv (the earlier `ERROR_INVALID_NAME` was a
+nested shell-redirect-quoting artifact of the *test harness*, not clio — clio spawns a real
+argv). One-time `[windows] sandbox="elevated"` provisioning creates the `codexsandbox*` users.
 
 ## Design — a `codex` backend on the existing ladder
 
