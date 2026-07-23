@@ -464,7 +464,9 @@ def _resolve_backend(
     and a typed :class:`~clio_agent.runtime.net_chokepoint.ChokepointStartError` drops the srt
     rung to Landlock/floor rather than starting children that silently lose all network.
 
-    Windows always floors this slice (activation is B3's ``clio sandbox setup``).
+    Windows (B3, #977): a three-way branch on the provisioning verdict (``win_state`` /
+    ``sandbox_provision.windows_sandbox_state``) — provisioned→srt_windows, srt_absent→typed
+    reason, unprovisioned→the floor gate (needs ``clio sandbox setup``).
     """
     det = detection if detection is not None else detect_srt(env=env, platform=platform)
     base_details: dict[str, Any] = {
@@ -490,8 +492,7 @@ def _resolve_backend(
     if not _sandbox_enabled(env):
         return floor(REASON_DISABLED)
 
-    # Windows (B3): the provisioning verdict drives the rung — provisioned → activate the
-    # srt_windows session-wide fence; srt absent → typed reason; unprovisioned → the floor gate.
+    # Windows (B3): the provisioning verdict drives the rung (see the docstring's 3-way branch).
     if platform.startswith("win"):
         from clio_agent.runtime import sandbox_provision as swp  # noqa: PLC0415
 
@@ -665,8 +666,7 @@ def wrap_confined(
     env_overlay: dict[str, str] = {}
     popen_kwargs: dict[str, Any] = {}
 
-    # srt Windows fs policy is SESSION-WIDE (no per-exec override, #977): the shell profile
-    # cannot be narrowed below fleet, so it REUSES fleet territory — typed, never silent.
+    # srt Windows fs policy is SESSION-WIDE (#977): shell can't narrow below fleet → REUSES it.
     compose_profile: Profile = profile
     windows_note = ""
     if resolved_state.mechanism == MECHANISM_SRT_WINDOWS and profile == PROFILE_SHELL:
