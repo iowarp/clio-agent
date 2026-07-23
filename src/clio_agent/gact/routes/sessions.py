@@ -62,6 +62,7 @@ from clio_agent.gact.runtime.globals import (
     _new_memory_event_id,
     _new_question_id,
 )
+from clio_agent.gact.runtime.grants import emit_session_attach_boundary
 from clio_agent.gact.runtime.retention import enforce_dict_bound
 from clio_agent.gact.types import (
     AnswerUserQuestionRequest,
@@ -139,6 +140,8 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             edit_mode=req.edit_mode,
             routing_mode=req.routing_mode,
         )
+        # B5 #979.2: session→workspace attach is a write-territory boundary — emit it (guarded).
+        emit_session_attach_boundary(app, sess.id, wid)
         return Session(**sess.to_wire())
 
     @app.patch("/v1/sessions/{sid}", response_model=Session)
