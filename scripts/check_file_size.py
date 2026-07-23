@@ -262,7 +262,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1001: doctor rendering + disk-GC surface moved to the ui/doctor.py owner module
     # (ratcheted 1156 -> 1135 in the same change).
     # merge(main->develop): +6 (1135 -> 1141) integrating main's release-stream cli deltas.
-    "src/clio_agent/ui/cli.py": 1141,
+    # #977 (B3 sandbox): the `sandbox` verb dispatches to runtime/sandbox_provision.py and
+    # run_doctor/--tune stub moved to their owner modules — net ratchet 1141 -> 1132.
+    "src/clio_agent/ui/cli.py": 1132,
 }
 
 # Root of the source tree to scan, relative to the repository root.
