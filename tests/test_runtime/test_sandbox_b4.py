@@ -444,6 +444,184 @@ def test_join_no_records_is_noop() -> None:
     assert out == []
 
 
+# --------------------------------------------------------------------------- #
+# Step 0 — tool-DECLARED web-source normalization (chokepoint-independent).
+# Holds a remote source in lineage when egress recording is deferred (e.g. codex),
+# and COMPOSES with the chokepoint (an observed egress UPGRADES a declared edge).
+# --------------------------------------------------------------------------- #
+
+
+def _url_authority_edge(url: str, *, note: str = "fetched"):
+    from clio_agent.gact.artifacts.transform_types import EdgeEvidence, EdgeRole, ProvEdge
+
+    return ProvEdge(
+        role=EdgeRole.USED,
+        evidence=EdgeEvidence.AUTHORITY,
+        authority=url,
+        external_ref=f"external:{url}",
+        note=note,
+    )
+
+
+def test_declare_web_domains_keys_a_url_edge_without_any_chokepoint() -> None:
+    """A used URL edge is domain-keyed from the tool's OWN declaration — NO egress records.
+
+    This is the codex case: egress recording deferred → the ledger is empty, yet the remote
+    source still lands in lineage as a ``tool-declared`` domain (not falsely marked observed).
+    """
+    from clio_agent.gact.artifacts.ingest_edges import (
+        NET_MECHANISM_TOOL_DECLARED,
+        attach_ingest_edges,
+    )
+
+    edge = _url_authority_edge("https://data.example/dataset/x.csv", note="ndp_stage_resource")
+    app = _app_with_egress([])  # empty ledger — the deferred-egress world
+    out = attach_ingest_edges(
+        app, [edge], workspace_id="", tool_name="stage_resource", started_at=None
+    )
+    assert len(out) == 1  # never duplicated
+    got = out[0]
+    assert got.net_domain == "data.example"  # domain-keyed from the DECLARED url
+    assert got.net_mechanism == NET_MECHANISM_TOOL_DECLARED  # honest: declared, not observed
+    assert got.authority == "https://data.example/dataset/x.csv"  # the url edge is preserved
+    assert got.note == "ndp_stage_resource"  # a pre-set note is not clobbered
+
+
+def test_declare_web_domains_is_general_across_tools_not_ndp_only() -> None:
+    """Any fetch tool's url edge is normalized — the mechanism is tool-agnostic (not ndp-only)."""
+    from clio_agent.gact.artifacts.ingest_edges import (
+        NET_MECHANISM_TOOL_DECLARED,
+        attach_ingest_edges,
+    )
+
+    edge = _url_authority_edge("http://arxiv.org/abs/1234.5678", note="")  # different tool/source
+    app = _app_with_egress([])
+    out = attach_ingest_edges(
+        app, [edge], workspace_id="", tool_name="arxiv_download", started_at=None
+    )
+    assert len(out) == 1 and out[0].net_domain == "arxiv.org"
+    assert out[0].net_mechanism == NET_MECHANISM_TOOL_DECLARED
+    assert out[0].note == "web_declared"  # default note when the edge had none
+
+
+def test_declare_web_domains_leaves_local_path_edges_untouched() -> None:
+    """A local ``external:/path`` used edge names no http host → never domain-keyed (precision)."""
+    from clio_agent.gact.artifacts.ingest_edges import attach_ingest_edges
+    from clio_agent.gact.artifacts.transform_types import EdgeEvidence, EdgeRole, ProvEdge
+
+    local = ProvEdge(
+        role=EdgeRole.USED,
+        evidence=EdgeEvidence.SCHEMA_ARG,
+        external_ref="external:/ws/input.csv",
+        note="local_input",
+    )
+    app = _app_with_egress([])
+    out = attach_ingest_edges(app, [local], workspace_id="", tool_name="convert", started_at=None)
+    assert len(out) == 1
+    assert out[0].net_domain == ""  # no host → no net stamp
+    assert out[0].net_mechanism == ""
+
+
+def test_chokepoint_egress_upgrades_a_tool_declared_edge_to_observed() -> None:
+    """The two evidence sources COMPOSE: an observed egress UPGRADES the declared edge.
+
+    Step 0 marks the url edge ``tool-declared``; a live chokepoint that saw the SAME host then
+    upgrades it in place to the stronger observed mechanism (one edge, two evidence bases) —
+    never a duplicate, and the declared mark is superseded by the observation.
+    """
+    from clio_agent.gact.artifacts.ingest_edges import attach_ingest_edges
+
+    edge = _url_authority_edge("https://data.example/x.csv", note="ndp_stage_resource")
+    app = _app_with_egress([_egress("data.example", mechanism="proxy-enforced")])
+    out = attach_ingest_edges(
+        app, [edge], workspace_id="", tool_name="stage_resource", started_at=_WINDOW_START
+    )
+    assert len(out) == 1  # upgraded in place, not duplicated
+    assert out[0].net_domain == "data.example"
+    assert out[0].net_mechanism == "proxy-enforced"  # observation SUPERSEDED the declaration
+    assert out[0].net_at == "2026-07-22T00:00:00+00:00"
+
+
+def test_declare_web_domains_never_downgrades_an_observed_edge() -> None:
+    """An edge already carrying an observed ``net_domain`` is never overwritten by step 0."""
+    from clio_agent.gact.artifacts.ingest_edges import attach_ingest_edges
+    from clio_agent.gact.artifacts.transform_types import EdgeEvidence, EdgeRole, ProvEdge
+
+    observed = ProvEdge(
+        role=EdgeRole.USED,
+        evidence=EdgeEvidence.AUTHORITY,
+        authority="https://data.example/x.csv",
+        external_ref="external:https://data.example/x.csv",
+        net_domain="data.example",
+        net_mechanism="proxy-enforced",  # already observed
+        note="net_ingest",
+    )
+    app = _app_with_egress([])
+    out = attach_ingest_edges(
+        app, [observed], workspace_id="", tool_name="stage_resource", started_at=None
+    )
+    assert out[0].net_mechanism == "proxy-enforced"  # untouched — no downgrade to tool-declared
+
+
+def test_declare_web_domains_ignores_bare_id_and_doi_authorities() -> None:
+    """A non-URL authority (bare catalog id / DOI) is NEVER declared a web domain (precision).
+
+    Sabotage of the strict-scheme guard: a catalog-details result with an id-only resource sets
+    ``authority`` to a bare DOI/UUID. Without the http(s)-scheme check, ``urlsplit`` mis-reads
+    ``10.1038/x`` as host ``10.1038`` and fabricates ``net_mechanism=tool-declared``. It must not.
+    """
+    from clio_agent.gact.artifacts.ingest_edges import attach_ingest_edges
+
+    for bogus in ("10.1038/s41586-020-2649-2", "550e8400-e29b-41d4-a716-446655440000"):
+        edge = _url_authority_edge(bogus, note="ndp_catalog_resource")
+        app = _app_with_egress([])
+        out = attach_ingest_edges(app, [edge], workspace_id="", tool_name="get_details", started_at=None)
+        assert out[0].net_domain == "", f"fabricated a domain for a bare id: {bogus}"
+        assert out[0].net_mechanism == ""
+
+
+def test_declare_web_domains_ignores_non_http_schemes() -> None:
+    """A non-web scheme (``ftp://``, ``s3://``) is not a web source → never declared (precision)."""
+    from clio_agent.gact.artifacts.ingest_edges import attach_ingest_edges
+
+    for ref in ("ftp://host.example/x", "s3://bucket/key"):
+        edge = _url_authority_edge(ref, note="")
+        app = _app_with_egress([])
+        out = attach_ingest_edges(app, [edge], workspace_id="", tool_name="fetch", started_at=None)
+        assert out[0].net_domain == "", f"declared a domain for a non-web scheme: {ref}"
+        assert out[0].net_mechanism == ""
+
+
+def test_step0_declared_edge_coexists_with_step2_mint_for_a_distinct_domain() -> None:
+    """Composition: a step-0 DECLARED url edge (host A) + a serving-child egress on host B.
+
+    Step 0 domain-keys the declared edge (A, tool-declared); step 2 still mints a fresh
+    ``web:B`` edge for the serving child's in-window egress on the DIFFERENT host B — the
+    pre-stamped A in ``named_hosts`` must neither suppress B nor duplicate A.
+    """
+    from clio_agent.gact.artifacts.ingest_edges import (
+        NET_MECHANISM_TOOL_DECLARED,
+        attach_ingest_edges,
+    )
+
+    declared = _url_authority_edge("https://a.example/x.csv", note="ndp_stage_resource")
+    app = _app_with_egress([_egress("b.example", child_id="c1", mechanism="proxy-enforced")])
+    out = attach_ingest_edges(
+        app,
+        [declared],
+        workspace_id="",
+        tool_name="stage_resource",
+        started_at=_WINDOW_START,
+        serving_child_id="c1",
+    )
+    domains = {e.net_domain for e in out}
+    assert domains == {"a.example", "b.example"}  # both present, none suppressed
+    by_domain = {e.net_domain: e for e in out}
+    assert by_domain["a.example"].net_mechanism == NET_MECHANISM_TOOL_DECLARED  # A stays declared
+    assert by_domain["b.example"].external_ref == "web:b.example@2026-07-22T00:00:00+00:00"  # B minted
+    assert len(out) == 2  # no duplicate A
+
+
 def test_serving_child_linkage_register_and_resolve_roundtrip() -> None:
     """The call_id → serving child_id linkage the observer threads: register, resolve, abstain."""
     from fastapi import FastAPI

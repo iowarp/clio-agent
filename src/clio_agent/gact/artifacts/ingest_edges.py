@@ -9,9 +9,12 @@ the gact-side seam it calls back into:
   per-app ledger and (b) emits ONE trace-only ``net.egress`` semantic event via
   ``_emit_semantic_event`` — so the chokepoint never imports the god app, and every egress
   lands on the durable trace + ARC, never the SSE wire.
-* :func:`attach_ingest_edges` JOINS those egress records onto an ingest-shaped
-  :class:`~clio_agent.gact.artifacts.transform_types.TransformRecord`'s ``used`` edges as
-  ``used web:<domain>@<time>`` — **precision over recall** (owner decision #966.10):
+* :func:`attach_ingest_edges` first runs :func:`declare_web_domains` (step 0), a
+  chokepoint-INDEPENDENT pass that domain-keys any used http(s)-URL edge from the tool's OWN
+  declaration (``net_mechanism=tool-declared``) so a remote source survives in lineage even
+  when egress recording is deferred (e.g. the codex write-fence). It then JOINS in-window
+  egress records onto the ``used`` edges as ``used web:<domain>@<time>``, only ever
+  STRENGTHENING a declared edge to observed evidence — **precision over recall** (#966.10):
 
   1. a staged-download / catalog edge whose source URL host MATCHES an in-window egress host
      is ENRICHED in place (one edge, two evidence bases: its ``sha256`` hash-pair PLUS the
@@ -52,6 +55,13 @@ logger = logging.getLogger(__name__)
 #: The trace-only semantic event a forwarded egress mints (registered in
 #: ``semantic_events.SSE_TRACE_ONLY_EVENT_TYPES`` — durable-only, never on the SSE wire).
 NET_EGRESS_EVENT = "net.egress"
+
+#: Per-edge ``net_mechanism`` for a domain sourced from the TOOL's OWN url DECLARATION
+#: (step 0) rather than an observed chokepoint egress — a distinct, weaker provenance source
+#: than ``proxy-enforced``/``env-cooperative`` (which name an OBSERVED connection). Kept
+#: separate so the trace never passes a self-report off as independent observation; a live
+#: chokepoint (step 1) UPGRADES a matched edge to the observed mechanism (two evidence bases).
+NET_MECHANISM_TOOL_DECLARED = "tool-declared"
 
 #: Bound on the per-app egress ledger (bounded memory — a long-lived server must not grow it
 #: unboundedly). The join only ever reads the recent window, so an old record is dead weight.
@@ -315,6 +325,69 @@ def _child_of(entry: dict[str, Any]) -> str:
     return str(entry.get("child_id") or "").strip()
 
 
+def _edge_url_host(edge: ProvEdge) -> str:
+    """The http(s) host a used edge NAMES via its authority/external_ref (``""`` if none)."""
+    return _url_host(edge.authority) or _url_host(edge.external_ref.removeprefix("external:"))
+
+
+def _declared_web_host(value: str) -> str:
+    """Host of an explicit ``http(s)`` URL, or ``""`` — REQUIRES an http/https scheme.
+
+    Unlike :func:`_url_host` (which prepends ``//`` to a schemeless value and would mis-read a
+    bare DOI / catalog id like ``10.1038/x`` or a UUID — or a non-web scheme like ``ftp://`` /
+    ``s3://`` — as a "host"), the step-0 DECLARATION stamps a ``web:<domain>`` only for a genuine
+    http(s) URL. Precision over recall (#966.10): never fabricate a domain from a non-web ref.
+    """
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parts = urlsplit(raw)
+    except ValueError:
+        return ""
+    if parts.scheme.lower() not in ("http", "https"):
+        return ""
+    return (parts.hostname or "").strip().lower()
+
+
+def _declared_web_host_of(edge: ProvEdge) -> str:
+    """The http(s) host an edge DECLARES via authority/external_ref (strict scheme; ``""`` else)."""
+    return _declared_web_host(edge.authority) or _declared_web_host(
+        edge.external_ref.removeprefix("external:")
+    )
+
+
+def declare_web_domains(used: list[ProvEdge]) -> list[ProvEdge]:
+    """Step 0 — normalize TOOL-DECLARED web sources into domain-keyed edges (no chokepoint).
+
+    General across every fetch/ingest tool (not tied to any one server): for each ``used``
+    edge whose authority/external_ref names an http(s) URL and that carries no observed
+    ``net_domain`` yet, stamp ``net_domain`` from the DECLARED URL host and mark
+    ``net_mechanism`` :data:`NET_MECHANISM_TOOL_DECLARED`. This makes a remote source
+    domain-keyed in the artifact's lineage from the tool's OWN declaration — no network
+    observation required, so it holds under any write-fence whose egress recording is deferred.
+
+    A declaration is weaker than an observed egress and is kept distinct: when the chokepoint
+    is live, :func:`attach_ingest_edges` step 1 UPGRADES a matched edge to the observed
+    mechanism (two evidence bases). Never mutates the input; returns a new list.
+    """
+    out = list(used)
+    for i, edge in enumerate(out):
+        if edge.net_domain or edge.net_mechanism:  # already observed/declared — never overwrite
+            continue
+        host = _declared_web_host_of(edge)  # STRICT: http(s) scheme only (no bare-id/DOI guess)
+        if not host:
+            continue
+        out[i] = edge.model_copy(
+            update={
+                "net_domain": host,
+                "net_mechanism": NET_MECHANISM_TOOL_DECLARED,
+                "note": edge.note or "web_declared",
+            }
+        )
+    return out
+
+
 def attach_ingest_edges(
     app: "FastAPI",
     used: list[ProvEdge],
@@ -329,9 +402,14 @@ def attach_ingest_edges(
 
     Precision over recall (#966.10):
 
-    * **Step 1 — enrich** a URL edge whose host matches an in-window egress host (exact host
-      match; the transform's own url edge corroborates the domain, so this needs no child key
-      and is always safe).
+    * **Step 0 — declare** (:func:`declare_web_domains`, chokepoint-INDEPENDENT): a used edge
+      naming an http(s) URL is domain-keyed from the tool's OWN declaration
+      (``net_mechanism=tool-declared``) so a remote source survives in lineage even when
+      egress recording is deferred. Steps 1-2 (the chokepoint) only ever strengthen it.
+    * **Step 1 — upgrade** a URL edge whose host matches an in-window egress host to the
+      OBSERVED mechanism (exact host match; the transform's own url edge corroborates the
+      domain, so this needs no child key and is always safe — a step-0 declared edge gains the
+      stronger observed evidence base here).
     * **Step 2 — egress-only mint** a fresh ``web:<domain>@<time>`` edge, but ONLY when the
       join can attribute the egress DETERMINISTICALLY to this transform's producing call
       (#978 point 5, ``egress → child → call-window → transform``): the transform is
@@ -345,6 +423,11 @@ def attach_ingest_edges(
 
     Returns the (possibly enriched/extended) used list; never mutates the input.
     """
+    # Step 0 — tool-DECLARED web-source normalization (chokepoint-INDEPENDENT), so a remote
+    # source is domain-keyed in lineage even when egress recording is deferred (e.g. codex).
+    # Runs BEFORE the egress guards below; the chokepoint (steps 1-2) only ever strengthens it.
+    used = declare_web_domains(used)
+
     window = _in_window_records(app, started_at, ended_at if ended_at is not None else time.time())
     if not window:
         return used
@@ -361,16 +444,18 @@ def attach_ingest_edges(
     out = list(used)
     named_hosts: set[str] = set()
     for edge in out:
-        host = _url_host(edge.authority) or _url_host(edge.external_ref.removeprefix("external:"))
+        host = _edge_url_host(edge)
         if host or edge.net_domain:
             named_hosts.add(host or edge.net_domain)
 
-    # Step 1 — enrich an existing URL edge whose host matches an in-window egress (exact host
-    # match is the guarantee: one edge, two evidence bases; never a duplicate node). Safe
-    # without a child key — the transform itself named this url.
+    # Step 1 — UPGRADE a URL edge whose host matches an in-window egress to the OBSERVED
+    # mechanism (exact host match is the guarantee: one edge, two evidence bases; never a
+    # duplicate node). Safe without a child key — the transform itself named this url. A
+    # step-0 ``tool-declared`` edge is upgraded here to the stronger observed evidence; an
+    # already-observed edge is left as-is (idempotent, precise).
     for i, edge in enumerate(out):
-        host = _url_host(edge.authority) or _url_host(edge.external_ref.removeprefix("external:"))
-        if host and host in by_host and not edge.net_domain:
+        host = _edge_url_host(edge)
+        if host and host in by_host and edge.net_mechanism in ("", NET_MECHANISM_TOOL_DECLARED):
             out[i] = _enriched(edge, by_host[host][0])
 
     # Step 2 — egress-only mint, CHILD-KEYED + abstaining (precision over recall, #978 pt 5).
@@ -427,7 +512,9 @@ def _web_edge(host: str, rec: dict[str, Any]) -> ProvEdge:
 
 __all__ = [
     "NET_EGRESS_EVENT",
+    "NET_MECHANISM_TOOL_DECLARED",
     "attach_ingest_edges",
+    "declare_web_domains",
     "install_egress_recorder",
     "join_call_to_serving_child",
     "net_egress_records",
