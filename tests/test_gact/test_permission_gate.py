@@ -1103,8 +1103,16 @@ def test_external_mcp_call_uses_explicit_session_for_policy_and_telemetry(
             "tool.call.started",
             "tool.call.completed",
         ]
-        assert older_history[0].payload["reason"] == "policy_allow"
-        assert newer_history == []
+        # B5 #979.2: session creation now emits a session-attach ``boundary.granted``
+        # (a ``semantic.event`` on the bus), so assert on the permission.resolved row directly
+        # rather than history[0], and that the NEWER session leaked no tool/permission events.
+        resolved = next(e for e in older_history if e.type == "permission.resolved")
+        assert resolved.payload["reason"] == "policy_allow"
+        assert [
+            e.type
+            for e in newer_history
+            if e.type.startswith("tool.call.") or e.type == "permission.resolved"
+        ] == []
         assert app.state.tool_call_ledger[older_sid][0]["name"] == "shell.exec"
         assert newer_sid not in app.state.tool_call_ledger
 
@@ -1142,7 +1150,13 @@ def test_observer_uses_active_turn_session_over_recency(tmp_path: Path) -> None:
             observer("hdf5_list_datasets", {"path": "/tmp/x.h5"}, "started", None)
             observer("hdf5_list_datasets", {"path": "/tmp/x.h5"}, "completed", None)
 
-        assert app.state.bus._history.get(newer_sid, []) == []
+        # B5 #979.2: the newer session's only bus entry is its creation-time boundary event;
+        # what must NOT leak to it is any TOOL call from the older session's turn.
+        assert [
+            e.type
+            for e in app.state.bus._history.get(newer_sid, [])
+            if e.type.startswith("tool.call.")
+        ] == []
         older_history = app.state.bus._history.get(older_sid, [])
         assert [e.type for e in older_history if e.type.startswith("tool.call.")] == [
             "tool.call.started",
@@ -1176,7 +1190,12 @@ def test_turn_context_reaches_observer_inside_executor_thread(tmp_path: Path) ->
         newer_sid = c.post("/v1/sessions", json={"title": "newer"}).json()["id"]
         complete_turn(c, older_sid, "inspect")
 
-        assert app.state.bus._history.get(newer_sid, []) == []
+        # B5 #979.2: newer session's creation-time boundary event is allowed; no TOOL leak is.
+        assert [
+            e.type
+            for e in app.state.bus._history.get(newer_sid, [])
+            if e.type.startswith("tool.call.")
+        ] == []
         older_history = app.state.bus._history.get(older_sid, [])
         assert "tool.call.started" in [e.type for e in older_history]
         assert "tool.call.completed" in [e.type for e in older_history]
