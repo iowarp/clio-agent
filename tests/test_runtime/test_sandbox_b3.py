@@ -244,6 +244,148 @@ def test_default_installer_is_the_elevation_and_is_guarded(monkeypatch: pytest.M
 
 
 # --------------------------------------------------------------------------- #
+# npm one-command install offer (owner direction on #977) — injected fakes only. #
+# --------------------------------------------------------------------------- #
+
+
+def _srt_absent_node_present() -> swp.WindowsSandboxState:
+    """srt binary absent BUT node present (npm ships with node) — the offer-eligible state."""
+    det = _det(sandbox.REASON_SRT_NOT_INSTALLED)  # installed=False, node_present=False by default
+    det = sandbox.SrtDetection(
+        installed=False,
+        binary_path="",
+        version="",
+        node_present=True,  # node (hence npm) present — srt is the ONLY missing piece
+        node_version="v22.0.0",
+        node_ok=True,
+        socat_present=False,
+        reason=sandbox.REASON_SRT_NOT_INSTALLED,
+    )
+    return swp.WindowsSandboxState(
+        status=swp.STATUS_SRT_ABSENT,
+        reason=sandbox.REASON_SRT_NOT_INSTALLED,
+        srt=det,
+        next_action=swp.SRT_INSTALL_POINTER,
+    )
+
+
+class _SpyNpm:
+    """A fake `npm install -g` — records calls; the real npm is NEVER run in tests."""
+
+    def __init__(self, ok: bool = True, detail: str = "installed") -> None:
+        self.calls = 0
+        self._ok = ok
+        self._detail = detail
+
+    def __call__(self) -> tuple[bool, str]:
+        self.calls += 1
+        return self._ok, self._detail
+
+
+def test_provision_offers_npm_install_then_continues_one_command() -> None:
+    """npm present + consent → auto-install srt, then CONTINUE into provision (one command)."""
+    npm = _SpyNpm(ok=True)
+    elevation = _SpyInstaller(ok=True)
+    written: list[str] = []
+    # After npm install, the re-probe reports unprovisioned (srt now present); the elevation's
+    # own post-install re-probe then reports provisioned.
+    reprobes = iter(
+        [
+            swp.WindowsSandboxState(
+                status=swp.STATUS_UNPROVISIONED,
+                reason=sandbox.REASON_WINDOWS_UNPROVISIONED,
+                srt=_ready_det(),
+            ),
+            swp.WindowsSandboxState(
+                status=swp.STATUS_PROVISIONED, reason=swp.REASON_WINDOWS_PROVISIONED
+            ),
+        ]
+    )
+    result = swp.provision_windows_sandbox(
+        state=_srt_absent_node_present(),
+        installer=elevation,
+        marker_writer=lambda v: written.append(v),
+        state_reader=lambda: next(reprobes),
+        npm_installer=npm,
+        confirm=lambda _prompt: True,
+    )
+    assert result.ok is True
+    assert result.status == swp.OUTCOME_PROVISIONED
+    assert npm.calls == 1  # srt auto-installed
+    assert elevation.calls == ["C:\\srt\\srt.cmd"]  # then provisioned under one UAC
+    assert written == ["0.0.66"]
+
+
+def test_provision_npm_install_failure_is_typed_no_marker() -> None:
+    """npm install fails → typed srt_install_failed, no elevation, no marker (no silent path)."""
+    npm = _SpyNpm(ok=False, detail="npm install exited 1")
+    elevation = _SpyInstaller()
+    written: list[str] = []
+    result = swp.provision_windows_sandbox(
+        state=_srt_absent_node_present(),
+        installer=elevation,
+        marker_writer=lambda v: written.append(v),
+        npm_installer=npm,
+        confirm=lambda _prompt: True,
+    )
+    assert result.ok is False
+    assert result.status == swp.OUTCOME_SRT_INSTALL_FAILED
+    assert result.reason == swp.REASON_SRT_INSTALL_FAILED
+    assert npm.calls == 1
+    assert elevation.calls == []  # never elevated
+    assert written == []  # no marker written on a failed install
+
+
+def test_provision_offer_declined_is_pointer_no_npm() -> None:
+    """A declined offer → the typed install pointer; npm is NOT run, nothing elevated."""
+    npm = _SpyNpm()
+    result = swp.provision_windows_sandbox(
+        state=_srt_absent_node_present(), npm_installer=npm, confirm=lambda _prompt: False
+    )
+    assert result.ok is False
+    assert result.status == swp.STATUS_SRT_ABSENT
+    assert npm.calls == 0
+
+
+def test_provision_node_absent_is_pointer_not_offer() -> None:
+    """node absent → the offer is NOT made (npm ships with node); the typed pointer stands."""
+    npm = _SpyNpm()
+    node_absent = sandbox.SrtDetection(
+        installed=True,
+        binary_path="C:\\srt\\srt.cmd",
+        version="",
+        node_present=False,  # node (hence npm) absent — the offer must NOT be made
+        node_version="",
+        node_ok=False,
+        socat_present=False,
+        reason=sandbox.REASON_SRT_NODE_MISSING,
+    )
+    state = swp.WindowsSandboxState(
+        status=swp.STATUS_SRT_ABSENT,
+        reason=sandbox.REASON_SRT_NODE_MISSING,
+        srt=node_absent,
+        next_action="Install Node.js ...",
+    )
+    result = swp.provision_windows_sandbox(
+        state=state, npm_installer=npm, confirm=lambda _prompt: True
+    )
+    assert result.ok is False
+    assert result.status == swp.STATUS_SRT_ABSENT
+    assert npm.calls == 0  # no node ⇒ no npm ⇒ no offer
+
+
+def test_provision_no_confirm_gate_never_offers() -> None:
+    """confirm is None (conservative programmatic default) → no offer, no npm run."""
+    npm = _SpyNpm()
+    result = swp.provision_windows_sandbox(
+        state=_srt_absent_node_present(), npm_installer=npm, confirm=None
+    )
+    assert result.ok is False
+    assert result.status == swp.STATUS_SRT_ABSENT
+    assert npm.calls == 0
+
+
+# --------------------------------------------------------------------------- #
 # Ladder — srt_windows activates only when provisioned; floors otherwise.        #
 # --------------------------------------------------------------------------- #
 
@@ -392,13 +534,24 @@ def test_winerror5_denial_mapping(text: str, path: str) -> None:
     assert denial["path"] == path
 
 
-def test_winerror5_mints_prevented_when_fenced(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A fenced out-of-root WinError-5 mints a prevented violation (srt_windows mechanism)."""
+def test_winerror5_mints_prevented_when_fenced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fenced out-of-root WinError-5 mints a prevented violation (srt_windows mechanism).
+
+    Uses REAL ``tmp_path`` roots so containment (``_within_roots``) is evaluated with the
+    running OS's own Path flavor — portable on Linux CI and Windows alike (a hardcoded
+    ``C:\\...`` string is a single opaque segment under PosixPath, which would false-judge
+    containment on the Linux runner; that non-portability was the review blocker).
+    """
     from fastapi import FastAPI
 
     from clio_agent.gact.artifacts import violations as v
 
-    monkeypatch.setattr(v, "_effective_roots", lambda _app, _ws: (Path("C:\\ws"),))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    outside = tmp_path / "outside" / "escaped.txt"
+    monkeypatch.setattr(v, "_effective_roots", lambda _app, _ws: (ws,))
     active = sandbox.SandboxResult(
         mechanism=sandbox.MECHANISM_SRT_WINDOWS, active=True, reason=sandbox.REASON_FENCE_ACTIVE
     )
@@ -409,7 +562,7 @@ def test_winerror5_mints_prevented_when_fenced(monkeypatch: pytest.MonkeyPatch) 
         tool_name="bash",
         args={},
         call_id="c1",
-        result={"stderr": "[WinError 5] Access is denied: 'C:\\outside\\escaped.txt'"},
+        result={"stderr": f"[WinError 5] Access is denied: '{outside}'"},
         workspace_id="ws1",
         state=active,
         started_at=1000.0,
@@ -418,29 +571,34 @@ def test_winerror5_mints_prevented_when_fenced(monkeypatch: pytest.MonkeyPatch) 
     assert out[0].kind == v.VIOLATION_PREVENTED
     assert out[0].mechanism == sandbox.MECHANISM_SRT_WINDOWS
     assert out[0].errno_name == "ERROR_ACCESS_DENIED"
-    assert out[0].path == "C:\\outside\\escaped.txt"
+    assert out[0].path == str(outside)
 
 
-@pytest.mark.parametrize(
-    ("stderr", "mints"),
-    [
-        # In-root WinError 5 (a DAC/mandatory denial inside territory) → NO mint.
-        ("[WinError 5] Access is denied: 'C:\\ws\\inside.txt'", False),
-        # Path-less "access is denied" (no quoted/extractable path) → NO mint.
-        ("Access is denied.", False),
-        # Genuine out-of-root WinError 5 write denial → MINT.
-        ("[WinError 5] Access is denied: 'C:\\outside\\x.txt'", True),
-    ],
-)
+@pytest.mark.parametrize("kind", ["in_root", "path_less", "out_of_root"])
 def test_winerror5_precision_skips(
-    stderr: str, mints: bool, monkeypatch: pytest.MonkeyPatch
+    kind: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Precision over recall: only a proven out-of-root WinError-5 write mints (no false attribution)."""
+    """Precision over recall: only a proven out-of-root WinError-5 write mints (no false attribution).
+
+    Real ``tmp_path`` roots/paths so containment uses the running OS's Path flavor — portable
+    on Linux CI and Windows (the review blocker was hardcoded ``C:\\...`` strings, which
+    PosixPath treats as one opaque segment → an in-root drive path false-judged as out-of-root).
+    """
     from fastapi import FastAPI
 
     from clio_agent.gact.artifacts import violations as v
 
-    monkeypatch.setattr(v, "_effective_roots", lambda _app, _ws: (Path("C:\\ws"),))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    stderr, mints = {
+        # In-root WinError 5 (a DAC/mandatory denial inside territory) → NO mint.
+        "in_root": (f"[WinError 5] Access is denied: '{ws / 'inside.txt'}'", False),
+        # Path-less "access is denied" (no quoted/extractable path) → NO mint.
+        "path_less": ("Access is denied.", False),
+        # Genuine out-of-root WinError 5 write denial → MINT.
+        "out_of_root": (f"[WinError 5] Access is denied: '{tmp_path / 'outside' / 'x.txt'}'", True),
+    }[kind]
+    monkeypatch.setattr(v, "_effective_roots", lambda _app, _ws: (ws,))
     active = sandbox.SandboxResult(
         mechanism=sandbox.MECHANISM_SRT_WINDOWS, active=True, reason=sandbox.REASON_FENCE_ACTIVE
     )
@@ -471,18 +629,20 @@ def test_cli_parses_sandbox_subaction(action: str, monkeypatch: pytest.MonkeyPat
 
     captured: dict[str, object] = {}
 
-    def _spy(act: object, *, json_output: bool = False) -> int:
+    def _spy(act: object, *, json_output: bool = False, assume_yes: bool = False) -> int:
         captured["action"] = act
         captured["json"] = json_output
+        captured["assume_yes"] = assume_yes
         return 0
 
     monkeypatch.setattr(swp, "run_sandbox_cli", _spy)
-    monkeypatch.setattr("sys.argv", ["clio-agent", "sandbox", action, "--json"])
+    monkeypatch.setattr("sys.argv", ["clio-agent", "sandbox", action, "--json", "--yes"])
     with pytest.raises(SystemExit) as exc:
         cli.main()
     assert exc.value.code == 0
     assert captured["action"] == action
     assert captured["json"] is True
+    assert captured["assume_yes"] is True  # --yes threads through to the owner module
 
 
 def test_run_sandbox_cli_unknown_action_is_typed() -> None:
