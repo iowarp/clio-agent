@@ -185,7 +185,7 @@ def test_synthesize_profile_win32_read_anywhere_write_fence() -> None:
     fs = profile["filesystem"]
     assert fs["D:\\ws"] == "write"
     assert fs["D:\\"] == "read"  # the write root's drive anchor is a read grant
-    assert set(profile) == {"description", "filesystem"}
+    assert set(profile) == {"description", "filesystem", "network"}
     # The synthesized table passes clio's own validation (round-trip).
     sc.validate_codex_profile(profile)
 
@@ -231,7 +231,7 @@ def test_synthesize_profile_write_wins_over_read_overlap() -> None:
 
 def test_validate_profile_rejects_bad_top_key() -> None:
     """A stray top-level key is typed codex_profile_rejected (defensive against drift)."""
-    bad = {"filesystem": {"/ws": "write"}, "network": {}}
+    bad = {"filesystem": {"/ws": "write"}, "bogus_top": 1}
     with pytest.raises(sc.CodexProfileError) as exc:
         sc.validate_codex_profile(bad)
     assert exc.value.reason == sc.REASON_CODEX_PROFILE_REJECTED
@@ -267,6 +267,73 @@ def test_validate_profile_rejects_non_dict() -> None:
     """A non-dict profile is rejected."""
     with pytest.raises(sc.CodexProfileError):
         sc.validate_codex_profile(["not", "a", "table"])
+
+
+# --------------------------------------------------------------------------- #
+# network egress table (Recipe A) — synth emits it, validate closes on drift.   #
+# --------------------------------------------------------------------------- #
+
+
+def test_synthesize_profile_emits_network_table() -> None:
+    """synth emits the REQUIRED Recipe-A network table (enabled/full/allow_upstream_proxy)."""
+    profile = sc.synthesize_codex_profile(["/ws"], platform="linux")
+    assert profile["network"] == {
+        "enabled": True,
+        "mode": "full",
+        "allow_upstream_proxy": True,
+    }
+    # The synthesized table round-trips clio's own validation.
+    sc.validate_codex_profile(profile)
+
+
+def _valid_profile_with_net(network: Any) -> dict[str, Any]:
+    """A minimal otherwise-valid profile carrying ``network`` (isolates the network assertion)."""
+    return {"filesystem": {"/ws": "write"}, "network": network}
+
+
+def test_validate_profile_rejects_missing_network() -> None:
+    """clio always synthesizes network, so a MISSING network table is drift (typed reject)."""
+    with pytest.raises(sc.CodexProfileError) as exc:
+        sc.validate_codex_profile({"filesystem": {"/ws": "write"}})
+    assert exc.value.reason == sc.REASON_CODEX_PROFILE_REJECTED
+    assert "network" in str(exc.value)
+
+
+def test_validate_profile_rejects_bad_net_mode() -> None:
+    """A network mode outside {full, limited} is typed codex_profile_rejected."""
+    bad = _valid_profile_with_net(
+        {"enabled": True, "mode": "wideopen", "allow_upstream_proxy": True}
+    )
+    with pytest.raises(sc.CodexProfileError) as exc:
+        sc.validate_codex_profile(bad)
+    assert exc.value.reason == sc.REASON_CODEX_PROFILE_REJECTED
+    assert "mode" in str(exc.value)
+
+
+def test_validate_profile_rejects_net_extra_key() -> None:
+    """An extra key in the network table (e.g. a stray ``mitm`` bool) is rejected."""
+    bad = _valid_profile_with_net(
+        {"enabled": True, "mode": "full", "allow_upstream_proxy": True, "mitm": False}
+    )
+    with pytest.raises(sc.CodexProfileError) as exc:
+        sc.validate_codex_profile(bad)
+    assert exc.value.reason == sc.REASON_CODEX_PROFILE_REJECTED
+
+
+def test_validate_profile_rejects_non_bool_enabled() -> None:
+    """A non-bool ``enabled`` (an int is NOT a bool) is rejected — no silent coercion."""
+    bad = _valid_profile_with_net({"enabled": 1, "mode": "full", "allow_upstream_proxy": True})
+    with pytest.raises(sc.CodexProfileError) as exc:
+        sc.validate_codex_profile(bad)
+    assert exc.value.reason == sc.REASON_CODEX_PROFILE_REJECTED
+    assert "enabled" in str(exc.value)
+
+
+def test_validate_profile_rejects_non_bool_allow_upstream() -> None:
+    """A non-bool ``allow_upstream_proxy`` is rejected."""
+    bad = _valid_profile_with_net({"enabled": True, "mode": "full", "allow_upstream_proxy": "yes"})
+    with pytest.raises(sc.CodexProfileError):
+        sc.validate_codex_profile(bad)
 
 
 # --------------------------------------------------------------------------- #
@@ -344,6 +411,36 @@ def test_write_layer_omits_windows_block_when_not_elevated(tmp_path: Path) -> No
     )
     text = (tmp_path / f"{layer}.config.toml").read_text(encoding="utf-8")
     assert "[windows]" not in text
+
+
+def test_write_layer_emits_network_block_no_mitm(tmp_path: Path) -> None:
+    """The rendered layer carries the Recipe-A [permissions.<p>.network] block, and NO mitm line."""
+    profile = sc.synthesize_codex_profile(["/ws"], profile_name="clio", platform="linux")
+    layer = sc.write_codex_layer(
+        "clio", profile, elevated=False, codex_home=tmp_path, platform="linux"
+    )
+    text = (tmp_path / f"{layer}.config.toml").read_text(encoding="utf-8")
+    assert "[permissions.clio.network]" in text
+    assert "enabled = true" in text
+    assert 'mode = "full"' in text
+    assert "allow_upstream_proxy = true" in text
+    # mitm is a TOML TABLE in codex v0.145, not a bool — it must NOT be emitted at all.
+    assert "mitm" not in text
+
+
+def test_render_layer_toml_network_block_shape() -> None:
+    """_render_layer_toml emits the network block reading values from the profile (not hardcoded)."""
+    profile = sc.synthesize_codex_profile(["/ws"], profile_name="clio", platform="linux")
+    body = sc._render_layer_toml("clio", profile, elevated=False)
+    assert "[permissions.clio.filesystem]" in body
+    net_idx = body.index("[permissions.clio.network]")
+    fs_idx = body.index("[permissions.clio.filesystem]")
+    assert fs_idx < net_idx  # network block follows the filesystem block
+    block = body[net_idx:]
+    assert "enabled = true" in block
+    assert 'mode = "full"' in block
+    assert "allow_upstream_proxy = true" in block
+    assert "mitm" not in body
 
 
 def test_write_layer_validates_before_writing(tmp_path: Path) -> None:

@@ -230,10 +230,12 @@ def _resolve_backend(
 
 
 def _activate_codex(det: Any, base_details: dict[str, Any]) -> SandboxResult:
-    """Stamp an ACTIVE Codex write-fence result (network egress DEFERRED to a later slice).
+    """Stamp an ACTIVE Codex write-fence result with RECORDED egress (Recipe A).
 
-    The Codex write-fence needs NO chokepoint proxy; it activates now and ``net_enforcement``
-    honestly records ``codex-net-deferred`` (a typed value, never a silent gap).
+    Egress is recorded through clio's upstream chokepoint: codex's managed proxy forces the
+    confined child's traffic through it, then chains to clio's per-child loopback listener
+    (``allow_upstream_proxy``). The child cannot bypass it (codex's OS egress rules force it),
+    so ``net_enforcement`` is :data:`NET_ENFORCEMENT_PROXY` — proxy-enforced, never a silent gap.
     """
     return SandboxResult(
         mechanism=MECHANISM_CODEX,
@@ -243,7 +245,7 @@ def _activate_codex(det: Any, base_details: dict[str, Any]) -> SandboxResult:
             **base_details,
             "codex_binary": det.binary_path,
             "codex_version": det.version,
-            "net_enforcement": "codex-net-deferred",
+            "net_enforcement": NET_ENFORCEMENT_PROXY,
         },
     )
 
@@ -323,18 +325,18 @@ def wrap_confined(
     popen_kwargs: dict[str, Any] = {}
     net_child_id = ""
 
-    # Active backend: fence prefix INNER (pdeathsig outermost below). B4's per-child egress channel
-    # is the Landlock/floor tier ONLY; codex net is DEFERRED — skip the proxy (it would hang) and
-    # compose only.
+    # Active backend: fence prefix INNER (pdeathsig outermost below). Every active backend opens a
+    # per-child egress channel. For codex this is Recipe A: the proxy overlay lands on the spawned
+    # process — which IS the codex PARENT — and codex chains its managed child proxy to clio's
+    # per-child loopback listener (attribution preserved: one spawn = one child = one port).
     if resolved_state.active and resolved_state.mechanism != MECHANISM_NONE:
         proxy_port: Optional[int] = None
-        if resolved_state.mechanism != MECHANISM_CODEX:
-            from clio_agent.runtime import sandbox_net  # noqa: PLC0415 - B4 egress-wiring sibling
+        from clio_agent.runtime import sandbox_net  # noqa: PLC0415 - B4 egress-wiring sibling
 
-            net_child_id, proxy_port, net_env = sandbox_net.open_child_egress(
-                resolved_state, write_roots
-            )
-            env_overlay.update(net_env)
+        net_child_id, proxy_port, net_env = sandbox_net.open_child_egress(
+            resolved_state, write_roots
+        )
+        env_overlay.update(net_env)
         cmd, arg_list = _compose_fence_prefix(
             resolved_state, profile, cmd, arg_list, write_roots, proxy_port=proxy_port
         )

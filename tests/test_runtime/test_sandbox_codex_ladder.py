@@ -76,8 +76,8 @@ def test_codex_viable_activates_codex(platform: str) -> None:
     assert result.reason == sandbox.REASON_FENCE_ACTIVE
     assert result.details["codex_binary"] == "/usr/bin/codex"
     assert result.details["codex_version"] == "0.145.0"
-    # Network egress is DEFERRED — the write-fence is active with the honest deferred net label.
-    assert result.details["net_enforcement"] == "codex-net-deferred"
+    # Network egress is RECORDED via clio's upstream chokepoint (Recipe A) → proxy-enforced label.
+    assert result.details["net_enforcement"] == sandbox.NET_ENFORCEMENT_PROXY
 
 
 @pytest.mark.parametrize(

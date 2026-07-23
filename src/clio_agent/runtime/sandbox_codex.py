@@ -265,6 +265,9 @@ def synthesize_codex_profile(
             f"write-fenced to {len(writes)} root(s)"
         ),
         "filesystem": filesystem,
+        # Recipe A egress recording: codex's managed proxy chains to clio's per-child upstream;
+        # ``mode="full"`` = observe-all (reads allowed); ``mitm`` OMITTED (table-not-bool in v0.145).
+        "network": {"enabled": True, "mode": "full", "allow_upstream_proxy": True},
     }
     validate_codex_profile(profile)
     return profile
@@ -273,9 +276,13 @@ def synthesize_codex_profile(
 #: The top-level keys clio's synthesizer is allowed to emit. clio validates its OWN table
 #: against this closed set — a stray key is a synthesizer drift bug (``codex_profile_rejected``),
 #: never a silent no-op that fences nothing.
-_ALLOWED_PROFILE_KEYS = frozenset({"description", "filesystem"})
+_ALLOWED_PROFILE_KEYS = frozenset({"description", "filesystem", "network"})
 #: The only filesystem grant modes codex honors; anything else is drift.
 _ALLOWED_FS_MODES = frozenset({"read", "write", "deny"})
+#: Egress observation modes clio synthesizes (``full`` = observe-all; ``limited`` reserved). Drift else.
+_ALLOWED_NET_MODES = frozenset({"full", "limited"})
+#: The exact closed key set clio's ``network`` table carries (like the filesystem grants).
+_ALLOWED_NET_KEYS = frozenset({"enabled", "mode", "allow_upstream_proxy"})
 
 
 def validate_codex_profile(profile: Any) -> None:
@@ -284,8 +291,9 @@ def validate_codex_profile(profile: Any) -> None:
     A closed-world check that the table clio synthesized is exactly the shape clio intends,
     defensive against silent config drift (a stray key, a bogus mode) that codex might tolerate
     and quietly mis-fence. Raises :class:`CodexProfileError` (``codex_profile_rejected``) on any
-    deviation: an unexpected top-level key, a missing ``filesystem`` table, a non-string
-    description, an empty/non-string filesystem key, or a mode outside ``{read, write, deny}``.
+    deviation: an unexpected top-level key, a missing ``filesystem`` or ``network`` table, a
+    non-string description, an empty/non-string filesystem key, a filesystem mode outside
+    ``{read, write, deny}``, or a drifted ``network`` table (key set / bool / mode).
     """
     if not isinstance(profile, dict):
         raise CodexProfileError("codex profile must be a table (dict)")
@@ -310,6 +318,37 @@ def validate_codex_profile(profile: Any) -> None:
                 f"codex profile filesystem[{key!r}] must be one of "
                 f"{sorted(_ALLOWED_FS_MODES)}, got {mode!r}"
             )
+    _validate_codex_network(profile)
+
+
+def _validate_codex_network(profile: dict[str, Any]) -> None:
+    """Validate the REQUIRED ``network`` egress table (Recipe A) against clio's closed key set.
+
+    clio always synthesizes ``network`` (egress recording is not optional), so a MISSING table is
+    drift like a missing ``filesystem`` — a typed ``codex_profile_rejected``, never a silent no-op
+    leaving egress unrecorded. Must carry EXACTLY ``{enabled, mode, allow_upstream_proxy}``:
+    the two flags bool, ``mode`` in :data:`_ALLOWED_NET_MODES`.
+    """
+    if "network" not in profile:
+        raise CodexProfileError("codex profile requires a 'network' table")
+    network = profile["network"]
+    if not isinstance(network, dict):
+        raise CodexProfileError("codex profile 'network' must be a table")
+    keys = set(network)
+    if keys != _ALLOWED_NET_KEYS:
+        raise CodexProfileError(
+            f"codex profile network keys must be exactly {sorted(_ALLOWED_NET_KEYS)}, "
+            f"got {sorted(keys)}"
+        )
+    for flag in ("enabled", "allow_upstream_proxy"):  # int is not bool → no silent coercion
+        if not isinstance(network[flag], bool):
+            raise CodexProfileError(f"codex profile network[{flag!r}] must be a bool")
+    mode = network["mode"]
+    if mode not in _ALLOWED_NET_MODES:
+        raise CodexProfileError(
+            f"codex profile network['mode'] must be one of {sorted(_ALLOWED_NET_MODES)}, "
+            f"got {mode!r}"
+        )
 
 
 def _toml_str(value: str) -> str:
@@ -320,6 +359,11 @@ def _toml_str(value: str) -> str:
     """
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+
+def _toml_bool(value: bool) -> str:
+    """Render a bool as a TOML literal (lowercase ``true``/``false``)."""
+    return "true" if value else "false"
 
 
 def codex_layer_name(profile_name: str, profile: dict[str, Any]) -> str:
@@ -338,10 +382,10 @@ def codex_layer_name(profile_name: str, profile: dict[str, Any]) -> str:
 def _render_layer_toml(profile_name: str, profile: dict[str, Any], *, elevated: bool) -> str:
     """Render the layer's real-TOML body (a FILE, no shell involved — plain escaping).
 
-    Emits ``[windows]\\nsandbox = "elevated"`` when ``elevated`` (the caller gates this on win32),
-    then ``[permissions.<name>.filesystem]`` with one ``"<escaped-path>" = "<mode>"`` line per
-    grant. Backslashes are doubled by :func:`_toml_str` — this is genuine TOML, so a Windows path
-    reads back exactly.
+    Emits ``[windows]\\nsandbox = "elevated"`` when ``elevated`` (win32-gated), then the
+    ``[permissions.<name>.filesystem]`` grants, then the ``[permissions.<name>.network]`` egress
+    table (Recipe A). Values are read from the profile dict (never hardcoded) so a future mode
+    change flows through. Backslashes are doubled by :func:`_toml_str` (genuine TOML).
     """
     lines: list[str] = []
     if elevated:
@@ -351,6 +395,13 @@ def _render_layer_toml(profile_name: str, profile: dict[str, Any], *, elevated: 
     lines.append(f"[permissions.{profile_name}.filesystem]")
     for path, mode in profile["filesystem"].items():
         lines.append(f"{_toml_str(path)} = {_toml_str(mode)}")
+    lines.append("")
+    # Recipe A egress table — emit profile values (never hardcoded); ``mitm`` absent by design.
+    network = profile["network"]
+    lines.append(f"[permissions.{profile_name}.network]")
+    lines.append(f"enabled = {_toml_bool(network['enabled'])}")
+    lines.append(f"mode = {_toml_str(network['mode'])}")
+    lines.append(f"allow_upstream_proxy = {_toml_bool(network['allow_upstream_proxy'])}")
     lines.append("")
     return "\n".join(lines)
 

@@ -229,7 +229,8 @@ def test_ladder_non_win32_codex_viable_activates_unchanged() -> None:
     )
     assert result.mechanism == sandbox.MECHANISM_CODEX
     assert result.active is True
-    assert result.details["net_enforcement"] == "codex-net-deferred"
+    # Egress is RECORDED via clio's upstream chokepoint (Recipe A) → proxy-enforced net label.
+    assert result.details["net_enforcement"] == sandbox.NET_ENFORCEMENT_PROXY
 
 
 # --------------------------------------------------------------------------- #

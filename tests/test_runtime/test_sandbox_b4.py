@@ -749,3 +749,58 @@ def test_wrap_confined_channel_failure_falls_back_not_silent(
     # Falls back to the shared chokepoint; no per-child env overlay, no attribution.
     assert confined.env_overlay == {}
     assert confined.result.details["net_child_id"] == ""
+
+
+def _codex_state():
+    from clio_agent.runtime import sandbox
+
+    return sandbox.SandboxResult(
+        mechanism=sandbox.MECHANISM_CODEX,
+        active=True,
+        reason=sandbox.REASON_FENCE_ACTIVE,
+        # Recipe A: egress is RECORDED through clio's upstream chokepoint → proxy-enforced label.
+        details={"net_enforcement": sandbox.NET_ENFORCEMENT_PROXY, "codex_binary": "codex"},
+    )
+
+
+def test_wrap_confined_codex_records_egress_recipe_a(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ACTIVE codex spawn opens a per-child channel: the overlay lands on the codex PARENT.
+
+    Recipe A — the proxy env overlay is set on the spawned process (the codex parent), and codex
+    chains its managed child proxy to this per-child clio listener. Per-child attribution holds:
+    one spawn = one child_id = one port.
+    """
+    from clio_agent.runtime import sandbox
+
+    # Keep the codex layer write hermetic (into tmp, never the real ~/.codex).
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+
+    captured: dict[str, object] = {}
+
+    def _fake_open(child_id: str, *, mechanism: str = "", workspace_root: str = "") -> int:
+        captured["child_id"] = child_id
+        captured["mechanism"] = mechanism
+        captured["workspace_root"] = workspace_root
+        return 44444
+
+    monkeypatch.setattr(nc, "open_child_channel", _fake_open)
+
+    confined = sandbox.wrap_confined(
+        "python",
+        ["-c", "print(1)"],
+        write_roots=[str(tmp_path)],
+        profile=sandbox.PROFILE_FLEET,
+        state=_codex_state(),
+    )
+    # A non-empty per-child id is attributed to this spawn.
+    assert confined.result.details["net_child_id"] == captured["child_id"]
+    assert captured["child_id"]
+    # The overlay carries the Recipe-A parent proxy pointing at the per-child loopback listener.
+    assert confined.env_overlay["HTTP_PROXY"] == "http://127.0.0.1:44444"
+    assert confined.env_overlay["HTTPS_PROXY"] == "http://127.0.0.1:44444"
+    assert confined.env_overlay["ALL_PROXY"] == "http://127.0.0.1:44444"
+    # The child cannot bypass codex's managed proxy → the honest per-edge label is proxy-enforced.
+    assert captured["mechanism"] == nc.MECHANISM_PROXY_ENFORCED
+    assert captured["workspace_root"] == str(tmp_path)

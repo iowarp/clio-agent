@@ -171,7 +171,8 @@ def test_resolve_backend_codex_primary_activates_off_win32() -> None:
     assert result.active is True
     assert result.reason == sandbox.REASON_FENCE_ACTIVE
     assert result.details["codex_binary"] == "/usr/bin/codex"
-    assert result.details["net_enforcement"] == "codex-net-deferred"
+    # Egress is RECORDED via clio's upstream chokepoint (Recipe A) → proxy-enforced net label.
+    assert result.details["net_enforcement"] == sandbox.NET_ENFORCEMENT_PROXY
     assert "landlock" not in result.details  # the fallback rung was never taken
 
 
