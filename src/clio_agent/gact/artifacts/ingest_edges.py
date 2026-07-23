@@ -16,14 +16,21 @@ the gact-side seam it calls back into:
   1. a staged-download / catalog edge whose source URL host MATCHES an in-window egress host
      is ENRICHED in place (one edge, two evidence bases: its ``sha256`` hash-pair PLUS the
      chokepoint-confirmed domain + net mechanism) — never a duplicate node;
-  2. otherwise, when the transform is ingest-shaped and the in-window egress names EXACTLY
-     ONE (workspace-scoped) domain, a fresh ``web:<domain>@<time>`` edge is minted from the
-     egress alone;
-  3. an ambiguous (multi-domain) or unjoinable egress stays a BARE ``net.egress`` record —
-     never a fabricated edge.
+  2. otherwise, when the transform is ingest-shaped AND the producing call's SERVING confined
+     child is known AND that child's in-window egress names EXACTLY ONE (workspace-scoped)
+     domain, a fresh ``web:<domain>@<time>`` edge is minted from the egress alone;
+  3. an ambiguous / unattributable egress stays a BARE ``net.egress`` record — never a
+     fabricated edge.
 
-The join is deterministic (host match / single unambiguous domain, workspace-scoped), NOT a
-timing heuristic — the window only bounds the candidate set.
+**The step-2 mint is CHILD-KEYED and deterministic** (#978 point 5: ``egress → child →
+call-window → transform``). Every ``EgressRecord`` carries the ``child_id`` of the confined
+child that opened the connection (a per-dispatch chokepoint channel — no timing heuristic).
+The mint fires ONLY when the transform's serving child_id is threaded in AND that child's
+egress is unambiguous; it ABSTAINS (bare ``net.egress``, no edge) when the serving child is
+unknown, the window is unprovable (no ``started_at``), or the child's egress spans multiple
+domains. This is precision over recall (#966.10): a concurrent sibling child's egress can
+never be minted onto an unrelated transform. Step-1 host-match enrich is always safe (the
+transform's OWN url edge corroborates the domain) and needs no child key.
 """
 
 from __future__ import annotations
@@ -138,6 +145,61 @@ def net_egress_records(app: "FastAPI") -> list[dict[str, Any]]:
 
 
 # --------------------------------------------------------------------------- #
+# The serving-child linkage: call_id → the confined child that served the call.
+# --------------------------------------------------------------------------- #
+#
+# This is the deterministic key the step-2 mint requires (#978 point 5). A confined MCP
+# child's ``net_child_id`` (stamped at spawn in ``sandbox.compose_confined_spawn`` →
+# ``details['net_child_id']``) is associated with the ``call_id`` it serves via
+# :func:`register_serving_child`; the join reads it back via
+# :func:`resolve_serving_child_id`. Until a call's serving child is registered the resolver
+# returns ``""`` and the step-2 mint ABSTAINS (precision over recall — never a wrong edge).
+# The map is bounded and per-app; population lights up wherever the confined-dispatch boundary
+# can name the child serving a call (empty on the floor, where no channel is opened at all).
+
+#: Bound on the call_id → serving child_id map (a long-lived server must not grow it).
+_SERVING_CHILD_MAX = 1024
+
+
+def register_serving_child(app: "FastAPI", call_id: str, child_id: str) -> None:
+    """Associate a tool ``call_id`` with the confined child that served it (B4, guarded).
+
+    No-op for an empty ``call_id`` or ``child_id`` (the floor / unattributed case). Bounded —
+    oldest associations fall off. Never raises into the caller.
+    """
+    call = (call_id or "").strip()
+    child = (child_id or "").strip()
+    if not call or not child:
+        return
+    try:
+        table = getattr(app.state, "net_serving_child_by_call", None)
+        if not isinstance(table, dict):
+            table = {}
+            app.state.net_serving_child_by_call = table
+        table[call] = child
+        if len(table) > _SERVING_CHILD_MAX:
+            for stale in list(table.keys())[: len(table) - _SERVING_CHILD_MAX]:
+                table.pop(stale, None)
+    except Exception:  # noqa: BLE001 — a linkage note must never break a call
+        logger.debug("serving-child register skipped reason=linkage_unwritable", exc_info=True)
+
+
+def resolve_serving_child_id(app: "FastAPI", call_id: str) -> str:
+    """Return the confined child id that served ``call_id``, or ``""`` (never raises).
+
+    ``""`` is the abstain signal: the step-2 egress-only mint suppresses without a known
+    serving child (precision over recall).
+    """
+    call = (call_id or "").strip()
+    if not call:
+        return ""
+    table = getattr(app.state, "net_serving_child_by_call", None)
+    if isinstance(table, dict):
+        return str(table.get(call) or "")
+    return ""
+
+
+# --------------------------------------------------------------------------- #
 # The join: ``used web:<domain>@<time>`` (precision over recall, #966.10).
 # --------------------------------------------------------------------------- #
 
@@ -169,10 +231,13 @@ def _in_window_records(
 ) -> list[dict[str, Any]]:
     """Egress records whose timestamp falls within the transform's ``[started, ended]`` window.
 
-    The window only BOUNDS the candidate set — the join decision itself is domain-based, not a
-    timing heuristic. A record with an unparseable timestamp is dropped (never guessed into
-    the window). When ``started_at`` is unknown the window is unbounded-below (still bounded
-    above by ``ended_at``), so a just-completed ingest still joins.
+    The window only BOUNDS the candidate set — the join decision itself is child-keyed +
+    domain-based, not a timing heuristic. A record with an unparseable timestamp is dropped
+    (never guessed into the window). When ``started_at`` is unknown the window is
+    unbounded-below (still bounded above by ``ended_at``): this feeds ONLY the safe step-1
+    host-match enrich (self-corroborated by the transform's own url edge). The step-2
+    egress-only mint separately REQUIRES ``started_at`` (:func:`attach_ingest_edges` abstains
+    without it) — an unprovable window never mints a fresh edge.
     """
     lo = started_at if started_at is not None else 0.0
     out: list[dict[str, Any]] = []
@@ -214,6 +279,11 @@ def _is_ingest_shaped(tool_name: str, used: list[ProvEdge]) -> bool:
     return any(e.authority or e.external_ref.startswith("external:http") for e in used)
 
 
+def _child_of(entry: dict[str, Any]) -> str:
+    """The confined child id that opened this egress (``""`` when unattributed)."""
+    return str(entry.get("child_id") or "").strip()
+
+
 def attach_ingest_edges(
     app: "FastAPI",
     used: list[ProvEdge],
@@ -222,14 +292,27 @@ def attach_ingest_edges(
     tool_name: str,
     started_at: Optional[float],
     ended_at: Optional[float] = None,
+    serving_child_id: Optional[str] = None,
 ) -> list[ProvEdge]:
     """Join in-window ``net.egress`` records onto a transform's ``used`` edges (B4 #978).
 
-    Precision over recall (#966.10): enrich a URL edge whose host matches an egress host
-    (step 1); else mint ONE ``web:<domain>@<time>`` edge iff the transform is ingest-shaped
-    and the in-window (workspace-scoped) egress names exactly one still-unmatched domain
-    (step 2); an ambiguous / unjoinable egress stays a bare ``net.egress`` record (step 3 =
-    do nothing). Returns the (possibly enriched/extended) used list; never mutates the input.
+    Precision over recall (#966.10):
+
+    * **Step 1 — enrich** a URL edge whose host matches an in-window egress host (exact host
+      match; the transform's own url edge corroborates the domain, so this needs no child key
+      and is always safe).
+    * **Step 2 — egress-only mint** a fresh ``web:<domain>@<time>`` edge, but ONLY when the
+      join can attribute the egress DETERMINISTICALLY to this transform's producing call
+      (#978 point 5, ``egress → child → call-window → transform``): the transform is
+      ingest-shaped, ``started_at`` bounds the window, ``serving_child_id`` names the confined
+      child that served the call, and THAT child's in-window egress names exactly one
+      still-unmatched domain.
+    * **Abstain** (bare ``net.egress``, no edge) whenever step-2 attribution is not provable:
+      ``serving_child_id`` is unknown/empty, the window is unbounded (no ``started_at``), or
+      the serving child's egress spans multiple domains. A concurrent sibling child's egress
+      is therefore never minted onto an unrelated transform.
+
+    Returns the (possibly enriched/extended) used list; never mutates the input.
     """
     window = _in_window_records(app, started_at, ended_at if ended_at is not None else time.time())
     if not window:
@@ -252,18 +335,27 @@ def attach_ingest_edges(
             named_hosts.add(host or edge.net_domain)
 
     # Step 1 — enrich an existing URL edge whose host matches an in-window egress (exact host
-    # match is the guarantee: one edge, two evidence bases; never a duplicate node).
+    # match is the guarantee: one edge, two evidence bases; never a duplicate node). Safe
+    # without a child key — the transform itself named this url.
     for i, edge in enumerate(out):
         host = _url_host(edge.authority) or _url_host(edge.external_ref.removeprefix("external:"))
         if host and host in by_host and not edge.net_domain:
             out[i] = _enriched(edge, by_host[host][0])
 
-    # Step 2 — egress-only mint: an ingest-shaped transform whose in-window egress names
-    # EXACTLY ONE still-unnamed domain gets one fresh ``web:<domain>@<time>`` edge.
-    unmatched = {h: rs for h, rs in by_host.items() if h not in named_hosts}
-    if len(unmatched) == 1 and _is_ingest_shaped(tool_name, used):
+    # Step 2 — egress-only mint, CHILD-KEYED + abstaining (precision over recall, #978 pt 5).
+    # Abstain unless the producing call's serving child is known AND the window is bounded:
+    # an unprovable window or an unknown serving child can never mint a web edge.
+    serving = (serving_child_id or "").strip()
+    if started_at is None or not serving or not _is_ingest_shaped(tool_name, used):
+        return out
+    # Restrict the candidate egress to the SERVING child only — a concurrent sibling child's
+    # egress (same workspace, distinct child_id) is dropped here, before the domain decision.
+    child_by_host = {h: rs for h, rs in by_host.items() if any(_child_of(r) == serving for r in rs)}
+    unmatched = {h: rs for h, rs in child_by_host.items() if h not in named_hosts}
+    if len(unmatched) == 1:
         host, rs = next(iter(unmatched.items()))
-        out.append(_web_edge(host, rs[0]))
+        serving_rec = next((r for r in rs if _child_of(r) == serving), rs[0])
+        out.append(_web_edge(host, serving_rec))
     return out
 
 
@@ -308,4 +400,6 @@ __all__ = [
     "install_egress_recorder",
     "net_egress_records",
     "record_egress",
+    "register_serving_child",
+    "resolve_serving_child_id",
 ]
