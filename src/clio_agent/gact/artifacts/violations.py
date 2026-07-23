@@ -18,8 +18,9 @@ trace-only ``artifact.policy_violation`` event (registered in
 the SSE listing / lineage-node projection waits for B5's SPEC rider.
 
 VIOLATION MAPPING (owner note #974 spike): a bwrap denial surfaces as ``EROFS``
-("Read-only file system"), NOT ``PermissionError`` — so this catches errno **EROFS + EACCES**
-(WinError 5 is B3's). The errno signal fires ONLY when a fence is active, so the floor never
+("Read-only file system"), NOT ``PermissionError`` — so this catches errno **EROFS + EACCES**;
+B3 (#977) adds the Windows srt ACL/WFP denial **WinError 5 / ERROR_ACCESS_DENIED** (a separate
+namespace from POSIX errno). The signal fires ONLY when a fence is active, so the floor never
 mints a violation (its out-of-root write is an honest gap, as before).
 """
 
@@ -91,6 +92,12 @@ class PolicyViolation(BaseModel):
 _ERRNO_BRACKET = {code: re.compile(rf"\[Errno {code}\]") for code in _DENIAL_ERRNOS}
 #: strerror text form (``/bin/sh`` prints this, not the ``[Errno N]`` bracket).
 _ERRNO_STRERROR = {code: os.strerror(code).lower() for code in _DENIAL_ERRNOS}
+#: Windows write-denial (B3, #977): srt's ACL/WFP fence surfaces ERROR_ACCESS_DENIED
+#: (WinError 5) — a separate namespace from POSIX errno, caught via the ``[WinError 5]``
+#: bracket a Python child prints and the "access is denied" strerror text a shell prints.
+_DENIAL_WINERRORS: dict[int, str] = {5: "ERROR_ACCESS_DENIED"}
+_WINERROR_BRACKET = {code: re.compile(rf"\[WinError {code}\]") for code in _DENIAL_WINERRORS}
+_WINERROR_STRERROR: dict[int, str] = {5: "access is denied"}
 #: Best-effort path extractors from a denial message, spanning the common shell/tool forms:
 #: coreutils/sh ("cannot create /p:"), bash redirect ("bash: line 1: /p: Read-only file
 #: system"), and Python OSError ("[Errno 30] ...: '/p'"). Ordered most-specific first.
@@ -131,9 +138,10 @@ def write_denial_from_result(result: Any) -> Optional[dict[str, Any]]:
 
     Scans the result's string leaves for a fenced child's ``EROFS``/``EACCES`` signal — the
     Python ``[Errno N]`` bracket form OR the OS ``strerror`` text a shell prints (e.g.
-    "Read-only file system"). Reality-surfacing (an OS errno in a tool result), NOT a
-    prose/routing heuristic — the caller only calls this when a fence is active, so a normal
-    permission error on the floor never becomes a violation.
+    "Read-only file system") — plus the Windows ``WinError 5`` / "access is denied" form the
+    srt ACL/WFP fence surfaces (B3, #977). Reality-surfacing (an OS errno/winerror in a tool
+    result), NOT a prose/routing heuristic — the caller only calls this when a fence is active,
+    so a normal permission error on the floor never becomes a violation.
     """
     for text in _walk_strings(result):
         lowered = text.lower()
@@ -141,6 +149,15 @@ def write_denial_from_result(result: Any) -> Optional[dict[str, Any]]:
             if _ERRNO_BRACKET[code].search(text) or _ERRNO_STRERROR[code] in lowered:
                 return {
                     "errno": code,
+                    "errno_name": name,
+                    "path": _extract_path(text),
+                    "detail": text.strip()[:400],
+                }
+        for code, name in _DENIAL_WINERRORS.items():
+            if _WINERROR_BRACKET[code].search(text) or _WINERROR_STRERROR[code] in lowered:
+                return {
+                    "errno": None,
+                    "winerror": code,
                     "errno_name": name,
                     "path": _extract_path(text),
                     "detail": text.strip()[:400],
