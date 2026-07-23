@@ -6,13 +6,17 @@ tier the OS fence FORCES children through it (srt sets ``HTTP_PROXY``/``HTTPS_PR
 child env AND the fence blocks direct sockets), so the proxy is enforcement, not just
 cooperation.
 
-**B2 SCOPE — allow-all CONNECT passthrough, NO recording, NO policy.** This slice ships the
-minimal proxy srt's ``httpProxyPort`` requires (srt's own note: "The external proxy must
-handle domain filtering"). It accepts HTTP ``CONNECT host:port`` (the tunnel every HTTPS
-client opens through a proxy), dials the target, returns ``200``, and pumps bytes
-bidirectionally — domain-level visibility, no MITM/CA. **B4 owns this module's growth**: it
-turns each CONNECT into a recorded ``net.egress`` → ``used web:domain@time`` provenance edge
-and adds the opt-in deny-by-default policy. Do not add recording/policy here in B2.
+**B2 SCOPE — allow-all TRANSPARENT passthrough, NO recording, NO policy.** This slice ships
+the minimal proxy srt's ``httpProxyPort`` requires (srt's own note: "The external proxy must
+handle domain filtering"). It forwards BOTH proxied verbs a fenced client emits: ``CONNECT
+host:port`` (the tunnel an HTTPS client opens — dial, ``200``, pump opaque TLS, domain-level,
+no MITM/CA) AND absolute-form ``GET http://host/path`` (what a client sends for a plain-HTTP
+target — a scientific MCP server's data source can be plain HTTP, e.g. an NDP catalog on
+``:8003``). A CONNECT-only proxy answered plain HTTP ``501`` and silently broke every
+plain-HTTP fleet call under the fence — the B2 live gate caught it. **B4 owns this module's
+growth**: it turns each forwarded egress into a recorded ``net.egress`` → ``used
+web:domain@time`` provenance edge and adds the opt-in deny-by-default policy. B2 forwards
+transparently; it does not record or gate.
 
 NO SILENT FALLBACK: a bind/listen failure raises a typed :class:`ChokepointStartError`
 (``chokepoint_start_failed``); the ladder degrades the RUNG (srt → landlock/floor) rather
@@ -104,19 +108,38 @@ class Chokepoint:
             ).start()
 
     def _handle(self, client: socket.socket) -> None:
-        """Serve one client: parse a single ``CONNECT``, tunnel, pump. Best-effort, guarded."""
+        """Serve one client: CONNECT tunnel (HTTPS) OR absolute-form HTTP forward. Guarded.
+
+        The passthrough must be TRANSPARENT to the fleet — a scientific MCP server may talk
+        to a plain-HTTP data source (e.g. an NDP catalog on ``:8003``), which a proxied
+        client sends as an absolute-form ``GET http://host/path`` line, NOT a ``CONNECT``.
+        A CONNECT-only proxy answered those ``501 Not Implemented``, silently breaking every
+        plain-HTTP fleet call under the fence (caught by the B2 live gate). Both verbs
+        forward here; RECORDING each as a ``net.egress`` edge is still B4's addition.
+        """
         upstream: Optional[socket.socket] = None
         try:
             client.settimeout(_CONNECT_READ_TIMEOUT_S)
             header = self._read_request_head(client)
             target = _parse_connect_target(header)
-            if target is None:
-                # B2 is CONNECT-only (the TLS tunnel path). B4 adds absolute-form HTTP.
-                client.sendall(b"HTTP/1.1 501 Not Implemented\r\n\r\n")
+            if target is not None:
+                # HTTPS: open the tunnel, then pump opaque TLS bytes (domain-level only).
+                host, port = target
+                upstream = socket.create_connection((host, port), timeout=_CONNECT_READ_TIMEOUT_S)
+                client.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                client.settimeout(None)
+                self._track(client)
+                self._track(upstream)
+                self._pump(client, upstream)
                 return
-            host, port = target
+            forward = _parse_absolute_form(header)
+            if forward is None:
+                client.sendall(b"HTTP/1.1 400 Bad Request\r\n\r\n")
+                return
+            # Plain HTTP: dial the origin, replay the head rewritten to origin-form, pump.
+            host, port, origin_head = forward
             upstream = socket.create_connection((host, port), timeout=_CONNECT_READ_TIMEOUT_S)
-            client.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+            upstream.sendall(origin_head)
             client.settimeout(None)
             self._track(client)
             self._track(upstream)
@@ -220,6 +243,45 @@ def _parse_connect_target(header: bytes) -> Optional[tuple[str, int]]:
     if not (0 < port < 65536):
         return None
     return host, port
+
+
+def _parse_absolute_form(header: bytes) -> Optional[tuple[str, int, bytes]]:
+    """Parse a proxied plain-HTTP request → ``(host, port, origin_head)``; ``None`` if not.
+
+    A client configured with ``HTTP_PROXY`` sends the request line in absolute form —
+    ``GET http://host:port/path HTTP/1.1`` — to the proxy. This rewrites the head to the
+    origin form the target server expects (``GET /path HTTP/1.1``), preserving the method,
+    the rest of the path/query, the HTTP version and every header (incl. ``Host``), so the
+    proxy is a transparent passthrough. Non-HTTP-URL targets (or a malformed head) → ``None``.
+    Only the request HEAD is rewritten; any body streams verbatim through :meth:`_pump`.
+    """
+    try:
+        head_text = header.decode("latin-1")
+    except UnicodeDecodeError:
+        return None
+    line, sep, rest = head_text.partition("\r\n")
+    if not sep:
+        return None
+    parts = line.split(" ")
+    if len(parts) != 3:
+        return None
+    method, target, version = parts
+    if not target.lower().startswith("http://"):
+        return None
+    without_scheme = target[len("http://") :]
+    authority, slash, path = without_scheme.partition("/")
+    origin_path = f"/{path}" if slash else "/"
+    host, _, port_s = authority.partition(":")
+    if not host:
+        return None
+    if port_s:
+        if not port_s.isdigit() or not (0 < int(port_s) < 65536):
+            return None
+        port = int(port_s)
+    else:
+        port = 80
+    origin_head = f"{method} {origin_path} {version}\r\n{rest}".encode("latin-1")
+    return host, port, origin_head
 
 
 # Process-lifetime singleton (same pattern as the child reaper / sandbox state).           #

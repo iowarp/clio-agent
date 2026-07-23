@@ -745,6 +745,80 @@ def test_chokepoint_connect_round_trip() -> None:
         upstream.close()
 
 
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        # (method, origin-path, host, port) rewritten from absolute form.
+        (
+            "GET http://host:8003/search?q=x HTTP/1.1",
+            ("host", 8003, b"GET /search?q=x HTTP/1.1\r\n"),
+        ),
+        ("POST http://ndp.example/api HTTP/1.1", ("ndp.example", 80, b"POST /api HTTP/1.1\r\n")),
+        ("GET http://host HTTP/1.1", ("host", 80, b"GET / HTTP/1.1\r\n")),
+        ("CONNECT host:443 HTTP/1.1", None),  # a CONNECT is not absolute-form
+        ("GET https://host/x HTTP/1.1", None),  # https targets tunnel via CONNECT, not here
+        ("GET /already/origin HTTP/1.1", None),  # already origin-form (not proxied absolute)
+    ],
+)
+def test_parse_absolute_form(line: str, expected) -> None:
+    from clio_agent.runtime.net_chokepoint import _parse_absolute_form
+
+    got = _parse_absolute_form((line + "\r\nHost: h\r\n\r\n").encode())
+    if expected is None:
+        assert got is None
+    else:
+        host, port, head_prefix = expected
+        assert got is not None
+        assert (got[0], got[1]) == (host, port)
+        # The rewritten head is origin-form + preserves the trailing headers verbatim.
+        assert got[2].startswith(head_prefix)
+        assert got[2].endswith(b"Host: h\r\n\r\n")
+
+
+def test_chokepoint_plain_http_forward_round_trip() -> None:
+    """An absolute-form plain-HTTP request forwards through the chokepoint to the origin (F-gate).
+
+    The fleet regression the B2 live gate caught: a plain-HTTP data source (NDP on :8003) is
+    reached via ``GET http://host/path`` through the proxy, which a CONNECT-only proxy
+    answered 501. The passthrough must rewrite to origin-form and forward transparently.
+    """
+    import socket
+    import threading
+
+    from clio_agent.runtime.net_chokepoint import Chokepoint
+
+    origin = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    origin.bind(("127.0.0.1", 0))
+    origin.listen(1)
+    up_port = origin.getsockname()[1]
+    received: dict[str, bytes] = {}
+
+    def _serve() -> None:
+        conn, _ = origin.accept()
+        with conn:
+            received["head"] = conn.recv(1024)
+            conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi")
+
+    threading.Thread(target=_serve, daemon=True).start()
+
+    cp = Chokepoint().start()
+    try:
+        client = socket.create_connection(("127.0.0.1", cp.port), timeout=5)
+        client.sendall(
+            f"GET http://127.0.0.1:{up_port}/search?q=earthscope HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{up_port}\r\n\r\n".encode()
+        )
+        resp = client.recv(256)
+        assert b"200 OK" in resp and resp.endswith(b"hi")
+        client.close()
+    finally:
+        cp.stop()
+        origin.close()
+    # The origin saw an ORIGIN-form request line (scheme+authority stripped), Host preserved.
+    assert received["head"].startswith(b"GET /search?q=earthscope HTTP/1.1\r\n")
+    assert b"http://" not in received["head"].split(b"\r\n", 1)[0]
+
+
 def test_chokepoint_bind_failure_is_typed() -> None:
     """A bind/listen failure raises the typed ChokepointStartError (no silent net loss, F8)."""
     import socket as _socket
