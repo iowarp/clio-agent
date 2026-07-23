@@ -139,13 +139,9 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             edit_mode=req.edit_mode,
             routing_mode=req.routing_mode,
         )
-        # B5 #979.2 (⚑ correction): a plain session-create ATTACHES to its workspace's
-        # ALREADY-established territory — no user/model granted anything, so it is NOT a
-        # boundary CHANGE and must not emit ``boundary.granted`` (⚑ grants are user/model
-        # decisions; a fabricated grantor=user on every session-create both violates that
-        # and floods every session's semantic stream ahead of ``turn.started``). The real
-        # boundary events are workspace-create, ``PATCH root_path`` and the explicit grant
-        # flows — which DO emit — and they fully record the session's territory.
+        # B5 #979.2 (⚑): session-create INHERITS existing territory — no grant made, so it
+        # emits NO boundary event (a fabricated grantor=user would violate ⚑ + precede
+        # turn.started; workspace-create / PATCH root_path / explicit grants record it).
         return Session(**sess.to_wire())
 
     @app.patch("/v1/sessions/{sid}", response_model=Session)
