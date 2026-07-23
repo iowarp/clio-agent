@@ -354,8 +354,16 @@ def _now_iso() -> str:
     return _iso_from_epoch(time.time())
 
 
-def _generated_edges(minted: list[ArtifactVersion]) -> list[ProvEdge]:
-    """Project the versions minted this call to ``generated`` edges."""
+def _generated_edges(
+    minted: list[ArtifactVersion], *, fence_proven: bool = False
+) -> list[ProvEdge]:
+    """Project the versions minted this call to ``generated`` edges.
+
+    ``fence_proven`` (B6 #980) stamps the per-edge lease-window → fence_proven upgrade on
+    every generated edge when an active OS fence proved this call's output territory exclusive
+    by construction (:func:`_generated_fence_proven`). Identity evidence (``hash-pair`` /
+    ``schema-arg``) is unchanged — the marker is a separate attribution axis.
+    """
     edges: list[ProvEdge] = []
     for version in minted:
         edges.append(
@@ -368,6 +376,7 @@ def _generated_edges(minted: list[ArtifactVersion]) -> list[ProvEdge]:
                 version=version.version,
                 path=version.path,
                 note=("" if version.sha256 else "stat_pinned"),
+                fence_proven=fence_proven,
             )
         )
     return edges
@@ -472,11 +481,20 @@ def record_transform(
         )
     except Exception:  # noqa: BLE001 — the ingest join is best-effort, never fatal
         logger.debug("ingest edge join skipped reason=ingest_join_failed", exc_info=True)
-    generated = _generated_edges(minted)
     environment = capture_environment(app)
     replay, replay_reason = compute_replay_contract(environment, used)
     candidates = _contended_candidates(app, workspace_id, sid)
     kind = TransformKind.CONTENDED if candidates else TransformKind.ORDINARY
+    # B6 (#980): the per-edge lease-window → fence_proven upgrade on the generated (written)
+    # side — proven only when an active fence made this call's output territory exclusive by
+    # construction (ordinary record + set-math). Never on the floor, never when contended.
+    from clio_agent.gact.artifacts.transform_exclusivity import (  # noqa: PLC0415
+        generated_fence_proven,
+    )
+
+    generated = _generated_edges(
+        minted, fence_proven=generated_fence_proven(app, workspace_id, sid, kind=kind)
+    )
     started_iso = _iso_from_epoch_opt(started_at)
     record = TransformRecord(
         call_id=call_id,
