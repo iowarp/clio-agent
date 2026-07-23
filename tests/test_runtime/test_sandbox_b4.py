@@ -230,6 +230,52 @@ def test_record_egress_appends_bounded_ledger() -> None:
     assert entry["transport"] == "connect"
 
 
+def test_real_connect_emits_net_egress_event_end_to_end(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A REAL CONNECT through the Chokepoint, with ``record_egress`` wired as the recorder,
+    fires exactly one ``net.egress`` semantic EVENT carrying host/port/child_id/transport.
+
+    Closes the loop the shape tests leave open: connection → recorder → ``record_egress`` →
+    ``_emit_semantic_event`` (durable-only). The event sink is stubbed so no app/ARC is needed.
+    """
+    from fastapi import FastAPI
+
+    from clio_agent.gact.artifacts import ingest_edges
+    from clio_agent.gact.runtime import globals as gact_globals
+
+    events: list[dict] = []
+
+    def _capture(app_, sid, event_type, **kw):
+        events.append({"type": event_type, "sid": sid, **kw})
+
+    monkeypatch.setattr(gact_globals, "_emit_semantic_event", _capture)
+
+    app = FastAPI()
+    upstream, up_port = _echo_server()
+    nc.set_egress_recorder(lambda rec: ingest_edges.record_egress(app, rec))
+    cp = nc.Chokepoint().start()
+    try:
+        port = cp.open_child_channel("child-Z", mechanism="proxy-enforced", workspace_root="/ws")
+        c = socket.create_connection(("127.0.0.1", port), timeout=5)
+        c.sendall(f"CONNECT 127.0.0.1:{up_port} HTTP/1.1\r\n\r\n".encode())
+        assert b"200" in c.recv(128)
+        c.close()
+    finally:
+        cp.stop()
+        nc.set_egress_recorder(None)
+        upstream.close()
+
+    egress_events = [e for e in events if e["type"] == "net.egress"]
+    assert len(egress_events) == 1
+    ev = egress_events[0]
+    assert ev["detail_level"] == "off"  # durable-only, never on the SSE wire
+    payload = ev["payload"]
+    assert payload["child_id"] == "child-Z"
+    assert payload["host"] == "127.0.0.1"
+    assert payload["port"] == up_port
+    assert payload["transport"] == "connect"
+    assert payload["mechanism"] == "proxy-enforced"
+
+
 # --------------------------------------------------------------------------- #
 # used web:<domain>@<time> join — precision over recall (#966.10)
 # --------------------------------------------------------------------------- #
@@ -243,9 +289,15 @@ def _app_with_egress(records: list[dict]):
     return app
 
 
-def _egress(host: str, *, mechanism: str = "proxy-enforced", at: str = "2026-07-22T00:00:00+00:00"):
+def _egress(
+    host: str,
+    *,
+    child_id: str = "c1",
+    mechanism: str = "proxy-enforced",
+    at: str = "2026-07-22T00:00:00+00:00",
+):
     return {
-        "child_id": "c1",
+        "child_id": child_id,
         "host": host,
         "port": 443,
         "resolved_ip": "203.0.113.1",
@@ -254,6 +306,11 @@ def _egress(host: str, *, mechanism: str = "proxy-enforced", at: str = "2026-07-
         "workspace_root": "",
         "at": at,
     }
+
+
+#: A ``started_at`` epoch safely BEFORE the fixed 2026-07-22 egress ``at`` (bounds the window
+#: below so the child-keyed step-2 mint can fire; ``ended_at`` defaults to now).
+_WINDOW_START = 1.0
 
 
 def test_join_enriches_staged_download_edge_on_host_match() -> None:
@@ -283,11 +340,18 @@ def test_join_enriches_staged_download_edge_on_host_match() -> None:
 
 
 def test_join_mints_web_edge_for_unambiguous_ingest() -> None:
-    """An ingest-shaped call with a SINGLE in-window egress domain mints one web:<domain> edge."""
+    """An ingest call whose SERVING child made a single in-window egress mints one web edge."""
     from clio_agent.gact.artifacts.ingest_edges import attach_ingest_edges
 
-    app = _app_with_egress([_egress("ndp.example", mechanism="env-cooperative")])
-    out = attach_ingest_edges(app, [], workspace_id="", tool_name="fetch", started_at=None)
+    app = _app_with_egress([_egress("ndp.example", child_id="c1", mechanism="env-cooperative")])
+    out = attach_ingest_edges(
+        app,
+        [],
+        workspace_id="",
+        tool_name="fetch",
+        started_at=_WINDOW_START,
+        serving_child_id="c1",  # the child that served this call == the child that egressed
+    )
     assert len(out) == 1
     edge = out[0]
     assert edge.net_domain == "ndp.example"
@@ -297,21 +361,76 @@ def test_join_mints_web_edge_for_unambiguous_ingest() -> None:
     assert edge.note == "net_ingest"
 
 
-def test_join_ambiguous_multi_domain_leaves_egress_bare() -> None:
-    """Two distinct in-window domains → AMBIGUOUS → no edge (the bare net.egress records stand)."""
+def test_join_sibling_child_egress_never_minted_onto_unrelated_transform() -> None:
+    """THE false-attribution regression (#978 pt 5): a SIBLING child's egress is not minted.
+
+    Two confined children share the workspace; the sibling ``sib`` fetched ``x.example`` in
+    the window, but THIS ingest-shaped transform was served by ``mine`` (which did no fetch).
+    The join must NOT mint ``web:x.example`` onto this transform — the sibling's domain is
+    filtered out by the serving-child key before the single-domain decision.
+    """
     from clio_agent.gact.artifacts.ingest_edges import attach_ingest_edges
 
-    app = _app_with_egress([_egress("a.example"), _egress("b.example")])
-    out = attach_ingest_edges(app, [], workspace_id="", tool_name="fetch", started_at=None)
-    assert out == []  # precision over recall — nothing fabricated
+    app = _app_with_egress([_egress("x.example", child_id="sib")])
+    out = attach_ingest_edges(
+        app,
+        [],
+        workspace_id="",
+        tool_name="fetch",
+        started_at=_WINDOW_START,
+        serving_child_id="mine",  # served by a DIFFERENT child than the one that egressed
+    )
+    assert out == []  # no fabricated edge — a wrong edge is worse than none
+
+
+def test_join_abstains_when_serving_child_unknown() -> None:
+    """Unknown serving child (empty) → SUPPRESS the mint even for a single in-window domain."""
+    from clio_agent.gact.artifacts.ingest_edges import attach_ingest_edges
+
+    app = _app_with_egress([_egress("a.example", child_id="c1")])
+    out = attach_ingest_edges(
+        app, [], workspace_id="", tool_name="fetch", started_at=_WINDOW_START, serving_child_id=""
+    )
+    assert out == []
+
+
+def test_join_abstains_without_started_at_even_with_serving_child() -> None:
+    """An unbounded window (no ``started_at``) is unprovable → no step-2 mint (item 3)."""
+    from clio_agent.gact.artifacts.ingest_edges import attach_ingest_edges
+
+    app = _app_with_egress([_egress("a.example", child_id="c1")])
+    out = attach_ingest_edges(
+        app, [], workspace_id="", tool_name="fetch", started_at=None, serving_child_id="c1"
+    )
+    assert out == []
+
+
+def test_join_ambiguous_multi_domain_for_serving_child_leaves_bare() -> None:
+    """The SERVING child hitting two distinct domains → AMBIGUOUS → no edge (nothing fabricated)."""
+    from clio_agent.gact.artifacts.ingest_edges import attach_ingest_edges
+
+    app = _app_with_egress(
+        [_egress("a.example", child_id="c1"), _egress("b.example", child_id="c1")]
+    )
+    out = attach_ingest_edges(
+        app, [], workspace_id="", tool_name="fetch", started_at=_WINDOW_START, serving_child_id="c1"
+    )
+    assert out == []  # precision over recall
 
 
 def test_join_non_ingest_tool_no_web_edge() -> None:
     """A non-ingest tool with egress but no url edge does NOT mint a web edge (precision)."""
     from clio_agent.gact.artifacts.ingest_edges import attach_ingest_edges
 
-    app = _app_with_egress([_egress("a.example")])
-    out = attach_ingest_edges(app, [], workspace_id="", tool_name="run_analysis", started_at=None)
+    app = _app_with_egress([_egress("a.example", child_id="c1")])
+    out = attach_ingest_edges(
+        app,
+        [],
+        workspace_id="",
+        tool_name="run_analysis",
+        started_at=_WINDOW_START,
+        serving_child_id="c1",
+    )
     assert out == []
 
 
@@ -319,8 +438,28 @@ def test_join_no_records_is_noop() -> None:
     from clio_agent.gact.artifacts.ingest_edges import attach_ingest_edges
 
     app = _app_with_egress([])
-    out = attach_ingest_edges(app, [], workspace_id="", tool_name="fetch", started_at=None)
+    out = attach_ingest_edges(
+        app, [], workspace_id="", tool_name="fetch", started_at=_WINDOW_START, serving_child_id="c1"
+    )
     assert out == []
+
+
+def test_serving_child_linkage_register_and_resolve_roundtrip() -> None:
+    """The call_id → serving child_id linkage the observer threads: register, resolve, abstain."""
+    from fastapi import FastAPI
+
+    from clio_agent.gact.artifacts.ingest_edges import (
+        register_serving_child,
+        resolve_serving_child_id,
+    )
+
+    app = FastAPI()
+    assert resolve_serving_child_id(app, "call_1") == ""  # unknown → abstain signal
+    register_serving_child(app, "call_1", "child_abc")
+    assert resolve_serving_child_id(app, "call_1") == "child_abc"
+    register_serving_child(app, "", "child_x")  # empty call/child → no-op, never raises
+    register_serving_child(app, "call_2", "")
+    assert resolve_serving_child_id(app, "call_2") == ""
 
 
 # --------------------------------------------------------------------------- #
