@@ -187,6 +187,32 @@ def _attribute_process_leaks(request):
 
 
 @pytest.fixture(autouse=True)
+def _restore_clio_logger():
+    """Snapshot + restore the process-global ``clio_agent`` logger state (suite-wide).
+
+    :func:`clio_agent.runtime.trace.configure` (triggered by any test that boots the CLI /
+    serve path) sets ``propagate=False`` and installs a handler on the shared ``clio_agent``
+    logger with no teardown. Left leaked into a later-collected test in the same xdist worker,
+    that breaks ``caplog``-based assertions (caplog captures via root-logger propagation) — an
+    order-dependent isolation flake surfaced when a new test module shifts the distribution.
+    Restoring propagate/level/handlers around EVERY test kills the whole class (was scoped to
+    tests/test_ui/conftest.py; promoted here so it protects the full suite).
+    """
+    import logging  # noqa: PLC0415 - only needed by this fixture
+
+    lg = logging.getLogger("clio_agent")
+    saved_propagate = lg.propagate
+    saved_level = lg.level
+    saved_handlers = list(lg.handlers)
+    try:
+        yield
+    finally:
+        lg.propagate = saved_propagate
+        lg.level = saved_level
+        lg.handlers[:] = saved_handlers
+
+
+@pytest.fixture(autouse=True)
 def _reset_runtime_context():
     """Isolate each test from the single GACT runtime contextvar (#714).
 
