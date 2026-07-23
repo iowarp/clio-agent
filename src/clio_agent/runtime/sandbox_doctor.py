@@ -106,6 +106,14 @@ def probe_sandbox(*, state: sb.SandboxResult | None = None) -> IntegrationStatus
     srt = resolved.details.get("srt", {}) if isinstance(resolved.details, dict) else {}
     if resolved.reason == sb.REASON_WINDOWS_UNPROVISIONED:
         next_action = "Run `clio sandbox setup` (B3) to provision the Windows write fence."
+    elif sys.platform.startswith("win") and resolved.reason in {
+        sb.REASON_SRT_NOT_INSTALLED,
+        sb.REASON_SRT_NODE_MISSING,
+    }:
+        # Windows srt precondition gap: the fence needs srt BEFORE `clio sandbox setup` (#977).
+        next_action = (
+            f"Install srt (`npm install -g {sb.SRT_PACKAGE_NAME}`), then run `clio sandbox setup`."
+        )
     elif resolved.reason == sb.REASON_DISABLED:
         next_action = "Set sandbox.enabled=true (CLIO_SANDBOX_ENABLED) to resolve a fence."
     elif resolved.reason == sb.REASON_SRT_VERSION_UNSUPPORTED:

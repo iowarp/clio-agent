@@ -15,7 +15,24 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-__all__ = ["render_doctor_report", "render_gc_report", "run_doctor_gc"]
+__all__ = ["render_doctor_report", "render_gc_report", "run_doctor", "run_doctor_gc"]
+
+
+def run_doctor(json_output: bool = False) -> int:
+    """Run the non-interactive doctor command IN-PROCESS.
+
+    A doctor must work when no server is up, so this uses the same probe engine the server
+    hosts at ``/v1/health`` directly, via
+    :func:`clio_agent.runtime.status.collect_runtime_status`.
+    """
+    from clio_agent.runtime.status import collect_runtime_status  # noqa: PLC0415
+
+    report = collect_runtime_status()
+    if json_output:
+        print(json.dumps(report.to_dict(), indent=2))
+    else:
+        render_doctor_report(Console(), report)
+    return 0
 
 
 def render_doctor_report(console: Console, report: Any) -> None:

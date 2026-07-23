@@ -452,6 +452,7 @@ def _resolve_backend(
     bwrap: Optional[tuple[bool, str]] = None,
     landlock: Any = None,
     start_proxy: Any = None,
+    win_state: Any = None,
 ) -> SandboxResult:
     """Resolve + ACTIVATE the confinement backend down the typed ladder (#976, B2).
 
@@ -463,7 +464,9 @@ def _resolve_backend(
     and a typed :class:`~clio_agent.runtime.net_chokepoint.ChokepointStartError` drops the srt
     rung to Landlock/floor rather than starting children that silently lose all network.
 
-    Windows always floors this slice (activation is B3's ``clio sandbox setup``).
+    Windows (B3, #977): a three-way branch on the provisioning verdict (``win_state`` /
+    ``sandbox_provision.windows_sandbox_state``) — provisioned→srt_windows, srt_absent→typed
+    reason, unprovisioned→the floor gate (needs ``clio sandbox setup``).
     """
     det = detection if detection is not None else detect_srt(env=env, platform=platform)
     base_details: dict[str, Any] = {
@@ -489,8 +492,16 @@ def _resolve_backend(
     if not _sandbox_enabled(env):
         return floor(REASON_DISABLED)
 
-    # Windows: srt Windows activation is B3; the floor reason is the provisioning gate.
+    # Windows (B3): the provisioning verdict drives the rung (see the docstring's 3-way branch).
     if platform.startswith("win"):
+        from clio_agent.runtime import sandbox_provision as swp  # noqa: PLC0415
+
+        win = win_state or swp.windows_sandbox_state(platform=platform, detection=det)
+        if win.status == swp.STATUS_PROVISIONED:
+            activated = _activate_srt(MECHANISM_SRT_WINDOWS, det, base_details, start_proxy)
+            return activated if activated is not None else floor(REASON_CHOKEPOINT_START_FAILED)
+        if win.status == swp.STATUS_SRT_ABSENT:
+            return floor(win.reason)
         return floor(REASON_WINDOWS_UNPROVISIONED)
 
     srt_ok, srt_skip = _srt_viability(det)
@@ -593,7 +604,7 @@ def _compose_fence_prefix(
     mechanism = state.mechanism
     roots: list[str] = [str(r) for r in write_roots]
     try:
-        if mechanism in (MECHANISM_SRT_BWRAP, MECHANISM_SRT_SEATBELT):
+        if mechanism in (MECHANISM_SRT_BWRAP, MECHANISM_SRT_SEATBELT, MECHANISM_SRT_WINDOWS):
             from clio_agent.runtime import sandbox_srt  # noqa: PLC0415
 
             proxy_port = state.details.get("proxy_port")
@@ -655,9 +666,19 @@ def wrap_confined(
     env_overlay: dict[str, str] = {}
     popen_kwargs: dict[str, Any] = {}
 
+    # srt Windows fs policy is SESSION-WIDE (#977): shell can't narrow below fleet → REUSES it.
+    compose_profile: Profile = profile
+    windows_note = ""
+    if resolved_state.mechanism == MECHANISM_SRT_WINDOWS and profile == PROFILE_SHELL:
+        compose_profile = PROFILE_FLEET
+        windows_note = "shell reuses fleet (srt Windows fs policy is session-wide)"
+        write_roots = (*effective_write_roots(PROFILE_FLEET), *(Path(r) for r in write_roots))
+
     # Active backend (B2): compose the fence prefix INNER (pdeathsig stays outermost below).
     if resolved_state.active and resolved_state.mechanism != MECHANISM_NONE:
-        cmd, arg_list = _compose_fence_prefix(resolved_state, profile, cmd, arg_list, write_roots)
+        cmd, arg_list = _compose_fence_prefix(
+            resolved_state, compose_profile, cmd, arg_list, write_roots
+        )
 
     # pdeathsig OUTERMOST (owner decision #974.5): fold the pre-existing argv-prefix helper
     # in as the last composer step so there is exactly one prefix owner. Passthrough on
@@ -672,9 +693,11 @@ def wrap_confined(
         details={
             **resolved_state.details,
             "profile": profile,
+            "compose_profile": compose_profile,
             "net_policy": net_policy,
             "pdeathsig": pdeathsig,
             "write_roots": [str(r) for r in write_roots],
+            **({"windows_profile_reuse": windows_note} if windows_note else {}),
         },
     )
     return ConfinedSpawn(

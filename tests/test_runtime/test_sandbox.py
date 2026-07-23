@@ -244,13 +244,19 @@ def test_resolve_backend_linux_floor_is_srt_not_installed() -> None:
     assert result.details["target_mechanism"] == sandbox.MECHANISM_SRT_BWRAP
 
 
-def test_resolve_backend_windows_absent_is_unprovisioned() -> None:
-    """Windows, srt absent → the honest provisioning gate reason (owner #974.2)."""
+def test_resolve_backend_windows_srt_absent_is_srt_not_installed() -> None:
+    """Windows, srt absent → the honest srt precondition reason (B3 refines the Windows rung).
+
+    B3 (#977) makes the Windows rung precise: srt absent floors with ``srt_not_installed``
+    (install srt first), while ``windows_unprovisioned`` is the srt-present-but-not-provisioned
+    gate (`clio sandbox setup`, covered in ``test_sandbox_b3``). The target mechanism the
+    provisioned fence WOULD use stays ``srt_windows``.
+    """
     result = sandbox._resolve_backend(
         platform="win32", detection=_det(sandbox.REASON_SRT_NOT_INSTALLED)
     )
     assert result.mechanism == sandbox.MECHANISM_NONE
-    assert result.reason == sandbox.REASON_WINDOWS_UNPROVISIONED
+    assert result.reason == sandbox.REASON_SRT_NOT_INSTALLED
     assert result.details["target_mechanism"] == sandbox.MECHANISM_SRT_WINDOWS
 
 
