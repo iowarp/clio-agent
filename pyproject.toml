@@ -180,6 +180,7 @@ markers = [
     "live: hits a live gact server + external provider (slow; skipped unless CLIO_RUN_LIVE=1)",
     "concurrency: thread-safety / shared-state tests run under xdist load x3 in the flake-hunt CI job (#735)",
     "linux_fence: OS write-fence sabotage suite (srt/Landlock); auto-skipped where the host cannot run it (#976 B2)",
+    "sandbox_conformance: B6 campaign-done conformance gate (#980); asserts a typed mechanism/reason per (seam x tier) — the unit parts run everywhere, the live parts need a resolved fence",
 ]
 # Keep addopts empty: forcing --verbose + coverage (incl. 23MB htmlcov) on
 # every invocation — even --collect-only — punishes local runs. CI passes

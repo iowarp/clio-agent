@@ -11,8 +11,13 @@
 - `tools/` for the FastMCP gateway, tool catalog, file policy, and execution boundary; `tools/servers/` for the FS and shell MCP servers
 - `providers/` for provider auth and LiteLLM bridges (Argonne/ALCF, claude_code, codex) plus `handshake/` model-limit discovery
 - `optimizer/` for tuning and instrumentation workflows
-- `runtime/` for doctor/status, hooks, LM activity/stream audit, and the nanoagent spawn primitive
+- `runtime/` for doctor/status, hooks, LM activity/stream audit, the nanoagent spawn primitive, and the **sandbox** (write-confinement ladder `sandbox.py`, `sandbox_roots.py`, srt/Landlock/Windows adapters, `net_chokepoint.py`, and the `sandbox_conformance.py` sweep — campaign #974)
 - `ui/` for the legacy CLI and REST API entry points (gact is the product surface)
+
+The OS write fence (`runtime/sandbox.py`) confines every agent-spawned child to its
+territory; `docs/PERMISSIONS.md` and `docs/design/sandboxing-campaign-2026-07.md` cover the
+backend ladder, grants, network chokepoint, and the provenance-tier upgrades. `clio sandbox
+setup` provisions the Windows fence (one-time UAC).
 
 Tests mirror the runtime layout in `tests/` (`test_core/`, `test_arc/`, `test_tools/`, `test_gact/`, `test_integration/`, ...). Architecture and design docs live in `docs/` (historical material in `docs/archive/`), and reference material is in `ai-docs/`.
 Helper scripts for local demos and homelab setup live in `scripts/`.
