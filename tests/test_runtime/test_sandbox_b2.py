@@ -221,9 +221,12 @@ def test_ladder_selection_matrix(
     # marker — inject an UNPROVISIONED verdict so the matrix stays host-independent (this row
     # is the unprovisioned floor case; a provisioned box would otherwise resolve srt_windows).
     win_state = None
+    env = {"CLIO_SANDBOX_ENABLED": "true" if enabled else "false"}
     if platform == "win32":
         from clio_agent.runtime import sandbox_provision as swp  # noqa: PLC0415
 
+        # pin srt: win32's default backend is now codex (B-codex-4) — this row tests the srt ladder.
+        env["CLIO_SANDBOX_BACKEND"] = "srt"
         win_state = swp.WindowsSandboxState(
             status=swp.STATUS_UNPROVISIONED,
             reason=sandbox.REASON_WINDOWS_UNPROVISIONED,
@@ -232,7 +235,7 @@ def test_ladder_selection_matrix(
             next_action="run clio sandbox setup",
         )
     result = sandbox._resolve_backend(
-        env={"CLIO_SANDBOX_ENABLED": "true" if enabled else "false"},
+        env=env,
         platform=platform,
         detection=det,
         bwrap=bwrap,

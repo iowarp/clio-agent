@@ -94,16 +94,14 @@ NetPolicy = Literal["allow_record", "deny"]
 NET_ALLOW_RECORD: NetPolicy = "allow_record"
 NET_DENY: NetPolicy = "deny"
 
-# Confinement classification of a census child by kind (#975): makes the EXCLUDED seams
-# (CTE daemon, provider CLI links, serve.py — never wrapped, #974.5) visible policy.
+# Confinement classification by census kind (#975): makes EXCLUDED seams visible policy (#974.5).
 Confinement = Literal["wrapped", "excluded"]
 CONFINEMENT_WRAPPED: Confinement = "wrapped"
 CONFINEMENT_EXCLUDED: Confinement = "excluded"
 
 #: Census child kinds descending from a wrapped seam (the MCP fleet + python MCP servers).
 _WRAPPED_KINDS: frozenset[str] = frozenset({"mcp_stdio", "mcp_launcher", "python_child"})
-#: Kinds EXCLUDED from confinement: the clio-core daemon (breakaway is load-bearing) + the
-#: provider LLM CLI links (claude/codex need the network + their own cache territory).
+#: Kinds EXCLUDED from confinement: the clio-core daemon + provider LLM CLI links (own net/cache).
 _EXCLUDED_KINDS: frozenset[str] = frozenset({"clio_core_daemon", "sdk_cli", "codex_cli"})
 
 
@@ -184,24 +182,26 @@ def _sandbox_enabled(env: Optional[Mapping[str, str]] = None) -> bool:
     )
 
 
-def _sandbox_backend(env: Optional[Mapping[str, str]] = None) -> str:
+def _sandbox_backend(
+    env: Optional[Mapping[str, str]] = None, *, platform: str = sys.platform
+) -> str:
     """Which OS-fence backend the ladder resolves (config ``sandbox.backend``).
 
-    ``"codex"`` selects the flag-gated Codex fence (opt-in, all platforms); ``"srt"`` (the default)
-    keeps the existing srt→Landlock ladder UNCHANGED. Mirrors :func:`_sandbox_enabled`'s env/config
-    read; an unrecognized value falls to ``"srt"``.
+    Platform-aware default (B-codex-4): ``"codex"`` on win32 (srt's Windows fence is proven broken
+    there, Codex proven working), ``"srt"`` elsewhere (Seatbelt/bwrap, validated). Explicit
+    ``CLIO_SANDBOX_BACKEND`` wins; an unrecognized/unset value → the platform default.
     """
     from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
 
+    default = "codex" if platform.startswith("win") else "srt"
     if env is not None:
         raw = (env.get("CLIO_SANDBOX_BACKEND", "") or "").strip().lower()
-        return raw if raw in ("codex", "srt") else "srt"
-    value = (
-        conf.resolve("sandbox.backend", env="CLIO_SANDBOX_BACKEND", default="srt", cast=conf.as_str)
-        .strip()
-        .lower()
+        return raw if raw in ("codex", "srt") else default
+    value = conf.resolve(
+        "sandbox.backend", env="CLIO_SANDBOX_BACKEND", default=default, cast=conf.as_str
     )
-    return value if value in ("codex", "srt") else "srt"
+    value = value.strip().lower()
+    return value if value in ("codex", "srt") else default
 
 
 def _srt_path_override(env: Optional[Mapping[str, str]] = None) -> str:
@@ -454,7 +454,7 @@ def _resolve_backend(
 
     # Codex backend (flag-gated, all platforms): resolve BEFORE the srt/Landlock ladder — viable
     # detect_codex → active (win32 additionally gates on provisioning + verify #1026), else floor.
-    if _sandbox_backend(env) == "codex":
+    if _sandbox_backend(env, platform=platform) == "codex":
         from clio_agent.runtime import sandbox_codex as scx  # noqa: PLC0415
 
         cdet = (

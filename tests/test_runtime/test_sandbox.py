@@ -287,7 +287,9 @@ def test_resolve_backend_windows_srt_absent_is_srt_not_installed() -> None:
     provisioned fence WOULD use stays ``srt_windows``.
     """
     result = sandbox._resolve_backend(
-        platform="win32", detection=_det(sandbox.REASON_SRT_NOT_INSTALLED)
+        env={"CLIO_SANDBOX_BACKEND": "srt"},  # pin srt: win32's default backend is now codex
+        platform="win32",
+        detection=_det(sandbox.REASON_SRT_NOT_INSTALLED),
     )
     assert result.mechanism == sandbox.MECHANISM_NONE
     assert result.reason == sandbox.REASON_SRT_NOT_INSTALLED

@@ -464,6 +464,7 @@ def _win_state(status: str, reason: str) -> swp.WindowsSandboxState:
 def test_ladder_windows_provisioned_activates_srt_windows() -> None:
     """Provisioned Windows → MECHANISM_SRT_WINDOWS active, fence_active, proxy started."""
     result = sandbox._resolve_backend(
+        env={"CLIO_SANDBOX_BACKEND": "srt"},  # pin srt: win32's default backend is now codex
         platform="win32",
         detection=_ready_det(),
         win_state=_win_state(swp.STATUS_PROVISIONED, swp.REASON_WINDOWS_PROVISIONED),
@@ -479,6 +480,7 @@ def test_ladder_windows_provisioned_activates_srt_windows() -> None:
 def test_ladder_windows_unprovisioned_floors() -> None:
     """Unprovisioned Windows → floor none/windows_unprovisioned (as today)."""
     result = sandbox._resolve_backend(
+        env={"CLIO_SANDBOX_BACKEND": "srt"},  # pin srt: win32's default backend is now codex
         platform="win32",
         detection=_ready_det(),
         win_state=_win_state(swp.STATUS_UNPROVISIONED, sandbox.REASON_WINDOWS_UNPROVISIONED),
@@ -496,6 +498,7 @@ def test_ladder_windows_enforcement_unverified_floors_typed() -> None:
     it floors to the advisory policy and surfaces ``srt_windows_enforcement_unverified``.
     """
     result = sandbox._resolve_backend(
+        env={"CLIO_SANDBOX_BACKEND": "srt"},  # pin srt: win32's default backend is now codex
         platform="win32",
         detection=_ready_det(),
         win_state=_win_state(
@@ -510,6 +513,7 @@ def test_ladder_windows_enforcement_unverified_floors_typed() -> None:
 def test_ladder_windows_srt_absent_floors_with_reason() -> None:
     """srt absent on Windows → floor carries the typed srt precondition reason (not the gate)."""
     result = sandbox._resolve_backend(
+        env={"CLIO_SANDBOX_BACKEND": "srt"},  # pin srt: win32's default backend is now codex
         platform="win32",
         detection=_det(sandbox.REASON_SRT_NOT_INSTALLED),
         win_state=_win_state(swp.STATUS_SRT_ABSENT, sandbox.REASON_SRT_NOT_INSTALLED),
@@ -526,6 +530,7 @@ def test_ladder_windows_provisioned_but_proxy_down_floors_typed() -> None:
         raise ChokepointStartError("down")
 
     result = sandbox._resolve_backend(
+        env={"CLIO_SANDBOX_BACKEND": "srt"},  # pin srt: win32's default backend is now codex
         platform="win32",
         detection=_ready_det(),
         win_state=_win_state(swp.STATUS_PROVISIONED, swp.REASON_WINDOWS_PROVISIONED),

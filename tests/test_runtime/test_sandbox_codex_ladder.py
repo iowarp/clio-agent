@@ -91,12 +91,31 @@ def _ll(ok: bool) -> LandlockProbe:
         ("CODEX", "codex"),  # case-insensitive
         (" srt ", "srt"),
         ("srt", "srt"),
-        ("", "srt"),  # unset → the default backend
-        ("bogus", "srt"),  # unrecognized → the safe default
+        ("", "srt"),  # unset → the platform default (linux → srt)
+        ("bogus", "srt"),  # unrecognized → the platform default (linux → srt)
     ],
 )
 def test_sandbox_backend_reads_flag(raw: str, expected: str) -> None:
-    assert sandbox._sandbox_backend({"CLIO_SANDBOX_BACKEND": raw}) == expected
+    # Pin platform=linux so the unset/bogus rows resolve the srt default deterministically
+    # (the default is platform-aware since B-codex-4: win32 → codex, elsewhere → srt).
+    assert sandbox._sandbox_backend({"CLIO_SANDBOX_BACKEND": raw}, platform="linux") == expected
+
+
+@pytest.mark.parametrize(
+    ("env", "platform", "expected"),
+    [
+        ({}, "win32", "codex"),  # unset on win32 → codex (B-codex-4 platform default)
+        ({"CLIO_SANDBOX_BACKEND": ""}, "win32", "codex"),  # blank on win32 → codex
+        ({"CLIO_SANDBOX_BACKEND": "bogus"}, "win32", "codex"),  # unrecognized on win32 → codex
+        ({"CLIO_SANDBOX_BACKEND": "srt"}, "win32", "srt"),  # explicit srt still wins on win32
+        ({}, "linux", "srt"),  # unset off-win32 → srt
+    ],
+)
+def test_sandbox_backend_default_is_platform_aware(
+    env: dict[str, str], platform: str, expected: str
+) -> None:
+    """The default backend is codex on win32 (srt's Windows fence is broken), srt elsewhere."""
+    assert sandbox._sandbox_backend(env, platform=platform) == expected
 
 
 # --------------------------------------------------------------------------- #
