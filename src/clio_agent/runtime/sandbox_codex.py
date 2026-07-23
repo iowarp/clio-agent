@@ -482,23 +482,271 @@ def compose_codex_spawn(
     return prefix[0], [*prefix[1:], command, *args]
 
 
+# --------------------------------------------------------------------------- #
+# Windows provisioning detection + enforcement verify (B-codex-3, #1026).       #
+# --------------------------------------------------------------------------- #
+#
+# Codex's Windows ELEVATED backend runs confined children as dedicated local users
+# (``codexsandboxoffline`` / ``codexsandboxonline``) created by codex's one-time setup helper on
+# the first elevated use (one UAC prompt). Provisioned ⇔ those accounts exist. A provisioned
+# account is NOT proof codex can actually confine a child — so, exactly like
+# :mod:`clio_agent.runtime.sandbox_verify` does for srt, clio runs a REAL behavioural probe
+# (spawn a confined codex child, attempt an out-of-root write, confirm DENIED) and records the
+# verdict in a small clio-owned marker the ladder reads at boot (no live probe every boot). This
+# mirrors the srt STATUS_PROVISIONED / _ENFORCEMENT_UNVERIFIED / _SRT_ABSENT verdict pattern
+# WITHOUT touching the srt path — a codex-native sibling of the same #1026 no-false-green rule.
+
+#: The dedicated local accounts codex's elevated Windows backend runs confined children as
+#: (created by codex's one-time setup helper). ``codexsandboxoffline`` existing ⇔ provisioned.
+CODEX_WINDOWS_ACCOUNT_OFFLINE = "codexsandboxoffline"
+CODEX_WINDOWS_ACCOUNT_ONLINE = "codexsandboxonline"
+#: The clio-owned marker recording codex's Windows provisioning + enforcement verdict (under the
+#: existing config dir — a single small file, never a fifth store).
+CODEX_WINDOWS_MARKER_NAME = "codex-windows-provisioned.json"
+
+#: Typed Windows provisioning / enforcement verdicts (no silent fallback — every outcome names itself).
+REASON_NOT_WINDOWS = "not_windows"
+REASON_CODEX_WINDOWS_PROVISIONED = "codex_windows_provisioned"
+REASON_CODEX_WINDOWS_UNPROVISIONED = "codex_windows_unprovisioned"
+REASON_CODEX_ENFORCEMENT_VERIFIED = "codex_enforcement_verified"
+REASON_CODEX_ENFORCEMENT_UNVERIFIED = "codex_enforcement_unverified"
+REASON_CODEX_ENFORCEMENT_ESCAPED = "codex_enforcement_escaped"
+
+#: Bounded spawn timeout for the enforcement probe — a hung codex must never stall setup.
+_CODEX_PROBE_TIMEOUT_S = 60
+#: Short timeout for the non-mutating ``net user`` provisioning query.
+_ACCOUNT_PROBE_TIMEOUT_S = 10
+
+
+def _default_codex_account_check(*, account: str = CODEX_WINDOWS_ACCOUNT_OFFLINE) -> bool:
+    """Whether a codex Windows sandbox account exists (a non-mutating ``net user`` query).
+
+    Best-effort + short timeout: any spawn/query failure is treated as "cannot confirm" (not
+    provisioned), never a raised error. ``net user`` is Windows-only; the caller guards platform.
+    """
+    import subprocess  # noqa: PLC0415 - only on this path
+
+    try:
+        proc = subprocess.run(
+            ["net", "user", account],
+            capture_output=True,
+            text=True,
+            timeout=_ACCOUNT_PROBE_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.info("codex account probe failed reason=codex_account_probe_failed error=%r", exc)
+        return False
+    return proc.returncode == 0
+
+
+def codex_windows_provisioned(
+    *,
+    platform: str = sys.platform,
+    runner: Optional[Callable[[], bool]] = None,
+) -> tuple[bool, str]:
+    """Whether codex's Windows sandbox accounts are provisioned (injectable, best-effort).
+
+    Off-win32 → ``(True, "not_windows")``: codex uses Seatbelt/bubblewrap there, so there is
+    nothing to provision. On win32 the ``runner`` (default: ``net user codexsandboxoffline``)
+    confirms the ``codexsandboxoffline`` account exists; any error → ``False`` (not provisioned).
+
+    Returns ``(provisioned, reason)`` where reason is :data:`REASON_CODEX_WINDOWS_PROVISIONED`
+    or :data:`REASON_CODEX_WINDOWS_UNPROVISIONED` (:data:`REASON_NOT_WINDOWS` off-win32).
+    """
+    if not platform.startswith("win"):
+        return True, REASON_NOT_WINDOWS
+    check = runner if runner is not None else _default_codex_account_check
+    exists = bool(check())
+    reason = REASON_CODEX_WINDOWS_PROVISIONED if exists else REASON_CODEX_WINDOWS_UNPROVISIONED
+    return exists, reason
+
+
+def verify_codex_enforcement(
+    binary: str,
+    write_root: str,
+    *,
+    platform: str = sys.platform,
+    runner: Optional[Callable[[str, str], tuple[bool, str]]] = None,
+) -> tuple[bool, str]:
+    """Prove codex actually ENFORCES a Windows write fence (fail-safe, never raises).
+
+    Mirrors :func:`clio_agent.runtime.sandbox_verify.verify_windows_enforcement`: off-win32 →
+    ``(False, "not_windows")`` (this fence does not apply there); else run the injectable
+    ``runner`` (default :func:`_run_codex_enforcement_probe`). Any exception is an honest
+    ``(False, codex_enforcement_unverified)`` — the fence is unproven, so the ladder must NOT
+    claim it (#1026 no-false-green; precision-over-recall: only an observed denial yields ``True``).
+
+    ``runner`` is injectable so the whole matrix is unit-pinnable without spawning codex; the real
+    probe is win32-only and never unit-run.
+    """
+    if not platform.startswith("win"):
+        return False, REASON_NOT_WINDOWS
+    run = runner if runner is not None else _run_codex_enforcement_probe
+    try:
+        return run(binary, write_root)
+    except Exception as exc:  # noqa: BLE001 — any failure ⇒ enforcement unproven, never a false-green
+        logger.info(
+            "codex enforcement verify failed reason=%s error=%r",
+            REASON_CODEX_ENFORCEMENT_UNVERIFIED,
+            exc,
+        )
+        return False, REASON_CODEX_ENFORCEMENT_UNVERIFIED
+
+
+def _run_codex_enforcement_probe(
+    binary: str, write_root: str
+) -> tuple[bool, str]:  # pragma: no cover - win32 live gate only (never unit-run)
+    """The real behavioural probe (win32; never unit-run — tests inject ``runner``).
+
+    Fences a fresh temp ``allow`` dir and composes a confined codex child (via
+    :func:`codex_prefix` over a :func:`write_codex_layer` elevated layer) that writes to a path
+    OUTSIDE the fence. Enforcement ⇒ the write is denied (file absent AND the child spawned):
+    :data:`REASON_CODEX_ENFORCEMENT_VERIFIED`. If the file appears the fence let an out-of-root
+    write through: :data:`REASON_CODEX_ENFORCEMENT_ESCAPED`. If codex could not even spawn the
+    confined child (``createprocesswithlogon`` in the output) the fence is
+    :data:`REASON_CODEX_ENFORCEMENT_UNVERIFIED`. The outside redirect target is NOT quoted (the
+    temp path is space-free; quoting mangles the child redirect through codex's spawn — a
+    live-proven gotcha). ``write_root`` is the caller's declared territory (threaded for parity
+    with :func:`verify_codex_enforcement`); the probe self-provisions its temp allow dir.
+    """
+    import subprocess  # noqa: PLC0415 - only on this path
+    import tempfile  # noqa: PLC0415
+
+    with (
+        tempfile.TemporaryDirectory(prefix="clio-codex-allow-") as allow,
+        tempfile.TemporaryDirectory(prefix="clio-codex-out-") as outside,
+    ):
+        outside_target = Path(outside) / "denied.txt"
+        profile = synthesize_codex_profile([allow])
+        layer = write_codex_layer("clio-verify", profile, elevated=True)
+        argv = [
+            *codex_prefix(binary, "clio-verify", allow, layer_name=layer),
+            "cmd",
+            "/c",
+            f"type nul > {outside_target}",  # NO quotes — space-free temp path; quoting mangles it
+        ]
+        proc = subprocess.run(
+            argv, capture_output=True, text=True, timeout=_CODEX_PROBE_TIMEOUT_S, check=False
+        )
+        if outside_target.exists():
+            # The confined child wrote OUTSIDE its territory — the fence did not hold.
+            return False, REASON_CODEX_ENFORCEMENT_ESCAPED
+        blob = f"{proc.stdout}\n{proc.stderr}".lower()
+        if "createprocesswithlogon" in blob:
+            # codex never spawned the confined child (elevated logon failed) — nothing enforced.
+            return False, REASON_CODEX_ENFORCEMENT_UNVERIFIED
+        # Child spawned and the out-of-root write did not land ⇒ the fence is genuinely in force.
+        return True, REASON_CODEX_ENFORCEMENT_VERIFIED
+
+
+def _codex_marker_path() -> Path:
+    """The clio-owned codex provisioning marker path (under the existing config dir, no new store)."""
+    from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
+
+    return paths.user_config_dir() / "sandbox" / CODEX_WINDOWS_MARKER_NAME
+
+
+def _read_codex_marker() -> Optional[dict[str, Any]]:
+    """Read the codex provisioning marker, or ``None`` when absent/unreadable (honest empty)."""
+    import json  # noqa: PLC0415 - only on this path
+
+    path = _codex_marker_path()
+    try:
+        if not path.is_file():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        logger.info("codex windows marker unreadable reason=codex_marker_unreadable error=%r", exc)
+        return None
+
+
+def write_codex_provision_marker(
+    version: str,
+    *,
+    enforcement_verified: Optional[bool] = None,
+    enforcement_reason: str = "",
+) -> Path:
+    """Persist the codex Windows provisioning + enforcement verdict marker (written by setup).
+
+    Records the codex version + timestamp + accounts so a later boot reads an HONEST cached state
+    WITHOUT re-spawning codex. ``enforcement_verified`` is the result of the real behavioural check
+    (:func:`verify_codex_enforcement`) — ``True`` only when codex was observed to actually deny an
+    out-of-root write; anything else (``False``/``None``) leaves the fence unproven so the ladder
+    floors honestly rather than reporting a false ``active`` (#1026). Returns the written path.
+    """
+    import json  # noqa: PLC0415 - only on this path
+    from datetime import datetime, timezone  # noqa: PLC0415
+
+    path = _codex_marker_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "accounts": [CODEX_WINDOWS_ACCOUNT_OFFLINE, CODEX_WINDOWS_ACCOUNT_ONLINE],
+        "codex_version": version,
+        "provisioned_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "enforcement_verified": enforcement_verified,
+        "enforcement_reason": enforcement_reason,
+    }
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return path
+
+
+def codex_windows_gate(
+    *,
+    platform: str = sys.platform,
+    provisioned: Any = None,
+    marker_reader: Any = None,
+) -> tuple[bool, str]:
+    """The ladder's cached Windows codex gate: provisioned account AND enforcement-verified marker.
+
+    The TODO-free typed default the ladder (:func:`clio_agent.runtime.sandbox._resolve_backend`)
+    reads at boot — it consults the CACHED marker, never a live probe every boot. Returns
+    ``(ready, reason)``: no ``codexsandboxoffline`` account → :data:`REASON_CODEX_WINDOWS_UNPROVISIONED`;
+    provisioned but the cached marker is not ``enforcement_verified`` (verify failed, or a marker
+    predating the check) → :data:`REASON_CODEX_ENFORCEMENT_UNVERIFIED` (#1026, no false-green);
+    else ``(True, codex_windows_provisioned)``. Sub-probes are injectable for unit tests.
+    """
+    check = provisioned if provisioned is not None else codex_windows_provisioned
+    ok, _reason = check(platform=platform)
+    if not ok:
+        return False, REASON_CODEX_WINDOWS_UNPROVISIONED
+    read = marker_reader if marker_reader is not None else _read_codex_marker
+    marker = read()
+    if marker is None or marker.get("enforcement_verified") is not True:
+        return False, REASON_CODEX_ENFORCEMENT_UNVERIFIED
+    return True, REASON_CODEX_WINDOWS_PROVISIONED
+
+
 __all__ = [
     "CODEX_BINARY_NAME",
     "CODEX_MIN_SUPPORTED_VERSION",
+    "CODEX_WINDOWS_ACCOUNT_OFFLINE",
+    "CODEX_WINDOWS_ACCOUNT_ONLINE",
+    "CODEX_WINDOWS_MARKER_NAME",
     "REASON_CODEX_DETECTED",
+    "REASON_CODEX_ENFORCEMENT_ESCAPED",
+    "REASON_CODEX_ENFORCEMENT_UNVERIFIED",
+    "REASON_CODEX_ENFORCEMENT_VERIFIED",
     "REASON_CODEX_NOT_INSTALLED",
     "REASON_CODEX_PROFILE_REJECTED",
     "REASON_CODEX_VERSION_UNSUPPORTED",
+    "REASON_CODEX_WINDOWS_PROVISIONED",
+    "REASON_CODEX_WINDOWS_UNPROVISIONED",
+    "REASON_NOT_WINDOWS",
     "CodexDetection",
     "CodexProfileError",
     "CodexSpawnError",
     "codex_layer_name",
     "codex_prefix",
+    "codex_windows_gate",
+    "codex_windows_provisioned",
     "compose_codex_spawn",
     "detect_codex",
     "is_codex_version_supported",
     "parse_version",
     "synthesize_codex_profile",
     "validate_codex_profile",
+    "verify_codex_enforcement",
     "write_codex_layer",
+    "write_codex_provision_marker",
 ]

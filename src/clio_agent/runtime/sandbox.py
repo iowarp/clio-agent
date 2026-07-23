@@ -30,8 +30,7 @@ logger = logging.getLogger(__name__)
 SRT_PACKAGE_NAME = "@anthropic-ai/sandbox-runtime"
 #: The CLI binary the package installs (resolved on PATH unless overridden by config).
 SRT_BINARY_NAME = "srt"
-#: The latest srt release verified against this ladder (#974 live probe). Detection is
-#: version-tolerant; this is the reference the doctor row cites, not a hard floor.
+#: Latest srt release verified against this ladder (#974); the doctor row cites it, not a floor.
 SRT_LATEST_KNOWN_VERSION = "0.0.66"
 #: srt requires node >= 20.11 (owner note #974). A ``(major, minor)`` floor.
 SRT_MIN_NODE_VERSION = (20, 11)
@@ -302,8 +301,7 @@ def detect_srt(
     typed ladder reason the missing/present fence implies (:func:`_resolve_backend` maps it).
     """
     override = _srt_path_override(env)
-    # win32: prefer the launchable ``srt.cmd``/``srt.exe`` — the extensionless POSIX shim ``which``
-    # returns first can't be exec'd by CreateProcess (WinError 193).
+    # win32: prefer launchable ``srt.cmd``/``srt.exe`` (an extensionless POSIX shim fails CreateProcess).
     _names = (
         ("srt.cmd", "srt.exe", SRT_BINARY_NAME)
         if platform.startswith("win")
@@ -331,8 +329,7 @@ def detect_srt(
     if not node_present:
         reason = REASON_SRT_NODE_MISSING
     elif not node_version:
-        # node is on PATH but its version could not be read (probe failure, logged by
-        # the reader) — an unreadable version is NOT the same claim as "too old".
+        # node on PATH but its version was unreadable (logged) — NOT the same claim as "too old".
         reason = REASON_SRT_NODE_VERSION_UNREADABLE
     elif not node_ok:
         reason = REASON_SRT_NODE_TOO_OLD
@@ -412,6 +409,7 @@ def _resolve_backend(
     platform: str = sys.platform,
     detection: Optional[SrtDetection] = None,
     codex_detection: Any = None,
+    codex_provisioned_probe: Any = None,
     bwrap: Optional[tuple[bool, str]] = None,
     landlock: Any = None,
     start_proxy: Any = None,
@@ -420,7 +418,9 @@ def _resolve_backend(
     """Resolve + ACTIVATE the confinement backend down the typed ladder (#976, B2).
 
     When ``CLIO_SANDBOX_BACKEND=codex`` (flag-gated), the Codex rung resolves FIRST on all
-    platforms (via injectable ``codex_detection``), else a typed ``codex_*`` floor. The DEFAULT
+    platforms (via injectable ``codex_detection``; win32 additionally gates on the cached
+    ``codex_provisioned_probe`` — provisioned + enforcement-verified, #1026), else a typed
+    ``codex_*`` floor (``codex_windows_unprovisioned`` / ``codex_enforcement_unverified``). The DEFAULT
     ``srt`` ladder is UNCHANGED: **srt** (Seatbelt / bwrap+proxy) → **Landlock** → **none**. Every
     rung change carries a typed reason; all probes are injectable so the matrix is unit-pinnable.
     ``start_proxy`` runs only for an srt tier, and a typed
@@ -452,17 +452,21 @@ def _resolve_backend(
     if not _sandbox_enabled(env):
         return floor(REASON_DISABLED)
 
-    # Codex backend (flag-gated, all platforms): resolve BEFORE the srt/Landlock ladder — activates
-    # when detect_codex is viable, else a typed codex_* floor. srt stays the DEFAULT (flag-only).
+    # Codex backend (flag-gated, all platforms): resolve BEFORE the srt/Landlock ladder — viable
+    # detect_codex → active (win32 additionally gates on provisioning + verify #1026), else floor.
     if _sandbox_backend(env) == "codex":
         from clio_agent.runtime import sandbox_codex as scx  # noqa: PLC0415
 
         cdet = (
             codex_detection if codex_detection is not None else scx.detect_codex(platform=platform)
         )
-        if cdet.installed and cdet.reason == scx.REASON_CODEX_DETECTED:
-            return _activate_codex(cdet, base_details)
-        return floor(cdet.reason)  # typed: codex_not_installed / codex_version_unsupported
+        if not (cdet.installed and cdet.reason == scx.REASON_CODEX_DETECTED):
+            return floor(cdet.reason)  # typed: codex_not_installed / codex_version_unsupported
+        if platform.startswith("win"):  # gate on cached provision + verify (#1026 no-false-green)
+            ready, creason = (codex_provisioned_probe or scx.codex_windows_gate)()
+            if not ready:
+                return floor(creason)  # codex_windows_unprovisioned / codex_enforcement_unverified
+        return _activate_codex(cdet, base_details)
 
     # Windows (B3): the provisioning verdict drives the rung (see the docstring's 3-way branch).
     if platform.startswith("win"):
@@ -599,8 +603,7 @@ def _compose_fence_prefix(
         if mechanism in (MECHANISM_SRT_BWRAP, MECHANISM_SRT_SEATBELT, MECHANISM_SRT_WINDOWS):
             from clio_agent.runtime import sandbox_srt  # noqa: PLC0415
 
-            # B4: the child's ``httpProxyPort`` is its OWN chokepoint channel port (the listener a
-            # connection arrives on names the child); else the shared port (typed upstream).
+            # B4: the child's ``httpProxyPort`` is its OWN chokepoint channel port, else the shared.
             port = proxy_port if proxy_port is not None else state.details.get("proxy_port")
             config = sandbox_srt.synthesize_srt_config(roots, http_proxy_port=port)
             settings = sandbox_srt.settings_path_for(profile, config=config)
@@ -669,8 +672,7 @@ def wrap_confined(
         write_roots = (*effective_write_roots(PROFILE_FLEET), *(Path(r) for r in write_roots))
 
     # Active backend: fence prefix INNER (pdeathsig outermost below). B4's per-child egress channel
-    # (proxy env, egress recorded) is srt/Landlock ONLY; codex net is DEFERRED — skip the proxy (one
-    # the codex fence blocks would hang the child) and just compose its fence.
+    # is srt/Landlock ONLY; codex net is DEFERRED — skip the proxy (it would hang) and compose only.
     if resolved_state.active and resolved_state.mechanism != MECHANISM_NONE:
         proxy_port: Optional[int] = None
         if resolved_state.mechanism != MECHANISM_CODEX:
@@ -684,8 +686,7 @@ def wrap_confined(
             resolved_state, compose_profile, cmd, arg_list, write_roots, proxy_port=proxy_port
         )
 
-    # pdeathsig OUTERMOST (owner decision #974.5): the pre-existing argv-prefix helper folds in as
-    # the last composer step (one prefix owner). Passthrough where setpriv is absent, as it guards.
+    # pdeathsig OUTERMOST (#974.5): the argv-prefix helper folds in last (passthrough sans setpriv).
     if pdeathsig:
         from clio_agent.tools.mcp_config import pdeathsig_wrapped_command  # noqa: PLC0415 - cycle
 
@@ -714,8 +715,7 @@ def wrap_confined(
     )
 
 
-# The resolved backend for THIS process, cached at install (same pattern as
-# process_tree.child_reaper_status). ``None`` until installed.
+# The resolved backend for THIS process, cached at install (cf. process_tree.child_reaper_status).
 _STATE: SandboxResult | None = None
 
 

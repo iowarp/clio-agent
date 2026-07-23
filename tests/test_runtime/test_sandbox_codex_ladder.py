@@ -108,14 +108,17 @@ def test_sandbox_backend_reads_flag(raw: str, expected: str) -> None:
 def test_backend_codex_viable_activates_codex(platform: str) -> None:
     """backend=codex + a viable codex detection → MECHANISM_CODEX active on every platform.
 
-    Codex resolves BEFORE the srt/Landlock ladder and (this slice) has NO Windows provisioning
-    gate, so win32 activates from ``detect_codex`` viability alone.
+    Codex resolves BEFORE the srt/Landlock ladder. On win32 (B-codex-3, #1026) activation
+    ADDITIONALLY requires a provisioned + enforcement-verified probe — injected here — so the win32
+    rung is honest; off-win32 codex activates from ``detect_codex`` viability alone (no gate).
     """
     result = sandbox._resolve_backend(
         env={"CLIO_SANDBOX_BACKEND": "codex", "CLIO_SANDBOX_ENABLED": "true"},
         platform=platform,
         detection=_srt_none(),  # injected so the ladder never runs a real srt/node probe
         codex_detection=_codex_ok(),
+        # win32 gate: a provisioned + enforcement-verified probe (ignored off-win32).
+        codex_provisioned_probe=lambda: (True, sc.REASON_CODEX_WINDOWS_PROVISIONED),
     )
     assert result.mechanism == sandbox.MECHANISM_CODEX
     assert result.active is True

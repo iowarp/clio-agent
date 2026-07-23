@@ -110,6 +110,15 @@ def probe_sandbox(*, state: sb.SandboxResult | None = None) -> IntegrationStatus
     if resolved.reason in (sc.REASON_CODEX_NOT_INSTALLED, sc.REASON_CODEX_VERSION_UNSUPPORTED):
         # Codex backend floor (flag-gated): guide the operator to install/upgrade codex.
         next_action = "Install codex: npm install -g @openai/codex"
+    elif resolved.reason == sc.REASON_CODEX_WINDOWS_UNPROVISIONED:
+        # Codex win32 backend: the dedicated sandbox accounts are not provisioned yet (#1026).
+        next_action = "Run `clio sandbox setup` to provision the Codex Windows fence."
+    elif resolved.reason == sc.REASON_CODEX_ENFORCEMENT_UNVERIFIED:
+        # Codex win32 backend: accounts exist but the write fence could not be verified (#1026).
+        next_action = (
+            "Codex is provisioned but its Windows write fence could not be verified on this host; "
+            "re-run `clio sandbox setup` to re-verify enforcement."
+        )
     elif resolved.reason == sb.REASON_WINDOWS_UNPROVISIONED:
         next_action = "Run `clio sandbox setup` (B3) to provision the Windows write fence."
     elif resolved.reason == sv.REASON_WINDOWS_ENFORCEMENT_UNVERIFIED:
