@@ -43,6 +43,7 @@ from clio_agent.runtime.sandbox import (
     MECHANISM_SRT_WINDOWS,
     REASON_SRT_NOT_INSTALLED,
     REASON_WINDOWS_UNPROVISIONED,
+    SRT_BINARY_NAME,
     SRT_PACKAGE_NAME,
     SrtDetection,
     detect_srt,
@@ -74,6 +75,7 @@ OUTCOME_ALREADY_PROVISIONED = "already_provisioned"
 OUTCOME_PROVISIONED = "provisioned"
 OUTCOME_PROVISION_FAILED = "provision_failed"
 OUTCOME_PROVISION_VERIFY_FAILED = "provision_verify_failed"
+OUTCOME_SRT_INSTALL_FAILED = "srt_install_failed"
 
 # Typed reasons (no silent fallback — every state explains itself).
 REASON_NOT_WINDOWS = "not_windows"
@@ -83,6 +85,7 @@ REASON_ALREADY_PROVISIONED = "already_provisioned"
 REASON_PROVISION_FAILED = "srt_windows_install_failed"
 REASON_PROVISION_VERIFY_FAILED = "srt_windows_install_unverified"
 REASON_SRT_VERSION_UNSUPPORTED = "srt_version_unsupported"
+REASON_SRT_INSTALL_FAILED = "srt_install_failed"
 
 
 @dataclass(frozen=True)
@@ -357,26 +360,66 @@ def _elevated_srt_windows_install(srt_binary: str) -> tuple[bool, str]:
     return True, "srt windows-install completed under elevation"
 
 
+def _npm_install_srt() -> tuple[bool, str]:
+    """Run ``npm install -g @anthropic-ai/sandbox-runtime`` (a machine-mutating global install).
+
+    Like the elevation, this MUTATES the host, so it is the owner-gated live gate: it is never
+    run from unit tests (which inject a fake ``npm_installer``). Best-effort, short-timeout;
+    returns ``(ok, detail)`` and never raises on a non-zero exit.
+    """
+    import subprocess  # pragma: no cover - live gate only
+
+    try:  # pragma: no cover - live gate only
+        proc = subprocess.run(
+            ["npm", "install", "-g", SRT_PACKAGE_NAME],
+            capture_output=True,
+            text=True,
+            timeout=600,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:  # pragma: no cover
+        return False, f"npm install failed to launch: {exc!r}"
+    if proc.returncode != 0:  # pragma: no cover
+        return False, f"npm install exited {proc.returncode}: {(proc.stderr or '').strip()[:300]}"
+    return True, f"{SRT_PACKAGE_NAME} installed via npm"
+
+
+def _interactive_confirm(prompt: str) -> bool:  # pragma: no cover - interactive, never unit-run
+    """Ask a yes/no question on the terminal (skippable/injectable — never run in tests)."""
+    try:
+        answer = input(f"{prompt} [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return answer in {"y", "yes"}
+
+
 def provision_windows_sandbox(
     *,
     state: Optional[WindowsSandboxState] = None,
     installer: Any = None,
     marker_writer: Any = None,
     state_reader: Any = None,
+    npm_installer: Any = None,
+    confirm: Any = None,
 ) -> WindowsProvisionResult:
     """Idempotently provision the Windows write fence (``clio sandbox setup``) (#977/B3).
 
-    Flow (owner decision #974.2, single UAC + zero-prompt re-run):
+    Flow (owner decision #974.2 + #977 owner direction — ONE command + ONE UAC click):
 
     * off-Windows → typed no-op (:data:`STATUS_NOT_WINDOWS`); the ladder fences automatically;
-    * srt absent/too old → typed guided reason + the install pointer, NO elevation attempted;
+    * srt absent but **node/npm present** → OFFER (one ``confirm``) to
+      ``npm install -g @anthropic-ai/sandbox-runtime``, then CONTINUE into provisioning, so the
+      whole flow is one command + one UAC. node/npm absent (or the offer declined) → the typed
+      install pointer, NO elevation, NO npm run;
     * already provisioned → idempotent no-op (:data:`OUTCOME_ALREADY_PROVISIONED`), ZERO prompts;
     * otherwise → one self-elevating ``srt windows-install``, then persist the marker and
       RE-PROBE to verify (principal + marker) before claiming success.
 
-    ``installer`` / ``marker_writer`` / ``state_reader`` are injectable so the whole flow is
-    unit-pinnable with fakes; the real :func:`_elevated_srt_windows_install` (a UAC prompt) is
-    NEVER called from tests. Returns a typed :class:`WindowsProvisionResult`.
+    Every machine-mutating step is injectable so the whole flow is unit-pinnable with fakes:
+    ``installer`` (the UAC elevation), ``npm_installer`` (the global npm install) and
+    ``confirm`` (the interactive consent) are NEVER their real machine-touching implementations
+    in tests. ``confirm is None`` disables the auto-install offer (a conservative programmatic
+    default). Returns a typed :class:`WindowsProvisionResult`.
     """
     st = state if state is not None else windows_sandbox_state()
     if st.status == STATUS_NOT_WINDOWS:
@@ -388,13 +431,13 @@ def provision_windows_sandbox(
             next_action=st.next_action,
         )
     if st.status == STATUS_SRT_ABSENT:
-        # Precondition gap: guide the user, DO NOT elevate or attempt to install srt ourselves.
-        return WindowsProvisionResult(
-            ok=False,
-            status=STATUS_SRT_ABSENT,
-            reason=st.reason,
-            detail=st.detail,
-            next_action=st.next_action,
+        return _handle_srt_absent(
+            st,
+            installer=installer,
+            marker_writer=marker_writer,
+            state_reader=state_reader,
+            npm_installer=npm_installer,
+            confirm=confirm,
         )
     if st.status == STATUS_PROVISIONED:
         # Idempotent: already provisioned → no-op, zero prompts (safe to re-run on any channel).
@@ -443,23 +486,89 @@ def provision_windows_sandbox(
     )
 
 
+def _handle_srt_absent(
+    st: WindowsSandboxState,
+    *,
+    installer: Any,
+    marker_writer: Any,
+    state_reader: Any,
+    npm_installer: Any,
+    confirm: Any,
+) -> WindowsProvisionResult:
+    """srt-absent branch: the one-command npm auto-install offer, else the typed pointer (#977).
+
+    Offer condition (owner direction): srt is the ONLY missing piece — ``srt_not_installed`` with
+    **node present** (npm ships with node) — AND a ``confirm`` gate is supplied. Then, on consent,
+    run the injectable ``npm_installer`` and CONTINUE into provisioning (one command + one UAC).
+    node/npm absent, no confirm gate, or a declined offer → the typed install pointer (no npm run,
+    no elevation). A successful npm install that still leaves srt undetected is a typed
+    ``srt_install_failed`` (never a silent loop).
+    """
+    srt = st.srt
+    can_offer = (
+        st.reason == REASON_SRT_NOT_INSTALLED
+        and srt is not None
+        and srt.node_present
+        and confirm is not None
+    )
+    if not (can_offer and confirm(f"Install {SRT_PACKAGE_NAME} now via `{SRT_INSTALL_POINTER}`?")):
+        # node/npm absent, no consent gate, or declined → guide the user; do NOT install/elevate.
+        return WindowsProvisionResult(
+            ok=False,
+            status=STATUS_SRT_ABSENT,
+            reason=st.reason,
+            detail=st.detail,
+            next_action=st.next_action,
+        )
+    ok, detail = (npm_installer if npm_installer is not None else _npm_install_srt)()
+    if not ok:
+        return WindowsProvisionResult(
+            ok=False,
+            status=OUTCOME_SRT_INSTALL_FAILED,
+            reason=REASON_SRT_INSTALL_FAILED,
+            detail=detail,
+            next_action=f"Install srt manually (`{SRT_INSTALL_POINTER}`), then run `clio sandbox setup`.",
+        )
+    reprobe = (state_reader if state_reader is not None else windows_sandbox_state)()
+    if reprobe.status == STATUS_SRT_ABSENT:
+        return WindowsProvisionResult(
+            ok=False,
+            status=OUTCOME_SRT_INSTALL_FAILED,
+            reason=REASON_SRT_INSTALL_FAILED,
+            detail=f"npm install ran but srt is still not usable ({reprobe.reason}).",
+            next_action=f"Verify `{SRT_BINARY_NAME}` is on PATH, then run `clio sandbox setup`.",
+        )
+    # srt now present → continue into the normal provision flow (one command, one UAC).
+    return provision_windows_sandbox(
+        state=reprobe,
+        installer=installer,
+        marker_writer=marker_writer,
+        state_reader=state_reader,
+        npm_installer=npm_installer,
+        confirm=confirm,
+    )
+
+
 # --------------------------------------------------------------------------- #
 # The CLI verb: `clio sandbox setup` / `clio sandbox status` (cli.py dispatches).#
 # --------------------------------------------------------------------------- #
 
 
-def run_sandbox_cli(action: Optional[str], *, json_output: bool = False) -> int:
+def run_sandbox_cli(
+    action: Optional[str], *, json_output: bool = False, assume_yes: bool = False
+) -> int:
     """Dispatch the ``sandbox`` CLI verb (``setup`` / ``status``). Returns the process exit code.
 
     ``ui/cli.py`` only parses argv and calls this (no accretion). ``status`` (the default)
     renders the ``sandbox`` doctor row standalone; ``setup`` runs the idempotent one-time
-    provisioning. Both emit typed, guided output — never a raw traceback.
+    provisioning. ``assume_yes`` (``--yes``) accepts the srt install offer non-interactively.
+    Both emit typed, guided output — never a raw traceback.
     """
     act = (action or "status").strip().lower()
     if act == "status":
         return _sandbox_status_cli(json_output=json_output)
     if act == "setup":
-        return _sandbox_setup_cli(json_output=json_output)
+        return _sandbox_setup_cli(json_output=json_output, assume_yes=assume_yes)
     _print(f"unknown sandbox action: {act!r} (expected 'setup' or 'status')", json_output, err=True)
     return 2
 
@@ -479,8 +588,13 @@ def _sandbox_status_cli(*, json_output: bool) -> int:
     return 0
 
 
-def _sandbox_setup_cli(*, json_output: bool) -> int:
-    """Run ``clio sandbox setup`` — the one-time Windows provisioning (typed, guided)."""
+def _sandbox_setup_cli(*, json_output: bool, assume_yes: bool = False) -> int:
+    """Run ``clio sandbox setup`` — the one-time Windows provisioning (typed, guided).
+
+    The srt auto-install offer is interactive on a terminal, ``--yes`` (``assume_yes``) accepts
+    it non-interactively, and ``--json`` without ``--yes`` disables it (a conservative
+    programmatic default — never install/elevate a machine without explicit consent).
+    """
     if not sys.platform.startswith("win"):
         msg = (
             "No setup needed on this platform: the confinement ladder resolves an automatic "
@@ -491,7 +605,13 @@ def _sandbox_setup_cli(*, json_output: bool) -> int:
             msg, json_output, payload={"status": STATUS_NOT_WINDOWS, "reason": REASON_NOT_WINDOWS}
         )
         return 0
-    result = provision_windows_sandbox()
+    if assume_yes:
+        confirm: Any = lambda _prompt: True  # noqa: E731 - trivial non-interactive consent
+    elif json_output:
+        confirm = None  # programmatic: no auto-install without an explicit --yes
+    else:
+        confirm = _interactive_confirm
+    result = provision_windows_sandbox(confirm=confirm)
     if json_output:
         import json  # noqa: PLC0415
 
@@ -576,7 +696,9 @@ __all__ = [
     "OUTCOME_PROVISIONED",
     "OUTCOME_PROVISION_FAILED",
     "OUTCOME_PROVISION_VERIFY_FAILED",
+    "OUTCOME_SRT_INSTALL_FAILED",
     "REASON_ALREADY_PROVISIONED",
+    "REASON_SRT_INSTALL_FAILED",
     "REASON_NOT_WINDOWS",
     "REASON_PROVISION_FAILED",
     "REASON_PROVISION_VERIFY_FAILED",

@@ -263,8 +263,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # (ratcheted 1156 -> 1135 in the same change).
     # merge(main->develop): +6 (1135 -> 1141) integrating main's release-stream cli deltas.
     # #977 (B3 sandbox): the `sandbox` verb dispatches to runtime/sandbox_provision.py and
-    # run_doctor/--tune stub moved to their owner modules — net ratchet 1141 -> 1132.
-    "src/clio_agent/ui/cli.py": 1132,
+    # run_doctor/--tune stub moved to their owner modules; the `--yes` flag (owner's
+    # one-command install acceptance) adds it back slightly — net ratchet 1141 -> 1138 (still
+    # a reduction vs the inherited baseline).
+    "src/clio_agent/ui/cli.py": 1138,
 }
 
 # Root of the source tree to scan, relative to the repository root.

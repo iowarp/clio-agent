@@ -1070,6 +1070,12 @@ def main() -> None:
         action="store_true",
         help="With 'doctor --gc': show the reclamation plan without deleting anything.",
     )
+    parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="With 'sandbox setup': accept the srt install offer non-interactively.",
+    )
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Server host")
     parser.add_argument("--port", type=int, default=8100, help="Server port")
     parser.add_argument(
@@ -1097,7 +1103,7 @@ def main() -> None:
     if args.command == "sandbox":
         from clio_agent.runtime.sandbox_provision import run_sandbox_cli  # noqa: PLC0415
 
-        sys.exit(run_sandbox_cli(args.sandbox_action, json_output=args.json))
+        sys.exit(run_sandbox_cli(args.sandbox_action, json_output=args.json, assume_yes=args.yes))
 
     # Serve mode: run the GACT server in the foreground on this process,
     # calling the gact app's foreground runner directly (no server spawn /
