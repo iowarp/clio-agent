@@ -418,6 +418,7 @@ def record_transform(
     trace_id: str = "",
     started_at: Optional[float] = None,
     agent_id: str = "",
+    serving_child_id: str = "",
 ) -> Optional[TransformRecord]:
     """Build, emit (trace-only), and fold one :class:`TransformRecord` (owner #966.6).
 
@@ -452,10 +453,12 @@ def record_transform(
     notes = [*used_scan.notes, *authority_scan.notes]
     # B4 (#978): join in-window ``net.egress`` records onto the used edges as
     # ``used web:<domain>@<time>`` — enriching a staged-download/catalog URL edge whose host
-    # the chokepoint observed (one edge, two evidence bases), or minting one fresh web edge
-    # for an ingest-shaped call with a single unambiguous egress domain. Precision over recall
-    # (#966.10): an ambiguous/unjoinable egress stays a bare ``net.egress`` record. Guarded —
-    # a provenance join must never break a turn.
+    # the chokepoint observed (step 1, one edge two evidence bases), or minting one fresh web
+    # edge ONLY when the producing call's SERVING confined child is known and its egress is a
+    # single unambiguous domain (step 2, child-keyed). Precision over recall (#966.10): an
+    # unattributable egress (unknown serving child / multi-domain / unbounded window) stays a
+    # bare ``net.egress`` record — a sibling child's egress is never minted onto this
+    # transform. Guarded — a provenance join must never break a turn.
     try:
         from clio_agent.gact.artifacts.ingest_edges import attach_ingest_edges  # noqa: PLC0415
 
@@ -465,6 +468,7 @@ def record_transform(
             workspace_id=workspace_id,
             tool_name=tool_name,
             started_at=started_at,
+            serving_child_id=serving_child_id,
         )
     except Exception:  # noqa: BLE001 — the ingest join is best-effort, never fatal
         logger.debug("ingest edge join skipped reason=ingest_join_failed", exc_info=True)
@@ -590,6 +594,14 @@ def observe_tool_transform(
             call_started_at=started,
             result=result,
         )
+        # B4 (#978): resolve the confined child that SERVED this call so the ingest join can
+        # attribute egress deterministically (``egress → child → call-window → transform``).
+        # ``""`` when no child link is recorded (the floor / unattributed) — the step-2 mint
+        # then abstains rather than guess.
+        from clio_agent.gact.artifacts.ingest_edges import (  # noqa: PLC0415
+            resolve_serving_child_id,
+        )
+
         record_transform(
             app,
             sid,
@@ -604,6 +616,7 @@ def observe_tool_transform(
             trace_id=trace_id,
             started_at=started,
             agent_id=_ctx.active_react_scope() or "",
+            serving_child_id=resolve_serving_child_id(app, call_id),
         )
         # B2 (#976): on a FENCED platform, a denied (or fence-escaping) out-of-root write is a
         # typed ``policy_violation`` — the enforced-tier variant of #966's ``gap`` node. No-op
