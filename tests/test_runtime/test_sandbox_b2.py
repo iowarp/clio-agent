@@ -217,6 +217,20 @@ def test_ladder_selection_matrix(
     platform, det, bwrap, landlock_ok, enabled, mechanism, active
 ) -> None:
     """The full ladder decision table, pinned with injected probes (host-independent)."""
+    # On win32 the ladder consults windows_sandbox_state(), which reads the REAL provisioned
+    # marker — inject an UNPROVISIONED verdict so the matrix stays host-independent (this row
+    # is the unprovisioned floor case; a provisioned box would otherwise resolve srt_windows).
+    win_state = None
+    if platform == "win32":
+        from clio_agent.runtime import sandbox_provision as swp  # noqa: PLC0415
+
+        win_state = swp.WindowsSandboxState(
+            status=swp.STATUS_UNPROVISIONED,
+            reason=sandbox.REASON_WINDOWS_UNPROVISIONED,
+            srt=det,
+            detail="test: injected unprovisioned",
+            next_action="run clio sandbox setup",
+        )
     result = sandbox._resolve_backend(
         env={"CLIO_SANDBOX_ENABLED": "true" if enabled else "false"},
         platform=platform,
@@ -224,6 +238,7 @@ def test_ladder_selection_matrix(
         bwrap=bwrap,
         landlock=_ll(landlock_ok),
         start_proxy=lambda: 40000,
+        win_state=win_state,
     )
     assert result.mechanism == mechanism
     assert result.active is active

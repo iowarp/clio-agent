@@ -325,7 +325,16 @@ def detect_srt(
     implies; :func:`_resolve_backend` maps it onto the final (always ``none``) result.
     """
     override = _srt_path_override(env)
-    binary = override if override else (which(SRT_BINARY_NAME) or "")
+    if override:
+        binary = override
+    elif platform.startswith("win"):
+        # On Windows the npm bin ships BOTH an extensionless ``srt`` (a POSIX shim) and the
+        # launchable ``srt.cmd``. ``shutil.which("srt")`` returns the extensionless file, which
+        # CreateProcess cannot exec (WinError 193). Prefer the PATHEXT-launchable form so the
+        # composed fence prefix is actually spawnable by the real StdioTransport/subprocess path.
+        binary = which("srt.cmd") or which("srt.exe") or which(SRT_BINARY_NAME) or ""
+    else:
+        binary = which(SRT_BINARY_NAME) or ""
     if not binary:
         return SrtDetection(
             installed=False,

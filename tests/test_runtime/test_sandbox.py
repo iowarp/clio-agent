@@ -84,6 +84,39 @@ def test_detect_srt_not_installed_when_binary_absent() -> None:
     assert det.reason == sandbox.REASON_SRT_NOT_INSTALLED
 
 
+def test_detect_srt_prefers_launchable_cmd_on_windows() -> None:
+    """On Windows, srt must resolve to the LAUNCHABLE ``srt.cmd``, not the extensionless shim.
+
+    The npm bin ships both an extensionless ``srt`` (a POSIX shim CreateProcess can't exec →
+    WinError 193) and ``srt.cmd``. A live gate caught the fence composing the extensionless
+    form, so the real spawn never launched. This pins the win32 preference.
+    """
+    resolved = {
+        "srt": r"C:\npm\srt",
+        "srt.cmd": r"C:\npm\srt.cmd",
+        "node": r"C:\node\node.exe",
+    }
+    det = sandbox.detect_srt(
+        which=lambda n: resolved.get(n),
+        package_version=lambda _p: "0.0.66",
+        node_version_reader=lambda: "v22.0.0",
+        platform="win32",
+    )
+    assert det.binary_path == r"C:\npm\srt.cmd"
+    # On Linux the plain name is correct (no PATHEXT concern).
+    det_linux = sandbox.detect_srt(
+        which=lambda n: {
+            "srt": "/usr/bin/srt",
+            "node": "/usr/bin/node",
+            "socat": "/usr/bin/socat",
+        }.get(n),
+        package_version=lambda _p: "0.0.66",
+        node_version_reader=lambda: "v22.0.0",
+        platform="linux",
+    )
+    assert det_linux.binary_path == "/usr/bin/srt"
+
+
 def test_detect_srt_node_missing() -> None:
     """srt present but node absent → ``srt_node_missing``."""
     which = {"srt": "/opt/srt"}.get
