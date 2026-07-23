@@ -450,6 +450,24 @@ def record_transform(
     )
     used = [*used_scan.edges, *authority_scan.edges]
     notes = [*used_scan.notes, *authority_scan.notes]
+    # B4 (#978): join in-window ``net.egress`` records onto the used edges as
+    # ``used web:<domain>@<time>`` — enriching a staged-download/catalog URL edge whose host
+    # the chokepoint observed (one edge, two evidence bases), or minting one fresh web edge
+    # for an ingest-shaped call with a single unambiguous egress domain. Precision over recall
+    # (#966.10): an ambiguous/unjoinable egress stays a bare ``net.egress`` record. Guarded —
+    # a provenance join must never break a turn.
+    try:
+        from clio_agent.gact.artifacts.ingest_edges import attach_ingest_edges  # noqa: PLC0415
+
+        used = attach_ingest_edges(
+            app,
+            used,
+            workspace_id=workspace_id,
+            tool_name=tool_name,
+            started_at=started_at,
+        )
+    except Exception:  # noqa: BLE001 — the ingest join is best-effort, never fatal
+        logger.debug("ingest edge join skipped reason=ingest_join_failed", exc_info=True)
     generated = _generated_edges(minted)
     environment = capture_environment(app)
     replay, replay_reason = compute_replay_contract(environment, used)

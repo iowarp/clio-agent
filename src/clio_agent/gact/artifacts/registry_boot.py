@@ -266,6 +266,13 @@ async def boot_fold_artifact_registry_offloop(
     freezing mid-turn. The boot-time placement converts an unrecoverable in-process GIL
     freeze into a diagnosable boot failure.
     """
+    # #978 (B4): wire the network chokepoint's egress recorder to THIS app now that ARC is
+    # live — every confined child's ``net.egress`` then lands on the durable trace + ARC and
+    # feeds the ``used web:domain@time`` ingest edge that enriches this very registry. Rides
+    # the artifact-provenance boot (no new god-file call site); the owner module owns the logic.
+    from clio_agent.gact.artifacts.ingest_edges import install_egress_recorder  # noqa: PLC0415
+
+    install_egress_recorder(app)
     try:
         await loop.run_in_executor(None, rebuild_registry_at_boot, app)
     except ArtifactRegistryBootStalled as exc:
