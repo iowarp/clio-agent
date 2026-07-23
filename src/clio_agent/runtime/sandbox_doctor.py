@@ -11,7 +11,6 @@ a backend. Re-exported from :mod:`clio_agent.runtime.sandbox` so callers keep re
 from __future__ import annotations
 
 import logging
-import sys
 from typing import Any
 
 from clio_agent.runtime import sandbox as sb
@@ -60,10 +59,10 @@ def emit_boot_state_event(app: Any, state: "sb.SandboxResult | None") -> None:
 def probe_sandbox(*, state: sb.SandboxResult | None = None) -> IntegrationStatus:
     """Report the confinement backend as a doctor row (#975/#976).
 
-    READY when an OS fence is active (srt / Landlock); DEGRADED (surfaced, never an error
+    READY when an OS fence is active (Codex / Landlock); DEGRADED (surfaced, never an error
     state) on the honest floor, because a missing fence is a *legal* configuration (the
-    advisory file_policy still applies; HPC/no-npm hosts are floor-only). Cites the
-    mechanism, the typed reason and the srt/landlock detection details.
+    advisory file_policy still applies; HPC/no-codex hosts are floor-only). Cites the
+    mechanism, the typed reason and the codex/landlock detection details.
     """
     resolved = state if state is not None else sb.current_state()
     if resolved is None:
@@ -104,11 +103,9 @@ def probe_sandbox(*, state: sb.SandboxResult | None = None) -> IntegrationStatus
         )
 
     from clio_agent.runtime import sandbox_codex as sc  # noqa: PLC0415
-    from clio_agent.runtime import sandbox_verify as sv  # noqa: PLC0415
 
-    srt = resolved.details.get("srt", {}) if isinstance(resolved.details, dict) else {}
     if resolved.reason in (sc.REASON_CODEX_NOT_INSTALLED, sc.REASON_CODEX_VERSION_UNSUPPORTED):
-        # Codex backend floor (flag-gated): guide the operator to install/upgrade codex.
+        # Codex backend floor: guide the operator to install/upgrade codex.
         next_action = "Install codex: npm install -g @openai/codex"
     elif resolved.reason == sc.REASON_CODEX_WINDOWS_UNPROVISIONED:
         # Codex win32 backend: the dedicated sandbox accounts are not provisioned yet (#1026).
@@ -119,35 +116,12 @@ def probe_sandbox(*, state: sb.SandboxResult | None = None) -> IntegrationStatus
             "Codex is provisioned but its Windows write fence could not be verified on this host; "
             "re-run `clio sandbox setup` to re-verify enforcement."
         )
-    elif resolved.reason == sb.REASON_WINDOWS_UNPROVISIONED:
-        next_action = "Run `clio sandbox setup` (B3) to provision the Windows write fence."
-    elif resolved.reason == sv.REASON_WINDOWS_ENFORCEMENT_UNVERIFIED:
-        next_action = (
-            "srt provisioned the srt-sandbox account but could not enforce a confined write on "
-            "this host (upstream srt CreateProcessWithLogonW); the advisory file_policy applies. "
-            "Re-run `clio sandbox setup` to re-verify."
-        )
-    elif sys.platform.startswith("win") and resolved.reason in {
-        sb.REASON_SRT_NOT_INSTALLED,
-        sb.REASON_SRT_NODE_MISSING,
-    }:
-        # Windows srt precondition gap: the fence needs srt BEFORE `clio sandbox setup` (#977).
-        next_action = (
-            f"Install srt (`npm install -g {sb.SRT_PACKAGE_NAME}`), then run `clio sandbox setup`."
-        )
     elif resolved.reason == sb.REASON_DISABLED:
         next_action = "Set sandbox.enabled=true (CLIO_SANDBOX_ENABLED) to resolve a fence."
-    elif resolved.reason == sb.REASON_SRT_VERSION_UNSUPPORTED:
-        next_action = (
-            f"Installed {sb.SRT_PACKAGE_NAME} v{srt.get('version') or '?'} is below the "
-            f"validated floor v{'.'.join(map(str, _min_srt()))}; upgrade it for the OS fence."
-        )
     else:
         next_action = (
-            f"Install {sb.SRT_PACKAGE_NAME} (needs node>={sb.SRT_MIN_NODE_VERSION[0]}."
-            f"{sb.SRT_MIN_NODE_VERSION[1]}"
-            f"{', socat on Linux' if sys.platform.startswith('linux') else ''}), or run on a "
-            "Landlock-capable kernel (>=5.13), for the OS write fence; the advisory "
+            "Install codex (`npm install -g @openai/codex`) for the cross-platform OS write "
+            "fence, or run on a Landlock-capable kernel (>=5.13) on Linux; the advisory "
             "file_policy still applies meanwhile."
         )
     return IntegrationStatus(
@@ -164,12 +138,6 @@ def probe_sandbox(*, state: sb.SandboxResult | None = None) -> IntegrationStatus
         details=details,
         required=False,
     )
-
-
-def _min_srt() -> tuple[int, int, int]:
-    from clio_agent.runtime.sandbox_srt import SRT_MIN_SUPPORTED_VERSION  # noqa: PLC0415
-
-    return SRT_MIN_SUPPORTED_VERSION
 
 
 __all__ = ["emit_boot_state_event", "probe_sandbox"]

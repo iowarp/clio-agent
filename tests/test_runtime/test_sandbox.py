@@ -1,23 +1,24 @@
-"""OS write-confinement ladder + seam wiring on the typed floor (#974/#975, B1).
+"""OS write-confinement ladder + seam wiring on the typed floor (#974/#975, B-codex-5).
 
-The confinement plumbing lands FLOOR-FIRST: :func:`wrap_confined` always resolves to the
-passthrough ``none`` backend this slice, so every spawn is byte-identical to today while
+The confinement plumbing lands FLOOR-FIRST: :func:`wrap_confined` resolves to the passthrough
+``none`` backend where no OS fence is available, so every spawn is byte-identical to today while
 the mechanism labels, doctor row and provenance field populate. These tests pin:
 
-* the backend ladder's typed reasons for every rung (incl. ``srt_not_installed``),
-* that the srt VERSION probe reads ``package.json`` — never the lying ``srt --version``,
+* the backend ladder's typed reasons (codex-primary → Landlock on Linux → floor),
 * the ``pdeathsig`` fold preserving argv EXACTLY where it applies today,
 * the spawn-diet FINAL argv being what gets wrapped (not the launcher chain),
 * the exclusion classification (CTE daemon / provider CLIs never wrapped),
 * the ``effective_write_roots`` boundary sharing file_policy's source + the uv cache,
 * the doctor row being DEGRADED (never ERROR) on the floor,
 * and the provenance environment field + shell sabotage floor.
+
+Codex-specific detection / provisioning / ladder-gate coverage lives in
+``test_sandbox_codex_ladder.py`` and ``test_sandbox_codex_provision.py``.
 """
 
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -25,6 +26,8 @@ import pytest
 from fastmcp import Client
 
 from clio_agent.runtime import sandbox
+from clio_agent.runtime import sandbox_codex as sc
+from clio_agent.runtime.sandbox_landlock import LandlockProbe
 from clio_agent.runtime.status import IntegrationState
 
 # --------------------------------------------------------------------------- #
@@ -33,14 +36,11 @@ from clio_agent.runtime.status import IntegrationState
 
 
 def test_known_mechanisms_are_exactly_the_ladder_rungs() -> None:
-    """The typed mechanism set is the whole ladder (srt family + Codex + Landlock + none)."""
+    """The typed mechanism set is the whole ladder (Codex + Landlock + none)."""
     assert sandbox.KNOWN_MECHANISMS == frozenset(
         {
-            sandbox.MECHANISM_SRT_SEATBELT,
-            sandbox.MECHANISM_SRT_BWRAP,
-            sandbox.MECHANISM_SRT_WINDOWS,
-            sandbox.MECHANISM_LANDLOCK,
             sandbox.MECHANISM_CODEX,
+            sandbox.MECHANISM_LANDLOCK,
             sandbox.MECHANISM_NONE,
         }
     )
@@ -69,99 +69,6 @@ def test_excluded_seams_are_never_wrapped() -> None:
         assert sandbox.confinement_for_kind(kind) == sandbox.CONFINEMENT_EXCLUDED
 
 
-# --------------------------------------------------------------------------- #
-# srt detection — the ladder rungs, and the version-probe defect guard         #
-# --------------------------------------------------------------------------- #
-
-
-def _which_none(_name: str) -> str | None:
-    return None
-
-
-def test_detect_srt_not_installed_when_binary_absent() -> None:
-    """No ``srt`` on PATH → the typed ``srt_not_installed`` rung (detection only)."""
-    det = sandbox.detect_srt(which=_which_none, platform="linux")
-    assert det.installed is False
-    assert det.reason == sandbox.REASON_SRT_NOT_INSTALLED
-
-
-def test_detect_srt_prefers_launchable_cmd_on_windows() -> None:
-    """On Windows, srt must resolve to the LAUNCHABLE ``srt.cmd``, not the extensionless shim.
-
-    The npm bin ships both an extensionless ``srt`` (a POSIX shim CreateProcess can't exec →
-    WinError 193) and ``srt.cmd``. A live gate caught the fence composing the extensionless
-    form, so the real spawn never launched. This pins the win32 preference.
-    """
-    resolved = {
-        "srt": r"C:\npm\srt",
-        "srt.cmd": r"C:\npm\srt.cmd",
-        "node": r"C:\node\node.exe",
-    }
-    det = sandbox.detect_srt(
-        which=lambda n: resolved.get(n),
-        package_version=lambda _p: "0.0.66",
-        node_version_reader=lambda: "v22.0.0",
-        platform="win32",
-    )
-    assert det.binary_path == r"C:\npm\srt.cmd"
-    # On Linux the plain name is correct (no PATHEXT concern).
-    det_linux = sandbox.detect_srt(
-        which=lambda n: {
-            "srt": "/usr/bin/srt",
-            "node": "/usr/bin/node",
-            "socat": "/usr/bin/socat",
-        }.get(n),
-        package_version=lambda _p: "0.0.66",
-        node_version_reader=lambda: "v22.0.0",
-        platform="linux",
-    )
-    assert det_linux.binary_path == "/usr/bin/srt"
-
-
-def test_detect_srt_node_missing() -> None:
-    """srt present but node absent → ``srt_node_missing``."""
-    which = {"srt": "/opt/srt"}.get
-    det = sandbox.detect_srt(
-        which=lambda n: which(n),
-        package_version=lambda _p: "0.0.66",
-        platform="linux",
-    )
-    assert det.installed is True
-    assert det.reason == sandbox.REASON_SRT_NODE_MISSING
-
-
-def test_detect_srt_node_too_old() -> None:
-    """node below 20.11 → ``srt_node_too_old`` (owner note #974)."""
-    which = {"srt": "/opt/srt", "node": "/usr/bin/node", "socat": "/usr/bin/socat"}.get
-    det = sandbox.detect_srt(
-        which=lambda n: which(n),
-        package_version=lambda _p: "0.0.66",
-        node_version_reader=lambda: "v18.19.0",
-        platform="linux",
-    )
-    assert det.node_ok is False
-    assert det.reason == sandbox.REASON_SRT_NODE_TOO_OLD
-
-
-def test_detect_srt_node_version_unreadable_is_not_too_old() -> None:
-    """node on PATH but its version unreadable → ``srt_node_version_unreadable``.
-
-    An unreadable version is NOT the claim "too old" (review fix, #975): the probe
-    failure is logged by the reader and the typed reason says what actually happened.
-    """
-    which = {"srt": "/opt/srt", "node": "/usr/bin/node", "socat": "/usr/bin/socat"}.get
-    det = sandbox.detect_srt(
-        which=lambda n: which(n),
-        package_version=lambda _p: "0.0.66",
-        node_version_reader=lambda: "",
-        platform="linux",
-    )
-    assert det.node_present is True
-    assert det.node_ok is False
-    assert det.reason == sandbox.REASON_SRT_NODE_VERSION_UNREADABLE
-    assert det.reason != sandbox.REASON_SRT_NODE_TOO_OLD
-
-
 def test_sandbox_state_event_is_declared_trace_only() -> None:
     """``sandbox.state`` is in ``SSE_TRACE_ONLY_EVENT_TYPES`` — trace-only by declaration.
 
@@ -180,145 +87,92 @@ def test_sandbox_state_event_is_declared_trace_only() -> None:
     assert event_reaches_ui("sandbox.state", status="failed") is False
 
 
-def test_detect_srt_socat_missing_on_linux() -> None:
-    """On Linux, srt + modern node but no socat → ``srt_socat_missing``."""
-    which = {"srt": "/opt/srt", "node": "/usr/bin/node"}.get
-    det = sandbox.detect_srt(
-        which=lambda n: which(n),
-        package_version=lambda _p: "0.0.66",
-        node_version_reader=lambda: "v20.11.0",
-        platform="linux",
-    )
-    assert det.socat_present is False
-    assert det.reason == sandbox.REASON_SRT_SOCAT_MISSING
-
-
-def test_detect_srt_all_present_defers_activation() -> None:
-    """srt + node>=20.11 + socat → detected-but-deferred (this slice never activates)."""
-    which = {"srt": "/opt/srt", "node": "/usr/bin/node", "socat": "/usr/bin/socat"}.get
-    det = sandbox.detect_srt(
-        which=lambda n: which(n),
-        package_version=lambda _p: "0.0.66",
-        node_version_reader=lambda: "v22.2.0",
-        platform="linux",
-    )
-    assert det.version == "0.0.66"
-    assert det.reason == sandbox.REASON_SRT_DETECTED_DEFERRED
-
-
-def test_srt_version_read_from_package_json_never_the_lying_banner(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The version probe reads ``package.json`` — NEVER ``srt --version`` (which lies 1.0.0).
-
-    A probe that trusted the CLI banner would be a defect (owner note #974): ``srt
-    --version`` prints a stale ``1.0.0``. We lay down the real npm layout with version
-    ``0.0.66`` and a shim whose (hypothetical) banner would say ``1.0.0``; the probe must
-    return ``0.0.66`` and must never shell out to the binary.
-    """
-    pkg_dir = tmp_path / "node_modules" / "@anthropic-ai" / "sandbox-runtime"
-    pkg_dir.mkdir(parents=True)
-    (pkg_dir / "package.json").write_text(
-        json.dumps({"name": sandbox.SRT_PACKAGE_NAME, "version": "0.0.66"}), encoding="utf-8"
-    )
-    binary = tmp_path / "node_modules" / ".bin" / "srt"
-    binary.parent.mkdir(parents=True)
-    binary.write_text("#!/bin/sh\necho 1.0.0\n", encoding="utf-8")
-
-    # If the probe EVER spawned the binary, this tripwire raises. The probe is a pure
-    # filesystem read of package.json; it must never shell out (that would trust the lie).
-    def _no_spawn(*_a: object, **_k: object):  # type: ignore[no-untyped-def]
-        raise AssertionError("srt version probe must not spawn the binary (--version lies)")
-
-    monkeypatch.setattr(subprocess, "run", _no_spawn)
-    version = sandbox._srt_package_version(str(binary))
-    assert version == "0.0.66"
-    assert version != "1.0.0"  # never the banner
-
-
 # --------------------------------------------------------------------------- #
-# Backend resolution per platform (monkeypatched) — always ``none`` this slice #
+# Backend resolution per platform (injected probes) — codex primary, LL, floor #
 # --------------------------------------------------------------------------- #
 
 
-def _det(reason: str, *, installed: bool = False, version: str = "") -> sandbox.SrtDetection:
-    return sandbox.SrtDetection(
+def _codex(reason: str, *, installed: bool = False, version: str = "") -> sc.CodexDetection:
+    return sc.CodexDetection(
         installed=installed,
-        binary_path="/opt/srt" if installed else "",
+        binary_path="/usr/bin/codex" if installed else "",
         version=version,
-        node_present=installed,
-        node_version="v22.0.0" if installed else "",
-        node_ok=installed,
-        socat_present=installed,
         reason=reason,
     )
 
 
-def _ll(available: bool, *, abi: int = 0, reason: str = ""):
-    from clio_agent.runtime.sandbox_landlock import LandlockProbe
+def _codex_ok() -> sc.CodexDetection:
+    return _codex(sc.REASON_CODEX_DETECTED, installed=True, version="0.145.0")
 
+
+def _ll(available: bool, *, abi: int = 0, reason: str = "") -> LandlockProbe:
     return LandlockProbe(available=available, abi=abi, refer_supported=abi >= 2, reason=reason)
 
 
-def test_resolve_backend_linux_floor_is_srt_not_installed() -> None:
-    """Linux, srt absent AND Landlock absent → floor ``none`` (B2 ladder bottom).
+def test_resolve_backend_linux_codex_absent_falls_to_landlock() -> None:
+    """Linux, codex absent but Landlock present → the Landlock fallback rung activates."""
+    result = sandbox._resolve_backend(
+        platform="linux",
+        codex_detection=_codex(sc.REASON_CODEX_NOT_INSTALLED),
+        landlock=_ll(True, abi=2),
+    )
+    assert result.mechanism == sandbox.MECHANISM_LANDLOCK
+    assert result.active is True
+    assert result.reason == sandbox.REASON_FENCE_ACTIVE
+    assert result.details["codex_skip_reason"] == sc.REASON_CODEX_NOT_INSTALLED
 
-    The floor reason is the last-rung (Landlock) reason; the srt skip is preserved in
-    ``details.srt_skip_reason`` so both rungs are honest.
+
+def test_resolve_backend_linux_floor_is_landlock_reason() -> None:
+    """Linux, codex absent AND Landlock absent → floor ``none`` (ladder bottom).
+
+    The floor reason is the last-rung (Landlock) reason; the codex skip is preserved in
+    ``details.codex_skip_reason`` so both rungs are honest.
     """
     result = sandbox._resolve_backend(
         platform="linux",
-        detection=_det(sandbox.REASON_SRT_NOT_INSTALLED),
+        codex_detection=_codex(sc.REASON_CODEX_NOT_INSTALLED),
         landlock=_ll(False, reason=sandbox.REASON_LANDLOCK_UNAVAILABLE),
     )
     assert result.mechanism == sandbox.MECHANISM_NONE
     assert result.active is False
     assert result.reason == sandbox.REASON_LANDLOCK_UNAVAILABLE
-    assert result.details["srt_skip_reason"] == sandbox.REASON_SRT_NOT_INSTALLED
-    assert result.details["target_mechanism"] == sandbox.MECHANISM_SRT_BWRAP
+    assert result.details["codex_skip_reason"] == sc.REASON_CODEX_NOT_INSTALLED
+    assert result.details["target_mechanism"] == sandbox.MECHANISM_CODEX
 
 
-def test_resolve_backend_windows_srt_absent_is_srt_not_installed() -> None:
-    """Windows, srt absent → the honest srt precondition reason (B3 refines the Windows rung).
-
-    B3 (#977) makes the Windows rung precise: srt absent floors with ``srt_not_installed``
-    (install srt first), while ``windows_unprovisioned`` is the srt-present-but-not-provisioned
-    gate (`clio sandbox setup`, covered in ``test_sandbox_b3``). The target mechanism the
-    provisioned fence WOULD use stays ``srt_windows``.
-    """
+def test_resolve_backend_windows_codex_absent_floors_typed() -> None:
+    """Windows, codex absent → the honest codex precondition reason (no Landlock rung on win32)."""
     result = sandbox._resolve_backend(
-        env={"CLIO_SANDBOX_BACKEND": "srt"},  # pin srt: win32's default backend is now codex
         platform="win32",
-        detection=_det(sandbox.REASON_SRT_NOT_INSTALLED),
+        codex_detection=_codex(sc.REASON_CODEX_NOT_INSTALLED),
     )
     assert result.mechanism == sandbox.MECHANISM_NONE
-    assert result.reason == sandbox.REASON_SRT_NOT_INSTALLED
-    assert result.details["target_mechanism"] == sandbox.MECHANISM_SRT_WINDOWS
+    assert result.reason == sc.REASON_CODEX_NOT_INSTALLED
+    assert result.details["target_mechanism"] == sandbox.MECHANISM_CODEX
 
 
 def test_resolve_backend_darwin_floor() -> None:
-    """macOS target is Seatbelt; absent srt still floors to ``none``."""
+    """macOS: codex absent floors to ``none`` (no Landlock rung on darwin)."""
     result = sandbox._resolve_backend(
-        platform="darwin", detection=_det(sandbox.REASON_SRT_NOT_INSTALLED)
+        platform="darwin", codex_detection=_codex(sc.REASON_CODEX_NOT_INSTALLED)
     )
-    assert result.details["target_mechanism"] == sandbox.MECHANISM_SRT_SEATBELT
-    assert result.reason == sandbox.REASON_SRT_NOT_INSTALLED
+    assert result.details["target_mechanism"] == sandbox.MECHANISM_CODEX
+    assert result.reason == sc.REASON_CODEX_NOT_INSTALLED
 
 
-def test_resolve_backend_srt_present_and_bwrap_ok_activates_srt() -> None:
-    """B2: srt viable + bwrap ok → ACTIVATE srt_bwrap (proxy started, net=proxy)."""
+def test_resolve_backend_codex_primary_activates_off_win32() -> None:
+    """Codex viable off-win32 → MECHANISM_CODEX active (the primary backend, no gate)."""
     result = sandbox._resolve_backend(
         platform="linux",
-        detection=_det(sandbox.REASON_SRT_DETECTED_DEFERRED, installed=True, version="0.0.66"),
-        bwrap=(True, ""),
-        start_proxy=lambda: 51515,
+        codex_detection=_codex_ok(),
+        landlock=_ll(True),  # present, but codex is primary → never consulted
     )
-    assert result.mechanism == sandbox.MECHANISM_SRT_BWRAP
+    assert result.mechanism == sandbox.MECHANISM_CODEX
     assert result.active is True
     assert result.reason == sandbox.REASON_FENCE_ACTIVE
-    assert result.details["proxy_port"] == 51515
-    assert result.details["net_enforcement"] == sandbox.NET_ENFORCEMENT_PROXY
-    assert result.details["srt_binary"] == "/opt/srt"
+    assert result.details["codex_binary"] == "/usr/bin/codex"
+    assert result.details["net_enforcement"] == "codex-net-deferred"
+    assert "landlock" not in result.details  # the fallback rung was never taken
 
 
 def test_resolve_backend_disabled_by_config() -> None:
@@ -326,7 +180,7 @@ def test_resolve_backend_disabled_by_config() -> None:
     result = sandbox._resolve_backend(
         env={"CLIO_SANDBOX_ENABLED": "false"},
         platform="linux",
-        detection=_det(sandbox.REASON_SRT_NOT_INSTALLED),
+        codex_detection=_codex_ok(),
     )
     assert result.reason == sandbox.REASON_DISABLED
 
@@ -334,7 +188,7 @@ def test_resolve_backend_disabled_by_config() -> None:
 def test_install_and_current_state_cache() -> None:
     """install_sandbox resolves + caches; current_state returns the cached result.
 
-    B2 may ACTIVATE a fence on a capable host (Linux+srt/Landlock), so this pins the
+    The ladder may ACTIVATE a fence on a capable host (codex or Landlock), so this pins the
     cache contract + a typed reason, not a floor mechanism (that is host-dependent now).
     """
     result = sandbox.install_sandbox()
@@ -508,14 +362,14 @@ def test_probe_sandbox_floor_is_degraded_never_error() -> None:
     state = sandbox.SandboxResult(
         mechanism=sandbox.MECHANISM_NONE,
         active=False,
-        reason=sandbox.REASON_SRT_NOT_INSTALLED,
-        details={"srt": {"version": ""}},
+        reason=sc.REASON_CODEX_NOT_INSTALLED,
+        details={"codex": {"version": ""}},
     )
     row = sandbox.probe_sandbox(state=state)
     assert row.name == "sandbox"
     assert row.state == IntegrationState.DEGRADED
     assert row.state not in {IntegrationState.UNAVAILABLE, IntegrationState.MISCONFIGURED}
-    assert row.details["reason"] == sandbox.REASON_SRT_NOT_INSTALLED
+    assert row.details["reason"] == sc.REASON_CODEX_NOT_INSTALLED
     assert row.required is False
 
 
@@ -524,7 +378,7 @@ def test_probe_sandbox_reports_mechanism_and_reason() -> None:
     state = sandbox.SandboxResult(
         mechanism=sandbox.MECHANISM_NONE,
         active=False,
-        reason=sandbox.REASON_WINDOWS_UNPROVISIONED,
+        reason=sc.REASON_CODEX_WINDOWS_UNPROVISIONED,
         details={},
     )
     row = sandbox.probe_sandbox(state=state)
@@ -590,11 +444,11 @@ def test_environment_payload_roundtrips_sandbox_fields() -> None:
     )
 
     original = EnvironmentRecord(
-        sandbox_mechanism=sandbox.MECHANISM_NONE, sandbox_reason=sandbox.REASON_SRT_NOT_INSTALLED
+        sandbox_mechanism=sandbox.MECHANISM_NONE, sandbox_reason=sc.REASON_CODEX_NOT_INSTALLED
     )
     rebuilt = environment_from_payload(original.model_dump())
     assert rebuilt.sandbox_mechanism == sandbox.MECHANISM_NONE
-    assert rebuilt.sandbox_reason == sandbox.REASON_SRT_NOT_INSTALLED
+    assert rebuilt.sandbox_reason == sc.REASON_CODEX_NOT_INSTALLED
 
 
 # --------------------------------------------------------------------------- #
@@ -624,14 +478,14 @@ async def test_shell_out_of_root_write_succeeds_on_the_floor(
 
     conf.reload()
     # Force the honest FLOOR state so this floor test is deterministic regardless of host —
-    # on a fenced Linux CI box B2 would otherwise ACTIVATE a backend and deny the write.
+    # on a fenced host the ladder would otherwise ACTIVATE a backend and deny the write.
     monkeypatch.setattr(
         sandbox,
         "_STATE",
         sandbox.SandboxResult(
             mechanism=sandbox.MECHANISM_NONE,
             active=False,
-            reason=sandbox.REASON_SRT_NOT_INSTALLED,
+            reason=sc.REASON_CODEX_NOT_INSTALLED,
             details={"platform": sys.platform},
         ),
     )

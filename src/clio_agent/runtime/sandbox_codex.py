@@ -1,7 +1,7 @@
 """codex backend: detection, profile synthesis, clio-side validation, argv composition (B-codex-1).
 
-Sibling of :mod:`clio_agent.runtime.sandbox_srt` — it holds the Codex-specific logic so the
-ladder module (:mod:`clio_agent.runtime.sandbox`) stays under its file-size ratchet. The
+Sibling of the :mod:`clio_agent.runtime.sandbox` ladder — it holds the Codex-specific logic so the
+ladder module stays under its file-size ratchet. The
 OpenAI **Codex** sandbox (``codex``, open-source ``codex-rs``, Apache-2.0) is the rung that
 enforces on native Windows using the SOUND primitive — a dedicated sandbox user + ACLs (not
 srt's failing ``CreateProcessWithLogonW`` secondary logon) — and Seatbelt/bubblewrap on
@@ -489,12 +489,10 @@ def compose_codex_spawn(
 # Codex's Windows ELEVATED backend runs confined children as dedicated local users
 # (``codexsandboxoffline`` / ``codexsandboxonline``) created by codex's one-time setup helper on
 # the first elevated use (one UAC prompt). Provisioned ⇔ those accounts exist. A provisioned
-# account is NOT proof codex can actually confine a child — so, exactly like
-# :mod:`clio_agent.runtime.sandbox_verify` does for srt, clio runs a REAL behavioural probe
+# account is NOT proof codex can actually confine a child — so clio runs a REAL behavioural probe
 # (spawn a confined codex child, attempt an out-of-root write, confirm DENIED) and records the
-# verdict in a small clio-owned marker the ladder reads at boot (no live probe every boot). This
-# mirrors the srt STATUS_PROVISIONED / _ENFORCEMENT_UNVERIFIED / _SRT_ABSENT verdict pattern
-# WITHOUT touching the srt path — a codex-native sibling of the same #1026 no-false-green rule.
+# verdict in a small clio-owned marker the ladder reads at boot (no live probe every boot). The
+# provisioned / enforcement-verified / unverified verdict pattern is the #1026 no-false-green rule.
 
 #: The dedicated local accounts codex's elevated Windows backend runs confined children as
 #: (created by codex's one-time setup helper). ``codexsandboxoffline`` existing ⇔ provisioned.
@@ -571,8 +569,7 @@ def verify_codex_enforcement(
 ) -> tuple[bool, str]:
     """Prove codex actually ENFORCES a Windows write fence (fail-safe, never raises).
 
-    Mirrors :func:`clio_agent.runtime.sandbox_verify.verify_windows_enforcement`: off-win32 →
-    ``(False, "not_windows")`` (this fence does not apply there); else run the injectable
+    Off-win32 → ``(False, "not_windows")`` (this fence does not apply there); else run the injectable
     ``runner`` (default :func:`_run_codex_enforcement_probe`). Any exception is an honest
     ``(False, codex_enforcement_unverified)`` — the fence is unproven, so the ladder must NOT
     claim it (#1026 no-false-green; precision-over-recall: only an observed denial yields ``True``).

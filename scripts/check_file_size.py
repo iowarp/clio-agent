@@ -267,7 +267,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1001: doctor rendering + disk-GC surface moved to the ui/doctor.py owner module
     # (ratcheted 1156 -> 1135 in the same change).
     # merge(main->develop): +6 (1135 -> 1141) integrating main's release-stream cli deltas.
-    # #977 (B3 sandbox): the `sandbox` verb dispatches to runtime/sandbox_provision.py and
+    # #977 (B3 sandbox): the `sandbox` verb dispatches to runtime/sandbox_cli.py and
     # run_doctor/--tune stub moved to their owner modules; the `--yes` flag (owner's
     # one-command install acceptance) adds it back slightly — net ratchet 1141 -> 1138 (still
     # a reduction vs the inherited baseline).

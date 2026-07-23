@@ -71,13 +71,13 @@ def _make_app(tmp_path: Path, *, extra_ws: dict[str, str] | None = None):
     return SimpleNamespace(state=state), sess, store, arc
 
 
-def _fence(mechanism: str = sb.MECHANISM_SRT_BWRAP) -> sb.SandboxResult:
+def _fence(mechanism: str = sb.MECHANISM_CODEX) -> sb.SandboxResult:
     return sb.SandboxResult(mechanism=mechanism, active=True, reason=sb.REASON_FENCE_ACTIVE)
 
 
 def _floor() -> sb.SandboxResult:
     return sb.SandboxResult(
-        mechanism=sb.MECHANISM_NONE, active=False, reason=sb.REASON_SRT_NOT_INSTALLED
+        mechanism=sb.MECHANISM_NONE, active=False, reason=sb.REASON_NOT_INSTALLED
     )
 
 

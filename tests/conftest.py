@@ -53,7 +53,7 @@ def floor_sandbox(monkeypatch):
     floor = _sandbox.SandboxResult(
         mechanism=_sandbox.MECHANISM_NONE,
         active=False,
-        reason=_sandbox.REASON_SRT_NOT_INSTALLED,
+        reason=_sandbox.REASON_NOT_INSTALLED,
         details={"platform": _sys.platform},
     )
     monkeypatch.setattr(_sandbox, "_STATE", floor)

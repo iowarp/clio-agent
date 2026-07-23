@@ -38,7 +38,9 @@ def test_root_grant_widens_effective_write_roots_live(tmp_path) -> None:
     outside = tmp_path / "elsewhere"
     outside.mkdir()
 
-    before = sandbox_roots.effective_write_roots(sandbox_roots.PROFILE_SHELL, workspace_root=str(ws))
+    before = sandbox_roots.effective_write_roots(
+        sandbox_roots.PROFILE_SHELL, workspace_root=str(ws)
+    )
     assert outside.resolve() not in {r.resolve() for r in before}
 
     sandbox_roots.register_write_root_grant(str(ws), str(outside))

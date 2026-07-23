@@ -268,10 +268,8 @@ def _grant_reason_for_fence() -> str:
         state = None
     if state is None or not getattr(state, "active", False):
         return REASON_GRANT_RECORDED_NO_FENCE
-    # srt Windows fs policy is SESSION-WIDE (written once per child at spawn): a live child
-    # keeps its territory until it respawns, so the grant is pending-respawn, never silent.
-    if getattr(state, "mechanism", "") == sandbox.MECHANISM_SRT_WINDOWS:
-        return REASON_GRANT_PENDING_RESPAWN
+    # The surviving backends (Codex, Landlock) write the write territory PER SPAWN, so a
+    # mid-session root grant takes effect on the child's next spawn — an applied-live grant.
     return REASON_GRANT_LIVE
 
 

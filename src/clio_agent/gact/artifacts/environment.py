@@ -107,8 +107,8 @@ class EnvironmentRecord(BaseModel):
     #: ``policy_violation`` once B2/B3 activate a fence — the record already carries the
     #: mechanism label, floor-first.
     sandbox_mechanism: str = ""
-    #: The typed reason the fence is (in)active (e.g. ``srt_not_installed``,
-    #: ``srt_detected_activation_deferred``, ``windows_unprovisioned``); ``""`` when unresolved.
+    #: The typed reason the fence is (in)active (e.g. ``fence_active``, ``codex_not_installed``,
+    #: ``codex_windows_unprovisioned``, ``landlock_unavailable``); ``""`` when unresolved.
     sandbox_reason: str = ""
 
 

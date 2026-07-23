@@ -1,11 +1,10 @@
 """B-codex-3 (#1026): Codex Windows provisioning detection + enforcement verify + ladder gate.
 
-Host-agnostic unit coverage — NO real codex/net-user spawn. Mirrors ``test_sandbox_verify.py``
-(the srt enforcement-verify contract) and ``test_sandbox_codex_ladder.py`` (the injected-probe
-ladder matrix). Every machine-touching seam is INJECTED: ``runner`` on
-:func:`sandbox_codex.codex_windows_provisioned` / :func:`~sandbox_codex.verify_codex_enforcement`,
-``codex_provisioned_probe`` on :func:`sandbox._resolve_backend`, ``provisioned`` / ``marker_reader``
-on :func:`~sandbox_codex.codex_windows_gate`. Pinned #1026 no-false-green invariant: only a
+Host-agnostic unit coverage — NO real codex/net-user spawn. Every machine-touching seam is
+INJECTED: ``runner`` on :func:`sandbox_codex.codex_windows_provisioned` /
+:func:`~sandbox_codex.verify_codex_enforcement`, ``codex_provisioned_probe`` on
+:func:`sandbox._resolve_backend`, ``provisioned`` / ``marker_reader`` on
+:func:`~sandbox_codex.codex_windows_gate`. Pinned #1026 no-false-green invariant: only a
 positively provisioned + enforcement-verified state activates codex on win32; every other outcome
 floors HONESTLY with a typed reason, never a false ``active``.
 """
@@ -30,22 +29,8 @@ def _codex_ok() -> sc.CodexDetection:
     )
 
 
-def _srt_none() -> sandbox.SrtDetection:
-    """A benign 'srt absent' detection injected so the ladder never runs a real host probe."""
-    return sandbox.SrtDetection(
-        installed=False,
-        binary_path="",
-        version="",
-        node_present=False,
-        node_version="",
-        node_ok=False,
-        socat_present=False,
-        reason=sandbox.REASON_SRT_NOT_INSTALLED,
-    )
-
-
 def _codex_env() -> dict[str, str]:
-    return {"CLIO_SANDBOX_BACKEND": "codex", "CLIO_SANDBOX_ENABLED": "true"}
+    return {"CLIO_SANDBOX_ENABLED": "true"}
 
 
 # --------------------------------------------------------------------------- #
@@ -194,7 +179,6 @@ def test_ladder_win32_codex_provisioned_and_verified_activates() -> None:
     result = sandbox._resolve_backend(
         env=_codex_env(),
         platform="win32",
-        detection=_srt_none(),
         codex_detection=_codex_ok(),
         codex_provisioned_probe=lambda: (True, sc.REASON_CODEX_WINDOWS_PROVISIONED),
     )
@@ -209,7 +193,6 @@ def test_ladder_win32_codex_unprovisioned_floors_typed() -> None:
     result = sandbox._resolve_backend(
         env=_codex_env(),
         platform="win32",
-        detection=_srt_none(),
         codex_detection=_codex_ok(),
         codex_provisioned_probe=lambda: (False, sc.REASON_CODEX_WINDOWS_UNPROVISIONED),
     )
@@ -223,7 +206,6 @@ def test_ladder_win32_codex_provisioned_not_verified_floors_no_false_green() -> 
     result = sandbox._resolve_backend(
         env=_codex_env(),
         platform="win32",
-        detection=_srt_none(),
         codex_detection=_codex_ok(),
         codex_provisioned_probe=lambda: (False, sc.REASON_CODEX_ENFORCEMENT_UNVERIFIED),
     )
@@ -240,7 +222,6 @@ def test_ladder_non_win32_codex_viable_activates_unchanged() -> None:
     result = sandbox._resolve_backend(
         env=_codex_env(),
         platform="linux",
-        detection=_srt_none(),
         codex_detection=_codex_ok(),
         codex_provisioned_probe=lambda: (_ for _ in ()).throw(
             AssertionError("win32-only gate must not run off-win32")

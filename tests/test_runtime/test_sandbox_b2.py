@@ -1,17 +1,17 @@
-"""B2 (#976): srt + Landlock fence activation, the degrade ladder, and gap→policy_violation.
+"""B2 (#976): the Landlock fallback rung, the degrade ladder, and gap→policy_violation.
 
 Host-agnostic unit coverage (the Linux-fence sabotage suite is platform-marked, in
-``test_sandbox_fence.py``, and runs in the live gate):
+``test_sandbox_fence.py``, and runs in the live gate). After B-codex-5 the srt backend is
+deleted — Codex is the primary OS fence (its detection/ladder-gate coverage lives in
+``test_sandbox_codex_ladder.py`` / ``test_sandbox_codex_provision.py``) and **Landlock** is the
+Linux fallback rung when Codex is not installed. Pinned here:
 
-* srt config synthesis pinned against a golden (httpProxyPort + empty required arrays);
-* clio-side schema validation rejects unknown/malformed synthesized config;
-* srt version pin (supported floor);
-* the srt argv PREFIX form ``srt -s <settings> --``;
-* ladder selection pinned per (platform, srt, bwrap, landlock, enabled) matrix;
-* argv composition order ``pdeathsig( srt( final-argv ) )`` and the Landlock shim;
-* chokepoint-start failure drops the srt rung to Landlock (typed, never a silent net break);
-* EROFS + EACCES → policy_violation mapping;
-* the Landlock shim arg split + non-Linux probe.
+* ladder selection when Codex is absent — Landlock activates on Linux, else the honest floor;
+* argv composition order ``pdeathsig( fence( final-argv ) )`` on the Landlock rung;
+* the Landlock shim arg split + non-Linux probe;
+* EROFS + EACCES + WinError-5 → policy_violation mapping and the observer mint;
+* the net chokepoint (kept for the Landlock/floor egress tier): CONNECT/absolute-form parse,
+  round-trips, typed bind-failure, idempotency, shutdown.
 """
 
 from __future__ import annotations
@@ -21,16 +21,16 @@ from pathlib import Path
 
 import pytest
 
-from clio_agent.runtime import sandbox, sandbox_landlock, sandbox_srt
+from clio_agent.runtime import sandbox, sandbox_landlock
+from clio_agent.runtime import sandbox_codex as sc
 from clio_agent.runtime.sandbox_landlock import LandlockProbe
 
 
 @pytest.fixture(autouse=True)
 def _stub_egress_channel(monkeypatch: pytest.MonkeyPatch) -> None:
-    """B4: ``wrap_confined`` opens a per-child egress channel whose port is the srt
-    ``httpProxyPort``. Stub it deterministically (to the shared port these B2 tests already
-    assert) so the composition tests stay side-effect-free (no real loopback listener) and
-    port-stable. Per-child attribution itself is covered in ``test_sandbox_b4.py``.
+    """B4: ``wrap_confined`` opens a per-child egress channel on the Landlock tier. Stub it
+    deterministically so the composition tests stay side-effect-free (no real loopback listener)
+    and port-stable. Per-child attribution itself is covered in ``test_sandbox_b4.py``.
     """
     from clio_agent.runtime import net_chokepoint
 
@@ -42,103 +42,21 @@ def _stub_egress_channel(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# srt config synthesis + clio-side schema validation                           #
+# Ladder selection — Codex absent → Landlock (Linux) → floor.                   #
 # --------------------------------------------------------------------------- #
 
 
-def test_srt_config_synthesis_matches_golden() -> None:
-    """The synthesized settings doc is exactly the pinned shape (owner note #974 spike)."""
-    root = str(Path("/ws/project"))
-    config = sandbox_srt.synthesize_srt_config([root], http_proxy_port=48080)
-    assert config == {
-        "network": {"allowedDomains": [], "deniedDomains": [], "httpProxyPort": 48080},
-        "filesystem": {"denyRead": [], "allowWrite": [root], "denyWrite": []},
-    }
-    # Empty required arrays are valid; tlsTerminate is OFF by omission.
-    sandbox_srt.validate_srt_config(config)  # must not raise
-
-
-def test_srt_config_without_proxy_omits_httpproxyport() -> None:
-    """No proxy port → the key is omitted (not null) and still schema-valid."""
-    config = sandbox_srt.synthesize_srt_config([str(Path("/ws"))])
-    assert "httpProxyPort" not in config["network"]
-    sandbox_srt.validate_srt_config(config)
-
-
-@pytest.mark.parametrize(
-    "mutate",
-    [
-        lambda c: c.update({"bogus": 1}),  # unknown top-level key (srt would silently strip)
-        lambda c: c["network"].update({"mitmProxy": {}}),  # unexpected network key
-        lambda c: c["filesystem"].pop("denyRead"),  # missing required key
-        lambda c: c["network"].update({"allowedDomains": ["*"]}),  # schema-forbidden '*'
-        lambda c: c["filesystem"].update({"allowWrite": "not-a-list"}),  # wrong type
-        lambda c: c["network"].update({"httpProxyPort": 0}),  # invalid port
-    ],
-)
-def test_validate_srt_config_rejects_drift(mutate) -> None:
-    """clio validates its OWN doc — srt's strip mode would otherwise swallow a drift/typo."""
-    config = sandbox_srt.synthesize_srt_config([str(Path("/ws"))], http_proxy_port=1234)
-    mutate(config)
-    with pytest.raises(sandbox_srt.SrtConfigError) as exc:
-        sandbox_srt.validate_srt_config(config)
-    assert exc.value.reason == sandbox_srt.REASON_SRT_CONFIG_REJECTED
-
-
-def test_write_settings_validates_before_disk(tmp_path: Path) -> None:
-    """A rejected config never reaches disk (validation runs first)."""
-    bad = {"network": {}, "filesystem": {}}
-    target = tmp_path / "srt-settings" / "fleet.json"
-    with pytest.raises(sandbox_srt.SrtConfigError):
-        sandbox_srt.write_settings_file(bad, target)
-    assert not target.exists()
-
-
-def test_write_settings_roundtrips_good_config(tmp_path: Path) -> None:
-    import json
-
-    config = sandbox_srt.synthesize_srt_config([str(tmp_path)], http_proxy_port=9999)
-    target = sandbox_srt.settings_path_for("fleet", cache_dir=tmp_path)
-    written = sandbox_srt.write_settings_file(config, target)
-    assert written.is_file()
-    assert json.loads(written.read_text(encoding="utf-8")) == config
-
-
-@pytest.mark.parametrize(
-    ("version", "supported"),
-    [("0.0.66", True), ("0.0.67", True), ("0.1.0", True), ("0.0.65", False), ("", False)],
-)
-def test_srt_version_pin(version: str, supported: bool) -> None:
-    """The version pin is the schema-validated floor; below it (or unreadable) is unsupported."""
-    assert sandbox_srt.is_srt_version_supported(version) is supported
-
-
-def test_srt_prefix_argv_form() -> None:
-    """The srt prefix is ``[binary, -s, <settings>, --]`` (argv passthrough, verified live)."""
-    prefix = sandbox_srt.srt_prefix("/opt/srt", "/cache/fleet.json")
-    assert prefix == ["/opt/srt", "-s", "/cache/fleet.json", "--"]
-
-
-# --------------------------------------------------------------------------- #
-# Ladder selection matrix — (platform, srt, bwrap, landlock, enabled)          #
-# --------------------------------------------------------------------------- #
-
-
-def _det(reason: str, *, installed: bool = False, version: str = "") -> sandbox.SrtDetection:
-    return sandbox.SrtDetection(
+def _codex(reason: str, *, installed: bool = False, version: str = "") -> sc.CodexDetection:
+    return sc.CodexDetection(
         installed=installed,
-        binary_path="/opt/srt" if installed else "",
+        binary_path="/usr/bin/codex" if installed else "",
         version=version,
-        node_present=installed,
-        node_version="v22.0.0" if installed else "",
-        node_ok=installed,
-        socat_present=installed,
         reason=reason,
     )
 
 
-def _srt_ok() -> sandbox.SrtDetection:
-    return _det(sandbox.REASON_SRT_DETECTED_DEFERRED, installed=True, version="0.0.66")
+def _codex_ok() -> sc.CodexDetection:
+    return _codex(sc.REASON_CODEX_DETECTED, installed=True, version="0.145.0")
 
 
 def _ll(ok: bool) -> LandlockProbe:
@@ -151,97 +69,50 @@ def _ll(ok: bool) -> LandlockProbe:
 
 
 @pytest.mark.parametrize(
-    ("platform", "det", "bwrap", "landlock_ok", "enabled", "mechanism", "active"),
+    ("platform", "codex", "landlock_ok", "enabled", "mechanism", "active"),
     [
-        # Linux: srt + bwrap ok → srt_bwrap.
-        ("linux", _srt_ok(), (True, ""), True, True, sandbox.MECHANISM_SRT_BWRAP, True),
-        # Linux: srt ok but bwrap broken (Ubuntu 24.04 AppArmor) → Landlock.
+        # Linux: codex viable → codex (the primary backend).
+        ("linux", _codex_ok(), True, True, sandbox.MECHANISM_CODEX, True),
+        # Linux: codex absent, Landlock present → the Landlock fallback rung.
         (
             "linux",
-            _srt_ok(),
-            (False, sandbox.REASON_BWRAP_USERNS_RESTRICTED),
+            _codex(sc.REASON_CODEX_NOT_INSTALLED),
             True,
             True,
             sandbox.MECHANISM_LANDLOCK,
             True,
         ),
-        # Linux: srt absent, Landlock present → Landlock.
+        # Linux: codex absent, no Landlock → floor none.
         (
             "linux",
-            _det(sandbox.REASON_SRT_NOT_INSTALLED),
-            (True, ""),
-            True,
-            True,
-            sandbox.MECHANISM_LANDLOCK,
-            True,
-        ),
-        # Linux: neither → floor none.
-        (
-            "linux",
-            _det(sandbox.REASON_SRT_NOT_INSTALLED),
-            (False, sandbox.REASON_BWRAP_UNAVAILABLE),
+            _codex(sc.REASON_CODEX_NOT_INSTALLED),
             False,
             True,
             sandbox.MECHANISM_NONE,
             False,
         ),
-        # Linux: srt version too old + no Landlock → floor none.
-        (
-            "linux",
-            _det(sandbox.REASON_SRT_DETECTED_DEFERRED, installed=True, version="0.0.1"),
-            (True, ""),
-            False,
-            True,
-            sandbox.MECHANISM_NONE,
-            False,
-        ),
-        # macOS: srt ok → Seatbelt.
-        ("darwin", _srt_ok(), (True, ""), False, True, sandbox.MECHANISM_SRT_SEATBELT, True),
-        # macOS: srt absent → floor (no Landlock rung on darwin).
+        # macOS: codex viable → codex.
+        ("darwin", _codex_ok(), False, True, sandbox.MECHANISM_CODEX, True),
+        # macOS: codex absent → floor (no Landlock rung on darwin).
         (
             "darwin",
-            _det(sandbox.REASON_SRT_NOT_INSTALLED),
-            (True, ""),
+            _codex(sc.REASON_CODEX_NOT_INSTALLED),
             True,
             True,
             sandbox.MECHANISM_NONE,
             False,
         ),
-        # Windows: always floor this slice (activation is B3).
-        ("win32", _srt_ok(), (True, ""), True, True, sandbox.MECHANISM_NONE, False),
         # Disabled knob → floor regardless of a fully-capable host.
-        ("linux", _srt_ok(), (True, ""), True, False, sandbox.MECHANISM_NONE, False),
+        ("linux", _codex_ok(), True, False, sandbox.MECHANISM_NONE, False),
     ],
 )
-def test_ladder_selection_matrix(
-    platform, det, bwrap, landlock_ok, enabled, mechanism, active
-) -> None:
-    """The full ladder decision table, pinned with injected probes (host-independent)."""
-    # On win32 the ladder consults windows_sandbox_state(), which reads the REAL provisioned
-    # marker — inject an UNPROVISIONED verdict so the matrix stays host-independent (this row
-    # is the unprovisioned floor case; a provisioned box would otherwise resolve srt_windows).
-    win_state = None
-    env = {"CLIO_SANDBOX_ENABLED": "true" if enabled else "false"}
-    if platform == "win32":
-        from clio_agent.runtime import sandbox_provision as swp  # noqa: PLC0415
-
-        # pin srt: win32's default backend is now codex (B-codex-4) — this row tests the srt ladder.
-        env["CLIO_SANDBOX_BACKEND"] = "srt"
-        win_state = swp.WindowsSandboxState(
-            status=swp.STATUS_UNPROVISIONED,
-            reason=sandbox.REASON_WINDOWS_UNPROVISIONED,
-            srt=det,
-            detail="test: injected unprovisioned",
-            next_action="run clio sandbox setup",
-        )
+def test_ladder_selection_matrix(platform, codex, landlock_ok, enabled, mechanism, active) -> None:
+    """The Codex-primary / Landlock-fallback / floor decision table (host-independent)."""
     result = sandbox._resolve_backend(
-        env=env,
+        env={"CLIO_SANDBOX_ENABLED": "true" if enabled else "false"},
         platform=platform,
-        detection=det,
-        bwrap=bwrap,
+        codex_detection=codex,
         landlock=_ll(landlock_ok),
-        start_proxy=lambda: 40000,
-        win_state=win_state,
     )
     assert result.mechanism == mechanism
     assert result.active is active
@@ -249,87 +120,40 @@ def test_ladder_selection_matrix(
         assert result.reason == sandbox.REASON_FENCE_ACTIVE
 
 
-def test_chokepoint_failure_drops_srt_rung_to_landlock() -> None:
-    """A proxy that cannot start drops the srt rung to Landlock — typed, never a silent net break."""
-    from clio_agent.runtime.net_chokepoint import ChokepointStartError
-
-    def _boom() -> int:
-        raise ChokepointStartError("bind failed")
-
-    result = sandbox._resolve_backend(
-        platform="linux",
-        detection=_srt_ok(),
-        bwrap=(True, ""),
-        landlock=_ll(True),
-        start_proxy=_boom,
-    )
-    assert result.mechanism == sandbox.MECHANISM_LANDLOCK
-    assert result.active is True
-    assert result.details["srt_skip_reason"] == sandbox.REASON_CHOKEPOINT_START_FAILED
-
-
-def test_chokepoint_failure_on_darwin_floors() -> None:
-    """No Landlock rung on macOS: a proxy failure floors with the typed chokepoint reason."""
-    from clio_agent.runtime.net_chokepoint import ChokepointStartError
-
-    def _boom() -> int:
-        raise ChokepointStartError("bind failed")
-
-    result = sandbox._resolve_backend(platform="darwin", detection=_srt_ok(), start_proxy=_boom)
-    assert result.mechanism == sandbox.MECHANISM_NONE
-    assert result.reason == sandbox.REASON_CHOKEPOINT_START_FAILED
-
-
 # --------------------------------------------------------------------------- #
-# argv composition order — pdeathsig( fence( final-argv ) )                     #
+# argv composition order — pdeathsig( fence( final-argv ) ) on the Landlock rung #
 # --------------------------------------------------------------------------- #
 
 
-def _srt_state(port: int = 40000) -> sandbox.SandboxResult:
+def _landlock_state() -> sandbox.SandboxResult:
     return sandbox.SandboxResult(
-        mechanism=sandbox.MECHANISM_SRT_BWRAP,
+        mechanism=sandbox.MECHANISM_LANDLOCK,
         active=True,
         reason=sandbox.REASON_FENCE_ACTIVE,
-        details={"srt_binary": "/opt/srt", "proxy_port": port, "net_enforcement": "proxy"},
+        details={"net_enforcement": "env-cooperative"},
     )
 
 
-def test_wrap_confined_srt_composes_prefix_inner(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An active srt state prepends ``srt -s <settings> --`` and writes a valid settings file."""
-    monkeypatch.setattr(
-        sandbox_srt,
-        "settings_path_for",
-        lambda profile, config=None, cache_dir=None: tmp_path / f"{profile}.json",
-    )
+def test_wrap_confined_landlock_composes_shim() -> None:
+    """An active Landlock state prepends the ``landlock_exec`` shim over the roots."""
+    import sys as _sys
+
     confined = sandbox.wrap_confined(
-        "python",
-        ["-c", "print(1)"],
-        write_roots=[str(tmp_path)],
-        profile=sandbox.PROFILE_FLEET,
-        state=_srt_state(),
+        "mytool",
+        ["--x"],
+        write_roots=[str(Path("/ws"))],
+        profile=sandbox.PROFILE_SHELL,
+        state=_landlock_state(),
     )
-    assert confined.command == "/opt/srt"
-    assert confined.args[:3] == ["-s", str(tmp_path / "fleet.json"), "--"]
-    assert confined.args[3:] == ["python", "-c", "print(1)"]
-    # The settings the fence will read were validated + written.
-    import json
-
-    written = json.loads((tmp_path / "fleet.json").read_text(encoding="utf-8"))
-    assert written["network"]["httpProxyPort"] == 40000
-    assert written["filesystem"]["allowWrite"] == [str(tmp_path)]
+    assert confined.command == _sys.executable
+    assert confined.args[:3] == ["-m", "clio_agent.runtime.landlock_exec", str(Path("/ws"))]
+    assert confined.args[-3:] == ["--", "mytool", "--x"]
 
 
-def test_wrap_confined_pdeathsig_stays_outermost_over_srt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_wrap_confined_pdeathsig_stays_outermost_over_landlock(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Composition order is ``pdeathsig( srt( argv ) )`` — pdeathsig OUTERMOST (owner #974.5)."""
-    monkeypatch.setattr(
-        sandbox_srt,
-        "settings_path_for",
-        lambda profile, config=None, cache_dir=None: tmp_path / f"{profile}.json",
-    )
+    """Composition order is ``pdeathsig( landlock( argv ) )`` — pdeathsig OUTERMOST (owner #974.5)."""
     from clio_agent.tools import mcp_config
 
     monkeypatch.setattr(mcp_config.sys, "platform", "linux")
@@ -337,50 +161,34 @@ def test_wrap_confined_pdeathsig_stays_outermost_over_srt(
     confined = sandbox.wrap_confined(
         "python",
         ["-c", "print(1)"],
-        write_roots=[str(tmp_path)],
+        write_roots=[str(Path("/ws"))],
         profile=sandbox.PROFILE_FLEET,
         pdeathsig=True,
-        state=_srt_state(),
+        state=_landlock_state(),
     )
-    # setpriv (pdeathsig) is outermost, then srt, then the real argv.
+    # setpriv (pdeathsig) is outermost, then the landlock shim, then the real argv.
     assert confined.command == "/usr/bin/setpriv"
     assert confined.args[:3] == ["--pdeathsig", "SIGKILL", "--"]
-    assert confined.args[3] == "/opt/srt"
+    assert "clio_agent.runtime.landlock_exec" in confined.args
     assert confined.args[-3:] == ["python", "-c", "print(1)"]
 
 
-def test_wrap_confined_landlock_composes_shim() -> None:
-    """An active Landlock state prepends the ``landlock_exec`` shim over the roots."""
-    import sys as _sys
-
-    state = sandbox.SandboxResult(
-        mechanism=sandbox.MECHANISM_LANDLOCK,
-        active=True,
-        reason=sandbox.REASON_FENCE_ACTIVE,
-        details={"net_enforcement": "env-cooperative"},
-    )
-    confined = sandbox.wrap_confined(
-        "mytool",
-        ["--x"],
-        write_roots=[str(Path("/ws"))],
-        profile=sandbox.PROFILE_SHELL,
-        state=state,
-    )
-    assert confined.command == _sys.executable
-    assert confined.args[:3] == ["-m", "clio_agent.runtime.landlock_exec", str(Path("/ws"))]
-    assert confined.args[-3:] == ["--", "mytool", "--x"]
-
-
-def test_wrap_confined_bad_srt_config_raises_not_silent(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_wrap_confined_bad_landlock_prefix_raises_not_silent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A fence that cannot compose RAISES (typed) — never a silent unconfined spawn."""
 
     def _boom(*_a, **_k):
-        raise sandbox_srt.SrtConfigError("synthesized bad")
+        raise ValueError("shim prefix failed")
 
-    monkeypatch.setattr(sandbox_srt, "synthesize_srt_config", _boom)
+    monkeypatch.setattr(sandbox_landlock, "landlock_shim_prefix", _boom)
     with pytest.raises(sandbox.SandboxCompositionError):
         sandbox.wrap_confined(
-            "python", [], write_roots=["/ws"], profile=sandbox.PROFILE_FLEET, state=_srt_state()
+            "python",
+            [],
+            write_roots=["/ws"],
+            profile=sandbox.PROFILE_FLEET,
+            state=_landlock_state(),
         )
 
 
@@ -498,7 +306,7 @@ def test_observe_policy_violations_noop_on_floor() -> None:
 
     app = FastAPI()
     floor = sandbox.SandboxResult(
-        mechanism=sandbox.MECHANISM_NONE, active=False, reason=sandbox.REASON_SRT_NOT_INSTALLED
+        mechanism=sandbox.MECHANISM_NONE, active=False, reason=sc.REASON_CODEX_NOT_INSTALLED
     )
     out = observe_policy_violations(
         app,
@@ -522,7 +330,7 @@ def test_observe_policy_violations_mints_prevented_when_fenced() -> None:
 
     app = FastAPI()
     active = sandbox.SandboxResult(
-        mechanism=sandbox.MECHANISM_SRT_BWRAP, active=True, reason=sandbox.REASON_FENCE_ACTIVE
+        mechanism=sandbox.MECHANISM_LANDLOCK, active=True, reason=sandbox.REASON_FENCE_ACTIVE
     )
     out = v.observe_policy_violations(
         app,
@@ -538,7 +346,7 @@ def test_observe_policy_violations_mints_prevented_when_fenced() -> None:
     assert len(out) == 1
     viol = out[0]
     assert viol.kind == v.VIOLATION_PREVENTED
-    assert viol.mechanism == sandbox.MECHANISM_SRT_BWRAP
+    assert viol.mechanism == sandbox.MECHANISM_LANDLOCK
     assert viol.errno_name == "EROFS"
     assert viol.path == "/home/u/out.txt"
     assert v.policy_violations(app)[0]["kind"] == v.VIOLATION_PREVENTED
@@ -557,10 +365,10 @@ def test_probe_sandbox_active_is_ready() -> None:
     """An active fence renders READY with the mechanism + network label."""
     from clio_agent.runtime.status import IntegrationState
 
-    state = _srt_state()
+    state = _landlock_state()
     row = sandbox.probe_sandbox(state=state)
     assert row.state == IntegrationState.READY
-    assert "srt_bwrap" in row.summary
+    assert "landlock" in row.summary
     assert "write-fence" in (row.capabilities or [])
 
 
@@ -570,14 +378,14 @@ def test_probe_sandbox_active_is_ready() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def _active_srt() -> sandbox.SandboxResult:
+def _active_fence() -> sandbox.SandboxResult:
     return sandbox.SandboxResult(
-        mechanism=sandbox.MECHANISM_SRT_BWRAP, active=True, reason=sandbox.REASON_FENCE_ACTIVE
+        mechanism=sandbox.MECHANISM_LANDLOCK, active=True, reason=sandbox.REASON_FENCE_ACTIVE
     )
 
 
-# The errno signal fires only under a live srt/Landlock fence, i.e. on Linux/macOS, so the
-# denial messages carry POSIX paths — the fixtures use POSIX roots to mirror that reality.
+# The errno signal fires only under a live fence, i.e. on Linux/macOS, so the denial messages
+# carry POSIX paths — the fixtures use POSIX roots to mirror that reality.
 @pytest.mark.parametrize(
     ("stderr", "mints"),
     [
@@ -585,7 +393,7 @@ def _active_srt() -> sandbox.SandboxResult:
         ("cat: /ws/secret.txt: Permission denied", False),
         # (b) bare SSH/publickey 'Permission denied' with no extractable path → NO mint.
         ("git@github.com: Permission denied (publickey).", False),
-        # (c) IN-ROOT EROFS (srt mandatory .git/hooks protection) → path in-root → NO mint.
+        # (c) IN-ROOT EROFS (mandatory .git/hooks protection) → path in-root → NO mint.
         ("cannot create /ws/.git/hooks/pre-commit: Read-only file system", False),
         # (d) genuine OUT-OF-ROOT EROFS write denial with a path → MINT (prevented).
         ("cannot create /totally/outside/escaped.txt: Read-only file system", True),
@@ -609,7 +417,7 @@ def test_errno_signal_precision_battery(
         call_id="c",
         result={"stderr": stderr, "exit_code": 1},
         workspace_id="ws",
-        state=_active_srt(),
+        state=_active_fence(),
         started_at=1000.0,
     )
     assert bool(out) is mints
@@ -657,68 +465,82 @@ def test_designated_no_window_is_never_detected(
 
     # No window → present file is UNPROVEN → skipped, never 'detected'.
     assert (
-        v.observe_policy_violations(app, "s", **common, state=_active_srt(), started_at=None) == []
+        v.observe_policy_violations(app, "s", **common, state=_active_fence(), started_at=None)
+        == []
     )
     # A real fresh window → 'detected' (the fence was escaped).
     fresh = v.observe_policy_violations(
-        app, "s", **common, state=_active_srt(), started_at=target.stat().st_mtime - 1
+        app, "s", **common, state=_active_fence(), started_at=target.stat().st_mtime - 1
     )
     assert len(fresh) == 1 and fresh[0].kind == v.VIOLATION_DETECTED
     # Absent file → 'prevented' regardless of window (the fence blocked it).
     target.unlink()
     prevented = v.observe_policy_violations(
-        app, "s", **common, state=_active_srt(), started_at=None
+        app, "s", **common, state=_active_fence(), started_at=None
     )
     assert len(prevented) == 1 and prevented[0].kind == v.VIOLATION_PREVENTED
 
 
 # --------------------------------------------------------------------------- #
-# F9 — concurrent settings writes: distinct territory -> distinct files, no torn #
-# read, no leftover .tmp.                                                        #
+# WinError 5 → policy_violation (the EROFS/EACCES path, extended for Windows).   #
 # --------------------------------------------------------------------------- #
 
 
-def test_concurrent_settings_writes_no_clobber(tmp_path: Path) -> None:
-    """Two threads with DIFFERENT roots land in DIFFERENT digest files, each intact (F9)."""
-    import json
-    import threading
+@pytest.mark.parametrize(
+    ("text", "path"),
+    [
+        # Python child bracket form under the codex Windows fence.
+        ("[WinError 5] Access is denied: 'C:\\Users\\u\\out.txt'", "C:\\Users\\u\\out.txt"),
+        # strerror text form a shell prints, with a quoted path.
+        ("Access is denied: 'C:\\ws\\escaped.txt'", "C:\\ws\\escaped.txt"),
+    ],
+)
+def test_winerror5_denial_mapping(text: str, path: str) -> None:
+    from clio_agent.gact.artifacts.violations import write_denial_from_result
 
-    cfg_a = sandbox_srt.synthesize_srt_config([str(tmp_path / "a")], http_proxy_port=1)
-    cfg_b = sandbox_srt.synthesize_srt_config([str(tmp_path / "b")], http_proxy_port=2)
-    paths: dict[str, Path] = {}
-    barrier = threading.Barrier(2)
-
-    def _write(name: str, cfg: dict) -> None:
-        p = sandbox_srt.settings_path_for("fleet", config=cfg, cache_dir=tmp_path)
-        barrier.wait()
-        for _ in range(20):
-            sandbox_srt.write_settings_file(cfg, p)
-        paths[name] = p
-
-    threads = [
-        threading.Thread(target=_write, args=("a", cfg_a)),
-        threading.Thread(target=_write, args=("b", cfg_b)),
-    ]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-
-    assert paths["a"] != paths["b"]  # distinct digests → distinct files, no clobber
-    assert json.loads(paths["a"].read_text(encoding="utf-8")) == cfg_a
-    assert json.loads(paths["b"].read_text(encoding="utf-8")) == cfg_b
-    assert list((tmp_path / sandbox_srt.SRT_SETTINGS_DIRNAME).glob("*.tmp")) == []
+    denial = write_denial_from_result({"stderr": text, "exit_code": 1})
+    assert denial is not None
+    assert denial["errno_name"] == "ERROR_ACCESS_DENIED"
+    assert denial["winerror"] == 5
+    assert denial["path"] == path
 
 
-def test_settings_dir_pruned_to_keep_bound(tmp_path: Path) -> None:
-    """The content-addressed settings dir is bounded — old files are pruned (F3, no leak)."""
-    keep = sandbox_srt.SRT_SETTINGS_KEEP
-    for i in range(keep + 10):
-        cfg = sandbox_srt.synthesize_srt_config([str(tmp_path / f"ws{i}")], http_proxy_port=i + 1)
-        p = sandbox_srt.settings_path_for("fleet", config=cfg, cache_dir=tmp_path)
-        sandbox_srt.write_settings_file(cfg, p)
-    remaining = list((tmp_path / sandbox_srt.SRT_SETTINGS_DIRNAME).glob("*.json"))
-    assert len(remaining) <= keep
+def test_winerror5_mints_prevented_when_fenced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fenced out-of-root WinError-5 mints a prevented violation (codex mechanism).
+
+    Uses REAL ``tmp_path`` roots so containment (``_within_roots``) is evaluated with the
+    running OS's own Path flavor — portable on Linux CI and Windows alike.
+    """
+    from fastapi import FastAPI
+
+    from clio_agent.gact.artifacts import violations as v
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    outside = tmp_path / "outside" / "escaped.txt"
+    monkeypatch.setattr(v, "_effective_roots", lambda _app, _ws: (ws,))
+    active = sandbox.SandboxResult(
+        mechanism=sandbox.MECHANISM_CODEX, active=True, reason=sandbox.REASON_FENCE_ACTIVE
+    )
+    app = FastAPI()
+    out = v.observe_policy_violations(
+        app,
+        "sess",
+        tool_name="bash",
+        args={},
+        call_id="c1",
+        result={"stderr": f"[WinError 5] Access is denied: '{outside}'"},
+        workspace_id="ws1",
+        state=active,
+        started_at=1000.0,
+    )
+    assert len(out) == 1
+    assert out[0].kind == v.VIOLATION_PREVENTED
+    assert out[0].mechanism == sandbox.MECHANISM_CODEX
+    assert out[0].errno_name == "ERROR_ACCESS_DENIED"
+    assert out[0].path == str(outside)
 
 
 # --------------------------------------------------------------------------- #

@@ -1074,7 +1074,7 @@ def main() -> None:
         "--yes",
         "-y",
         action="store_true",
-        help="With 'sandbox setup': accept the srt install offer non-interactively.",
+        help="Accepted for CLI parity (Codex sandbox setup pops a native UAC prompt).",
     )
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Server host")
     parser.add_argument("--port", type=int, default=8100, help="Server port")
@@ -1098,10 +1098,10 @@ def main() -> None:
             sys.exit(run_doctor_gc(dry_run=args.dry_run, json_output=args.json))
         sys.exit(run_doctor(json_output=args.json))
 
-    # Sandbox verb (#977): the OS write-fence setup/status (logic in the owner module
-    # runtime/sandbox_provision.py — cli.py only parses + dispatches, like doctor).
+    # Sandbox verb: the Codex OS write-fence setup/status (logic in the owner module
+    # runtime/sandbox_cli.py — cli.py only parses + dispatches, like doctor).
     if args.command == "sandbox":
-        from clio_agent.runtime.sandbox_provision import run_sandbox_cli  # noqa: PLC0415
+        from clio_agent.runtime.sandbox_cli import run_sandbox_cli  # noqa: PLC0415
 
         sys.exit(run_sandbox_cli(args.sandbox_action, json_output=args.json, assume_yes=args.yes))
 

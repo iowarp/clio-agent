@@ -1,6 +1,6 @@
 """B4 (#978): network egress recording, per-child attribution, and the ``used web:`` join.
 
-Host-agnostic unit coverage (the real-egress + fenced-srt proofs run in the WSL live gate):
+Host-agnostic unit coverage (the real-egress + fenced proofs run in the WSL live gate):
 
 * ``net.egress`` record shape + emission on BOTH a CONNECT round-trip AND a plain-HTTP
   forward, carrying host/port/child_id/mechanism + the DNS-resolved ip;
@@ -8,8 +8,8 @@ Host-agnostic unit coverage (the real-egress + fenced-srt proofs run in the WSL 
 * the ``net.egress`` event is trace-only (never on the SSE wire, even on failure);
 * the ``used web:<domain>@<time>`` join — enrich a staged/catalog URL edge on host match,
   mint one web edge for an unambiguous ingest egress, leave an ambiguous egress bare;
-* the child-attribution wiring in ``wrap_confined`` (per-child port → srt ``httpProxyPort``
-  + the ``HTTP(S)_PROXY`` env overlay) and its inert floor behaviour.
+* the child-attribution wiring in ``wrap_confined`` (per-child port → the ``HTTP(S)_PROXY``
+  env overlay on the Landlock/floor egress tier) and its inert floor behaviour.
 """
 
 from __future__ import annotations
@@ -463,34 +463,27 @@ def test_serving_child_linkage_register_and_resolve_roundtrip() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# wrap_confined child-attribution wiring (per-child port → srt httpProxyPort + env overlay)
+# wrap_confined child-attribution wiring (per-child port → env proxy overlay)
 # --------------------------------------------------------------------------- #
 
 
-def _srt_state(port: int = 40000):
+def _landlock_state():
     from clio_agent.runtime import sandbox
 
     return sandbox.SandboxResult(
-        mechanism=sandbox.MECHANISM_SRT_BWRAP,
+        mechanism=sandbox.MECHANISM_LANDLOCK,
         active=True,
         reason=sandbox.REASON_FENCE_ACTIVE,
-        details={"srt_binary": "/opt/srt", "proxy_port": port, "net_enforcement": "proxy"},
+        details={"net_enforcement": "env-cooperative"},
     )
 
 
 def test_wrap_confined_uses_per_child_port_and_sets_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An active srt spawn opens a per-child channel: its port is the httpProxyPort + env proxy."""
-    import json
+    """An active Landlock spawn opens a per-child channel: its port drives the env proxy overlay."""
+    from clio_agent.runtime import sandbox
 
-    from clio_agent.runtime import sandbox, sandbox_srt
-
-    monkeypatch.setattr(
-        sandbox_srt,
-        "settings_path_for",
-        lambda profile, config=None, cache_dir=None: tmp_path / f"{profile}.json",
-    )
     captured: dict[str, object] = {}
 
     def _fake_open(child_id: str, *, mechanism: str = "", workspace_root: str = "") -> int:
@@ -506,18 +499,14 @@ def test_wrap_confined_uses_per_child_port_and_sets_env(
         ["-c", "print(1)"],
         write_roots=[str(tmp_path)],
         profile=sandbox.PROFILE_FLEET,
-        state=_srt_state(),
+        state=_landlock_state(),
     )
-    # The per-child port (NOT the shared proxy_port=40000) is the srt httpProxyPort.
-    written = json.loads((tmp_path / "fleet.json").read_text(encoding="utf-8"))
-    assert written["network"]["httpProxyPort"] == 55555
-    # The child env overlay routes to the per-child channel (floor/Landlock use this directly;
-    # srt overrides inside the sandbox but the port identity is the per-child one).
+    # The child env overlay routes to the per-child channel (the Landlock/floor egress tier).
     assert confined.env_overlay["HTTP_PROXY"] == "http://127.0.0.1:55555"
     assert confined.env_overlay["HTTPS_PROXY"] == "http://127.0.0.1:55555"
     assert confined.env_overlay["ALL_PROXY"] == "http://127.0.0.1:55555"
-    # The mechanism label is proxy-enforced on the srt tier; the channel is workspace-scoped.
-    assert captured["mechanism"] == nc.MECHANISM_PROXY_ENFORCED
+    # The mechanism label is env-cooperative on the Landlock tier; the channel is workspace-scoped.
+    assert captured["mechanism"] == nc.MECHANISM_ENV_COOPERATIVE
     assert captured["workspace_root"] == str(tmp_path)
     assert confined.result.details["net_child_id"] == captured["child_id"]
 
@@ -555,7 +544,7 @@ def test_wrap_confined_floor_opens_no_channel(monkeypatch: pytest.MonkeyPatch) -
         nc, "open_child_channel", lambda *a, **k: called.__setitem__("n", called["n"] + 1) or 1
     )
     floor = sandbox.SandboxResult(
-        mechanism=sandbox.MECHANISM_NONE, active=False, reason=sandbox.REASON_SRT_NOT_INSTALLED
+        mechanism=sandbox.MECHANISM_NONE, active=False, reason=sandbox.REASON_NOT_INSTALLED
     )
     confined = sandbox.wrap_confined(
         "python", ["-c", "x"], write_roots=[], profile=sandbox.PROFILE_FLEET, state=floor
@@ -569,25 +558,16 @@ def test_wrap_confined_channel_failure_falls_back_not_silent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A channel that cannot open → fall back to the shared port, no env proxy, typed (not silent)."""
-    import json
+    from clio_agent.runtime import sandbox
 
-    from clio_agent.runtime import sandbox, sandbox_srt
-
-    monkeypatch.setattr(
-        sandbox_srt,
-        "settings_path_for",
-        lambda profile, config=None, cache_dir=None: tmp_path / f"{profile}.json",
-    )
     monkeypatch.setattr(nc, "open_child_channel", lambda *a, **k: 0)  # cannot open
     confined = sandbox.wrap_confined(
         "python",
         ["-c", "print(1)"],
         write_roots=[str(tmp_path)],
         profile=sandbox.PROFILE_FLEET,
-        state=_srt_state(port=40000),
+        state=_landlock_state(),
     )
-    # Falls back to the shared chokepoint port; no per-child env overlay, no attribution.
-    written = json.loads((tmp_path / "fleet.json").read_text(encoding="utf-8"))
-    assert written["network"]["httpProxyPort"] == 40000
+    # Falls back to the shared chokepoint; no per-child env overlay, no attribution.
     assert confined.env_overlay == {}
     assert confined.result.details["net_child_id"] == ""

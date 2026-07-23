@@ -25,9 +25,7 @@ from clio_agent.runtime.status import IntegrationState
 
 # Every mechanism the ladder can resolve to (the wrapped seams must be typed on each).
 _ALL_TIERS = [
-    sb.MECHANISM_SRT_BWRAP,
-    sb.MECHANISM_SRT_SEATBELT,
-    sb.MECHANISM_SRT_WINDOWS,
+    sb.MECHANISM_CODEX,
     sb.MECHANISM_LANDLOCK,
     sb.MECHANISM_NONE,
 ]
@@ -45,7 +43,7 @@ def _state(mechanism: str, *, active: bool, reason: str) -> sb.SandboxResult:
 @pytest.mark.parametrize("mechanism", _ALL_TIERS)
 def test_sweep_is_fully_typed_on_every_tier(mechanism: str) -> None:
     active = mechanism != sb.MECHANISM_NONE
-    reason = sb.REASON_FENCE_ACTIVE if active else sb.REASON_SRT_NOT_INSTALLED
+    reason = sb.REASON_FENCE_ACTIVE if active else sb.REASON_NOT_INSTALLED
     report = sc.sweep_conformance(_state(mechanism, active=active, reason=reason))
     # Six seams: 3 wrapped + 3 excluded, all typed, zero untyped degrades.
     assert len(report.seams) == len(sc.WRAPPED_SEAMS) + len(sc.EXCLUDED_SEAMS)
@@ -116,7 +114,7 @@ def test_none_state_is_unresolved_not_untyped() -> None:
 
 def test_probe_ready_when_fenced_and_typed() -> None:
     row = sc.probe_sandbox_conformance(
-        state=_state(sb.MECHANISM_SRT_BWRAP, active=True, reason=sb.REASON_FENCE_ACTIVE)
+        state=_state(sb.MECHANISM_CODEX, active=True, reason=sb.REASON_FENCE_ACTIVE)
     )
     assert row.state is IntegrationState.READY
     assert "zero-untyped-degrade" in row.capabilities
@@ -126,7 +124,7 @@ def test_probe_ready_on_typed_floor() -> None:
     # The floor SATISFIES conformance (a typed `none` reason) — the *presence* of a fence is
     # the separate `sandbox` row's question. Sabotage: DEGRADE the floor here → red.
     row = sc.probe_sandbox_conformance(
-        state=_state(sb.MECHANISM_NONE, active=False, reason=sb.REASON_SRT_NOT_INSTALLED)
+        state=_state(sb.MECHANISM_NONE, active=False, reason=sb.REASON_NOT_INSTALLED)
     )
     assert row.state is IntegrationState.READY
 

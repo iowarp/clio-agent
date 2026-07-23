@@ -484,12 +484,16 @@ def build_hook_registry() -> HookRegistry:
     """
 
     backend = (
-        conf.resolve("hooks.backend", env="CLIO_HOOKS_BACKEND", default="local_python", cast=conf.as_str)
+        conf.resolve(
+            "hooks.backend", env="CLIO_HOOKS_BACKEND", default="local_python", cast=conf.as_str
+        )
         .strip()
         .lower()
     )
     if backend in {"", "local", "local_python", "python", "file", "filesystem"}:
-        raw_dir = conf.resolve("hooks.dir", env="CLIO_HOOKS_DIR", default="", cast=conf.as_str).strip()
+        raw_dir = conf.resolve(
+            "hooks.dir", env="CLIO_HOOKS_DIR", default="", cast=conf.as_str
+        ).strip()
         hooks_dir = Path(raw_dir).expanduser() if raw_dir else None
         return HookRegistry(hooks_dir=hooks_dir)
     if backend in {"none", "off", "disabled"}:

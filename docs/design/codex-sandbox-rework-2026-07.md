@@ -124,9 +124,32 @@ Codex's egress model — TBD in the net slice; the write-fence lands first.
 
 ## Deletion inventory (lands with the replacement, not after)
 
-- srt config synth/validation, srt_prefix, srt version floor (`sandbox_srt.py`).
-- srt Windows provisioning (`sandbox_provision.py`) — replaced by the Codex setup path.
-- `MECHANISM_SRT_*`, srt reasons, `detect_srt`, the srt flag — once B-codex-4 gates green.
+**DONE (B-codex-5, 2026-07-23)** — Codex is the SOLE OS-fence backend on all platforms; srt
+deleted now that Codex is live-validated on Windows and Linux:
+
+- ✅ `src/clio_agent/runtime/sandbox_srt.py` — config synth/validation, `srt_prefix`, version
+  floor, settings materialization. DELETED.
+- ✅ `src/clio_agent/runtime/sandbox_provision.py` — srt Windows provisioning + `run_sandbox_cli`.
+  DELETED; the CLI (`clio sandbox setup`/`status`) moved to the new
+  `src/clio_agent/runtime/sandbox_cli.py`, repointed at Codex provisioning + dispatched from
+  `ui/cli.py`.
+- ✅ `src/clio_agent/runtime/sandbox_verify.py` — srt-Windows enforce-verify. DELETED (superseded
+  by `verify_codex_enforcement` in `sandbox_codex.py`).
+- ✅ From `sandbox.py`: `MECHANISM_SRT_SEATBELT/_BWRAP/_WINDOWS`, all `REASON_SRT_*`,
+  `REASON_WINDOWS_UNPROVISIONED`, `REASON_CHOKEPOINT_START_FAILED`, `SrtDetection`, `detect_srt`,
+  `_srt_viability`, `_activate_srt`, `_probe_bwrap_userns`, `_default_start_proxy`,
+  `_sandbox_backend` (+ the `CLIO_SANDBOX_BACKEND` flag) and the `SRT_*` constants. DELETED.
+  `_resolve_backend` is now: try Codex (all platforms; win32 gated on the provisioned+verified
+  gate) → on Linux fall to the Landlock rung → floor; win32/darwin floor with the typed codex
+  reason. Kept: `MECHANISM_CODEX`, `MECHANISM_LANDLOCK`, `MECHANISM_NONE`, the Landlock rung,
+  `wrap_confined`, `ConfinedSpawn`, the codex-gated net wiring.
+- ✅ Doctor (`sandbox_doctor.py`) retargeted at the codex/landlock/floor reasons; the `srt_path`
+  config knob removed; `grants.py` / `environment.py` srt references cleaned.
+- ✅ Tests: `test_sandbox_srt.py` (n/a — never existed), `test_sandbox_verify.py`,
+  `test_sandbox_b3.py` DELETED; `test_sandbox_b2.py` reworked to Landlock-only;
+  `test_sandbox.py` / `test_sandbox_codex_ladder.py` / `test_sandbox_conformance.py` /
+  `test_sandbox_fence.py` / `test_sandbox_b4.py` reworked to codex-primary + Landlock-fallback +
+  floor. `scripts/check_file_size.py` had no entry for any deleted file (no baseline change).
 
 ## Validation assets
 

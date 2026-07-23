@@ -353,9 +353,6 @@ runtime.lm_token_liveness: true
 # CLIO_SANDBOX_ENABLED  (bool)  <- src/clio_agent/runtime/sandbox.py
 sandbox.enabled: true
 
-# CLIO_SANDBOX_SRT_PATH  (str)  <- src/clio_agent/runtime/sandbox.py
-# sandbox.srt_path:  # default unset; resolved in code
-
 # CLIO_ALLOW_SYMLINKS  (bool)  <- src/clio_agent/tools/file_policy.py
 tools.file_policy.allow_symlinks: false
 

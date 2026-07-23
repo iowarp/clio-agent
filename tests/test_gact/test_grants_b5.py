@@ -226,13 +226,14 @@ def test_root_grant_endpoint_widens_write_roots_and_reports_reason(
     )
     assert outside.resolve() in {r.resolve() for r in roots}
 
-    # Windows srt (session-wide fs policy): a live child needs a respawn — typed, not silent.
+    # A per-spawn active fence (Codex): the write territory is written at each spawn, so a
+    # mid-session grant applies live (takes effect on the child's next spawn), never silent.
     monkeypatch.setattr(
-        sandbox, "current_state", lambda: _fake_state(True, sandbox.MECHANISM_SRT_WINDOWS)
+        sandbox, "current_state", lambda: _fake_state(True, sandbox.MECHANISM_CODEX)
     )
     resp2 = c.post(f"/v1/workspaces/{ws['id']}/grants", json={"root": str(tmp_path / "o2")}).json()
-    assert resp2["root"]["reason"] == grants.REASON_GRANT_PENDING_RESPAWN
-    assert resp2["root"]["pending_respawn"] is True
+    assert resp2["root"]["reason"] == grants.REASON_GRANT_LIVE
+    assert resp2["root"]["pending_respawn"] is False
 
     # A per-spawn active fence (Landlock) applies live.
     monkeypatch.setattr(
