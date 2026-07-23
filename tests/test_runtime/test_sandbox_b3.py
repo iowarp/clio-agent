@@ -25,6 +25,7 @@ import pytest
 
 from clio_agent.runtime import sandbox
 from clio_agent.runtime import sandbox_provision as swp
+from clio_agent.runtime import sandbox_verify as swv
 
 # --------------------------------------------------------------------------- #
 # Faked srt detection helpers (never a real srt/node probe).                    #
@@ -172,9 +173,9 @@ def test_provision_already_provisioned_is_zero_prompt_noop() -> None:
 
 
 def test_provision_fresh_success_writes_marker_and_verifies() -> None:
-    """Unprovisioned → one install, marker persisted, re-probe confirms → provisioned."""
+    """Unprovisioned → one install, enforcement verified, marker persisted → provisioned."""
     spy = _SpyInstaller(ok=True)
-    written: list[str] = []
+    written: list[tuple[str, bool]] = []
     state = swp.WindowsSandboxState(
         status=swp.STATUS_UNPROVISIONED,
         reason=sandbox.REASON_WINDOWS_UNPROVISIONED,
@@ -186,14 +187,15 @@ def test_provision_fresh_success_writes_marker_and_verifies() -> None:
     result = swp.provision_windows_sandbox(
         state=state,
         installer=spy,
-        marker_writer=lambda v: written.append(v),
+        marker_writer=lambda v, **k: written.append((v, k.get("enforcement_verified"))),
         state_reader=lambda: provisioned,
+        verifier=lambda _b: (True, swv.REASON_WINDOWS_ENFORCEMENT_VERIFIED),
     )
     assert result.ok is True
     assert result.status == swp.OUTCOME_PROVISIONED
     assert result.elevated is True
     assert spy.calls == ["C:\\srt\\srt.cmd"]  # the ready detection's binary
-    assert written == ["0.0.66"]  # marker persisted with the srt version
+    assert written == [("0.0.66", True)]  # marker persisted: version + verified enforcement
 
 
 def test_provision_install_failure_is_typed() -> None:
@@ -205,7 +207,7 @@ def test_provision_install_failure_is_typed() -> None:
         srt=_ready_det(),
     )
     result = swp.provision_windows_sandbox(
-        state=state, installer=spy, marker_writer=lambda v: None, state_reader=lambda: state
+        state=state, installer=spy, marker_writer=lambda v, **_k: None, state_reader=lambda: state
     )
     assert result.ok is False
     assert result.status == swp.OUTCOME_PROVISION_FAILED
@@ -224,10 +226,72 @@ def test_provision_verify_failure_is_typed() -> None:
         status=swp.STATUS_UNPROVISIONED, reason=sandbox.REASON_WINDOWS_UNPROVISIONED
     )
     result = swp.provision_windows_sandbox(
-        state=state, installer=spy, marker_writer=lambda v: None, state_reader=lambda: still_unprov
+        state=state,
+        installer=spy,
+        marker_writer=lambda v, **_k: None,
+        state_reader=lambda: still_unprov,
     )
     assert result.ok is False
     assert result.status == swp.OUTCOME_PROVISION_VERIFY_FAILED
+
+
+def test_provision_install_but_enforcement_unverified_is_honest_degrade() -> None:
+    """Install + account OK but srt cannot enforce → honest ENFORCEMENT_UNVERIFIED, never green (#1026)."""
+    spy = _SpyInstaller(ok=True)
+    written: list[tuple[str, object]] = []
+    state = swp.WindowsSandboxState(
+        status=swp.STATUS_UNPROVISIONED,
+        reason=sandbox.REASON_WINDOWS_UNPROVISIONED,
+        srt=_ready_det(),
+    )
+    unverified = swp.WindowsSandboxState(
+        status=swp.STATUS_ENFORCEMENT_UNVERIFIED,
+        reason=swv.REASON_WINDOWS_ENFORCEMENT_UNVERIFIED,
+    )
+    result = swp.provision_windows_sandbox(
+        state=state,
+        installer=spy,
+        marker_writer=lambda v, **k: written.append((v, k.get("enforcement_verified"))),
+        state_reader=lambda: unverified,
+        verifier=lambda _b: (False, swv.REASON_WINDOWS_ENFORCEMENT_UNVERIFIED),
+    )
+    assert result.ok is False
+    assert result.status == swp.STATUS_ENFORCEMENT_UNVERIFIED
+    assert result.reason == swv.REASON_WINDOWS_ENFORCEMENT_UNVERIFIED
+    assert result.elevated is True
+    assert written == [("0.0.66", False)]  # marker records the unverified verdict, not a fake green
+
+
+def test_windows_state_maps_enforcement_unverified_marker() -> None:
+    """A probe reporting the unverified reason → STATUS_ENFORCEMENT_UNVERIFIED (honest third state)."""
+    state = swp.windows_sandbox_state(
+        platform="win32",
+        detection=_ready_det(),
+        provisioned_probe=lambda: (False, swv.REASON_WINDOWS_ENFORCEMENT_UNVERIFIED),
+    )
+    assert state.status == swp.STATUS_ENFORCEMENT_UNVERIFIED
+    assert state.reason == swv.REASON_WINDOWS_ENFORCEMENT_UNVERIFIED
+    assert "advisory file policy" in state.next_action
+
+
+def test_default_probe_unverified_when_enforcement_not_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Marker + principal present but enforcement_verified != True → unverified, not provisioned."""
+    monkeypatch.setattr(swp, "_read_marker", lambda: {"principal": swp.SRT_WINDOWS_PRINCIPAL})
+    monkeypatch.setattr(swp, "_srt_principal_exists", lambda *, platform="win32": True)
+    provisioned, reason = swp._default_provisioned_probe(platform="win32")
+    assert provisioned is False
+    assert reason == swv.REASON_WINDOWS_ENFORCEMENT_UNVERIFIED
+    # And a marker WITH a verified verdict is genuinely provisioned.
+    monkeypatch.setattr(
+        swp,
+        "_read_marker",
+        lambda: {"principal": swp.SRT_WINDOWS_PRINCIPAL, "enforcement_verified": True},
+    )
+    provisioned2, reason2 = swp._default_provisioned_probe(platform="win32")
+    assert provisioned2 is True
+    assert reason2 == swp.REASON_WINDOWS_PROVISIONED
 
 
 def test_default_installer_is_the_elevation_and_is_guarded() -> None:
@@ -306,10 +370,11 @@ def test_provision_offers_npm_install_then_continues_one_command() -> None:
     result = swp.provision_windows_sandbox(
         state=_srt_absent_node_present(),
         installer=elevation,
-        marker_writer=lambda v: written.append(v),
+        marker_writer=lambda v, **_k: written.append(v),
         state_reader=lambda: next(reprobes),
         npm_installer=npm,
         confirm=lambda _prompt: True,
+        verifier=lambda _b: (True, swv.REASON_WINDOWS_ENFORCEMENT_VERIFIED),
     )
     assert result.ok is True
     assert result.status == swp.OUTCOME_PROVISIONED
@@ -326,7 +391,7 @@ def test_provision_npm_install_failure_is_typed_no_marker() -> None:
     result = swp.provision_windows_sandbox(
         state=_srt_absent_node_present(),
         installer=elevation,
-        marker_writer=lambda v: written.append(v),
+        marker_writer=lambda v, **_k: written.append(v),
         npm_installer=npm,
         confirm=lambda _prompt: True,
     )
@@ -421,6 +486,25 @@ def test_ladder_windows_unprovisioned_floors() -> None:
     assert result.mechanism == sandbox.MECHANISM_NONE
     assert result.active is False
     assert result.reason == sandbox.REASON_WINDOWS_UNPROVISIONED
+
+
+def test_ladder_windows_enforcement_unverified_floors_typed() -> None:
+    """Provisioned account but srt can't enforce → floor none, carries the typed reason (#1026).
+
+    The false-green this closes: the account exists, so a marker-only probe reported
+    ``srt_windows/active``. The ladder must NOT wrap children with a fence that does nothing —
+    it floors to the advisory policy and surfaces ``srt_windows_enforcement_unverified``.
+    """
+    result = sandbox._resolve_backend(
+        platform="win32",
+        detection=_ready_det(),
+        win_state=_win_state(
+            swp.STATUS_ENFORCEMENT_UNVERIFIED, swv.REASON_WINDOWS_ENFORCEMENT_UNVERIFIED
+        ),
+    )
+    assert result.mechanism == sandbox.MECHANISM_NONE
+    assert result.active is False
+    assert result.reason == swv.REASON_WINDOWS_ENFORCEMENT_UNVERIFIED
 
 
 def test_ladder_windows_srt_absent_floors_with_reason() -> None:

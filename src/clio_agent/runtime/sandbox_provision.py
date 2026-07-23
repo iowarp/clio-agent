@@ -49,6 +49,10 @@ from clio_agent.runtime.sandbox import (
     detect_srt,
 )
 from clio_agent.runtime.sandbox_srt import is_srt_version_supported
+from clio_agent.runtime.sandbox_verify import (
+    REASON_WINDOWS_ENFORCEMENT_UNVERIFIED,
+    verify_windows_enforcement,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +71,7 @@ SRT_INSTALL_POINTER = f"npm install -g {SRT_PACKAGE_NAME}"
 # Provisioning STATUS literals (the typed verdict the three consumers branch on).
 STATUS_PROVISIONED = "provisioned"
 STATUS_UNPROVISIONED = "unprovisioned"
+STATUS_ENFORCEMENT_UNVERIFIED = "enforcement_unverified"  # account provisioned, srt can't enforce
 STATUS_SRT_ABSENT = "srt_absent"
 STATUS_NOT_WINDOWS = "not_windows"
 
@@ -94,7 +99,8 @@ class WindowsSandboxState:
 
     Attributes:
         status: One of :data:`STATUS_PROVISIONED`, :data:`STATUS_UNPROVISIONED`,
-            :data:`STATUS_SRT_ABSENT`, :data:`STATUS_NOT_WINDOWS`.
+            :data:`STATUS_ENFORCEMENT_UNVERIFIED`, :data:`STATUS_SRT_ABSENT`,
+            :data:`STATUS_NOT_WINDOWS`.
         reason: A machine-stable typed reason token for the verdict.
         srt: The srt detection this verdict was computed from (``None`` off-Windows).
         detail: A short human-readable evidence string.
@@ -153,11 +159,20 @@ def _read_marker() -> Optional[dict[str, Any]]:
         return None
 
 
-def write_provision_marker(version: str) -> Path:
+def write_provision_marker(
+    version: str,
+    *,
+    enforcement_verified: Optional[bool] = None,
+    enforcement_reason: str = "",
+) -> Path:
     """Persist the provisioning marker after a successful ``srt windows-install``.
 
     Records the srt version + timestamp + principal so a later idempotent re-run can verify
-    provisioning WITHOUT elevating. Returns the written path.
+    provisioning WITHOUT elevating. ``enforcement_verified`` is the result of the real
+    behavioural fence check (:func:`~clio_agent.runtime.sandbox_verify.verify_windows_enforcement`)
+    — ``True`` only when srt was observed to actually deny an out-of-root write; anything else
+    (``False``/``None``) leaves the fence unproven so the ladder floors honestly rather than
+    reporting a false ``active`` (#1026). Returns the written path.
     """
     import json  # noqa: PLC0415 - only on this path
     from datetime import datetime, timezone  # noqa: PLC0415
@@ -168,6 +183,8 @@ def write_provision_marker(version: str) -> Path:
         "principal": SRT_WINDOWS_PRINCIPAL,
         "srt_version": version,
         "provisioned_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "enforcement_verified": enforcement_verified,
+        "enforcement_reason": enforcement_reason,
     }
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return path
@@ -199,16 +216,23 @@ def _srt_principal_exists(*, platform: str = sys.platform) -> bool:
 
 
 def _default_provisioned_probe(*, platform: str = sys.platform) -> tuple[bool, str]:
-    """Default provisioned-state probe: marker present AND the ``srt-sandbox`` principal exists.
+    """Default provisioned-state probe: marker + ``srt-sandbox`` principal + enforcement verified.
 
     Returns ``(provisioned, reason)``. A marker with a missing principal is the honest
-    ``windows_provisioning_incomplete`` (someone removed the account) — NOT a false green.
+    ``windows_provisioning_incomplete`` (someone removed the account). A marker whose recorded
+    ``enforcement_verified`` is not ``True`` (srt could not actually confine a write, or a legacy
+    marker predating the check) is ``srt_windows_enforcement_unverified`` — the fence is unproven,
+    so it is NOT reported as provisioned/active (#1026, no false-green).
     """
     marker = _read_marker()
     if marker is None:
         return False, REASON_WINDOWS_UNPROVISIONED
     if not _srt_principal_exists(platform=platform):
         return False, REASON_WINDOWS_PROVISION_INCOMPLETE
+    if marker.get("enforcement_verified") is not True:
+        # Account provisioned but srt was NOT observed to actually enforce a confined write
+        # (verify failed, or a legacy marker predating the check). Honest: unproven, not green.
+        return False, REASON_WINDOWS_ENFORCEMENT_UNVERIFIED
     return True, REASON_WINDOWS_PROVISIONED
 
 
@@ -266,8 +290,26 @@ def windows_sandbox_state(
             status=STATUS_PROVISIONED,
             reason=reason,
             srt=det,
-            detail=f"Windows write fence provisioned (principal={SRT_WINDOWS_PRINCIPAL}).",
+            detail=f"Windows write fence provisioned + enforcement verified (principal={SRT_WINDOWS_PRINCIPAL}).",
             next_action="No action required.",
+        )
+    if reason == REASON_WINDOWS_ENFORCEMENT_UNVERIFIED:
+        # The srt-sandbox account exists but srt was NOT observed to enforce a confined write
+        # (an upstream srt spawn/logon limitation). Honest third state: NOT provisioned-and-active,
+        # NOT an install gap — the ladder floors with this typed reason instead of a false 'active'.
+        return WindowsSandboxState(
+            status=STATUS_ENFORCEMENT_UNVERIFIED,
+            reason=reason,
+            srt=det,
+            detail=(
+                "srt-sandbox is provisioned but srt could not enforce the Windows write fence "
+                "(spawn/logon verification failed); the fence is unproven."
+            ),
+            next_action=(
+                "Windows enforcement is unavailable on this host (upstream srt "
+                "CreateProcessWithLogonW); clio runs with the advisory file policy. "
+                "Re-run `clio sandbox setup` to re-verify."
+            ),
         )
     return WindowsSandboxState(
         status=STATUS_UNPROVISIONED,
@@ -406,6 +448,7 @@ def provision_windows_sandbox(
     state_reader: Any = None,
     npm_installer: Any = None,
     confirm: Any = None,
+    verifier: Any = None,
 ) -> WindowsProvisionResult:
     """Idempotently provision the Windows write fence (``clio sandbox setup``) (#977/B3).
 
@@ -417,8 +460,11 @@ def provision_windows_sandbox(
       whole flow is one command + one UAC. node/npm absent (or the offer declined) → the typed
       install pointer, NO elevation, NO npm run;
     * already provisioned → idempotent no-op (:data:`OUTCOME_ALREADY_PROVISIONED`), ZERO prompts;
-    * otherwise → one self-elevating ``srt windows-install``, then persist the marker and
-      RE-PROBE to verify (principal + marker) before claiming success.
+    * otherwise → one self-elevating ``srt windows-install``, then run the real enforcement check
+      (:func:`~clio_agent.runtime.sandbox_verify.verify_windows_enforcement`), persist its verdict
+      in the marker, and RE-PROBE. A provisioned account whose fence does NOT actually enforce a
+      confined write is the honest :data:`STATUS_ENFORCEMENT_UNVERIFIED` (advisory-policy degrade),
+      never a false ``active`` — see #1026.
 
     Every machine-mutating step is injectable so the whole flow is unit-pinnable with fakes:
     ``installer`` (the UAC elevation), ``npm_installer`` (the global npm install) and
@@ -443,6 +489,7 @@ def provision_windows_sandbox(
             state_reader=state_reader,
             npm_installer=npm_installer,
             confirm=confirm,
+            verifier=verifier,
         )
     if st.status == STATUS_PROVISIONED:
         # Idempotent: already provisioned → no-op, zero prompts (safe to re-run on any channel).
@@ -470,15 +517,41 @@ def provision_windows_sandbox(
             elevated=True,
         )
 
-    (marker_writer if marker_writer is not None else write_provision_marker)(version)
+    # The account is provisioned; now PROVE srt can actually enforce a confined write before
+    # claiming the fence (#1026 — no false-green). The verdict is persisted in the marker so the
+    # ladder/doctor read an honest state without re-spawning srt every boot.
+    verify = verifier if verifier is not None else verify_windows_enforcement
+    enforced, enforce_reason = verify(binary)
+    (marker_writer if marker_writer is not None else write_provision_marker)(
+        version, enforcement_verified=enforced, enforcement_reason=enforce_reason
+    )
     reprobe = (state_reader if state_reader is not None else windows_sandbox_state)()
     if reprobe.status == STATUS_PROVISIONED:
         return WindowsProvisionResult(
             ok=True,
             status=OUTCOME_PROVISIONED,
             reason=REASON_WINDOWS_PROVISIONED,
-            detail="Windows write fence provisioned (one-time UAC). Per-session use is unprivileged.",
+            detail="Windows write fence provisioned + enforcement verified (one-time UAC). Per-session use is unprivileged.",
             next_action="No action required.",
+            elevated=True,
+        )
+    if reprobe.status == STATUS_ENFORCEMENT_UNVERIFIED:
+        # srt windows-install succeeded and the account is real, but srt could NOT enforce a
+        # confined write on this host. Report the honest degrade — clio runs on the advisory
+        # file policy; there is no clio action that fixes an upstream srt spawn/logon failure.
+        return WindowsProvisionResult(
+            ok=False,
+            status=STATUS_ENFORCEMENT_UNVERIFIED,
+            reason=REASON_WINDOWS_ENFORCEMENT_UNVERIFIED,
+            detail=(
+                "srt windows-install succeeded and the srt-sandbox account is provisioned, but "
+                f"srt could NOT enforce a confined write ({enforce_reason}). clio runs with the "
+                "advisory file policy (honest degrade — no OS write fence in force on this host)."
+            ),
+            next_action=(
+                "This is an upstream srt limitation (CreateProcessWithLogonW); no clio action "
+                "resolves it. The advisory file_policy still records out-of-root writes."
+            ),
             elevated=True,
         )
     return WindowsProvisionResult(
@@ -499,6 +572,7 @@ def _handle_srt_absent(
     state_reader: Any,
     npm_installer: Any,
     confirm: Any,
+    verifier: Any = None,
 ) -> WindowsProvisionResult:
     """srt-absent branch: the one-command npm auto-install offer, else the typed pointer (#977).
 
@@ -551,6 +625,7 @@ def _handle_srt_absent(
         state_reader=state_reader,
         npm_installer=npm_installer,
         confirm=confirm,
+        verifier=verifier,
     )
 
 
@@ -693,6 +768,7 @@ __all__ = [
     "SRT_WINDOWS_INSTALL_SUBCOMMAND",
     "SRT_WINDOWS_MARKER_NAME",
     "SRT_WINDOWS_PRINCIPAL",
+    "STATUS_ENFORCEMENT_UNVERIFIED",
     "STATUS_NOT_WINDOWS",
     "STATUS_PROVISIONED",
     "STATUS_SRT_ABSENT",
@@ -707,6 +783,7 @@ __all__ = [
     "REASON_NOT_WINDOWS",
     "REASON_PROVISION_FAILED",
     "REASON_PROVISION_VERIFY_FAILED",
+    "REASON_WINDOWS_ENFORCEMENT_UNVERIFIED",
     "REASON_WINDOWS_PROVISIONED",
     "REASON_WINDOWS_PROVISION_INCOMPLETE",
     "WindowsProvisionResult",

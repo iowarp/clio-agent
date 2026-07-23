@@ -481,8 +481,8 @@ def _resolve_backend(
         if win.status == swp.STATUS_PROVISIONED:
             activated = _activate_srt(MECHANISM_SRT_WINDOWS, det, base_details, start_proxy)
             return activated if activated is not None else floor(REASON_CHOKEPOINT_START_FAILED)
-        if win.status == swp.STATUS_SRT_ABSENT:
-            return floor(win.reason)
+        if win.status in (swp.STATUS_SRT_ABSENT, swp.STATUS_ENFORCEMENT_UNVERIFIED):
+            return floor(win.reason)  # typed floor: srt gap OR provisioned-but-cannot-enforce (#1026)
         return floor(REASON_WINDOWS_UNPROVISIONED)
 
     srt_ok, srt_skip = _srt_viability(det)

@@ -103,9 +103,17 @@ def probe_sandbox(*, state: sb.SandboxResult | None = None) -> IntegrationStatus
             required=False,
         )
 
+    from clio_agent.runtime import sandbox_verify as sv  # noqa: PLC0415
+
     srt = resolved.details.get("srt", {}) if isinstance(resolved.details, dict) else {}
     if resolved.reason == sb.REASON_WINDOWS_UNPROVISIONED:
         next_action = "Run `clio sandbox setup` (B3) to provision the Windows write fence."
+    elif resolved.reason == sv.REASON_WINDOWS_ENFORCEMENT_UNVERIFIED:
+        next_action = (
+            "srt provisioned the srt-sandbox account but could not enforce a confined write on "
+            "this host (upstream srt CreateProcessWithLogonW); the advisory file_policy applies. "
+            "Re-run `clio sandbox setup` to re-verify."
+        )
     elif sys.platform.startswith("win") and resolved.reason in {
         sb.REASON_SRT_NOT_INSTALLED,
         sb.REASON_SRT_NODE_MISSING,
