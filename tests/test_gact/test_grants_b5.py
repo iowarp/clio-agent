@@ -27,9 +27,11 @@ from clio_agent.runtime import sandbox_net, sandbox_roots
 def _clean_registries():
     sandbox_roots.clear_write_root_grants()
     sandbox_net.clear_namespace_children()
+    grants._PENDING_EGRESS.clear()
     yield
     sandbox_roots.clear_write_root_grants()
     sandbox_net.clear_namespace_children()
+    grants._PENDING_EGRESS.clear()
 
 
 @pytest.fixture
@@ -96,8 +98,18 @@ def test_host_action_for_matches_workspace_scope() -> None:
     app = SimpleNamespace(
         state=SimpleNamespace(
             permission_policies=[
-                {"scope": "workspace", "scope_id": "ws1", "action": "allow", "host_pattern": "*.ndp.org"},
-                {"scope": "workspace", "scope_id": "ws1", "action": "deny", "host_pattern": "evil.test"},
+                {
+                    "scope": "workspace",
+                    "scope_id": "ws1",
+                    "action": "allow",
+                    "host_pattern": "*.ndp.org",
+                },
+                {
+                    "scope": "workspace",
+                    "scope_id": "ws1",
+                    "action": "deny",
+                    "host_pattern": "evil.test",
+                },
             ]
         )
     )
@@ -112,12 +124,19 @@ def test_network_egress_resolution_derives_host_pattern() -> None:
         _append_permission_policy_from_resolution,
     )
 
-    app = SimpleNamespace(state=SimpleNamespace(permission_policies=[], sessions=SimpleNamespace(get=lambda _sid: None)))
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            permission_policies=[], sessions=SimpleNamespace(get=lambda _sid: None)
+        )
+    )
     row = {
         "id": "perm_x",
         "session_id": "",
         "kind": "network_egress",
-        "tool_call": {"tool_name": "network_egress", "input": {"host": "data.ndp.org", "port": 443}},
+        "tool_call": {
+            "tool_name": "network_egress",
+            "input": {"host": "data.ndp.org", "port": 443},
+        },
     }
     policy = _append_permission_policy_from_resolution(app, row=row, action="allow_workspace")
     assert policy is not None
@@ -182,17 +201,23 @@ def test_root_grant_endpoint_widens_write_roots_and_reports_reason(
     assert resp["root"]["reason"] == grants.REASON_GRANT_RECORDED_NO_FENCE
     assert resp["root"]["pending_respawn"] is False
     # The grant widened the live territory registry (advisory + fence both consult it).
-    roots = sandbox_roots.effective_write_roots(sandbox_roots.PROFILE_SHELL, workspace_root=str(root))
+    roots = sandbox_roots.effective_write_roots(
+        sandbox_roots.PROFILE_SHELL, workspace_root=str(root)
+    )
     assert outside.resolve() in {r.resolve() for r in roots}
 
     # Windows srt (session-wide fs policy): a live child needs a respawn — typed, not silent.
-    monkeypatch.setattr(sandbox, "current_state", lambda: _fake_state(True, sandbox.MECHANISM_SRT_WINDOWS))
+    monkeypatch.setattr(
+        sandbox, "current_state", lambda: _fake_state(True, sandbox.MECHANISM_SRT_WINDOWS)
+    )
     resp2 = c.post(f"/v1/workspaces/{ws['id']}/grants", json={"root": str(tmp_path / "o2")}).json()
     assert resp2["root"]["reason"] == grants.REASON_GRANT_PENDING_RESPAWN
     assert resp2["root"]["pending_respawn"] is True
 
     # A per-spawn active fence (Landlock) applies live.
-    monkeypatch.setattr(sandbox, "current_state", lambda: _fake_state(True, sandbox.MECHANISM_LANDLOCK))
+    monkeypatch.setattr(
+        sandbox, "current_state", lambda: _fake_state(True, sandbox.MECHANISM_LANDLOCK)
+    )
     resp3 = c.post(f"/v1/workspaces/{ws['id']}/grants", json={"root": str(tmp_path / "o3")}).json()
     assert resp3["root"]["reason"] == grants.REASON_GRANT_LIVE
 
@@ -278,7 +303,7 @@ def test_deny_mode_off_is_allow(tmp_path, captured_events) -> None:
     app = build_app(sessions_path=tmp_path / "s.json")
     root = tmp_path / "proj"
     root.mkdir()
-    ws = app.state.workspaces.create(name="p", root_path=str(root))
+    app.state.workspaces.create(name="p", root_path=str(root))
     rec = _egress_record("anything.test", str(root))
     assert grants._egress_gate_decision(app, rec) == "allow"  # default ALLOW + RECORD (B4)
 
@@ -336,6 +361,147 @@ def test_deny_mode_unknown_domain_prompts_then_grant_unblocks(tmp_path, captured
         {"scope": "workspace", "scope_id": ws.id, "action": "deny", "host_pattern": "evil.test"}
     )
     assert grants._egress_gate_decision(app, _egress_record("evil.test", str(root))) == "deny"
+
+
+def test_deny_mode_timeout_fails_closed_and_records(tmp_path, captured_events, monkeypatch) -> None:
+    """Acceptance (#979): an unresolved deny-mode prompt TIMES OUT → deny + typed record."""
+    monkeypatch.setattr(grants, "_EGRESS_GATE_TIMEOUT_S", 0.15)
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    ws = app.state.workspaces.create(
+        name="p", root_path=str(root), metadata={"network_deny_mode": True}
+    )
+    app.state.sessions.create(workspace_id=ws.id)
+    assert grants._egress_gate_decision(app, _egress_record("slow.test", str(root))) == "deny"
+    resolved = [e for e in captured_events if e["event_type"] == "permission.resolved"]
+    assert resolved and resolved[-1]["payload"]["reason"] == grants.REASON_EGRESS_TIMEOUT
+    assert resolved[-1]["payload"]["action"] == "deny"
+
+
+def test_deny_mode_prompt_store_failure_fails_closed(tmp_path, captured_events) -> None:
+    """A wedged permission store during a deny-mode prompt fails CLOSED (deny), never open."""
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    app.state.workspaces.create(
+        name="p", root_path=str(root), metadata={"network_deny_mode": True}
+    )
+
+    class _Wedged(dict):
+        def __setitem__(self, *a, **k):
+            raise RuntimeError("store wedged")
+
+    app.state.permissions = _Wedged()
+    assert grants._egress_gate_decision(app, _egress_record("x.test", str(root))) == "deny"
+    reasons = {
+        e["payload"].get("reason")
+        for e in captured_events
+        if e["event_type"] == "permission.resolved"
+    }
+    assert grants.REASON_EGRESS_PROMPT_UNWRITABLE in reasons
+
+
+def test_deny_mode_decision_error_fails_closed(tmp_path, captured_events, monkeypatch) -> None:
+    """An exception in the deny-mode host-policy decision fails CLOSED with a typed reason."""
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    app.state.workspaces.create(
+        name="p", root_path=str(root), metadata={"network_deny_mode": True}
+    )
+
+    def _boom(*a, **k):
+        raise RuntimeError("policy engine down")
+
+    monkeypatch.setattr(grants, "_host_action_for", _boom)
+    assert grants._egress_gate_decision(app, _egress_record("y.test", str(root))) == "deny"
+    reasons = {
+        e["payload"].get("reason")
+        for e in captured_events
+        if e["event_type"] == "permission.resolved"
+    }
+    assert grants.REASON_EGRESS_DECISION_ERROR in reasons
+
+
+def test_deny_mode_store_unresolved_fails_closed(tmp_path, captured_events, monkeypatch) -> None:
+    """If the store cannot prove the workspace is NOT deny-mode, fail CLOSED (never allow)."""
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+
+    def _boom(*a, **k):
+        raise RuntimeError("store list failed")
+
+    monkeypatch.setattr(app.state.workspaces, "list", _boom)
+    assert grants._egress_gate_decision(app, _egress_record("z.test", str(root))) == "deny"
+    reasons = {
+        e["payload"].get("reason")
+        for e in captured_events
+        if e["event_type"] == "permission.resolved"
+    }
+    assert grants.REASON_EGRESS_STORE_UNRESOLVED in reasons
+
+
+def test_session_scoped_host_grant_never_leaks(tmp_path) -> None:
+    """Review finding 2: a session-scoped host_pattern grant does NOT widen the egress boundary.
+
+    A workspace-shared fleet child's egress cannot be attributed to one session, so an
+    ``allow_session`` host grant must never be honoured at the chokepoint (it would leak the
+    MORE-restrictive choice globally). Only an explicit workspace-scoped grant is honoured, and
+    only for ITS workspace.
+    """
+    from clio_agent.gact.runtime.permission_policies import _host_action_for
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    app.state.permission_policies = [
+        # A session-scoped host grant — must NOT match at the chokepoint for ANY workspace.
+        {"scope": "session", "scope_id": "sess_a", "action": "allow", "host_pattern": "leak.test"},
+        # An empty-scope_id workspace host grant — must NOT be treated as a wildcard either.
+        {"scope": "workspace", "scope_id": "", "action": "allow", "host_pattern": "wild.test"},
+        # A proper workspace-scoped grant — honoured only for ws_a.
+        {"scope": "workspace", "scope_id": "ws_a", "action": "allow", "host_pattern": "ok.test"},
+    ]
+    assert _host_action_for(app, workspace_id="ws_a", host="leak.test") == ""  # session never leaks
+    assert _host_action_for(app, workspace_id="ws_b", host="leak.test") == ""
+    assert _host_action_for(app, workspace_id="ws_a", host="wild.test") == ""  # empty scope_id ≠ *
+    assert _host_action_for(app, workspace_id="ws_a", host="ok.test") == "allow"
+    assert _host_action_for(app, workspace_id="ws_b", host="ok.test") == ""  # scoped to ws_a only
+
+
+def test_workspace_root_resolution_is_path_boundary_aware(tmp_path) -> None:
+    """Review finding 3: ``/ws`` must not match the adjacent ``/ws2`` (path-boundary matching)."""
+    app = build_app(sessions_path=tmp_path / "s.json")
+    ws1_root = tmp_path / "ws"
+    ws2_root = tmp_path / "ws2"
+    ws1_root.mkdir()
+    ws2_root.mkdir()
+    ws1 = app.state.workspaces.create(name="one", root_path=str(ws1_root))
+    ws2 = app.state.workspaces.create(name="two", root_path=str(ws2_root))
+    assert grants._workspace_id_for_root(app, str(ws2_root)) == ws2.id  # not ws1 (no prefix bleed)
+    assert grants._workspace_id_for_root(app, str(ws1_root / "sub" / "f")) == ws1.id  # real child
+    assert grants._workspace_id_for_root(app, str(tmp_path / "unrelated")) == ""
+
+
+def test_deny_mode_prompt_cap_fails_closed_over_limit(
+    tmp_path, captured_events, monkeypatch
+) -> None:
+    """Review finding 4: distinct concurrent egress prompts are bounded — excess denies, typed."""
+    monkeypatch.setattr(grants, "_MAX_CONCURRENT_EGRESS_PROMPTS", 2)
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    ws = app.state.workspaces.create(name="p", root_path=str(root))
+    # Pre-fill the pending registry to the cap (simulating 2 distinct hosts already blocked).
+    grants._PENDING_EGRESS[(ws.id, "a.test")] = {"waiters": 1}
+    grants._PENDING_EGRESS[(ws.id, "b.test")] = {"waiters": 1}
+    assert grants._prompt_egress(app, ws.id, _egress_record("c.test", str(root))) == "deny"
+    reasons = {
+        e["payload"].get("reason")
+        for e in captured_events
+        if e["event_type"] == "permission.resolved"
+    }
+    assert grants.REASON_EGRESS_PROMPT_CAP in reasons
 
 
 # --------------------------------------------------------------------------- #
