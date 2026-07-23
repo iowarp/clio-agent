@@ -43,7 +43,8 @@ Three resolution paths:
 3. **Interactive** — for everything else (e.g. an LM-driven ReAct loop
    that decides to call `fs_apply_edit_write` mid-turn), the gate
    publishes a `permission.requested` event and blocks on a
-   `threading.Event` for up to 120 s. The TUI sees the event and
+   `threading.Event` for up to `DEFAULT_TIMEOUT_S = 600.0` s
+   (a timeout fails safe: the gate returns `deny`). The TUI sees the event and
    renders a banner; the user resolves with a/d/s/w; the backend
    POSTs the resolution back; the gate returns `allow` or `deny`.
 
