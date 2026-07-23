@@ -24,21 +24,40 @@ PROFILE_SHELL: Profile = "shell"
 
 
 def _platform_tool_cache_dirs() -> list[Path]:
-    """Platform tool-cache dirs the MCP fleet must be able to write (false-positive guard).
+    """Platform tool-cache + tool-DATA dirs the MCP fleet must be able to write.
 
-    A fence that forgot these would break ``uv``/``npm``/``pip`` launchers mid-spawn. Kept
-    bounded + honest: the clio-owned caches plus the common per-user tool caches (present or
-    not — they are writable territory, not a precondition).
+    A fence that forgot these would break ``uv``/``npm``/``pip`` launchers mid-spawn (the
+    false-positive guard). Kept bounded + honest: the clio-owned caches plus the common
+    per-user tool caches/data dirs (present or not — they are writable territory, not a
+    precondition).
+
+    Includes the uv/clio-kit **data** dirs, not just caches: the shipped fleet launcher is
+    ``clio-kit`` (``uv tool install clio-kit`` — install/install.sh), and launching an MCP
+    server BUILDS that server's package **in-place inside the uv tool install tree**
+    (``<uv-data>/uv/tools/clio-kit/clio-kit-mcp-servers/<name>``) and writes uv temp files
+    there. Granting only the caches denied that build under an active fence (EROFS), so the
+    whole fleet failed to start — caught by the B2 Linux live gate, invisible to the unit
+    false-positive suite (which used a fixture server, not the real clio-kit uv-tool
+    launcher). ``platformdirs`` resolves these per-OS (respects ``XDG_*``); the Windows
+    layout is re-verified by B3's provisioned-fence gate (the Windows fence is floor here).
     """
+    import platformdirs  # noqa: PLC0415 - cheap; only on this path
+
     from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
 
     dirs: list[Path] = [paths.user_cache_dir(), paths.user_config_dir(), paths.user_data_dir()]
     home = Path.home()
-    # Common per-user tool caches (uv, npm, pip). Present or not, they are writable
-    # territory for a launcher, so the fence must include them.
+    # The uv + clio-kit cache AND data dirs (the fleet launcher's whole toolchain writes
+    # here at spawn — see the docstring). platformdirs is per-OS + XDG-aware.
     dirs.extend(
         [
+            Path(platformdirs.user_cache_dir("uv", appauthor=False)),
+            Path(platformdirs.user_data_dir("uv", appauthor=False)),
+            Path(platformdirs.user_cache_dir("clio-kit", appauthor=False)),
+            Path(platformdirs.user_data_dir("clio-kit", appauthor=False)),
             home / ".cache" / "uv",
+            home / ".local" / "share" / "uv",
+            home / ".cache" / "clio-kit",
             home / ".cache" / "pip",
             home / ".npm",
         ]
