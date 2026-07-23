@@ -17,18 +17,13 @@ BACKEND LADDER (owner decision #974.1), strongest first — **srt → Landlock �
 * **none** (:data:`MECHANISM_NONE`) — the honest floor: no OS fence + a typed reason;
   :mod:`clio_agent.tools.file_policy` survives as the ADVISORY twin at the tool boundary.
 
-srt VERSION PROBE: ``srt --version`` LIES (a stale ``1.0.0`` banner), so
-:func:`_srt_package_version` reads the npm ``package.json`` version, never the CLI banner.
-
-COMPOSITION (#974.5): an active backend's fence prefix composes INNER, then ``pdeathsig``
-(:func:`clio_agent.tools.mcp_config.pdeathsig_wrapped_command`) OUTERMOST, so
-:func:`wrap_confined` is the single argv-prefix owner. On the floor the argv is byte-identical.
-B4: a per-child egress channel (:mod:`clio_agent.runtime.sandbox_net`) also attaches here.
-
-DENIAL SEMANTICS: an active fence refuses an out-of-territory write at the OS as ``EROFS``
-(Linux bwrap read-only bind), ``EACCES`` (ACL) or ``WinError 5`` (Windows) — never a bare
-``PermissionError``. On the floor the write happens; #966's ``gap`` node records
-``sandbox: none/<reason>``. Fenced tiers upgrade that ``gap`` to a typed ``policy_violation``.
+srt VERSION PROBE: ``srt --version`` LIES (stale ``1.0.0`` banner) → :func:`_srt_package_version`
+reads the npm ``package.json``. COMPOSITION (#974.5): fence prefix INNER, ``pdeathsig`` OUTERMOST
+(one argv-prefix owner); a per-child egress channel (B4, :mod:`clio_agent.runtime.sandbox_net`)
+attaches here too. DENIAL: an active fence refuses an out-of-territory write as ``EROFS`` /
+``EACCES`` / ``WinError 5`` (never a bare ``PermissionError``); the floor lets it happen and
+#966's ``gap`` node records ``sandbox: none/<reason>`` — fenced tiers upgrade it to
+``policy_violation``.
 """
 
 from __future__ import annotations
@@ -325,16 +320,14 @@ def detect_srt(
     implies; :func:`_resolve_backend` maps it onto the final (always ``none``) result.
     """
     override = _srt_path_override(env)
-    if override:
-        binary = override
-    elif platform.startswith("win"):
-        # On Windows the npm bin ships BOTH an extensionless ``srt`` (a POSIX shim) and the
-        # launchable ``srt.cmd``. ``shutil.which("srt")`` returns the extensionless file, which
-        # CreateProcess cannot exec (WinError 193). Prefer the PATHEXT-launchable form so the
-        # composed fence prefix is actually spawnable by the real StdioTransport/subprocess path.
-        binary = which("srt.cmd") or which("srt.exe") or which(SRT_BINARY_NAME) or ""
-    else:
-        binary = which(SRT_BINARY_NAME) or ""
+    # win32: prefer the launchable ``srt.cmd``/``srt.exe`` — the npm bin's extensionless ``srt``
+    # (a POSIX shim ``which`` returns first) can't be exec'd by CreateProcess (WinError 193).
+    _names = (
+        ("srt.cmd", "srt.exe", SRT_BINARY_NAME)
+        if platform.startswith("win")
+        else (SRT_BINARY_NAME,)
+    )
+    binary = override or next((p for p in (which(n) for n in _names) if p), "")
     if not binary:
         return SrtDetection(
             installed=False,
