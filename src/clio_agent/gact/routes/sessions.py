@@ -139,6 +139,9 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             edit_mode=req.edit_mode,
             routing_mode=req.routing_mode,
         )
+        # B5 #979.2 (⚑): session-create INHERITS existing territory — no grant made, so it
+        # emits NO boundary event (a fabricated grantor=user would violate ⚑ + precede
+        # turn.started; workspace-create / PATCH root_path / explicit grants record it).
         return Session(**sess.to_wire())
 
     @app.patch("/v1/sessions/{sid}", response_model=Session)

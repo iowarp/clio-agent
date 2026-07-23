@@ -24,6 +24,7 @@ events, types, stdlib) and never loads :mod:`clio_agent.gact.app`.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -43,6 +44,8 @@ from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
+
+logger = logging.getLogger(__name__)
 
 
 def register_permissions_routes(app: FastAPI, deps: "GactDeps") -> None:
@@ -141,11 +144,46 @@ def register_permissions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 # iowarp/clio-agent#759: sticky grants must survive a
                 # server restart, so flush the derived policy to disk.
                 _flush_permission_policies(app)
+                # B5 #979.5: a derived ``host_pattern`` policy (a deny-mode ``network_egress``
+                # grant) is an effective DOMAIN boundary — emit ``boundary.granted{kind: domain}``
+                # with its ``created_from_permission_id`` provenance. A generic tool-permission
+                # sticky policy is not a boundary and emits nothing (handled inside the helper).
+                from clio_agent.gact.runtime.grants import (  # noqa: PLC0415
+                    emit_boundary_for_derived_policy,
+                )
+
+                emit_boundary_for_derived_policy(app, row, policy)
             # iowarp/clio-agent#7: wake any MCPToolBridge thread
             # waiting on this permission's event.
             evt = app.state.permission_events.pop(pid, None)
             if evt is not None:
                 evt.set()
+            # B5 #979.8: ``permission.resolved`` was bus-only while ``permission.requested`` was a
+            # semantic event — surface the resolution on the highway/trace too so the
+            # request→resolution lifecycle is consistently captured AND SSE-served (both are now
+            # in ``SSE_UI_EVENT_TYPES``). Guarded — a resolution must never fail on an emit.
+            try:
+                from clio_agent.gact.runtime.globals import (  # noqa: PLC0415
+                    _emit_semantic_event,
+                )
+
+                _emit_semantic_event(
+                    app,
+                    str(row.get("session_id") or ""),
+                    "permission.resolved",
+                    status="completed",
+                    summary=f"Permission {pid} resolved: {action}.",
+                    actor={"role": "user"},
+                    subject={"permission_id": pid, "action": action},
+                    payload={"permission_id": pid, "action": action, "kind": row.get("kind") or ""},
+                )
+            except Exception as exc:  # noqa: BLE001 - observability, never fatal to a resolution
+                logger.warning(
+                    "permission.resolved semantic emit skipped reason=resolved_emit_failed "
+                    "permission_id=%s error=%r",
+                    pid,
+                    exc,
+                )
             app.state.bus.publish(
                 Event(
                     type="permission.resolved",

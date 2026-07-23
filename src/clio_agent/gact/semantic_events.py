@@ -111,6 +111,19 @@ SSE_UI_EVENT_TYPES: frozenset[str] = frozenset(
         "artifact.created",
         "artifact.version.added",
         "artifact.alias.moved",
+        # Grants on the record (B5 #979): every effective-boundary change is a
+        # user/model DECISION the TUI renders — a workspace/session write-root grant
+        # or revoke (``boundary.granted``/``boundary.revoked``, ``kind: root|domain``)
+        # and the permission request/resolution lifecycle around it. Unlike the
+        # trace-only provenance substrate below (net.egress / policy_violation), these
+        # ARE UI events — the user must see the prompt and the resulting grant live.
+        # ``permission.requested`` was emitted as a semantic event (turn.py) but never
+        # SSE-listed, while ``permission.resolved`` was bus-only: both are now listed
+        # here so the request→resolution lifecycle is consistently served (B5 #979.8).
+        "boundary.granted",
+        "boundary.revoked",
+        "permission.requested",
+        "permission.resolved",
     }
 )
 
@@ -140,15 +153,17 @@ SSE_TRACE_ONLY_EVENT_TYPES: frozenset[str] = frozenset(
         "sandbox.state",
         # Policy violations (B2 #976): a fence-denied (or fence-escaping) out-of-root write
         # is durable-trace provenance substrate — the typed ``policy_violation`` node that
-        # replaces #966's ``gap``. Trace-only initially; SSE listing waits for B5's SPEC
-        # rider. Declared here so its "failed"-status emit cannot ride ``_SSE_ALWAYS_STATUSES``
-        # onto the UI wire ahead of that contract.
+        # replaces #966's ``gap``. B5 (#979) confirmed it STAYS trace-only (the SPEC rider
+        # lists only ``boundary.*`` + ``permission.*`` as UI events; the grant AFFORDANCE the
+        # model acts on rides the node's ``next_action`` field, not an SSE row). Declared here
+        # so its "failed"-status emit cannot ride ``_SSE_ALWAYS_STATUSES`` onto the UI wire.
         "artifact.policy_violation",
         # Network egress (B4 #978): every forwarded child connection through the clio
         # chokepoint is a ``net.egress`` record — high-volume, durable-only provenance
-        # substrate that feeds the ``used web:domain@time`` ingest edge. NEVER on the SSE
-        # wire this slice (SSE listing waits for the B5 SPEC rider); declared trace-only so
-        # no status can lift it onto the UI stream.
+        # substrate that feeds the ``used web:domain@time`` ingest edge. B5 (#979) confirmed
+        # it STAYS trace-only (the UI renders the ``boundary.granted{kind: domain}`` a deny-mode
+        # grant produces, never the raw per-connection egress); declared trace-only so no
+        # status can lift it onto the UI stream.
         "net.egress",
     }
 )

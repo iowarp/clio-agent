@@ -184,6 +184,37 @@ def register_serving_child(app: "FastAPI", call_id: str, child_id: str) -> None:
         logger.debug("serving-child register skipped reason=linkage_unwritable", exc_info=True)
 
 
+def join_call_to_serving_child(
+    app: "FastAPI", session_id: str, tool_name: str, call_id: str
+) -> None:
+    """Join a fleet ``call_id`` to its confined child's ``net_child_id`` (B5 #979.7, guarded).
+
+    A namespaced tool name is ``<namespace>_<tool>``; the fleet proxy for that namespace is one
+    persistent confined child whose ``net_child_id`` was registered at spawn (mcp_config
+    ``transport_for`` → :func:`clio_agent.runtime.sandbox_net.register_namespace_child`), keyed
+    by the workspace root. Resolve the child and record ``call_id -> net_child_id`` via
+    :func:`register_serving_child` so the egress-only ingest mint (:func:`attach_ingest_edges`)
+    can attribute THIS call's egress deterministically (#978 pt 5). Empty child (floor /
+    built-in namespace) is a no-op — the mint abstains (precision over recall). Never raises.
+
+    The tool-observer calls this on its ``started`` phase (the ``call_id`` mint site); the logic
+    lives HERE, the serving-child seam's owner, so the observer stays a one-line call.
+    """
+    try:
+        namespace = tool_name.split("_", 1)[0] if "_" in tool_name else tool_name
+        session = app.state.sessions.get(session_id) if session_id else None
+        workspace_id = str(getattr(session, "workspace_id", "") or "")
+        ws = app.state.workspaces.get(workspace_id) if workspace_id else None
+        workspace_root = str(getattr(ws, "root_path", "") or "")
+        from clio_agent.runtime.sandbox_net import resolve_namespace_child  # noqa: PLC0415
+
+        child = resolve_namespace_child(workspace_root, namespace)
+        if child:
+            register_serving_child(app, call_id, child)
+    except Exception:  # noqa: BLE001 — a linkage note must never break the tool call
+        logger.debug("serving-child join skipped reason=join_unavailable", exc_info=True)
+
+
 def resolve_serving_child_id(app: "FastAPI", call_id: str) -> str:
     """Return the confined child id that served ``call_id``, or ``""`` (never raises).
 
@@ -398,6 +429,7 @@ __all__ = [
     "NET_EGRESS_EVENT",
     "attach_ingest_edges",
     "install_egress_recorder",
+    "join_call_to_serving_child",
     "net_egress_records",
     "record_egress",
     "register_serving_child",

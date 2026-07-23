@@ -79,10 +79,34 @@ class PolicyViolation(BaseModel):
     started_at: str = ""  # the call window (start / end ISO)
     ended_at: str = ""
     detail: str = ""  # a bounded evidence snippet (e.g. the stderr line)
+    next_action: str = ""  # the grant affordance (B5 #979.6) — a request the MODEL may make
 
     def to_payload(self) -> dict[str, Any]:
         """The durable ``artifact.policy_violation`` payload."""
         return self.model_dump()
+
+
+def _grant_affordance(workspace_id: str, path: str) -> str:
+    """The grant affordance a ``policy_violation`` carries (B5 #979.6).
+
+    A STATIC next-step string, never a clio decision (⚑ #974.8): it tells the model that the
+    write was fenced and that a workspace ROOT GRANT (``POST /v1/workspaces/{wid}/grants`` with
+    ``{"root": "<dir>"}``) would permit it — so the MODEL may ask and the USER decides. clio
+    neither grants nor reroutes; it only surfaces the affordance on the record.
+    """
+    parent = ""
+    if path:
+        try:
+            parent = str(Path(path).parent)
+        except (OSError, ValueError):
+            parent = path
+    target = parent or path or "the out-of-root directory"
+    wid = workspace_id or "{wid}"
+    return (
+        f"This write was blocked by the workspace write-fence. To permit it, request a root "
+        f"grant for {target} — POST /v1/workspaces/{wid}/grants {{'root': '{target}'}} — which a "
+        f"user must approve; then retry, or write inside the workspace root instead."
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -230,6 +254,7 @@ def observe_policy_violations(
                     started_at=started_iso,
                     ended_at=ended_iso,
                     detail=str(denial.get("detail") or ""),
+                    next_action=_grant_affordance(workspace_id, dpath),
                 )
             )
         else:
@@ -339,6 +364,7 @@ def _designated_out_of_root_violations(
                 signal=signal,
                 started_at=started_iso,
                 ended_at=ended_iso,
+                next_action=_grant_affordance(workspace_id, str(path)),
             )
         )
     return out
