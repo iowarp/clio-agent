@@ -394,12 +394,16 @@ class Chokepoint:
             )
 
     def _gate_allows(self, child_id: str, host: str, port: int, transport: str) -> bool:
-        """Consult the deny-mode gate for one CONNECT (B5 #979.5). ``True`` = allow (fail-open).
+        """Consult the deny-mode gate for one CONNECT (B5 #979.5). ``True`` = allow.
 
         Builds the pre-dial :class:`EgressRecord` the gate decides on (``resolved_ip=""`` — not
-        dialed yet), attributed to the child's channel. No gate wired → allow (B4 default). A
-        gate that RAISES is treated as allow: the deny decision itself is the only blocker, and
-        deny mode is opt-in + gated inside the closure, so a wiring bug must never sever egress.
+        dialed yet), attributed to the child's channel. No gate wired → allow (the genuinely
+        UNWIRED case = the B4 ALLOW + RECORD default). The wired gate itself
+        (``grants._egress_gate_decision``) is FAIL-CLOSED for every in-deny-mode path — a deny
+        workspace whose decision errors returns ``"deny"`` with a typed reason, never reaching
+        this catch. This residual ``except`` is the last resort for a gate that crashes ENTIRELY
+        (an unrecognised/foreign gate, or record construction) — equivalent to unwired — so a
+        total wiring failure degrades to the B4 default rather than severing all egress.
         """
         gate = _GATE
         if gate is None:

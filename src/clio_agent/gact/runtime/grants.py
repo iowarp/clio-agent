@@ -76,6 +76,27 @@ GRANTED_ROOTS_CONFIG_KEY = "granted_write_roots"
 #: timeout denial (mirrors the tool gate's ``DEFAULT_TIMEOUT_S``).
 _EGRESS_GATE_TIMEOUT_S = 600.0
 
+#: Bound on DISTINCT concurrently-pending deny-mode egress prompts (review finding 4): a flood
+#: of unknown-domain CONNECTs must not spawn unbounded blocked prompts. Connects to the SAME
+#: ``(workspace, host)`` COALESCE onto one prompt (below); once this many distinct prompts are
+#: already open, a further distinct-host connect fails CLOSED with a typed reason (never blocks).
+_MAX_CONCURRENT_EGRESS_PROMPTS = 32
+
+#: Live deny-mode egress prompts, keyed ``(workspace_id, host)`` so concurrent connects to the
+#: same domain share ONE user prompt + resolution. Each value is a small holder
+#: ``{pid, event, row, waiters}``; the entry is dropped when the last waiter leaves.
+_PENDING_EGRESS: dict[tuple[str, str], dict[str, Any]] = {}
+_PENDING_EGRESS_LOCK = threading.Lock()
+
+#: Typed deny reasons recorded on the trace when a deny-mode egress is blocked (no silent
+#: fallback — every boundary denial reaches the trace via :func:`_record_egress_denied`).
+REASON_EGRESS_POLICY_DENY = "policy_deny"
+REASON_EGRESS_TIMEOUT = "egress_gate_timeout"
+REASON_EGRESS_PROMPT_CAP = "egress_gate_prompt_cap_reached"
+REASON_EGRESS_STORE_UNRESOLVED = "egress_gate_store_unresolved"
+REASON_EGRESS_DECISION_ERROR = "egress_gate_decision_error"
+REASON_EGRESS_PROMPT_UNWRITABLE = "egress_gate_prompt_unwritable"
+
 
 # --------------------------------------------------------------------------- #
 # boundary.* semantic events
@@ -373,15 +394,22 @@ def workspace_deny_mode(app: "FastAPI", workspace_id: str) -> bool:
 
 
 def _workspace_id_for_root(app: "FastAPI", workspace_root: str) -> str:
-    """Resolve the workspace whose ``root_path`` matches ``workspace_root`` (best-effort)."""
+    """Resolve the workspace whose ``root_path`` contains ``workspace_root``.
+
+    Path-BOUNDARY aware (review finding 3): a raw ``startswith`` would let ``/ws`` match
+    ``/ws2`` — an adjacent, differently-permissioned workspace. Match only on real path
+    containment (equality or ``is_relative_to``). A ``workspaces.list()`` store error is NOT
+    swallowed here — it bubbles to :func:`_egress_gate_decision`, which fails CLOSED in deny
+    context (never a silent allow on an unevaluable boundary).
+    """
     if not workspace_root:
         return ""
     from pathlib import Path  # noqa: PLC0415
 
     try:
-        target = str(Path(workspace_root).expanduser().resolve(strict=False))
+        target = Path(workspace_root).expanduser().resolve(strict=False)
     except OSError:
-        target = workspace_root
+        target = Path(workspace_root)
     workspaces = getattr(app.state, "workspaces", None)
     if workspaces is None:
         return ""
@@ -390,10 +418,10 @@ def _workspace_id_for_root(app: "FastAPI", workspace_root: str) -> str:
         if not root:
             continue
         try:
-            resolved = str(Path(root).expanduser().resolve(strict=False))
+            resolved = Path(root).expanduser().resolve(strict=False)
         except OSError:
-            resolved = root
-        if resolved == target or target.startswith(resolved):
+            resolved = Path(root)
+        if target == resolved or target.is_relative_to(resolved):
             return str(getattr(ws, "id", "") or "")
     return ""
 
@@ -407,49 +435,113 @@ def _egress_gate_decision(app: "FastAPI", rec: "EgressRecord") -> str:
     ``allow``/``allow_session``/``allow_workspace`` lets the CONNECT through and (for
     ``allow_workspace``) leaves a sticky ``host_pattern`` policy so subsequent CONNECTs need no
     gate; ``deny``/timeout blocks it with a recorded reason.
+
+    FAIL-CLOSED IN DENY MODE (review finding 1). The chokepoint's own ``_gate_allows`` fails
+    OPEN only for the genuinely-unwired case (no gate / deny mode off). Here, once a workspace
+    is established as deny-mode — OR the store CANNOT be evaluated to prove it is NOT — any
+    error fails CLOSED with a TYPED reason on the trace, never a silent allow on a boundary the
+    user explicitly opted into (⚑ clio must not decide to allow).
     """
-    workspace_id = _workspace_id_for_root(app, rec.workspace_root)
-    if not workspace_deny_mode(app, workspace_id):
-        return "allow"  # default is ALLOW + RECORD (B4); deny mode is strictly opt-in
-    host = (rec.host or "").strip().lower()
-    action = _host_action_for(app, workspace_id=workspace_id, host=host)
-    if action == "deny":
-        _record_egress_denied(app, workspace_id, host, reason="policy_deny")
+    try:
+        workspace_id = _workspace_id_for_root(app, rec.workspace_root)
+        deny = workspace_deny_mode(app, workspace_id)
+    except Exception as exc:  # noqa: BLE001 — cannot prove NOT-deny → fail closed, typed
+        _record_egress_denied(app, "", (rec.host or ""), reason=REASON_EGRESS_STORE_UNRESOLVED)
+        logger.warning(
+            "egress deny-mode unresolved reason=%s host=%s error=%r — failing closed",
+            REASON_EGRESS_STORE_UNRESOLVED,
+            rec.host,
+            exc,
+        )
         return "deny"
-    if action in {"allow", "allow_session", "allow_workspace"}:
-        return "allow"
-    return _prompt_egress(app, workspace_id, rec)
+    if not deny:
+        return "allow"  # default is ALLOW + RECORD (B4); deny mode is strictly opt-in
+    try:
+        host = (rec.host or "").strip().lower()
+        action = _host_action_for(app, workspace_id=workspace_id, host=host)
+        if action == "deny":
+            _record_egress_denied(app, workspace_id, host, reason=REASON_EGRESS_POLICY_DENY)
+            return "deny"
+        if action in {"allow", "allow_session", "allow_workspace"}:
+            return "allow"
+        return _prompt_egress(app, workspace_id, rec)
+    except Exception as exc:  # noqa: BLE001 — a deny-mode decision error must fail closed, typed
+        _record_egress_denied(
+            app, workspace_id, (rec.host or ""), reason=REASON_EGRESS_DECISION_ERROR
+        )
+        logger.warning(
+            "egress deny-mode decision failed reason=%s host=%s error=%r — failing closed",
+            REASON_EGRESS_DECISION_ERROR,
+            rec.host,
+            exc,
+        )
+        return "deny"
 
 
 def _prompt_egress(app: "FastAPI", workspace_id: str, rec: "EgressRecord") -> str:
-    """Open the interactive gate for an unknown deny-mode domain; block until resolved."""
-    session_id = _active_session_for_workspace(app, workspace_id)
+    """Open the interactive gate for an unknown deny-mode domain; block until resolved.
+
+    Concurrent connects to the SAME ``(workspace, host)`` COALESCE onto one pending prompt
+    (review finding 4) — one user decision unblocks every waiter. Distinct concurrently-open
+    prompts are bounded by :data:`_MAX_CONCURRENT_EGRESS_PROMPTS`; over the cap a further
+    distinct-host connect fails CLOSED with a typed reason (never unbounded blocked prompts).
+    """
     host = (rec.host or "").strip().lower()
-    pid = f"perm_{uuid.uuid4().hex[:12]}"
-    evt = threading.Event()
-    now = datetime.now(timezone.utc).isoformat()
-    row = {
-        "id": pid,
-        "session_id": session_id,
-        "kind": NETWORK_EGRESS_REQUEST_KIND,
-        "tool_call": {
-            "tool_name": NETWORK_EGRESS_REQUEST_KIND,
-            "input": {"host": host, "port": rec.port},
-        },
-        "summary": f"network egress to {host}:{rec.port} requested (deny mode)",
-        "created_at": now,
-        "status": "pending",
-    }
-    try:
-        app.state.permissions[pid] = row
-        app.state.permission_events[pid] = evt
-    except Exception as exc:  # noqa: BLE001 - a wedged prompt store must fail SAFE (deny)
-        logger.warning("egress prompt store failed reason=prompt_unwritable error=%r", exc)
-        return "deny"
-    _emit_egress_requested(app, session_id, row)
-    if not evt.wait(timeout=_EGRESS_GATE_TIMEOUT_S):
+    key = (workspace_id, host)
+    with _PENDING_EGRESS_LOCK:
+        prompt = _PENDING_EGRESS.get(key)
+        is_creator = prompt is None
+        if is_creator:
+            if len(_PENDING_EGRESS) >= _MAX_CONCURRENT_EGRESS_PROMPTS:
+                _record_egress_denied(app, workspace_id, host, reason=REASON_EGRESS_PROMPT_CAP)
+                return "deny"
+            pid = f"perm_{uuid.uuid4().hex[:12]}"
+            prompt = {
+                "pid": pid,
+                "event": threading.Event(),
+                "row": {
+                    "id": pid,
+                    "session_id": _active_session_for_workspace(app, workspace_id),
+                    "kind": NETWORK_EGRESS_REQUEST_KIND,
+                    "tool_call": {
+                        "tool_name": NETWORK_EGRESS_REQUEST_KIND,
+                        "input": {"host": host, "port": rec.port},
+                    },
+                    "summary": f"network egress to {host}:{rec.port} requested (deny mode)",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "status": "pending",
+                },
+                "waiters": 0,
+            }
+            _PENDING_EGRESS[key] = prompt
+        # Non-creator path took an existing (non-None) entry; creator path just built one.
+        assert prompt is not None
+        prompt["waiters"] += 1
+    row = prompt["row"]
+    evt = prompt["event"]
+    if is_creator:
+        try:
+            app.state.permissions[row["id"]] = row
+            app.state.permission_events[row["id"]] = evt
+        except Exception as exc:  # noqa: BLE001 — a wedged prompt store must fail SAFE (deny)
+            with _PENDING_EGRESS_LOCK:
+                _PENDING_EGRESS.pop(key, None)
+            _record_egress_denied(app, workspace_id, host, reason=REASON_EGRESS_PROMPT_UNWRITABLE)
+            logger.warning(
+                "egress prompt store failed reason=%s error=%r",
+                REASON_EGRESS_PROMPT_UNWRITABLE,
+                exc,
+            )
+            return "deny"
+        _emit_egress_requested(app, str(row.get("session_id") or ""), row)
+    resolved = evt.wait(timeout=_EGRESS_GATE_TIMEOUT_S)
+    with _PENDING_EGRESS_LOCK:
+        prompt["waiters"] -= 1
+        if prompt["waiters"] <= 0:
+            _PENDING_EGRESS.pop(key, None)
+    if not resolved:
         row["status"] = "timeout"
-        _record_egress_denied(app, workspace_id, host, reason="egress_gate_timeout")
+        _record_egress_denied(app, workspace_id, host, reason=REASON_EGRESS_TIMEOUT)
         return "deny"
     action = str(row.get("action") or "deny")
     return "allow" if action in {"allow", "allow_session", "allow_workspace"} else "deny"

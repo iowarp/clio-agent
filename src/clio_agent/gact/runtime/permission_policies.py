@@ -226,18 +226,27 @@ def _host_action_for(
     workspace_id: str,
     host: str,
 ) -> str:
-    """Return the first matching ``host_pattern`` policy action for ``host`` (B5 #979.5).
+    """Return the first matching WORKSPACE-scoped ``host_pattern`` policy action (B5 #979.5).
 
     Consulted by the deny-mode egress chokepoint gate: a workspace-scoped ``host_pattern``
     fnmatch (the ``path_pattern`` shape, applied to the requested authority host) whose action
     is ``allow``/``allow_workspace`` lets the CONNECT through with no gate; ``deny`` blocks it.
-    ``""`` means no host policy matched (the caller then opens the interactive gate). Session
-    scope is honoured too (a session-scoped host grant), keyed by the egress child's session
-    when known; workspace scope is the default a deny-mode grant writes.
+    ``""`` means no host policy matched (the caller then opens the interactive gate).
+
+    SESSION-scoped ``host_pattern`` policies are DELIBERATELY NOT honoured here (review
+    finding 2). The egress a fleet child opens is workspace-SHARED — one persistent confined
+    child serves every session in the workspace, and the ``EgressRecord`` carries no session id
+    — so a connection cannot be attributed to a single session. Honouring a session-scoped host
+    grant on an unattributable connection would let the MORE-restrictive ``allow_session`` choice
+    LEAK to every session/workspace (broader than ``allow_workspace``). A session-scoped host
+    grant that cannot be attributed must therefore NOT widen the boundary: it is skipped, so the
+    connection re-prompts (fail-safe) rather than silently allowing global egress. A missing
+    ``scope_id`` on a WORKSPACE row is also NOT treated as a wildcard here — an empty workspace
+    scope_id would match every workspace, the same leak — so it is skipped.
     """
 
     policies = getattr(app.state, "permission_policies", [])
-    if not isinstance(policies, list) or not host:
+    if not isinstance(policies, list) or not host or not workspace_id:
         return ""
     host = host.strip().lower()
     for policy in policies:
@@ -246,12 +255,11 @@ def _host_action_for(
         host_pattern = str(policy.get("host_pattern") or "")
         if not host_pattern:
             continue
-        scope = str(policy.get("scope") or "").lower()
-        scope_id = str(policy.get("scope_id") or "")
-        if scope == "workspace":
-            if scope_id and scope_id != workspace_id:
-                continue
-        elif scope != "session":
+        # WORKSPACE scope with an EXPLICIT matching scope_id only — session-scoped and
+        # empty-scope_id host rows are never honoured at the chokepoint (see the docstring).
+        if str(policy.get("scope") or "").lower() != "workspace":
+            continue
+        if str(policy.get("scope_id") or "") != workspace_id:
             continue
         if not fnmatch.fnmatchcase(host, host_pattern.strip().lower()):
             continue
