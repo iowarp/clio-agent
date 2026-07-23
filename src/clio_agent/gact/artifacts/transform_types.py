@@ -116,6 +116,19 @@ class ProvEdge(BaseModel):
     #: The call arg the edge was discovered on (``""`` for result-derived edges).
     arg: str = ""
     note: str = ""
+    #: Network-sourced INGEST evidence (B4 #978), joined from the clio chokepoint's
+    #: ``net.egress`` record. ``net_domain`` is the chokepoint-observed remote host; a fresh
+    #: web edge names it as ``web:<domain>@<time>`` in ``external_ref``, a joined
+    #: staged-download edge keeps its ``sha256`` (hash-pair) AND gains ``net_domain`` (two
+    #: evidence bases, one edge). ``net_mechanism`` is the honest per-edge enforcement
+    #: (``proxy-enforced`` on the srt tier, ``env-cooperative`` on Landlock/floor — raw
+    #: sockets bypass, so the record never claims completeness the tier can't provide).
+    #: ``net_at`` is the egress timestamp; ``net_resolved_ip`` the DNS resolution the proxy
+    #: performed on the child's behalf (the fenced child issues no raw UDP/53).
+    net_domain: str = ""
+    net_mechanism: str = ""
+    net_at: str = ""
+    net_resolved_ip: str = ""
 
     def to_artifact_use(self) -> Optional[dict[str, Any]]:
         """Project to the relay ``ArtifactUse {artifact_id, sha256}`` shape, or ``None``.

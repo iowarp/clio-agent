@@ -24,6 +24,23 @@ import pytest
 from clio_agent.runtime import sandbox, sandbox_landlock, sandbox_srt
 from clio_agent.runtime.sandbox_landlock import LandlockProbe
 
+
+@pytest.fixture(autouse=True)
+def _stub_egress_channel(monkeypatch: pytest.MonkeyPatch) -> None:
+    """B4: ``wrap_confined`` opens a per-child egress channel whose port is the srt
+    ``httpProxyPort``. Stub it deterministically (to the shared port these B2 tests already
+    assert) so the composition tests stay side-effect-free (no real loopback listener) and
+    port-stable. Per-child attribution itself is covered in ``test_sandbox_b4.py``.
+    """
+    from clio_agent.runtime import net_chokepoint
+
+    monkeypatch.setattr(
+        net_chokepoint,
+        "open_child_channel",
+        lambda cid, *, mechanism="", workspace_root="": 40000,
+    )
+
+
 # --------------------------------------------------------------------------- #
 # srt config synthesis + clio-side schema validation                           #
 # --------------------------------------------------------------------------- #
