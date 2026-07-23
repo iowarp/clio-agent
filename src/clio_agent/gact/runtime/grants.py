@@ -224,31 +224,6 @@ def emit_boundary_revoked(
     )
 
 
-def emit_session_attach_boundary(app: "FastAPI", session_id: str, workspace_id: str) -> None:
-    """Emit ``boundary.granted{kind: root, scope: session}`` on session→workspace attach (#979.2).
-
-    A session inherits its workspace's write-root as its effective territory; surfacing that as
-    a boundary event closes the silent session-attach mutation. Called from the (thin) session
-    route so WorkspaceStore stays leaf-pure. Guarded — never break session creation.
-    """
-    try:
-        ws = app.state.workspaces.get(workspace_id)
-        root = str(getattr(ws, "root_path", "") or "") if ws is not None else ""
-        if not root:
-            return
-        emit_boundary_granted(
-            app,
-            kind=KIND_ROOT,
-            scope=SCOPE_SESSION,
-            grantor=GRANTOR_USER,
-            pattern=root,
-            workspace_id=workspace_id,
-            session_id=session_id,
-        )
-    except Exception as exc:  # noqa: BLE001 - boundary emit is observability, never fatal
-        logger.debug("session-attach boundary emit skipped session=%s error=%r", session_id, exc)
-
-
 def emit_boundary_for_derived_policy(
     app: "FastAPI", row: dict[str, Any], policy: Optional[dict[str, Any]]
 ) -> None:
@@ -629,7 +604,6 @@ __all__ = [
     "emit_boundary_for_derived_policy",
     "emit_boundary_granted",
     "emit_boundary_revoked",
-    "emit_session_attach_boundary",
     "install_egress_gate",
     "replay_persisted_root_grants",
     "workspace_deny_mode",

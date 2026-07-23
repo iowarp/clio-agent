@@ -150,7 +150,15 @@ def test_network_egress_resolution_derives_host_pattern() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_workspace_create_session_attach_and_patch_emit_boundary(tmp_path, captured_events) -> None:
+def test_workspace_create_and_patch_emit_boundary(tmp_path, captured_events) -> None:
+    """The REAL boundary CHANGES emit boundary.* : workspace-create + PATCH root_path.
+
+    ⚑ correction: a plain session-create ATTACHES to its workspace's already-established
+    territory — no user/model granted anything — so it must NOT emit ``boundary.granted``
+    (a fabricated grantor=user on every session-create violates ⚑ and floods the stream
+    ahead of ``turn.started``). The territory is fully recorded by the workspace-create
+    boundary below; the next test pins the no-emit invariant.
+    """
     c = TestClient(build_app(sessions_path=tmp_path / "s.json"))
     root = tmp_path / "proj"
     root.mkdir()
@@ -162,16 +170,28 @@ def test_workspace_create_session_attach_and_patch_emit_boundary(tmp_path, captu
     assert granted[-1]["payload"]["grantor"] == "user"
 
     captured_events.clear()
-    c.post("/v1/sessions", json={"workspace_id": ws["id"]})
-    attach = [e for e in captured_events if e["event_type"] == "boundary.granted"]
-    assert attach and attach[-1]["payload"]["scope"] == "session"
-
-    captured_events.clear()
     new_root = tmp_path / "proj2"
     new_root.mkdir()
     c.patch(f"/v1/workspaces/{ws['id']}", json={"root_path": str(new_root)})
     kinds = _types(captured_events)
     assert "boundary.revoked" in kinds and "boundary.granted" in kinds  # honest territory change
+
+
+def test_plain_session_create_emits_no_boundary(tmp_path, captured_events) -> None:
+    """⚑: a session inheriting existing territory is not a grant → zero boundary events.
+
+    Guards the fix for the semantic-stream pollution: session-create must not prepend a
+    fabricated ``boundary.granted`` to the session's event stream (which broke the
+    ``turn.started``-first contract across the semantic-events / streaming / delete suites).
+    """
+    c = TestClient(build_app(sessions_path=tmp_path / "s.json"))
+    root = tmp_path / "proj"
+    root.mkdir()
+    ws = c.post("/v1/workspaces", json={"name": "p", "root_path": str(root)}).json()
+
+    captured_events.clear()
+    c.post("/v1/sessions", json={"workspace_id": ws["id"]})
+    assert [e for e in captured_events if e["event_type"].startswith("boundary.")] == []
 
 
 # --------------------------------------------------------------------------- #
@@ -384,9 +404,7 @@ def test_deny_mode_prompt_store_failure_fails_closed(tmp_path, captured_events) 
     app = build_app(sessions_path=tmp_path / "s.json")
     root = tmp_path / "proj"
     root.mkdir()
-    app.state.workspaces.create(
-        name="p", root_path=str(root), metadata={"network_deny_mode": True}
-    )
+    app.state.workspaces.create(name="p", root_path=str(root), metadata={"network_deny_mode": True})
 
     class _Wedged(dict):
         def __setitem__(self, *a, **k):
@@ -407,9 +425,7 @@ def test_deny_mode_decision_error_fails_closed(tmp_path, captured_events, monkey
     app = build_app(sessions_path=tmp_path / "s.json")
     root = tmp_path / "proj"
     root.mkdir()
-    app.state.workspaces.create(
-        name="p", root_path=str(root), metadata={"network_deny_mode": True}
-    )
+    app.state.workspaces.create(name="p", root_path=str(root), metadata={"network_deny_mode": True})
 
     def _boom(*a, **k):
         raise RuntimeError("policy engine down")
