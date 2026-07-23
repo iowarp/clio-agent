@@ -14,6 +14,7 @@ name the child (no timing heuristic).
 from __future__ import annotations
 
 import logging
+import threading
 import uuid
 from collections.abc import Sequence
 from pathlib import Path
@@ -26,6 +27,66 @@ logger = logging.getLogger(__name__)
 
 #: The loopback host every confined child reaches the chokepoint on (clio-private).
 _LOOPBACK_HOST = "127.0.0.1"
+
+
+# --------------------------------------------------------------------------- #
+# Fleet namespace → serving child map (B5 #979.7 — the deferred B4 WRITER).
+# --------------------------------------------------------------------------- #
+#
+# A confined MCP-fleet proxy is ONE persistent child per (workspace, namespace): its
+# ``net_child_id`` is minted at ``transport_for`` (proxy build) and is stable for the child's
+# life. The gact tool-observer mints the ``call_id`` on a DIFFERENT thread and only knows the
+# tool NAME (``<namespace>_<tool>``), so this runtime-layer registry bridges the two: the
+# spawn seam registers ``(workspace_root, namespace) -> net_child_id`` here, and the observer
+# resolves it to call ``register_serving_child(app, call_id, net_child_id)`` — completing the
+# ``egress -> child -> call-window -> transform`` join (#978 pt 5). Keyed by workspace_root +
+# namespace (NOT process-global by namespace alone), so two workspaces' identically-named
+# namespaces never cross-attribute; the fleet child is workspace-shared, so a workspace key is
+# the child's real scope (a session key would be too narrow — sessions share the child). A
+# rebuilt gateway overwrites the entry with the fresh child; the floor leaves it empty
+# (net_child_id="" → the observer no-ops → the mint abstains: precision preserved).
+_NAMESPACE_CHILD: dict[tuple[str, str], str] = {}
+_NAMESPACE_CHILD_LOCK = threading.Lock()
+
+
+def _ns_key(workspace_root: Optional[str], namespace: str) -> tuple[str, str]:
+    root = ""
+    if workspace_root:
+        try:
+            root = str(Path(workspace_root).expanduser().resolve(strict=False))
+        except OSError:
+            root = str(Path(workspace_root).expanduser())
+    return root, (namespace or "").strip()
+
+
+def register_namespace_child(
+    workspace_root: Optional[str], namespace: str, net_child_id: str
+) -> None:
+    """Associate a fleet namespace's persistent confined child with its ``net_child_id`` (B5).
+
+    No-op for an empty ``net_child_id`` (the floor / unfenced case) or empty ``namespace``.
+    """
+    child = (net_child_id or "").strip()
+    ns = (namespace or "").strip()
+    if not child or not ns:
+        return
+    with _NAMESPACE_CHILD_LOCK:
+        _NAMESPACE_CHILD[_ns_key(workspace_root, ns)] = child
+
+
+def resolve_namespace_child(workspace_root: Optional[str], namespace: str) -> str:
+    """Return the confined ``net_child_id`` serving ``namespace`` in ``workspace_root``, or ``""``."""
+    ns = (namespace or "").strip()
+    if not ns:
+        return ""
+    with _NAMESPACE_CHILD_LOCK:
+        return _NAMESPACE_CHILD.get(_ns_key(workspace_root, ns), "")
+
+
+def clear_namespace_children() -> None:
+    """Drop all namespace→child associations (test isolation seam)."""
+    with _NAMESPACE_CHILD_LOCK:
+        _NAMESPACE_CHILD.clear()
 
 
 def net_mechanism_label(state: "SandboxResult") -> str:
@@ -85,4 +146,10 @@ def open_child_egress(
     return child_id, port, overlay
 
 
-__all__ = ["net_mechanism_label", "open_child_egress"]
+__all__ = [
+    "clear_namespace_children",
+    "net_mechanism_label",
+    "open_child_egress",
+    "register_namespace_child",
+    "resolve_namespace_child",
+]

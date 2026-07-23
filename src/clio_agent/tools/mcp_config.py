@@ -509,6 +509,16 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
             profile=sandbox.PROFILE_FLEET,
             pdeathsig=False,
         )
+        # B5 #979.7 (the deferred B4 WRITER): this fleet proxy is ONE persistent confined child
+        # per (workspace, namespace). Register its ``net_child_id`` (empty on the floor → no-op)
+        # keyed by ``spec.name`` (the namespace) + ``cwd`` (the workspace root) so the gact
+        # tool-observer can join ``call_id -> serving child`` for the egress ingest mint (#978
+        # pt 5). Runtime-layer registry (sandbox_net) so this seam never imports gact.
+        sandbox_net_child = str(confined.result.details.get("net_child_id") or "")
+        if sandbox_net_child:
+            from clio_agent.runtime.sandbox_net import register_namespace_child  # noqa: PLC0415
+
+            register_namespace_child(cwd, spec.name, sandbox_net_child)
         return StdioTransport(
             command=confined.command,
             args=confined.args,
