@@ -52,7 +52,9 @@ from clio_agent.gact.app import build_app
 # slice added these route modules but left the fingerprint stale; recorded now.)
 # 163 -> 164 (#979 B5): +1 mid-session root/domain grant route POST
 # /v1/workspaces/{wid}/grants, owned by routes/workspaces.py (grants-on-the-record).
-EXPECTED_ROUTE_METHOD_PAIRS = 164
+# 164 -> 166 (#1037 Pillar 2): +2 live-handle routes owned by routes/agent_tasks.py —
+# GET /v1/agent-tasks/{id}/live (read-only projection) + POST /v1/agent-tasks/{id}/steer.
+EXPECTED_ROUTE_METHOD_PAIRS = 166
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary
