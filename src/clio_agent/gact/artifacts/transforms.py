@@ -43,7 +43,11 @@ from clio_agent.gact.artifacts.environment import (
     tier_at_least,
 )
 from clio_agent.gact.artifacts.records import ArtifactVersion
-from clio_agent.gact.artifacts.transform_edges import detect_authority_edges, detect_used_edges
+from clio_agent.gact.artifacts.transform_edges import (
+    contributing_workspace_ids,
+    detect_authority_edges,
+    detect_used_edges,
+)
 from clio_agent.gact.artifacts.transform_types import (
     AgentRole,
     EdgeEvidence,
@@ -453,6 +457,10 @@ def record_transform(
     from clio_agent.gact.artifacts.registry import get_registry  # noqa: PLC0415
     from clio_agent.gact.semantic_events import _event_id  # noqa: PLC0415
 
+    # P3.1 (#1038): the CROSS-JOB contributing set — every workspace sharing this
+    # job's root_path — computed here (the caller HAS ``app``) and threaded into the
+    # detector so it keeps its acyclic position. ``None`` → same-workspace-only.
+    allowed_workspace_ids = contributing_workspace_ids(app, workspace_id)
     used_scan = _detect_used_edges(
         app,
         sid,
@@ -461,6 +469,7 @@ def record_transform(
         turn_id=turn_id,
         trace_id=trace_id,
         call_started_at=started_at,
+        allowed_workspace_ids=allowed_workspace_ids,
     )
     authority_scan = detect_authority_edges(
         app, tool_name=tool_name, result=result, workspace_id=workspace_id

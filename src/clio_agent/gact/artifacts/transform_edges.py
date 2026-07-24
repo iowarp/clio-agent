@@ -128,6 +128,67 @@ def _looks_like_path(raw: str) -> bool:
     return Path(raw).suffix.lower() in ARTIFACT_SUFFIXES
 
 
+def contributing_workspace_ids(app: "FastAPI", workspace_id: str) -> Optional[set[str]]:
+    """The cross-job contributing set for ``workspace_id`` (P3.1 #1038), or ``None``.
+
+    Every workspace whose ``Workspace.root_path`` resolves to the SAME absolute path
+    as the current workspace's — the "same job filesystem, separate top-level job"
+    boundary (a re-run in the same directory registers under a different
+    workspace_id). Computed at the CALLER (which holds ``app``) and threaded into
+    :func:`detect_used_edges` so that detector keeps its acyclic position.
+
+    Returns ``None`` (→ same-workspace-only resolution) when the workspace registry
+    is unavailable or the current workspace has no resolvable root — a typed,
+    non-widening skip (a missing registry NEVER silently widens the bind set). The
+    returned set always includes ``workspace_id`` itself when the root resolves.
+    """
+    store = getattr(app.state, "workspaces", None)
+    if store is None or not workspace_id:
+        return None
+    try:
+        current = store.get(workspace_id)
+    except Exception:  # noqa: BLE001 — an unresolvable store degrades to same-workspace-only
+        logger.info("cross-job bind set skipped reason=workspace_store_error ws=%s", workspace_id)
+        return None
+    current_root = str(getattr(current, "root_path", "") or "").strip() if current else ""
+    if not current_root:
+        logger.info(
+            "cross-job bind set skipped reason=no_current_root_path ws=%s "
+            "(narrowed to same-workspace-only)",
+            workspace_id,
+        )
+        return None
+    try:
+        target_root = Path(current_root).expanduser().resolve(strict=False)
+    except (OSError, ValueError):
+        logger.info(
+            "cross-job bind set skipped reason=current_root_unresolvable ws=%s root=%s "
+            "(narrowed to same-workspace-only)",
+            workspace_id,
+            current_root,
+        )
+        return None
+    try:
+        rows = list(store.list())
+    except Exception:  # noqa: BLE001 — a store without list() degrades to same-workspace-only
+        logger.info(
+            "cross-job bind set skipped reason=workspace_list_unavailable ws=%s", workspace_id
+        )
+        return None
+    ids: set[str] = set()
+    for ws in rows:
+        raw = str(getattr(ws, "root_path", "") or "").strip()
+        if not raw:
+            continue
+        try:
+            if Path(raw).expanduser().resolve(strict=False) == target_root:
+                ids.add(str(getattr(ws, "id", "") or ""))
+        except (OSError, ValueError):
+            continue
+    ids.discard("")
+    return ids or None
+
+
 def detect_used_edges(
     app: "FastAPI",
     sid: str,
@@ -137,6 +198,7 @@ def detect_used_edges(
     turn_id: str,
     trace_id: str,
     call_started_at: Optional[float] = None,
+    allowed_workspace_ids: Optional[set[str]] = None,
 ) -> EdgeScan:
     """Detect ``used`` edges from call args (item 3 — precision over recall).
 
@@ -152,6 +214,15 @@ def detect_used_edges(
     version FIRST and point the edge at it (the ``note`` carries the ACTUAL
     reconcile class — finding [3]); over threshold → ``stat-pinned`` labeled. An
     existing contained file NOT in the registry → an ``external:<path>`` edge.
+
+    ``allowed_workspace_ids`` (P3.1 #1038 — cross-job lineage bind) is the CROSS-JOB
+    contributing set the CALLER computed (every workspace sharing this job's
+    ``root_path`` — see :func:`contributing_workspace_ids`). ``None`` keeps the
+    same-workspace-only resolution (drop-in). When provided, a producer registered
+    under a DIFFERENT workspace_id sharing the root becomes visible: the bound edge
+    REUSES the foreign version's ``artifact_id`` (never a minted local id) and carries
+    ``cross_workspace_bind=True``. Threaded IN (never reached via ``app`` here) so
+    this detector keeps its acyclic position.
     """
     from clio_agent.gact.artifacts.minting import (  # noqa: PLC0415
         _contained,
@@ -208,7 +279,9 @@ def detect_used_edges(
             evidence = compute_identity(resolved)
         except OSError:
             continue
-        match = registry.find_version_by_path(workspace_id, resolved)
+        match = registry.find_version_by_path(
+            workspace_id, resolved, allowed_workspace_ids=allowed_workspace_ids
+        )
         if match is None:
             # Existing contained file, not registered → an external:path edge.
             edges.append(
@@ -224,18 +297,24 @@ def detect_used_edges(
             )
             continue
         record, version = match
+        # Cross-job bind (P3.1 #1038): the producer is registered under a DIFFERENT
+        # workspace_id (a separate top-level job sharing this root). Reconcile /
+        # attach against the PRODUCING record's workspace so an edited input revises
+        # the FOREIGN chain (reusing its identity) instead of forking a local v1.
+        cross_bind = record.workspace_id != workspace_id
         edges.append(
             _matched_used_edge(
                 app,
                 sid,
                 record_name=record.name,
-                workspace_id=workspace_id,
+                workspace_id=record.workspace_id,
                 version=version,
                 on_disk=evidence,
                 path=resolved,
                 arg=arg_name,
                 turn_id=turn_id,
                 trace_id=trace_id,
+                cross_workspace_bind=cross_bind,
             )
         )
     return EdgeScan(edges, notes)
@@ -253,8 +332,16 @@ def _matched_used_edge(
     arg: str,
     turn_id: str,
     trace_id: str,
+    cross_workspace_bind: bool = False,
 ) -> ProvEdge:
-    """Build the used edge for a registry-matched path (re-hash under threshold)."""
+    """Build the used edge for a registry-matched path (re-hash under threshold).
+
+    ``cross_workspace_bind`` (P3.1 #1038) is stamped on EVERY branch when the match
+    came from a foreign workspace — the clean hash-pair reuses the foreign
+    ``artifact_id``, the changed-input reconcile revises the foreign chain, and
+    ``workspace_id`` here is the PRODUCING record's workspace (so the reconcile
+    attaches there, never forking a local id).
+    """
     disk_sha = on_disk.sha256
     if disk_sha is None:
         # Over the hash threshold → stat-pinned, labeled (never a silent hash-skip).
@@ -267,6 +354,7 @@ def _matched_used_edge(
             path=path,
             arg=arg,
             note="over_threshold",
+            cross_workspace_bind=cross_workspace_bind,
         )
     if disk_sha == version.sha256:
         # Content unchanged since registration → schema-arg + hash-pair.
@@ -279,6 +367,7 @@ def _matched_used_edge(
             version=version.version,
             path=path,
             arg=arg,
+            cross_workspace_bind=cross_workspace_bind,
         )
     # Content DIFFERS — never silently pin the stale registered version. Mint a GAP
     # version FIRST (S4 reconcile machinery) and point the edge at it. The note
@@ -306,6 +395,7 @@ def _matched_used_edge(
             path=path,
             arg=arg,
             note="stale_fallback",
+            cross_workspace_bind=cross_workspace_bind,
         )
     target = outcome.version
     return ProvEdge(
@@ -318,6 +408,7 @@ def _matched_used_edge(
         path=path,
         arg=arg,
         note=_reconcile_note(str(getattr(outcome, "action", "") or "")),
+        cross_workspace_bind=cross_workspace_bind,
     )
 
 
@@ -525,4 +616,9 @@ def _hash_if_contained(app: "FastAPI", raw_path: str, workspace_id: str) -> Opti
         return None
 
 
-__all__ = ["EdgeScan", "detect_authority_edges", "detect_used_edges"]
+__all__ = [
+    "EdgeScan",
+    "contributing_workspace_ids",
+    "detect_authority_edges",
+    "detect_used_edges",
+]

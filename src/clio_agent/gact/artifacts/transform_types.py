@@ -143,6 +143,13 @@ class ProvEdge(BaseModel):
     #: B6 (#980): the lease-window → fence_proven per-edge upgrade on a GENERATED edge. See the
     #: class docstring + :func:`fence_proves_exclusivity`. Default ``False`` (floor / contended).
     fence_proven: bool = False
+    #: P3.1 (#1038): ``True`` when this USED edge bound to a producer registered under a
+    #: DIFFERENT workspace_id (a separate top-level job sharing this job's ``root_path``) —
+    #: cross-job lineage resolution reused the FOREIGN version's ``artifact_id`` (never a
+    #: minted local id). A typed marker (never overloading ``note``, which an edited cross-job
+    #: input already owns for its ``auto_revision`` reconcile class), so the cross-workspace
+    #: bind is DETECTABLE on the record, never silent. ``False`` for a same-workspace match.
+    cross_workspace_bind: bool = False
 
     def to_artifact_use(self) -> Optional[dict[str, Any]]:
         """Project to the relay ``ArtifactUse {artifact_id, sha256}`` shape, or ``None``.
