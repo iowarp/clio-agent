@@ -36,6 +36,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARTIFACTS_HASH_MAX_FILE_BYTES` | `artifacts.hash_max_file_bytes` | int | `67108864` | `src/clio_agent/gact/artifacts/minting.py` |
 | `CLIO_ARTIFACTS_INSTRUMENT_ARG_MAX_BYTES` | `artifacts.instrument_arg_max_bytes` | int | `2048` | `src/clio_agent/gact/artifacts/transforms.py` |
 | `CLIO_ARTIFACTS_INSTRUMENT_TOTAL_MAX_BYTES` | `artifacts.instrument_total_max_bytes` | int | `16384` | `src/clio_agent/gact/artifacts/transforms.py` |
+| `CLIO_ARTIFACTS_LINEAGE_MAX_NODES` | `artifacts.lineage_max_nodes` | int | `500` | `src/clio_agent/gact/artifacts/lineage.py` |
 | `CLIO_ARTIFACTS_PROPOSALS_BATCH_MAX` | `artifacts.proposals_batch_max` | int | `32` | `src/clio_agent/gact/artifacts/proposals.py` |
 | `CLIO_ARTIFACTS_PROPOSALS_PER_TURN` | `artifacts.proposals_per_turn` | int | `8` | `src/clio_agent/gact/artifacts/proposals.py` |
 | `CLIO_ARTIFACT_CAS_BUDGET_BYTES` | `artifacts.cas_budget_bytes` | int | `536870912` | `src/clio_agent/gact/artifacts/cas.py` |
