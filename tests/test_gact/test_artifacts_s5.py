@@ -81,7 +81,10 @@ class _FakeWorkspaces:
 
     def get(self, wid: str) -> Any:
         root = self._roots.get(wid)
-        return SimpleNamespace(root_path=root) if root else None
+        return SimpleNamespace(id=wid, root_path=root) if root else None
+
+    def list(self) -> list[Any]:
+        return [SimpleNamespace(id=wid, root_path=root) for wid, root in self._roots.items()]
 
 
 def _make_app(tmp_path: Path):

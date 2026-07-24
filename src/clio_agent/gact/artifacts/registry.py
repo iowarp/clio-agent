@@ -321,22 +321,38 @@ class ArtifactRegistry:
             return list(self._transforms.values())
 
     def find_version_by_path(
-        self, workspace_id: str, path: str
+        self,
+        workspace_id: str,
+        path: str,
+        *,
+        allowed_workspace_ids: Optional[set[str]] = None,
     ) -> Optional[tuple[ArtifactRecord, ArtifactVersion]]:
         """Resolve a registered version by its referenced ``path`` (S5 used-edge match).
 
-        Returns the ``(record, version)`` whose ``version.path`` resolves to the
-        same absolute path within ``workspace_id`` — the HEAD version when several
-        of a chain share the path (the operative content). ``None`` when no version
-        references that path. Linear over the bounded fleet.
+        Returns the ``(record, version)`` whose ``version.path`` resolves to the same
+        absolute path (``None`` when none does). Linear over the bounded fleet.
+
+        ``allowed_workspace_ids`` (P3.1 #1038 — cross-job lineage bind) gates which
+        workspaces a match may come from. ``None`` (default, drop-in for existing
+        callers) → same-workspace-only: only versions under ``workspace_id``, HEAD
+        (highest ``version``) wins. A set → the CROSS-JOB contributing set (every
+        workspace sharing the current job's ``root_path``); a version whose ``ws in
+        allowed_workspace_ids`` matches on absolute path equality, with a
+        DETERMINISTIC cross-record tie-break — prefer an exact ``ws == workspace_id``
+        match, else the newest by ``(created_at, ws, name, version)``, a total order
+        independent of dict iteration (flag #4), never the naive per-record HEAD-wins.
         """
         if not path:
             return None
         target = Path(str(path)).expanduser().resolve(strict=False)
         with self._lock:
+            best_key: Optional[tuple[Any, ...]] = None
             best: Optional[tuple[ArtifactRecord, ArtifactVersion]] = None
-            for (ws, _name), record in self._records.items():
-                if ws != workspace_id:
+            for (ws, name), record in self._records.items():
+                if allowed_workspace_ids is None:
+                    if ws != workspace_id:
+                        continue
+                elif ws not in allowed_workspace_ids:
                     continue
                 for version in record.versions:
                     if not version.path:
@@ -345,9 +361,18 @@ class ArtifactRegistry:
                         vpath = Path(version.path).expanduser().resolve(strict=False)
                     except OSError:
                         continue
-                    if vpath == target:
-                        if best is None or version.version >= best[1].version:
-                            best = (record, version)
+                    if vpath != target:
+                        continue
+                    # Default: HEAD (highest version) wins. Cross-job: prefer local ws,
+                    # else newest by (created_at, ws, name, version) — a deterministic
+                    # total order, never dict iteration order (flag #4).
+                    key: tuple[Any, ...] = (
+                        (version.version,)
+                        if allowed_workspace_ids is None
+                        else (ws == workspace_id, version.created_at or "", ws, name, version.version)
+                    )
+                    if best_key is None or key >= best_key:
+                        best_key, best = key, (record, version)
             return best
 
     def _fold_event(self, event: _ArtifactEvent) -> FoldResult:
