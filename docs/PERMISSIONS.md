@@ -198,9 +198,11 @@ existing permission gate + policy store (a new request *kind*, not a new gate):
 |---|---|---|
 | `/v1/workspaces/{wid}/grants` | POST | Grant a writable root (`{"root": "<dir>"}`) or a domain (`{"host_pattern": "<pattern>"}`) |
 
-A root grant widens the fence `write_roots` on the **next** spawn (already-spawned
-fenced children keep their compile-time territory until they respawn — reported as a
-typed `grant_pending_respawn`, never silently). A denied `policy_violation` carries a
+A root grant widens the fence `write_roots` and restarts the workspace's resident
+fleet so an already-spawned, workspace-shared child picks up the new territory at a
+safe boundary (a busy fleet is never torn down mid-call — the restart defers and is
+reported as a typed `grant_restart_deferred_busy`, never silently — #1033). A denied
+`policy_violation` carries a
 static grant affordance (`next_action`) so the model may *ask* and the user decides.
 
 ### Provenance tiers under the fence (#980)

@@ -272,8 +272,9 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         """Grant new effective boundary to a workspace mid-session (B5 #979.3).
 
         Body (any subset): ``{"root": "<path>"}`` grants a writable root — the fence + advisory
-        widen LIVE on the next spawn (a session-wide srt fence reports ``grant_pending_respawn``
-        for children already spawned); ``{"domain": "<host>"}`` grants a network domain (a sticky
+        widen LIVE and the workspace's resident fleet is restarted so an already-spawned child
+        picks up the new territory (a busy fleet defers, reported ``grant_restart_deferred_busy``
+        — #1033); ``{"domain": "<host>"}`` grants a network domain (a sticky
         workspace ``host_pattern`` policy the deny-mode chokepoint honours); ``{"deny_mode":
         true|false}`` toggles the workspace's opt-in network deny mode. Every grant is a recorded
         USER decision emitting ``boundary.granted`` (⚑ the model requests, the user grants).
