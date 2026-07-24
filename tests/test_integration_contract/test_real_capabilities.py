@@ -371,10 +371,10 @@ def test_streaming_text_delivery_events(http: httpx.Client, session_id: str) -> 
 def test_destructive_tool_requests_permission(http: httpx.Client, tmp_path: Path) -> None:
     """SPEC §6.13 — destructive tools must register a permission row
     (visible via /v1/permissions) before they execute. Drive the
-    diff-apply path which uses fs_apply_edit_write (matches the
-    'write' substring in _DESTRUCTIVE_TOOL_SUBSTRINGS) — the test
-    asserts the permission row appears AND has tool_call info that
-    identifies the destructive call."""
+    diff-apply path which uses fs_apply_edit_write — its static catalog
+    'write' tag means is_read_only (#1032) does NOT fast-allow it, so it
+    proceeds to the permission gate — the test asserts the permission row
+    appears AND has tool_call info that identifies the destructive call."""
 
     root = Path(os.environ.get("CLIO_INTEGRATION_WORKSPACE_ROOT", tmp_path)).resolve()
     root.mkdir(parents=True, exist_ok=True)

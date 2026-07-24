@@ -31,11 +31,12 @@ Responsibilities:
 
 from __future__ import annotations
 
-import fnmatch
 import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from clio_agent.gact.runtime.grant_resolver import resolve
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -243,27 +244,15 @@ def _host_action_for(
     connection re-prompts (fail-safe) rather than silently allowing global egress. A missing
     ``scope_id`` on a WORKSPACE row is also NOT treated as a wildcard here — an empty workspace
     scope_id would match every workspace, the same leak — so it is skipped.
+
+    A thin shim over :func:`~clio_agent.gact.runtime.grant_resolver.resolve` (``kind="domain"``),
+    which encodes this leak guard as the domain kind's per-kind scope rule. Kept as a named shim
+    because :mod:`clio_agent.gact.runtime.grants` binds it (and monkeypatches it in tests).
     """
 
-    policies = getattr(app.state, "permission_policies", [])
-    if not isinstance(policies, list) or not host or not workspace_id:
-        return ""
-    host = host.strip().lower()
-    for policy in policies:
-        if not isinstance(policy, dict):
-            continue
-        host_pattern = str(policy.get("host_pattern") or "")
-        if not host_pattern:
-            continue
-        # WORKSPACE scope with an EXPLICIT matching scope_id only — session-scoped and
-        # empty-scope_id host rows are never honoured at the chokepoint (see the docstring).
-        if str(policy.get("scope") or "").lower() != "workspace":
-            continue
-        if str(policy.get("scope_id") or "") != workspace_id:
-            continue
-        if not fnmatch.fnmatchcase(host, host_pattern.strip().lower()):
-            continue
-        action = str(policy.get("action") or "").lower()
-        if action in {"allow", "allow_session", "allow_workspace", "deny", "ask"}:
-            return action
-    return ""
+    return resolve(
+        "domain",
+        host,
+        policies=getattr(app.state, "permission_policies", []),
+        workspace_id=workspace_id,
+    )
