@@ -111,7 +111,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # _set_app_arc. All logic (ladder, detection, doctor probe, boot-event emit) lives in
     # the owner module runtime/sandbox.py; only the two call sites are here (the #900
     # child-reaper precedent). Ratchets back with the #714 lifespan split.
-    "src/clio_agent/gact/app.py": 2739,
+    "src/clio_agent/gact/app.py": 2730,
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -139,7 +139,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # catalog + reconnect/streamable-http route growth). Part of the #947 MCP-apps
     # decomposition debt; ratchets back with the mcp_app_* owner-module split.
     "src/clio_agent/gact/routes/blueprints.py": 861,
-    "src/clio_agent/gact/routes/catalog.py": 943,
+    "src/clio_agent/gact/routes/catalog.py": 936,
     "src/clio_agent/gact/routes/mcp.py": 993,
     # #947 DEBT (recorded 2026-07-18, #948 S4 branch): the MCP-apps landing grew
     # these files past their baselines without a ratchet update (it merged to
@@ -163,7 +163,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # merge(main->develop): -2 ratchet down (1548 -> 1546).
     # B5 #979.2: +3 for the session-attach boundary emit seam (the emit logic lives in the
     # grants owner module; only the guarded one-call seam + its import land here).
-    "src/clio_agent/gact/routes/sessions.py": 1549,
+    # #1034: +2 to pass approval_mode through create_session + patch_session (two arg-pass
+    # lines; the axis logic lives in sessions.py + permission_gate.py, no accretion here).
+    "src/clio_agent/gact/routes/sessions.py": 1551,
     # #933: +8 for the turn-scoped workspace-fleet lease in _tool_session_context.
     # #933 review hardening: typed workspace_lease_unavailable degrade when a
     # rooted turn has no leasable agent (+9).
@@ -222,7 +224,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # mcp_app_* owner-module split (see the #947 DEBT block on mcp_apps.py).
     # #968 S2: +11 for the resource_link Part fields (uri/name/server_id) + the
     # x_clio_artifacts capability flag — Part + CapabilityFlags are defined here.
-    "src/clio_agent/gact/types.py": 1165,
+    # #1034: +5 for the approval_mode axis on the three session wire models (Session +
+    # Create/Update requests) + a 3-line doc comment; the enum + enforcement live in
+    # sessions.py + permission_gate.py, so only the field declarations land here.
+    "src/clio_agent/gact/types.py": 1170,
     # -120 (#891): the SDK-session machinery moved out to sibling owner modules —
     # the blocking-path pool to providers/claude_code_sdk_pool.py and the per-expert
     # streaming session/delta transport to providers/claude_code_sessions.py; this

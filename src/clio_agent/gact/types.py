@@ -511,6 +511,10 @@ class Session(BaseModel):
     mode: Literal["chat", "plan", "edit", "architect"] = "chat"
     edit_mode: Literal["diff", "whole", "patch"] = "diff"
     routing_mode: Literal["auto", "chat", "experts", "reasoning_only"] = "auto"
+    # iowarp/clio-agent #1034 — approval axis, ORTHOGONAL to ``mode`` (default
+    # "ask"). Decides a non-read call at the gate's prompt boundary; the
+    # plan/architect lock + reads-never-gated invariant sit ABOVE it (gate docs).
+    approval_mode: Literal["ask", "auto-edits", "bypass", "ai-review"] = "ask"
     metadata: dict[str, Any] = Field(default_factory=dict)
     # iowarp/gact-tui §audit/E-14: lets the desktop and TUI archive a
     # session for "hide from the active list, keep around for browse".
@@ -528,6 +532,7 @@ class CreateSessionRequest(BaseModel):
     mode: Literal["chat", "plan", "edit", "architect"] = "chat"
     edit_mode: Literal["diff", "whole", "patch"] = "diff"
     routing_mode: Literal["auto", "chat", "experts", "reasoning_only"] = "auto"
+    approval_mode: Literal["ask", "auto-edits", "bypass", "ai-review"] = "ask"
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -547,6 +552,7 @@ class UpdateSessionRequest(BaseModel):
     # asks the planner to prefer tool/expert reasoning over deterministic
     # shortcuts.
     routing_mode: Optional[Literal["auto", "chat", "experts", "reasoning_only"]] = None
+    approval_mode: Optional[Literal["ask", "auto-edits", "bypass", "ai-review"]] = None  # #1034
     # iowarp/gact-tui §audit/E-14: the desktop needs to push pin state
     # (`metadata.pinned: bool`) and archive state. Without these the
     # desktop's controls flip the UI optimistically but the changes are
@@ -886,7 +892,6 @@ class Tool(BaseModel):
     name: str
     title: str = ""
     description: str = ""
-    permission_default: str = "ask"
     owner: str = ""
     tags: list[str] = Field(default_factory=list)
     visible_to: list[str] = Field(default_factory=list)

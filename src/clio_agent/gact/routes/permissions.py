@@ -9,7 +9,7 @@ This concern owns two related vendor surfaces the gact-tui drives:
   ``MCPToolBridge`` thread blocked on the request's event, and -- for the
   ``allow_session``/``allow_workspace`` actions -- derives a sticky policy.
 * **Policies** (SPEC §6.11.b) -- the declarative ``allow``/``deny``/``ask``
-  rules consulted before the per-tool ``permission_default``.
+  rules consulted at the permission boundary.
   ``GET /v1/policies`` lists them; ``PUT /v1/policies`` atomically replaces the
   whole list (matching the gact-tui ``PutPolicies`` shape), validating every row
   before persisting so a typoed deny rule can never be silently dropped.
@@ -199,8 +199,8 @@ def register_permissions_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     # ---- /v1/policies (SPEC §6.11.b permission policies) -------------
     #
-    # Declarative allow/deny/ask rules consulted before the per-tool
-    # permission_default. PUT replaces the whole list (matches the
+    # Declarative allow/deny/ask rules consulted at the permission
+    # boundary. PUT replaces the whole list (matches the
     # gact-tui client's PutPolicies shape) and persists it locally.
 
     @app.get("/v1/policies")

@@ -138,6 +138,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             mode=req.mode,
             edit_mode=req.edit_mode,
             routing_mode=req.routing_mode,
+            approval_mode=req.approval_mode,
         )
         # B5 #979.2 (⚑): session-create INHERITS existing territory — no grant made, so it
         # emits NO boundary event (a fabricated grantor=user would violate ⚑ + precede
@@ -159,6 +160,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             mode=req.mode,
             edit_mode=req.edit_mode,
             routing_mode=req.routing_mode,
+            approval_mode=req.approval_mode,
             model=req.model.model_dump(exclude_none=True) if req.model else None,
             agent=req.agent.model_dump(exclude_none=True) if req.agent else None,
             # iowarp/gact-tui §audit/E-14: persist pin + archive state.

@@ -66,6 +66,7 @@ from clio_agent.gact.runtime.grant_resolver import (
 from clio_agent.gact.runtime.permission_policies import _permission_path_from_args
 from clio_agent.gact.runtime.retention import enforce_dict_bound
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
+from clio_agent.tools.catalog import get_tool_entry
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -74,6 +75,51 @@ if TYPE_CHECKING:
 #: :mod:`grant_resolver`; re-exported here under its historical private name for the
 #: routes/builders/tests that bind ``permission_gate._EXTERNAL_MCP_PERMISSION_CONTEXT_KIND``.
 _EXTERNAL_MCP_PERMISSION_CONTEXT_KIND = EXTERNAL_MCP_CONTEXT_KIND
+
+#: #1034 typed approval-mode reasons stamped on the resolved / pending permission row so the
+#: trace always shows WHY a non-read call was auto-approved or still prompted (never silent).
+REASON_APPROVAL_BYPASS = "approval_mode_bypass"
+REASON_APPROVAL_AUTO_EDITS = "approval_mode_auto_edits"
+#: ai-review still PROMPTS today (the reviewer agent is the split follow-up slice); the pending
+#: row carries this typed reason so the ask is attributable to the reviewer-pending state.
+REASON_AI_REVIEW_REVIEWER_PENDING = "ai_review_reviewer_pending"
+
+
+def default_decision(
+    approval_mode: str,
+    kind: str,
+    name: str,
+    args: Mapping[str, Any],
+) -> str:
+    """Decide a non-read tool call at the gate's PROMPT boundary from the approval mode (#1034).
+
+    Consulted ONLY after :func:`is_read_only` fast-allow, the plan/architect read-only lock, and
+    the explicit-policy resolve have all declined to decide the call — so an explicit ``allow`` /
+    ``deny`` policy always WINS over a mode default. Reads never reach here. The approval axis is
+    orthogonal to ``session.mode`` and only ever relaxes toward auto-approve or falls through to
+    the existing interactive prompt; it never manufactures a denial (that stays with the lock and
+    explicit deny policies above). Returns:
+
+    * ``allow`` — ``bypass`` (any non-read call) or ``auto-edits`` for an fs WRITE (a call whose
+      static catalog entry carries the ``write`` tag);
+    * ``ask``   — ``ask`` (default), ``auto-edits`` for a non-write (e.g. ``shell_bash``, whose
+      writes live behind the OS fence, not a catalog ``write`` tag), or ``ai-review`` (the caller
+      stamps the typed ``ai_review_reviewer_pending`` reason on the pending row).
+
+    ``kind``/``args`` are accepted for a stable signature (a future kind may inspect them) but the
+    two current signals (mode + the catalog ``write`` tag) do not consult them.
+    """
+
+    _ = (kind, args)
+    if approval_mode == "bypass":
+        return "allow"
+    if approval_mode == "auto-edits":
+        entry = get_tool_entry(name)
+        if entry is not None and "write" in entry.tags:
+            return "allow"
+        return "ask"
+    # ask (default) and ai-review both route to the existing interactive prompt.
+    return "ask"
 
 
 def _normalize_mcp_tool_annotations(tool: Any) -> dict[str, Any] | None:
@@ -405,6 +451,34 @@ def _make_permission_gate(app: "FastAPI"):
                 reason=f"policy_{policy_action}",
             )
             return "allow"
+        # #1034: consult the session's approval_mode at the PROMPT boundary. Precedence is uniform
+        # — an explicit policy (deny/allow already returned above, AND an explicit ``ask``) beats the
+        # mode. Here policy_action is only "" (no policy) or "ask" (explicit "always confirm this
+        # tool"): the mode may auto-approve ONLY the unpolicied case, so an explicit ``ask`` survives
+        # even bypass. Reads never reach here (is_read_only returned at the top).
+        approval_mode = getattr(current, "approval_mode", "ask") if current is not None else "ask"
+        if (
+            policy_action != "ask"
+            and default_decision(approval_mode, "tool", name, args) == "allow"
+        ):
+            # bypass (any non-read) or auto-edits (fs write): auto-approve but STILL record a
+            # resolved audit row + permission.resolved boundary event — the OS fence is
+            # untouched (⚑ never a confinement disable), so the approval is on the record.
+            _record_resolved_permission(
+                app,
+                session_id=sid,
+                tool_name=name,
+                args=args,
+                status="auto_approved",
+                action="allow",
+                summary=f"{subject} {name!r} allowed by approval_mode={approval_mode!r}",
+                reason=(
+                    REASON_APPROVAL_BYPASS
+                    if approval_mode == "bypass"
+                    else REASON_APPROVAL_AUTO_EDITS
+                ),
+            )
+            return "allow"
         if not sid:
             return "deny"
         pid = f"perm_{uuid.uuid4().hex[:12]}"
@@ -420,6 +494,11 @@ def _make_permission_gate(app: "FastAPI"):
             "created_at": datetime.now(timezone.utc).isoformat(),
             "status": "pending",
         }
+        # ai-review still prompts today (the reviewer agent is the split follow-up); stamp the
+        # typed reviewer-pending reason on the recorded/published row so the ask is never a
+        # silent default — the trace attributes it to the ai-review approval mode.
+        if approval_mode == "ai-review":
+            row["reason"] = REASON_AI_REVIEW_REVIEWER_PENDING
         app.state.permissions[pid] = row
         app.state.permission_events[pid] = evt
         enforce_dict_bound(app, app.state.permissions, "permissions", session_id=sid)

@@ -1503,9 +1503,8 @@ def build_app(
     # extension points. In-memory; not persisted across restarts.
     app.state.declarative_hooks = {}
     # SPEC §6.11.b permission policies — list, not dict. Backends
-    # consult this on every tool call to decide allow/deny/ask before
-    # falling back to the per-tool permission_default. PUT replaces
-    # the whole list.
+    # consult this on every tool call to decide allow/deny/ask at the
+    # permission boundary. PUT replaces the whole list.
     app.state.permission_policies_path = session_store_path.parent / "permission_policies.json"
     app.state.permission_policies = _load_permission_policies(app.state.permission_policies_path)
     # iowarp/clio-agent#18: per-session task list (todo-style).
