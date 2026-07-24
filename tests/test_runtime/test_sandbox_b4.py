@@ -864,9 +864,13 @@ def test_wrap_confined_channel_failure_falls_back_not_silent(
         profile=sandbox.PROFILE_FLEET,
         state=_landlock_state(),
     )
-    # Falls back to the shared chokepoint; no per-child env overlay, no attribution.
-    assert confined.env_overlay == {}
+    # Falls back to the shared chokepoint; no per-child NET proxy overlay, no attribution.
+    assert "HTTP_PROXY" not in confined.env_overlay
+    assert "ALL_PROXY" not in confined.env_overlay
     assert confined.result.details["net_child_id"] == ""
+    # The child-cache-env redirect is independent of the net channel — an active fence with write
+    # territory still lands it (PART A), so the overlay is not empty, just carries no proxy vars.
+    assert confined.env_overlay["FASTMCP_CHECK_FOR_UPDATES"] == "off"
 
 
 def _codex_state():

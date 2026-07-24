@@ -250,6 +250,82 @@ def test_pdeathsig_fold_preserves_argv_exactly(
 
 
 # --------------------------------------------------------------------------- #
+# Confined-child cache-env redirect (PART A) — active fence only, never on floor #
+# --------------------------------------------------------------------------- #
+
+
+def _codex_active_state() -> "sandbox.SandboxResult":
+    """An ACTIVE codex fence state (proxy-enforced) for the cache-redirect assertions."""
+    return sandbox.SandboxResult(
+        mechanism=sandbox.MECHANISM_CODEX,
+        active=True,
+        reason=sandbox.REASON_FENCE_ACTIVE,
+        details={"net_enforcement": sandbox.NET_ENFORCEMENT_PROXY, "codex_binary": "codex"},
+    )
+
+
+def test_wrap_confined_active_fence_redirects_child_cache_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An active fence points the child's cache/temp env at a dir UNDER write_roots[0] + creates it.
+
+    A real python/fastmcp MCP server writes a profile cache at import; under the read-only fence
+    that would crash PermissionError. wrap_confined redirects LOCALAPPDATA/APPDATA/TEMP/TMP/
+    XDG_CACHE_HOME/FASTMCP_HOME to <write_roots[0]>/.clio-child-cache and sets
+    FASTMCP_CHECK_FOR_UPDATES=off. Side effects (egress channel + codex compose) are faked so the
+    test touches neither the real chokepoint nor ~/.codex.
+    """
+    from clio_agent.runtime import sandbox_codex, sandbox_net
+
+    monkeypatch.setattr(
+        sandbox_net,
+        "open_child_egress",
+        lambda state, roots: ("child_x", 4321, {"HTTP_PROXY": "http://127.0.0.1:4321"}),
+    )
+    monkeypatch.setattr(
+        sandbox_codex,
+        "compose_codex_spawn",
+        lambda roots, cmd, args, *, binary: (cmd, list(args)),
+    )
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    confined = sandbox.wrap_confined(
+        "python",
+        ["-m", "web_mcp.server"],
+        write_roots=[str(ws)],
+        profile=sandbox.PROFILE_FLEET,
+        state=_codex_active_state(),
+    )
+    cache_dir = ws / sandbox.CHILD_CACHE_DIRNAME
+    assert cache_dir.is_dir()  # created best-effort under the ALREADY-writable territory
+    for key in sandbox.CHILD_CACHE_DIR_ENV_KEYS:
+        assert confined.env_overlay[key] == str(cache_dir)
+    assert confined.env_overlay["FASTMCP_CHECK_FOR_UPDATES"] == "off"
+    # The redirect is ADDITIVE — the per-child net proxy overlay still lands.
+    assert confined.env_overlay["HTTP_PROXY"] == "http://127.0.0.1:4321"
+
+
+def test_wrap_confined_floor_sets_no_child_cache_env(tmp_path: Path, floor_sandbox) -> None:
+    """On the floor NONE of the cache-redirect vars are set and no cache dir is created.
+
+    The floor env_overlay must stay byte-identical (empty) — the redirect is an active-fence-only
+    behavior, never a floor behavior (owner rule: floor stays byte-identical).
+    """
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    confined = sandbox.wrap_confined(
+        "python",
+        ["-m", "web_mcp.server"],
+        write_roots=[str(ws)],
+        profile=sandbox.PROFILE_FLEET,
+    )
+    assert confined.env_overlay == {}  # byte-identical floor overlay
+    for key in (*sandbox.CHILD_CACHE_DIR_ENV_KEYS, "FASTMCP_CHECK_FOR_UPDATES"):
+        assert key not in confined.env_overlay
+    assert not (ws / sandbox.CHILD_CACHE_DIRNAME).exists()  # no dir touched on the floor
+
+
+# --------------------------------------------------------------------------- #
 # Seam wiring — the spawn-diet FINAL argv is what gets wrapped                  #
 # --------------------------------------------------------------------------- #
 
