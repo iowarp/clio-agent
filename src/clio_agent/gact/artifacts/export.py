@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.gact.artifacts.cas import CASStore, cas_max_file_bytes
+from clio_agent.gact.artifacts.lineage import build_lineage
 from clio_agent.gact.artifacts.records import ArtifactRecord, ArtifactVersion
 from clio_agent.gact.artifacts.registry import ArtifactRegistry, get_registry
 from clio_agent.gact.artifacts.reproduce import (
@@ -350,8 +351,14 @@ def _ro_crate_metadata(
     records: list[ArtifactRecord],
     transforms: list[TransformRecord],
     nodes: dict[str, ArtifactNode],
+    lineage_truncated: Optional[dict[str, Any]] = None,
 ) -> dict:
-    """Assemble the ``ro-crate-metadata.json`` JSON-LD graph."""
+    """Assemble the ``ro-crate-metadata.json`` JSON-LD graph.
+
+    ``lineage_truncated`` (#1040): when a transitive upstream closure hit the node
+    cap, its typed ``{reason, nodes}`` marker rides the crate root as
+    ``clio:lineage_truncated`` — an HONEST partial, never a silent full-looking crate.
+    """
     graph: list[dict] = [
         {
             "@id": "ro-crate-metadata.json",
@@ -384,7 +391,7 @@ def _ro_crate_metadata(
     if used_unknown:
         agents["#agent-unknown"] = _UNKNOWN_AGENT
 
-    root_entity = {
+    root_entity: dict[str, Any] = {
         "@id": "./",
         "@type": "Dataset",
         "name": name,
@@ -407,6 +414,8 @@ def _ro_crate_metadata(
         ],
         "mentions": [{"@id": a["@id"]} for a in activity_entities],
     }
+    if lineage_truncated is not None:
+        root_entity["clio:lineage_truncated"] = lineage_truncated
     graph.append(root_entity)
     graph.extend(file_entities)
     graph.extend(activity_entities)
@@ -444,6 +453,7 @@ def _assemble_bundle(
     workspace_id: str,
     records: list[ArtifactRecord],
     transforms: list[TransformRecord],
+    lineage_truncated: Optional[dict[str, Any]] = None,
 ) -> ExportBundle:
     """Build the full crate (metadata + bytes + reproduce.py/.ipynb) for a record set."""
     root = _workspace_root(app, workspace_id)
@@ -455,6 +465,7 @@ def _assemble_bundle(
         records=records,
         transforms=transforms,
         nodes=nodes,
+        lineage_truncated=lineage_truncated,
     )
     bundle.add_file(
         "ro-crate-metadata.json",
@@ -467,6 +478,48 @@ def _assemble_bundle(
         json.dumps(compile_notebook(script), indent=1).encode("utf-8"),
     )
     return bundle
+
+
+def _accumulate_lineage(
+    registry: ArtifactRegistry,
+    lineage: dict[str, Any],
+    *,
+    records: list[ArtifactRecord],
+    record_keys: set[tuple[str, str]],
+    transforms: list[TransformRecord],
+    transform_ids: set[str],
+) -> None:
+    """Re-resolve a lineage graph's WIRE nodes back to registry records + transforms.
+
+    :func:`build_lineage` returns wire dicts (``artifact`` / ``gap`` / ``activity``),
+    NOT records. To feed the crate assembler each node id is re-resolved: an
+    artifact/gap node → its logical record (:meth:`ArtifactRegistry.get_by_artifact_id`,
+    which carries every version); an activity node → its :class:`TransformRecord`
+    (:meth:`ArtifactRegistry.get_transform` by ``call_id``). External leaf nodes carry
+    no registry record and are skipped. Dedup keys are the caller's ``record_keys``
+    (``(workspace_id, name)``) and ``transform_ids`` (``call_id``) so several closures
+    merge cleanly into ONE accumulation (the cross-job case, #1040 b). Completeness is
+    the crux: every upstream input version the closure surfaced becomes a record here,
+    or reproduce silently drops that stage input.
+    """
+    for node in lineage.get("nodes", []):
+        if node.get("type") == "activity":
+            call_id = node.get("call_id")
+            transform = registry.get_transform(call_id) if call_id else None
+            if transform is not None and transform.call_id not in transform_ids:
+                transform_ids.add(transform.call_id)
+                transforms.append(transform)
+            continue
+        if node.get("external"):
+            continue  # authority-only / external leaf — no registry record to add
+        resolved = registry.get_by_artifact_id(node.get("id", ""))
+        if resolved is None:
+            continue
+        record, _version = resolved
+        key = (record.workspace_id, record.name)
+        if key not in record_keys:
+            record_keys.add(key)
+            records.append(record)
 
 
 def build_session_bundle(
@@ -502,55 +555,129 @@ def build_session_bundle(
                 seen.add(key)
                 records.append(record)
     transforms: list[TransformRecord] = []
+    transform_ids: set[str] = set()
     for child_sid in session_ids:
-        transforms.extend(registry.transforms_for_session(child_sid))
+        for transform in registry.transforms_for_session(child_sid):
+            if transform.call_id not in transform_ids:
+                transform_ids.add(transform.call_id)
+                transforms.append(transform)
+    cross_job_truncated = _close_cross_job_inputs(
+        registry,
+        workspaces=workspaces,
+        records=records,
+        record_keys=seen,
+        transforms=transforms,
+        transform_ids=transform_ids,
+    )
     return _assemble_bundle(
         app,
         name=f"clio session {sid} artifacts",
         workspace_id=workspace_id,
         records=records,
         transforms=transforms,
+        # A cross-job closure that hit the node cap surfaces its typed truncation into
+        # the session crate too — an honest partial, never a silent full-looking crate.
+        lineage_truncated=cross_job_truncated,
     )
 
 
-def build_artifact_bundle(app: "FastAPI", artifact_id: str) -> Optional[ExportBundle]:
-    """Build the RO-Crate bundle for one artifact's lineage (its chain + producers).
+def _close_cross_job_inputs(
+    registry: ArtifactRegistry,
+    *,
+    workspaces: list[str],
+    records: list[ArtifactRecord],
+    record_keys: set[tuple[str, str]],
+    transforms: list[TransformRecord],
+    transform_ids: set[str],
+) -> Optional[dict[str, Any]]:
+    """Gather non-descendant sibling jobs that PRODUCED a consumed input (#1040 b).
 
-    Exports the logical record owning ``artifact_id`` (all its versions) plus every
-    TransformRecord that produced or consumed any of those versions, and the input
-    records those transforms reference (one hop) so the reproduce chain is closed.
-    Returns ``None`` when the artifact id is unknown.
+    The descendant union (``include_children``) only reaches child workspaces. A
+    consumed input can instead be produced by a NON-descendant sibling job in another
+    workspace (resolvable fleet-wide via #1038's ``get_by_artifact_id``). For each
+    ``transform.used`` edge whose producing record lives OUTSIDE the already-included
+    workspaces, run the SAME complete upstream closure over that input and merge its
+    full producing chain — records + transforms — reusing the caller's dedup sets. A
+    sibling's ENTIRE producing chain lands, not just its terminal record, so a
+    cross-job reproduce rebuilds every upstream stage.
+    """
+    truncated: Optional[dict[str, Any]] = None
+    closed_inputs: set[str] = set()
+    for transform in list(transforms):
+        for edge in transform.used:
+            input_id = edge.artifact_id
+            if not input_id or input_id in closed_inputs:
+                continue
+            closed_inputs.add(input_id)
+            resolved = registry.get_by_artifact_id(input_id)
+            if resolved is None:
+                continue
+            in_rec, _in_ver = resolved
+            if in_rec.workspace_id in workspaces:
+                continue  # already covered by the descendant workspace union
+            lineage = build_lineage(registry, input_id, direction="upstream", complete=True)
+            if lineage is None:
+                continue
+            # Retain the FIRST cross-job closure that hit the node cap, so the session
+            # crate surfaces a typed truncation (no silent partial — the caller threads
+            # this into clio:lineage_truncated on the crate root).
+            if truncated is None and lineage.get("truncated"):
+                truncated = lineage["truncated"]
+            _accumulate_lineage(
+                registry,
+                lineage,
+                records=records,
+                record_keys=record_keys,
+                transforms=transforms,
+                transform_ids=transform_ids,
+            )
+    return truncated
+
+
+def build_artifact_bundle(app: "FastAPI", artifact_id: str) -> Optional[ExportBundle]:
+    """Build the RO-Crate bundle for one artifact's TRANSITIVE upstream lineage.
+
+    Drives off the COMPLETE upstream closure (:func:`build_lineage` with
+    ``complete=True``, #1040): the logical record owning ``artifact_id`` plus EVERY
+    transitive upstream producing record and TransformRecord — not merely the one-hop
+    inputs the earlier loop pulled (a 2-hops-up producer was never discovered, so
+    reproduce silently dropped that stage's input at ``reproduce.py`` guard
+    ``if e.artifact_id in nodes``). Bounded: the closure's node cap + the per-version
+    byte cap both hold; a capped closure surfaces its typed ``truncated`` marker into
+    the crate root (``clio:lineage_truncated``) — an honest partial, never a silent
+    full-looking crate. Returns ``None`` when the artifact id is unknown.
     """
     registry = get_registry(app)
     found = registry.get_by_artifact_id(artifact_id)
     if found is None:
         return None
     record, _version = found
-    records: list[ArtifactRecord] = [record]
-    record_keys: set[tuple[str, str]] = {(record.workspace_id, record.name)}
-    version_ids = {v.artifact_id for v in record.versions}
-
+    records: list[ArtifactRecord] = []
+    record_keys: set[tuple[str, str]] = set()
     transforms: list[TransformRecord] = []
-    for transform in registry.all_transforms():
-        touches = any(e.artifact_id in version_ids for e in (*transform.used, *transform.generated))
-        if not touches:
-            continue
-        transforms.append(transform)
-        # Pull the one-hop input records so the chain is closed.
-        for edge in transform.used:
-            resolved = registry.get_by_artifact_id(edge.artifact_id) if edge.artifact_id else None
-            if resolved is not None:
-                in_rec, _in_ver = resolved
-                key = (in_rec.workspace_id, in_rec.name)
-                if key not in record_keys:
-                    record_keys.add(key)
-                    records.append(in_rec)
+    transform_ids: set[str] = set()
+    lineage = build_lineage(registry, artifact_id, direction="upstream", complete=True)
+    if lineage is not None:
+        _accumulate_lineage(
+            registry,
+            lineage,
+            records=records,
+            record_keys=record_keys,
+            transforms=transforms,
+            transform_ids=transform_ids,
+        )
+    # The root record anchors the crate even if the closure resolved nothing else.
+    root_key = (record.workspace_id, record.name)
+    if root_key not in record_keys:
+        record_keys.add(root_key)
+        records.append(record)
     return _assemble_bundle(
         app,
         name=f"clio artifact {record.name} lineage",
         workspace_id=record.workspace_id,
         records=records,
         transforms=transforms,
+        lineage_truncated=lineage.get("truncated") if lineage is not None else None,
     )
 
 

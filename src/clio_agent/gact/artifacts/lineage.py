@@ -36,6 +36,24 @@ if TYPE_CHECKING:
 _MAX_NODES = 500
 
 
+def lineage_max_nodes() -> int:
+    """The node cap for a COMPLETE (export/reproduce) closure — config-resolved (#985).
+
+    Interactive ``/lineage`` keeps the ``_MAX_NODES`` literal (depth-bounded, small).
+    A complete closure walks the whole upstream chain, so it honors a HIGHER,
+    operator-tunable ceiling — but is STILL bounded (never an unbounded archive): a
+    walk that hits this cap emits the typed ``node_cap`` truncation marker.
+    """
+    from clio_agent import conf  # noqa: PLC0415
+
+    return conf.resolve(
+        "artifacts.lineage_max_nodes",
+        env="CLIO_ARTIFACTS_LINEAGE_MAX_NODES",
+        default=_MAX_NODES,
+        cast=conf.as_int,
+    )
+
+
 def _node_type(version: ArtifactVersion) -> str:
     """``gap`` for an unattributed (mechanism ``none``) version, else ``artifact``."""
     return "gap" if version.mechanism is Mechanism.NONE else "artifact"
@@ -131,6 +149,7 @@ def build_lineage(
     *,
     direction: str = "both",
     depth: int = 3,
+    complete: bool = False,
 ) -> Optional[dict[str, Any]]:
     """Build the lineage graph rooted at ``artifact_id`` (S5 #971).
 
@@ -141,10 +160,20 @@ def build_lineage(
     at_depth}`` (findings [9]/[10]). Deterministic + idempotent: nodes and edges are
     de-duplicated by id, the BFS visits each artifact once at its shallowest depth,
     and no edge is emitted whose endpoint node was clipped by the cap (no dangling).
+
+    ``complete`` (export/reproduce only, #1040): treat ``depth`` as UNBOUNDED — the
+    depth horizon never fires, so the walk gathers the WHOLE upstream chain (the
+    transitive closure a reproduce bundle needs; a missing upstream record silently
+    drops a stage input, so completeness is the correctness crux). Still BOUNDED: the
+    node cap rises to the config-resolved :func:`lineage_max_nodes` ceiling and a walk
+    that hits it emits the typed ``node_cap`` marker — never an unbounded archive. The
+    interactive ``/lineage`` path (``complete=False``) is byte-identical: the
+    ``_MAX_NODES`` literal cap and the depth-horizon check are unchanged.
     """
     if direction not in ("upstream", "downstream", "both"):
         direction = "both"
     depth = max(0, int(depth))
+    node_cap = lineage_max_nodes() if complete else _MAX_NODES
     index = _LineageIndex(registry)
     root = index.version(artifact_id)
     if root is None:
@@ -160,10 +189,10 @@ def build_lineage(
         node_id = node["id"]
         if node_id in nodes:
             return True
-        if len(nodes) >= _MAX_NODES:
+        if len(nodes) >= node_cap:
             # Node cap wins over a depth horizon (the harder bound). Only a node
             # that was actually ADDED can be an edge endpoint (finding [9]).
-            truncated = {"reason": "node_cap", "nodes": _MAX_NODES}
+            truncated = {"reason": "node_cap", "nodes": node_cap}
             return False
         nodes[node_id] = node
         return True
@@ -190,9 +219,11 @@ def build_lineage(
         resolved = index.version(current_id)
         if resolved is None:
             continue
-        if current_depth >= depth:
+        if not complete and current_depth >= depth:
             # At the caller's depth horizon: if this node still has neighbours in the
             # requested direction, the graph CONTINUES past the bound (finding [10]).
+            # A COMPLETE closure has NO depth horizon (#1040): the check is skipped so
+            # the walk keeps descending the whole chain, bounded only by ``node_cap``.
             if _has_frontier_beyond(index, resolved, direction=direction):
                 note_depth_horizon()
             continue
@@ -352,4 +383,4 @@ def _add_external_node(edge: Any, add_node: Any) -> bool:
     )
 
 
-__all__ = ["build_lineage"]
+__all__ = ["build_lineage", "lineage_max_nodes"]

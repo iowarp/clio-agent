@@ -95,6 +95,9 @@ artifacts.instrument_arg_max_bytes: 2048
 # CLIO_ARTIFACTS_INSTRUMENT_TOTAL_MAX_BYTES  (int)  <- src/clio_agent/gact/artifacts/transforms.py
 artifacts.instrument_total_max_bytes: 16384
 
+# CLIO_ARTIFACTS_LINEAGE_MAX_NODES  (int)  <- src/clio_agent/gact/artifacts/lineage.py
+artifacts.lineage_max_nodes: 500
+
 # CLIO_ARTIFACTS_PROPOSALS_BATCH_MAX  (int)  <- src/clio_agent/gact/artifacts/proposals.py
 artifacts.proposals_batch_max: 32
 
