@@ -28,8 +28,12 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, Optional
 
-from clio_agent.gact.artifacts.designation import ARTIFACT_SUFFIXES, OUTPUT_PATH_ARG_NAMES
-from clio_agent.gact.artifacts.records import ArtifactVersion, Mechanism
+from clio_agent.gact.artifacts.designation import (
+    ARTIFACT_SUFFIXES,
+    OUTPUT_PATH_ARG_NAMES,
+    kind_for_path,
+)
+from clio_agent.gact.artifacts.records import ArtifactKind, ArtifactVersion, Mechanism
 from clio_agent.gact.artifacts.transform_types import EdgeEvidence, EdgeRole, ProvEdge
 
 if TYPE_CHECKING:
@@ -228,6 +232,7 @@ def detect_used_edges(
         _contained,
         _workspace_root,
         compute_identity,
+        mint_artifact_outcome,
     )
     from clio_agent.gact.artifacts.registry import get_registry  # noqa: PLC0415
 
@@ -283,6 +288,57 @@ def detect_used_edges(
             workspace_id, resolved, allowed_workspace_ids=allowed_workspace_ids
         )
         if match is None:
+            # Designate-on-USE for a CONSUMED script (P3.2 #1039). A used `.py`/`.sh`
+            # is minted as its OWN SCRIPT version so a transform whose instrument is a
+            # script pins that script as a first-class dependency (its hash +
+            # artifact_id ride the used edge, which ``_script_instrument`` reads). The
+            # mint fires ONLY here — inside ``match is None`` — so a script already
+            # registered (locally OR by a sibling job under the shared root, P3.1
+            # #1038) reuses the existing/foreign id and never forks a local v1. It is
+            # minted under ``workspace_id`` (the LOCAL/consuming job — there is no
+            # foreign producer, that is why the match is None), with ``producing=False``
+            # (an observed input, not a generated output) and ``TOOL_SCHEMA`` (a known
+            # basis → renders as an ``artifact`` node, not a ``gap``). Only a script
+            # with a REAL hash mints; a stat-pinned (oversized) script has no sha256 →
+            # it stays the external leaf below (matching the arg channel's semantics,
+            # and ``_script_instrument`` skips a hashless edge anyway). A non-SCRIPT
+            # suffix (plain data/report input) also falls through unchanged.
+            if kind_for_path(resolved) is ArtifactKind.SCRIPT and evidence.sha256:
+                outcome = mint_artifact_outcome(
+                    app,
+                    sid,
+                    name=Path(resolved).name,
+                    workspace_id=workspace_id,
+                    evidence=evidence,
+                    kind=ArtifactKind.SCRIPT,
+                    mechanism=Mechanism.TOOL_SCHEMA,
+                    producing=False,
+                    path=resolved,
+                    turn_id=turn_id,
+                    trace_id=trace_id,
+                )
+                if outcome is not None:
+                    minted_version = outcome.version
+                    edges.append(
+                        ProvEdge(
+                            role=EdgeRole.USED,
+                            evidence=EdgeEvidence.HASH_PAIR,
+                            artifact_id=minted_version.artifact_id,
+                            sha256=evidence.sha256,
+                            name=Path(resolved).name,
+                            version=minted_version.version,
+                            path=resolved,
+                            arg=arg_name,
+                        )
+                    )
+                    continue
+                # A typed mint skip (never silent) → fall through to the external leaf
+                # so the consumed script still leaves a detectable used edge.
+                logger.info(
+                    "used script mint skipped reason=mint_returned_none session=%s path=%s",
+                    sid,
+                    resolved,
+                )
             # Existing contained file, not registered → an external:path edge.
             edges.append(
                 ProvEdge(
