@@ -49,6 +49,7 @@ from fastapi.responses import JSONResponse
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.events import Event
+from clio_agent.gact.loop_inbox import enqueue_user_steer
 from clio_agent.gact.mcp_apps import cleanup_session_mcp_apps
 from clio_agent.gact.routes._body import NonObjectBodyError, json_body
 from clio_agent.gact.routes.compaction import build_compact_summary_message
@@ -1150,28 +1151,30 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         if not _pending_user_questions(sid):
             sess = app.state.sessions.get(sid)
             should_resume = bool(updated.metadata.get("resume_on_answer")) and sess is not None
-            # #948 S1: the within-session busy gate covers the RESUME producer too.
-            # If a turn is already in flight (an intervening POST staged one while
-            # this question was pending), staging the resume now would overwrite the
-            # running turn's slot and orphan it. DEFER it (never drop — losing the
-            # user's answer would be a silent-fallback bug): record the prepared
-            # resume; the turn-runner idle hook (_redrive_deferred_resume) re-drives
-            # it the instant the session frees. A typed event reaches the trace/API.
+            resume_metadata = {
+                "ask_user_question_id": updated.id,
+                "ask_user_prompt": updated.prompt,
+                "ask_user_answer": updated.answer,
+                "ask_user_selected_options": updated.selected_options,
+                "ask_user_source_turn_id": updated.turn_id,
+                "ask_user_attempt_id": updated.attempt_id,
+                "ask_user_caller": updated.metadata.get("caller", {}),
+                "ask_user_resume": True,
+            }
+            # #1036 (was #948 S1): the busy gate covers the RESUME producer too.
+            # Staging the resume while a turn is in flight would orphan its slot, so
+            # fold it into the loop inbox as a user_message steer (never drop — that
+            # would be a silent-fallback bug): the running turn drains it into a
+            # ``### steer`` block, or the idle hook (drain_inbox_to_new_turn)
+            # re-drives it into ONE new turn. The ask_user_* metadata rides the event
+            # so the re-drive stages a proper resume turn. A typed event hits the API.
             if should_resume and app.state.agent is not None and app.state.turn_runner.busy(sid):
-                app.state.deferred_resumes[sid] = {
-                    "text": deps.ask_user_resume_text(updated),
-                    "metadata": {
-                        "ask_user_question_id": updated.id,
-                        "ask_user_prompt": updated.prompt,
-                        "ask_user_answer": updated.answer,
-                        "ask_user_selected_options": updated.selected_options,
-                        "ask_user_source_turn_id": updated.turn_id,
-                        "ask_user_attempt_id": updated.attempt_id,
-                        "ask_user_caller": updated.metadata.get("caller", {}),
-                        "ask_user_resume": True,
-                    },
-                    "question_id": updated.id,
-                }
+                enqueue_user_steer(
+                    app,
+                    sid,
+                    deps.ask_user_resume_text(updated),
+                    {**resume_metadata, "question_id": updated.id},
+                )
                 app.state.sessions.update(sid, metadata_patch={"pending_user_question_id": ""})
                 app.state.bus.publish(
                     Event(
@@ -1199,16 +1202,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                     sid,
                     sess,
                     deps.ask_user_resume_text(updated),
-                    metadata={
-                        "ask_user_question_id": updated.id,
-                        "ask_user_prompt": updated.prompt,
-                        "ask_user_answer": updated.answer,
-                        "ask_user_selected_options": updated.selected_options,
-                        "ask_user_source_turn_id": updated.turn_id,
-                        "ask_user_attempt_id": updated.attempt_id,
-                        "ask_user_caller": updated.metadata.get("caller", {}),
-                        "ask_user_resume": True,
-                    },
+                    metadata=resume_metadata,
                     prev_status=sess.status if sess is not None else "waiting_user",
                 )
                 app.state.bus.publish(

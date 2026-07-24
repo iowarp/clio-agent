@@ -29,8 +29,20 @@ Design invariants (this slice, #1035):
   ``app.py`` → ``runtime.app_state.resolve_tool_runtime``). This module is gact
   and may import gact freely.
 
-Out of scope here (deferred): Producer B / 202-user-steer + the ``deferred_resumes``
-fold (#1036) and the live handle (#1037).
+#1036 (Producer B) adds a second event kind — ``user_message`` — the mid-turn
+*steer*: a user POST that lands while a turn is already running is no longer a 409;
+the message is persisted (marked ``mid_turn_steer``) and a data-carrying
+:class:`InboxEvent` (``kind="user_message"``, its ``text`` + ``metadata``) is
+enqueued. The running turn's next tool boundary drains it and surfaces a
+``### steer`` grounding block (USER-authored, trusted, but off the model-output
+lane) in the SAME turn. A steer that is never drained mid-turn (the turn ended
+first) is re-driven by the idle hook into EXACTLY ONE new turn
+(``drain_inbox_to_new_turn``). The ``deferred_resumes`` stash (an ask-user
+answer that arrived while busy) is folded into this same carrier. De-dup is
+inherent in the atomic pop-all :meth:`LoopInbox.drain` — a steer surfaces exactly
+once (mid-turn OR idle, whichever drains first).
+
+Out of scope here (deferred): the live handle (#1037).
 """
 
 from __future__ import annotations
@@ -55,7 +67,14 @@ logger = logging.getLogger(__name__)
 # next-turn ``notify_pending`` fallback still carries it (never silent loss).
 _INBOX_MAXLEN = 64
 
-InboxKind = Literal["child_completed", "child_failed"]
+InboxKind = Literal["child_completed", "child_failed", "user_message"]
+
+# Grounding-block header for a mid-turn user steer (#1036). Its OWN marker, NOT the
+# task-notification marker: a steer is USER-authored (trusted) but still rides the
+# server-grounding lane (surfaced in the model's tool-observation string), never the
+# model-output lane, so it is unambiguously labelled as an out-of-band user message
+# that arrived while the turn was running.
+USER_STEER_MARKER = "## Mid-turn user steer (a message the user sent while this turn was running)"
 
 
 def _now_iso() -> str:
@@ -68,15 +87,21 @@ def _now_iso() -> str:
 class InboxEvent:
     """One data-light mid-turn wake.
 
-    ``kind`` distinguishes a completed from a failed child (the only two kinds in
-    #1035 — user_message steer is #1036); ``task_id`` points back at the
-    authoritative ``AgentTask`` from which the model-facing text is composed at
-    drain time. ``enqueued_at`` is a stamp for ordering/diagnostics only.
+    ``kind`` distinguishes a completed from a failed child (#1035) from a
+    ``user_message`` steer (#1036). For the two child kinds ``task_id`` points
+    back at the authoritative ``AgentTask`` from which the model-facing text is
+    composed at drain time, and ``text``/``metadata`` are empty. For a
+    ``user_message`` steer ``task_id`` is ``""``/meaningless and the event carries
+    its own ``text`` (the user's steer message) plus ``metadata`` (e.g. the
+    ask-user-resume bookkeeping when the fold re-drives an answer). ``enqueued_at``
+    is a stamp for ordering/diagnostics only.
     """
 
     kind: InboxKind
     task_id: str
     enqueued_at: str = field(default_factory=_now_iso)
+    text: str = ""
+    metadata: dict = field(default_factory=dict)
 
 
 class LoopInbox:
@@ -182,6 +207,97 @@ def enqueue_completion_wake(app: "FastAPI", task: object) -> None:
         )
 
 
+def enqueue_user_steer(
+    app: "FastAPI",
+    session_id: str,
+    text: str,
+    metadata: dict | None = None,
+) -> None:
+    """Producer B: enqueue a mid-turn user *steer* onto ``session_id``'s inbox.
+
+    Sibling of :func:`enqueue_completion_wake`. Used by both Producer B callers —
+    the POST /messages busy branch (a user message that arrived while a turn runs)
+    and the ask-user resume fold (an answer that arrived while busy). The event
+    carries the user's ``text`` + ``metadata``; the running turn's next tool
+    boundary drains it into a ``### steer`` grounding block, or — if the turn ends
+    first — the idle hook re-drives residual steers into ONE new turn. This does
+    NOT start a turn and does NOT persist a message (the POST route persists the
+    ``mid_turn_steer`` message; the idle re-drive persists via a new turn).
+    """
+
+    inbox_for(app, session_id).put(
+        InboxEvent(
+            kind="user_message",
+            task_id="",
+            text=text,
+            metadata=dict(metadata or {}),
+        )
+    )
+
+
+def drain_inbox_to_new_turn(app: "FastAPI", sid: str) -> None:
+    """Re-drive residual mid-turn user *steers* into EXACTLY ONE new turn (#1036).
+
+    The turn-runner idle-hook body (installed in ``app.py``), fired when ``sid``'s
+    turn slot clears. A steer (a mid-turn POST, or a folded ask-user resume) that
+    the running turn never drained is still buffered here; we drain and start ONE
+    new turn for all residual steers so the user's message is never dropped. Non-
+    steer events (Producer A child wakes enqueued at the boundary) are put back —
+    they are not turn-drivers and their next-turn ``notify_pending`` fallback still
+    delivers them. If the session is gone / agent unavailable / a turn re-acquired
+    the slot, every event stays buffered for the next idle transition.
+    """
+
+    inbox = app.state.loop_inboxes.get(sid)
+    if inbox is None or not inbox.peek_nonempty():
+        return
+    sess = app.state.sessions.get(sid)
+    if sess is None:
+        return  # session gone; nothing to resume into
+    if app.state.agent is None or app.state.turn_runner.busy(sid):
+        return  # not ready — leave buffered for the next idle transition
+    events = inbox.drain()
+    steers = [e for e in events if e.kind == "user_message"]
+    for residual in events:
+        if residual.kind != "user_message":
+            inbox_for(app, sid).put(residual)
+    if not steers:
+        return
+
+    from clio_agent.gact.events import Event  # noqa: PLC0415
+    from clio_agent.gact.turn import _start_background_user_turn  # noqa: PLC0415
+
+    # One turn total: concatenate residual steer texts in arrival order; merge their
+    # metadata (later wins) so a folded ask-user resume carries its ask_user_* keys.
+    metadata: dict = {}
+    for e in steers:
+        metadata.update(e.metadata or {})
+    resumed_msg = _start_background_user_turn(
+        app,
+        sid,
+        sess,
+        "\n\n".join(e.text for e in steers if e.text),
+        metadata=metadata,
+        prev_status=str(getattr(sess, "status", "idle") or "idle"),
+    )
+    # A folded ask-user resume still publishes user_question.resumed so the answer's
+    # delivery is observable on the trace/API exactly as the live path emits it.
+    for e in steers:
+        if e.metadata.get("ask_user_resume"):
+            app.state.bus.publish(
+                Event(
+                    type="user_question.resumed",
+                    session_id=sid,
+                    payload={
+                        "question_id": e.metadata.get("question_id", ""),
+                        "session_id": sid,
+                        "queued_user_message_id": resumed_msg.id,
+                        "deferred": True,
+                    },
+                )
+            )
+
+
 def drain_active_session_inbox(app: "FastAPI") -> str:
     """Drain the ACTIVE session's inbox and return a composed model-facing block.
 
@@ -213,59 +329,80 @@ def drain_active_session_inbox(app: "FastAPI") -> str:
         if not events:
             return ""
 
-        from clio_agent.gact.agent_tasks import consume_notification  # noqa: PLC0415
-        from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
-            _runtime_active_agent_blueprint_id,
-        )
-        from clio_agent.gact.agents.spawn_runtime import (  # noqa: PLC0415
-            _emit_delegation_terminal,
-        )
-        from clio_agent.gact.enrichment import (  # noqa: PLC0415
-            PENDING_TASK_NOTIFICATION_MARKER,
-            _notify_block,
-        )
-        from clio_agent.gact.types import AgentDef  # noqa: PLC0415
-
-        reg = app.state.agent_task_registry
-        blueprint_id = _runtime_active_agent_blueprint_id(app, sid) or ""
-        blocks: list[str] = []
+        # A user_message steer (#1036) is NOT a task: it MUST skip the once-gate
+        # (consume_notification) and the delegation terminal entirely and surface a
+        # ``### steer`` grounding block composed from its OWN text. The task path
+        # below runs only for the child-completion kinds.
+        steer_blocks: list[str] = []
+        task_events = []
         for event in events:
-            task = reg.get(event.task_id)
-            if task is None:
-                logger.warning("loop_inbox drain skip reason=unknown_task task=%s", event.task_id)
+            if event.kind == "user_message":
+                steer_text = (event.text or "").strip()
+                if steer_text:
+                    steer_blocks.append(USER_STEER_MARKER + "\n\n" + steer_text)
                 continue
-            # Claim the observe-later notification atomically. If a concurrent
-            # wait/check (or an earlier drain) already consumed it, mark_consumed
-            # returns None and we skip surfacing it — no double-surface.
-            claimed = consume_notification(app, event.task_id)
-            if claimed is None:
-                continue
-            blocks.append(_notify_block(claimed))
-            # Pair the consume with the delegation TERMINAL — the SAME choreography the
-            # next-turn commit (consume_pending_agent_task_notifications) and wait/check
-            # emit: blueprint.delegation.completed|failed + the return expert_handoff Part
-            # + parent_resumed. Separately once-gated via delegation_reported, so a later
-            # wait / next-turn inject reaching this task never double-emits. WITHOUT this a
-            # mid-turn-drained fire-and-forget child would dangle (started, no terminal) and
-            # render perpetually in-progress — the exact regression the observe-later commit
-            # path exists to prevent. (A post-drain turn abort keeps the wire correct via this
-            # terminal + the durable agent.task.completed; the parent re-observes via the
-            # registry, so the completion is never lost — only the mid-turn auto-inject is.)
-            parent_id = task.agent_ref.get("requesting_expert_id", "") or "main"
-            parent_def = AgentDef(
-                id=parent_id,
-                title=parent_id,
-                metadata={"agent_blueprint_id": blueprint_id},
+            task_events.append(event)
+
+        task_section = ""
+        if task_events:
+            from clio_agent.gact.agent_tasks import consume_notification  # noqa: PLC0415
+            from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+                _runtime_active_agent_blueprint_id,
             )
-            _emit_delegation_terminal(app, sid, parent_def, task)
+            from clio_agent.gact.agents.spawn_runtime import (  # noqa: PLC0415
+                _emit_delegation_terminal,
+            )
+            from clio_agent.gact.enrichment import (  # noqa: PLC0415
+                PENDING_TASK_NOTIFICATION_MARKER,
+                _notify_block,
+            )
+            from clio_agent.gact.types import AgentDef  # noqa: PLC0415
+
+            reg = app.state.agent_task_registry
+            blueprint_id = _runtime_active_agent_blueprint_id(app, sid) or ""
+            task_blocks: list[str] = []
+            for event in task_events:
+                task = reg.get(event.task_id)
+                if task is None:
+                    logger.warning(
+                        "loop_inbox drain skip reason=unknown_task task=%s", event.task_id
+                    )
+                    continue
+                # Claim the observe-later notification atomically. If a concurrent
+                # wait/check (or an earlier drain) already consumed it, mark_consumed
+                # returns None and we skip surfacing it — no double-surface.
+                claimed = consume_notification(app, event.task_id)
+                if claimed is None:
+                    continue
+                task_blocks.append(_notify_block(claimed))
+                # Pair the consume with the delegation TERMINAL — the SAME choreography the
+                # next-turn commit (consume_pending_agent_task_notifications) and wait/check
+                # emit: blueprint.delegation.completed|failed + the return expert_handoff Part
+                # + parent_resumed. Separately once-gated via delegation_reported, so a later
+                # wait / next-turn inject reaching this task never double-emits. WITHOUT this a
+                # mid-turn-drained fire-and-forget child would dangle (started, no terminal) and
+                # render perpetually in-progress — the exact regression the observe-later commit
+                # path exists to prevent. (A post-drain turn abort keeps the wire correct via
+                # this terminal + the durable agent.task.completed; the parent re-observes via
+                # the registry, so the completion is never lost — only the mid-turn auto-inject.)
+                parent_id = task.agent_ref.get("requesting_expert_id", "") or "main"
+                parent_def = AgentDef(
+                    id=parent_id,
+                    title=parent_id,
+                    metadata={"agent_blueprint_id": blueprint_id},
+                )
+                _emit_delegation_terminal(app, sid, parent_def, task)
+            if task_blocks:
+                task_section = PENDING_TASK_NOTIFICATION_MARKER + "\n\n" + "\n\n".join(task_blocks)
 
         # Watchdog liveness: publish on the PARENT session even if every event was
         # already consumed elsewhere (the drain still did work this turn).
-        _publish_drain_progress(app, sid, len(events), len(blocks))
+        surfaced = len(steer_blocks) + (1 if task_section else 0)
+        _publish_drain_progress(app, sid, len(events), surfaced)
 
-        if not blocks:
-            return ""
-        return PENDING_TASK_NOTIFICATION_MARKER + "\n\n" + "\n\n".join(blocks)
+        # Steers first (the user's most recent intent leads), then task results.
+        sections = [*steer_blocks, task_section]
+        return "\n\n".join(s for s in sections if s)
     except Exception as exc:  # noqa: BLE001 - a drain must never break a tool call
         logger.warning("loop_inbox drain failed reason=drain_error err=%r", exc)
         return ""

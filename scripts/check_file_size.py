@@ -117,7 +117,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # hook install (mirrors pending_cancellation_checker). All logic lives in the
     # owner module gact/loop_inbox.py; only these boot call sites are here. Ratchets
     # back with the #714 lifespan split.
-    "src/clio_agent/gact/app.py": 2737,
+    # #1036 (epic #1031 Pillar 2): 2737 -> 2695 — deleted the deferred_resumes init +
+    # _redrive_deferred_resume; the resume fold's re-drive now lives in the owner
+    # module gact/loop_inbox.py (drain_inbox_to_new_turn), leaving only the idle-hook
+    # wiring here.
+    "src/clio_agent/gact/app.py": 2695,
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -171,7 +175,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # grants owner module; only the guarded one-call seam + its import land here).
     # #1034: +2 to pass approval_mode through create_session + patch_session (two arg-pass
     # lines; the axis logic lives in sessions.py + permission_gate.py, no accretion here).
-    "src/clio_agent/gact/routes/sessions.py": 1551,
+    # #1036: 1551 -> 1545 — the ask-user resume fold replaced the inline deferred_resumes
+    # stash with a one-call enqueue_user_steer + a hoisted resume_metadata (dedup).
+    "src/clio_agent/gact/routes/sessions.py": 1545,
     # #933: +8 for the turn-scoped workspace-fleet lease in _tool_session_context.
     # #933 review hardening: typed workspace_lease_unavailable degrade when a
     # rooted turn has no leasable agent (+9).

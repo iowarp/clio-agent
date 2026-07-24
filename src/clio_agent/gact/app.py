@@ -785,14 +785,14 @@ from clio_agent.gact.catalog import (  # noqa: E402, F401
     _tool_visible_to_for_catalog,
     _truthy_command_field,
 )
-from clio_agent.gact.events import Event, EventBus
+from clio_agent.gact.events import EventBus
 from clio_agent.gact.expert_packs import (
     discover_expert_packs,
     load_expert_pack_path,
     load_expert_packs,
     validate_expert_hierarchy,
 )
-from clio_agent.gact.loop_inbox import _make_loop_inbox_drain
+from clio_agent.gact.loop_inbox import _make_loop_inbox_drain, drain_inbox_to_new_turn
 from clio_agent.gact.messages import MessageStore
 from clio_agent.gact.permission_gate import (  # noqa: E402,F401
     _direct_permission_denied,
@@ -1233,46 +1233,6 @@ def _fire_schedule(app: "FastAPI", sch: Any) -> None:
     )
 
 
-def _redrive_deferred_resume(app: "FastAPI", sid: str) -> None:
-    """Stage an ask-user resume that was deferred because the session was busy when
-    its answer arrived (#948 S1). Fired by the turn-runner idle hook the moment the
-    session's turn slot clears, so the resume runs promptly — the user's answer is
-    never dropped. Idempotent + self-re-deferring if the session busied again."""
-
-    deferred = getattr(app.state, "deferred_resumes", None)
-    if not deferred:
-        return
-    payload = deferred.pop(sid, None)
-    if payload is None:
-        return
-    sess = app.state.sessions.get(sid)
-    if sess is None:
-        return  # session gone; nothing to resume into
-    if app.state.agent is None or app.state.turn_runner.busy(sid):
-        deferred[sid] = payload  # not ready — re-defer for the next idle transition
-        return
-    resumed_msg = _turn_start_background_user_turn(
-        app,
-        sid,
-        sess,
-        payload["text"],
-        metadata=payload["metadata"],
-        prev_status=str(getattr(sess, "status", "idle") or "idle"),
-    )
-    app.state.bus.publish(
-        Event(
-            type="user_question.resumed",
-            session_id=sid,
-            payload={
-                "question_id": payload.get("question_id", ""),
-                "session_id": sid,
-                "queued_user_message_id": resumed_msg.id,
-                "deferred": True,
-            },
-        )
-    )
-
-
 def _scheduler_tick_once(app: "FastAPI") -> None:
     """Process one scheduler tick: fire every currently-due schedule.
 
@@ -1531,15 +1491,13 @@ def build_app(
     # minute; _scheduler_tick_once retries them until the session frees (a coarse
     # cron can't be retried via due_now, which only re-yields on a cron match).
     app.state.deferred_schedules = set()
-    # #948 S1: ask-user resumes deferred because an intervening turn was running
-    # when the answer arrived. Keyed by session_id -> {text, metadata, question_id};
-    # the turn-runner idle hook re-drives them the instant the session frees (never
-    # dropped — losing a user's answer is a silent-fallback bug).
-    app.state.deferred_resumes = {}
-    # #1035 (epic #1031 Pillar 2): per-session loop inboxes — the mid-turn wake
-    # carrier (session_id -> LoopInbox). See gact/loop_inbox.py for the owner logic.
+    # #1035/#1036 (epic #1031 Pillar 2): per-session loop inboxes — the mid-turn
+    # wake + user-steer carrier (session_id -> LoopInbox). See gact/loop_inbox.py.
+    # #1036 folded the former app.state.deferred_resumes stash here: an ask-user
+    # resume that arrives while busy is enqueued as a user_message steer and the
+    # idle hook (drain_inbox_to_new_turn) re-drives residual steers into ONE turn.
     app.state.loop_inboxes = {}
-    app.state.turn_runner.set_idle_hook(lambda sid: _redrive_deferred_resume(app, sid))
+    app.state.turn_runner.set_idle_hook(lambda sid: drain_inbox_to_new_turn(app, sid))
     # iowarp/clio-agent#2: per-session ledger of tool calls observed
     # during the in-flight turn. The global tool_observer appends
     # here; _run_turn_in_background drains it post-forward to attach

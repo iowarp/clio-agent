@@ -35,7 +35,9 @@ from typing import TYPE_CHECKING, Any
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Response
 
 from clio_agent.gact.events import Event
+from clio_agent.gact.loop_inbox import enqueue_user_steer
 from clio_agent.gact.message_wire import normalize_thought_ownership
+from clio_agent.gact.messaging import _user_message_parts
 from clio_agent.gact.providers.config import (
     _active_lm_supports_vision,
     _effective_lm_config,
@@ -43,6 +45,8 @@ from clio_agent.gact.providers.config import (
     _model_ref_is_empty,
     _model_ref_matches_active,
 )
+from clio_agent.gact.runtime.globals import _iso_from_epoch, _new_message_id
+from clio_agent.gact.session_store import _append_session_message
 from clio_agent.gact.turn_runner import session_busy_error_payload
 from clio_agent.gact.types import (
     ErrorEnvelope,
@@ -204,9 +208,44 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
     # the stored user message + the assistant's reply. Streaming
     # (SSE on /v1/sessions/{sid}/events) lands in BBB10.
 
+    def _persist_mid_turn_steer(sid: str, user_text: str, req: PostMessageRequest) -> Message:
+        """Persist a mid-turn user *steer* directly (NOT via a new turn) (#1036).
+
+        A POST that lands while a turn is already running is a steer, not a new
+        turn: we persist the user message with ``metadata["mid_turn_steer"]=True``
+        so ``GET /messages`` reflects it immediately, but we do NOT mint a turn_id
+        for it (``start_background_user_turn`` would spawn a second turn and orphan
+        the running one). ``turn_id`` stays empty — the steer correlates to no turn
+        of its own; the running turn drains it mid-flight (or the idle hook
+        re-drives it into one new turn). Publishes ``message.created`` so SSE
+        clients see the steer arrive live.
+        """
+
+        now = _iso_from_epoch(datetime.now(timezone.utc).timestamp())
+        steer_metadata = dict(req.metadata or {})
+        steer_metadata["mid_turn_steer"] = True
+        steer_msg = Message(
+            id=_new_message_id("user"),
+            turn_id="",
+            session_id=sid,
+            role="user",
+            created_at=now,
+            updated_at=now,
+            parts=_user_message_parts(request_parts=list(req.parts or []), user_text=user_text),
+            metadata=steer_metadata,
+        )
+        _append_session_message(app, sid, steer_msg)
+        app.state.bus.publish(
+            Event(type="message.created", session_id=sid, payload=steer_msg.to_wire())
+        )
+        return steer_msg
+
     @app.post("/v1/sessions/{sid}/messages", response_model=PostMessageResponse)
     async def post_message(
-        sid: str, req: PostMessageRequest, background_tasks: BackgroundTasks
+        sid: str,
+        req: PostMessageRequest,
+        background_tasks: BackgroundTasks,
+        response: Response,
     ) -> PostMessageResponse:
         """Accept a user message and ack immediately. The agent turn
         runs in the background; clients consume progress via the SSE
@@ -310,16 +349,25 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             )
 
-        # #948 S1 (#662): within-session busy gate. A second POST while a turn is
-        # already in flight for this session is refused with a typed 409 rather
-        # than silently overwriting the first turn's slot (which orphaned it,
-        # uncancellable, with both turns writing the same session + ARC). The
-        # client renders the reason and retries after the running turn completes.
-        # (Deliberate concurrency of turns is a background-child mechanism — #948
-        # S3 — spawned on child sessions, not a second turn on this one.)
-        busy_payload = session_busy_error_payload(getattr(app.state, "turn_runner", None), sid)
-        if busy_payload is not None:
-            raise HTTPException(status_code=409, detail=busy_payload)
+        # #1036 (epic #1031 Pillar 2): within-session mid-turn STEER. A second POST
+        # while a turn is already in flight is no longer a 409 — it is a user steer.
+        # We do NOT start a second turn (that would orphan the running one's slot,
+        # both writing the same session + ARC — the #948 S1 hazard). Instead we
+        # persist the message (marked mid_turn_steer so GET /messages shows it) and
+        # enqueue a user_message InboxEvent; the running turn's next tool boundary
+        # drains it into a ``### steer`` grounding block (same turn), or — if the
+        # turn ends first — the idle hook re-drives it into exactly ONE new turn.
+        # Ack 202 (accepted-as-steer, distinct from the 200 new-turn ack). The
+        # busy-gate 409 payload is still used by other producers (mcp_apps, retry).
+        if session_busy_error_payload(getattr(app.state, "turn_runner", None), sid) is not None:
+            steer_msg = _persist_mid_turn_steer(sid, user_text, req)
+            enqueue_user_steer(app, sid, user_text, req.metadata)
+            del background_tasks
+            response.status_code = 202
+            return PostMessageResponse(
+                message_id=steer_msg.id,
+                accepted_at=steer_msg.created_at,
+            )
 
         # Persist + publish the user message synchronously so by the
         # time the ack returns, GET /messages reflects it. Then mark
