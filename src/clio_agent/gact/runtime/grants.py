@@ -73,13 +73,9 @@ REASON_GRANT_LIVE = "grant_applied_live"  # no resident child: next spawn uses t
 REASON_GRANT_RESTARTED_LIVE = "grant_restarted_live"  # resident fleet restarted → live now
 REASON_GRANT_DEFERRED_BUSY = "grant_restart_deferred_busy"  # busy fleet: restart deferred to drain
 REASON_GRANT_RECORDED_NO_FENCE = "grant_recorded_no_active_fence"  # floor: advisory-only widen
-#: A restart-WIRING failure (the ``request_fleet_restart`` call itself raised) must NOT collapse to
-#: ``grant_applied_live`` — a resident child may still enforce its stale compile-time territory, so
-#: claiming the grant is live would be an over-claim. This distinct reason keeps the failure honest
-#: on the boundary.granted/API reason field, not only in a warning log (#1033 review — honesty lens).
-REASON_GRANT_RESTART_FAILED = (
-    "grant_restart_failed"  # restart attempt raised; territory may be stale
-)
+#: A restart-WIRING failure (the request itself raised): a resident child may keep stale territory,
+#: so surface it honestly instead of collapsing to ``grant_applied_live`` (#1033 review — honesty).
+REASON_GRANT_RESTART_FAILED = "grant_restart_failed"
 
 #: Deny-mode flag key on the workspace ``config`` (opt-in per workspace; config/state, not env).
 DENY_MODE_CONFIG_KEY = "network_deny_mode"
@@ -314,9 +310,7 @@ def _fold_restart_into_reason(base_reason: str, restart_outcome: str) -> str:
     )
 
     if restart_outcome == REASON_GRANT_RESTART_FAILED:
-        # A restart-wiring failure: do NOT fall back to the base ``grant_applied_live`` — a resident
-        # child may retain stale territory, so surface the failure honestly (no over-claim).
-        return REASON_GRANT_RESTART_FAILED
+        return REASON_GRANT_RESTART_FAILED  # never folds to applied_live
     if restart_outcome == RESTART_RESTARTED_LIVE:
         return REASON_GRANT_RESTARTED_LIVE
     if restart_outcome == RESTART_DEFERRED_BUSY:
@@ -331,7 +325,7 @@ def _request_fleet_restart(app: "FastAPI", workspace_root: str, *, widened: bool
     :data:`~clio_agent.tools.reaper.RESTART_NO_RESIDENT`) when the territory did not actually
     widen (an idempotent re-grant must not recycle the shared fleet — risk #1) or when no live
     agent is mounted (the unit / pre-agent context — a typed skip, never a silent success).
-    Never raises: a restart-wiring failure degrades to "no resident child" with a logged reason.
+    Never raises: a restart-wiring failure returns ``REASON_GRANT_RESTART_FAILED`` (honest + logged).
     """
     from clio_agent.tools.reaper import RESTART_NO_RESIDENT  # noqa: PLC0415
 
@@ -348,9 +342,8 @@ def _request_fleet_restart(app: "FastAPI", workspace_root: str, *, widened: bool
     try:
         return str(restart(workspace_root))
     except Exception as exc:  # noqa: BLE001 — a restart-wiring failure must never break the grant
-        # Do NOT collapse to RESTART_NO_RESIDENT (which folds to ``grant_applied_live``): a resident
-        # workspace-shared child may still enforce its stale compile-time territory. Return the
-        # distinct failure reason so the boundary.granted/API reason is honest, not only the log.
+        # Honest failure, NOT no-resident (which folds to grant_applied_live): a resident child may
+        # keep stale territory — surface it on the reason field, not only the log.
         logger.warning(
             "fleet restart failed reason=fleet_restart_failed root=%s error=%r",
             workspace_root,
@@ -370,16 +363,13 @@ def apply_root_grant(
 ) -> dict[str, Any]:
     """Apply a mid-session workspace root grant on the record (B5 #979.3, #1033).
 
-    Registers ``path`` as writable territory for the workspace's root (the live fence +
-    advisory both widen on the next spawn/check), persists it on the workspace record so it
-    survives a restart, restarts the workspace's resident fleet so an already-spawned child
-    picks up the widened territory (#1033), then emits ``boundary.granted{kind: root}``. Returns
-    a typed result ``{granted, pattern, reason, restart_deferred}`` — ``grant_restarted_live``
-    when a resident fleet was restarted, ``grant_restart_deferred_busy`` when a busy fleet
-    deferred it to the next drain, ``grant_restart_failed`` when the restart attempt raised (a
-    resident child may retain stale territory — surfaced honestly, not swallowed to a log),
-    ``grant_applied_live`` when nothing resident needed a restart, ``grant_recorded_no_active_fence``
-    on the advisory floor. Never raises for a missing fence.
+    Registers ``path`` as writable territory, persists it on the workspace record, restarts the
+    resident fleet so an already-spawned child picks up the widened territory (#1033), then emits
+    ``boundary.granted{kind: root}``. Returns ``{granted, pattern, reason, restart_deferred}`` with a
+    typed ``reason``: ``grant_restarted_live`` (idle fleet restarted), ``grant_restart_deferred_busy``
+    (busy fleet deferred to the next drain), ``grant_restart_failed`` (restart raised — a resident
+    child may keep stale territory, surfaced honestly), ``grant_applied_live`` (nothing resident), or
+    ``grant_recorded_no_active_fence`` (advisory floor). Never raises for a missing fence.
     """
     from clio_agent.runtime.sandbox_roots import register_write_root_grant  # noqa: PLC0415
 
@@ -387,11 +377,9 @@ def apply_root_grant(
     workspace_root = str(getattr(ws, "root_path", "") or "") if ws is not None else ""
     resolved = register_write_root_grant(workspace_root, path)
     pattern = str(resolved)
-    # Persist onto the workspace record (no new store — RULE 4): the boot replay reads it back.
-    # Mutate config BEFORE the store flush so ``update`` serialises the new list under the lock
-    # (a post-update mutation would not reach disk until the next write). ``widened`` tracks
-    # whether this grant ACTUALLY changed the territory (risk #1: an idempotent re-grant must not
-    # recycle the shared fleet for every session).
+    # Persist onto the workspace record (no new store — RULE 4) BEFORE the flush so ``update``
+    # serialises the new list under the lock. ``widened`` tracks whether the territory ACTUALLY
+    # changed (risk #1: an idempotent re-grant must not recycle the shared fleet).
     widened = True
     if ws is not None:
         existing = list(ws.config.get(GRANTED_ROOTS_CONFIG_KEY) or [])
