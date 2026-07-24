@@ -95,6 +95,18 @@ class InboxEvent:
     its own ``text`` (the user's steer message) plus ``metadata`` (e.g. the
     ask-user-resume bookkeeping when the fold re-drives an answer). ``enqueued_at``
     is a stamp for ordering/diagnostics only.
+
+    #1052 (persist-at-CONSUMPTION): a POST-route steer additionally carries a
+    pre-minted ``steer_message_id`` + ``steer_created_at`` + ``steer_parts`` (the
+    route-built :class:`~clio_agent.gact.types.Part` list, as wire dicts or Part
+    objects, so multimodal/image steers are not regressed). When
+    ``steer_message_id`` is non-empty the drain persists the ``mid_turn_steer``
+    Message at consumption — the route no longer persists it, so the atomic
+    pop-all drain yields exactly ONE record. These are DEDICATED fields (not folded
+    into ``metadata``) so ``drain_inbox_to_new_turn``'s ``metadata.update()`` merge
+    never leaks them into a new turn's metadata. The ask-user-resume fold supplies
+    NO ``steer_message_id`` (it persists only via the idle new-turn), so its
+    mid-turn behavior is unchanged: surface the block, do NOT persist.
     """
 
     kind: InboxKind
@@ -102,6 +114,9 @@ class InboxEvent:
     enqueued_at: str = field(default_factory=_now_iso)
     text: str = ""
     metadata: dict = field(default_factory=dict)
+    steer_message_id: str = ""
+    steer_created_at: str = ""
+    steer_parts: list = field(default_factory=list)
 
 
 class LoopInbox:
@@ -212,6 +227,10 @@ def enqueue_user_steer(
     session_id: str,
     text: str,
     metadata: dict | None = None,
+    *,
+    steer_message_id: str = "",
+    steer_created_at: str = "",
+    steer_parts: list | None = None,
 ) -> None:
     """Producer B: enqueue a mid-turn user *steer* onto ``session_id``'s inbox.
 
@@ -221,8 +240,15 @@ def enqueue_user_steer(
     carries the user's ``text`` + ``metadata``; the running turn's next tool
     boundary drains it into a ``### steer`` grounding block, or — if the turn ends
     first — the idle hook re-drives residual steers into ONE new turn. This does
-    NOT start a turn and does NOT persist a message (the POST route persists the
-    ``mid_turn_steer`` message; the idle re-drive persists via a new turn).
+    NOT start a turn.
+
+    #1052 (persist-at-CONSUMPTION): the POST-route caller now supplies
+    ``steer_message_id`` + ``steer_created_at`` + ``steer_parts`` — the persist of
+    the ``mid_turn_steer`` message MOVED from the route to the drain (consumption),
+    so a steer whose running turn ends before it drains is no longer persisted
+    twice (once by the route, once by the idle new-turn). The ask-user-resume
+    caller does NOT supply these (it persists only via the idle new-turn), so its
+    mid-turn behavior is unchanged.
     """
 
     inbox_for(app, session_id).put(
@@ -231,6 +257,9 @@ def enqueue_user_steer(
             task_id="",
             text=text,
             metadata=dict(metadata or {}),
+            steer_message_id=steer_message_id,
+            steer_created_at=steer_created_at,
+            steer_parts=list(steer_parts or []),
         )
     )
 
@@ -272,6 +301,14 @@ def drain_inbox_to_new_turn(app: "FastAPI", sid: str) -> None:
     metadata: dict = {}
     for e in steers:
         metadata.update(e.metadata or {})
+    # #1052: honor the pre-minted id the mid-turn POST already returned in its 202,
+    # so the id handed to the client resolves to exactly one persisted message in the
+    # turn-ended-first (idle re-drive) path too — not just the mid-turn-drain path.
+    # Only when EXACTLY ONE steer is promoted: when several coalesce into one turn a
+    # single message can carry only one id, so we mint a fresh one (the coalesced 202
+    # ids are inherently un-resolvable — the documented multi-steer edge). An
+    # ask-user-resume steer carries no steer_message_id and mints as before.
+    promote_id = steers[0].steer_message_id if len(steers) == 1 else ""
     resumed_msg = _start_background_user_turn(
         app,
         sid,
@@ -279,6 +316,7 @@ def drain_inbox_to_new_turn(app: "FastAPI", sid: str) -> None:
         "\n\n".join(e.text for e in steers if e.text),
         metadata=metadata,
         prev_status=str(getattr(sess, "status", "idle") or "idle"),
+        user_msg_id=promote_id,
     )
     # A folded ask-user resume still publishes user_question.resumed so the answer's
     # delivery is observable on the trace/API exactly as the live path emits it.
@@ -340,6 +378,14 @@ def drain_active_session_inbox(app: "FastAPI") -> str:
                 steer_text = (event.text or "").strip()
                 if steer_text:
                     steer_blocks.append(USER_STEER_MARKER + "\n\n" + steer_text)
+                    # #1052: a POST-route steer carries a pre-minted id — persist the
+                    # mid_turn_steer Message HERE (persist-at-CONSUMPTION), the point
+                    # the running turn folds it in. The route no longer persists, so
+                    # the atomic drain yields exactly ONE record. An ask-user-resume
+                    # steer carries NO steer_message_id — it persists only via the idle
+                    # new-turn, so we surface its block WITHOUT persisting.
+                    if event.steer_message_id:
+                        _persist_steer_at_consumption(app, sid, event, steer_text)
                 continue
             task_events.append(event)
 
@@ -406,6 +452,55 @@ def drain_active_session_inbox(app: "FastAPI") -> str:
     except Exception as exc:  # noqa: BLE001 - a drain must never break a tool call
         logger.warning("loop_inbox drain failed reason=drain_error err=%r", exc)
         return ""
+
+
+def _persist_steer_at_consumption(
+    app: "FastAPI", sid: str, event: InboxEvent, steer_text: str
+) -> None:
+    """Persist a POST-route mid-turn steer at the drain — persist-at-CONSUMPTION (#1052).
+
+    The POST route pre-mints the id / stamp / parts and carries them on ``event``;
+    we materialize the ``mid_turn_steer`` Message HERE (the point the running turn
+    actually folds the steer in) and publish ``message.created`` so SSE clients see
+    the steer arrive when it takes effect. Because the route no longer persists and
+    the atomic pop-all :meth:`LoopInbox.drain` guarantees a single consumer, exactly
+    ONE record exists. Runs on the tool-executor thread (thread-safe, exactly as
+    this module already publishes ``loop_inbox.drained`` + the delegation terminals).
+    Wrapped in its OWN typed-reason try/except so a persist hiccup still lets the
+    ``### steer`` block surface to the model — the steer is never lost to the turn.
+    """
+
+    try:
+        from clio_agent.gact.events import Event  # noqa: PLC0415
+        from clio_agent.gact.session_store import _append_session_message  # noqa: PLC0415
+        from clio_agent.gact.types import Message, Part  # noqa: PLC0415
+
+        parts = [Part(**p) if isinstance(p, dict) else p for p in event.steer_parts] or [
+            Part(type="text", text=steer_text)
+        ]
+        stamp = event.steer_created_at or _now_iso()
+        metadata = dict(event.metadata or {})
+        metadata["mid_turn_steer"] = True
+        msg = Message(
+            id=event.steer_message_id,
+            turn_id="",
+            session_id=sid,
+            role="user",
+            created_at=stamp,
+            updated_at=stamp,
+            parts=parts,
+            metadata=metadata,
+        )
+        _append_session_message(app, sid, msg)
+        app.state.bus.publish(
+            Event(type="message.created", session_id=sid, payload=msg.to_wire())
+        )
+    except Exception as exc:  # noqa: BLE001 - a persist hiccup must not drop the steer block
+        logger.warning(
+            "loop_inbox steer persist failed reason=steer_persist_error steer_id=%s err=%r",
+            event.steer_message_id,
+            exc,
+        )
 
 
 def _publish_drain_progress(app: "FastAPI", sid: str, drained: int, surfaced: int) -> None:

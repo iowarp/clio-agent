@@ -260,12 +260,13 @@ def _post_message(client: TestClient, sid: str, text: str = "hi"):
 
 
 def test_second_post_while_running_steers_with_202(tmp_path: Path) -> None:
-    """#1036: a second POST while a turn runs is NO LONGER a 409 — it is a mid-turn
-    STEER. It returns 202, persists the message marked ``mid_turn_steer`` (so
-    GET /messages shows it immediately), and does NOT start a second turn (the
-    running turn keeps its slot; the steer is drained mid-flight or re-driven once
-    at idle). The busy-gate 409 payload survives for other producers (mcp_apps,
-    retry)."""
+    """#1036/#1052: a second POST while a turn runs is NO LONGER a 409 — it is a
+    mid-turn STEER. It returns 202 and does NOT start a second turn (the running turn
+    keeps its slot). Under #1052 persist-at-CONSUMPTION the route no longer persists
+    the steer itself — it enqueues it and the running turn's next drain (or the idle
+    re-drive) persists it EXACTLY ONCE; so right after the 202 the steer is buffered,
+    not yet in GET /messages. The busy-gate 409 payload survives for other producers
+    (mcp_apps, retry)."""
 
     app = build_app(sessions_path=tmp_path / "s.json", agent=_SlowAgent(sleep_s=1.5))
     with TestClient(app) as client:
@@ -282,12 +283,12 @@ def test_second_post_while_running_steers_with_202(tmp_path: Path) -> None:
         assert second.status_code == 202, "a mid-turn POST must be accepted as a steer, not 409'd"
         steer_id = second.json()["message_id"]
 
-        # The steer was persisted (visible immediately) and marked mid_turn_steer.
-        msgs = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-        by_id = {m["id"]: m for m in msgs}
-        assert steer_id in by_id, "the mid-turn steer was not persisted"
-        assert by_id[steer_id]["metadata"].get("mid_turn_steer") is True
-        assert by_id[steer_id].get("turn_id", "") == "", "a steer must not mint its own turn"
+        # #1052: the route no longer persists — the steer is NOT yet in GET /messages
+        # (it appears when a drain consumes it), but it IS buffered on the inbox with
+        # the pre-minted id the 202 handed back (which that drain will persist under).
+        by_id = {m["id"]: m for m in client.get(f"/v1/sessions/{sid}/messages").json()["messages"]}
+        assert steer_id not in by_id, "persist-at-consumption: the route must not persist the steer"
+        assert app.state.loop_inboxes[sid].peek_nonempty(), "the steer was not buffered for the drain"
 
         # It did NOT start a second turn: the running turn still owns the slot and
         # its id is unchanged.

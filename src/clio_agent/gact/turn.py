@@ -831,19 +831,19 @@ def _start_background_user_turn(
     metadata: Optional[dict[str, Any]] = None,
     prev_status: str = "idle",
     turn_agent_id: str = "",
+    user_msg_id: str = "",
 ) -> Message:
     """Stage a user turn and drive it off-thread.
 
-    Persists the user message + parts, flips the session to ``running``,
-    publishes ``session.status_changed`` + ``message.created``, then schedules
-    :func:`_run_turn_in_background` as a tracked ``asyncio`` task (registered in
-    ``app.state.in_flight_turns`` so cancellation can reach it). Returns the
-    staged user :class:`Message`.
-
-    Hoisted out of ``build_app`` (#714) so the POST-message / question-answer /
-    retry-attempt / scheduler callers can share it via ``GactDeps`` without
-    importing back into :mod:`clio_agent.gact.app`; ``app`` is now an explicit
-    first argument instead of a closure capture.
+    Persists the user message + parts, flips the session to ``running``, publishes
+    ``session.status_changed`` + ``message.created``, then schedules
+    :func:`_run_turn_in_background` as a tracked ``asyncio`` task (in
+    ``app.state.in_flight_turns`` so cancellation reaches it). Returns the staged
+    user :class:`Message`. Hoisted out of ``build_app`` (#714) so callers share it
+    via ``GactDeps`` with ``app`` an explicit arg. ``user_msg_id`` overrides the
+    minted message/turn id (empty ⇒ mint): the #1052 idle steer re-drive passes the
+    id the mid-turn ``202`` already returned so the promoted turn reuses it — no
+    phantom client-held id (see ``loop_inbox.drain_inbox_to_new_turn``).
     """
     # #714 danger set: bind through app at call time so test monkeypatches of
     # clio_agent.gact.app._append_session_message keep intercepting persistence.
@@ -870,7 +870,7 @@ def _start_background_user_turn(
             "session_agent_id": _session_agent_id(sess),
             "scope": "turn",
         }
-    user_msg_id = _new_message_id("user")
+    user_msg_id = user_msg_id or _new_message_id("user")
     user_msg = Message(
         id=user_msg_id,
         # The turn id IS the user message id (#711); a user message correlates to

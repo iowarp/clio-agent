@@ -46,7 +46,6 @@ from clio_agent.gact.providers.config import (
     _model_ref_matches_active,
 )
 from clio_agent.gact.runtime.globals import _iso_from_epoch, _new_message_id
-from clio_agent.gact.session_store import _append_session_message
 from clio_agent.gact.turn_runner import session_busy_error_payload
 from clio_agent.gact.types import (
     ErrorEnvelope,
@@ -208,38 +207,6 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
     # the stored user message + the assistant's reply. Streaming
     # (SSE on /v1/sessions/{sid}/events) lands in BBB10.
 
-    def _persist_mid_turn_steer(sid: str, user_text: str, req: PostMessageRequest) -> Message:
-        """Persist a mid-turn user *steer* directly (NOT via a new turn) (#1036).
-
-        A POST that lands while a turn is already running is a steer, not a new
-        turn: we persist the user message with ``metadata["mid_turn_steer"]=True``
-        so ``GET /messages`` reflects it immediately, but we do NOT mint a turn_id
-        for it (``start_background_user_turn`` would spawn a second turn and orphan
-        the running one). ``turn_id`` stays empty — the steer correlates to no turn
-        of its own; the running turn drains it mid-flight (or the idle hook
-        re-drives it into one new turn). Publishes ``message.created`` so SSE
-        clients see the steer arrive live.
-        """
-
-        now = _iso_from_epoch(datetime.now(timezone.utc).timestamp())
-        steer_metadata = dict(req.metadata or {})
-        steer_metadata["mid_turn_steer"] = True
-        steer_msg = Message(
-            id=_new_message_id("user"),
-            turn_id="",
-            session_id=sid,
-            role="user",
-            created_at=now,
-            updated_at=now,
-            parts=_user_message_parts(request_parts=list(req.parts or []), user_text=user_text),
-            metadata=steer_metadata,
-        )
-        _append_session_message(app, sid, steer_msg)
-        app.state.bus.publish(
-            Event(type="message.created", session_id=sid, payload=steer_msg.to_wire())
-        )
-        return steer_msg
-
     @app.post("/v1/sessions/{sid}/messages", response_model=PostMessageResponse)
     async def post_message(
         sid: str,
@@ -353,20 +320,43 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         # while a turn is already in flight is no longer a 409 — it is a user steer.
         # We do NOT start a second turn (that would orphan the running one's slot,
         # both writing the same session + ARC — the #948 S1 hazard). Instead we
-        # persist the message (marked mid_turn_steer so GET /messages shows it) and
-        # enqueue a user_message InboxEvent; the running turn's next tool boundary
-        # drains it into a ``### steer`` grounding block (same turn), or — if the
-        # turn ends first — the idle hook re-drives it into exactly ONE new turn.
-        # Ack 202 (accepted-as-steer, distinct from the 200 new-turn ack). The
-        # busy-gate 409 payload is still used by other producers (mcp_apps, retry).
+        # pre-mint the message id + stamp + parts and enqueue a user_message
+        # InboxEvent carrying them; the running turn's next tool boundary drains it
+        # into a ``### steer`` grounding block AND persists the mid_turn_steer message
+        # at THAT point (#1052 persist-at-CONSUMPTION) — or, if the turn ends first,
+        # the idle hook re-drives it into exactly ONE new turn (which persists it).
+        # The route no longer persists here, so the message is recorded EXACTLY ONCE
+        # regardless of which consumer claims it (the atomic pop-all drain guarantees
+        # a single consumer). The 202's pre-minted message_id resolves to that single
+        # persisted message in BOTH drain paths: the mid-turn drain persists under it,
+        # and the turn-ended-first idle re-drive REUSES it for the promoted turn
+        # (#1052 — no phantom 202 id). Accepted trade-off: between the 202 and the next
+        # drain (usually the next tool boundary) the steer is NOT yet in GET /messages
+        # — it appears when it takes effect. (Edge: if several steers coalesce into one
+        # idle-promoted turn, that single message can carry only one id, so the
+        # coalesced 202 ids beyond the first are inherently un-resolvable.) Ack 202
+        # (accepted-as-steer, distinct from the 200 new-turn ack). The busy-gate 409
+        # payload is still used by other producers (mcp_apps, retry).
         if session_busy_error_payload(getattr(app.state, "turn_runner", None), sid) is not None:
-            steer_msg = _persist_mid_turn_steer(sid, user_text, req)
-            enqueue_user_steer(app, sid, user_text, req.metadata)
+            steer_id = _new_message_id("user")
+            created_at = _iso_from_epoch(datetime.now(timezone.utc).timestamp())
+            steer_parts = _user_message_parts(
+                request_parts=list(req.parts or []), user_text=user_text
+            )
+            enqueue_user_steer(
+                app,
+                sid,
+                user_text,
+                req.metadata,
+                steer_message_id=steer_id,
+                steer_created_at=created_at,
+                steer_parts=steer_parts,
+            )
             del background_tasks
             response.status_code = 202
             return PostMessageResponse(
-                message_id=steer_msg.id,
-                accepted_at=steer_msg.created_at,
+                message_id=steer_id,
+                accepted_at=created_at,
             )
 
         # Persist + publish the user message synchronously so by the
