@@ -391,7 +391,7 @@ def _ro_crate_metadata(
     if used_unknown:
         agents["#agent-unknown"] = _UNKNOWN_AGENT
 
-    root_entity = {
+    root_entity: dict[str, Any] = {
         "@id": "./",
         "@type": "Dataset",
         "name": name,
