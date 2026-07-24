@@ -792,6 +792,7 @@ from clio_agent.gact.expert_packs import (
     load_expert_packs,
     validate_expert_hierarchy,
 )
+from clio_agent.gact.loop_inbox import _make_loop_inbox_drain
 from clio_agent.gact.messages import MessageStore
 from clio_agent.gact.permission_gate import (  # noqa: E402,F401
     _direct_permission_denied,
@@ -1535,6 +1536,9 @@ def build_app(
     # the turn-runner idle hook re-drives them the instant the session frees (never
     # dropped — losing a user's answer is a silent-fallback bug).
     app.state.deferred_resumes = {}
+    # #1035 (epic #1031 Pillar 2): per-session loop inboxes — the mid-turn wake
+    # carrier (session_id -> LoopInbox). See gact/loop_inbox.py for the owner logic.
+    app.state.loop_inboxes = {}
     app.state.turn_runner.set_idle_hook(lambda sid: _redrive_deferred_resume(app, sid))
     # iowarp/clio-agent#2: per-session ledger of tool calls observed
     # during the in-flight turn. The global tool_observer appends
@@ -1588,6 +1592,9 @@ def build_app(
     from clio_agent.tools.execution import set_tool_runtime_resolver  # noqa: PLC0415
 
     set_tool_runtime_resolver(resolve_tool_runtime)
+    # #1035: install the injected loop-inbox drain (both boot branches run turns);
+    # resolve_tool_runtime folds it into ToolRuntimeHooks (acyclic edge preserved).
+    app.state.pending_loop_inbox_drain = _make_loop_inbox_drain(app)
     if agent is not None:
         try:
             _install_tool_runtime_hooks(app)

@@ -132,9 +132,9 @@ class ToolRuntimeHooks:
     tool_observer: Optional[ToolObserver | LegacyToolObserver] = None
     tool_interceptor: Optional[Callable[[str, Mapping[str, Any]], Any | None]] = None
     cancellation_checker: Optional[Callable[[], bool]] = None
-    # The ordinary observer receives only the sanitized public MCP projection.
-    # MCP Apps additionally need the full CallToolResult (including private
-    # ``_meta``), which stays in a capability-bound, session-local store.
+    loop_inbox_drain: Optional[Callable[[], "str | None"]] = None  # #1035 injected gact drain
+    # The ordinary observer gets only the sanitized public MCP projection; MCP Apps
+    # need the full CallToolResult (private ``_meta``) held in a session-local store.
     mcp_app_observer: Optional[MCPAppObserver] = None
 
 
@@ -1272,9 +1272,9 @@ class SyncMCPToolExecutor:
 
         if return_raw:
             return outcome.raw_result
-        if repair_records:
-            return _prepend_repair_notes(repair_records, result)
-        return result
+        drained = hooks.loop_inbox_drain() if hooks.loop_inbox_drain is not None else None
+        result = _prepend_repair_notes(repair_records, result) if repair_records else result
+        return f"{result}\n\n{drained}" if drained else result
 
     def read_resource(self, namespace: str | None, uri: str) -> Any:
         """Read one resource from the exact originating MCP namespace."""

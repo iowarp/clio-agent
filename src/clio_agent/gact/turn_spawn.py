@@ -34,6 +34,7 @@ from clio_agent.gact.agent_tasks import (
     persist_agent_task,
     publish_agent_task_event,
 )
+from clio_agent.gact.loop_inbox import enqueue_completion_wake
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -607,6 +608,11 @@ def _on_child_done(app: "FastAPI", task_id: str, child_sid: str, mode: str) -> N
 
     persist_agent_task(app, updated)
     publish_agent_task_event(app, updated, AGENT_TASK_EVENTS[updated.status])
+    # Producer A (#1035): a child finishing DURING the parent's turn wakes the
+    # parent mid-turn via the loop inbox (gated on the parent being busy). This is
+    # a latency optimization only — ``notify_pending`` stays set as the next-turn
+    # fallback — and never raises into this completion callback.
+    enqueue_completion_wake(app, updated)
     _admit_next_queued(app)
 
 
