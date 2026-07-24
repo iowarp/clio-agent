@@ -90,6 +90,11 @@ class EgressRecord:
     ``mechanism`` is the tier's honest net enforcement (:data:`MECHANISM_PROXY_ENFORCED` vs
     :data:`MECHANISM_ENV_COOPERATIVE`). ``transport`` is ``connect`` (HTTPS tunnel) or
     ``http`` (absolute-form plain HTTP).
+
+    ``method`` is the plain-HTTP request VERB (``GET``/``POST``/… uppercased), the first token
+    of the absolute-form request head — the ONLY write-classification signal clio has (N2). For
+    a ``CONNECT`` tunnel it is ``""`` (opaque: clio sees ``host:port`` only, never the verb), so
+    an HTTPS write can never be over-claimed as write-shaped (honesty caveat, codex-net design).
     """
 
     child_id: str
@@ -100,6 +105,7 @@ class EgressRecord:
     mechanism: str
     workspace_root: str
     at: str
+    method: str = ""
 
 
 #: The registered egress recorder (set from the gact lifespan once ARC is live). ``None``
@@ -330,12 +336,14 @@ class Chokepoint:
                 client.sendall(b"HTTP/1.1 400 Bad Request\r\n\r\n")
                 return
             # Plain HTTP: dial the origin, replay the head rewritten to origin-form, pump.
-            host, port, origin_head = forward
-            if not self._gate_allows(child_id, host, port, "http"):
+            # The request VERB (``method``) is visible here (unlike CONNECT) — the write-gate's
+            # only honest classification signal — so it is threaded into BOTH gate + record.
+            host, port, origin_head, method = forward
+            if not self._gate_allows(child_id, host, port, "http", method):
                 client.sendall(b"HTTP/1.1 403 Forbidden\r\n\r\n")
                 return
             upstream = socket.create_connection((host, port), timeout=_CONNECT_READ_TIMEOUT_S)
-            self._record_open(child_id, host, port, upstream, "http")
+            self._record_open(child_id, host, port, upstream, "http", method)
             upstream.sendall(origin_head)
             client.settimeout(None)
             self._track(client)
@@ -354,7 +362,13 @@ class Chokepoint:
                 _safe_close(upstream)
 
     def _record_open(
-        self, child_id: str, host: str, port: int, upstream: socket.socket, transport: str
+        self,
+        child_id: str,
+        host: str,
+        port: int,
+        upstream: socket.socket,
+        transport: str,
+        method: str = "",
     ) -> None:
         """Mint ONE ``net.egress`` record at connection OPEN — off the pump, fully guarded.
 
@@ -383,6 +397,7 @@ class Chokepoint:
                     mechanism=mechanism,
                     workspace_root=workspace_root,
                     at=_utcnow_iso(),
+                    method=method,
                 )
             )
         except Exception as exc:  # noqa: BLE001 — a record must never wedge the pump/egress
@@ -393,8 +408,10 @@ class Chokepoint:
                 exc,
             )
 
-    def _gate_allows(self, child_id: str, host: str, port: int, transport: str) -> bool:
-        """Consult the deny-mode gate for one CONNECT (B5 #979.5). ``True`` = allow.
+    def _gate_allows(
+        self, child_id: str, host: str, port: int, transport: str, method: str = ""
+    ) -> bool:
+        """Consult the deny-mode / write gate for one egress (B5 #979.5, N2). ``True`` = allow.
 
         Builds the pre-dial :class:`EgressRecord` the gate decides on (``resolved_ip=""`` — not
         dialed yet), attributed to the child's channel. No gate wired → allow (the genuinely
@@ -420,6 +437,7 @@ class Chokepoint:
                     mechanism=mechanism,
                     workspace_root=workspace_root,
                     at=_utcnow_iso(),
+                    method=method,
                 )
             )
         except Exception as exc:  # noqa: BLE001 — a gate wiring bug must never sever egress
@@ -537,8 +555,8 @@ def _parse_connect_target(header: bytes) -> Optional[tuple[str, int]]:
     return host, port
 
 
-def _parse_absolute_form(header: bytes) -> Optional[tuple[str, int, bytes]]:
-    """Parse a proxied plain-HTTP request → ``(host, port, origin_head)``; ``None`` if not.
+def _parse_absolute_form(header: bytes) -> Optional[tuple[str, int, bytes, str]]:
+    """Parse a proxied plain-HTTP request → ``(host, port, origin_head, method)``; ``None`` if not.
 
     A client configured with ``HTTP_PROXY`` sends the request line in absolute form —
     ``GET http://host:port/path HTTP/1.1`` — to the proxy. This rewrites the head to the
@@ -546,6 +564,9 @@ def _parse_absolute_form(header: bytes) -> Optional[tuple[str, int, bytes]]:
     the rest of the path/query, the HTTP version and every header (incl. ``Host``), so the
     proxy is a transparent passthrough. Non-HTTP-URL targets (or a malformed head) → ``None``.
     Only the request HEAD is rewritten; any body streams verbatim through :meth:`_pump`.
+
+    ``method`` is returned UPPERCASED (the write-gate classification token, N2) while the
+    rewritten ``origin_head`` keeps the verb VERBATIM — the passthrough never mutates the wire.
     """
     try:
         head_text = header.decode("latin-1")
@@ -573,7 +594,7 @@ def _parse_absolute_form(header: bytes) -> Optional[tuple[str, int, bytes]]:
     else:
         port = 80
     origin_head = f"{method} {origin_path} {version}\r\n{rest}".encode("latin-1")
-    return host, port, origin_head
+    return host, port, origin_head, method.upper()
 
 
 # Process-lifetime singleton (same pattern as the child reaper / sandbox state).           #

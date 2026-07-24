@@ -522,6 +522,237 @@ def test_deny_mode_prompt_cap_fails_closed_over_limit(
 
 
 # --------------------------------------------------------------------------- #
+# N2 — read-allow / WRITE-GATE (codex-net) : reads never blocked, writes escalated
+# --------------------------------------------------------------------------- #
+
+
+def _http_record(host: str, workspace_root: str, method: str = "POST"):
+    """A plain-HTTP (verb-visible) egress record — the write-classification path."""
+    from clio_agent.runtime.net_chokepoint import EgressRecord
+
+    return EgressRecord(
+        child_id="c1",
+        host=host,
+        port=80,
+        resolved_ip="",
+        transport="http",
+        mechanism="proxy-enforced",
+        workspace_root=workspace_root,
+        at="2026-07-23T00:00:00+00:00",
+        method=method,
+    )
+
+
+def _resolved_reasons(captured_events: list[dict]) -> set:
+    return {
+        e["payload"].get("reason")
+        for e in captured_events
+        if e["event_type"] == "permission.resolved"
+    }
+
+
+def test_write_gate_off_allows_post_no_behavior_change(tmp_path, captured_events) -> None:
+    """Default posture (write-gate OFF): a POST is ALLOWED — the capability adds no new gating."""
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    app.state.workspaces.create(name="p", root_path=str(root))
+    assert grants._egress_gate_decision(app, _http_record("api.test", str(root), "POST")) == "allow"
+    assert "permission.requested" not in _types(captured_events)
+
+
+def test_write_gate_on_read_get_never_blocked(tmp_path, captured_events) -> None:
+    """Write-gate ON but the egress is a READ (GET) → allowed, never prompts (reads never gated)."""
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    app.state.workspaces.create(
+        name="p", root_path=str(root), metadata={"network_write_gate": True}
+    )
+    assert grants._egress_gate_decision(app, _http_record("api.test", str(root), "GET")) == "allow"
+    assert "permission.requested" not in _types(captured_events)
+
+
+def test_write_gate_on_connect_allowed_opacity(tmp_path, captured_events) -> None:
+    """Write-gate ON + a CONNECT tunnel (method="") → allowed: opaque traffic is never write-shaped."""
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    app.state.workspaces.create(
+        name="p", root_path=str(root), metadata={"network_write_gate": True}
+    )
+    # _egress_record builds a CONNECT (transport="connect", method="") record.
+    assert grants._egress_gate_decision(app, _egress_record("api.test", str(root))) == "allow"
+    assert "permission.requested" not in _types(captured_events)
+
+
+def test_write_gate_on_granted_host_no_prompt(tmp_path, captured_events) -> None:
+    """Write-gate ON + a write to an ALREADY-granted host → allowed with NO prompt (sticky)."""
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    ws = app.state.workspaces.create(
+        name="p", root_path=str(root), metadata={"network_write_gate": True}
+    )
+    app.state.permission_policies.append(
+        {"scope": "workspace", "scope_id": ws.id, "action": "allow", "host_pattern": "api.test"}
+    )
+    assert grants._egress_gate_decision(app, _http_record("api.test", str(root), "PUT")) == "allow"
+    assert "permission.requested" not in _types(captured_events)
+
+
+def test_write_gate_on_deny_policy_denies_write(tmp_path, captured_events) -> None:
+    """Write-gate ON + a ``deny`` host policy on the write host → deny, typed write-policy reason."""
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    ws = app.state.workspaces.create(
+        name="p", root_path=str(root), metadata={"network_write_gate": True}
+    )
+    app.state.permission_policies.append(
+        {"scope": "workspace", "scope_id": ws.id, "action": "deny", "host_pattern": "evil.test"}
+    )
+    assert grants._egress_gate_decision(app, _http_record("evil.test", str(root), "POST")) == "deny"
+    assert grants.REASON_EGRESS_WRITE_POLICY_DENY in _resolved_reasons(captured_events)
+
+
+def test_write_gate_on_ungranted_write_prompts_then_grant_unblocks(
+    tmp_path, captured_events
+) -> None:
+    """Write-gate ON + un-granted write host → WRITE-labelled prompt; a grant unblocks + sticks."""
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    ws = app.state.workspaces.create(
+        name="p", root_path=str(root), metadata={"network_write_gate": True}
+    )
+    app.state.sessions.create(workspace_id=ws.id)
+    rec = _http_record("api.ndp.org", str(root), "POST")
+
+    result: dict = {}
+
+    def _run() -> None:
+        result["decision"] = grants._egress_gate_decision(app, rec)
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    deadline = time.time() + 5
+    pid = ""
+    while time.time() < deadline and not pid:
+        for p, r in list(app.state.permissions.items()):
+            if r.get("kind") == "network_egress" and r.get("status") == "pending":
+                pid = p
+                break
+        time.sleep(0.02)
+    assert pid, "an un-granted write must open an interactive permission request"
+    # The prompt is labelled a WRITE so the approver sees what they are approving.
+    assert app.state.permissions[pid]["egress_kind"] == "write"
+    assert app.state.permissions[pid]["tool_call"]["input"]["method"] == "POST"
+    assert "permission.requested" in _types(captured_events)
+
+    # Resolve allow_workspace (the route path) → sticky host_pattern grant + wake the waiter.
+    from clio_agent.gact.runtime.permission_policies import (
+        _append_permission_policy_from_resolution,
+    )
+
+    row = app.state.permissions[pid]
+    row["status"] = "resolved"
+    row["action"] = "allow_workspace"
+    _append_permission_policy_from_resolution(app, row=row, action="allow_workspace")
+    app.state.permission_events[pid].set()
+    t.join(timeout=5)
+    assert result["decision"] == "allow"
+
+    # Sticky: a SUBSEQUENT write to the granted host is allowed with NO new gate.
+    captured_events.clear()
+    assert (
+        grants._egress_gate_decision(app, _http_record("api.ndp.org", str(root), "DELETE"))
+        == "allow"
+    )
+    assert "permission.requested" not in _types(captured_events)
+
+
+def test_write_gate_on_ungranted_write_prompt_denied_blocks(tmp_path, captured_events) -> None:
+    """Write-gate ON + un-granted write host, user DECLINES → the write is denied."""
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    ws = app.state.workspaces.create(
+        name="p", root_path=str(root), metadata={"network_write_gate": True}
+    )
+    app.state.sessions.create(workspace_id=ws.id)
+    rec = _http_record("post.test", str(root), "POST")
+
+    result: dict = {}
+
+    def _run() -> None:
+        result["decision"] = grants._egress_gate_decision(app, rec)
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    deadline = time.time() + 5
+    pid = ""
+    while time.time() < deadline and not pid:
+        for p, r in list(app.state.permissions.items()):
+            if r.get("kind") == "network_egress" and r.get("status") == "pending":
+                pid = p
+                break
+        time.sleep(0.02)
+    assert pid
+    row = app.state.permissions[pid]
+    row["status"] = "resolved"
+    row["action"] = "deny"
+    app.state.permission_events[pid].set()
+    t.join(timeout=5)
+    assert result["decision"] == "deny"
+
+
+def test_write_gate_decision_error_write_fails_closed_read_fails_open(
+    tmp_path, captured_events, monkeypatch
+) -> None:
+    """FAIL-SAFE ASYMMETRY: a raising write-gate denies a WRITE but never blocks a READ.
+
+    Sabotage the write-gate decision so it explodes. A write-shaped egress must fail CLOSED
+    (deny + typed reason — a wiring bug must not silently allow a write); a read (GET, never
+    write-shaped) never enters the write-gate at all and keeps failing OPEN (allow).
+    """
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    app.state.workspaces.create(
+        name="p", root_path=str(root), metadata={"network_write_gate": True}
+    )
+
+    def _boom(*a, **k):
+        raise RuntimeError("write gate engine down")
+
+    monkeypatch.setattr(grants, "_write_gate_decision", _boom)
+
+    # A write fails CLOSED (deny) with the typed write-gate-error reason.
+    assert grants._egress_gate_decision(app, _http_record("x.test", str(root), "POST")) == "deny"
+    assert grants.REASON_EGRESS_WRITE_GATE_ERROR in _resolved_reasons(captured_events)
+
+    # A read (GET) is NEVER routed through the write-gate → allowed (fails open), unaffected.
+    captured_events.clear()
+    assert grants._egress_gate_decision(app, _http_record("x.test", str(root), "GET")) == "allow"
+
+
+def test_workspace_write_gate_default_off(tmp_path) -> None:
+    """The write-gate flag DEFAULTS OFF — a plain workspace does not opt in."""
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    ws = app.state.workspaces.create(name="p", root_path=str(root))
+    assert grants.workspace_write_gate(app, ws.id) is False
+    q = tmp_path / "q"
+    q.mkdir()
+    ws2 = app.state.workspaces.create(
+        name="q", root_path=str(q), metadata={"network_write_gate": True}
+    )
+    assert grants.workspace_write_gate(app, ws2.id) is True
+
+
+# --------------------------------------------------------------------------- #
 # fleet serving-child join — the deferred B4 WRITER (#979.7)
 # --------------------------------------------------------------------------- #
 

@@ -68,6 +68,14 @@ REASON_GRANT_RECORDED_NO_FENCE = "grant_recorded_no_active_fence"  # floor: advi
 
 #: Deny-mode flag key on the workspace ``config`` (opt-in per workspace; config/state, not env).
 DENY_MODE_CONFIG_KEY = "network_deny_mode"
+#: Write-gate flag key on the workspace ``config`` (opt-in per workspace, DEFAULT OFF — N2). When
+#: set, a WRITE-SHAPED egress (a plain-HTTP write verb) to an un-granted host is escalated to a
+#: human permission ask; reads (and opaque CONNECT tunnels) are NEVER newly blocked by it.
+NETWORK_WRITE_GATE_CONFIG_KEY = "network_write_gate"
+#: The plain-HTTP request verbs clio classifies as WRITE-SHAPED (N2). A CONNECT tunnel carries
+#: ``method=""`` (opaque host:port only) so it is NEVER write-shaped — the honesty caveat: clio
+#: cannot see an HTTPS verb, and never over-claims a write-gate on opaque traffic.
+WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 #: Persisted list of granted write roots on the workspace ``config`` (replayed into the live
 #: registry at boot so a recorded grant survives a restart — no new store, RULE 4).
 GRANTED_ROOTS_CONFIG_KEY = "granted_write_roots"
@@ -96,6 +104,11 @@ REASON_EGRESS_PROMPT_CAP = "egress_gate_prompt_cap_reached"
 REASON_EGRESS_STORE_UNRESOLVED = "egress_gate_store_unresolved"
 REASON_EGRESS_DECISION_ERROR = "egress_gate_decision_error"
 REASON_EGRESS_PROMPT_UNWRITABLE = "egress_gate_prompt_unwritable"
+#: N2 write-gate typed reasons (never a silent path). A write-gate decision that RAISES fails
+#: CLOSED (deny) for a write-shaped egress — a wiring bug must not silently allow a write; a
+#: matching ``deny`` host policy on a write is recorded distinctly from the deny-mode read deny.
+REASON_EGRESS_WRITE_GATE_ERROR = "egress_write_gate_error"
+REASON_EGRESS_WRITE_POLICY_DENY = "write_policy_deny"
 
 
 # --------------------------------------------------------------------------- #
@@ -366,6 +379,23 @@ def workspace_deny_mode(app: "FastAPI", workspace_id: str) -> bool:
     return False
 
 
+def workspace_write_gate(app: "FastAPI", workspace_id: str) -> bool:
+    """Whether ``workspace_id`` opts into the network WRITE-gate (default OFF — N2).
+
+    Mirrors :func:`workspace_deny_mode`: a per-workspace opt-in flag on ``config``/``metadata``,
+    DEFAULT FALSE so this adds the write-gating CAPABILITY without changing the B4 default
+    posture or breaking legitimate fleet POSTs. When on, a write-shaped egress to an un-granted
+    host is escalated for human permission (see :func:`_write_gate_decision`).
+    """
+    ws = app.state.workspaces.get(workspace_id) if workspace_id else None
+    if ws is None:
+        return False
+    for source in (getattr(ws, "config", {}) or {}, getattr(ws, "metadata", {}) or {}):
+        if bool(source.get(NETWORK_WRITE_GATE_CONFIG_KEY)):
+            return True
+    return False
+
+
 def _workspace_id_for_root(app: "FastAPI", workspace_root: str) -> str:
     """Resolve the workspace whose ``root_path`` contains ``workspace_root``.
 
@@ -414,7 +444,34 @@ def _egress_gate_decision(app: "FastAPI", rec: "EgressRecord") -> str:
     is established as deny-mode — OR the store CANNOT be evaluated to prove it is NOT — any
     error fails CLOSED with a TYPED reason on the trace, never a silent allow on a boundary the
     user explicitly opted into (⚑ clio must not decide to allow).
+
+    WRITE-GATE (N2). A WRITE-SHAPED egress (``rec.method`` in :data:`WRITE_METHODS` — so an
+    opaque CONNECT tunnel, ``method=""``, is NEVER write-shaped, honouring the opacity limit)
+    is consulted FIRST via :func:`_write_gate_decision`. When the workspace opts into the
+    write-gate and the host is not already write-granted, it escalates to a human ask and
+    returns its allow/deny; otherwise it returns ``None`` and the request falls through to the
+    EXISTING read/deny-mode behaviour unchanged (reads are NEVER newly blocked by this slice).
+    The write-gate fails CLOSED asymmetrically: if its decision RAISES, a write-shaped egress
+    denies (a wiring bug must not silently allow a write) while a read is untouched by it and
+    keeps failing OPEN (the chokepoint residual) — mirrors the B5 deny-mode fail-safe lesson.
     """
+    if rec.method in WRITE_METHODS:
+        try:
+            write_decision = _write_gate_decision(app, rec)
+        except Exception as exc:  # noqa: BLE001 — a write-gate wiring bug fails CLOSED (deny), typed
+            _record_egress_denied(app, "", (rec.host or ""), reason=REASON_EGRESS_WRITE_GATE_ERROR)
+            logger.warning(
+                "egress write-gate decision failed reason=%s host=%s method=%s error=%r "
+                "— failing closed (write)",
+                REASON_EGRESS_WRITE_GATE_ERROR,
+                rec.host,
+                rec.method,
+                exc,
+            )
+            return "deny"
+        if write_decision is not None:
+            return write_decision
+        # write-gate OFF / not applicable → fall through to the existing read/deny-mode path.
     try:
         workspace_id = _workspace_id_for_root(app, rec.workspace_root)
         deny = workspace_deny_mode(app, workspace_id)
@@ -451,8 +508,48 @@ def _egress_gate_decision(app: "FastAPI", rec: "EgressRecord") -> str:
         return "deny"
 
 
-def _prompt_egress(app: "FastAPI", workspace_id: str, rec: "EgressRecord") -> str:
-    """Open the interactive gate for an unknown deny-mode domain; block until resolved.
+def _write_gate_decision(app: "FastAPI", rec: "EgressRecord") -> Optional[str]:
+    """Decide a WRITE-SHAPED egress under the opt-in write-gate (N2). ``None`` = not applicable.
+
+    Called from :func:`_egress_gate_decision` ONLY for a write-shaped egress (``rec.method`` in
+    :data:`WRITE_METHODS`). Returns:
+
+    * ``None`` — the workspace does NOT opt into the write-gate (DEFAULT), so the request falls
+      through to the existing read/deny-mode behaviour unchanged (no new gating, legitimate
+      fleet POSTs keep working);
+    * ``"allow"`` — the write host is already write-GRANTED (a workspace ``host_pattern`` grant
+      covers it, reusing the existing host-policy check) — sticky, no re-prompt;
+    * ``"deny"`` — a ``host_pattern`` deny policy matches the write host (typed record); or the
+      human declined / the prompt timed out;
+    * the interactive gate's allow/deny — an un-granted write host under the write-gate is
+      escalated to a WRITE-labelled permission ask (:func:`_prompt_egress`, ``write=True``).
+
+    Raising here (e.g. a store failure resolving the workspace) is caught by the caller and
+    fails CLOSED for the write — this function never swallows an error into a silent allow.
+    """
+    workspace_id = _workspace_id_for_root(app, rec.workspace_root)
+    if not workspace_write_gate(app, workspace_id):
+        return None  # write-gate OFF (default) → existing behaviour, no new gating
+    host = (rec.host or "").strip().lower()
+    action = _host_action_for(app, workspace_id=workspace_id, host=host)
+    if action in {"allow", "allow_session", "allow_workspace"}:
+        return "allow"  # already write-granted (sticky) — no prompt
+    if action == "deny":
+        _record_egress_denied(app, workspace_id, host, reason=REASON_EGRESS_WRITE_POLICY_DENY)
+        return "deny"
+    return _prompt_egress(app, workspace_id, rec, write=True)
+
+
+def _prompt_egress(
+    app: "FastAPI", workspace_id: str, rec: "EgressRecord", *, write: bool = False
+) -> str:
+    """Open the interactive gate for an un-granted egress domain; block until resolved.
+
+    Serves BOTH escalation kinds: a deny-mode unknown domain (any verb, ``write=False``) and an
+    N2 WRITE-shaped egress (``write=True``) — the row is labelled distinctly so the approver sees
+    whether it is a WRITE. The request KIND stays :data:`NETWORK_EGRESS_REQUEST_KIND` either way
+    (a new request kind, not a new gate — ⚑ #974.8), so an ``allow_workspace`` resolution derives
+    the same sticky ``host_pattern`` grant that both gates consult on the next connect.
 
     Concurrent connects to the SAME ``(workspace, host)`` COALESCE onto one pending prompt
     (review finding 4) — one user decision unblocks every waiter. Distinct concurrently-open
@@ -469,6 +566,11 @@ def _prompt_egress(app: "FastAPI", workspace_id: str, rec: "EgressRecord") -> st
                 _record_egress_denied(app, workspace_id, host, reason=REASON_EGRESS_PROMPT_CAP)
                 return "deny"
             pid = f"perm_{uuid.uuid4().hex[:12]}"
+            summary = (
+                f"network WRITE egress ({rec.method}) to {host}:{rec.port} requested (write gate)"
+                if write
+                else f"network egress to {host}:{rec.port} requested (deny mode)"
+            )
             prompt = {
                 "pid": pid,
                 "event": threading.Event(),
@@ -476,11 +578,17 @@ def _prompt_egress(app: "FastAPI", workspace_id: str, rec: "EgressRecord") -> st
                     "id": pid,
                     "session_id": _active_session_for_workspace(app, workspace_id),
                     "kind": NETWORK_EGRESS_REQUEST_KIND,
+                    "egress_kind": "write" if write else "read",
                     "tool_call": {
                         "tool_name": NETWORK_EGRESS_REQUEST_KIND,
-                        "input": {"host": host, "port": rec.port},
+                        "input": {
+                            "host": host,
+                            "port": rec.port,
+                            "method": rec.method,
+                            "write": write,
+                        },
                     },
-                    "summary": f"network egress to {host}:{rec.port} requested (deny mode)",
+                    "summary": summary,
                     "created_at": datetime.now(timezone.utc).isoformat(),
                     "status": "pending",
                 },
@@ -588,6 +696,8 @@ __all__ = [
     "BOUNDARY_REVOKED_EVENT",
     "DENY_MODE_CONFIG_KEY",
     "GRANTED_ROOTS_CONFIG_KEY",
+    "NETWORK_WRITE_GATE_CONFIG_KEY",
+    "WRITE_METHODS",
     "GRANTOR_MODEL_REQUEST",
     "GRANTOR_POLICY",
     "GRANTOR_USER",
@@ -605,4 +715,5 @@ __all__ = [
     "install_egress_gate",
     "replay_persisted_root_grants",
     "workspace_deny_mode",
+    "workspace_write_gate",
 ]

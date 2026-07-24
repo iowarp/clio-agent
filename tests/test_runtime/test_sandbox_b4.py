@@ -191,6 +191,120 @@ def test_recorder_that_raises_never_breaks_egress() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# N2 — plain-HTTP request VERB capture (write-classification signal) + CONNECT opacity
+# --------------------------------------------------------------------------- #
+
+
+def _http_origin() -> tuple[socket.socket, int]:
+    """A one-shot origin that answers any request head with ``200 OK`` (reused by N2 tests)."""
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+
+    def _serve() -> None:
+        try:
+            conn, _ = srv.accept()
+            with conn:
+                conn.recv(1024)
+                conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi")
+        except OSError:
+            pass
+
+    threading.Thread(target=_serve, daemon=True).start()
+    return srv, srv.getsockname()[1]
+
+
+def test_plain_http_verb_captured_uppercased_on_egress_record() -> None:
+    """N2: the plain-HTTP request verb is captured (UPPERCASED) on the EgressRecord.
+
+    Drives both a lowercase ``post`` (write-shaped) and a ``GET`` (read) through a per-child
+    channel and asserts ``method`` is the uppercased first token — the ONLY write signal clio has.
+    """
+    for verb in ("post", "GET"):
+        origin, up_port = _http_origin()
+        records: list[nc.EgressRecord] = []
+        nc.set_egress_recorder(records.append)
+        cp = nc.Chokepoint().start()
+        try:
+            port = cp.open_child_channel(f"c-{verb}")
+            client = socket.create_connection(("127.0.0.1", port), timeout=5)
+            client.sendall(
+                f"{verb} http://127.0.0.1:{up_port}/x HTTP/1.1\r\n"
+                f"Host: 127.0.0.1:{up_port}\r\nContent-Length: 0\r\n\r\n".encode()
+            )
+            assert b"200 OK" in client.recv(256)
+            client.close()
+        finally:
+            cp.stop()
+            nc.set_egress_recorder(None)
+            origin.close()
+        assert len(records) == 1
+        assert records[0].transport == "http"
+        assert records[0].method == verb.upper()  # uppercased classification token
+
+
+def test_connect_leaves_method_empty_opaque() -> None:
+    """N2 opacity: an HTTPS CONNECT tunnel is opaque (host:port only) → ``method=""``.
+
+    clio never sees the verb inside the tunnel, so it can NEVER classify a CONNECT as a write —
+    the honesty caveat that the write-gate must respect (no over-claim on opaque traffic).
+    """
+    upstream, up_port = _echo_server()
+    records: list[nc.EgressRecord] = []
+    nc.set_egress_recorder(records.append)
+    cp = nc.Chokepoint().start()
+    try:
+        port = cp.open_child_channel("c-connect")
+        client = socket.create_connection(("127.0.0.1", port), timeout=5)
+        client.sendall(f"CONNECT 127.0.0.1:{up_port} HTTP/1.1\r\n\r\n".encode())
+        assert b"200" in client.recv(128)
+        client.close()
+    finally:
+        cp.stop()
+        nc.set_egress_recorder(None)
+        upstream.close()
+    assert len(records) == 1
+    assert records[0].transport == "connect"
+    assert records[0].method == ""  # opaque — never a write-classification
+
+
+def test_method_flows_into_net_egress_record_dict() -> None:
+    """N2: the durable ``net.egress`` record dict carries the verb (audit/provenance)."""
+    from fastapi import FastAPI
+
+    from clio_agent.gact.artifacts.ingest_edges import net_egress_records, record_egress
+
+    app = FastAPI()
+    rec = nc.EgressRecord(
+        child_id="c1",
+        host="data.example",
+        port=80,
+        resolved_ip="203.0.113.9",
+        transport="http",
+        mechanism="proxy-enforced",
+        workspace_root="/ws",
+        at="2026-07-23T00:00:00+00:00",
+        method="POST",
+    )
+    record_egress(app, rec)
+    entry = net_egress_records(app)[0]
+    assert entry["method"] == "POST"
+    # A CONNECT record carries an empty method (opacity) in the dict too.
+    connect_rec = nc.EgressRecord(
+        child_id="c1",
+        host="tls.example",
+        port=443,
+        resolved_ip="",
+        transport="connect",
+        mechanism="proxy-enforced",
+        workspace_root="/ws",
+        at="2026-07-23T00:00:01+00:00",
+    )
+    record_egress(app, connect_rec)
+    assert net_egress_records(app)[1]["method"] == ""
+
+
+# --------------------------------------------------------------------------- #
 # net.egress is trace-only substrate (mirror the sandbox.state / policy_violation tests)
 # --------------------------------------------------------------------------- #
 
@@ -575,7 +689,9 @@ def test_declare_web_domains_ignores_bare_id_and_doi_authorities() -> None:
     for bogus in ("10.1038/s41586-020-2649-2", "550e8400-e29b-41d4-a716-446655440000"):
         edge = _url_authority_edge(bogus, note="ndp_catalog_resource")
         app = _app_with_egress([])
-        out = attach_ingest_edges(app, [edge], workspace_id="", tool_name="get_details", started_at=None)
+        out = attach_ingest_edges(
+            app, [edge], workspace_id="", tool_name="get_details", started_at=None
+        )
         assert out[0].net_domain == "", f"fabricated a domain for a bare id: {bogus}"
         assert out[0].net_mechanism == ""
 
@@ -618,7 +734,9 @@ def test_step0_declared_edge_coexists_with_step2_mint_for_a_distinct_domain() ->
     assert domains == {"a.example", "b.example"}  # both present, none suppressed
     by_domain = {e.net_domain: e for e in out}
     assert by_domain["a.example"].net_mechanism == NET_MECHANISM_TOOL_DECLARED  # A stays declared
-    assert by_domain["b.example"].external_ref == "web:b.example@2026-07-22T00:00:00+00:00"  # B minted
+    assert (
+        by_domain["b.example"].external_ref == "web:b.example@2026-07-22T00:00:00+00:00"
+    )  # B minted
     assert len(out) == 2  # no duplicate A
 
 

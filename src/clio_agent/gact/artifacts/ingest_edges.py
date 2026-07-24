@@ -90,6 +90,9 @@ def _record_to_dict(rec: "EgressRecord") -> dict[str, Any]:
         "mechanism": rec.mechanism,
         "workspace_root": rec.workspace_root,
         "at": rec.at,
+        # The plain-HTTP verb (N2) — the write-classification signal on the durable record
+        # (``""`` for an opaque CONNECT tunnel). Additive: existing consumers ignore it.
+        "method": rec.method,
     }
 
 
