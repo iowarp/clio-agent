@@ -122,3 +122,58 @@ node22/codex, bwrap — watch the DNS caveat codex#22387).
 - `codex-net-deferred` references in `sandbox_doctor.py` / tests updated to the active reason.
 - No new store, no god-file accretion (owner modules: `sandbox_codex.py`, `sandbox_net.py`,
   `net_chokepoint.py`, `ingest_edges.py`).
+
+## Fleet under codex (LIVE-VALIDATED 2026-07-24)
+
+The `codex_net_recipe_a_probe.py` primitive proves egress recording with a curl child, but curl
+works only because `System32` is world-exec. Running the **real released web MCP server**
+(python/httpx, fastmcp, clio-kit 2.6.3) confined under the codex fence revealed a cascade of
+fleet-under-codex requirements curl could not. The demo (`out/codex-sandbox/fleet_demo.py`) now
+passes — web server started confined, `web.fetch(http://example.com)` → status 200, and clio's
+chokepoint recorded the httpx egress, per-child attributed — but only after the three fixes below,
+which are now **automatic** (no manual setup).
+
+### A. Confined-child cache-env redirect (cross-platform — the most important)
+
+A real python/fastmcp MCP server writes a per-user **profile cache at import time**; under the
+read-only OS fence that default location is out-of-territory, so the server crashes
+`PermissionError` before it can serve. `wrap_confined` (`runtime/sandbox.py`) therefore, when a
+fence is **active and `write_roots` is non-empty**, points the child's cache/temp env at a
+per-child cache dir `<write_roots[0]>/.clio-child-cache` (created best-effort, typed log on
+failure, never breaks the spawn). The vars set (`sandbox._child_cache_env`):
+
+- `LOCALAPPDATA`, `APPDATA`, `XDG_CACHE_HOME`, `TEMP`, `TMP`, `FASTMCP_HOME` → the per-child dir
+- `FASTMCP_CHECK_FOR_UPDATES=off` (belt-and-suspenders — no update check → no cache write)
+
+`FASTMCP_HOME` is load-bearing and separate: fastmcp writes `version_cache.json` to `settings.home`
+via platformdirs' **Windows API**, which `LOCALAPPDATA` does **not** redirect — only `FASTMCP_HOME`
+does (proven live). The redirect points at the child's ALREADY-writable workspace — it is **not** a
+new grant and does **not** widen the write fence. On the **floor** (inactive) NONE of these are set
+— the floor `env_overlay` stays byte-identical. Linux (bwrap, same-user) needs this too.
+
+### B. Windows `codexsandbox*` RX grants on the fleet runtime (Windows-only)
+
+After codex's setup helper creates the dedicated `CodexSandboxOffline` / `CodexSandboxOnline`
+accounts, `CreateProcessAsUserW` still fails **`WinError 5`** unless those restricted users can
+read+exec the fleet runtime they must launch (the per-user profile tree denies them by default).
+`clio sandbox setup` now runs `grant_fleet_runtime_access` (`runtime/sandbox_cli.py`) as part of
+provisioning — an own-profile DACL edit (the current user owns these paths → no admin needed) that
+`icacls /grant`s **both** users, per path, emitting a structured reason each (`granted` /
+`skipped_missing` / `failed`), never failing setup:
+
+- `(OI)(CI)(RX)` `/T` on: the **uv tool bin dir** (the clio-kit launcher — resolved from the
+  launcher on PATH, else `~/.local/bin`), `~/AppData/Roaming/uv/tools`,
+  `~/AppData/Roaming/uv/python` (the uv-managed python trampoline target), and `~/.cache/clio-kit`
+- `(RX)` traverse (no `/T`) on `~/AppData/Local/Temp` — the confined workspace lives under it
+
+A path that does not exist is a typed skip (never a failure). The per-grant reasons land on
+`CodexProvisionResult.extra['fleet_runtime_grants']`.
+
+### C. MCP-server envs must be PRE-PROVISIONED
+
+A confined child **cannot build its uv venv** (write-fenced), and the clio-kit launcher's on-demand
+env install/verify FAILS under the fence (`web-mcp not found … install the server package`). So the
+fleet must **pre-build the MCP-server envs** before the confined spawn, or spawn the pre-built env
+python **directly** (`<env>/Scripts/python.exe -m web_mcp.server`, bypassing launcher-managed
+install) rather than routing through the launcher's on-demand management. Linux (bwrap, same-user)
+skips the RX grants (B) but still needs both the cache redirect (A) and pre-provisioned envs (C).

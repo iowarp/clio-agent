@@ -250,6 +250,61 @@ def _activate_codex(det: Any, base_details: dict[str, Any]) -> SandboxResult:
     )
 
 
+#: Per-child cache dir name under the child's write territory (write_roots[0]) when a fence is
+#: ACTIVE. A real python/fastmcp MCP server writes a per-user profile cache at import time; under
+#: the read-only OS fence its default location is out-of-territory, so the server would crash
+#: PermissionError before serving. We redirect its cache/temp env into this dir (already-writable
+#: territory — NOT a new grant), proven live for the released web MCP server (python/httpx/fastmcp).
+CHILD_CACHE_DIRNAME = ".clio-child-cache"
+
+#: The env keys whose value we point at the per-child cache dir under an active fence. General
+#: (platformdirs/tempfile-based libs) PLUS the two fastmcp-specific vars: fastmcp writes
+#: ``version_cache.json`` to ``settings.home`` via platformdirs' Windows API, which ``LOCALAPPDATA``
+#: does NOT redirect — only ``FASTMCP_HOME`` does (proven live). ``FASTMCP_CHECK_FOR_UPDATES=off`` is
+#: belt-and-suspenders (no update check → no cache write attempt at all). Set ONLY on an active
+#: fence with write territory; NEVER on the floor (floor env_overlay stays byte-identical).
+CHILD_CACHE_DIR_ENV_KEYS: tuple[str, ...] = (
+    "LOCALAPPDATA",
+    "APPDATA",
+    "XDG_CACHE_HOME",
+    "TEMP",
+    "TMP",
+    "FASTMCP_HOME",
+)
+
+
+def _child_cache_env(write_roots: Sequence[Path] | Sequence[str]) -> dict[str, str]:
+    """Cache/temp env redirect for a confined child (active fence + write territory only).
+
+    Points the child's profile-cache / temp env vars (:data:`CHILD_CACHE_DIR_ENV_KEYS`) at a
+    per-child cache dir under ``write_roots[0]`` — the child's ALREADY-writable territory, never a
+    new grant — plus ``FASTMCP_CHECK_FOR_UPDATES=off``. Without it a real python/fastmcp MCP server
+    crashes ``PermissionError`` writing its profile cache under the read-only fence (proven live).
+
+    Returns an empty overlay when there is no write territory. Dir creation is best-effort: an
+    ``OSError`` is logged with a typed reason and the redirect is skipped (never breaks the spawn —
+    the child may still crash, but loudly at its own layer, never silently swallowed here).
+    """
+    if not write_roots:
+        return {}
+    cache_dir = Path(str(write_roots[0])).expanduser() / CHILD_CACHE_DIRNAME
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning(
+            "sandbox child-cache redirect skipped reason=child_cache_dir_create_failed "
+            "dir=%s error=%s: %s",
+            cache_dir,
+            type(exc).__name__,
+            exc,
+        )
+        return {}
+    target = str(cache_dir)
+    overlay: dict[str, str] = dict.fromkeys(CHILD_CACHE_DIR_ENV_KEYS, target)
+    overlay["FASTMCP_CHECK_FOR_UPDATES"] = "off"
+    return overlay
+
+
 class SandboxCompositionError(RuntimeError):
     """A fence prefix could not be composed at spawn time — typed, loud (no silent hole)."""
 
@@ -337,6 +392,11 @@ def wrap_confined(
             resolved_state, write_roots
         )
         env_overlay.update(net_env)
+        # Redirect the confined child's profile-cache / temp writes into its granted write
+        # territory (write_roots[0]) so a real python/fastmcp MCP server does not crash
+        # PermissionError writing its cache under the read-only fence. Active fence + write
+        # territory ONLY — empty on the floor (env_overlay stays byte-identical there).
+        env_overlay.update(_child_cache_env(write_roots))
         cmd, arg_list = _compose_fence_prefix(
             resolved_state, profile, cmd, arg_list, write_roots, proxy_port=proxy_port
         )
@@ -414,6 +474,8 @@ __all__ = [
     "REASON_FENCE_ACTIVE",
     "NET_ENFORCEMENT_PROXY",
     "NET_ENFORCEMENT_ENV_COOPERATIVE",
+    "CHILD_CACHE_DIRNAME",
+    "CHILD_CACHE_DIR_ENV_KEYS",
     "PROFILE_FLEET",
     "PROFILE_SHELL",
     "NET_ALLOW_RECORD",

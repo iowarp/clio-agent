@@ -78,25 +78,31 @@ def test_provision_codex_absent_never_elevates() -> None:
     assert spy.calls == []
 
 
-def test_provision_already_provisioned_is_zero_prompt_noop() -> None:
-    """Idempotence: a provisioned + verified host re-run no-ops WITHOUT elevating (zero prompts)."""
+def test_provision_already_provisioned_reapplies_grants_zero_prompt() -> None:
+    """Idempotence: a provisioned+verified host re-run no-ops WITHOUT elevating (zero prompts) —
+    but STILL (re)applies the fleet-runtime RX grants, so a box provisioned by a prior clio version
+    (accounts present, grants absent) gets them on the next `clio sandbox setup`."""
     spy = _SpyElevator()
+    granted = [{"grant": "cache", "status": "granted"}]
     result = scli.provision_codex_windows(
         platform="win32",
         detection=_codex_ok(),
         gate=lambda *, platform: (True, sc.REASON_CODEX_WINDOWS_PROVISIONED),
         elevator=spy,
+        grantor=lambda: granted,  # fake grants (never touch icacls)
     )
     assert result.ok is True
     assert result.status == scli.OUTCOME_ALREADY_PROVISIONED
     assert result.reason == scli.REASON_ALREADY_PROVISIONED
     assert spy.calls == []  # the re-run never prompts
+    assert result.extra["fleet_runtime_grants"] == granted  # grants ARE applied on the ready path
 
 
 def test_provision_fresh_success_elevates_verifies_and_marks() -> None:
     """Unprovisioned → one elevation, enforcement verified, marker persisted → provisioned."""
     spy = _SpyElevator(ok=True)
     written: list[tuple[str, object]] = []
+    grants = [{"grant": "uv_tool_bin", "status": "granted"}]
     result = scli.provision_codex_windows(
         platform="win32",
         detection=_codex_ok(),
@@ -104,12 +110,15 @@ def test_provision_fresh_success_elevates_verifies_and_marks() -> None:
         elevator=spy,
         verifier=lambda _b, _r, platform="win32": (True, sc.REASON_CODEX_ENFORCEMENT_VERIFIED),
         marker_writer=lambda v, **k: written.append((v, k.get("enforcement_verified"))),
+        grantor=lambda: grants,  # fake fleet-runtime RX grants (never touch icacls)
     )
     assert result.ok is True
     assert result.status == scli.OUTCOME_PROVISIONED
     assert result.elevated is True
     assert spy.calls == ["C:\\codex\\codex.cmd"]  # the detection's binary
     assert written == [("0.145.0", True)]  # marker persisted: version + verified enforcement
+    # The fleet-runtime grant reasons are recorded on the result (never a silent step).
+    assert result.extra["fleet_runtime_grants"] == grants
 
 
 def test_provision_setup_failure_is_typed() -> None:
@@ -140,6 +149,7 @@ def test_provision_enforcement_unverified_is_honest_degrade() -> None:
         elevator=spy,
         verifier=lambda _b, _r, platform="win32": (False, sc.REASON_CODEX_ENFORCEMENT_UNVERIFIED),
         marker_writer=lambda v, **k: written.append((v, k.get("enforcement_verified"))),
+        grantor=lambda: [{"grant": "user_temp", "status": "granted"}],
     )
     assert result.ok is False
     assert result.status == scli.OUTCOME_ENFORCEMENT_UNVERIFIED
@@ -148,6 +158,112 @@ def test_provision_enforcement_unverified_is_honest_degrade() -> None:
     assert written == [
         ("0.145.0", False)
     ]  # marker records the unverified verdict, not a fake green
+
+
+# --------------------------------------------------------------------------- #
+# grant_fleet_runtime_access — the codexsandbox* RX grants (PART B, WINDOWS).    #
+# NOTE: no test ever runs a real ``icacls`` — the plan/argv is asserted, and the #
+# executor is driven with an injected ``runner``.                                #
+# --------------------------------------------------------------------------- #
+
+
+def test_fleet_grant_plan_builds_rx_argv_for_both_users() -> None:
+    """The plan emits ``(OI)(CI)(RX)`` ``/T`` per dir and a bare ``(RX)`` traverse for Temp."""
+    plan = scli.build_fleet_runtime_grant_plan(
+        paths_override=[
+            ("uv_tool_bin", "C:\\u\\bin", True),
+            ("user_temp", "C:\\u\\Temp", False),
+        ]
+    )
+    assert [g.label for g in plan] == ["uv_tool_bin", "user_temp"]
+    # Both codex restricted users are covered on every path.
+    assert plan[0].users == scli.CODEX_SANDBOX_USERS
+    # A recursive-inherit dir grant → one icacls per user with (OI)(CI)(RX) + /T.
+    argv = plan[0].icacls_argv()
+    assert argv == [
+        ["icacls", "C:\\u\\bin", "/grant", "CodexSandboxOffline:(OI)(CI)(RX)", "/T"],
+        ["icacls", "C:\\u\\bin", "/grant", "CodexSandboxOnline:(OI)(CI)(RX)", "/T"],
+    ]
+    # Temp is a bare (RX) traverse — no inheritance flags, no /T.
+    temp_argv = plan[1].icacls_argv()
+    assert temp_argv == [
+        ["icacls", "C:\\u\\Temp", "/grant", "CodexSandboxOffline:(RX)"],
+        ["icacls", "C:\\u\\Temp", "/grant", "CodexSandboxOnline:(RX)"],
+    ]
+
+
+def test_fleet_grant_runs_icacls_for_existing_paths_only() -> None:
+    """An existing path grants both users (typed granted); a missing path is a typed skip."""
+    plan = [
+        scli.FleetGrant(
+            label="uv_tool_bin",
+            path="C:\\exists",
+            users=scli.CODEX_SANDBOX_USERS,
+            inherit=True,
+            exists=True,
+        ),
+        scli.FleetGrant(
+            label="uv_python",
+            path="C:\\gone",
+            users=scli.CODEX_SANDBOX_USERS,
+            inherit=True,
+            exists=False,
+        ),
+    ]
+    ran: list[list[str]] = []
+
+    def _runner(argv: list[str]) -> tuple[int, str]:
+        ran.append(argv)
+        return 0, "processed 1 files"
+
+    reasons = scli.grant_fleet_runtime_access(runner=_runner, plan=plan, platform="win32")
+    # The existing path ran icacls once PER user; the missing path ran nothing.
+    assert ran == plan[0].icacls_argv()
+    granted = [r for r in reasons if r["status"] == "granted"]
+    assert {r["user"] for r in granted} == set(scli.CODEX_SANDBOX_USERS)
+    assert all(r["path"] == "C:\\exists" for r in granted)
+    skipped = [r for r in reasons if r["status"] == "skipped_missing"]
+    assert skipped == [{"grant": "uv_python", "path": "C:\\gone", "status": "skipped_missing"}]
+
+
+def test_fleet_grant_reports_typed_failure_never_raises() -> None:
+    """A non-zero icacls is a typed ``failed`` reason (logged, stepped past), never an exception."""
+    plan = [
+        scli.FleetGrant(
+            label="clio_kit_cache",
+            path="C:\\cache",
+            users=("CodexSandboxOffline",),
+            inherit=True,
+            exists=True,
+        )
+    ]
+    reasons = scli.grant_fleet_runtime_access(
+        runner=lambda _argv: (5, "Access is denied."), plan=plan, platform="win32"
+    )
+    assert reasons[0]["status"] == "failed"
+    assert reasons[0]["rc"] == 5
+    assert "Access is denied." in reasons[0]["detail"]
+
+
+def test_fleet_grant_is_typed_noop_off_windows() -> None:
+    """Off-win32 the grant is a typed no-op — no icacls, no plan build, a structured skip reason."""
+    ran = {"n": 0}
+    reasons = scli.grant_fleet_runtime_access(
+        runner=lambda _a: ran.__setitem__("n", ran["n"] + 1) or (0, ""),
+        platform="linux",
+    )
+    assert ran["n"] == 0
+    assert reasons == [{"grant": "fleet_runtime_access", "status": "skipped_not_windows"}]
+
+
+def test_fleet_grant_plan_resolves_the_expected_windows_paths() -> None:
+    """The real resolver names all five fleet-runtime paths (uv bin/tools/python, cache, Temp)."""
+    labels = {label for label, _p, _i in scli._resolve_fleet_runtime_paths()}
+    assert labels == {"uv_tool_bin", "uv_tools", "uv_python", "clio_kit_cache", "user_temp"}
+    # Temp is the only traverse-only (non-inherit) grant; the rest are recursive dir trees.
+    specs = {label: inherit for label, _p, inherit in scli._resolve_fleet_runtime_paths()}
+    assert specs["user_temp"] is False
+    assert all(v for k, v in specs.items() if k != "user_temp")
 
 
 def test_default_elevator_is_guarded_off_win32() -> None:
