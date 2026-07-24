@@ -18,6 +18,7 @@ INJECTED fakes (faked ``which`` + ``version_reader``, an explicit ``platform`` s
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
