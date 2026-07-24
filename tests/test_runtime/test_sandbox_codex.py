@@ -245,6 +245,15 @@ def test_validate_profile_rejects_bad_fs_mode() -> None:
     assert exc.value.reason == sc.REASON_CODEX_PROFILE_REJECTED
 
 
+def test_validate_profile_rejects_unhashable_fs_mode() -> None:
+    """A drifted UNHASHABLE filesystem mode (a list/dict) is a typed CodexProfileError, not a
+    bare TypeError from the ``in`` membership test (N1: guard the mode with isinstance first)."""
+    bad = {"filesystem": {"/ws": ["write"]}}
+    with pytest.raises(sc.CodexProfileError) as exc:
+        sc.validate_codex_profile(bad)
+    assert exc.value.reason == sc.REASON_CODEX_PROFILE_REJECTED
+
+
 def test_validate_profile_rejects_empty_fs_key() -> None:
     """An empty/blank filesystem key is rejected (a non-empty string is required)."""
     with pytest.raises(sc.CodexProfileError):
@@ -308,6 +317,17 @@ def test_validate_profile_rejects_bad_net_mode() -> None:
         sc.validate_codex_profile(bad)
     assert exc.value.reason == sc.REASON_CODEX_PROFILE_REJECTED
     assert "mode" in str(exc.value)
+
+
+def test_validate_profile_rejects_unhashable_net_mode() -> None:
+    """A drifted UNHASHABLE network mode (a list/dict) is a typed CodexProfileError, not a bare
+    TypeError from the ``in`` membership test (N1: guard the mode with isinstance first)."""
+    bad = _valid_profile_with_net(
+        {"enabled": True, "mode": {"nested": "table"}, "allow_upstream_proxy": True}
+    )
+    with pytest.raises(sc.CodexProfileError) as exc:
+        sc.validate_codex_profile(bad)
+    assert exc.value.reason == sc.REASON_CODEX_PROFILE_REJECTED
 
 
 def test_validate_profile_rejects_net_extra_key() -> None:
