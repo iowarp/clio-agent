@@ -29,7 +29,6 @@ from clio_agent.gact.app import (
     build_app,
 )
 from clio_agent.gact.permission_gate import (
-    REASON_AI_REVIEW_REVIEWER_PENDING,
     REASON_APPROVAL_AUTO_EDITS,
     REASON_APPROVAL_BYPASS,
     default_decision,
@@ -367,9 +366,20 @@ def test_auto_edits_non_write_falls_through_to_prompt(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_ai_review_prompts_with_typed_reason(tmp_path: Path) -> None:
+def test_ai_review_escalate_prompts_and_human_resolves(tmp_path: Path, monkeypatch) -> None:
+    """#1044 migrated: ai-review now RUNS the reviewer (it no longer just prompts). On ESCALATE
+    (forced here via a mocked verdict — no LM dependency, deterministic) the gate falls to the
+    human prompt with the typed escalation reason and a human resolves — never a silent auto-allow.
+    The reviewer allow/deny + the full invariant matrix live in test_ai_review_reviewer.py."""
     from fastapi.testclient import TestClient
 
+    from clio_agent.gact.runtime import ai_review as _ai_review_mod
+
+    monkeypatch.setattr(
+        _ai_review_mod,
+        "ai_review_verdict",
+        lambda *a, **k: ("escalate", _ai_review_mod.REASON_AI_REVIEW_ESCALATE),
+    )
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
         sid = c.post("/v1/sessions", json={"title": "t", "approval_mode": "ai-review"}).json()["id"]
@@ -385,7 +395,7 @@ def test_ai_review_prompts_with_typed_reason(tmp_path: Path) -> None:
         try:
             row = _wait_for_row(app)
             assert row["status"] == "pending"
-            assert row["reason"] == REASON_AI_REVIEW_REVIEWER_PENDING
+            assert row["reason"] == _ai_review_mod.REASON_AI_REVIEW_ESCALATE
             pid = row["id"]
             assert c.post(f"/v1/permissions/{pid}", json={"action": "deny"}).status_code == 204
             thread.join(timeout=2.0)

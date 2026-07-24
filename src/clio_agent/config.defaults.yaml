@@ -329,6 +329,9 @@ paths.data_dir: ".clio/agent"
 # CLIO_WEB_DIR  (str)  <- src/clio_agent/gact/app.py
 # paths.web_dir:  # default unset; resolved in code
 
+# CLIO_AI_REVIEW_TIMEOUT_S  (str)  <- src/clio_agent/gact/runtime/ai_review.py
+permissions.ai_review_timeout_s: "45.0"
+
 # CLIO_CLAUDE_CODE_SESSION_REUSE  (bool)  <- src/clio_agent/providers/claude_code_sessions.py
 providers.claude_code.session_reuse: true
 

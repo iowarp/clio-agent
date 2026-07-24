@@ -62,33 +62,32 @@ SCOPE_WORKSPACE = "workspace"
 GRANTOR_USER = "user"
 GRANTOR_MODEL_REQUEST = "model-request"
 GRANTOR_POLICY = "policy"
+#: #1044 — the one-shot AI reviewer (ai-review mode) auto-decided the grant (recorded, never silent).
+GRANTOR_REVIEWER = "reviewer"
 
 #: Typed root-grant application reasons (no silent fallback). #1033 replaced the dead
-#: ``grant_pending_respawn`` (the srt backend it described is deleted; it had no producer) with
-#: the two real outcomes of the drain-aware fleet restart: an idle fleet restarts NOW
-#: (``grant_restarted_live``), a busy one defers to the next safe boundary
-#: (``grant_restart_deferred_busy``). ``grant_applied_live`` remains the honest reason when there
-#: is no resident fleet child to restart (the next spawn reads the widened territory).
+#: ``grant_pending_respawn`` with the two real drain-aware fleet-restart outcomes: an idle fleet
+#: restarts NOW (``grant_restarted_live``), a busy one defers to the next safe boundary
+#: (``grant_restart_deferred_busy``). ``grant_applied_live`` is the honest reason when there is no
+#: resident fleet child to restart (the next spawn reads the widened territory).
 REASON_GRANT_LIVE = "grant_applied_live"  # no resident child: next spawn uses the widened territory
 REASON_GRANT_RESTARTED_LIVE = "grant_restarted_live"  # resident fleet restarted → live now
 REASON_GRANT_DEFERRED_BUSY = "grant_restart_deferred_busy"  # busy fleet: restart deferred to drain
 REASON_GRANT_RECORDED_NO_FENCE = "grant_recorded_no_active_fence"  # floor: advisory-only widen
 #: A restart-WIRING failure (the request itself raised): a resident child may keep stale territory,
-#: so surface it honestly instead of collapsing to ``grant_applied_live`` (#1033 review — honesty).
+#: so surface it honestly instead of collapsing to ``grant_applied_live`` (#1033).
 REASON_GRANT_RESTART_FAILED = "grant_restart_failed"
 
 #: Deny-mode flag key on the workspace ``config`` (opt-in per workspace; config/state, not env).
 DENY_MODE_CONFIG_KEY = "network_deny_mode"
-#: Write-gate flag key on the workspace ``config`` (opt-in per workspace, DEFAULT OFF — N2). When
-#: set, a WRITE-SHAPED egress (a plain-HTTP write verb) to an un-granted host is escalated to a
-#: human permission ask; reads (and opaque CONNECT tunnels) are NEVER newly blocked by it.
+#: Write-gate flag key on the workspace ``config`` (opt-in, DEFAULT OFF — N2). When set, a
+#: WRITE-SHAPED egress to an un-granted host escalates to a human ask; reads/opaque CONNECTs stay open.
 NETWORK_WRITE_GATE_CONFIG_KEY = "network_write_gate"
 #: The plain-HTTP request verbs clio classifies as WRITE-SHAPED (N2). A CONNECT tunnel carries
-#: ``method=""`` (opaque host:port only) so it is NEVER write-shaped — the honesty caveat: clio
-#: cannot see an HTTPS verb, and never over-claims a write-gate on opaque traffic.
+#: ``method=""`` (opaque) so it is NEVER write-shaped — clio never over-claims a write-gate on it.
 WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 #: Persisted list of granted write roots on the workspace ``config`` (replayed into the live
-#: registry at boot so a recorded grant survives a restart — no new store, RULE 4).
+#: registry at boot so a recorded grant survives a restart — RULE 4, no new store).
 GRANTED_ROOTS_CONFIG_KEY = "granted_write_roots"
 
 #: How long a deny-mode egress prompt blocks the chokepoint connection thread before a typed
@@ -779,6 +778,7 @@ __all__ = [
     "WRITE_METHODS",
     "GRANTOR_MODEL_REQUEST",
     "GRANTOR_POLICY",
+    "GRANTOR_REVIEWER",
     "GRANTOR_USER",
     "KIND_DOMAIN",
     "KIND_ROOT",
