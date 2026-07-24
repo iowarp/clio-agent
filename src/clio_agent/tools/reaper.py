@@ -31,6 +31,22 @@ _DEFAULT_TTL_S = 120.0
 _DEFAULT_MAX_RESIDENT = 2
 _TICK_S = 15.0
 
+#: Typed outcomes of a drain-aware fleet restart request (#1033) — never silent. A resident
+#: fleet child is workspace-SHARED and long-lived, so a mid-session write-root grant does not
+#: reach it until it respawns; :meth:`WorkspaceExecutorReaper.request_restart` makes that true
+#: at a safe boundary and reports which happened.
+RESTART_RESTARTED_LIVE = "restarted_live"  # idle+unleased → closed+evicted now; rebuild is live
+RESTART_DEFERRED_BUSY = "restart_deferred_busy"  # busy/leased → pending; drains at next idle pass
+RESTART_NO_RESIDENT = "no_resident_child"  # nothing resident → next spawn picks up the territory
+
+
+def _default_channel_closer(root: str) -> int:
+    """Close a workspace's per-child net channels (the reap/restart stop step, #1033)."""
+
+    from clio_agent.runtime.sandbox_net import close_namespace_children  # noqa: PLC0415
+
+    return close_namespace_children(root)
+
 
 def workspace_fleet_ttl_s() -> float:
     """The idle TTL for per-workspace fleets (config/env; #933)."""
@@ -70,6 +86,7 @@ class WorkspaceExecutorReaper:
         ttl_s: float | None = None,
         max_resident: int | None = None,
         tick_s: float = _TICK_S,
+        channel_closer: Callable[[str], int] | None = None,
     ) -> None:
         self._registry = registry
         self._lock = lock
@@ -78,6 +95,15 @@ class WorkspaceExecutorReaper:
         # executor for the whole expert lifetime, so the drain unit is the
         # turn, not the individual call.
         self._leases = leases if leases is not None else {}
+        # #1033: roots with a deferred fleet restart (grant landed while the
+        # executor was busy/leased). The drain-aware pass in ``reap_once`` fires
+        # each one at the next safe boundary — NOT a second scheduler, the same
+        # idle/lease-gated loop the reaper already runs. Guarded by ``self._lock``.
+        self._pending_restarts: set[str] = set()
+        # The net-channel stop step (#1033): closes a workspace's per-child
+        # chokepoint listeners when its fleet is torn down (reap OR restart), so
+        # the previously-unwired ``close_child_channel`` seam stops leaking.
+        self._channel_closer = channel_closer or _default_channel_closer
         self._ttl_s = workspace_fleet_ttl_s() if ttl_s is None else ttl_s
         self._max_resident = (
             workspace_fleet_max_resident() if max_resident is None else max_resident
@@ -109,6 +135,30 @@ class WorkspaceExecutorReaper:
         to_close: list[tuple[str, Any, str]] = []
         try:
             with self._lock:
+                # #1033 deferred restarts FIRST: a root whose grant landed while
+                # busy fires here the moment it goes idle+unleased — reason-tagged
+                # ``grant_restart`` so the close+channel-close path (below) rebuilds
+                # it lazily with the widened write territory. A pending root no
+                # longer resident (already reaped) simply drops its flag: the next
+                # spawn reads the widened territory anyway (no restart needed).
+                for root in list(self._pending_restarts):
+                    executor = self._registry.get(root)
+                    if executor is None or getattr(executor, "closed", False):
+                        self._pending_restarts.discard(root)
+                        continue
+                    try:
+                        busy = bool(executor.busy) or self._leases.get(root, 0) > 0
+                    except Exception as exc:  # noqa: BLE001 - can't prove idle → keep deferred
+                        trace.event(
+                            "TOOLS",
+                            "workspace_fleet_restart_probe_failed root=%s reason=%s",
+                            root,
+                            exc,
+                        )
+                        continue
+                    if not busy:
+                        to_close.append((root, self._registry.pop(root), "grant_restart"))
+                        self._pending_restarts.discard(root)
                 # Idle TTL. Leased roots (live turns) are untouchable. A
                 # registry entry whose probe raises is skipped with a typed
                 # reason rather than aborting the pass — an abort here would
@@ -162,7 +212,16 @@ class WorkspaceExecutorReaper:
                         root,
                         exc,
                     )
+                    # The executor is already POPPED; its per-child net channels must still be
+                    # closed on the error path, or their listeners leak toward _MAX_CHILD_CHANNELS
+                    # (the next lazy rebuild overwrites the (root,namespace) ids, orphaning them).
+                    # Mirrors request_restart, which closes channels even after a close error.
+                    self._close_channels(root)
                     continue
+                # #1033: a torn-down fleet's per-child net channels go with it —
+                # closing them here wires the previously-unused close_child_channel
+                # seam so per-child listeners stop leaking. Typed, never fatal.
+                self._close_channels(root)
                 reaped.append(root)
                 trace.event(
                     "TOOLS",
@@ -172,6 +231,76 @@ class WorkspaceExecutorReaper:
                     len(self._registry),
                 )
         return reaped
+
+    def _close_channels(self, root: str) -> int:
+        """Close the workspace's per-child net channels (guarded, typed) — #1033."""
+
+        try:
+            return self._channel_closer(root)
+        except Exception as exc:  # noqa: BLE001 - a channel-close error must never abort teardown
+            trace.event(
+                "TOOLS",
+                "workspace_fleet_channel_close_failed root=%s reason=%s",
+                root,
+                exc,
+            )
+            return 0
+
+    def request_restart(self, workspace_root: str) -> str:
+        """Request a drain-aware restart of ``workspace_root``'s resident fleet (#1033).
+
+        The primitive behind a mid-session write-root grant taking effect on an already-spawned,
+        workspace-shared fleet child. Under the SHARED registry lock (so it can never race a
+        concurrent get-or-create or the reaper's pass):
+
+        * idle + unleased → close the executor, close its per-child net channels, and evict it
+          from the registry so the next ``_active_tool_executor`` rebuilds lazily with the
+          widened ``effective_write_roots`` (returns :data:`RESTART_RESTARTED_LIVE`);
+        * busy or leased → NEVER close it mid-call; flag the root for a deferred restart that
+          the reaper's idle pass drains at the next safe boundary (returns
+          :data:`RESTART_DEFERRED_BUSY`);
+        * nothing resident → no-op; the next spawn reads the widened territory anyway (returns
+          :data:`RESTART_NO_RESIDENT`).
+
+        The executor + channels are closed OUTSIDE the lock (a channel join can block) after an
+        atomic close-and-evict under it — mirroring :meth:`reap_once`.
+        """
+
+        root = (workspace_root or "").strip()
+        if not root:
+            return RESTART_NO_RESIDENT
+        to_close: Any = None
+        with self._lock:
+            executor = self._registry.get(root)
+            if executor is None or getattr(executor, "closed", False):
+                self._pending_restarts.discard(root)
+                return RESTART_NO_RESIDENT
+            try:
+                busy = bool(executor.busy) or self._leases.get(root, 0) > 0
+            except Exception as exc:  # noqa: BLE001 - can't prove idle → defer, never close busy
+                trace.event(
+                    "TOOLS",
+                    "workspace_fleet_restart_probe_failed root=%s reason=%s",
+                    root,
+                    exc,
+                )
+                self._pending_restarts.add(root)
+                return RESTART_DEFERRED_BUSY
+            if busy:
+                self._pending_restarts.add(root)
+                trace.event("TOOLS", "workspace_fleet_restart_deferred root=%s reason=busy", root)
+                return RESTART_DEFERRED_BUSY
+            to_close = self._registry.pop(root)
+            self._pending_restarts.discard(root)
+        try:
+            to_close.close()
+        except Exception as exc:  # noqa: BLE001 - close error is typed, restart still evicted
+            trace.event(
+                "TOOLS", "workspace_fleet_restart_close_failed root=%s reason=%s", root, exc
+            )
+        self._close_channels(root)
+        trace.event("TOOLS", "workspace_fleet_restarted root=%s reason=grant_applied_live", root)
+        return RESTART_RESTARTED_LIVE
 
 
 ReaperFactory = Callable[..., WorkspaceExecutorReaper]

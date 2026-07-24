@@ -219,7 +219,7 @@ def test_root_grant_endpoint_widens_write_roots_and_reports_reason(
     monkeypatch.setattr(sandbox, "current_state", lambda: _fake_state(False, "none"))
     resp = c.post(f"/v1/workspaces/{ws['id']}/grants", json={"root": str(outside)}).json()
     assert resp["root"]["reason"] == grants.REASON_GRANT_RECORDED_NO_FENCE
-    assert resp["root"]["pending_respawn"] is False
+    assert resp["root"]["restart_deferred"] is False
     # The grant widened the live territory registry (advisory + fence both consult it).
     roots = sandbox_roots.effective_write_roots(
         sandbox_roots.PROFILE_SHELL, workspace_root=str(root)
@@ -233,7 +233,7 @@ def test_root_grant_endpoint_widens_write_roots_and_reports_reason(
     )
     resp2 = c.post(f"/v1/workspaces/{ws['id']}/grants", json={"root": str(tmp_path / "o2")}).json()
     assert resp2["root"]["reason"] == grants.REASON_GRANT_LIVE
-    assert resp2["root"]["pending_respawn"] is False
+    assert resp2["root"]["restart_deferred"] is False
 
     # A per-spawn active fence (Landlock) applies live.
     monkeypatch.setattr(
@@ -267,6 +267,128 @@ def test_root_grant_persists_and_replays(tmp_path, monkeypatch) -> None:
     assert outside.resolve() not in set(sandbox_roots.granted_write_roots(str(root)))
     grants.replay_persisted_root_grants(app)
     assert outside.resolve() in set(sandbox_roots.granted_write_roots(str(root)))
+
+
+def test_apply_root_grant_folds_deferred_restart_outcome(tmp_path, monkeypatch) -> None:
+    """#1033: a busy resident fleet defers → the reason stops over-claiming ``grant_applied_live``."""
+    from clio_agent.runtime import sandbox
+
+    monkeypatch.setattr(
+        sandbox, "current_state", lambda: _fake_state(True, sandbox.MECHANISM_CODEX)
+    )
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    ws = app.state.workspaces.create(name="p", root_path=str(root))
+
+    calls: list[str] = []
+    app.state.agent = SimpleNamespace(
+        request_fleet_restart=lambda r: (calls.append(r) or "restart_deferred_busy")
+    )
+    res = grants.apply_root_grant(app, ws.id, str(outside), emit=False)
+    assert res["reason"] == grants.REASON_GRANT_DEFERRED_BUSY
+    assert res["restart_deferred"] is True
+    assert calls == [str(root)], "the restart targets the workspace root (== registry key)"
+
+
+def test_apply_root_grant_folds_restarted_live_outcome(tmp_path, monkeypatch) -> None:
+    """#1033: an idle resident fleet is restarted → ``grant_restarted_live`` (genuinely live)."""
+    from clio_agent.runtime import sandbox
+
+    monkeypatch.setattr(
+        sandbox, "current_state", lambda: _fake_state(True, sandbox.MECHANISM_LANDLOCK)
+    )
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    ws = app.state.workspaces.create(name="p", root_path=str(root))
+
+    app.state.agent = SimpleNamespace(request_fleet_restart=lambda r: "restarted_live")
+    res = grants.apply_root_grant(app, ws.id, str(outside), emit=False)
+    assert res["reason"] == grants.REASON_GRANT_RESTARTED_LIVE
+    assert res["restart_deferred"] is False
+
+
+def test_apply_root_grant_idempotent_regrant_skips_restart(tmp_path, monkeypatch) -> None:
+    """#1033 risk 1: a re-grant that widens nothing must NOT recycle the shared fleet."""
+    from clio_agent.runtime import sandbox
+
+    monkeypatch.setattr(
+        sandbox, "current_state", lambda: _fake_state(True, sandbox.MECHANISM_CODEX)
+    )
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    ws = app.state.workspaces.create(name="p", root_path=str(root))
+
+    calls: list[str] = []
+    app.state.agent = SimpleNamespace(
+        request_fleet_restart=lambda r: (calls.append(r) or "restarted_live")
+    )
+    grants.apply_root_grant(app, ws.id, str(outside), emit=False)
+    # Second identical grant widens nothing → no restart, base per-fence reason stands.
+    res2 = grants.apply_root_grant(app, ws.id, str(outside), emit=False)
+    assert len(calls) == 1, "idempotent re-grant must not restart the shared fleet again"
+    assert res2["reason"] == grants.REASON_GRANT_LIVE
+
+
+def test_apply_root_grant_without_agent_is_typed_and_does_not_over_claim(
+    tmp_path, monkeypatch
+) -> None:
+    """#1033: no live agent (unit ctx) → a typed skip, reason stays the honest per-fence floor."""
+    from clio_agent.runtime import sandbox
+
+    monkeypatch.setattr(
+        sandbox, "current_state", lambda: _fake_state(True, sandbox.MECHANISM_CODEX)
+    )
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    ws = app.state.workspaces.create(name="p", root_path=str(root))
+
+    # build_app leaves app.state.agent None; no resident fleet exists to over-claim about.
+    assert getattr(app.state, "agent", None) is None
+    res = grants.apply_root_grant(app, ws.id, str(outside), emit=False)
+    assert res["reason"] == grants.REASON_GRANT_LIVE
+    assert res["restart_deferred"] is False
+
+
+def test_apply_root_grant_restart_failure_does_not_over_claim(tmp_path, monkeypatch) -> None:
+    """#1033 honesty: a restart-WIRING failure must NOT fold to ``grant_applied_live``.
+
+    When ``agent.request_fleet_restart`` itself raises, a resident workspace-shared child may still
+    enforce its stale compile-time territory — so claiming the grant is live would over-claim. The
+    reason must surface the distinct ``grant_restart_failed`` on the API/boundary field, not only a
+    warning log (review — honesty lens).
+    """
+    from clio_agent.runtime import sandbox
+
+    monkeypatch.setattr(
+        sandbox, "current_state", lambda: _fake_state(True, sandbox.MECHANISM_CODEX)
+    )
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    ws = app.state.workspaces.create(name="p", root_path=str(root))
+
+    def _boom(_r: str) -> str:
+        raise RuntimeError("reaper wiring blew up")
+
+    app.state.agent = SimpleNamespace(request_fleet_restart=_boom)
+    res = grants.apply_root_grant(app, ws.id, str(outside), emit=False)
+    assert res["reason"] == grants.REASON_GRANT_RESTART_FAILED
+    assert res["reason"] != grants.REASON_GRANT_LIVE, "a failed restart must not over-claim live"
+    assert res["restart_deferred"] is False
 
 
 def test_grant_endpoint_requires_a_grantable_field(tmp_path) -> None:

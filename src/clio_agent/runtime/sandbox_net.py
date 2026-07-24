@@ -89,6 +89,44 @@ def clear_namespace_children() -> None:
         _NAMESPACE_CHILD.clear()
 
 
+def close_namespace_children(workspace_root: Optional[str]) -> int:
+    """Close + drop every per-child net channel serving ``workspace_root`` (#1033).
+
+    The stop half of a drain-aware fleet restart: when a workspace's resident fleet is
+    torn down (reaped for idle/LRU, or restarted to pick up a widened write territory), its
+    per-child chokepoint listeners must go with it — otherwise they leak toward the bounded
+    ``_MAX_CHILD_CHANNELS`` cap (the previously-UNWIRED :func:`close_child_channel` seam). Pops
+    each ``(root, namespace) -> net_child_id`` entry for the root and closes that specific
+    channel by id (compare-and-close is unnecessary here because the pop removes exactly the
+    ids we then close; a subsequent lazy respawn registers fresh ids). Returns the count of
+    channels closed. Guarded per channel with a typed reason — a close error never leaves a
+    half-popped registry.
+    """
+    root = _ns_key(workspace_root, "")[0]
+    if not root:
+        return 0
+    with _NAMESPACE_CHILD_LOCK:
+        keys = [key for key in _NAMESPACE_CHILD if key[0] == root]
+        children = [_NAMESPACE_CHILD.pop(key) for key in keys]
+    if not children:
+        return 0
+    from clio_agent.runtime.net_chokepoint import close_child_channel  # noqa: PLC0415
+
+    closed = 0
+    for child in children:
+        try:
+            close_child_channel(child)
+        except Exception as exc:  # noqa: BLE001 — a channel-close error is typed, never silent
+            logger.warning(
+                "net child channel close skipped reason=net_child_close_failed child=%s error=%r",
+                child,
+                exc,
+            )
+            continue
+        closed += 1
+    return closed
+
+
 def net_mechanism_label(state: "SandboxResult") -> str:
     """Map the tier's ``net_enforcement`` to the honest per-edge egress mechanism label."""
     from clio_agent.runtime.net_chokepoint import (  # noqa: PLC0415
@@ -148,6 +186,7 @@ def open_child_egress(
 
 __all__ = [
     "clear_namespace_children",
+    "close_namespace_children",
     "net_mechanism_label",
     "open_child_egress",
     "register_namespace_child",

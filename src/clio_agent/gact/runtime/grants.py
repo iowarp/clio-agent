@@ -8,10 +8,12 @@ entirely on the EXISTING permission gate + policy store — a new request KIND, 
   events (SSE-listed) that make a write-root or domain grant/revoke observable live + durable.
 * :func:`apply_root_grant` — a mid-session workspace root grant: register the root into the
   ONE grant registry (:mod:`clio_agent.runtime.sandbox_roots`) so the fence + advisory twin
-  widen LIVE on the next spawn, persist it on the workspace record, and emit
-  ``boundary.granted{kind: root}``. On a session-wide srt fence (Windows) already-spawned
-  fleet children keep their compile-time territory until they respawn — reported as a typed
-  ``grant_pending_respawn`` (never silence).
+  widen LIVE on the next spawn, persist it on the workspace record, restart the workspace's
+  resident fleet so an already-spawned, workspace-shared child actually picks up the widened
+  territory (#1033 — otherwise ``grant_applied_live`` over-claims), and emit
+  ``boundary.granted{kind: root}``. The restart is DRAIN-AWARE: a busy/leased fleet is never
+  torn down mid-call — the grant defers to the next safe boundary and reports
+  ``grant_restart_deferred_busy`` (never silence).
 * deny-mode egress: :func:`workspace_deny_mode` reads the opt-in per-workspace flag;
   :func:`install_egress_gate` wires the chokepoint's CONNECT-time gate to consult the
   ``host_pattern`` policies and, on an unknown domain, open the EXISTING interactive
@@ -61,10 +63,23 @@ GRANTOR_USER = "user"
 GRANTOR_MODEL_REQUEST = "model-request"
 GRANTOR_POLICY = "policy"
 
-#: Typed root-grant application reasons (no silent fallback).
-REASON_GRANT_LIVE = "grant_applied_live"  # next spawn/invocation uses the widened territory
-REASON_GRANT_PENDING_RESPAWN = "grant_pending_respawn"  # session-wide fence: needs a respawn
+#: Typed root-grant application reasons (no silent fallback). #1033 replaced the dead
+#: ``grant_pending_respawn`` (the srt backend it described is deleted; it had no producer) with
+#: the two real outcomes of the drain-aware fleet restart: an idle fleet restarts NOW
+#: (``grant_restarted_live``), a busy one defers to the next safe boundary
+#: (``grant_restart_deferred_busy``). ``grant_applied_live`` remains the honest reason when there
+#: is no resident fleet child to restart (the next spawn reads the widened territory).
+REASON_GRANT_LIVE = "grant_applied_live"  # no resident child: next spawn uses the widened territory
+REASON_GRANT_RESTARTED_LIVE = "grant_restarted_live"  # resident fleet restarted → live now
+REASON_GRANT_DEFERRED_BUSY = "grant_restart_deferred_busy"  # busy fleet: restart deferred to drain
 REASON_GRANT_RECORDED_NO_FENCE = "grant_recorded_no_active_fence"  # floor: advisory-only widen
+#: A restart-WIRING failure (the ``request_fleet_restart`` call itself raised) must NOT collapse to
+#: ``grant_applied_live`` — a resident child may still enforce its stale compile-time territory, so
+#: claiming the grant is live would be an over-claim. This distinct reason keeps the failure honest
+#: on the boundary.granted/API reason field, not only in a warning log (#1033 review — honesty lens).
+REASON_GRANT_RESTART_FAILED = (
+    "grant_restart_failed"  # restart attempt raised; territory may be stale
+)
 
 #: Deny-mode flag key on the workspace ``config`` (opt-in per workspace; config/state, not env).
 DENY_MODE_CONFIG_KEY = "network_deny_mode"
@@ -286,6 +301,64 @@ def _grant_reason_for_fence() -> str:
     return REASON_GRANT_LIVE
 
 
+def _fold_restart_into_reason(base_reason: str, restart_outcome: str) -> str:
+    """Fold the fleet-restart outcome into the grant's typed reason (#1033 — no over-claim).
+
+    A resident workspace-shared fleet child keeps its compile-time territory, so the
+    ``grant_applied_live`` base reason over-claims until it respawns. This reports what actually
+    happened: restarted now, deferred to a drain, or nothing resident (base per-fence reason).
+    """
+    from clio_agent.tools.reaper import (  # noqa: PLC0415
+        RESTART_DEFERRED_BUSY,
+        RESTART_RESTARTED_LIVE,
+    )
+
+    if restart_outcome == REASON_GRANT_RESTART_FAILED:
+        # A restart-wiring failure: do NOT fall back to the base ``grant_applied_live`` — a resident
+        # child may retain stale territory, so surface the failure honestly (no over-claim).
+        return REASON_GRANT_RESTART_FAILED
+    if restart_outcome == RESTART_RESTARTED_LIVE:
+        return REASON_GRANT_RESTARTED_LIVE
+    if restart_outcome == RESTART_DEFERRED_BUSY:
+        return REASON_GRANT_DEFERRED_BUSY
+    return base_reason  # no resident child / typed skip: the base per-fence reason is honest
+
+
+def _request_fleet_restart(app: "FastAPI", workspace_root: str, *, widened: bool) -> str:
+    """Ask the live agent to restart ``workspace_root``'s resident fleet (#1033). Guarded, typed.
+
+    Returns a fleet-restart outcome string. A no-op (returns
+    :data:`~clio_agent.tools.reaper.RESTART_NO_RESIDENT`) when the territory did not actually
+    widen (an idempotent re-grant must not recycle the shared fleet — risk #1) or when no live
+    agent is mounted (the unit / pre-agent context — a typed skip, never a silent success).
+    Never raises: a restart-wiring failure degrades to "no resident child" with a logged reason.
+    """
+    from clio_agent.tools.reaper import RESTART_NO_RESIDENT  # noqa: PLC0415
+
+    if not widened or not workspace_root:
+        return RESTART_NO_RESIDENT
+    agent = getattr(app.state, "agent", None)
+    restart = getattr(agent, "request_fleet_restart", None) if agent is not None else None
+    if not callable(restart):
+        logger.debug(
+            "fleet restart skipped reason=no_live_agent root=%s (unit/pre-agent context)",
+            workspace_root,
+        )
+        return RESTART_NO_RESIDENT
+    try:
+        return str(restart(workspace_root))
+    except Exception as exc:  # noqa: BLE001 — a restart-wiring failure must never break the grant
+        # Do NOT collapse to RESTART_NO_RESIDENT (which folds to ``grant_applied_live``): a resident
+        # workspace-shared child may still enforce its stale compile-time territory. Return the
+        # distinct failure reason so the boundary.granted/API reason is honest, not only the log.
+        logger.warning(
+            "fleet restart failed reason=fleet_restart_failed root=%s error=%r",
+            workspace_root,
+            exc,
+        )
+        return REASON_GRANT_RESTART_FAILED
+
+
 def apply_root_grant(
     app: "FastAPI",
     workspace_id: str,
@@ -295,14 +368,18 @@ def apply_root_grant(
     created_from_permission_id: str = "",
     emit: bool = True,
 ) -> dict[str, Any]:
-    """Apply a mid-session workspace root grant on the record (B5 #979.3).
+    """Apply a mid-session workspace root grant on the record (B5 #979.3, #1033).
 
     Registers ``path`` as writable territory for the workspace's root (the live fence +
     advisory both widen on the next spawn/check), persists it on the workspace record so it
-    survives a restart, and emits ``boundary.granted{kind: root}``. Returns a typed result
-    ``{granted, pattern, reason, pending_respawn}`` — ``grant_pending_respawn`` on a
-    session-wide srt fence (Windows), ``grant_applied_live`` on a per-spawn fence,
-    ``grant_recorded_no_active_fence`` on the floor. Never raises for a missing fence.
+    survives a restart, restarts the workspace's resident fleet so an already-spawned child
+    picks up the widened territory (#1033), then emits ``boundary.granted{kind: root}``. Returns
+    a typed result ``{granted, pattern, reason, restart_deferred}`` — ``grant_restarted_live``
+    when a resident fleet was restarted, ``grant_restart_deferred_busy`` when a busy fleet
+    deferred it to the next drain, ``grant_restart_failed`` when the restart attempt raised (a
+    resident child may retain stale territory — surfaced honestly, not swallowed to a log),
+    ``grant_applied_live`` when nothing resident needed a restart, ``grant_recorded_no_active_fence``
+    on the advisory floor. Never raises for a missing fence.
     """
     from clio_agent.runtime.sandbox_roots import register_write_root_grant  # noqa: PLC0415
 
@@ -312,14 +389,28 @@ def apply_root_grant(
     pattern = str(resolved)
     # Persist onto the workspace record (no new store — RULE 4): the boot replay reads it back.
     # Mutate config BEFORE the store flush so ``update`` serialises the new list under the lock
-    # (a post-update mutation would not reach disk until the next write).
+    # (a post-update mutation would not reach disk until the next write). ``widened`` tracks
+    # whether this grant ACTUALLY changed the territory (risk #1: an idempotent re-grant must not
+    # recycle the shared fleet for every session).
+    widened = True
     if ws is not None:
         existing = list(ws.config.get(GRANTED_ROOTS_CONFIG_KEY) or [])
-        if pattern not in existing:
+        widened = pattern not in existing
+        if widened:
             existing.append(pattern)
         ws.config[GRANTED_ROOTS_CONFIG_KEY] = existing
         app.state.workspaces.update(workspace_id, metadata_patch=None)  # flush + bump updated_at
-    reason = _grant_reason_for_fence()
+    # Restart the resident fleet AFTER the territory flush (risk #6: the rebuilt child must read
+    # the persisted, widened roots), then fold the real outcome into the reason (no over-claim).
+    base_reason = _grant_reason_for_fence()
+    if base_reason == REASON_GRANT_LIVE:
+        # Active per-spawn fence: a resident workspace-shared child would keep its
+        # compile-time territory, so restart it (drain-aware) and fold the real outcome.
+        restart_outcome = _request_fleet_restart(app, workspace_root, widened=widened)
+        reason = _fold_restart_into_reason(base_reason, restart_outcome)
+    else:
+        # Advisory floor: no fence enforces, so no resident child to restart.
+        reason = base_reason
     if emit:
         emit_boundary_granted(
             app,
@@ -335,7 +426,7 @@ def apply_root_grant(
         "granted": True,
         "pattern": pattern,
         "reason": reason,
-        "pending_respawn": reason == REASON_GRANT_PENDING_RESPAWN,
+        "restart_deferred": reason == REASON_GRANT_DEFERRED_BUSY,
     }
 
 
@@ -703,9 +794,11 @@ __all__ = [
     "GRANTOR_USER",
     "KIND_DOMAIN",
     "KIND_ROOT",
+    "REASON_GRANT_DEFERRED_BUSY",
     "REASON_GRANT_LIVE",
-    "REASON_GRANT_PENDING_RESPAWN",
     "REASON_GRANT_RECORDED_NO_FENCE",
+    "REASON_GRANT_RESTART_FAILED",
+    "REASON_GRANT_RESTARTED_LIVE",
     "SCOPE_SESSION",
     "SCOPE_WORKSPACE",
     "apply_root_grant",

@@ -52,7 +52,8 @@ def register_write_root_grant(workspace_root: str, granted: str) -> Path:
     The live projection of a recorded workspace root grant: the next confined spawn's
     :func:`effective_write_roots` and the next advisory ``file_policy`` check both include it.
     Fenced children already spawned keep their compile-time territory until they respawn — the
-    route layer reports that as a typed ``grant_pending_respawn`` rather than silently.
+    grant path restarts the workspace's resident fleet at a safe boundary so this takes effect
+    live (a busy fleet defers, reported ``grant_restart_deferred_busy`` — #1033), never silently.
     """
     key = _normalize_root_key(workspace_root)
     resolved = Path(granted).expanduser()

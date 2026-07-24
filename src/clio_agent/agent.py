@@ -408,6 +408,33 @@ class ClioAgent(dspy.Module):
                 else:
                     leases[root] = remaining
 
+    def request_fleet_restart(self, workspace_root: str) -> str:
+        """Restart the workspace's resident fleet so a new write-root grant takes effect (#1033).
+
+        A workspace-shared fleet child is spawned once and keeps its compile-time write
+        territory, so a mid-session ``POST /v1/workspaces/{wid}/grants`` for a new root would
+        never reach it until it respawned — an over-claim on the grant's ``grant_applied_live``
+        reason. This delegates to the drain-aware :meth:`WorkspaceExecutorReaper.request_restart`
+        primitive (shared registry lock; never closes a busy/leased executor — it defers to the
+        reaper's idle pass) and returns its TYPED outcome
+        (:data:`RESTART_RESTARTED_LIVE` / :data:`RESTART_DEFERRED_BUSY` / :data:`RESTART_NO_RESIDENT`).
+        The registry key is ``str(ws.root_path)`` — the same value the grant route derives — so
+        an exact-string lookup matches the turn-bound executor.
+        """
+
+        from clio_agent.tools.reaper import RESTART_NO_RESIDENT  # noqa: PLC0415
+
+        root = (workspace_root or "").strip()
+        if not root:
+            return RESTART_NO_RESIDENT
+        # Ensure the shared (lock, executors, leases) exist even on a partially
+        # constructed test stub; a missing reaper means no resident fleet to restart.
+        self._workspace_state()
+        reaper = getattr(self, "_workspace_reaper", None)
+        if reaper is None:
+            return RESTART_NO_RESIDENT
+        return reaper.request_restart(root)
+
     def _discover_pack_experts(self) -> list[Any]:
         """Return loaded pack experts (for declared-tool visibility derivation)."""
 
