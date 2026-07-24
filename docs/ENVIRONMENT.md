@@ -11,6 +11,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | Environment variable | Config key | Type | Default | Defined in |
 | --- | --- | --- | --- | --- |
 | `CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP` | `agents.disable_default_registry_bootstrap` | bool | `false` | `src/clio_agent/gact/agent_blueprints.py` |
+| `CLIO_AI_REVIEW_TIMEOUT_S` | `permissions.ai_review_timeout_s` | str | `45.0` | `src/clio_agent/gact/runtime/ai_review.py` |
 | `CLIO_ALLOWED_ROOTS` | `tools.file_policy.allowed_roots` | str | `_default_allowed_roots()` _(computed)_ | `src/clio_agent/tools/file_policy.py` |
 | `CLIO_ALLOW_SYMLINKS` | `tools.file_policy.allow_symlinks` | bool | `false` | `src/clio_agent/tools/file_policy.py` |
 | `CLIO_API_BASE` | `runtime.api_base` | str | _(unset)_ | `src/clio_agent/runtime/status.py` |
