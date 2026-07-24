@@ -124,6 +124,13 @@ class Session:
     #   architect  — high-level plan + diff proposals; no direct file writes
     mode: str = "chat"
     edit_mode: str = "diff"
+    # iowarp/clio-agent #1034 — approval axis, ORTHOGONAL to ``mode``. One of
+    # {ask, auto-edits, bypass, ai-review}; default "ask" preserves today's
+    # interactive-prompt behaviour. Literal validation lives on the wire model
+    # (types.Session); the dataclass stores the raw string so a defaulted field
+    # round-trips old persisted rows (asdict/Session(**payload)) with no
+    # migration.
+    approval_mode: str = "ask"
     # Routing override. "auto" runs the LM-based router; "chat" forces
     # every turn through the chat path; "experts" rejects chat/none
     # routes (raises a routing error) so users can lock the session
@@ -234,6 +241,7 @@ class SessionStore:
         mode: str = "chat",
         edit_mode: str = "diff",
         routing_mode: str = "auto",
+        approval_mode: str = "ask",
     ) -> Session:
         """Create a new session. Returns the freshly-minted record.
 
@@ -245,6 +253,7 @@ class SessionStore:
         sid = _SESSION_ID_PREFIX + uuid.uuid4().hex[:12]
         now = _utcnow_iso()
         valid_routing_modes = {"auto", "chat", "experts", "reasoning_only"}
+        valid_approval_modes = {"ask", "auto-edits", "bypass", "ai-review"}
         sess = Session(
             id=sid,
             workspace_id=workspace_id,
@@ -259,6 +268,7 @@ class SessionStore:
             mode=mode if mode in {"chat", "plan", "edit", "architect"} else "chat",
             edit_mode=edit_mode if edit_mode in {"diff", "whole", "patch"} else "diff",
             routing_mode=routing_mode if routing_mode in valid_routing_modes else "auto",
+            approval_mode=approval_mode if approval_mode in valid_approval_modes else "ask",
         )
         with self._lock:
             self._sessions[sid] = sess
@@ -306,6 +316,7 @@ class SessionStore:
         mode: Optional[str] = None,
         edit_mode: Optional[str] = None,
         routing_mode: Optional[str] = None,
+        approval_mode: Optional[str] = None,
         model: Optional[dict[str, str]] = None,
         agent: Optional[dict[str, str]] = None,
         metadata_patch: Optional[dict[str, Any]] = None,
@@ -348,6 +359,13 @@ class SessionStore:
                 "reasoning_only",
             }:
                 sess.routing_mode = routing_mode
+            if approval_mode is not None and approval_mode in {
+                "ask",
+                "auto-edits",
+                "bypass",
+                "ai-review",
+            }:
+                sess.approval_mode = approval_mode
             if model is not None:
                 sess.model = dict(model)
             if agent is not None:

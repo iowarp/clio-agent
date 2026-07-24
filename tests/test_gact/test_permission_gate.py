@@ -392,7 +392,6 @@ def test_builtin_shell_bash_is_not_auto_allowed_without_approver(tmp_path: Path)
     read-only. With no session/approver it fails closed (deny). Read-only diagnostics
     that used to be hand-parsed are now covered by is_read_only via catalog/annotation."""
     app = build_app(sessions_path=tmp_path / "s.json")
-    app.state.permission_default = "deny"
     gate = _make_permission_gate(app)
 
     assert gate("shell_bash", {"command": "date"}) == "deny"
@@ -400,7 +399,6 @@ def test_builtin_shell_bash_is_not_auto_allowed_without_approver(tmp_path: Path)
 
 def test_builtin_shell_tool_still_gates_non_diagnostic_command(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "s.json")
-    app.state.permission_default = "deny"
     gate = _make_permission_gate(app)
 
     # ``shell_bash`` is never read-only (its writes live behind the OS fence, not a

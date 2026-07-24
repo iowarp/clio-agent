@@ -1,7 +1,7 @@
 """Permission-policy data machinery for the GACT server (#714 decomposition).
 
 SPEC §6.11.b permission policies are declarative ``allow``/``deny``/``ask`` rules
-consulted before the per-tool ``permission_default``. This module is the single
+consulted at the permission boundary. This module is the single
 owner of the *data* layer behind them -- validation, on-disk load/flush, and the
 derivation of a sticky policy from an ``allow_session``/``allow_workspace``
 permission resolution -- so both the request handlers in

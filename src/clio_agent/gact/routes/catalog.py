@@ -112,7 +112,6 @@ def _agent_runtime_tool_rows(app: FastAPI) -> list[dict[str, Any]]:
                 "source": "agent_runtime_mcp",
                 "input_schema": _runtime_tool_value(tool, "inputSchema", "input_schema") or {},
                 "output_schema": _runtime_tool_value(tool, "outputSchema", "output_schema") or {},
-                "permission_default": "ask",
                 "owner": _tool_owner_for_catalog(tool_name),
                 "tags": _tool_tags_for_catalog(tool_name),
                 "visible_to": _tool_visible_to_for_catalog(tool_name),
@@ -167,7 +166,6 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                         "source": "mcp",
                         "input_schema": tool.get("input_schema") or {},
                         "output_schema": tool.get("output_schema") or {},
-                        "permission_default": "ask",
                         "owner": _tool_owner_for_catalog(tool_name),
                         "tags": _tool_tags_for_catalog(tool_name),
                         "visible_to": _tool_visible_to_for_catalog(tool_name),
@@ -208,7 +206,6 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                             "enabled": bool(declared.get("enabled", False)),
                             "input_schema": declared.get("input_schema") or {},
                             "output_schema": declared.get("output_schema") or {},
-                            "permission_default": "ask",
                             "owner": _tool_owner_for_catalog(tool_name),
                             "tags": _tool_tags_for_catalog(tool_name),
                             "visible_to": _tool_visible_to_for_catalog(tool_name),
@@ -252,7 +249,6 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                                 "output_schema": getattr(t, "outputSchema", None)
                                 or getattr(t, "output_schema", None)
                                 or {},
-                                "permission_default": "ask",
                                 "owner": _tool_owner_for_catalog(tool_name),
                                 "tags": _tool_tags_for_catalog(tool_name),
                                 "visible_to": _tool_visible_to_for_catalog(tool_name),
@@ -300,7 +296,6 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                         "source": "mcp",
                         "input_schema": tool.get("input_schema") or {},
                         "output_schema": tool.get("output_schema") or {},
-                        "permission_default": "ask",
                         "owner": _tool_owner_for_catalog(tool_id),
                         "tags": _tool_tags_for_catalog(tool_id),
                         "visible_to": _tool_visible_to_for_catalog(tool_id),
@@ -336,7 +331,6 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                             "enabled": bool(declared.get("enabled", False)),
                             "input_schema": declared.get("input_schema") or {},
                             "output_schema": declared.get("output_schema") or {},
-                            "permission_default": "ask",
                             "owner": _tool_owner_for_catalog(tool_id),
                             "tags": _tool_tags_for_catalog(tool_id),
                             "visible_to": _tool_visible_to_for_catalog(tool_id),
@@ -365,7 +359,6 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                                 "output_schema": getattr(tt, "outputSchema", None)
                                 or getattr(tt, "output_schema", None)
                                 or {},
-                                "permission_default": "ask",
                                 "owner": _tool_owner_for_catalog(tool_id),
                                 "tags": _tool_tags_for_catalog(tool_id),
                                 "visible_to": _tool_visible_to_for_catalog(tool_id),
