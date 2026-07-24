@@ -111,7 +111,13 @@ RATCHET_BASELINE: dict[str, int] = {
     # _set_app_arc. All logic (ladder, detection, doctor probe, boot-event emit) lives in
     # the owner module runtime/sandbox.py; only the two call sites are here (the #900
     # child-reaper precedent). Ratchets back with the #714 lifespan split.
-    "src/clio_agent/gact/app.py": 2730,
+    # #1035 (epic #1031 Pillar 2): +7 to wire the loop-inbox mid-turn wake carrier
+    # into boot — the _make_loop_inbox_drain import, the per-session app.state
+    # .loop_inboxes store (beside deferred_resumes), and the pending_loop_inbox_drain
+    # hook install (mirrors pending_cancellation_checker). All logic lives in the
+    # owner module gact/loop_inbox.py; only these boot call sites are here. Ratchets
+    # back with the #714 lifespan split.
+    "src/clio_agent/gact/app.py": 2737,
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
