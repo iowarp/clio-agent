@@ -106,7 +106,12 @@ RATCHET_BASELINE: dict[str, int] = {
     # store fails loud at boot, not mid-turn (defect 1b). The fold + typed-stall + the
     # boot_fold_artifact_registry_offloop helper all live in the owner module
     # artifacts/registry_boot.py (no accretion); only the call site is here.
-    "src/clio_agent/gact/app.py": 2728,
+    # #975 (B1 sandbox): +11 to wire the OS write-confinement backend at boot — the
+    # install_sandbox() call in the lifespan + the emit_boot_state_event() call after
+    # _set_app_arc. All logic (ladder, detection, doctor probe, boot-event emit) lives in
+    # the owner module runtime/sandbox.py; only the two call sites are here (the #900
+    # child-reaper precedent). Ratchets back with the #714 lifespan split.
+    "src/clio_agent/gact/app.py": 2739,
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -156,7 +161,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # back below the pre-#947 count with the mcp_app_* owner-module split (see the
     # #947 DEBT block on mcp_apps.py).
     # merge(main->develop): -2 ratchet down (1548 -> 1546).
-    "src/clio_agent/gact/routes/sessions.py": 1546,
+    # B5 #979.2: +3 for the session-attach boundary emit seam (the emit logic lives in the
+    # grants owner module; only the guarded one-call seam + its import land here).
+    "src/clio_agent/gact/routes/sessions.py": 1549,
     # #933: +8 for the turn-scoped workspace-fleet lease in _tool_session_context.
     # #933 review hardening: typed workspace_lease_unavailable degrade when a
     # rooted turn has no leasable agent (+9).
@@ -171,7 +178,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # #966 S1 (artifacts seam a): +9 for the mint call site in the observer's
     # "completed" phase — the mint funnel + id/workspace resolution live in the
     # artifacts owner module; only the guarded one-call seam lands here.
-    "src/clio_agent/gact/tool_observer.py": 951,
+    # B5 #979.7 (deferred B4 WRITER): +6 for the serving-child join seam in the
+    # "started" phase — the join logic lives in the ingest_edges owner module
+    # (join_call_to_serving_child); only the import + guarded one-call seam land here.
+    "src/clio_agent/gact/tool_observer.py": 957,
     "src/clio_agent/gact/transcript.py": 986,
     # #918: +17 for the typed SkillNotDelegatableError ladder arm (a skill-bound
     # turn fails typed, never as generic agent_error).
@@ -230,7 +240,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # calls stay inline so the env-reference generator discovers each knob directly).
     # Real new functionality (env-only → config-first); ratchets down when the doctor's
     # probe methods are extracted to an owner module.
-    "src/clio_agent/runtime/status.py": 1238,
+    # #975 (B1 sandbox): +2 to register the `sandbox` doctor row in collect() (the import
+    # + the probe_sandbox() call); the probe logic lives in the owner module
+    # runtime/sandbox.py. Ratchets down when the probe methods are extracted.
+    "src/clio_agent/runtime/status.py": 1240,
     # #932: +62 for preloaded tool definitions (start() without the list_tools
     # fan-out) and namespace-direct call routing with lazy per-namespace
     # clients — the executor IS the owner module for this.
@@ -254,7 +267,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1001: doctor rendering + disk-GC surface moved to the ui/doctor.py owner module
     # (ratcheted 1156 -> 1135 in the same change).
     # merge(main->develop): +6 (1135 -> 1141) integrating main's release-stream cli deltas.
-    "src/clio_agent/ui/cli.py": 1141,
+    # #977 (B3 sandbox): the `sandbox` verb dispatches to runtime/sandbox_cli.py and
+    # run_doctor/--tune stub moved to their owner modules; the `--yes` flag (owner's
+    # one-command install acceptance) adds it back slightly — net ratchet 1141 -> 1138 (still
+    # a reduction vs the inherited baseline).
+    "src/clio_agent/ui/cli.py": 1138,
 }
 
 # Root of the source tree to scan, relative to the repository root.

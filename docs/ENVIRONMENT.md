@@ -124,6 +124,8 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_RESIDENT_LEDGERS_MAX` | `gact.resident_ledgers.max_sessions` | int | `512` | `src/clio_agent/gact/resident_ledgers.py` |
 | `CLIO_RESIDENT_LEDGERS_MAX_BYTES` | `gact.resident_ledgers.max_bytes` | int | `536870912` | `src/clio_agent/gact/resident_ledgers.py` |
 | `CLIO_RESIDENT_LEDGERS_TTL_S` | `gact.resident_ledgers.idle_ttl_s` | float | `1800.0` | `src/clio_agent/gact/resident_ledgers.py` |
+| `CLIO_SANDBOX_ENABLED` | `sandbox.enabled` | bool | `true` | `src/clio_agent/runtime/sandbox.py` |
+| `CLIO_SANDBOX_SRT_PATH` | `sandbox.srt_path` | str | _(unset)_ | `src/clio_agent/runtime/sandbox.py` |
 | `CLIO_SEMANTIC_TRACE_BACKEND` | `trace.backend` | str | `none` | `src/clio_agent/arc/memory.py` |
 | `CLIO_SEMANTIC_TRACE_CONFIG` | `trace.semantic_config` | str | _(unset)_ | `src/clio_agent/gact/semantic_events.py` |
 | `CLIO_SEMANTIC_TRACE_DETAIL` | `trace.detail_level` | str | `DEFAULT_DETAIL_LEVEL` _(computed)_ | `src/clio_agent/gact/_params.py` |

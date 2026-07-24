@@ -60,9 +60,7 @@ def _run(field: str, chunks: list[str]) -> str:
 
 @given(field=st.sampled_from(_FIELDS), text=_marker_text(), data=st.data())
 @settings(max_examples=200, deadline=None)
-def test_chunking_is_extraction_invariant(
-    field: str, text: str, data: st.DataObject
-) -> None:
+def test_chunking_is_extraction_invariant(field: str, text: str, data: st.DataObject) -> None:
     """Any chunking of the text yields the same field output as one-shot feed."""
     # Draw arbitrary cut points to partition ``text`` into ordered chunks.
     n = len(text)

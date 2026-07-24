@@ -333,10 +333,17 @@ def _contended_candidates(app: "FastAPI", workspace_id: str, session_id: str) ->
     out: list[str] = []
     in_flight = getattr(app.state, "in_flight_turns", None)
     if in_flight:
-        try:
-            others = [s for s in list(in_flight.keys()) if s and s != session_id]
-        except RuntimeError:
-            return out
+        # A ``RuntimeError`` means the in-flight map mutated mid-enumeration — a transient race,
+        # NOT "no peers". Swallowing it into an empty result would mis-classify a possibly-
+        # contended record as clean/``ordinary``. Retry the snapshot (races settle in a tick);
+        # a persistent race is backstopped by the separate lease-dirty guard (docstring).
+        others: list[str] = []
+        for _attempt in range(3):
+            try:
+                others = [s for s in list(in_flight.keys()) if s and s != session_id]
+                break
+            except RuntimeError:
+                continue
         for other in others:
             if _session_workspace(app, other) == workspace_id:
                 out.append(other)
@@ -354,8 +361,16 @@ def _now_iso() -> str:
     return _iso_from_epoch(time.time())
 
 
-def _generated_edges(minted: list[ArtifactVersion]) -> list[ProvEdge]:
-    """Project the versions minted this call to ``generated`` edges."""
+def _generated_edges(
+    minted: list[ArtifactVersion], *, fence_proven: bool = False
+) -> list[ProvEdge]:
+    """Project the versions minted this call to ``generated`` edges.
+
+    ``fence_proven`` (B6 #980) stamps the per-edge lease-window → fence_proven upgrade on
+    every generated edge when an active OS fence proved this call's output territory exclusive
+    by construction (``transform_exclusivity.generated_fence_proven``). Identity evidence
+    (``hash-pair`` / ``schema-arg``) is unchanged — the marker is a separate attribution axis.
+    """
     edges: list[ProvEdge] = []
     for version in minted:
         edges.append(
@@ -368,6 +383,7 @@ def _generated_edges(minted: list[ArtifactVersion]) -> list[ProvEdge]:
                 version=version.version,
                 path=version.path,
                 note=("" if version.sha256 else "stat_pinned"),
+                fence_proven=fence_proven,
             )
         )
     return edges
@@ -418,6 +434,7 @@ def record_transform(
     trace_id: str = "",
     started_at: Optional[float] = None,
     agent_id: str = "",
+    serving_child_id: str = "",
 ) -> Optional[TransformRecord]:
     """Build, emit (trace-only), and fold one :class:`TransformRecord` (owner #966.6).
 
@@ -450,11 +467,41 @@ def record_transform(
     )
     used = [*used_scan.edges, *authority_scan.edges]
     notes = [*used_scan.notes, *authority_scan.notes]
-    generated = _generated_edges(minted)
+    # B4 (#978): join in-window ``net.egress`` records onto the used edges as
+    # ``used web:<domain>@<time>`` — enriching a staged-download/catalog URL edge whose host
+    # the chokepoint observed (step 1, one edge two evidence bases), or minting one fresh web
+    # edge ONLY when the producing call's SERVING confined child is known and its egress is a
+    # single unambiguous domain (step 2, child-keyed). Precision over recall (#966.10): an
+    # unattributable egress (unknown serving child / multi-domain / unbounded window) stays a
+    # bare ``net.egress`` record — a sibling child's egress is never minted onto this
+    # transform. Guarded — a provenance join must never break a turn.
+    try:
+        from clio_agent.gact.artifacts.ingest_edges import attach_ingest_edges  # noqa: PLC0415
+
+        used = attach_ingest_edges(
+            app,
+            used,
+            workspace_id=workspace_id,
+            tool_name=tool_name,
+            started_at=started_at,
+            serving_child_id=serving_child_id,
+        )
+    except Exception:  # noqa: BLE001 — the ingest join is best-effort, never fatal
+        logger.debug("ingest edge join skipped reason=ingest_join_failed", exc_info=True)
     environment = capture_environment(app)
     replay, replay_reason = compute_replay_contract(environment, used)
     candidates = _contended_candidates(app, workspace_id, sid)
     kind = TransformKind.CONTENDED if candidates else TransformKind.ORDINARY
+    # B6 (#980): the per-edge lease-window → fence_proven upgrade on the generated (written)
+    # side — proven only when an active fence made this call's output territory exclusive by
+    # construction (ordinary record + set-math). Never on the floor, never when contended.
+    from clio_agent.gact.artifacts.transform_exclusivity import (  # noqa: PLC0415
+        generated_fence_proven,
+    )
+
+    generated = _generated_edges(
+        minted, fence_proven=generated_fence_proven(app, workspace_id, sid, kind=kind)
+    )
     started_iso = _iso_from_epoch_opt(started_at)
     record = TransformRecord(
         call_id=call_id,
@@ -572,6 +619,14 @@ def observe_tool_transform(
             call_started_at=started,
             result=result,
         )
+        # B4 (#978): resolve the confined child that SERVED this call so the ingest join can
+        # attribute egress deterministically (``egress → child → call-window → transform``).
+        # ``""`` when no child link is recorded (the floor / unattributed) — the step-2 mint
+        # then abstains rather than guess.
+        from clio_agent.gact.artifacts.ingest_edges import (  # noqa: PLC0415
+            resolve_serving_child_id,
+        )
+
         record_transform(
             app,
             sid,
@@ -586,6 +641,26 @@ def observe_tool_transform(
             trace_id=trace_id,
             started_at=started,
             agent_id=_ctx.active_react_scope() or "",
+            serving_child_id=resolve_serving_child_id(app, call_id),
+        )
+        # B2 (#976): on a FENCED platform, a denied (or fence-escaping) out-of-root write is a
+        # typed ``policy_violation`` — the enforced-tier variant of #966's ``gap`` node. No-op
+        # on the floor (the write succeeds → honest gap). Guarded above with the record.
+        from clio_agent.gact.artifacts.violations import (  # noqa: PLC0415
+            observe_policy_violations,
+        )
+
+        observe_policy_violations(
+            app,
+            sid,
+            tool_name=tool_name,
+            args=effective_args,
+            call_id=call_id,
+            result=result,
+            workspace_id=workspace_id,
+            turn_id=turn_id,
+            trace_id=trace_id,
+            started_at=started,
         )
     except Exception as exc:  # noqa: BLE001 — a live provenance record must never break a turn
         # Finding [11]: the wiring's ONLY production path must not SWALLOW its own

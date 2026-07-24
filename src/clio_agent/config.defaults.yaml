@@ -350,6 +350,9 @@ runtime.live_streaming: true
 # CLIO_LM_TOKEN_LIVENESS  (bool)  <- src/clio_agent/lm/io_logging.py
 runtime.lm_token_liveness: true
 
+# CLIO_SANDBOX_ENABLED  (bool)  <- src/clio_agent/runtime/sandbox.py
+sandbox.enabled: true
+
 # CLIO_ALLOW_SYMLINKS  (bool)  <- src/clio_agent/tools/file_policy.py
 tools.file_policy.allow_symlinks: false
 

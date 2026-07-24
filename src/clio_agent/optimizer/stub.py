@@ -49,3 +49,22 @@ def optimizer_not_implemented_payload() -> dict[str, Any]:
         "message": OPTIMIZER_NOT_IMPLEMENTED_MESSAGE,
         "tracking_issue": OPTIMIZER_TRACKING_ISSUE,
     }
+
+
+def run_tune_cli(expert_id: str, *, json_output: bool = False) -> int:
+    """Render the ``--tune`` not-implemented stub and return its exit code (2).
+
+    The CLI ``--tune`` hook dispatches here (no accretion in ``ui/cli.py``): it prints the
+    uniform structured not-implemented payload (JSON or a one-line notice) and returns exit
+    code ``2`` so the research surface never silently half-runs.
+    """
+    payload = {"expert_id": expert_id, **optimizer_not_implemented_payload()}
+    if json_output:
+        import json  # noqa: PLC0415
+
+        print(json.dumps(payload))
+    else:
+        from rich.console import Console  # noqa: PLC0415
+
+        Console().print(f"[yellow]{payload['message']}[/yellow]")
+    return 2

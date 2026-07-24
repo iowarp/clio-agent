@@ -81,6 +81,62 @@ _FILE_PICKER_SKIP_DIRS = {
 }
 
 
+_GRANTOR_USER = "user"
+
+
+def _emit_boundary_root(
+    app: FastAPI, workspace_id: str, root_path: str, *, grantor: str, revoked: bool = False
+) -> None:
+    """Emit a ``boundary.granted``/``boundary.revoked`` for a workspace write-root (B5 #979.2).
+
+    Thin route-layer shim over the grants owner module so WorkspaceStore stays leaf-pure (no
+    bus). Guarded — a boundary record must never break the workspace mutation.
+    """
+    try:
+        from clio_agent.gact.runtime import grants  # noqa: PLC0415
+
+        (grants.emit_boundary_revoked if revoked else grants.emit_boundary_granted)(
+            app,
+            kind=grants.KIND_ROOT,
+            scope=grants.SCOPE_WORKSPACE,
+            grantor=grantor,
+            pattern=root_path,
+            workspace_id=workspace_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - boundary emit is observability, never fatal
+        trace.event("WORKSPACE", "boundary emit skipped wid=%s reason=%r", workspace_id, exc)
+
+
+def _grant_workspace_domain(app: FastAPI, workspace_id: str, host: str) -> dict[str, Any]:
+    """Grant a network domain to a workspace: sticky ``host_pattern`` policy + boundary event."""
+    from clio_agent.gact.runtime import grants  # noqa: PLC0415
+
+    policy = {
+        "scope": grants.SCOPE_WORKSPACE,
+        "scope_id": workspace_id,
+        "tool_name_pattern": "*",
+        "host_pattern": host,
+        "action": "allow",
+    }
+    policies = getattr(app.state, "permission_policies", None)
+    if isinstance(policies, list):
+        policies.append(policy)
+        from clio_agent.gact.runtime.permission_policies import (  # noqa: PLC0415
+            _flush_permission_policies,
+        )
+
+        _flush_permission_policies(app)
+    grants.emit_boundary_granted(
+        app,
+        kind=grants.KIND_DOMAIN,
+        scope=grants.SCOPE_WORKSPACE,
+        grantor=_GRANTOR_USER,
+        pattern=host,
+        workspace_id=workspace_id,
+    )
+    return {"granted": True, "host_pattern": host}
+
+
 def _is_textual_workspace_file(name: str, raw: bytes) -> bool:
     """Whether a workspace file should be served as decoded ``text/plain``
     (code preview) vs. raw bytes with its real content type (binary, e.g. PNG).
@@ -135,6 +191,11 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
             storage_root=req.storage_root,
             metadata=req.metadata,
         )
+        # B5 #979.2: a new workspace pins a write-root boundary — previously a silent mutation
+        # (WorkspaceStore has no bus). Emit at the ROUTE layer (which has ``app``), keeping the
+        # store leaf-pure. ``grantor=user`` (a direct user action, never a clio decision, ⚑).
+        if ws.root_path:
+            _emit_boundary_root(app, ws.id, ws.root_path, grantor=_GRANTOR_USER)
         return Workspace(**ws.to_wire())
 
     @app.get("/v1/workspaces/{wid}", response_model=Workspace)
@@ -170,6 +231,10 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         # The desktop sends `config` as an alias for metadata.
         if metadata is None and isinstance(body.get("config"), dict):
             metadata = body.get("config")
+        # Capture the prior root so a root_path change emits an honest revoked→granted pair.
+        prior = app.state.workspaces.get(wid)
+        prior_root = str(getattr(prior, "root_path", "") or "") if prior is not None else ""
+        new_root = root_path.strip() if isinstance(root_path, str) and root_path.strip() else None
         # Route the mutation through the store so it serialises under the
         # WorkspaceStore lock (no torn write / flush racing a concurrent
         # create) and bumps ``updated_at`` — never mutate the live object
@@ -177,9 +242,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         ws = app.state.workspaces.update(
             wid,
             name=name.strip() if isinstance(name, str) and name.strip() else None,
-            root_path=(
-                root_path.strip() if isinstance(root_path, str) and root_path.strip() else None
-            ),
+            root_path=new_root,
             metadata_patch=metadata if isinstance(metadata, dict) else None,
         )
         if ws is None:
@@ -194,7 +257,67 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
+        # B5 #979.2: a root_path change is an effective write-territory boundary change —
+        # emit revoked(old)→granted(new) so the mutation is on the record, not silent.
+        if new_root is not None and new_root != prior_root:
+            if prior_root:
+                _emit_boundary_root(app, wid, prior_root, grantor=_GRANTOR_USER, revoked=True)
+            _emit_boundary_root(app, wid, new_root, grantor=_GRANTOR_USER)
         return Workspace(**ws.to_wire())
+
+    # ---- /v1/workspaces/{wid}/grants (B5 #979.3 — mid-session grants) ----
+
+    @app.post("/v1/workspaces/{wid}/grants")
+    async def create_workspace_grant(wid: str, request: Request) -> dict[str, Any]:
+        """Grant new effective boundary to a workspace mid-session (B5 #979.3).
+
+        Body (any subset): ``{"root": "<path>"}`` grants a writable root — the fence + advisory
+        widen LIVE on the next spawn (a session-wide srt fence reports ``grant_pending_respawn``
+        for children already spawned); ``{"domain": "<host>"}`` grants a network domain (a sticky
+        workspace ``host_pattern`` policy the deny-mode chokepoint honours); ``{"deny_mode":
+        true|false}`` toggles the workspace's opt-in network deny mode. Every grant is a recorded
+        USER decision emitting ``boundary.granted`` (⚑ the model requests, the user grants).
+        """
+        ws = app.state.workspaces.get(wid)
+        if ws is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"workspace not found: {wid}",
+                        details={"workspace_id": wid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        body = await json_body(request, route="POST /v1/workspaces/{wid}/grants")
+        from clio_agent.gact.runtime import grants  # noqa: PLC0415
+
+        result: dict[str, Any] = {"workspace_id": wid}
+        root = body.get("root") or body.get("path")
+        domain = body.get("domain") or body.get("host")
+        deny_mode = body.get("deny_mode")
+        if isinstance(deny_mode, bool):
+            ws.config[grants.DENY_MODE_CONFIG_KEY] = deny_mode
+            app.state.workspaces.update(wid, metadata_patch=None)
+            result["deny_mode"] = deny_mode
+        if isinstance(root, str) and root.strip():
+            result["root"] = grants.apply_root_grant(app, wid, root.strip())
+        if isinstance(domain, str) and domain.strip():
+            result["domain"] = _grant_workspace_domain(app, wid, domain.strip().lower())
+        if "root" not in result and "domain" not in result and "deny_mode" not in result:
+            raise HTTPException(
+                status_code=400,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="invalid_request",
+                        message="grant body must include one of: root, domain, deny_mode",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        return result
 
     @app.delete("/v1/workspaces/{wid}")
     async def delete_workspace(wid: str) -> Response:

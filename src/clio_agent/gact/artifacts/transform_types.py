@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from enum import Enum
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -97,6 +99,15 @@ class ProvEdge(BaseModel):
     non-head version), or ``stale_fallback`` (reconcile skipped, edge kept the
     stale registered version) — never an unconditional ``gap_first``. Other notes:
     ``stat_pinned`` / ``over_threshold`` (no content hash).
+
+    ``fence_proven`` (B6 #980) is the per-edge upgrade of a GENERATED edge's lease-window
+    attribution: ``True`` only where an active OS write fence made this call's output
+    territory EXCLUSIVE BY CONSTRUCTION (:func:`fence_proves_exclusivity` — its ``write_roots``
+    were disjoint from every OTHER concurrent actor's during the write window), so the
+    correlated single-writer window becomes proven, not merely asserted. ``False`` on the
+    floor (no fence → correlated only) and on a ``contended`` record (two fenced actors
+    legitimately sharing a granted root — the fence NARROWS exclusivity, never FAKES it).
+    Stamped at mint, never retroactively; identity evidence (``hash-pair``) is unchanged.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -116,6 +127,22 @@ class ProvEdge(BaseModel):
     #: The call arg the edge was discovered on (``""`` for result-derived edges).
     arg: str = ""
     note: str = ""
+    #: Network-sourced INGEST evidence (B4 #978), joined from the clio chokepoint's
+    #: ``net.egress`` record. ``net_domain`` is the chokepoint-observed remote host; a fresh
+    #: web edge names it as ``web:<domain>@<time>`` in ``external_ref``, a joined
+    #: staged-download edge keeps its ``sha256`` (hash-pair) AND gains ``net_domain`` (two
+    #: evidence bases, one edge). ``net_mechanism`` is the honest per-edge enforcement
+    #: (``proxy-enforced`` on the srt tier, ``env-cooperative`` on Landlock/floor — raw
+    #: sockets bypass, so the record never claims completeness the tier can't provide).
+    #: ``net_at`` is the egress timestamp; ``net_resolved_ip`` the DNS resolution the proxy
+    #: performed on the child's behalf (the fenced child issues no raw UDP/53).
+    net_domain: str = ""
+    net_mechanism: str = ""
+    net_at: str = ""
+    net_resolved_ip: str = ""
+    #: B6 (#980): the lease-window → fence_proven per-edge upgrade on a GENERATED edge. See the
+    #: class docstring + :func:`fence_proves_exclusivity`. Default ``False`` (floor / contended).
+    fence_proven: bool = False
 
     def to_artifact_use(self) -> Optional[dict[str, Any]]:
         """Project to the relay ``ArtifactUse {artifact_id, sha256}`` shape, or ``None``.
@@ -203,6 +230,73 @@ def bound_instrument_args(
     }
 
 
+# --------------------------------------------------------------------------- #
+# fence_proven exclusivity math (B6 #980) — the pure, unit-pinnable predicate.
+# --------------------------------------------------------------------------- #
+
+#: A write-territory root, given either as a string or a ``Path``.
+RootLike = Union[str, Path]
+
+
+def _root_overlap(a: Path, b: Path) -> bool:
+    """Whether two write-territory roots overlap — equal, or one contains the other.
+
+    Containment either way means a child fenced to one root could reach into the other's
+    territory, so the two are NOT provably disjoint. Pure + cross-platform (pathlib only);
+    an unresolvable path falls back to its literal form rather than raising.
+    """
+    try:
+        a_r = a.expanduser().resolve(strict=False)
+    except OSError:
+        a_r = a
+    try:
+        b_r = b.expanduser().resolve(strict=False)
+    except OSError:
+        b_r = b
+    if a_r == b_r:
+        return True
+    for inner, outer in ((a_r, b_r), (b_r, a_r)):
+        try:
+            inner.relative_to(outer)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def fence_proves_exclusivity(
+    output_roots: Sequence[RootLike],
+    other_actor_roots: Sequence[Sequence[RootLike]],
+) -> bool:
+    """Does an active fence PROVE this call's output territory exclusive? (B6 #980, pure).
+
+    The per-edge ``lease-window`` → ``fence_proven`` upgrade predicate. Exclusive BY
+    CONSTRUCTION iff no OTHER concurrent actor's write territory overlaps any of this call's
+    ``output_roots`` — then, under an OS write fence that confines every actor to its own
+    ``write_roots``, it is physically impossible for another actor to have written this call's
+    outputs, so correlated single-writer attribution is proven, not merely asserted.
+
+    Any overlap (a legitimately shared / B5-granted root) leaves exclusivity merely
+    correlated and returns ``False`` — the fence NARROWS exclusivity, never FAKES it
+    (precision over recall #966.10: an ambiguous territory is never a false ``fence_proven``).
+
+    Boundary cases: empty ``output_roots`` → ``False`` (nothing to prove exclusive); no other
+    actors → ``True`` (only this fenced actor can write here — vacuously exclusive). Pure —
+    the caller (mint) supplies the resolved root sets; this decides only the set-math.
+    """
+    outs = [Path(r) for r in output_roots if str(r).strip()]
+    if not outs:
+        return False
+    for actor in other_actor_roots:
+        for raw in actor:
+            if not str(raw).strip():
+                continue
+            other = Path(raw)
+            if any(_root_overlap(out, other) for out in outs):
+                return False
+    return True
+
+
 __all__ = [
     "AgentRole",
     "EdgeEvidence",
@@ -210,7 +304,9 @@ __all__ = [
     "Instrument",
     "ProvEdge",
     "ReplayContract",
+    "RootLike",
     "TransformKind",
     "TransformStatus",
     "bound_instrument_args",
+    "fence_proves_exclusivity",
 ]

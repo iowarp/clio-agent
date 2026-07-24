@@ -6,6 +6,30 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Added — sandboxing campaign (#974)
+
+OS-level write confinement for every process the agent spawns, a network chokepoint that
+records all child egress, grants as first-class recorded events, and the provenance-tier
+UPGRADES that make #966's honest floor enforcing. Backend ladder srt → Landlock → none;
+srt is the Windows path (one-time `clio sandbox setup`). GACT-contract surface:
+
+- **Events** (all trace-only, never on the SSE UI wire): `sandbox.state` (boot conformance),
+  `net.egress` (per-child egress), `artifact.policy_violation` (fence-denied out-of-root
+  write), and the `boundary.*` grant family.
+- **Permissions**: a new `network_egress` request kind (deny-mode grant-on-first-domain)
+  reusing the existing gate + policy store; a `host_pattern` domain vocabulary.
+- **Routes**: `POST /v1/workspaces/{wid}/grants` — a recorded root or domain grant (a
+  user/model decision, `boundary.granted` with grantor + sticky-policy provenance).
+- **Provenance**: `gap → policy_violation` (`prevented`/`detected`); the per-edge
+  `lease-window → fence_proven` upgrade on generated edges (fence proved output-territory
+  exclusivity by construction; `contended` records stay unproven); egress →
+  `used web:<domain>@<time>` ingest edges.
+- **Doctor**: the `sandbox` row (fence mechanism + typed reason), the census `confinement`
+  column (wrapped vs verifiably-excluded seams), and the `sandbox_conformance` row (the
+  zero-untyped-degrade guarantee: a typed mechanism/reason per seam on every tier).
+- **CLI**: `clio sandbox setup` (one-time self-elevating UAC on Windows) / `clio sandbox
+  status`.
+
 ### Added — artifacts campaign (#966)
 
 The first-class artifacts campaign lands `b = transform(a)` provenance and gives

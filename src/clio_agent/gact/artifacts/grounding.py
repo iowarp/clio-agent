@@ -57,10 +57,16 @@ if TYPE_CHECKING:
 
 @lru_cache(maxsize=None)
 def _artifact_path_token_re(extensions: tuple[str, ...]) -> re.Pattern[str]:
-    """Compile the fabricated-artifact token matcher for the declared extensions."""
+    """Compile the fabricated-artifact token matcher for the declared extensions.
+
+    The optional ``[A-Za-z]:`` head keeps a Windows drive spec INSIDE the token:
+    without it a ``C:/Users/x/...`` citation tokenizes drive-stripped
+    (``/Users/x/...``), a REAL on-disk citation fails ``is_file()`` and the "correction"
+    string-replace doubles the drive (``C:C:/...``).
+    """
 
     ext_alternation = "|".join(re.escape(ext) for ext in extensions)
-    return re.compile(rf"[A-Za-z0-9_./~+-]+\.(?:{ext_alternation})", re.IGNORECASE)
+    return re.compile(rf"(?:[A-Za-z]:)?[A-Za-z0-9_./~+-]+\.(?:{ext_alternation})", re.IGNORECASE)
 
 
 @lru_cache(maxsize=None)
@@ -286,6 +292,12 @@ def ground_answer_artifacts(
         embedded = [c for c in candidates if c and c in token and c != token]
         if len(embedded) == 1:
             result = result.replace(token, embedded[0])
+            continue
+        # The inverse mangle guard: a token that is the TAIL of a verified path is a
+        # real citation whose prefix the tokenizer (or the model) trimmed — replacing
+        # it inside the surrounding text would double the prefix (the C:C:/ defect).
+        # Leave it; the surrounding text already cites the real path.
+        if any(c.endswith(token) for c in candidates):
             continue
         if len(candidates) > 1:
             # Ambiguous which verified artifact was meant; leave the text unchanged.

@@ -100,6 +100,16 @@ class EnvironmentRecord(BaseModel):
     python_version: str = ""
     #: A reserved container image digest (never minted this campaign).
     image_digest: str = ""
+    #: The OS write-confinement mechanism in force when this transform ran, read from
+    #: :func:`clio_agent.runtime.sandbox.current_state` (Campaign B / #975). ``"none"``
+    #: on the honest floor (no fence); ``""`` when the backend was never resolved in this
+    #: process. This is what turns #966's ``gap`` node into an attributable
+    #: ``policy_violation`` once B2/B3 activate a fence — the record already carries the
+    #: mechanism label, floor-first.
+    sandbox_mechanism: str = ""
+    #: The typed reason the fence is (in)active (e.g. ``fence_active``, ``codex_not_installed``,
+    #: ``codex_windows_unprovisioned``, ``landlock_unavailable``); ``""`` when unresolved.
+    sandbox_reason: str = ""
 
 
 _CLIO_PACKAGE_NAME = "clio-agent"
@@ -243,6 +253,26 @@ def _active_model(app: "FastAPI") -> dict[str, str]:
         return {"provider_id": "", "model_id": "", "variant": "", "source": "global_fallback"}
 
 
+def _sandbox_state() -> tuple[str, str]:
+    """The OS write-confinement ``(mechanism, reason)`` for the current process (#975).
+
+    Reads the backend :func:`clio_agent.runtime.sandbox.current_state` resolved at server
+    boot — the same runtime-status feed pattern as the model/launcher fingerprints.
+    Returns ``("", "")`` when the backend was never resolved (a non-server capture),
+    never raising: environment identity is best-effort provenance, not load-bearing.
+    """
+    try:
+        from clio_agent.runtime.sandbox import current_state  # noqa: PLC0415
+
+        state = current_state()
+        if state is None:
+            return "", ""
+        return str(state.mechanism or ""), str(state.reason or "")
+    except Exception:  # noqa: BLE001 — sandbox provenance is best-effort, never load-bearing
+        logger.debug("environment sandbox state unreadable", exc_info=True)
+        return "", ""
+
+
 def capture_environment(app: "FastAPI") -> EnvironmentRecord:
     """Capture the tiered execution-environment identity for the current turn.
 
@@ -256,6 +286,7 @@ def capture_environment(app: "FastAPI") -> EnvironmentRecord:
     lockfile_sha = _lockfile_hash()
     tier = EnvironmentTier.LOCKFILE_HASH if lockfile_sha else EnvironmentTier.DECLARED
     model = _active_model(app)
+    sandbox_mechanism, sandbox_reason = _sandbox_state()
     return EnvironmentRecord(
         tier=tier,
         clio_version=str(clio_version or ""),
@@ -268,6 +299,8 @@ def capture_environment(app: "FastAPI") -> EnvironmentRecord:
         os=platform.system(),
         arch=platform.machine(),
         python_version=platform.python_version(),
+        sandbox_mechanism=sandbox_mechanism,
+        sandbox_reason=sandbox_reason,
     )
 
 
@@ -294,6 +327,8 @@ def environment_from_payload(raw: Any) -> EnvironmentRecord:
         arch=str(data.get("arch") or ""),
         python_version=str(data.get("python_version") or ""),
         image_digest=str(data.get("image_digest") or ""),
+        sandbox_mechanism=str(data.get("sandbox_mechanism") or ""),
+        sandbox_reason=str(data.get("sandbox_reason") or ""),
     )
 
 

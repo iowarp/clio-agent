@@ -193,9 +193,7 @@ def test_parity_rewrites_fabricated_csv_and_png_to_verified(tmp_path: Path) -> N
         "Plot (PNG): /home/x/.clio/artifacts/plots/P475_CI_LY_timeseries.png\n"
         "Source URL: https://ds2.datacollaboratory.org/raw_csv/P475.CI.LY_.20.csv"
     )
-    grounded = ground_answer_artifacts(
-        app, sid, answer, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA
-    )
+    grounded = ground_answer_artifacts(app, sid, answer, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
 
     # Fabricated PNG (not on disk) → the single verified PNG. Sabotage: return the
     # answer unchanged and this reddens.
@@ -230,9 +228,7 @@ def test_parity_staged_authority_input_is_not_a_substitution_candidate(tmp_path:
     )
 
     answer = "Staged station CSV: /tmp/SAN_timeseries.csv"
-    grounded = ground_answer_artifacts(
-        app, sid, answer, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA
-    )
+    grounded = ground_answer_artifacts(app, sid, answer, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
 
     # Exactly ONE deliverable CSV candidate (the catalog excluded by its STAGING-TOOL
     # producer, though it is byte-hashed just like the deliverable), so the fabricated
@@ -252,9 +248,7 @@ def test_parity_respects_missing_framing(tmp_path: Path) -> None:
     _register(app, sid, name="plot.png", path=str(real_png), kind=ArtifactKind.IMAGE)
 
     answer = "No figure was produced; a PNG has not been staged at /tmp/expected/P475_plot.png yet."
-    grounded = ground_answer_artifacts(
-        app, sid, answer, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA
-    )
+    grounded = ground_answer_artifacts(app, sid, answer, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
     # Honestly-framed missing/expected path: untouched even though a verified PNG
     # exists. Sabotage: drop the framing guard and the path is rewritten → reddens.
     assert grounded == answer
@@ -265,9 +259,7 @@ def test_parity_no_verified_neutralizes(tmp_path: Path) -> None:
     sid = _new_session(store)  # data-blocked run: nothing registered.
 
     answer = "Plot (PNG): /home/x/.clio/artifacts/plots/SAN_timeseries.png"
-    grounded = ground_answer_artifacts(
-        app, sid, answer, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA
-    )
+    grounded = ground_answer_artifacts(app, sid, answer, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
     # No registered PNG deliverable → neutralize rather than present as real. The
     # schema's declared png extension vocabulary is what still flags the fabricated
     # type on an empty registry (the hybrid design). Sabotage: skip neutralize and
@@ -295,7 +287,9 @@ def test_parity_collapses_doubled_prefix_even_with_multiple_verified(
     # TWO verified CSV deliverables → normally ambiguous, but the doubled token
     # embeds exactly one, so the embedded-collapse wins before the ambiguity check.
     _register(app, sid, name="a.csv", path=real_rel, kind=ArtifactKind.DATASET)
-    _register(app, sid, name="b.csv", path="ndp-staging/P999.PW.LY_.00.csv", kind=ArtifactKind.DATASET)
+    _register(
+        app, sid, name="b.csv", path="ndp-staging/P999.PW.LY_.00.csv", kind=ArtifactKind.DATASET
+    )
     doubled = f"artifacts/ndp-{real_rel}"  # a real path with a duplicated prefix
 
     grounded = ground_answer_artifacts(
@@ -312,9 +306,7 @@ def test_parity_keeps_honest_blocked_prose(tmp_path: Path) -> None:
         "No PNG was produced because staging was blocked; a figure would be "
         "written to /tmp/expected/figure.png once a station CSV is staged."
     )
-    grounded = ground_answer_artifacts(
-        app, sid, answer, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA
-    )
+    grounded = ground_answer_artifacts(app, sid, answer, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
     assert grounded == answer
 
 
@@ -330,11 +322,7 @@ def test_parity_widget_schema_grounds_svg_and_leaves_csv_png_untouched(tmp_path:
     real_svg.write_text("<svg/>")
     _register(app, sid, name="widget.svg", path=str(real_svg), kind=ArtifactKind.IMAGE)
 
-    answer = (
-        "Rendered: /out/fabricated_widget.svg\n"
-        "Data: /out/table.csv\n"
-        "Chart: /out/chart.png"
-    )
+    answer = "Rendered: /out/fabricated_widget.svg\nData: /out/table.csv\nChart: /out/chart.png"
     grounded = ground_answer_artifacts(app, sid, answer, schema=WIDGET_SCHEMA)
     # Only the declared svg type is grounded; csv/png are outside this pack's
     # deliverable vocabulary and left verbatim (domain-agnostic).
@@ -365,9 +353,9 @@ def test_on_disk_citation_is_left_unchanged(tmp_path: Path) -> None:
     _register(app, sid, name="real.png", path=real_s, kind=ArtifactKind.IMAGE)
     answer = f"Plot: {real_s}"
     # The cited path exists on disk → never rewritten (it is a real artifact).
-    assert ground_answer_artifacts(
-        app, sid, answer, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA
-    ) == answer
+    assert (
+        ground_answer_artifacts(app, sid, answer, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA) == answer
+    )
 
 
 def test_ambiguous_multiple_deliverables_left_unchanged(tmp_path: Path) -> None:
@@ -382,9 +370,9 @@ def test_ambiguous_multiple_deliverables_left_unchanged(tmp_path: Path) -> None:
     answer = "Plot: /tmp/fabricated.png"
     # Two verified PNGs, no embedding → ambiguous which was meant → unchanged
     # (precision over recall; false attribution is worse than none).
-    assert ground_answer_artifacts(
-        app, sid, answer, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA
-    ) == answer
+    assert (
+        ground_answer_artifacts(app, sid, answer, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA) == answer
+    )
 
 
 def test_unknown_session_grounds_nothing(tmp_path: Path) -> None:
@@ -392,9 +380,12 @@ def test_unknown_session_grounds_nothing(tmp_path: Path) -> None:
     answer = "Plot: /tmp/fabricated.png"
     # No such session → no workspace → no candidates → answer returned unchanged
     # (never a crash on an unbound session).
-    assert ground_answer_artifacts(
-        app, "sess_missing", answer, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA
-    ) == answer
+    assert (
+        ground_answer_artifacts(
+            app, "sess_missing", answer, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA
+        )
+        == answer
+    )
 
 
 class _FakeTask:
@@ -535,3 +526,44 @@ def test_produced_deliverable_off_disk_is_not_falsely_neutralized(tmp_path: Path
     # Sabotage: drop the produced_deliverable_extensions guard and this reddens.
     assert "no local csv artifact was produced" not in grounded
     assert "/tmp/SAN_missing.csv" in grounded
+
+
+def test_token_re_keeps_windows_drive_spec() -> None:
+    """A drive-lettered citation tokenizes WHOLE — the C:C:/ doubling root cause.
+
+    Without the optional ``[A-Za-z]:`` head the tokenizer strips the drive, a real
+    on-disk path fails ``is_file()`` and the substitution doubles the prefix.
+    """
+    from clio_agent.gact.artifacts.grounding import _artifact_path_token_re
+
+    token_re = _artifact_path_token_re(("png",))
+    match = token_re.search("Plot: C:/Users/jaime/real.png done")
+    assert match is not None
+    assert match.group(0) == "C:/Users/jaime/real.png"
+    # POSIX citations are unchanged by the drive head.
+    match = token_re.search("Plot: /home/user/real.png done")
+    assert match is not None
+    assert match.group(0) == "/home/user/real.png"
+
+
+def test_tail_of_verified_token_is_never_substituted(tmp_path: Path) -> None:
+    """A token that is the TAIL of a verified path stays untouched (inverse-mangle guard).
+
+    Substituting the full verified path into a tail token that sits inside prose
+    would double the prefix — the same C:C:/ defect shape for every prefix-trim
+    (e.g. a model citing the path without its mount prefix).
+    """
+    app, store = _grounding_app(tmp_path)
+    sid = _new_session(store)
+    real = tmp_path / "real.png"
+    real.write_bytes(b"PNGBYTES")
+    real_s = real.as_posix()
+    _register(app, sid, name="real.png", path=real_s, kind=ArtifactKind.IMAGE)
+    # A backslash-cited real path: the tokenizer's char class breaks on ``\\``, so
+    # the token collapses to the bare tail ``real.png``. Substituting the verified
+    # full path into that tail would mangle the citation (the prefix survives in
+    # the prose) — the tail-of-verified guard must leave it untouched.
+    answer = "Saved at " + real_s.replace("/", "\\\\") + " in the workspace."
+    grounded = ground_answer_artifacts(app, sid, answer, schema=EARTHSCOPE_WORKFLOW_STATE_SCHEMA)
+    assert grounded == answer
+    assert real_s + real_s not in grounded
