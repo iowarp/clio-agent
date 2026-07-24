@@ -47,6 +47,7 @@ Responsibilities:
 from __future__ import annotations
 
 import inspect
+import logging
 import threading
 import uuid
 from collections.abc import Mapping
@@ -63,13 +64,20 @@ from clio_agent.gact.runtime.grant_resolver import (
     is_read_only,
     resolve,
 )
-from clio_agent.gact.runtime.permission_policies import _permission_path_from_args
+from clio_agent.gact.runtime.grants import GRANTOR_REVIEWER, GRANTOR_USER
+from clio_agent.gact.runtime.permission_policies import (
+    _append_permission_policy_from_resolution,
+    _flush_permission_policies,
+    _permission_path_from_args,
+)
 from clio_agent.gact.runtime.retention import enforce_dict_bound
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.tools.catalog import get_tool_entry
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+
+logger = logging.getLogger(__name__)
 
 #: The gate ``context`` kind marking an external MCP tool call. Single-sourced in
 #: :mod:`grant_resolver`; re-exported here under its historical private name for the
@@ -344,6 +352,103 @@ def _guard_direct_destructive_action(
     )
 
 
+def resolve_permission(
+    app: "FastAPI",
+    pid: str,
+    action: str,
+    *,
+    grantor: str = GRANTOR_USER,
+) -> dict[str, Any] | None:
+    """Resolve one pending permission row and wake any blocked bridge thread.
+
+    Lifted verbatim from ``routes/permissions.py::respond_permission`` (#1044) so the
+    HTTP route (``grantor=GRANTOR_USER`` — byte-identical to the prior inline body) and
+    the in-process ai-review reviewer (``grantor=GRANTOR_REVIEWER``) share ONE
+    resolution path. Flips the row to ``resolved``, derives + flushes any sticky policy
+    (emitting a domain ``boundary.granted`` where applicable), pops+sets the request's
+    ``threading.Event`` so a waiting :class:`MCPToolBridge` thread unblocks, and emits
+    ``permission.resolved`` on both the semantic highway and the bus.
+
+    The ``grantor`` is stamped on the audit row and included in both
+    ``permission.resolved`` payloads, and drives the semantic ``actor`` (was hardcoded
+    ``role: "user"``), so every resolution is attributable to WHO decided it — never
+    silent.
+
+    Returns the resolved row, or ``None`` when ``pid`` is unknown or already resolved
+    (idempotent — a double-resolve is a no-op, matching the route's prior behaviour).
+    """
+
+    row = app.state.permissions.get(pid)
+    if row is None or row.get("status") != "pending":
+        return None
+    row["status"] = "resolved"
+    row["action"] = action
+    row["resolved_at"] = datetime.now(timezone.utc).isoformat()
+    row["grantor"] = grantor
+    policy = _append_permission_policy_from_resolution(app, row=row, action=action)
+    if policy is not None:
+        row["policy"] = policy
+        # iowarp/clio-agent#759: sticky grants must survive a server restart, so flush
+        # the derived policy to disk.
+        _flush_permission_policies(app)
+        # B5 #979.5: a derived ``host_pattern`` policy (a deny-mode ``network_egress`` grant)
+        # is an effective DOMAIN boundary — emit ``boundary.granted{kind: domain}`` with its
+        # provenance. A generic tool-permission sticky policy is not a boundary and emits
+        # nothing (handled inside the helper).
+        from clio_agent.gact.runtime.grants import (  # noqa: PLC0415
+            emit_boundary_for_derived_policy,
+        )
+
+        emit_boundary_for_derived_policy(app, row, policy)
+    # iowarp/clio-agent#7: wake any MCPToolBridge thread waiting on this permission.
+    evt = app.state.permission_events.pop(pid, None)
+    if evt is not None:
+        evt.set()
+    # B5 #979.8: surface the resolution on the highway/trace too so the request→resolution
+    # lifecycle is consistently captured AND SSE-served. Guarded — a resolution must never
+    # fail on an emit.
+    try:
+        from clio_agent.gact.runtime.globals import (  # noqa: PLC0415
+            _emit_semantic_event,
+        )
+
+        _emit_semantic_event(
+            app,
+            str(row.get("session_id") or ""),
+            "permission.resolved",
+            status="completed",
+            summary=f"Permission {pid} resolved: {action}.",
+            actor={"role": grantor},
+            subject={"permission_id": pid, "action": action},
+            payload={
+                "permission_id": pid,
+                "action": action,
+                "kind": row.get("kind") or "",
+                "grantor": grantor,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - observability, never fatal to a resolution
+        logger.warning(
+            "permission.resolved semantic emit skipped reason=resolved_emit_failed "
+            "permission_id=%s error=%r",
+            pid,
+            exc,
+        )
+    app.state.bus.publish(
+        Event(
+            type="permission.resolved",
+            session_id=row.get("session_id", ""),
+            payload={
+                "permission_id": pid,
+                "action": action,
+                "session_id": row.get("session_id", ""),
+                "grantor": grantor,
+            },
+        )
+    )
+    return row
+
+
 def _make_permission_gate(app: "FastAPI"):
     """Build a callable suitable for MCPToolBridge.permission_gate.
 
@@ -494,10 +599,12 @@ def _make_permission_gate(app: "FastAPI"):
             "created_at": datetime.now(timezone.utc).isoformat(),
             "status": "pending",
         }
-        # ai-review still prompts today (the reviewer agent is the split follow-up); stamp the
-        # typed reviewer-pending reason on the recorded/published row so the ask is never a
-        # silent default — the trace attributes it to the ai-review approval mode.
-        if approval_mode == "ai-review":
+        # #1044: the ai-review reviewer runs ONLY when there is no explicit ``ask`` policy —
+        # an explicit ``ask`` is a deliberate "always confirm THIS tool with a HUMAN" and beats
+        # the mode (uniform with #1034: explicit policy > mode), so it must NOT be reviewer-
+        # auto-decided. When the reviewer WILL run, stamp the typed reviewer-pending reason so
+        # the ledger attributes the ask to the ai-review mode (never a silent default).
+        if approval_mode == "ai-review" and policy_action != "ask":
             row["reason"] = REASON_AI_REVIEW_REVIEWER_PENDING
         app.state.permissions[pid] = row
         app.state.permission_events[pid] = evt
@@ -509,6 +616,24 @@ def _make_permission_gate(app: "FastAPI"):
                 payload=row,
             )
         )
+        # #1044: one-shot AI reviewer (ai-review approval mode only). The pending row +
+        # event are already on the ledger (auditable that a review happened, carrying the
+        # typed reviewer-pending reason). Ask the in-process reviewer; on a confident
+        # allow/deny, resolve the row now (grantor=reviewer, recorded + emitted) and
+        # return. On escalate — OR any fail-safe (no LM / reviewer error / timeout) — stamp
+        # the TYPED reason and FALL THROUGH to the existing human ``evt.wait`` below: a
+        # human decides, never a silent auto-allow. The reviewer runs NO tools and spawns
+        # nothing, so it cannot re-enter this (blocked) gate — no deadlock, no starvation.
+        if approval_mode == "ai-review" and policy_action != "ask":
+            from clio_agent.gact.runtime.ai_review import ai_review_verdict  # noqa: PLC0415
+
+            verdict, reason = ai_review_verdict(app, sid, name, args, context, subject=subject)
+            row["reason"] = reason
+            if verdict in {"allow", "deny"}:
+                resolve_permission(app, pid, verdict, grantor=GRANTOR_REVIEWER)
+                return verdict
+            # escalate/no-LM/error/timeout: the row stays pending with its typed escalation
+            # reason and the call falls through to the human wait below (fail-safe).
         # Block the bridge thread until POST /v1/permissions/{pid}
         # sets the event (or we time out).
         if not evt.wait(timeout=DEFAULT_TIMEOUT_S):
