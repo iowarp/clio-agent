@@ -23,30 +23,47 @@ cannot enforce.
 
 ## What triggers the gate
 
-`_make_permission_gate` (in `gact/app.py`) fires on any tool call where
-`_is_destructive(name)` is true — currently `fs_apply_edit_write` plus any
-tool name containing `delete`, `remove`, `drop`, `rm`, etc.
+`_make_permission_gate` (in `gact/permission_gate.py`) classifies **positively**:
+a provable *read* is always allowed, and everything the gate cannot prove is a
+read proceeds to the resolution paths below. There is no tool-name
+"destructive" substring list and no shell-command safety parser — both were
+deleted (#1032). Writes and network egress are governed by the OS sandbox fence
+(codex), not by name matching, so the gate no longer tries to guess
+destructiveness from a tool name.
 
-Three resolution paths:
+The gate decides in this order:
 
-1. **Auto-deny** — when `session.mode` is `plan` or `architect`, the gate
-   refuses any destructive call without prompting (read-only contract).
-   Permission row gets `status: auto_denied`, `action: deny`,
-   `reason: session.mode=plan`.
+1. **Read fast-allow (first branch, no mode can override).**
+   `grant_resolver.is_read_only(kind, name, args, context)` returns true when a
+   tool call is provably read-only — an MCP `readOnlyHint=true` annotation, or a
+   static tool-catalog `read` tag with no `write` tag (e.g. `fs_read_file`,
+   `fs_propose_edit`). A read returns `allow` **before** the mode lock and
+   records no permission row, in every `session.mode`. Reads are never gated.
 
-2. **Auto-approve** — when the destructive call originates from an
-   *explicit user gesture* (e.g. user clicked `a` to apply a proposed
-   diff via `/v1/sessions/{sid}/diffs/apply`), the gate fast-allows
-   because the user's intent is unambiguous. Row: `status: auto_approved`,
-   `action: allow`, `reason: user clicked /diffs/apply`.
+2. **Auto-deny (read-only session lock)** — when `session.mode` is `plan` or
+   `architect`, the gate refuses a non-read call without prompting (read-only
+   contract). Row: `status: auto_denied`, `action: deny`,
+   `reason: session_mode_readonly`.
 
-3. **Interactive** — for everything else (e.g. an LM-driven ReAct loop
-   that decides to call `fs_apply_edit_write` mid-turn), the gate
-   publishes a `permission.requested` event and blocks on a
-   `threading.Event` for up to `DEFAULT_TIMEOUT_S = 600.0` s
-   (a timeout fails safe: the gate returns `deny`). The TUI sees the event and
-   renders a banner; the user resolves with a/d/s/w; the backend
-   POSTs the resolution back; the gate returns `allow` or `deny`.
+3. **Policy resolution** — `grant_resolver.resolve(kind, pattern, …)` (which
+   `_policy_action_for_tool` and the egress `_host_action_for` both delegate to)
+   consults the declarative `/v1/policies` rules. A matching `deny` blocks; a
+   matching `allow`/`allow_session`/`allow_workspace` fast-allows (recorded as a
+   resolved audit row).
+
+4. **Interactive** — for an un-resolved non-read call (e.g. an LM-driven ReAct
+   loop calling `fs_apply_edit_write` or `shell_bash` mid-turn), the gate
+   publishes a `permission.requested` event and blocks on a `threading.Event`
+   for up to `DEFAULT_TIMEOUT_S = 600.0` s (a timeout fails safe: `deny`; a call
+   with no driving session also fails closed to `deny` immediately). The TUI
+   renders a banner; the user resolves with a/d/s/w; the backend POSTs the
+   resolution back; the gate returns `allow` or `deny`.
+
+> Note: because classification is positive, a tool that is read-only *in fact*
+> but declares neither a `readOnlyHint` annotation nor a catalog `read` tag is
+> treated as non-read and routes to steps 2–4. Closing the headless case (no
+> interactive approver) for such calls is the job of the approval-mode work
+> (#1034); until then, give such tools a `read` tag or `readOnlyHint`.
 
 ## TUI surface
 

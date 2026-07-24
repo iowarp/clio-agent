@@ -794,16 +794,8 @@ from clio_agent.gact.expert_packs import (
 )
 from clio_agent.gact.messages import MessageStore
 from clio_agent.gact.permission_gate import (  # noqa: E402,F401
-    _DESTRUCTIVE_TOOL_SUBSTRINGS,
-    _SAFE_READONLY_UTILS,
-    _SAFE_RESHAPE_UTILS,
-    _UNSAFE_SHELL_TOKENS,
     _direct_permission_denied,
     _guard_direct_destructive_action,
-    _is_destructive,
-    _is_safe_readonly_diagnostic,
-    _is_safe_shell_diagnostic,
-    _is_safe_text_reshape_command,
     _make_cancellation_checker,
     _make_permission_gate,
     _policy_action_for_tool,

@@ -56,7 +56,12 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
         visible_to={"chat"},
     ),
     "fs_propose_edit": _entry(
-        "fs_propose_edit", "utility", {"workspace", "edit", "diff", "proposal"}
+        # ``read``: fs_propose_edit stages a diff WITHOUT touching disk (fs_server), so it is
+        # a read-only call for the permission gate (grant_resolver.is_read_only signal 2). The
+        # tag reflects that truth in the catalog rather than a tool-name allowlist in the gate.
+        "fs_propose_edit",
+        "utility",
+        {"workspace", "edit", "diff", "proposal", "read"},
     ),
     "fs_read_file": _entry(
         "fs_read_file", "workspace", {"workspace", "read"}, planner_visible=False
