@@ -5,9 +5,10 @@ Two layers:
 * Direct unit tests of :class:`TurnRunner` — the master-ref set (no
   GC-cancellation), the busy signal, and the typed shutdown drain (cooperative
   settle vs forced hard-cancel).
-* Integration tests through the real app — a second POST while a turn runs is
-  refused with a typed 409 (and never orphans the first turn), and lifespan
-  shutdown drains an in-flight turn deterministically.
+* Integration tests through the real app — a second POST while a turn runs is a
+  mid-turn steer (#1036): accepted 202, persisted as ``mid_turn_steer``, never a
+  second concurrent turn (the busy gate's 409 payload survives for other
+  producers) — and lifespan shutdown drains an in-flight turn deterministically.
 """
 
 from __future__ import annotations
@@ -258,7 +259,14 @@ def _post_message(client: TestClient, sid: str, text: str = "hi"):
     )
 
 
-def test_second_post_while_running_returns_typed_409(tmp_path: Path) -> None:
+def test_second_post_while_running_steers_with_202(tmp_path: Path) -> None:
+    """#1036: a second POST while a turn runs is NO LONGER a 409 — it is a mid-turn
+    STEER. It returns 202, persists the message marked ``mid_turn_steer`` (so
+    GET /messages shows it immediately), and does NOT start a second turn (the
+    running turn keeps its slot; the steer is drained mid-flight or re-driven once
+    at idle). The busy-gate 409 payload survives for other producers (mcp_apps,
+    retry)."""
+
     app = build_app(sessions_path=tmp_path / "s.json", agent=_SlowAgent(sleep_s=1.5))
     with TestClient(app) as client:
         sid = _new_session(client)
@@ -266,33 +274,31 @@ def test_second_post_while_running_returns_typed_409(tmp_path: Path) -> None:
         assert first.status_code == 200
         first_turn_id = first.json()["message_id"]
 
-        # Give the loop a slice to flip the session to running / register the task.
-        time.sleep(0.1)
+        _wait_busy(app, sid)
+        running_task = app.state.turn_runner._in_flight.get(sid)
+        assert running_task is not None
 
         second = _post_message(client, sid, "second")
-        assert second.status_code == 409
-        body = second.json()
-        assert body["error"]["error"] == BUSY_ERROR_CODE
-        assert body["error"]["details"]["session_id"] == sid
-        assert body["error"]["details"]["running_turn_id"] == first_turn_id
-        assert "wait" in body["error"]["details"]["recovery_actions"]
+        assert second.status_code == 202, "a mid-turn POST must be accepted as a steer, not 409'd"
+        steer_id = second.json()["message_id"]
 
-        # The rejected POST must NOT have appended a user message.
+        # The steer was persisted (visible immediately) and marked mid_turn_steer.
         msgs = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-        user_texts = [
-            "".join(p.get("text", "") for p in m.get("parts", []))
-            for m in msgs
-            if m["role"] == "user"
-        ]
-        assert user_texts == ["first"], "the 409'd POST leaked a user message"
+        by_id = {m["id"]: m for m in msgs}
+        assert steer_id in by_id, "the mid-turn steer was not persisted"
+        assert by_id[steer_id]["metadata"].get("mid_turn_steer") is True
+        assert by_id[steer_id].get("turn_id", "") == "", "a steer must not mint its own turn"
 
-        # Once the first turn finishes, the gate clears and a new POST is accepted.
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline and app.state.turn_runner.busy(sid):
-            time.sleep(0.05)
-        assert app.state.turn_runner.busy(sid) is False
-        third = _post_message(client, sid, "third")
-        assert third.status_code == 200
+        # It did NOT start a second turn: the running turn still owns the slot and
+        # its id is unchanged.
+        assert app.state.turn_runner._in_flight.get(sid) is running_task, (
+            "the steer orphaned/replaced the running turn's slot"
+        )
+        assert app.state.turn_runner.handle(sid).turn_id == first_turn_id
+
+        # The busy-gate 409 payload is still available for the producers that keep it.
+        payload = session_busy_error_payload(app.state.turn_runner, sid)
+        assert payload is not None and payload["error"]["error"] == BUSY_ERROR_CODE
 
 
 def _wait_busy(app, sid: str, timeout: float = 3.0) -> None:
@@ -364,11 +370,13 @@ def _bus_events(app, sid: str, event_type: str) -> list:
 
 
 def test_answer_resume_deferred_when_busy_then_redriven(tmp_path: Path) -> None:
-    """Answering a stale pending question while an intervening turn runs must NOT
-    double-stage a concurrent resume (orphaning the running one) — but it must also
-    NOT drop the answer: the resume is DEFERRED (typed event) and re-driven by the
-    idle hook the instant the session frees."""
+    """#1036: answering a stale pending question while an intervening turn runs must
+    NOT double-stage a concurrent resume (orphaning the running one) — but it must
+    also NOT drop the answer. The resume is folded into the loop inbox as a
+    user_message steer (typed resume_deferred event), and the idle hook re-drives it
+    into exactly ONE new turn the instant the session frees."""
 
+    from clio_agent.gact.loop_inbox import inbox_for
     from clio_agent.gact.types import UserQuestion
 
     app = build_app(sessions_path=tmp_path / "s.json", agent=_SlowAgent(sleep_s=1.0))
@@ -393,19 +401,20 @@ def test_answer_resume_deferred_when_busy_then_redriven(tmp_path: Path) -> None:
 
         resp = client.post(f"/v1/sessions/{sid}/questions/{q.id}/answer", json={"answer": "yes"})
         assert resp.status_code == 200
-        # Deferred, not double-staged, not dropped: only the intervening turn is
-        # staged so far, the resume is recorded, and a typed event was published.
+        # Folded, not double-staged, not dropped: only the intervening turn is staged
+        # so far, the resume rides the inbox as a steer, and a typed event fired.
         assert _user_texts(client, sid) == ["intervening"], (
             "resume double-staged onto a busy session"
         )
-        assert sid in app.state.deferred_resumes, "resume was dropped, not deferred"
+        assert inbox_for(app, sid).peek_nonempty(), "resume was dropped, not enqueued as a steer"
         assert _bus_events(app, sid, "user_question.resume_deferred"), "no typed deferral event"
 
-        # Once the intervening turn finishes, the idle hook re-drives the resume.
+        # Once the intervening turn finishes, the idle hook re-drives the resume as
+        # one new turn and the inbox drains to empty.
         deadline = time.monotonic() + 8.0
-        while time.monotonic() < deadline and sid in app.state.deferred_resumes:
+        while time.monotonic() < deadline and inbox_for(app, sid).peek_nonempty():
             time.sleep(0.05)
-        assert sid not in app.state.deferred_resumes, "deferred resume was never re-driven"
+        assert not inbox_for(app, sid).peek_nonempty(), "buffered resume steer was never re-driven"
 
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline and len(_user_texts(client, sid)) < 2:
@@ -438,26 +447,24 @@ def test_retry_execute_while_busy_is_blocked(tmp_path: Path) -> None:
 
 
 def test_shutdown_does_not_redrive_deferred_resume(tmp_path: Path) -> None:
-    """Shutdown must NOT re-drive a deferred resume: a draining turn's completion
-    would otherwise stage a fresh resume whose task is hard-cancelled but whose
-    side effects (a misleading user_question.resumed event, a stuck-running
+    """#1036: shutdown must NOT re-drive a buffered resume steer: a draining turn's
+    completion would otherwise stage a fresh resume whose task is hard-cancelled but
+    whose side effects (a misleading user_question.resumed event, a stuck-running
     session) survive. The idle hook is unregistered before the drain."""
+
+    from clio_agent.gact.loop_inbox import enqueue_user_steer
 
     app = build_app(sessions_path=tmp_path / "s.json", agent=_SlowAgent(sleep_s=10.0))
     with TestClient(app) as client:
         sid = _new_session(client)
         assert _post_message(client, sid, "intervening").status_code == 200
         _wait_busy(app, sid)
-        # A resume is deferred (as answer-while-busy would record it).
-        app.state.deferred_resumes[sid] = {
-            "text": "resume now",
-            "metadata": {"ask_user_resume": True},
-            "question_id": "q1",
-        }
+        # A resume steer is buffered (as answer-while-busy would enqueue it).
+        enqueue_user_steer(app, sid, "resume now", {"ask_user_resume": True, "question_id": "q1"})
     # Context exit ran the lifespan shutdown (drains the in-flight turn). The
     # turn's _done must NOT fire the resume re-drive.
     resumed = [e for e in app.state.bus._history.get(sid, []) if e.type == "user_question.resumed"]
-    assert not resumed, "shutdown drain misleadingly re-drove a deferred resume"
+    assert not resumed, "shutdown drain misleadingly re-drove a buffered resume steer"
 
 
 def test_shutdown_drains_in_flight_turn(tmp_path: Path) -> None:
