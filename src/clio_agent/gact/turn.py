@@ -67,6 +67,7 @@ from clio_agent.gact.messaging import (
     _image_part_summaries,
     _user_message_parts,
 )
+from clio_agent.gact.plan_mode import inject_plan_mode_reminder
 from clio_agent.gact.runtime.globals import (
     _BlueprintRootDisabled,
     _cancelled_error_info,
@@ -301,6 +302,10 @@ async def _run_turn_in_background(
         # run seam below, so a turn aborted after enrichment leaves them pending.
         state.enriched_text, state.pending_notification_task_ids = (
             inject_pending_agent_task_notifications(state.app, state.sid, state.enriched_text)
+        )
+        # P1.2 #1064: surface plan mode to the model each turn (survives compaction; no-op otherwise).
+        state.enriched_text = inject_plan_mode_reminder(
+            state.app, state.sid, state.sess, state.enriched_text
         )
         # Carry prior turns so a follow-up ("now plot it") reuses resolved state (no-op turn 1).
         state.enriched_text = _compile_session_conversation_history(state.app, state.sid, state.enriched_text)

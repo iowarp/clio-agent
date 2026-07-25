@@ -272,7 +272,11 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
             session_edit_mode: str = "diff",
             cancel_requested: Any | None = None,
         ) -> Any:
-            del session_mode, session_edit_mode
+            # P1.2 #1064: kept (not dropped) for a stable forward() signature. The mode is NOT
+            # surfaced to the model here — it reaches the model upstream, in turn.py's per-turn
+            # enrichment (inject_plan_mode_reminder reads state.sess.mode and prepends the
+            # reminder to state.enriched_text before this forward() call).
+            _ = (session_mode, session_edit_mode)
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
                     _cancelled_error_info(
@@ -1362,7 +1366,11 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             session_edit_mode: str = "diff",
             cancel_requested: Any | None = None,
         ) -> Any:
-            del session_mode, session_edit_mode
+            # P1.2 #1064: kept (not dropped) for a stable forward() signature. The mode is NOT
+            # surfaced to the model here — it reaches the model upstream, in turn.py's per-turn
+            # enrichment (inject_plan_mode_reminder reads state.sess.mode and prepends the
+            # reminder to state.enriched_text before this forward() call).
+            _ = (session_mode, session_edit_mode)
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
                     _cancelled_error_info(
@@ -1789,7 +1797,11 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             session_edit_mode: str = "diff",
             cancel_requested: Any | None = None,
         ) -> Any:
-            del session_mode, session_edit_mode
+            # P1.2 #1064: kept (not dropped) for a stable forward() signature. The mode is NOT
+            # surfaced to the model here — it reaches the model upstream, in turn.py's per-turn
+            # enrichment (inject_plan_mode_reminder reads state.sess.mode and prepends the
+            # reminder to state.enriched_text before this forward() call).
+            _ = (session_mode, session_edit_mode)
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
                     _cancelled_error_info(

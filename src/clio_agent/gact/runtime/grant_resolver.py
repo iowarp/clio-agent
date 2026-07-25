@@ -163,6 +163,44 @@ def default_plan_acl_rows() -> list[dict[str, Any]]:
     ]
 
 
+def plan_mode_deny_message(mode: str, tool_name: str = "") -> str:
+    """Return the model-facing deny message for a plan-mode ACL block (P1.2 #1064).
+
+    Replaces the generic ``"denied by permission gate"`` string the tool executor
+    used to raise when a :data:`KIND_PLAN_ACL` deny wins. ``mode`` selects the
+    surface-accurate wording, since ``plan`` and ``architect`` are read-only for
+    DIFFERENT reasons and must not be conflated:
+
+    * ``mode == "plan"``: names the restriction (Plan Mode is read-only), points at
+      the sole writable path (the plan file), and says what IS allowed (write the
+      plan, or exit plan mode to execute).
+    * ``mode == "architect"`` (or any other plan-restricted mode): architect has NO
+      plan-file carve-out — it proposes diffs and never writes files directly — so
+      the message states that instead of pointing at a plan-file path or telling the
+      model to "exit plan mode" (which is inaccurate for architect).
+
+    This is the HUMAN/MODEL-facing text only — the typed audit reason stays
+    ``policy_deny`` — and it deliberately does NOT suggest any workaround that
+    defeats the mode. ``tool_name`` is woven in when known so the model sees which
+    call was blocked.
+    """
+
+    tool_ref = f" ({tool_name})" if tool_name else ""
+    if mode == "plan":
+        plan_glob = f"{plans_dir()}{os.sep}*.md"
+        return (
+            f"You are in Plan Mode: read-only except the plan file at {plan_glob}. "
+            f"This tool{tool_ref} would modify the system, so it is blocked. "
+            "Write your plan to the plan file, or exit plan mode to execute."
+        )
+    return (
+        f"You are in Architect Mode: propose changes as diffs; direct file "
+        f"modification is blocked. This tool{tool_ref} would modify the system, so "
+        "it is blocked. Describe the change as a diff for the user to apply, rather "
+        "than writing or editing files directly."
+    )
+
+
 def _normalized_plan_acl_path(path: str) -> str:
     """Return the traversal-collapsed absolute form of ``path`` (empty on failure/absence).
 
@@ -475,13 +513,46 @@ def resolve(
     ``allow``/``allow_session``/``allow_workspace``/``deny``/``ask`` action is returned verbatim.
     """
 
+    return _winning_action(
+        _collect_matches(
+            kind,
+            pattern,
+            policies=policies,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            path=path,
+            mode=mode,
+            event=event,
+        )
+    )
+
+
+def _collect_matches(
+    kind: str,
+    pattern: str,
+    *,
+    policies: list[Any] | None,
+    session_id: str,
+    workspace_id: str,
+    path: str,
+    mode: str,
+    event: str,
+) -> list[tuple[int, str, bool]]:
+    """Collect every matching ``(priority, action, is_plan_acl)`` for a resolve call.
+
+    Shared by :func:`resolve` and :func:`resolve_detail`. The third element flags rows
+    authored by the built-in plan-mode ACL (P1.2 #1064), so :func:`resolve_detail` can
+    attribute a winning deny to the mode-lock and surface its model-facing message while
+    :func:`resolve` (which only needs the action) ignores it.
+    """
+
     if not isinstance(policies, list):
-        return ""
+        return []
     if kind == KIND_DOMAIN and (not pattern or not workspace_id):
         # _host_action_for guard: an empty host or unknown workspace can never match a host row.
-        return ""
+        return []
     total = len(policies)
-    matches: list[tuple[int, str]] = []
+    matches: list[tuple[int, str, bool]] = []
     for index, policy in enumerate(policies):
         if not isinstance(policy, dict):
             continue
@@ -494,7 +565,7 @@ def resolve(
         action = str(policy.get("action") or "").lower()
         if action not in _VALID_ACTIONS:
             continue
-        matches.append((_effective_priority(policy, index, total), action))
+        matches.append((_effective_priority(policy, index, total), action, False))
     # Built-in plan-mode ACL (P1.1 #1063): the engine-level DEFAULT plan_acl rows are consulted for
     # every tool call in a plan-restricted mode, in ADDITION to the persisted user policies — never
     # merged into the user list, so they do not shift user-row insertion-index migration (the P0.1
@@ -505,14 +576,68 @@ def resolve(
     # finding #1). Gated to ``kind="tool"`` + a plan-restricted mode so a ``domain``/``fs_root``
     # resolve (or any non-plan mode) is untouched.
     if kind == KIND_TOOL and mode in _PLAN_ACL_MODES:
-        matches.extend(_plan_acl_default_matches(pattern, path, mode, event, matches))
+        user_pairs = [(priority, action) for priority, action, _src in matches]
+        for priority, action in _plan_acl_default_matches(pattern, path, mode, event, user_pairs):
+            matches.append((priority, action, True))
+    return matches
+
+
+def _winning_action(matches: list[tuple[int, str, bool]]) -> str:
+    """Return the winning action for a collected match list (band + tie-break)."""
+
     if not matches:
         return ""
-    highest = max(priority for priority, _ in matches)
-    band = [action for priority, action in matches if priority == highest]
+    highest = max(priority for priority, _action, _src in matches)
+    band = [action for priority, action, _src in matches if priority == highest]
     if len(band) == 1:
         return band[0]
     return _most_restrictive(band)
+
+
+def resolve_detail(
+    kind: str,
+    pattern: str,
+    *,
+    policies: list[Any] | None,
+    session_id: str = "",
+    workspace_id: str = "",
+    path: str = "",
+    mode: str = "",
+    event: str = "",
+) -> tuple[str, str]:
+    """Return ``(action, deny_message)`` for a resolve call (P1.2 #1064).
+
+    ``action`` is identical to what :func:`resolve` returns for the same arguments.
+    ``deny_message`` is a non-empty, model-facing string ONLY when the winning action
+    is ``deny`` AND that deny is authored by the built-in plan-mode ACL (a
+    :data:`KIND_PLAN_ACL` row in the top priority band) — i.e. the write is blocked
+    *because the session is in plan/architect mode*. A user-policy deny, an
+    ``ask``/``allow``, or a deny in any non-plan mode returns an empty message, so the
+    gate falls back to its generic denial text and only plan-mode blocks carry the
+    mode-aware guidance. The typed audit reason is decided by the caller and is
+    unaffected by this message.
+    """
+
+    matches = _collect_matches(
+        kind,
+        pattern,
+        policies=policies,
+        session_id=session_id,
+        workspace_id=workspace_id,
+        path=path,
+        mode=mode,
+        event=event,
+    )
+    action = _winning_action(matches)
+    if action == "deny" and matches:
+        highest = max(priority for priority, _action, _src in matches)
+        plan_authored = any(
+            is_plan_acl and match_action == "deny" and priority == highest
+            for priority, match_action, is_plan_acl in matches
+        )
+        if plan_authored:
+            return action, plan_mode_deny_message(mode, pattern)
+    return action, ""
 
 
 @dataclass(frozen=True)
@@ -633,6 +758,8 @@ __all__ = [
     "is_read_only",
     "migrate_priorities",
     "next_append_priority",
+    "plan_mode_deny_message",
     "plans_dir",
     "resolve",
+    "resolve_detail",
 ]

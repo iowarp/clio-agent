@@ -212,7 +212,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # seam — the secondary/optional designation channel mints declared output paths at
     # turn finalize. The mint funnel lives in the artifacts owner package; only the
     # guarded finalize helper + its one call site land here (never load-bearing).
-    "src/clio_agent/gact/turn.py": 918,
+    # P1.2 #1064: +5 for the plan-mode reminder enrichment call site (import + one-line comment
+    # + the 3-line call). All logic (full/sparse selection, compaction detection, the
+    # session.metadata suppression counter) lives in the owner module gact/plan_mode.py; only
+    # the call site lands here (the #1035/#966 call-site precedent). Ratchets back with #714.
+    "src/clio_agent/gact/turn.py": 923,
     # #952 S4 Pass C: -9 (the answer-substitution finalize call + import were
     # removed with the settle layer's degradation ledger).
     # #953 [5]: +3 to surface the variant winner stamp (variant_selection) on the
@@ -280,7 +284,12 @@ RATCHET_BASELINE: dict[str, int] = {
     # #966 S1 (artifacts): -109 (1747 -> 1638) — the grounding-hook constants +
     # _ground_output_paths moved to the artifacts designation owner module; only a
     # thin re-export wrapper remains here (deletion inventory item 2).
-    "src/clio_agent/tools/execution.py": 1638,
+    # P1.2 #1064: +4 at the tool-gate denial to surface a mode-aware ``deny_message`` (a str
+    # subclass carrying the plan-mode text) instead of the generic string — a getattr read + a
+    # 3-line rationale. Irreducible: execution.py OWNS the PermissionError the model sees, and the
+    # low tools layer imports no gact (duck-typed). The message text is produced in
+    # grant_resolver.plan_mode_deny_message. Ratchets back with the #714/#767 decomposition.
+    "src/clio_agent/tools/execution.py": 1642,
     # #1001: doctor rendering + disk-GC surface moved to the ui/doctor.py owner module
     # (ratcheted 1156 -> 1135 in the same change).
     # merge(main->develop): +6 (1135 -> 1141) integrating main's release-stream cli deltas.

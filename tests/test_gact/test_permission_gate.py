@@ -29,6 +29,7 @@ from clio_agent.gact.app import (
     build_app,
 )
 from clio_agent.gact.permission_gate import (
+    DenyDecision,
     _external_mcp_permission_context,
     _normalize_mcp_tool_annotations,
 )
@@ -1286,3 +1287,48 @@ def test_gate_user_allow_policy_does_not_override_plan_mode(tmp_path: Path) -> N
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
             assert gate("fs_apply_edit_write", {"filepath": "src/x.py"}) == "deny"
+
+
+def test_plan_acl_deny_surfaces_mode_aware_message(tmp_path: Path) -> None:
+    """P1.2 #1064: a plan_acl-denied write returns a ``DenyDecision`` carrying the mode-aware
+    message ("Plan Mode" + the plan file path), while the audit reason stays ``policy_deny``."""
+    from clio_agent.gact.runtime.grant_resolver import plans_dir
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={"title": "t", "mode": "plan"}).json()["id"]
+        gate = _make_permission_gate(app)
+        with _tool_session_context(sid):
+            decision = gate("fs_apply_edit_write", {"filepath": "src/x.py"})
+        # Backward compatible: still equals "deny" for every legacy comparison.
+        assert decision == "deny"
+        assert isinstance(decision, DenyDecision)
+        assert "Plan Mode" in decision.deny_message
+        assert str(plans_dir()) in decision.deny_message
+        assert "denied by permission gate" not in decision.deny_message
+        # The typed audit reason is unchanged.
+        rows = list(app.state.permissions.values())
+        assert len(rows) == 1
+        assert rows[0]["status"] == "auto_denied"
+        assert rows[0]["reason"] == "policy_deny"
+
+
+def test_user_policy_deny_in_edit_mode_carries_no_plan_message(tmp_path: Path) -> None:
+    """A user-policy deny (edit mode, no plan lock) returns a plain ``"deny"`` with no message,
+    so only plan-mode blocks carry the mode-aware guidance."""
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={"title": "t", "mode": "edit"}).json()["id"]
+        app.state.permission_policies = [
+            {
+                "scope": "session",
+                "scope_id": sid,
+                "tool_name_pattern": "fs_apply_edit_write",
+                "action": "deny",
+            }
+        ]
+        gate = _make_permission_gate(app)
+        with _tool_session_context(sid):
+            decision = gate("fs_apply_edit_write", {"filepath": "src/x.py"})
+        assert decision == "deny"
+        assert getattr(decision, "deny_message", "") == ""

@@ -71,6 +71,7 @@ from clio_agent.gact.runtime.grant_resolver import (
     EXTERNAL_MCP_CONTEXT_KIND,
     is_read_only,
     resolve,
+    resolve_detail,
 )
 from clio_agent.gact.runtime.grants import GRANTOR_REVIEWER, GRANTOR_USER
 from clio_agent.gact.runtime.permission_policies import (
@@ -99,6 +100,26 @@ REASON_APPROVAL_AUTO_EDITS = "approval_mode_auto_edits"
 #: ai-review still PROMPTS today (the reviewer agent is the split follow-up slice); the pending
 #: row carries this typed reason so the ask is attributable to the reviewer-pending state.
 REASON_AI_REVIEW_REVIEWER_PENDING = "ai_review_reviewer_pending"
+
+
+class DenyDecision(str):
+    """A gate ``"deny"`` decision carrying a model-facing deny message (P1.2 #1064).
+
+    A ``str`` subclass that IS ``"deny"``, so every existing ``decision == "deny"``
+    comparison and the tool executor's ``decision != "allow"`` branch keep working
+    unchanged. The extra :attr:`deny_message` is the mode-aware text the tool executor
+    raises to the model in place of the generic ``"denied by permission gate"`` string
+    (read via ``getattr`` at the execution boundary, so the low ``tools`` layer never
+    imports gact). The typed audit reason (``policy_deny``) is decided separately and is
+    NOT affected — this class only enriches the human/model-facing wording.
+    """
+
+    deny_message: str
+
+    def __new__(cls, deny_message: str = "") -> "DenyDecision":
+        obj = super().__new__(cls, "deny")
+        obj.deny_message = deny_message
+        return obj
 
 
 def default_decision(
@@ -224,6 +245,38 @@ def _policy_action_for_tool(
     path = _permission_path_from_args(args)
     workspace_id = getattr(session, "workspace_id", "") if session is not None else ""
     return resolve(
+        "tool",
+        tool_name,
+        policies=getattr(app.state, "permission_policies", []),
+        session_id=session_id,
+        workspace_id=workspace_id,
+        path=path,
+        mode=mode,
+    )
+
+
+def _policy_detail_for_tool(
+    app: "FastAPI",
+    *,
+    session_id: str,
+    session: Any | None,
+    tool_name: str,
+    args: Mapping[str, Any],
+    mode: str = "",
+) -> tuple[str, str]:
+    """Return ``(action, deny_message)`` for a tool call (P1.2 #1064).
+
+    The detail-returning companion to :func:`_policy_action_for_tool`: it resolves the
+    call through the SAME one matcher (:func:`~clio_agent.gact.runtime.grant_resolver.resolve_detail`)
+    but also carries the plan-mode deny message. ``deny_message`` is non-empty ONLY when
+    the winning deny is authored by the built-in plan_acl mode-lock, so the interactive
+    gate can raise the mode-aware text (states the restriction, points at the plan file,
+    says what IS allowed) while the ``policy_deny`` audit reason is unchanged.
+    """
+
+    path = _permission_path_from_args(args)
+    workspace_id = getattr(session, "workspace_id", "") if session is not None else ""
+    return resolve_detail(
         "tool",
         tool_name,
         policies=getattr(app.state, "permission_policies", []),
@@ -504,7 +557,7 @@ def _make_permission_gate(app: "FastAPI"):
         # in plan/architect (@40) and allow the sole ``<plans>/*.md`` write carve-out in plan (@70).
         # Read-only calls never reach here (``is_read_only`` fast-allowed above), in every mode.
         mode = getattr(current, "mode", "") if current is not None else ""
-        policy_action = _policy_action_for_tool(
+        policy_action, plan_deny_message = _policy_detail_for_tool(
             app,
             session_id=sid,
             session=current,
@@ -523,7 +576,11 @@ def _make_permission_gate(app: "FastAPI"):
                 summary=f"{subject} {name!r} blocked by permission policy",
                 reason="policy_deny",
             )
-            return "deny"
+            # P1.2 #1064: a plan_acl-authored deny carries a mode-aware message so the model
+            # sees WHY the call is blocked (Plan Mode, read-only except the plan file) instead
+            # of the generic executor string. The typed audit reason above stays ``policy_deny``;
+            # a non-plan (user-policy) deny returns an empty message and the plain "deny" string.
+            return DenyDecision(plan_deny_message) if plan_deny_message else "deny"
         if policy_action in {"allow", "allow_session", "allow_workspace"}:
             _record_resolved_permission(
                 app,

@@ -1177,7 +1177,11 @@ class SyncMCPToolExecutor:
             except Exception as exc:  # noqa: BLE001
                 raise PermissionError(f"permission gate raised: {exc!r}") from exc
             if decision != "allow":
-                raise PermissionError(f"tool call {name!r} denied by permission gate")
+                # P1.2 #1064: surface a mode-aware ``deny_message`` (a ``str`` subclass; duck-typed
+                # via getattr so this layer imports no gact) instead of the generic string; a plain
+                # "deny" falls back. The typed audit reason (``policy_deny``) is unchanged.
+                deny_message = getattr(decision, "deny_message", "")
+                raise PermissionError(deny_message or f"tool call {name!r} denied by permission gate")
 
         raise_if_cancelled("tool_call_before")
 

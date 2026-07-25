@@ -37,8 +37,10 @@ from clio_agent.gact.runtime.grant_resolver import (
     default_plan_acl_rows,
     is_read_only,
     migrate_priorities,
+    plan_mode_deny_message,
     plans_dir,
     resolve,
+    resolve_detail,
 )
 from clio_agent.gact.runtime.permission_policies import (
     _host_action_for,
@@ -920,3 +922,99 @@ def test_plan_acl_deny_unbypassable_by_large_legacy_migrated_priority() -> None:
         resolve("tool", _WRITE_TOOL, policies=rows, session_id="s", path=target, mode="plan")
         == "allow"
     )
+
+
+# --------------------------------------------------------------------------- #
+# P1.2 #1064 — resolve_detail + plan_mode_deny_message                          #
+# --------------------------------------------------------------------------- #
+
+
+def test_plan_mode_deny_message_names_plan_mode_and_plan_file() -> None:
+    """The model-facing message states Plan Mode, points at the plan file, and names the tool."""
+    message = plan_mode_deny_message("plan", _WRITE_TOOL)
+    assert "Plan Mode" in message
+    assert str(plans_dir()) in message
+    assert _WRITE_TOOL in message
+
+
+def test_resolve_detail_plan_acl_deny_carries_mode_message() -> None:
+    """A plan_acl-authored deny (a write in plan mode) returns the mode-aware deny message."""
+    action, deny_message = resolve_detail(
+        "tool", _WRITE_TOOL, policies=[], session_id="s", path="src/x.py", mode="plan"
+    )
+    assert action == "deny"
+    assert "Plan Mode" in deny_message
+    assert str(plans_dir()) in deny_message
+
+
+def test_resolve_detail_user_deny_has_no_plan_message() -> None:
+    """A user-policy deny (edit mode, no plan lock) resolves to deny with an EMPTY message."""
+    rows = [
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": _WRITE_TOOL,
+            "action": "deny",
+        }
+    ]
+    action, deny_message = resolve_detail(
+        "tool", _WRITE_TOOL, policies=rows, session_id="s", path="src/x.py", mode="edit"
+    )
+    assert action == "deny"
+    assert deny_message == ""
+
+
+def test_resolve_detail_plan_file_carveout_allows_with_no_message() -> None:
+    """The @70 plans-dir carve-out resolves to allow (no deny message) in plan mode."""
+    target = str(plans_dir() / "plan.md")
+    action, deny_message = resolve_detail(
+        "tool", _WRITE_TOOL, policies=[], session_id="s", path=target, mode="plan"
+    )
+    assert action == "allow"
+    assert deny_message == ""
+
+
+def test_plan_mode_deny_message_architect_is_not_plan_text() -> None:
+    """Architect-mode deny message must not tell the model it is in/should exit Plan Mode.
+
+    architect has no plan-file carve-out (it proposes diffs, it never writes files), so the
+    plan-specific wording — "Plan Mode" and "exit plan mode" — is inaccurate guidance there and
+    must not leak into the architect surface (review finding #1).
+    """
+    message = plan_mode_deny_message("architect", _WRITE_TOOL)
+    assert "Plan Mode" not in message
+    assert "exit plan mode" not in message.lower()
+    assert "Architect Mode" in message
+    assert _WRITE_TOOL in message
+
+
+def test_resolve_detail_architect_deny_is_not_plan_text() -> None:
+    """An architect-mode plan_acl deny surfaces architect-accurate text, not Plan Mode wording."""
+    action, deny_message = resolve_detail(
+        "tool", _WRITE_TOOL, policies=[], session_id="s", path="src/x.py", mode="architect"
+    )
+    assert action == "deny"
+    assert "Plan Mode" not in deny_message
+    assert "exit plan mode" not in deny_message.lower()
+    assert "Architect Mode" in deny_message
+
+
+def test_resolve_detail_matches_resolve_action() -> None:
+    """resolve_detail's action is byte-identical to resolve for the same arguments."""
+    rows = [
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": _WRITE_TOOL,
+            "path_pattern": "src/**",
+            "action": "allow",
+        }
+    ]
+    for mode in ("plan", "edit", "architect"):
+        action_only = resolve(
+            "tool", _WRITE_TOOL, policies=rows, session_id="s", path="src/x.py", mode=mode
+        )
+        action_detail, _msg = resolve_detail(
+            "tool", _WRITE_TOOL, policies=rows, session_id="s", path="src/x.py", mode=mode
+        )
+        assert action_only == action_detail
