@@ -65,7 +65,7 @@ from clio_agent.sdk import (
     PermissionRequested,
     SessionStatusChanged,
 )
-from clio_agent.ui.doctor import render_doctor_report, run_doctor_gc
+from clio_agent.ui.doctor import run_doctor, run_doctor_gc
 
 # ============================================================================
 # CLI CLASS
@@ -922,25 +922,6 @@ def render_health(console: Console, health: Health) -> None:
     console.print(table)
 
 
-def run_doctor(json_output: bool = False) -> int:
-    """Run the non-interactive doctor command IN-PROCESS.
-
-    A doctor must work when no server is up, so this uses the same probe
-    engine the server hosts at ``/v1/health`` directly, via
-    :func:`clio_agent.runtime.status.collect_runtime_status`.
-    """
-    from clio_agent.runtime.status import collect_runtime_status
-
-    report = collect_runtime_status()
-    if json_output:
-        import json
-
-        print(json.dumps(report.to_dict(), indent=2))
-    else:
-        render_doctor_report(Console(), report)
-    return 0
-
-
 # ============================================================================
 # MAIN ENTRY POINT
 # ============================================================================
@@ -1044,11 +1025,21 @@ def main() -> None:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=["doctor", "serve"],
+        choices=["doctor", "serve", "sandbox"],
         help=(
             "Optional command. 'doctor' inspects runtime integrations "
             "(in-process); 'serve' runs the GACT server in the foreground "
-            "(same server as clio-agent-gact; honors --host/--port)."
+            "(same server as clio-agent-gact; honors --host/--port); "
+            "'sandbox' manages the OS write fence (see the sandbox_action arg)."
+        ),
+    )
+    parser.add_argument(
+        "sandbox_action",
+        nargs="?",
+        choices=["setup", "status"],
+        help=(
+            "With 'sandbox': 'setup' provisions the OS write fence (one UAC prompt on "
+            "Windows; idempotent re-run no-ops); 'status' shows the sandbox doctor row."
         ),
     )
     parser.add_argument(
@@ -1079,6 +1070,12 @@ def main() -> None:
         action="store_true",
         help="With 'doctor --gc': show the reclamation plan without deleting anything.",
     )
+    parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Accepted for CLI parity (Codex sandbox setup pops a native UAC prompt).",
+    )
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Server host")
     parser.add_argument("--port", type=int, default=8100, help="Server port")
     parser.add_argument(
@@ -1101,6 +1098,13 @@ def main() -> None:
             sys.exit(run_doctor_gc(dry_run=args.dry_run, json_output=args.json))
         sys.exit(run_doctor(json_output=args.json))
 
+    # Sandbox verb: the Codex OS write-fence setup/status (logic in the owner module
+    # runtime/sandbox_cli.py — cli.py only parses + dispatches, like doctor).
+    if args.command == "sandbox":
+        from clio_agent.runtime.sandbox_cli import run_sandbox_cli  # noqa: PLC0415
+
+        sys.exit(run_sandbox_cli(args.sandbox_action, json_output=args.json, assume_yes=args.yes))
+
     # Serve mode: run the GACT server in the foreground on this process,
     # calling the gact app's foreground runner directly (no server spawn /
     # client boot). Blocks until the server exits.
@@ -1108,19 +1112,12 @@ def main() -> None:
         run_serve(host=args.host, port=args.port)
         return
 
-    # Tune mode (#801): the optimizer is a research surface — return the
-    # uniform structured not-implemented stub. No LM setup, no server needed.
+    # Tune mode (#801): the optimizer is a research surface — the uniform structured
+    # not-implemented stub. No LM setup, no server needed (dispatched, no accretion).
     if args.tune:
-        import json as tune_json
+        from clio_agent.optimizer.stub import run_tune_cli  # noqa: PLC0415
 
-        from clio_agent.optimizer.stub import optimizer_not_implemented_payload
-
-        tune_payload = {"expert_id": args.tune, **optimizer_not_implemented_payload()}
-        if args.json:
-            print(tune_json.dumps(tune_payload))
-        else:
-            Console().print(f"[yellow]{tune_payload['message']}[/yellow]")
-        sys.exit(2)
+        sys.exit(run_tune_cli(args.tune, json_output=args.json))
 
     if args.query:
         sys.exit(

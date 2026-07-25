@@ -41,10 +41,23 @@ from tests.test_gact.conftest import complete_turn
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 
-def test_non_destructive_tool_fast_allows(tmp_path: Path) -> None:
+def test_read_only_catalog_tool_fast_allows(tmp_path: Path) -> None:
+    """#1032: a provably read-only call (static catalog ``read`` tag, no ``write``)
+    fast-allows as the gate's FIRST branch — reads are never gated, even with no
+    session. This replaces the old name-heuristic ``_is_destructive`` fast-allow."""
     app = build_app(sessions_path=tmp_path / "s.json")
     gate = _make_permission_gate(app)
-    assert gate("hdf5_list_datasets", {}) == "allow"
+    assert gate("fs_read_file", {"filepath": "x"}) == "allow"
+
+
+def test_unclassified_tool_without_session_fails_closed(tmp_path: Path) -> None:
+    """#1032: a non-read tool is no longer hand-allowed by a name substring. It is
+    NOT read-only (not in the static catalog, no annotation), so it proceeds past the
+    read fast-allow; with no session/approver it fails closed (deny) immediately rather
+    than blocking on an interactive prompt."""
+    app = build_app(sessions_path=tmp_path / "s.json")
+    gate = _make_permission_gate(app)
+    assert gate("hdf5_list_datasets", {}) == "deny"
 
 
 def test_external_mcp_explicit_read_only_hint_fast_allows(tmp_path: Path) -> None:
@@ -372,23 +385,25 @@ def test_external_mcp_route_requires_permission_before_client_invocation(
     assert MustNotStartClient.constructed is False
 
 
-def test_builtin_shell_tool_allows_safe_diagnostic_command(tmp_path: Path) -> None:
+def test_builtin_shell_bash_is_not_auto_allowed_without_approver(tmp_path: Path) -> None:
+    """#1032: the bounded ``shell_bash`` command parser (``_is_safe_shell_diagnostic``
+    and friends) is DELETED. ``shell_bash`` is not catalog-``read`` tagged and the OS
+    fence — not a gate-side command parser — contains its writes/egress, so it is not
+    read-only. With no session/approver it fails closed (deny). Read-only diagnostics
+    that used to be hand-parsed are now covered by is_read_only via catalog/annotation."""
     app = build_app(sessions_path=tmp_path / "s.json")
-    app.state.permission_default = "deny"
     gate = _make_permission_gate(app)
 
-    assert gate("shell_bash", {"command": "date"}) == "allow"
+    assert gate("shell_bash", {"command": "date"}) == "deny"
 
 
 def test_builtin_shell_tool_still_gates_non_diagnostic_command(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "s.json")
-    app.state.permission_default = "deny"
     gate = _make_permission_gate(app)
 
-    # ``rm`` is a destructive token, so it is NOT a safe read-only diagnostic and
-    # still routes to the normal permission gate. (Read-only inspectors like
-    # ``cat``/``ls`` ARE auto-allowed now — see _SAFE_READONLY_UTILS — so use a
-    # genuinely state-changing command to exercise the gate.)
+    # ``shell_bash`` is never read-only (its writes live behind the OS fence, not a
+    # gate-side parser), so any command routes to the normal permission path; with no
+    # session it fails closed (deny).
     assert gate("shell_bash", {"command": "rm pyproject.toml"}) == "deny"
 
 
@@ -1103,8 +1118,16 @@ def test_external_mcp_call_uses_explicit_session_for_policy_and_telemetry(
             "tool.call.started",
             "tool.call.completed",
         ]
-        assert older_history[0].payload["reason"] == "policy_allow"
-        assert newer_history == []
+        # B5 #979.2: session creation now emits a session-attach ``boundary.granted``
+        # (a ``semantic.event`` on the bus), so assert on the permission.resolved row directly
+        # rather than history[0], and that the NEWER session leaked no tool/permission events.
+        resolved = next(e for e in older_history if e.type == "permission.resolved")
+        assert resolved.payload["reason"] == "policy_allow"
+        assert [
+            e.type
+            for e in newer_history
+            if e.type.startswith("tool.call.") or e.type == "permission.resolved"
+        ] == []
         assert app.state.tool_call_ledger[older_sid][0]["name"] == "shell.exec"
         assert newer_sid not in app.state.tool_call_ledger
 
@@ -1142,7 +1165,13 @@ def test_observer_uses_active_turn_session_over_recency(tmp_path: Path) -> None:
             observer("hdf5_list_datasets", {"path": "/tmp/x.h5"}, "started", None)
             observer("hdf5_list_datasets", {"path": "/tmp/x.h5"}, "completed", None)
 
-        assert app.state.bus._history.get(newer_sid, []) == []
+        # B5 #979.2: the newer session's only bus entry is its creation-time boundary event;
+        # what must NOT leak to it is any TOOL call from the older session's turn.
+        assert [
+            e.type
+            for e in app.state.bus._history.get(newer_sid, [])
+            if e.type.startswith("tool.call.")
+        ] == []
         older_history = app.state.bus._history.get(older_sid, [])
         assert [e.type for e in older_history if e.type.startswith("tool.call.")] == [
             "tool.call.started",
@@ -1176,7 +1205,12 @@ def test_turn_context_reaches_observer_inside_executor_thread(tmp_path: Path) ->
         newer_sid = c.post("/v1/sessions", json={"title": "newer"}).json()["id"]
         complete_turn(c, older_sid, "inspect")
 
-        assert app.state.bus._history.get(newer_sid, []) == []
+        # B5 #979.2: newer session's creation-time boundary event is allowed; no TOOL leak is.
+        assert [
+            e.type
+            for e in app.state.bus._history.get(newer_sid, [])
+            if e.type.startswith("tool.call.")
+        ] == []
         older_history = app.state.bus._history.get(older_sid, [])
         assert "tool.call.started" in [e.type for e in older_history]
         assert "tool.call.completed" in [e.type for e in older_history]

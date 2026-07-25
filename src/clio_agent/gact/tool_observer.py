@@ -32,6 +32,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.artifacts.ingest_edges import join_call_to_serving_child
 from clio_agent.gact.delegation import _expert_handoff_fields
 from clio_agent.gact.events import Event
 from clio_agent.gact.evidence import (
@@ -606,6 +607,9 @@ def _make_tool_observer(app: "FastAPI"):
             _OBSERVER_CALL_IDS.value = call_id
             # Stamp the start time so completion can compute duration.
             _OBSERVER_CALL_T0.value = time.time()
+            # B5 #979.7 (deferred B4 WRITER): join call_id → confined FLEET child (no-op on the
+            # floor / built-in namespaces → the egress mint abstains). See ingest_edges.
+            join_call_to_serving_child(app, sid, name, call_id)
             _emit_live_tool_route_context(app, sid, name)
             _emit_semantic_event(
                 app,
@@ -768,6 +772,17 @@ def _make_tool_observer(app: "FastAPI"):
                     session_id=sid,
                     payload=payload,
                 )
+            )
+            # Seam #966 S1+S5 (#971): mint generated versions + record the coarse
+            # TransformRecord (success AND failure — a failed write is provenance).
+            if not completed_after_cancel:
+                from clio_agent.gact.artifacts.transforms import (  # noqa: PLC0415
+                    observe_tool_transform,
+                )
+
+                observe_tool_transform(app, sid, name, dict(args), call_id, ok, result)
+            _OBSERVER_CALL_T0.value = (
+                None  # finding [3]: clear the latch (idle thread -> DIRTY lease)
             )
             result_text = completion_error or (
                 _tool_result_preview(result) if result is not None else "completed"

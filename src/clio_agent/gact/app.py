@@ -420,15 +420,12 @@ from clio_agent.gact.evidence import (  # noqa: E402,F401
     _bounded_tool_call_result,
     _dynamic_agent_runtime_provenance,
     _extract_tools_called_from_trajectory,
-    _ground_fabricated_local_artifact_paths,
     _is_bounded_tool_result,
     _is_empty_dynamic_agent_answer_error,
-    _is_remote_artifact_ref,
     _propose_edit_diffs_from_pred,
     _tool_agent_empty_answer_fallback,
     _tool_result_is_error,
     _tool_result_preview,
-    _verified_local_artifact_paths_by_ext,
 )
 from clio_agent.gact.mcp_apps import (  # noqa: E402
     cleanup_all_mcp_apps,
@@ -482,6 +479,7 @@ from clio_agent.gact.routes.agent_tasks import (  # noqa: E402
 from clio_agent.gact.routes.agents import (  # noqa: E402
     register_agents_routes,
 )
+from clio_agent.gact.routes.artifacts import register_artifacts_routes  # noqa: E402
 from clio_agent.gact.routes.blueprints import (  # noqa: E402
     register_blueprints_routes,
 )
@@ -787,25 +785,18 @@ from clio_agent.gact.catalog import (  # noqa: E402, F401
     _tool_visible_to_for_catalog,
     _truthy_command_field,
 )
-from clio_agent.gact.events import Event, EventBus
+from clio_agent.gact.events import EventBus
 from clio_agent.gact.expert_packs import (
     discover_expert_packs,
     load_expert_pack_path,
     load_expert_packs,
     validate_expert_hierarchy,
 )
+from clio_agent.gact.loop_inbox import _make_loop_inbox_drain, drain_inbox_to_new_turn
 from clio_agent.gact.messages import MessageStore
 from clio_agent.gact.permission_gate import (  # noqa: E402,F401
-    _DESTRUCTIVE_TOOL_SUBSTRINGS,
-    _SAFE_READONLY_UTILS,
-    _SAFE_RESHAPE_UTILS,
-    _UNSAFE_SHELL_TOKENS,
     _direct_permission_denied,
     _guard_direct_destructive_action,
-    _is_destructive,
-    _is_safe_readonly_diagnostic,
-    _is_safe_shell_diagnostic,
-    _is_safe_text_reshape_command,
     _make_cancellation_checker,
     _make_permission_gate,
     _policy_action_for_tool,
@@ -939,6 +930,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     from clio_agent.runtime.process_tree import install_child_reaper  # noqa: PLC0415
 
     app.state.child_reaper = install_child_reaper()
+
+    # #975: resolve the OS write-confinement backend (floor-first `none` + typed reason;
+    # owner module runtime/sandbox.py). The boot `sandbox.state` event fires once ARC is
+    # live (in _construct_agent_async).
+    from clio_agent.runtime.sandbox import install_sandbox  # noqa: PLC0415
+
+    app.state.sandbox = install_sandbox()
 
     # #1001: bound the clio-owned MCP uv spawn cache at boot (off-loop; SKIPS if a peer
     # clio process is alive; never mid-session). Typed reasons emitted by the helper.
@@ -1120,10 +1118,31 @@ async def _construct_agent_async(app: "FastAPI") -> None:
         app.state.agent_init_error = repr(exc)
         return
 
-    app.state.agent = agent
-    # The agent's ARCMemory is built HERE (async), after build_app ran with arc=None;
-    # _set_app_arc (re)wires the arc.op op-logger so ARC writes are observable.
+    # _set_app_arc must run before the boot fold (reads app.state.arc) and before ready.
     _set_app_arc(app, agent.arc)
+    # #975: emit the boot `sandbox.state` conformance event (owner module owns the logic).
+    from clio_agent.runtime import sandbox  # noqa: PLC0415
+
+    sandbox.emit_boot_state_event(app, getattr(app.state, "sandbox", None))
+    # #971: boot-fold the artifact registry off-loop before ready (defects 2 + 1b; owner helper).
+    from clio_agent.gact.artifacts import registry_boot  # noqa: PLC0415
+
+    if not await registry_boot.boot_fold_artifact_registry_offloop(app, loop):
+        return  # wedged store — agent stays unready with a typed agent_init_error
+    app.state.agent = agent
+
+    # #972: enforce the CAS store byte budget across every workspace at boot (off-loop,
+    # #1001 cadence — the registry is now folded, so the reachability scan is ready).
+    # Best-effort: a GC failure never blocks the agent coming ready.
+    async def _boot_cas_gc() -> None:
+        try:
+            from clio_agent.gact.artifacts.cas_gc import run_boot_cas_gc  # noqa: PLC0415
+
+            await loop.run_in_executor(None, run_boot_cas_gc, app)
+        except Exception as exc:  # noqa: BLE001 — boot CAS GC is best-effort
+            logger.warning("cas boot gc skipped reason=cas_boot_gc_failed error=%r", exc)
+
+    app.state.cas_boot_gc_task = asyncio.create_task(_boot_cas_gc())
 
     # Install the deferred permission gate + tool observer now that we
     # know an agent exists to gate. See build_app for why these aren't
@@ -1211,46 +1230,6 @@ def _fire_schedule(app: "FastAPI", sch: Any) -> None:
         sch.question,
         metadata={"scheduled": True, "schedule_id": sch.id},
         prev_status=str(getattr(sess, "status", "idle") or "idle"),
-    )
-
-
-def _redrive_deferred_resume(app: "FastAPI", sid: str) -> None:
-    """Stage an ask-user resume that was deferred because the session was busy when
-    its answer arrived (#948 S1). Fired by the turn-runner idle hook the moment the
-    session's turn slot clears, so the resume runs promptly — the user's answer is
-    never dropped. Idempotent + self-re-deferring if the session busied again."""
-
-    deferred = getattr(app.state, "deferred_resumes", None)
-    if not deferred:
-        return
-    payload = deferred.pop(sid, None)
-    if payload is None:
-        return
-    sess = app.state.sessions.get(sid)
-    if sess is None:
-        return  # session gone; nothing to resume into
-    if app.state.agent is None or app.state.turn_runner.busy(sid):
-        deferred[sid] = payload  # not ready — re-defer for the next idle transition
-        return
-    resumed_msg = _turn_start_background_user_turn(
-        app,
-        sid,
-        sess,
-        payload["text"],
-        metadata=payload["metadata"],
-        prev_status=str(getattr(sess, "status", "idle") or "idle"),
-    )
-    app.state.bus.publish(
-        Event(
-            type="user_question.resumed",
-            session_id=sid,
-            payload={
-                "question_id": payload.get("question_id", ""),
-                "session_id": sid,
-                "queued_user_message_id": resumed_msg.id,
-                "deferred": True,
-            },
-        )
     )
 
 
@@ -1485,9 +1464,8 @@ def build_app(
     # extension points. In-memory; not persisted across restarts.
     app.state.declarative_hooks = {}
     # SPEC §6.11.b permission policies — list, not dict. Backends
-    # consult this on every tool call to decide allow/deny/ask before
-    # falling back to the per-tool permission_default. PUT replaces
-    # the whole list.
+    # consult this on every tool call to decide allow/deny/ask at the
+    # permission boundary. PUT replaces the whole list.
     app.state.permission_policies_path = session_store_path.parent / "permission_policies.json"
     app.state.permission_policies = _load_permission_policies(app.state.permission_policies_path)
     # iowarp/clio-agent#18: per-session task list (todo-style).
@@ -1513,12 +1491,13 @@ def build_app(
     # minute; _scheduler_tick_once retries them until the session frees (a coarse
     # cron can't be retried via due_now, which only re-yields on a cron match).
     app.state.deferred_schedules = set()
-    # #948 S1: ask-user resumes deferred because an intervening turn was running
-    # when the answer arrived. Keyed by session_id -> {text, metadata, question_id};
-    # the turn-runner idle hook re-drives them the instant the session frees (never
-    # dropped — losing a user's answer is a silent-fallback bug).
-    app.state.deferred_resumes = {}
-    app.state.turn_runner.set_idle_hook(lambda sid: _redrive_deferred_resume(app, sid))
+    # #1035/#1036 (epic #1031 Pillar 2): per-session loop inboxes — the mid-turn
+    # wake + user-steer carrier (session_id -> LoopInbox). See gact/loop_inbox.py.
+    # #1036 folded the former app.state.deferred_resumes stash here: an ask-user
+    # resume that arrives while busy is enqueued as a user_message steer and the
+    # idle hook (drain_inbox_to_new_turn) re-drives residual steers into ONE turn.
+    app.state.loop_inboxes = {}
+    app.state.turn_runner.set_idle_hook(lambda sid: drain_inbox_to_new_turn(app, sid))
     # iowarp/clio-agent#2: per-session ledger of tool calls observed
     # during the in-flight turn. The global tool_observer appends
     # here; _run_turn_in_background drains it post-forward to attach
@@ -1571,6 +1550,9 @@ def build_app(
     from clio_agent.tools.execution import set_tool_runtime_resolver  # noqa: PLC0415
 
     set_tool_runtime_resolver(resolve_tool_runtime)
+    # #1035: install the injected loop-inbox drain (both boot branches run turns);
+    # resolve_tool_runtime folds it into ToolRuntimeHooks (acyclic edge preserved).
+    app.state.pending_loop_inbox_drain = _make_loop_inbox_drain(app)
     if agent is not None:
         try:
             _install_tool_runtime_hooks(app)
@@ -2331,6 +2313,10 @@ def build_app(
     # The AgentTask projection read + cancel routes, over
     # ``app.state.agent_task_registry`` (rebuilt at boot from agent-task sessions).
     register_agent_task_routes(app, deps)
+
+    # ---- /v1/artifacts + /v1/{sessions,workspaces}/{id}/artifacts (#966 S2/#968) ----
+    # Artifact registry read surface + user-pin channel, owned by routes/artifacts.py.
+    register_artifacts_routes(app, deps)
 
     # ---- /v1/workspaces -------------------------
     # Workspace store CRUD + file listing/reading are owned by

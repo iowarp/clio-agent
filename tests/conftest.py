@@ -30,6 +30,43 @@ from tests._process_hygiene import (
 )
 
 
+@pytest.fixture
+def floor_sandbox(monkeypatch):
+    """Pin the OS write-confinement backend to the honest FLOOR for a passthrough test (#976 B2).
+
+    Environment-conformance (house rule: *isolated tests never see the real box config — vary
+    CONFIG, not ambient env*). On a Landlock-capable Linux host the confinement ladder ACTIVATES
+    for real, so :func:`clio_agent.runtime.sandbox.wrap_confined` prepends the fence shim and
+    every passthrough / argv-pinning assertion breaks (``'<venv>/bin/python' == 'mytool'``,
+    ``'landlock' == 'none'``). This fixture pins ``sandbox._STATE`` to a floor
+    :class:`~clio_agent.runtime.sandbox.SandboxResult` (mechanism none, active False, typed
+    reason) AND neutralizes ``install_sandbox`` / ``_resolve_backend`` so a mid-test re-resolve
+    can never reactivate.
+
+    Activation tests (the B2 ladder matrix, which inject explicit probes / ``state=``) must NOT
+    use this fixture — they pin their own state and would be masked by it.
+    """
+    import sys as _sys
+
+    from clio_agent.runtime import sandbox as _sandbox
+
+    floor = _sandbox.SandboxResult(
+        mechanism=_sandbox.MECHANISM_NONE,
+        active=False,
+        reason=_sandbox.REASON_NOT_INSTALLED,
+        details={"platform": _sys.platform},
+    )
+    monkeypatch.setattr(_sandbox, "_STATE", floor)
+    monkeypatch.setattr(_sandbox, "_resolve_backend", lambda *a, **k: floor)
+
+    def _floor_install(*_a, **_k):
+        _sandbox._STATE = floor
+        return floor
+
+    monkeypatch.setattr(_sandbox, "install_sandbox", _floor_install)
+    return floor
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _clio_private_cte_daemon():
     """Point this suite run's cte-leg tests at a PRIVATE clio-core daemon.
@@ -147,6 +184,32 @@ def _attribute_process_leaks(request):
     audit = getattr(request.session, "_clio_hygiene_audit", None)
     if audit is not None:
         audit.observe_test(request.node.nodeid)
+
+
+@pytest.fixture(autouse=True)
+def _restore_clio_logger():
+    """Snapshot + restore the process-global ``clio_agent`` logger state (suite-wide).
+
+    :func:`clio_agent.runtime.trace.configure` (triggered by any test that boots the CLI /
+    serve path) sets ``propagate=False`` and installs a handler on the shared ``clio_agent``
+    logger with no teardown. Left leaked into a later-collected test in the same xdist worker,
+    that breaks ``caplog``-based assertions (caplog captures via root-logger propagation) — an
+    order-dependent isolation flake surfaced when a new test module shifts the distribution.
+    Restoring propagate/level/handlers around EVERY test kills the whole class (was scoped to
+    tests/test_ui/conftest.py; promoted here so it protects the full suite).
+    """
+    import logging  # noqa: PLC0415 - only needed by this fixture
+
+    lg = logging.getLogger("clio_agent")
+    saved_propagate = lg.propagate
+    saved_level = lg.level
+    saved_handlers = list(lg.handlers)
+    try:
+        yield
+    finally:
+        lg.propagate = saved_propagate
+        lg.level = saved_level
+        lg.handlers[:] = saved_handlers
 
 
 @pytest.fixture(autouse=True)

@@ -421,7 +421,6 @@ class Tool(_WireModel):
     description: str = ""
     server_id: str = ""
     source: str = ""
-    permission_default: str = "ask"
     owner: str = ""
     tags: list[str] = Field(default_factory=list)
     visible_to: list[str] = Field(default_factory=list)

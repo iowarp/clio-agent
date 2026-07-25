@@ -35,7 +35,9 @@ from typing import TYPE_CHECKING, Any
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Response
 
 from clio_agent.gact.events import Event
+from clio_agent.gact.loop_inbox import enqueue_user_steer
 from clio_agent.gact.message_wire import normalize_thought_ownership
+from clio_agent.gact.messaging import _user_message_parts
 from clio_agent.gact.providers.config import (
     _active_lm_supports_vision,
     _effective_lm_config,
@@ -43,6 +45,7 @@ from clio_agent.gact.providers.config import (
     _model_ref_is_empty,
     _model_ref_matches_active,
 )
+from clio_agent.gact.runtime.globals import _iso_from_epoch, _new_message_id
 from clio_agent.gact.turn_runner import session_busy_error_payload
 from clio_agent.gact.types import (
     ErrorEnvelope,
@@ -206,7 +209,10 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.post("/v1/sessions/{sid}/messages", response_model=PostMessageResponse)
     async def post_message(
-        sid: str, req: PostMessageRequest, background_tasks: BackgroundTasks
+        sid: str,
+        req: PostMessageRequest,
+        background_tasks: BackgroundTasks,
+        response: Response,
     ) -> PostMessageResponse:
         """Accept a user message and ack immediately. The agent turn
         runs in the background; clients consume progress via the SSE
@@ -310,16 +316,48 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             )
 
-        # #948 S1 (#662): within-session busy gate. A second POST while a turn is
-        # already in flight for this session is refused with a typed 409 rather
-        # than silently overwriting the first turn's slot (which orphaned it,
-        # uncancellable, with both turns writing the same session + ARC). The
-        # client renders the reason and retries after the running turn completes.
-        # (Deliberate concurrency of turns is a background-child mechanism — #948
-        # S3 — spawned on child sessions, not a second turn on this one.)
-        busy_payload = session_busy_error_payload(getattr(app.state, "turn_runner", None), sid)
-        if busy_payload is not None:
-            raise HTTPException(status_code=409, detail=busy_payload)
+        # #1036 (epic #1031 Pillar 2): within-session mid-turn STEER. A second POST
+        # while a turn is already in flight is no longer a 409 — it is a user steer.
+        # We do NOT start a second turn (that would orphan the running one's slot,
+        # both writing the same session + ARC — the #948 S1 hazard). Instead we
+        # pre-mint the message id + stamp + parts and enqueue a user_message
+        # InboxEvent carrying them; the running turn's next tool boundary drains it
+        # into a ``### steer`` grounding block AND persists the mid_turn_steer message
+        # at THAT point (#1052 persist-at-CONSUMPTION) — or, if the turn ends first,
+        # the idle hook re-drives it into exactly ONE new turn (which persists it).
+        # The route no longer persists here, so the message is recorded EXACTLY ONCE
+        # regardless of which consumer claims it (the atomic pop-all drain guarantees
+        # a single consumer). The 202's pre-minted message_id resolves to that single
+        # persisted message in BOTH drain paths: the mid-turn drain persists under it,
+        # and the turn-ended-first idle re-drive REUSES it for the promoted turn
+        # (#1052 — no phantom 202 id). Accepted trade-off: between the 202 and the next
+        # drain (usually the next tool boundary) the steer is NOT yet in GET /messages
+        # — it appears when it takes effect. (Edge: if several steers coalesce into one
+        # idle-promoted turn, that single message can carry only one id, so the
+        # coalesced 202 ids beyond the first are inherently un-resolvable.) Ack 202
+        # (accepted-as-steer, distinct from the 200 new-turn ack). The busy-gate 409
+        # payload is still used by other producers (mcp_apps, retry).
+        if session_busy_error_payload(getattr(app.state, "turn_runner", None), sid) is not None:
+            steer_id = _new_message_id("user")
+            created_at = _iso_from_epoch(datetime.now(timezone.utc).timestamp())
+            steer_parts = _user_message_parts(
+                request_parts=list(req.parts or []), user_text=user_text
+            )
+            enqueue_user_steer(
+                app,
+                sid,
+                user_text,
+                req.metadata,
+                steer_message_id=steer_id,
+                steer_created_at=created_at,
+                steer_parts=steer_parts,
+            )
+            del background_tasks
+            response.status_code = 202
+            return PostMessageResponse(
+                message_id=steer_id,
+                accepted_at=created_at,
+            )
 
         # Persist + publish the user message synchronously so by the
         # time the ack returns, GET /messages reflects it. Then mark

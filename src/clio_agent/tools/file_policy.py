@@ -1,4 +1,14 @@
-"""File access policy and validation for CLIO tools."""
+"""File access policy and validation for CLIO tools — the ADVISORY twin of the OS fence.
+
+This module is the pre-call, tool-boundary ADVISORY check: it produces typed,
+model-actionable errors (``outside_allowed_roots`` etc.) on EVERY platform, including the
+HPC/no-npm floor where no OS fence exists. It is the enforcing OS write-fence's twin, not its
+replacement (owner decision #974.6): :func:`clio_agent.runtime.sandbox.wrap_confined` fences
+what the advisory cannot SEE — the arbitrary writes a shell command or an MCP-server
+subprocess performs AFTER the boundary check. Both boundaries derive their territory from the
+ONE shared source :func:`clio_agent.runtime.sandbox.effective_write_roots` (whose base IS
+this policy's ``allowed_roots``), so the advisory and the fence can never drift apart.
+"""
 
 from __future__ import annotations
 
@@ -72,11 +82,35 @@ def _active_workspace_root() -> Path | None:
         return None
 
 
+def _granted_roots_for(workspace: Path | None) -> tuple[Path, ...]:
+    """Root grants recorded for the active workspace (B5 #979.3), for the advisory twin.
+
+    The fence (:func:`clio_agent.runtime.sandbox.effective_write_roots`) and this advisory
+    check consult the SAME grant registry, so a recorded root grant widens both boundaries in
+    lockstep and they can never drift (owner decision #974.6). ``None`` workspace / any failure
+    degrades to no extra roots (never breaks policy construction).
+    """
+    if workspace is None:
+        return ()
+    try:
+        from clio_agent.runtime.sandbox_roots import granted_write_roots  # noqa: PLC0415
+
+        return granted_write_roots(str(workspace))
+    except Exception:  # noqa: BLE001 - policy must never fail to build
+        return ()
+
+
 def _with_active_workspace(resolved: list[Path]) -> tuple[Path, ...]:
-    """Prepend the active workspace root to ``resolved`` (deduped) when bound."""
+    """Prepend the active workspace root + its recorded root grants (deduped) when bound."""
     workspace = _active_workspace_root()
+    extra: list[Path] = []
     if workspace is not None and workspace not in resolved:
-        return (workspace, *resolved)
+        extra.append(workspace)
+    for granted in _granted_roots_for(workspace):
+        if granted not in resolved and granted not in extra:
+            extra.append(granted)
+    if extra:
+        return (*extra, *resolved)
     return tuple(resolved)
 
 

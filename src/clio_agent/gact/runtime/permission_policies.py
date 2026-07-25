@@ -1,7 +1,7 @@
 """Permission-policy data machinery for the GACT server (#714 decomposition).
 
 SPEC §6.11.b permission policies are declarative ``allow``/``deny``/``ask`` rules
-consulted before the per-tool ``permission_default``. This module is the single
+consulted at the permission boundary. This module is the single
 owner of the *data* layer behind them -- validation, on-disk load/flush, and the
 derivation of a sticky policy from an ``allow_session``/``allow_workspace``
 permission resolution -- so both the request handlers in
@@ -36,11 +36,30 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from clio_agent.gact.runtime.grant_resolver import resolve
+
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
 _PERMISSION_POLICY_SCOPES = {"session", "workspace"}
 _PERMISSION_POLICY_ACTIONS = {"allow", "allow_session", "allow_workspace", "deny", "ask"}
+
+#: The request kind on a pending-row for a deny-mode egress prompt (B5 #979.5). It rides the
+#: SAME interactive permission gate as a destructive tool call — a new request KIND, not a new
+#: gate (⚑ #974.8) — so ``allow_workspace`` derives a sticky ``host_pattern`` policy below.
+NETWORK_EGRESS_REQUEST_KIND = "network_egress"
+
+
+def _permission_host_from_args(args: Mapping[str, Any]) -> str:
+    """Return the egress host a ``network_egress`` request targets (B5 #979.5).
+
+    The deny-mode chokepoint prompt stores the requested authority host under ``host`` (the
+    ``used web:<domain>`` vocabulary), so an ``allow_workspace`` resolution derives a sticky
+    ``host_pattern`` policy from it — the domain analogue of ``path_pattern``.
+    """
+
+    value = args.get("host")
+    return value.strip().lower() if isinstance(value, str) and value.strip() else ""
 
 
 def _permission_path_from_args(args: Mapping[str, Any]) -> str:
@@ -105,7 +124,7 @@ def _validate_permission_policies(
                 }
             )
 
-        for field in ("scope_id", "tool_name_pattern", "path_pattern"):
+        for field in ("scope_id", "tool_name_pattern", "path_pattern", "host_pattern"):
             value = policy.get(field)
             if value is not None and not isinstance(value, str):
                 policy_has_errors = True
@@ -183,8 +202,57 @@ def _append_permission_policy_from_resolution(
         "action": "allow",
         "created_from_permission_id": str(row.get("id") or ""),
     }
+    # A deny-mode egress prompt (B5 #979.5) is a ``network_egress`` request kind: an
+    # ``allow_workspace`` resolution derives a sticky ``host_pattern`` policy (the domain
+    # analogue of ``path_pattern``) the chokepoint consults, NOT a file path_pattern.
+    if str(row.get("kind") or "") == NETWORK_EGRESS_REQUEST_KIND:
+        host = _permission_host_from_args(args)
+        if host:
+            policy["host_pattern"] = host
+        return _appended(app, policy)
     path = _permission_path_from_args(args)
     if path:
         policy["path_pattern"] = path
+    return _appended(app, policy)
+
+
+def _appended(app: "FastAPI", policy: dict[str, Any]) -> dict[str, Any]:
     app.state.permission_policies.append(policy)
     return policy
+
+
+def _host_action_for(
+    app: "FastAPI",
+    *,
+    workspace_id: str,
+    host: str,
+) -> str:
+    """Return the first matching WORKSPACE-scoped ``host_pattern`` policy action (B5 #979.5).
+
+    Consulted by the deny-mode egress chokepoint gate: a workspace-scoped ``host_pattern``
+    fnmatch (the ``path_pattern`` shape, applied to the requested authority host) whose action
+    is ``allow``/``allow_workspace`` lets the CONNECT through with no gate; ``deny`` blocks it.
+    ``""`` means no host policy matched (the caller then opens the interactive gate).
+
+    SESSION-scoped ``host_pattern`` policies are DELIBERATELY NOT honoured here (review
+    finding 2). The egress a fleet child opens is workspace-SHARED — one persistent confined
+    child serves every session in the workspace, and the ``EgressRecord`` carries no session id
+    — so a connection cannot be attributed to a single session. Honouring a session-scoped host
+    grant on an unattributable connection would let the MORE-restrictive ``allow_session`` choice
+    LEAK to every session/workspace (broader than ``allow_workspace``). A session-scoped host
+    grant that cannot be attributed must therefore NOT widen the boundary: it is skipped, so the
+    connection re-prompts (fail-safe) rather than silently allowing global egress. A missing
+    ``scope_id`` on a WORKSPACE row is also NOT treated as a wildcard here — an empty workspace
+    scope_id would match every workspace, the same leak — so it is skipped.
+
+    A thin shim over :func:`~clio_agent.gact.runtime.grant_resolver.resolve` (``kind="domain"``),
+    which encodes this leak guard as the domain kind's per-kind scope rule. Kept as a named shim
+    because :mod:`clio_agent.gact.runtime.grants` binds it (and monkeypatches it in tests).
+    """
+
+    return resolve(
+        "domain",
+        host,
+        policies=getattr(app.state, "permission_policies", []),
+        workspace_id=workspace_id,
+    )

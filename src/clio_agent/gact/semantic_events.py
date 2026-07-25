@@ -65,7 +65,9 @@ SSE_KEEP_KEYS_BY_EVENT: dict[str, frozenset[str]] = {
 # is substrate the UI does not render, so it stays off the served wire. This is
 # the serving layer (order/cleanliness), NOT a capture filter: project_full and
 # ARC always see every event. Any FAILED/ERROR event passes regardless (errors
-# are first-class and never summarized away). See the four ReAct atoms:
+# are first-class and never summarized away) EXCEPT the trace-only provenance
+# substrate (``SSE_TRACE_ONLY_EVENT_TYPES``), which is excluded unconditionally.
+# See the four ReAct atoms:
 #   a) delegation  = blueprint.delegation.* + the orchestrator's reasoning
 #                    (carried on expert.response.completed for CoT orchestrators)
 #   b) tool call   } react.step.completed (thought + tool_name + tool_args
@@ -96,11 +98,81 @@ SSE_UI_EVENT_TYPES: frozenset[str] = frozenset(
         # A skill load is an agent ACTION with provenance the UI renders
         # (#920; gact-tui#315): which procedure the expert pulled in, from where.
         "skill.loaded",
+        # Artifacts (#966 S2 / #968): a generated output gains outbound wire
+        # identity. ``artifact.created`` fires per new immutable version;
+        # ``artifact.version.added`` / ``artifact.alias.moved`` are the version-chain
+        # + alias atoms (emit sites land in S4 — allow-listed now so the wire is
+        # ready). ``artifact.used`` / ``artifact.transform.recorded`` deliberately
+        # STAY trace-only (provenance substrate the UI does not render). All are
+        # captured FULL on the durable trace + ARC regardless; this only gates
+        # serving. Redaction is the same ``semantic`` detail path every UI event
+        # uses — an artifact record carries no ``SENSITIVE_KEYS`` field, so the SSE
+        # projection is the full record minus (absent) credentials.
+        "artifact.created",
+        "artifact.version.added",
+        "artifact.alias.moved",
+        # Grants on the record (B5 #979): every effective-boundary change is a
+        # user/model DECISION the TUI renders — a workspace/session write-root grant
+        # or revoke (``boundary.granted``/``boundary.revoked``, ``kind: root|domain``)
+        # and the permission request/resolution lifecycle around it. Unlike the
+        # trace-only provenance substrate below (net.egress / policy_violation), these
+        # ARE UI events — the user must see the prompt and the resulting grant live.
+        # ``permission.requested`` was emitted as a semantic event (turn.py) but never
+        # SSE-listed, while ``permission.resolved`` was bus-only: both are now listed
+        # here so the request→resolution lifecycle is consistently served (B5 #979.8).
+        "boundary.granted",
+        "boundary.revoked",
+        "permission.requested",
+        "permission.resolved",
+    }
+)
+
+# Provenance SUBSTRATE the UI never renders — definitionally trace-only, even on
+# failure. These artifact atoms are captured FULL on the durable trace + ARC and
+# served via the /transforms and /lineage ROUTES, but must NEVER ride the live SSE
+# wire. Unlike a failed *action* (a tool/delegation/expert step), a failed or
+# contended provenance record is still substrate, not a user-facing error — so the
+# ``_SSE_ALWAYS_STATUSES`` override below must NOT lift them onto the wire. Without
+# this exclusion a transform whose status is "failed" (e.g. a contended record that
+# generated 0 outputs) would leak onto SSE non-deterministically — exactly the
+# data-dependent clean-stream violation this set closes (S5 gate3 C5).
+SSE_TRACE_ONLY_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        "artifact.used",
+        "artifact.transform.recorded",
+        "artifact.transform.failed",
+        "artifact.proposed",
+        # CAS budget housekeeping (S6 #972): an evicted blob / a swept crash-orphaned
+        # temp is durable-trace substrate the UI never renders — never on the SSE wire.
+        "artifact.cas.evicted",
+        "artifact.cas.tmp_swept",
+        # Sandbox boot conformance (B1 #975): the resolved write-confinement mechanism
+        # is durable-trace substrate (the conformance floor), never a UI row — declared
+        # trace-only here so a future non-"completed" emit cannot ride the
+        # ``_SSE_ALWAYS_STATUSES`` override onto the wire.
+        "sandbox.state",
+        # Policy violations (B2 #976): a fence-denied (or fence-escaping) out-of-root write
+        # is durable-trace provenance substrate — the typed ``policy_violation`` node that
+        # replaces #966's ``gap``. B5 (#979) confirmed it STAYS trace-only (the SPEC rider
+        # lists only ``boundary.*`` + ``permission.*`` as UI events; the grant AFFORDANCE the
+        # model acts on rides the node's ``next_action`` field, not an SSE row). Declared here
+        # so its "failed"-status emit cannot ride ``_SSE_ALWAYS_STATUSES`` onto the UI wire.
+        "artifact.policy_violation",
+        # Network egress (B4 #978): every forwarded child connection through the clio
+        # chokepoint is a ``net.egress`` record — high-volume, durable-only provenance
+        # substrate that feeds the ``used web:domain@time`` ingest edge. B5 (#979) confirmed
+        # it STAYS trace-only (the UI renders the ``boundary.granted{kind: domain}`` a deny-mode
+        # grant produces, never the raw per-connection egress); declared trace-only so no
+        # status can lift it onto the UI stream.
+        "net.egress",
     }
 )
 
 # Statuses that ALWAYS reach the UI wire regardless of event_type — a failure or
-# cancellation must never be filtered out of the served stream.
+# cancellation must never be filtered out of the served stream. This override is
+# for *actions/lifecycle* (a failed tool call / delegation / expert step that is
+# not otherwise allow-listed); it deliberately does NOT apply to the trace-only
+# provenance substrate above (which is excluded first, unconditionally).
 _SSE_ALWAYS_STATUSES: frozenset[str] = frozenset({"failed", "error", "cancelled"})
 
 
@@ -108,10 +180,16 @@ def event_reaches_ui(event_type: str, status: str = "") -> bool:
     """True when a semantic event should be published to the live UI bus.
 
     The atom allow-list plus an unconditional pass for failure/cancellation
-    statuses. Capture (durable trace + ARC) is unaffected — this gates serving
-    only.
+    statuses — but trace-only provenance substrate is excluded FIRST, so no status
+    can lift it onto the wire. Capture (durable trace + ARC) is unaffected — this
+    gates serving only.
     """
-    return event_type in SSE_UI_EVENT_TYPES or (status or "").strip().lower() in _SSE_ALWAYS_STATUSES
+    if event_type in SSE_TRACE_ONLY_EVENT_TYPES:
+        return False
+    return (
+        event_type in SSE_UI_EVENT_TYPES or (status or "").strip().lower() in _SSE_ALWAYS_STATUSES
+    )
+
 
 # The "body" fields of a SemanticEvent — these carry the rich, potentially
 # sensitive payloads that are captured in FULL durably but projected/redacted
@@ -595,7 +673,10 @@ def build_trace_backend(default_root: Path) -> SemanticTraceBackend:
         return FileSemanticTraceBackend(path)
     if backend in {"factory", "python_factory", "custom"}:
         factory_path = conf.resolve(
-            "trace.semantic_factory", env="CLIO_SEMANTIC_TRACE_FACTORY", default="", cast=conf.as_str
+            "trace.semantic_factory",
+            env="CLIO_SEMANTIC_TRACE_FACTORY",
+            default="",
+            cast=conf.as_str,
         ).strip()
         if not factory_path:
             raise ValueError(

@@ -11,6 +11,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | Environment variable | Config key | Type | Default | Defined in |
 | --- | --- | --- | --- | --- |
 | `CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP` | `agents.disable_default_registry_bootstrap` | bool | `false` | `src/clio_agent/gact/agent_blueprints.py` |
+| `CLIO_AI_REVIEW_TIMEOUT_S` | `permissions.ai_review_timeout_s` | str | `45.0` | `src/clio_agent/gact/runtime/ai_review.py` |
 | `CLIO_ALLOWED_ROOTS` | `tools.file_policy.allowed_roots` | str | `_default_allowed_roots()` _(computed)_ | `src/clio_agent/tools/file_policy.py` |
 | `CLIO_ALLOW_SYMLINKS` | `tools.file_policy.allow_symlinks` | bool | `false` | `src/clio_agent/tools/file_policy.py` |
 | `CLIO_API_BASE` | `runtime.api_base` | str | _(unset)_ | `src/clio_agent/runtime/status.py` |
@@ -32,6 +33,16 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARC_LSM_MEMTABLE_SIZE` | `arc.lsm_memtable_size` | int | `1000` | `src/clio_agent/arc/memory.py` |
 | `CLIO_ARC_STORE` | `arc.store` | str | `cte` | `src/clio_agent/arc/storage.py` |
 | `CLIO_ARC_STORE_CONFIG` | `arc.store_config` | str | _(unset)_ | `src/clio_agent/arc/storage.py` |
+| `CLIO_ARTIFACTS_EXPORT_LICENSE` | `artifacts.export_license` | str | `NOASSERTION` | `src/clio_agent/gact/artifacts/export.py` |
+| `CLIO_ARTIFACTS_HASH_MAX_FILE_BYTES` | `artifacts.hash_max_file_bytes` | int | `67108864` | `src/clio_agent/gact/artifacts/minting.py` |
+| `CLIO_ARTIFACTS_INSTRUMENT_ARG_MAX_BYTES` | `artifacts.instrument_arg_max_bytes` | int | `2048` | `src/clio_agent/gact/artifacts/transforms.py` |
+| `CLIO_ARTIFACTS_INSTRUMENT_TOTAL_MAX_BYTES` | `artifacts.instrument_total_max_bytes` | int | `16384` | `src/clio_agent/gact/artifacts/transforms.py` |
+| `CLIO_ARTIFACTS_LINEAGE_MAX_NODES` | `artifacts.lineage_max_nodes` | int | `500` | `src/clio_agent/gact/artifacts/lineage.py` |
+| `CLIO_ARTIFACTS_PROPOSALS_BATCH_MAX` | `artifacts.proposals_batch_max` | int | `32` | `src/clio_agent/gact/artifacts/proposals.py` |
+| `CLIO_ARTIFACTS_PROPOSALS_PER_TURN` | `artifacts.proposals_per_turn` | int | `8` | `src/clio_agent/gact/artifacts/proposals.py` |
+| `CLIO_ARTIFACT_CAS_BUDGET_BYTES` | `artifacts.cas_budget_bytes` | int | `536870912` | `src/clio_agent/gact/artifacts/cas.py` |
+| `CLIO_ARTIFACT_CAS_MAX_FILE_BYTES` | `artifacts.cas_max_file_bytes` | int | `16777216` | `src/clio_agent/gact/artifacts/cas.py` |
+| `CLIO_ARTIFACT_HASH_STAT_CACHE` | `artifacts.hash_stat_cache` | bool | `false` | `src/clio_agent/gact/artifacts/cas.py` |
 | `CLIO_AUTOCOMPACT_PCT` | `autocompact.pct` | str | `0.85` | `src/clio_agent/gact/runtime/context_tokens.py` |
 | `CLIO_BLUEPRINT_REGISTRY_URL` | `gact.blueprint_registry.url` | str | `https://github.com/iowarp/clio-agent-marketplace.git` | `src/clio_agent/gact/agent_blueprints.py` |
 | `CLIO_CAPTURE_REASONING` | `runtime.capture_reasoning` | bool | `true` | `src/clio_agent/gact/usage.py` |
@@ -115,6 +126,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_RESIDENT_LEDGERS_MAX` | `gact.resident_ledgers.max_sessions` | int | `512` | `src/clio_agent/gact/resident_ledgers.py` |
 | `CLIO_RESIDENT_LEDGERS_MAX_BYTES` | `gact.resident_ledgers.max_bytes` | int | `536870912` | `src/clio_agent/gact/resident_ledgers.py` |
 | `CLIO_RESIDENT_LEDGERS_TTL_S` | `gact.resident_ledgers.idle_ttl_s` | float | `1800.0` | `src/clio_agent/gact/resident_ledgers.py` |
+| `CLIO_SANDBOX_ENABLED` | `sandbox.enabled` | bool | `true` | `src/clio_agent/runtime/sandbox.py` |
 | `CLIO_SEMANTIC_TRACE_BACKEND` | `trace.backend` | str | `none` | `src/clio_agent/arc/memory.py` |
 | `CLIO_SEMANTIC_TRACE_CONFIG` | `trace.semantic_config` | str | _(unset)_ | `src/clio_agent/gact/semantic_events.py` |
 | `CLIO_SEMANTIC_TRACE_DETAIL` | `trace.detail_level` | str | `DEFAULT_DETAIL_LEVEL` _(computed)_ | `src/clio_agent/gact/_params.py` |

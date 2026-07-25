@@ -131,9 +131,34 @@ from clio_agent.gact.usage import (
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
+    from clio_agent.gact.turn_state import TurnState  # noqa: F401
     from clio_agent.gact.types import AgentDef  # noqa: F401
 
 logger = logging.getLogger(__name__)
+
+
+def _mint_pack_declared_artifacts(state: "TurnState", workflow_state: dict[str, Any]) -> None:
+    """Register pack-declared ``workflow_state.artifact_paths`` at finalize (seam c).
+
+    Secondary/optional designation channel (#966 S1) — never load-bearing.
+    Best-effort with a typed reason: an artifact mint must never break the turn.
+    """
+    try:
+        from clio_agent.gact.artifacts.minting import mint_pack_declared_paths  # noqa: PLC0415
+
+        mint_pack_declared_paths(
+            state.app,
+            state.sid,
+            workflow_state=workflow_state,
+            path_specs=getattr(state.workflow_schema, "artifact_paths", ()),
+            workspace_id=str(getattr(state.sess, "workspace_id", "") or ""),
+            turn_id=state.turn_id,
+            trace_id=state.trace_id,
+        )
+    except Exception:  # noqa: BLE001 — a live artifact mint must never break a turn
+        logger.warning(
+            "artifact mint skipped reason=pack_declared_seam_failed session=%s", state.sid
+        )
 
 
 async def _run_turn_in_background(
@@ -527,6 +552,7 @@ async def _run_turn_in_background(
                     "visibility": "hidden",
                 },
             )
+            await asyncio.to_thread(_mint_pack_declared_artifacts, state, top_level_workflow_state)
         raw_handoffs = getattr(state.pred, "expert_handoffs", None) or []
         if not state.expert_handoffs:
             state.expert_handoffs = _coerce_expert_handoff_rows(raw_handoffs)
@@ -805,19 +831,19 @@ def _start_background_user_turn(
     metadata: Optional[dict[str, Any]] = None,
     prev_status: str = "idle",
     turn_agent_id: str = "",
+    user_msg_id: str = "",
 ) -> Message:
     """Stage a user turn and drive it off-thread.
 
-    Persists the user message + parts, flips the session to ``running``,
-    publishes ``session.status_changed`` + ``message.created``, then schedules
-    :func:`_run_turn_in_background` as a tracked ``asyncio`` task (registered in
-    ``app.state.in_flight_turns`` so cancellation can reach it). Returns the
-    staged user :class:`Message`.
-
-    Hoisted out of ``build_app`` (#714) so the POST-message / question-answer /
-    retry-attempt / scheduler callers can share it via ``GactDeps`` without
-    importing back into :mod:`clio_agent.gact.app`; ``app`` is now an explicit
-    first argument instead of a closure capture.
+    Persists the user message + parts, flips the session to ``running``, publishes
+    ``session.status_changed`` + ``message.created``, then schedules
+    :func:`_run_turn_in_background` as a tracked ``asyncio`` task (in
+    ``app.state.in_flight_turns`` so cancellation reaches it). Returns the staged
+    user :class:`Message`. Hoisted out of ``build_app`` (#714) so callers share it
+    via ``GactDeps`` with ``app`` an explicit arg. ``user_msg_id`` overrides the
+    minted message/turn id (empty ⇒ mint): the #1052 idle steer re-drive passes the
+    id the mid-turn ``202`` already returned so the promoted turn reuses it — no
+    phantom client-held id (see ``loop_inbox.drain_inbox_to_new_turn``).
     """
     # #714 danger set: bind through app at call time so test monkeypatches of
     # clio_agent.gact.app._append_session_message keep intercepting persistence.
@@ -844,7 +870,7 @@ def _start_background_user_turn(
             "session_agent_id": _session_agent_id(sess),
             "scope": "turn",
         }
-    user_msg_id = _new_message_id("user")
+    user_msg_id = user_msg_id or _new_message_id("user")
     user_msg = Message(
         id=user_msg_id,
         # The turn id IS the user message id (#711); a user message correlates to

@@ -9,7 +9,7 @@ This concern owns two related vendor surfaces the gact-tui drives:
   ``MCPToolBridge`` thread blocked on the request's event, and -- for the
   ``allow_session``/``allow_workspace`` actions -- derives a sticky policy.
 * **Policies** (SPEC §6.11.b) -- the declarative ``allow``/``deny``/``ask``
-  rules consulted before the per-tool ``permission_default``.
+  rules consulted at the permission boundary.
   ``GET /v1/policies`` lists them; ``PUT /v1/policies`` atomically replaces the
   whole list (matching the gact-tui ``PutPolicies`` shape), validating every row
   before persisting so a typoed deny rule can never be silently dropped.
@@ -18,24 +18,26 @@ The data layer (validation, load/flush, resolution-derived policy) lives in
 :mod:`clio_agent.gact.runtime.permission_policies` so this module and the
 ``build_app`` startup path share one implementation. Handlers close over the
 ``app`` argument (FastAPI's decorators need it) and read/write the live ledger +
-policy list via ``app.state``; the module imports only leaf packages (runtime,
-events, types, stdlib) and never loads :mod:`clio_agent.gact.app`.
+policy list via ``app.state``. The permission-resolution body is shared with the
+in-process reviewer path via :func:`clio_agent.gact.permission_gate.resolve_permission`
+(#1044) — a sibling ``gact`` module, NOT ``clio_agent.gact.app``; the route→gate
+import direction is safe (``permission_gate`` never imports routes), so the no-cycle
+invariant holds.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 
-from clio_agent.gact.events import Event
+from clio_agent.gact.permission_gate import resolve_permission
 from clio_agent.gact.routes._body import json_body
+from clio_agent.gact.runtime.grants import GRANTOR_USER
 from clio_agent.gact.runtime.permission_policies import (
     _PERMISSION_POLICY_ACTIONS,
     _PERMISSION_POLICY_SCOPES,
-    _append_permission_policy_from_resolution,
     _flush_permission_policies,
     _validate_permission_policies,
 )
@@ -131,38 +133,18 @@ def register_permissions_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        if row.get("status") == "pending":
-            row["status"] = "resolved"
-            row["action"] = action
-            row["resolved_at"] = datetime.now(timezone.utc).isoformat()
-            policy = _append_permission_policy_from_resolution(app, row=row, action=action)
-            if policy is not None:
-                row["policy"] = policy
-                # iowarp/clio-agent#759: sticky grants must survive a
-                # server restart, so flush the derived policy to disk.
-                _flush_permission_policies(app)
-            # iowarp/clio-agent#7: wake any MCPToolBridge thread
-            # waiting on this permission's event.
-            evt = app.state.permission_events.pop(pid, None)
-            if evt is not None:
-                evt.set()
-            app.state.bus.publish(
-                Event(
-                    type="permission.resolved",
-                    session_id=row.get("session_id", ""),
-                    payload={
-                        "permission_id": pid,
-                        "action": action,
-                        "session_id": row.get("session_id", ""),
-                    },
-                )
-            )
+        # #1044: the resolution core (status flip, sticky-policy derivation, bridge-thread
+        # wake, permission.resolved emit) lives in ``permission_gate.resolve_permission`` so
+        # the HTTP route and the in-process ai-review reviewer share ONE path. The route
+        # resolves as ``GRANTOR_USER`` — byte-identical to the prior inline body, now with the
+        # grantor stamped on the audit row + both resolved payloads.
+        resolve_permission(app, pid, action, grantor=GRANTOR_USER)
         return Response(status_code=204)
 
     # ---- /v1/policies (SPEC §6.11.b permission policies) -------------
     #
-    # Declarative allow/deny/ask rules consulted before the per-tool
-    # permission_default. PUT replaces the whole list (matches the
+    # Declarative allow/deny/ask rules consulted at the permission
+    # boundary. PUT replaces the whole list (matches the
     # gact-tui client's PutPolicies shape) and persists it locally.
 
     @app.get("/v1/policies")

@@ -58,7 +58,7 @@ If you only need the long-running `clio-agent` backend, install it as a persiste
 tool rather than using the ephemeral `uvx` / `uv tool run` environment:
 
 ```sh
-uv tool install --with dspy==3.3.0b1 clio-agent==0.8.0
+uv tool install --with dspy==3.3.0b1 clio-agent==0.8.1
 clio-agent serve
 ```
 
@@ -103,7 +103,7 @@ CLIO_REF=develop CLIO_GIT_PROTOCOL=ssh \
 
 ```sh
 # Pin the PyPI version and matching clio-agent GitHub release tag
-CLIO_VERSION=0.8.0 \
+CLIO_VERSION=0.8.1 \
   curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
 ```
 
@@ -130,6 +130,8 @@ PIDs:
 | `clio status` / `clio ps` | PID, port, health |
 | `clio logs [N]` | tail the server + gact stderr logs (default 40 lines) |
 | `clio doctor` | check prerequisites and install layout |
+| `clio sandbox status` | show the OS write-fence (sandbox) status row |
+| `clio sandbox setup` | provision the OS write fence (one UAC prompt on Windows; idempotent) |
 | `clio report` | print a diagnostics bundle to paste into a GitHub issue |
 | `clio completion <shell>` | print shell completion |
 | `clio uninstall [...]` | run the uninstaller |
@@ -140,6 +142,37 @@ The server runs detached. Its stdout/stderr land in
 stderr (Go panics included) lands in `$CLIO_PREFIX/gact-stderr.log`.
 `clio report` bundles all three plus version/environment info — that's
 the thing to attach when filing an issue.
+
+### OS write fence (sandbox)
+
+CLIO can confine every process the agent spawns so it writes only inside
+its workspace territory (the OS-level enforcement behind the advisory
+file-policy). The fence is `@anthropic-ai/sandbox-runtime` (`srt`, an npm
+package — `npm install -g @anthropic-ai/sandbox-runtime`, needs Node.js
+>= 20.11). Check the status any time:
+
+```sh
+clio sandbox status      # mechanism + typed reason + next action
+```
+
+On **Linux / macOS** the fence activates automatically per process (no
+setup) once `srt` is installed — Linux uses bubblewrap, macOS Seatbelt.
+When `srt` is absent the fence falls back to the advisory floor (honestly
+labeled; the row's `next_action` says what to install).
+
+On **Windows** the fence is a one-time, self-elevating, idempotent setup:
+
+```powershell
+clio sandbox setup       # ONE UAC prompt — provisions the srt-sandbox principal + WFP filters
+```
+
+`setup` triggers a single UAC elevation and provisions the fence; every
+per-session use afterward is unprivileged. Re-running `clio sandbox setup`
+detects the already-provisioned state and no-ops with **no prompt**, so
+it is safe to run twice. If `srt` (or Node.js) is missing, `setup` prints
+a typed, guided pointer instead of an error — install it, then re-run.
+`clio sandbox` is available on every install channel (the `clio-agent`
+console entry point and the desktop `clio` launcher).
 
 ### Shell completion
 

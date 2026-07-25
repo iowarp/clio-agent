@@ -74,6 +74,36 @@ arc.store: "cte"
 # CLIO_ARC_STORE_CONFIG  (str)  <- src/clio_agent/arc/storage.py
 # arc.store_config:  # default unset; resolved in code
 
+# CLIO_ARTIFACT_CAS_BUDGET_BYTES  (int)  <- src/clio_agent/gact/artifacts/cas.py
+artifacts.cas_budget_bytes: 536870912
+
+# CLIO_ARTIFACT_CAS_MAX_FILE_BYTES  (int)  <- src/clio_agent/gact/artifacts/cas.py
+artifacts.cas_max_file_bytes: 16777216
+
+# CLIO_ARTIFACTS_EXPORT_LICENSE  (str)  <- src/clio_agent/gact/artifacts/export.py
+artifacts.export_license: "NOASSERTION"
+
+# CLIO_ARTIFACTS_HASH_MAX_FILE_BYTES  (int)  <- src/clio_agent/gact/artifacts/minting.py
+artifacts.hash_max_file_bytes: 67108864
+
+# CLIO_ARTIFACT_HASH_STAT_CACHE  (bool)  <- src/clio_agent/gact/artifacts/cas.py
+artifacts.hash_stat_cache: false
+
+# CLIO_ARTIFACTS_INSTRUMENT_ARG_MAX_BYTES  (int)  <- src/clio_agent/gact/artifacts/transforms.py
+artifacts.instrument_arg_max_bytes: 2048
+
+# CLIO_ARTIFACTS_INSTRUMENT_TOTAL_MAX_BYTES  (int)  <- src/clio_agent/gact/artifacts/transforms.py
+artifacts.instrument_total_max_bytes: 16384
+
+# CLIO_ARTIFACTS_LINEAGE_MAX_NODES  (int)  <- src/clio_agent/gact/artifacts/lineage.py
+artifacts.lineage_max_nodes: 500
+
+# CLIO_ARTIFACTS_PROPOSALS_BATCH_MAX  (int)  <- src/clio_agent/gact/artifacts/proposals.py
+artifacts.proposals_batch_max: 32
+
+# CLIO_ARTIFACTS_PROPOSALS_PER_TURN  (int)  <- src/clio_agent/gact/artifacts/proposals.py
+artifacts.proposals_per_turn: 8
+
 # CLIO_AUTOCOMPACT_PCT  (str)  <- src/clio_agent/gact/runtime/context_tokens.py
 autocompact.pct: "0.85"
 
@@ -299,6 +329,9 @@ paths.data_dir: ".clio/agent"
 # CLIO_WEB_DIR  (str)  <- src/clio_agent/gact/app.py
 # paths.web_dir:  # default unset; resolved in code
 
+# CLIO_AI_REVIEW_TIMEOUT_S  (str)  <- src/clio_agent/gact/runtime/ai_review.py
+permissions.ai_review_timeout_s: "45.0"
+
 # CLIO_CLAUDE_CODE_SESSION_REUSE  (bool)  <- src/clio_agent/providers/claude_code_sessions.py
 providers.claude_code.session_reuse: true
 
@@ -322,6 +355,9 @@ runtime.live_streaming: true
 
 # CLIO_LM_TOKEN_LIVENESS  (bool)  <- src/clio_agent/lm/io_logging.py
 runtime.lm_token_liveness: true
+
+# CLIO_SANDBOX_ENABLED  (bool)  <- src/clio_agent/runtime/sandbox.py
+sandbox.enabled: true
 
 # CLIO_ALLOW_SYMLINKS  (bool)  <- src/clio_agent/tools/file_policy.py
 tools.file_policy.allow_symlinks: false

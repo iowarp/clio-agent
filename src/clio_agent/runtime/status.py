@@ -234,14 +234,14 @@ class RuntimeProbe:
     ) -> RuntimeReport:
         """Collect all currently supported integration statuses.
 
-        ``include_process_census=False`` skips the expensive live process-census
-        rows (``child_processes`` + ``child_parentage``, a ~10s cold psutil walk),
-        keeping only the cheap ``child_reaper`` row — for polled callers that serve
-        the census from a background cache instead (routes/system.py /v1/health).
+        ``include_process_census=False`` skips the expensive live process-census rows
+        (a ~10s cold psutil walk) for callers serving the census from a background cache.
         """
+        from clio_agent.runtime import sandbox_conformance as _sconf  # noqa: PLC0415
         from clio_agent.runtime.clio_core_health import probe_clio_core_health  # noqa: PLC0415
         from clio_agent.runtime.mcp_launcher import probe_mcp_launchers  # noqa: PLC0415
         from clio_agent.runtime.process_tree import probe_process_tree  # noqa: PLC0415
+        from clio_agent.runtime.sandbox import probe_sandbox  # noqa: PLC0415
 
         gateway_status = self.probe_gateway()
         integrations = [
@@ -254,6 +254,8 @@ class RuntimeProbe:
             self.probe_api(api_state=api_state, api_error=api_error),
             self.probe_clio_core(),
             *probe_mcp_launchers(env=self.env),
+            probe_sandbox(),
+            _sconf.probe_sandbox_conformance(),
             *probe_process_tree(include_live_census=include_process_census),
         ]
         return RuntimeReport(integrations=integrations)

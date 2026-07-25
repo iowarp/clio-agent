@@ -6,7 +6,97 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
-(nothing yet)
+## [0.8.1] — 2026-07-24
+
+### Added — post-#974 three-pillar redesign (#1031)
+
+Unifies the permission model, adds a single async loop-inbox, and completes the
+provenance DAG for cross-job reproducibility. All three pillars are live-gated
+end-to-end (standalone + a composed multi-job/multi-workspace pipeline). GACT
+surface:
+
+- **Permissions (P1)**: one `GrantRecord` (subject × decision × scope × grantor)
+  resolved by a single `grant_resolver`; reads are structurally never gated. A new
+  `session.approval_mode` axis (`ask` · `auto-edits` · `bypass` · `ai-review`),
+  orthogonal to the plan/architect read-only lock, set via
+  `PATCH /v1/sessions/{sid}`; the unified `POST /v1/workspaces/{wid}/grants` `kind`
+  body (`fs_root`/`domain`/`tool`). FS grants apply live at the loop boundary
+  (stop→apply→restart). `ai-review` routes an un-granted write to an in-process
+  reviewer that resolves the pending row (recorded `grantor=reviewer`; fail-safe →
+  escalate to human). An explicit `deny`/`ask` policy always beats the mode.
+- **Loop-inbox (P2)**: a single per-session inbox injects async child
+  completions/failures AND mid-turn user messages into the running ReAct loop. A
+  second POST while a turn runs is now a **202 steer** (the `409 session_busy`
+  busy-path is deleted), surfaced mid-turn; a fire-and-forget child completing
+  during the parent's turn injects into its next ReAct step (`loop_inbox.drained`)
+  rather than only the next turn. Human-facing live handle:
+  `GET /v1/agent-tasks/{id}/live` + `POST /v1/agent-tasks/{id}/steer`.
+- **Provenance (P3)**: cross-JOB / cross-workspace lineage binds by global path
+  identity (not sha) with revision-on-change; an executed `.py`/`.sh` is designated
+  a SCRIPT artifact on use; single-artifact reproduce is transitive with a
+  complete-closure export policy. `b = transform(a)` now reproduces across job
+  boundaries (`used` `cross_workspace_bind`).
+
+### Added — sandboxing campaign (#974)
+
+OS-level write confinement for every process the agent spawns, a network chokepoint that
+records all child egress, grants as first-class recorded events, and the provenance-tier
+UPGRADES that make #966's honest floor enforcing. Backend ladder srt → Landlock → none;
+srt is the Windows path (one-time `clio sandbox setup`). GACT-contract surface:
+
+- **Events** (all trace-only, never on the SSE UI wire): `sandbox.state` (boot conformance),
+  `net.egress` (per-child egress), `artifact.policy_violation` (fence-denied out-of-root
+  write), and the `boundary.*` grant family.
+- **Permissions**: a new `network_egress` request kind (deny-mode grant-on-first-domain)
+  reusing the existing gate + policy store; a `host_pattern` domain vocabulary.
+- **Routes**: `POST /v1/workspaces/{wid}/grants` — a recorded root or domain grant (a
+  user/model decision, `boundary.granted` with grantor + sticky-policy provenance).
+- **Provenance**: `gap → policy_violation` (`prevented`/`detected`); the per-edge
+  `lease-window → fence_proven` upgrade on generated edges (fence proved output-territory
+  exclusivity by construction; `contended` records stay unproven); egress →
+  `used web:<domain>@<time>` ingest edges.
+- **Doctor**: the `sandbox` row (fence mechanism + typed reason), the census `confinement`
+  column (wrapped vs verifiably-excluded seams), and the `sandbox_conformance` row (the
+  zero-untyped-degrade guarantee: a typed mechanism/reason per seam on every tier).
+- **CLI**: `clio sandbox setup` (one-time self-elevating UAC on Windows) / `clio sandbox
+  status`.
+
+### Added — artifacts campaign (#966)
+
+The first-class artifacts campaign lands `b = transform(a)` provenance and gives
+every meaningful session output a durable, hash-pinned, versioned record. GACT
+surface (vendor `x_clio_artifacts`, SPEC §6.26):
+
+- **Artifact routes**: `GET /v1/sessions/{sid}/artifacts` (+ `?include_children`),
+  `GET /v1/workspaces/{wid}/artifacts`, `GET /v1/workspaces/{wid}/artifacts/{name}`
+  (`?ref=latest|vN|<alias>`), `GET /v1/artifacts/{id}`, `GET /v1/artifacts/{id}/bytes`
+  (hash-verified), `POST /v1/sessions/{sid}/artifacts/pin`,
+  `POST /v1/workspaces/{wid}/artifacts/{name}/aliases`,
+  `GET /v1/artifacts/{id}/lineage`, `GET /v1/sessions/{sid}/transforms`,
+  `GET /v1/transforms/{activity_id}`.
+- **RO-Crate export (S7)**: `GET /v1/artifacts/{id}/export` and
+  `GET /v1/sessions/{sid}/export/bundle` return an RO-Crate zip — File entities with
+  PROV lineage, TransformRecords serialized as schema.org `CreateAction`s, gap
+  versions attributed to an unknown Agent — plus a compiled `reproduce.py` /
+  `reproduce.ipynb` that re-runs the lineage with executable per-stage `sha256`
+  assertions and honest per-stage verdicts (deterministic / write-bytes /
+  re-runnable / agentic-only / gap-break). Exports register their content hashes as
+  CAS GC roots.
+- **Events**: the `artifact.created` / `artifact.version.added` /
+  `artifact.alias.moved` family on the SSE UI wire; `artifact.used` /
+  `artifact.transform.recorded` trace-only. `artifact.proposed` keeps its payload.
+- **Parts**: a `resource_link` part is emitted per generated artifact at turn
+  finalize (a plot/report now has outbound wire identity instead of a path string).
+
+### Changed — path-string mechanisms deleted (S7, #973)
+
+- Answer grounding no longer disk-scans `workflow_state.artifact_paths`; it
+  validates/rewrites a final answer's fabricated deliverable-path citations against
+  the session's **registered artifacts** (registry-sourced, `include_children`
+  reach). The `evidence.py` heuristics and the inert `structured_outputs.artifacts`
+  field are deleted; a baseline-0 CI guard
+  (`scripts/check_no_artifact_scraper_vocabulary.py`) keeps the retired vocabulary
+  out. No wire-shape change (grounding is server-internal answer hygiene).
 
 ## [0.8.0] — 2026-07-21
 

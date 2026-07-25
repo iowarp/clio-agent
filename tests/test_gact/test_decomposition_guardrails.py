@@ -39,7 +39,22 @@ from clio_agent.gact.app import build_app
 # paths in S4 — the original same-path claim shadowed the #18 session-task GET)
 # + the MCP-app/session-lifecycle routes landed by the campaign's route modules.
 # Duplicate-free verified: zero (path, method) pairs register twice.
-EXPECTED_ROUTE_METHOD_PAIRS = 151
+# 151 -> 157 (#968 S2): +6 artifact routes owned by routes/artifacts.py — GET
+# session/workspace artifact lists, GET by-name+ref, GET by artifact_id, GET
+# /bytes, POST .../pin.
+# 157 -> 158 (#970 S4): +1 alias-move route POST /v1/workspaces/{wid}/artifacts/
+# {name}/aliases, owned by routes/artifact_aliases.py.
+# 158 -> 161 (#971 S5): +3 lineage/transform routes owned by
+# routes/artifact_lineage.py — GET /v1/artifacts/{id}/lineage, GET
+# /v1/sessions/{sid}/transforms, GET /v1/transforms/{activity_id}.
+# 161 -> 163 (#973 S7): +2 RO-Crate export routes owned by routes/artifact_export.py
+# — GET /v1/artifacts/{id}/export, GET /v1/sessions/{sid}/export/bundle. (The S7
+# slice added these route modules but left the fingerprint stale; recorded now.)
+# 163 -> 164 (#979 B5): +1 mid-session root/domain grant route POST
+# /v1/workspaces/{wid}/grants, owned by routes/workspaces.py (grants-on-the-record).
+# 164 -> 166 (#1037 Pillar 2): +2 live-handle routes owned by routes/agent_tasks.py —
+# GET /v1/agent-tasks/{id}/live (read-only projection) + POST /v1/agent-tasks/{id}/steer.
+EXPECTED_ROUTE_METHOD_PAIRS = 166
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

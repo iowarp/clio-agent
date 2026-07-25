@@ -1,11 +1,19 @@
 """Tool permission gating + cancellation for the GACT server (#714 decomposition).
 
 This module is the single owner of the *enforcement* side of CLIO's tool-call
-safety model: deciding whether a tool call is destructive, whether a shell
-diagnostic is safe to auto-allow, applying the declarative permission policies
-(SPEC §6.11.b) consulted before the interactive gate, recording resolved
-permission audit rows, and building the closures the tool-execution boundary
-calls (``permission_gate`` / cancellation checker).
+safety model: applying the declarative permission policies (SPEC §6.11.b)
+consulted before the interactive gate, recording resolved permission audit rows,
+and building the closures the tool-execution boundary calls
+(``permission_gate`` / cancellation checker).
+
+Whether a call needs approval is decided structurally, not by tool-name
+substrings: :func:`is_read_only` (in :mod:`clio_agent.gact.runtime.grant_resolver`)
+fast-allows a provably read-only call (MCP ``readOnlyHint`` annotation OR a static
+catalog ``read`` tag); every other call proceeds to the plan/architect lock,
+policy match, and interactive prompt. Policy matching itself delegates to the one
+:func:`~clio_agent.gact.runtime.grant_resolver.resolve` matcher (#1032) — the
+former ``_is_destructive`` substring set and the bounded ``shell_bash`` parser are
+deleted (their read-only diagnostics are now covered by :func:`is_read_only`).
 
 It pairs with :mod:`clio_agent.gact.runtime.permission_policies`, which owns the
 *data* layer (validation, on-disk load/flush, resolution-derived policies) and
@@ -13,22 +21,18 @@ exports :func:`_permission_path_from_args`, reused here for policy path matching
 
 Boundaries (preserving the no-cycle invariant): this module imports only stdlib,
 FastAPI/Starlette wire types, the gact ``events``/``types`` wire models, and the
-two ``runtime`` leaves it needs (``globals._resolve_tool_session`` for the
-turn-driving session, ``permission_policies._permission_path_from_args``). It
-NEVER imports :mod:`clio_agent.gact.app`. ``build_app`` and ``GactDeps`` import
+``runtime`` leaves it needs (``globals._resolve_tool_session`` for the
+turn-driving session, ``permission_policies._permission_path_from_args``,
+``grant_resolver.resolve``/``is_read_only``). It NEVER imports
+:mod:`clio_agent.gact.app`. ``build_app`` and ``GactDeps`` import
 :func:`_make_permission_gate`, :func:`_guard_direct_destructive_action`, etc.
 from here so the ``app.state.make_permission_gate`` seam and the route/turn
 dependents keep working.
 
 Responsibilities:
 
-* :data:`_DESTRUCTIVE_TOOL_SUBSTRINGS` + :func:`_is_destructive` -- the substring
-  set that classifies a tool name as destructive (triggering the gate).
-* :data:`_UNSAFE_SHELL_TOKENS` / :data:`_SAFE_RESHAPE_UTILS` /
-  :data:`_SAFE_READONLY_UTILS` + :func:`_is_safe_shell_diagnostic` /
-  :func:`_is_safe_readonly_diagnostic` / :func:`_is_safe_text_reshape_command`
-  -- the bounded shell-command fast-allow analysis.
-* :func:`_policy_action_for_tool` -- match the active permission policies.
+* :func:`_policy_action_for_tool` -- match the active permission policies (a thin
+  shim over :func:`~clio_agent.gact.runtime.grant_resolver.resolve`).
 * :func:`_record_resolved_permission` -- emit a resolved permission audit row +
   ``permission.resolved`` event.
 * :func:`_direct_permission_denied` / :func:`_guard_direct_destructive_action`
@@ -42,14 +46,12 @@ Responsibilities:
 
 from __future__ import annotations
 
-import fnmatch
 import inspect
-import re
+import logging
 import threading
 import uuid
 from collections.abc import Mapping
 from datetime import datetime, timezone
-from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -57,40 +59,75 @@ from fastapi import HTTPException
 
 from clio_agent.gact.events import Event
 from clio_agent.gact.runtime.globals import _resolve_tool_session
-from clio_agent.gact.runtime.permission_policies import _permission_path_from_args
+from clio_agent.gact.runtime.grant_resolver import (
+    EXTERNAL_MCP_CONTEXT_KIND,
+    is_read_only,
+    resolve,
+)
+from clio_agent.gact.runtime.grants import GRANTOR_REVIEWER, GRANTOR_USER
+from clio_agent.gact.runtime.permission_policies import (
+    _append_permission_policy_from_resolution,
+    _flush_permission_policies,
+    _permission_path_from_args,
+)
 from clio_agent.gact.runtime.retention import enforce_dict_bound
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
+from clio_agent.tools.catalog import get_tool_entry
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
-# iowarp/clio-agent#7: tools the gate treats as destructive. Anything
-# matching one of these substrings triggers a permission_requested
-# event + blocks the bridge thread until the user resolves it.
-_DESTRUCTIVE_TOOL_SUBSTRINGS: tuple[str, ...] = (
-    "delete",
-    "remove",
-    "rm_",
-    "drop",
-    "destroy",
-    "exec",
-    "shell",
-    "write",
-)
+logger = logging.getLogger(__name__)
+
+#: The gate ``context`` kind marking an external MCP tool call. Single-sourced in
+#: :mod:`grant_resolver`; re-exported here under its historical private name for the
+#: routes/builders/tests that bind ``permission_gate._EXTERNAL_MCP_PERMISSION_CONTEXT_KIND``.
+_EXTERNAL_MCP_PERMISSION_CONTEXT_KIND = EXTERNAL_MCP_CONTEXT_KIND
+
+#: #1034 typed approval-mode reasons stamped on the resolved / pending permission row so the
+#: trace always shows WHY a non-read call was auto-approved or still prompted (never silent).
+REASON_APPROVAL_BYPASS = "approval_mode_bypass"
+REASON_APPROVAL_AUTO_EDITS = "approval_mode_auto_edits"
+#: ai-review still PROMPTS today (the reviewer agent is the split follow-up slice); the pending
+#: row carries this typed reason so the ask is attributable to the reviewer-pending state.
+REASON_AI_REVIEW_REVIEWER_PENDING = "ai_review_reviewer_pending"
 
 
-def _is_destructive(tool_name: str) -> bool:
-    n = tool_name.lower()
-    return any(needle in n for needle in _DESTRUCTIVE_TOOL_SUBSTRINGS)
+def default_decision(
+    approval_mode: str,
+    kind: str,
+    name: str,
+    args: Mapping[str, Any],
+) -> str:
+    """Decide a non-read tool call at the gate's PROMPT boundary from the approval mode (#1034).
 
+    Consulted ONLY after :func:`is_read_only` fast-allow, the plan/architect read-only lock, and
+    the explicit-policy resolve have all declined to decide the call — so an explicit ``allow`` /
+    ``deny`` policy always WINS over a mode default. Reads never reach here. The approval axis is
+    orthogonal to ``session.mode`` and only ever relaxes toward auto-approve or falls through to
+    the existing interactive prompt; it never manufactures a denial (that stays with the lock and
+    explicit deny policies above). Returns:
 
-_EXTERNAL_MCP_PERMISSION_CONTEXT_KIND = "external_mcp"
-_MCP_BOOLEAN_HINTS: tuple[str, ...] = (
-    "readOnlyHint",
-    "destructiveHint",
-    "idempotentHint",
-    "openWorldHint",
-)
+    * ``allow`` — ``bypass`` (any non-read call) or ``auto-edits`` for an fs WRITE (a call whose
+      static catalog entry carries the ``write`` tag);
+    * ``ask``   — ``ask`` (default), ``auto-edits`` for a non-write (e.g. ``shell_bash``, whose
+      writes live behind the OS fence, not a catalog ``write`` tag), or ``ai-review`` (the caller
+      stamps the typed ``ai_review_reviewer_pending`` reason on the pending row).
+
+    ``kind``/``args`` are accepted for a stable signature (a future kind may inspect them) but the
+    two current signals (mode + the catalog ``write`` tag) do not consult them.
+    """
+
+    _ = (kind, args)
+    if approval_mode == "bypass":
+        return "allow"
+    if approval_mode == "auto-edits":
+        entry = get_tool_entry(name)
+        if entry is not None and "write" in entry.tags:
+            return "allow"
+        return "ask"
+    # ask (default) and ai-review both route to the existing interactive prompt.
+    return "ask"
 
 
 def _normalize_mcp_tool_annotations(tool: Any) -> dict[str, Any] | None:
@@ -160,243 +197,6 @@ def _is_external_mcp_permission_context(context: Mapping[str, Any] | None) -> bo
     )
 
 
-def _external_mcp_annotations_are_read_only(annotations: Any) -> bool:
-    """Return whether annotations explicitly and consistently declare read-only.
-
-    MCP annotations are optional hints. The permission boundary therefore uses
-    the one safe positive case only: a real boolean ``readOnlyHint=true`` with
-    well-typed standard boolean hints and no contradictory
-    ``destructiveHint=true``. Everything else asks for permission.
-    """
-
-    if not isinstance(annotations, Mapping):
-        return False
-    for name in _MCP_BOOLEAN_HINTS:
-        value = annotations.get(name)
-        if value is not None and type(value) is not bool:
-            return False
-    return (
-        annotations.get("readOnlyHint") is True and annotations.get("destructiveHint") is not True
-    )
-
-
-def _tool_requires_permission(
-    tool_name: str,
-    context: Mapping[str, Any] | None,
-) -> bool:
-    """Classify a call without changing legacy non-external behavior."""
-
-    if _is_external_mcp_permission_context(context):
-        assert context is not None
-        return not _external_mcp_annotations_are_read_only(context.get("annotations"))
-    return _is_destructive(tool_name)
-
-
-def _is_safe_shell_diagnostic(tool_name: str, args: Mapping[str, Any]) -> bool:
-    """Return whether a shell_bash call is a read-only local diagnostic.
-
-    Two classes auto-allow:
-      1. A small fixed set of read-only diagnostics (date/pwd/whoami/...).
-      2. A bounded text-reshaping pipeline over local files: a command built
-         only from safe read/transform utilities (cat/head/tail/awk/cut/sed/sort/
-         uniq/grep/wc/echo/tr) plus pipes and a single ``>`` redirect, with NO
-         destructive verbs (rm/mv/cp/dd/sudo/curl/wget/chmod/chown/mkfifo/&&-rm).
-         This is needed so an expert can normalize a malformed staged reference
-         CSV (e.g. the EarthScope station catalog whose header carries unit
-         sub-columns) into a clean lat/lon CSV for downstream geo ranking. The
-         shell subprocess still runs under the file-policy cwd; this only governs
-         whether the call needs interactive approval. Pipelines that touch any
-         destructive token fall through to the normal permission gate.
-    """
-
-    if tool_name != "shell_bash":
-        return False
-    command = str(args.get("command") or "").strip()
-    normalized = re.sub(r"\s+", " ", command).lower()
-    if normalized in {"date", "get-date", "pwd", "whoami", "hostname"}:
-        return True
-    return _is_safe_text_reshape_command(command) or _is_safe_readonly_diagnostic(command)
-
-
-# Destructive shell tokens that disqualify a command from the text-reshape
-# fast-allow path. Anything here forces the normal interactive permission gate.
-_UNSAFE_SHELL_TOKENS: tuple[str, ...] = (
-    "rm",
-    "rmdir",
-    "mv",
-    "cp",
-    "dd",
-    "sudo",
-    "su",
-    "chmod",
-    "chown",
-    "chgrp",
-    "ln",
-    "mkfifo",
-    "mknod",
-    "curl",
-    "wget",
-    "scp",
-    "rsync",
-    "ssh",
-    "nc",
-    "ncat",
-    "telnet",
-    "kill",
-    "pkill",
-    "killall",
-    "shutdown",
-    "reboot",
-    "mkdir",
-    "touch",
-    "truncate",
-    "tee",
-    "xargs",
-    "find",
-    "eval",
-    "exec",
-    "source",
-    "python",
-    "python3",
-    "perl",
-    "ruby",
-    "node",
-    "bash",
-    "sh",
-    "zsh",
-    "git",
-    "apt",
-    "pip",
-    "uv",
-    "npm",
-    "yum",
-    "brew",
-    "systemctl",
-    "service",
-    "crontab",
-    "at",
-    "export",
-    "unset",
-    "alias",
-    "function",
-)
-# Utilities permitted in a text-reshape pipeline.
-_SAFE_RESHAPE_UTILS: frozenset[str] = frozenset(
-    {
-        "cat",
-        "head",
-        "tail",
-        "awk",
-        "gawk",
-        "cut",
-        "sed",
-        "sort",
-        "uniq",
-        "grep",
-        "egrep",
-        "fgrep",
-        "wc",
-        "echo",
-        "tr",
-        "paste",
-        "column",
-        "nl",
-        "printf",
-        "true",
-    }
-)
-
-# Read-only inspection utilities (no writes). Superset of the reshape utils plus
-# pure file/dir inspectors. Used to auto-allow harmless diagnostic chains so a
-# model's `ls -la X && head -5 X` is not routed to an interactive approval gate
-# that would hang in a headless/autonomous run.
-_SAFE_READONLY_UTILS: frozenset[str] = _SAFE_RESHAPE_UTILS | frozenset(
-    {"ls", "stat", "file", "du", "df", "realpath", "basename", "dirname", "test", "[", "od", "xxd"}
-)
-
-
-def _is_safe_readonly_diagnostic(command: str) -> bool:
-    """Return whether a shell_bash command is a bounded READ-ONLY inspection chain.
-
-    Allows commands built ONLY from read-only utilities joined by ``&&`` / ``;`` /
-    ``|``, with NO output redirect, NO command/process substitution, and NO
-    background or destructive token. This lets an expert inspect staged files
-    (``ls -la /tmp/x.csv && head -5 /tmp/x.csv``) without falling through to the
-    interactive permission gate — which has no approver in headless/test runs and
-    therefore hangs. It writes nothing, so it cannot mutate state.
-    """
-
-    if not command or len(command) > 2000:
-        return False
-    # No command/process substitution, no writes/appends.
-    if any(tok in command for tok in ("`", "$(", "<(", ">(", ">>", ">")):
-        return False
-    # Allow `&&` as a separator but reject a bare background `&`.
-    if "&" in command.replace("&&", ""):
-        return False
-    # No destructive verb anywhere in the command.
-    words = re.findall(r"[a-z0-9_./-]+", command.lower())
-    if any(w.split("/")[-1] in _UNSAFE_SHELL_TOKENS for w in words):
-        return False
-    # Every segment (split on && ; |) must start with a read-only utility.
-    for seg in re.split(r"&&|;|\|", command):
-        seg = seg.strip()
-        if not seg:
-            continue
-        m = re.match(r"([A-Za-z0-9_./\[-]+)", seg)
-        if not m:
-            return False
-        first = m.group(1).split("/")[-1].lower()
-        if first not in _SAFE_READONLY_UTILS:
-            return False
-    return True
-
-
-def _is_safe_text_reshape_command(command: str) -> bool:
-    """Heuristic: a bounded read/transform pipeline that WRITES its output to a
-    derived file under ``/tmp/`` with no destructive tokens. Conservative — any
-    unrecognized leading word, destructive token, or a non-/tmp/missing output
-    target rejects, so the call falls through to the normal permission gate. A
-    bare read (e.g. ``cat pyproject.toml`` with no redirect) is NOT auto-allowed;
-    only the reshape-and-write-to-/tmp use case is."""
-
-    if not command or len(command) > 2000:
-        return False
-    # Reject backticks / command substitution / process substitution / append
-    # (``>>``) / background (``&``) / chaining (``||``).
-    if any(tok in command for tok in ("`", "$(", "<(", ">(", ">>", "&", "||")):
-        return False
-    # Must redirect output to a single /tmp/ file (the reshape target). Reject a
-    # bare read with no redirect, or a redirect to anywhere outside /tmp/.
-    redirects = re.findall(r">\s*(\S+)", command)
-    if len(redirects) != 1 or not redirects[0].strip("'\"").startswith("/tmp/"):
-        return False
-    # Tokenize on whitespace and pipes; check no destructive token appears and
-    # every "leading" utility (start of a pipe segment) is in the safe set.
-    lowered = command.lower()
-    words = re.findall(r"[a-z0-9_./-]+", lowered)
-    for w in words:
-        base = w.split("/")[-1]
-        if base in _UNSAFE_SHELL_TOKENS:
-            return False
-    # Each pipe segment must start with a safe utility or a brace group.
-    segments = re.split(r"\|", command)
-    for seg in segments:
-        seg = seg.strip().lstrip("{").strip()
-        if not seg:
-            continue
-        m = re.match(r"([A-Za-z0-9_./-]+)", seg)
-        if not m:
-            return False
-        first = m.group(1).split("/")[-1].lower()
-        # Allow a brace-group inner statement starting with echo/printf etc.
-        if first == "}":
-            continue
-        if first not in _SAFE_RESHAPE_UTILS:
-            return False
-    return True
-
-
 def _policy_action_for_tool(
     app: "FastAPI",
     *,
@@ -405,52 +205,27 @@ def _policy_action_for_tool(
     tool_name: str,
     args: Mapping[str, Any],
 ) -> str:
-    """Return the first matching permission policy action.
+    """Return the first matching permission policy action for a tool call.
 
-    The `/v1/policies` endpoint is user-facing configuration, so storing
-    policies without enforcing them is a silent safety bypass. Matching is
-    intentionally small and predictable: scope, tool glob, optional path glob,
-    then the policy action.
+    A thin shim over :func:`~clio_agent.gact.runtime.grant_resolver.resolve`
+    (``kind="tool"``): it resolves the call's target path + workspace from the
+    session and hands the active policy list to the one matcher. The
+    ``/v1/policies`` endpoint is user-facing configuration, so storing policies
+    without enforcing them is a silent safety bypass; matching stays small and
+    predictable (scope, tool glob, optional path glob, then the raw action).
+    Kept as a named shim because ``enrichment``/``proposal_effects`` bind it.
     """
 
-    policies = getattr(app.state, "permission_policies", [])
-    if not isinstance(policies, list):
-        return ""
     path = _permission_path_from_args(args)
     workspace_id = getattr(session, "workspace_id", "") if session is not None else ""
-    for policy in policies:
-        if not isinstance(policy, dict):
-            continue
-        scope = str(policy.get("scope") or "").lower()
-        scope_id = str(policy.get("scope_id") or "")
-        if scope == "session":
-            if scope_id and scope_id != session_id:
-                continue
-        elif scope == "workspace":
-            if scope_id and scope_id != workspace_id:
-                continue
-        else:
-            continue
-
-        tool_pattern = str(policy.get("tool_name_pattern") or "*")
-        if not fnmatch.fnmatchcase(tool_name, tool_pattern):
-            continue
-
-        path_pattern = str(policy.get("path_pattern") or "")
-        if path_pattern:
-            candidates = [path]
-            if path:
-                try:
-                    candidates.append(str(Path(path).resolve(strict=False)))
-                except OSError:
-                    pass
-            if not any(fnmatch.fnmatchcase(candidate, path_pattern) for candidate in candidates):
-                continue
-
-        action = str(policy.get("action") or "").lower()
-        if action in {"allow", "allow_session", "allow_workspace", "deny", "ask"}:
-            return action
-    return ""
+    return resolve(
+        "tool",
+        tool_name,
+        policies=getattr(app.state, "permission_policies", []),
+        session_id=session_id,
+        workspace_id=workspace_id,
+        path=path,
+    )
 
 
 def _record_resolved_permission(
@@ -577,13 +352,113 @@ def _guard_direct_destructive_action(
     )
 
 
+def resolve_permission(
+    app: "FastAPI",
+    pid: str,
+    action: str,
+    *,
+    grantor: str = GRANTOR_USER,
+) -> dict[str, Any] | None:
+    """Resolve one pending permission row and wake any blocked bridge thread.
+
+    Lifted verbatim from ``routes/permissions.py::respond_permission`` (#1044) so the
+    HTTP route (``grantor=GRANTOR_USER`` — byte-identical to the prior inline body) and
+    the in-process ai-review reviewer (``grantor=GRANTOR_REVIEWER``) share ONE
+    resolution path. Flips the row to ``resolved``, derives + flushes any sticky policy
+    (emitting a domain ``boundary.granted`` where applicable), pops+sets the request's
+    ``threading.Event`` so a waiting :class:`MCPToolBridge` thread unblocks, and emits
+    ``permission.resolved`` on both the semantic highway and the bus.
+
+    The ``grantor`` is stamped on the audit row and included in both
+    ``permission.resolved`` payloads, and drives the semantic ``actor`` (was hardcoded
+    ``role: "user"``), so every resolution is attributable to WHO decided it — never
+    silent.
+
+    Returns the resolved row, or ``None`` when ``pid`` is unknown or already resolved
+    (idempotent — a double-resolve is a no-op, matching the route's prior behaviour).
+    """
+
+    row = app.state.permissions.get(pid)
+    if row is None or row.get("status") != "pending":
+        return None
+    row["status"] = "resolved"
+    row["action"] = action
+    row["resolved_at"] = datetime.now(timezone.utc).isoformat()
+    row["grantor"] = grantor
+    policy = _append_permission_policy_from_resolution(app, row=row, action=action)
+    if policy is not None:
+        row["policy"] = policy
+        # iowarp/clio-agent#759: sticky grants must survive a server restart, so flush
+        # the derived policy to disk.
+        _flush_permission_policies(app)
+        # B5 #979.5: a derived ``host_pattern`` policy (a deny-mode ``network_egress`` grant)
+        # is an effective DOMAIN boundary — emit ``boundary.granted{kind: domain}`` with its
+        # provenance. A generic tool-permission sticky policy is not a boundary and emits
+        # nothing (handled inside the helper).
+        from clio_agent.gact.runtime.grants import (  # noqa: PLC0415
+            emit_boundary_for_derived_policy,
+        )
+
+        emit_boundary_for_derived_policy(app, row, policy)
+    # iowarp/clio-agent#7: wake any MCPToolBridge thread waiting on this permission.
+    evt = app.state.permission_events.pop(pid, None)
+    if evt is not None:
+        evt.set()
+    # B5 #979.8: surface the resolution on the highway/trace too so the request→resolution
+    # lifecycle is consistently captured AND SSE-served. Guarded — a resolution must never
+    # fail on an emit.
+    try:
+        from clio_agent.gact.runtime.globals import (  # noqa: PLC0415
+            _emit_semantic_event,
+        )
+
+        _emit_semantic_event(
+            app,
+            str(row.get("session_id") or ""),
+            "permission.resolved",
+            status="completed",
+            summary=f"Permission {pid} resolved: {action}.",
+            actor={"role": grantor},
+            subject={"permission_id": pid, "action": action},
+            payload={
+                "permission_id": pid,
+                "action": action,
+                "kind": row.get("kind") or "",
+                "grantor": grantor,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - observability, never fatal to a resolution
+        logger.warning(
+            "permission.resolved semantic emit skipped reason=resolved_emit_failed "
+            "permission_id=%s error=%r",
+            pid,
+            exc,
+        )
+    app.state.bus.publish(
+        Event(
+            type="permission.resolved",
+            session_id=row.get("session_id", ""),
+            payload={
+                "permission_id": pid,
+                "action": action,
+                "session_id": row.get("session_id", ""),
+                "grantor": grantor,
+            },
+        )
+    )
+    return row
+
+
 def _make_permission_gate(app: "FastAPI"):
     """Build a callable suitable for MCPToolBridge.permission_gate.
 
-    Non-destructive tools fast-allow. Destructive tools register a
-    permission row, publish permission.requested into the EventBus,
-    block on a threading.Event with a generous timeout, and return
-    "allow" / "deny" based on the user's resolution. Timeouts default
+    Provably read-only calls (:func:`is_read_only`) fast-allow as the FIRST
+    branch — before the plan/architect lock — so no mode ever gates a read
+    (structural invariant, #1032). Every other call proceeds to the plan/architect
+    lock, the policy match, and, absent a policy, registers a permission row,
+    publishes ``permission.requested`` into the EventBus, and blocks on a
+    ``threading.Event`` with a generous timeout, returning "allow"/"deny" from the
+    user's resolution. A missing session fails closed immediately; timeouts default
     to deny — fail-safe.
     """
 
@@ -603,7 +478,11 @@ def _make_permission_gate(app: "FastAPI"):
             _fire_hook("pre_tool", name, dict(args))
         except PermissionError:
             return "deny"
-        if not _tool_requires_permission(name, context):
+        # #1032: reads are NEVER gated. A provably read-only call (MCP
+        # readOnlyHint annotation OR a static catalog ``read`` tag) fast-allows
+        # here, BEFORE the plan/architect lock — the structural invariant that no
+        # mode or policy can gate a read. Everything else proceeds to approval.
+        if is_read_only("tool", name, args, context):
             return "allow"
         subject = (
             "external MCP tool"
@@ -677,7 +556,33 @@ def _make_permission_gate(app: "FastAPI"):
                 reason=f"policy_{policy_action}",
             )
             return "allow"
-        if _is_safe_shell_diagnostic(name, args):
+        # #1034: consult the session's approval_mode at the PROMPT boundary. Precedence is uniform
+        # — an explicit policy (deny/allow already returned above, AND an explicit ``ask``) beats the
+        # mode. Here policy_action is only "" (no policy) or "ask" (explicit "always confirm this
+        # tool"): the mode may auto-approve ONLY the unpolicied case, so an explicit ``ask`` survives
+        # even bypass. Reads never reach here (is_read_only returned at the top).
+        approval_mode = getattr(current, "approval_mode", "ask") if current is not None else "ask"
+        if (
+            policy_action != "ask"
+            and default_decision(approval_mode, "tool", name, args) == "allow"
+        ):
+            # bypass (any non-read) or auto-edits (fs write): auto-approve but STILL record a
+            # resolved audit row + permission.resolved boundary event — the OS fence is
+            # untouched (⚑ never a confinement disable), so the approval is on the record.
+            _record_resolved_permission(
+                app,
+                session_id=sid,
+                tool_name=name,
+                args=args,
+                status="auto_approved",
+                action="allow",
+                summary=f"{subject} {name!r} allowed by approval_mode={approval_mode!r}",
+                reason=(
+                    REASON_APPROVAL_BYPASS
+                    if approval_mode == "bypass"
+                    else REASON_APPROVAL_AUTO_EDITS
+                ),
+            )
             return "allow"
         if not sid:
             return "deny"
@@ -694,6 +599,13 @@ def _make_permission_gate(app: "FastAPI"):
             "created_at": datetime.now(timezone.utc).isoformat(),
             "status": "pending",
         }
+        # #1044: the ai-review reviewer runs ONLY when there is no explicit ``ask`` policy —
+        # an explicit ``ask`` is a deliberate "always confirm THIS tool with a HUMAN" and beats
+        # the mode (uniform with #1034: explicit policy > mode), so it must NOT be reviewer-
+        # auto-decided. When the reviewer WILL run, stamp the typed reviewer-pending reason so
+        # the ledger attributes the ask to the ai-review mode (never a silent default).
+        if approval_mode == "ai-review" and policy_action != "ask":
+            row["reason"] = REASON_AI_REVIEW_REVIEWER_PENDING
         app.state.permissions[pid] = row
         app.state.permission_events[pid] = evt
         enforce_dict_bound(app, app.state.permissions, "permissions", session_id=sid)
@@ -704,6 +616,24 @@ def _make_permission_gate(app: "FastAPI"):
                 payload=row,
             )
         )
+        # #1044: one-shot AI reviewer (ai-review approval mode only). The pending row +
+        # event are already on the ledger (auditable that a review happened, carrying the
+        # typed reviewer-pending reason). Ask the in-process reviewer; on a confident
+        # allow/deny, resolve the row now (grantor=reviewer, recorded + emitted) and
+        # return. On escalate — OR any fail-safe (no LM / reviewer error / timeout) — stamp
+        # the TYPED reason and FALL THROUGH to the existing human ``evt.wait`` below: a
+        # human decides, never a silent auto-allow. The reviewer runs NO tools and spawns
+        # nothing, so it cannot re-enter this (blocked) gate — no deadlock, no starvation.
+        if approval_mode == "ai-review" and policy_action != "ask":
+            from clio_agent.gact.runtime.ai_review import ai_review_verdict  # noqa: PLC0415
+
+            verdict, reason = ai_review_verdict(app, sid, name, args, context, subject=subject)
+            row["reason"] = reason
+            if verdict in {"allow", "deny"}:
+                resolve_permission(app, pid, verdict, grantor=GRANTOR_REVIEWER)
+                return verdict
+            # escalate/no-LM/error/timeout: the row stays pending with its typed escalation
+            # reason and the call falls through to the human wait below (fail-safe).
         # Block the bridge thread until POST /v1/permissions/{pid}
         # sets the event (or we time out).
         if not evt.wait(timeout=DEFAULT_TIMEOUT_S):

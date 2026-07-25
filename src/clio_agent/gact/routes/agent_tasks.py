@@ -21,7 +21,8 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
+from pydantic import BaseModel, Field
 
 from clio_agent.gact.agent_tasks import (
     AGENT_TASK_EVENTS,
@@ -29,10 +30,23 @@ from clio_agent.gact.agent_tasks import (
     persist_agent_task,
     publish_agent_task_event,
 )
+from clio_agent.gact.live_handle import enqueue_steer_or_raise, project_live_handle
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
+
+
+class SteerRequest(BaseModel):
+    """POST /v1/agent-tasks/{id}/steer body (#1037): a human mid-turn steer.
+
+    ``text`` is the user's out-of-band message to the running child; ``metadata`` is
+    optional bookkeeping forwarded verbatim onto the inbox event (mirrors the
+    within-session steer POST body).
+    """
+
+    text: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 def _not_found(kind: str, ident: str) -> HTTPException:
@@ -110,3 +124,30 @@ def register_agent_task_routes(app: FastAPI, deps: "GactDeps") -> None:
         persist_agent_task(app, updated)
         publish_agent_task_event(app, updated, AGENT_TASK_EVENTS[STATUS_CANCELLED])
         return asdict(updated)
+
+    @app.get("/v1/agent-tasks/{task_id}/live")
+    async def get_agent_task_live(task_id: str) -> dict[str, Any]:
+        # PURE read-only projection (#1037): assembles task + timeline + handoff +
+        # bounded child head from existing stores, mutating nothing. A gone child is
+        # tolerated (empty head/timeline); an unknown task is the typed not_found.
+        handle = project_live_handle(app, task_id)
+        if handle is None:
+            raise _not_found("task", task_id)
+        return asdict(handle)
+
+    @app.post("/v1/agent-tasks/{task_id}/steer")
+    async def steer_task(task_id: str, body: SteerRequest, response: Response) -> dict[str, Any]:
+        task = app.state.agent_task_registry.get(task_id)
+        if task is None:
+            raise _not_found("task", task_id)
+        # No silent stranding: a terminal/gone/idle child never drains its inbox
+        # again, so enqueue_steer_or_raise refuses with a typed 409 child_not_running
+        # unless the child has a genuinely running turn; only then does it reuse
+        # #1036's producer against the CHILD session.
+        enqueue_steer_or_raise(app, task, body.text, body.metadata)
+        response.status_code = 202  # accepted-as-steer into the running child's inbox
+        return {
+            "accepted": True,
+            "task_id": task_id,
+            "child_session_id": task.child_session_id,
+        }

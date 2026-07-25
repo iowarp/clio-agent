@@ -161,7 +161,6 @@ def test_unified_tools_endpoint_exposes_inspector_metadata(client: TestClient) -
     assert shell["owner"] == "utility"
     assert "chat" in shell["visible_to"]
     assert "diagnostic" in shell["tags"]
-    assert shell["permission_default"] == "ask"
 
     detail = client.get("/v1/tools/shell_bash")
     assert detail.status_code == 200
@@ -207,7 +206,6 @@ def test_unified_tools_endpoint_includes_preloaded_agent_runtime_mcps(
         "required": ["pipeline_id"],
     }
     assert runtime["output_schema"] == {"type": "object"}
-    assert runtime["permission_default"] == "ask"
     assert sum(row["name"] == "shell_bash" for row in tools) == 1
 
     detail = client.get("/v1/tools/relay_jarvis_run")

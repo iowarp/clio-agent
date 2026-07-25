@@ -130,6 +130,9 @@ class CapabilityFlags(BaseModel):
     x_clio_retry_attempts: bool = False
     x_clio_context_frames: bool = False
     x_clio_semantic_events: bool = False
+    # #966 S2 / #968 — the /v1/artifacts read surface + user-pin channel, the
+    # artifact.* SSE family, and resource_link parts carrying artifact:// wire ids.
+    x_clio_artifacts: bool = False
     x_clio_semantic_trace_backend: str = ""
     x_clio_semantic_trace_detail: str = ""
     x_clio_hook_backend: str = ""
@@ -508,6 +511,10 @@ class Session(BaseModel):
     mode: Literal["chat", "plan", "edit", "architect"] = "chat"
     edit_mode: Literal["diff", "whole", "patch"] = "diff"
     routing_mode: Literal["auto", "chat", "experts", "reasoning_only"] = "auto"
+    # iowarp/clio-agent #1034 — approval axis, ORTHOGONAL to ``mode`` (default
+    # "ask"). Decides a non-read call at the gate's prompt boundary; the
+    # plan/architect lock + reads-never-gated invariant sit ABOVE it (gate docs).
+    approval_mode: Literal["ask", "auto-edits", "bypass", "ai-review"] = "ask"
     metadata: dict[str, Any] = Field(default_factory=dict)
     # iowarp/gact-tui §audit/E-14: lets the desktop and TUI archive a
     # session for "hide from the active list, keep around for browse".
@@ -525,6 +532,7 @@ class CreateSessionRequest(BaseModel):
     mode: Literal["chat", "plan", "edit", "architect"] = "chat"
     edit_mode: Literal["diff", "whole", "patch"] = "diff"
     routing_mode: Literal["auto", "chat", "experts", "reasoning_only"] = "auto"
+    approval_mode: Literal["ask", "auto-edits", "bypass", "ai-review"] = "ask"
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -544,6 +552,7 @@ class UpdateSessionRequest(BaseModel):
     # asks the planner to prefer tool/expert reasoning over deterministic
     # shortcuts.
     routing_mode: Optional[Literal["auto", "chat", "experts", "reasoning_only"]] = None
+    approval_mode: Optional[Literal["ask", "auto-edits", "bypass", "ai-review"]] = None  # #1034
     # iowarp/gact-tui §audit/E-14: the desktop needs to push pin state
     # (`metadata.pinned: bool`) and archive state. Without these the
     # desktop's controls flip the UI optimistically but the changes are
@@ -644,6 +653,14 @@ class Part(BaseModel):
     is_error: bool = False
     cached: bool = False
     duration_ms: float = 0.0
+
+    # resource_link (SPEC §4.5 core type; #968). Reused to give a generated ARTIFACT
+    # outbound wire identity (#966.9): ``uri`` is ``artifact://<ws>/<name>@vN`` (or
+    # ``ui://…`` for a ``ui_payload``), ``server_id`` the ``clio-artifacts`` sentinel,
+    # ``name`` the artifact name; the identity/provenance block rides ``metadata``.
+    uri: str = ""
+    name: str = ""
+    server_id: str = ""
 
     # mcp_app (MCP Apps 2026-01-26). This is a public capability reference,
     # never the tool result's private ``_meta``. The host resolves ``data_ref``
@@ -875,7 +892,6 @@ class Tool(BaseModel):
     name: str
     title: str = ""
     description: str = ""
-    permission_default: str = "ask"
     owner: str = ""
     tags: list[str] = Field(default_factory=list)
     visible_to: list[str] = Field(default_factory=list)
