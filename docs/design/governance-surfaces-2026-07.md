@@ -205,7 +205,9 @@ references: `agent_blueprints.py:490/494` + `load_hook_descriptors` (727-771),
   thread) is built on the **replay substrate** (P2.3 tool synthesize + P2.4 `dspy.LM` wrapper): a
   deferred loop's checkpoint IS its recorded trajectory, and resume = deterministic replay up to the
   defer point + inject the approved decision — no DSPy-internal surgery; it composes with the
-  offline-replay machinery we already build. **Nothing here is deferred to a later spike.**
+  offline-replay machinery we already build. **Nothing here is postponed to a later spike** — the
+  `defer` *capability* is a governance outcome (suspend→approve-out-of-band→resume), distinct from
+  "postpone the work"; we build the capability now and postpone none of it.
 - **P2.7 Trust + introspection + audit.** Content-hash fingerprint for repo-shipped hooks (re-prompt
   on change), `allowManagedHooksOnly` admin lockdown, a `/hooks` inspection route (the real
   registry's `metadata()`/`matching_handlers()` data), **audit via the semantic-event highway**
@@ -263,12 +265,12 @@ provider/dspy layer (`dspy.LM` wrapper for BeforeModel); `runtime/app_state.py` 
   (P0 priority row), and a `plan_exit → defer` is approved out-of-band — one pipeline.
 - **Smoke (every merge):** `pytest -m "not integration"`, `ruff check src/`, baseline `cli.py`.
 
-## Awaiting an external dependency (the ONLY deferred item)
+## Awaiting an external dependency (the ONLY postponed item)
 - **Harden the Windows shell fence from floor → hard.** Today file-writes are hard-denied on Windows;
   shell-command writes are a recorded floor. A better OS sandbox is in the works but still in **alpha**
   — the day we swap to it, plan-mode shell gets the correct **hard** semantics on Windows with **no
   design change** (the ACL/fence contract is already right; only the enforcer improves). This is the
-  one thing we wait on, because it is externally blocked — not a choice to defer.
+  one thing we wait on, because it is externally blocked — not a choice to postpone.
 
 ## In scope this campaign (substrate-enabled — NOT deferred)
 Everything the P1.0 skill-effects substrate + the replay substrate unlock is built now, folded into
