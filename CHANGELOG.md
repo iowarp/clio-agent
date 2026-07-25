@@ -6,6 +6,37 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.8.1] — 2026-07-24
+
+### Added — post-#974 three-pillar redesign (#1031)
+
+Unifies the permission model, adds a single async loop-inbox, and completes the
+provenance DAG for cross-job reproducibility. All three pillars are live-gated
+end-to-end (standalone + a composed multi-job/multi-workspace pipeline). GACT
+surface:
+
+- **Permissions (P1)**: one `GrantRecord` (subject × decision × scope × grantor)
+  resolved by a single `grant_resolver`; reads are structurally never gated. A new
+  `session.approval_mode` axis (`ask` · `auto-edits` · `bypass` · `ai-review`),
+  orthogonal to the plan/architect read-only lock, set via
+  `PATCH /v1/sessions/{sid}`; the unified `POST /v1/workspaces/{wid}/grants` `kind`
+  body (`fs_root`/`domain`/`tool`). FS grants apply live at the loop boundary
+  (stop→apply→restart). `ai-review` routes an un-granted write to an in-process
+  reviewer that resolves the pending row (recorded `grantor=reviewer`; fail-safe →
+  escalate to human). An explicit `deny`/`ask` policy always beats the mode.
+- **Loop-inbox (P2)**: a single per-session inbox injects async child
+  completions/failures AND mid-turn user messages into the running ReAct loop. A
+  second POST while a turn runs is now a **202 steer** (the `409 session_busy`
+  busy-path is deleted), surfaced mid-turn; a fire-and-forget child completing
+  during the parent's turn injects into its next ReAct step (`loop_inbox.drained`)
+  rather than only the next turn. Human-facing live handle:
+  `GET /v1/agent-tasks/{id}/live` + `POST /v1/agent-tasks/{id}/steer`.
+- **Provenance (P3)**: cross-JOB / cross-workspace lineage binds by global path
+  identity (not sha) with revision-on-change; an executed `.py`/`.sh` is designated
+  a SCRIPT artifact on use; single-artifact reproduce is transitive with a
+  complete-closure export policy. `b = transform(a)` now reproduces across job
+  boundaries (`used` `cross_workspace_bind`).
+
 ### Added — sandboxing campaign (#974)
 
 OS-level write confinement for every process the agent spawns, a network chokepoint that
