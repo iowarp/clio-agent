@@ -140,6 +140,33 @@ def _validate_permission_policies(
                     }
                 )
 
+        # The P0.2 (#1060) axis fields ``modes``/``on`` are optional list[str] narrowing filters.
+        # A malformed axis (not a list, or a non-string entry) must be REJECTED with a typed reason,
+        # never silently coerced or dropped (⚑ no-silent-fallback) — a typoed axis that were silently
+        # ignored would widen a plan/hook grant the user believed was scoped.
+        for field in ("modes", "on"):
+            value = policy.get(field)
+            if value is None:
+                continue
+            if not isinstance(value, list):
+                policy_has_errors = True
+                errors.append(
+                    {
+                        "index": index,
+                        "field": field,
+                        "message": f"{field} must be a list of strings when present",
+                    }
+                )
+            elif not all(isinstance(entry, str) for entry in value):
+                policy_has_errors = True
+                errors.append(
+                    {
+                        "index": index,
+                        "field": field,
+                        "message": f"{field} entries must all be strings",
+                    }
+                )
+
         # A malformed priority must be REJECTED with a typed reason, never silently defaulted
         # (⚑ no-silent-fallback). Absence is legitimate — the load-time migration assigns a
         # stable descending priority. ``bool`` is an ``int`` subclass but never a valid priority.

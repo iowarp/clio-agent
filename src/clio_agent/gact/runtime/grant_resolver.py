@@ -25,8 +25,17 @@ Two invariants are load-bearing and preserved verbatim (blast-radius flags 2 & 3
 POSITIVE, data-driven allowlist (MCP ``readOnlyHint`` annotation OR a static catalog ``read``
 tag), with NO tool-name substring matching — that heuristic is exactly what #1032 deletes.
 
-``mode`` is threaded through :func:`resolve` as a pass-through placeholder only; the mode enum +
-``default_decision`` logic lands in #1034 (do NOT build it here).
+**Axis scoping (P0.2 #1060).** A policy row may additionally carry two OPTIONAL axis fields:
+``modes`` (a ``list[str]`` of mode names) and ``on`` (a ``list[str]`` of event names). A row
+whose ``modes`` is NON-EMPTY matches only when :func:`resolve`'s ``mode`` argument is one of them;
+an absent/empty ``modes`` matches ANY mode (backward compatible with pre-P0.2 rows). The ``on``
+axis works identically against the ``event`` argument. Two new ``kind`` discriminators ride the
+same row shape: :data:`KIND_PLAN_ACL` (rows a plan-mode ACL scopes ``modes=[plan]``) and
+:data:`KIND_HOOK` (rows a hook policy scopes ``on=[PreToolUse]``). P0.2 adds ONLY the engine
+support for these axes/kinds; it authors NO plan/hook rules (that is P1.1/P2).
+:class:`GrantRecord` round-trips both axes too (as ``tuple[str, ...]``, empty by default), so a
+``plan_acl``/``hook`` grant built via ``GrantRecord(...).to_policy_row()`` keeps its ``modes``/
+``on`` scoping instead of silently widening to match any mode/event on persist.
 """
 
 from __future__ import annotations
@@ -43,6 +52,14 @@ from clio_agent.tools.catalog import get_tool_entry
 KIND_TOOL = "tool"
 KIND_DOMAIN = "domain"
 KIND_ROOT = "fs_root"
+#: Axis-scoped kinds (P0.2 #1060): a plan-mode ACL row (typically ``modes=[plan]``) and a hook
+#: policy row (typically ``on=[PreToolUse]``). Both ride the SAME row shape as ``kind="tool"``
+#: (subject in ``tool_name_pattern``) and are matched by the shared axis step below.
+KIND_PLAN_ACL = "plan_acl"
+KIND_HOOK = "hook"
+
+#: The full set of explicit ``kind`` discriminators a stored row may declare.
+_VALID_KINDS = frozenset({KIND_TOOL, KIND_DOMAIN, KIND_ROOT, KIND_PLAN_ACL, KIND_HOOK})
 
 #: The full raw action vocabulary a policy row may carry (never collapsed).
 _VALID_ACTIONS = frozenset({"allow", "allow_session", "allow_workspace", "deny", "ask"})
@@ -184,6 +201,26 @@ def _subject_matches(kind: str, policy: Mapping[str, Any], pattern: str, path: s
     return True
 
 
+def _axis_matches(policy: Mapping[str, Any], mode: str, event: str) -> bool:
+    """Return whether ``policy``'s optional ``modes``/``on`` axes admit this call (P0.2 #1060).
+
+    Backward-compatible narrowing filters: an ABSENT or EMPTY ``modes`` matches any ``mode`` (so a
+    pre-P0.2 row is unaffected), while a NON-EMPTY ``modes`` matches ONLY when ``mode`` is one of
+    its entries. The ``on`` axis narrows against ``event`` by the identical rule. Validation
+    (:func:`permission_policies._validate_permission_policies`) guarantees each axis, when present,
+    is a ``list[str]``; a non-list value here is treated as "no axis constraint" rather than a
+    silent block, since malformed rows are rejected at the validation boundary, not here.
+    """
+
+    modes = policy.get("modes")
+    if isinstance(modes, list) and modes and mode not in modes:
+        return False
+    on = policy.get("on")
+    if isinstance(on, list) and on and event not in on:
+        return False
+    return True
+
+
 def _migrated_priority(index: int, total: int) -> int:
     """Legacy priority for an unprioritized row: unique + DESCENDING by insertion index.
 
@@ -276,6 +313,7 @@ def resolve(
     workspace_id: str = "",
     path: str = "",
     mode: str = "",
+    event: str = "",
 ) -> str:
     """Return the winning matching policy's RAW action, or ``""`` when nothing matches.
 
@@ -283,8 +321,10 @@ def resolve(
     (``kind="tool"``) and ``_host_action_for`` (``kind="domain"``). ``pattern`` is the subject
     string for the kind: the tool name (``tool``), the requested host (``domain``), or the target
     path (``fs_root``). ``path`` supplies the optional path-glob refinement a ``tool`` policy may
-    additionally carry; it is unused for ``domain``/``fs_root``. ``mode`` is a pass-through
-    placeholder (#1034 owns the mode enum + default_decision).
+    additionally carry; it is unused for ``domain``/``fs_root``. ``mode`` and ``event`` drive the
+    optional ``modes``/``on`` axis narrowing (P0.2 #1060): a row with a non-empty ``modes`` matches
+    only when ``mode`` is in it, and a row with a non-empty ``on`` matches only when ``event`` is in
+    it; absent/empty axes match any ``mode``/``event`` (see :func:`_axis_matches`).
 
     **Priority-banded evaluation (P0.1 #1059).** Instead of first-match-return, ALL rows matching
     ``(kind, subject, scope)`` are collected, then the HIGHEST-priority band wins (higher priority
@@ -296,7 +336,6 @@ def resolve(
     ``allow``/``allow_session``/``allow_workspace``/``deny``/``ask`` action is returned verbatim.
     """
 
-    _ = mode  # pass-through placeholder for #1034 (mode enum + default_decision)
     if not isinstance(policies, list):
         return ""
     if kind == KIND_DOMAIN and (not pattern or not workspace_id):
@@ -310,6 +349,8 @@ def resolve(
         if not _scope_matches(kind, policy, session_id, workspace_id):
             continue
         if not _subject_matches(kind, policy, pattern, path):
+            continue
+        if not _axis_matches(policy, mode, event):
             continue
         action = str(policy.get("action") or "").lower()
         if action not in _VALID_ACTIONS:
@@ -333,7 +374,10 @@ class GrantRecord:
     pattern field is set for a legacy row that lacks it; :meth:`to_policy_row` round-trips back.
     ``decision`` is the coarse ``allow``/``deny``/``ask`` value (the raw ``allow_session`` /
     ``allow_workspace`` stickiness is carried by ``scope``); enforcement always reads the raw store
-    via :func:`resolve`, so this typed view never gates on its own.
+    via :func:`resolve`, so this typed view never gates on its own. ``modes``/``on`` mirror the
+    optional row-level axis fields (P0.2 #1060) as ``tuple[str, ...]`` (frozen-dataclass
+    hashability); both default to empty, matching the "absent axis = matches anything" semantics
+    :func:`_axis_matches` applies at enforcement.
     """
 
     kind: str
@@ -344,11 +388,13 @@ class GrantRecord:
     grantor: str = ""
     created_from_permission_id: str = ""
     priority: int | None = None
+    modes: tuple[str, ...] = ()
+    on: tuple[str, ...] = ()
 
     @staticmethod
     def _kind_for_row(row: Mapping[str, Any]) -> str:
         explicit = str(row.get("kind") or "").strip()
-        if explicit in {KIND_TOOL, KIND_DOMAIN, KIND_ROOT}:
+        if explicit in _VALID_KINDS:
             return explicit
         if str(row.get("host_pattern") or ""):
             return KIND_DOMAIN
@@ -376,6 +422,10 @@ class GrantRecord:
             decision = "ask"
         raw_priority = row.get("priority")
         priority = raw_priority if isinstance(raw_priority, int) and not isinstance(raw_priority, bool) else None
+        raw_modes = row.get("modes")
+        modes = tuple(str(m) for m in raw_modes) if isinstance(raw_modes, list) else ()
+        raw_on = row.get("on")
+        on = tuple(str(e) for e in raw_on) if isinstance(raw_on, list) else ()
         return cls(
             kind=kind,
             pattern=pattern,
@@ -385,6 +435,8 @@ class GrantRecord:
             grantor=str(row.get("grantor") or ""),
             created_from_permission_id=str(row.get("created_from_permission_id") or ""),
             priority=priority,
+            modes=modes,
+            on=on,
         )
 
     def to_policy_row(self) -> dict[str, Any]:
@@ -409,6 +461,10 @@ class GrantRecord:
             row["created_from_permission_id"] = self.created_from_permission_id
         if self.priority is not None:
             row["priority"] = self.priority
+        if self.modes:
+            row["modes"] = list(self.modes)
+        if self.on:
+            row["on"] = list(self.on)
         return row
 
 
@@ -416,6 +472,8 @@ __all__ = [
     "EXTERNAL_MCP_CONTEXT_KIND",
     "GrantRecord",
     "KIND_DOMAIN",
+    "KIND_HOOK",
+    "KIND_PLAN_ACL",
     "KIND_ROOT",
     "KIND_TOOL",
     "annotations_are_read_only",

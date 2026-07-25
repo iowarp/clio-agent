@@ -111,7 +111,7 @@ def _grant_workspace_domain(app: FastAPI, workspace_id: str, host: str) -> dict[
     """Grant a network domain to a workspace: sticky ``host_pattern`` policy + boundary event."""
     from clio_agent.gact.runtime import grants  # noqa: PLC0415
 
-    policy = {
+    policy: dict[str, Any] = {
         "scope": grants.SCOPE_WORKSPACE,
         "scope_id": workspace_id,
         "tool_name_pattern": "*",

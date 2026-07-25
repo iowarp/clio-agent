@@ -27,13 +27,15 @@ from clio_agent.gact.app import (
 from clio_agent.gact.permission_gate import _policy_action_for_tool
 from clio_agent.gact.runtime.grant_resolver import (
     KIND_DOMAIN,
+    KIND_HOOK,
+    KIND_PLAN_ACL,
     KIND_ROOT,
     KIND_TOOL,
     GrantRecord,
     is_read_only,
+    migrate_priorities,
     resolve,
 )
-from clio_agent.gact.runtime.grant_resolver import migrate_priorities
 from clio_agent.gact.runtime.permission_policies import (
     _host_action_for,
     _validate_permission_policies,
@@ -431,3 +433,256 @@ def test_two_successive_sticky_appends_both_preserve_first_match(tmp_path: Path)
         resolve("tool", "git.rebase", policies=app.state.permission_policies, workspace_id=ws.id)
         == "allow"
     )
+
+
+# ---- P0.2 modes axis + event axis + plan_acl/hook kinds (#1060) ----------------------------
+
+
+def test_modes_axis_narrows_to_matching_mode() -> None:
+    """A row with a non-empty ``modes`` matches ONLY when ``mode`` is one of its entries.
+
+    A deny scoped ``modes=[plan]`` fires under ``mode="plan"`` but is skipped under ``mode="edit"``
+    and the default ``mode=""`` — for the latter cases a lower-priority allow row (or ``""``) wins.
+    """
+    policies = [
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": "shell.exec",
+            "action": "deny",
+            "modes": ["plan"],
+            "priority": 50,
+        },
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": "shell.exec",
+            "action": "allow",
+            "priority": 10,
+        },
+    ]
+    # plan: the higher-priority plan-scoped deny is in scope and wins.
+    assert resolve("tool", "shell.exec", policies=policies, session_id="s", mode="plan") == "deny"
+    # edit: the plan-scoped deny is skipped; the lower allow is the only match.
+    assert resolve("tool", "shell.exec", policies=policies, session_id="s", mode="edit") == "allow"
+    # default mode="": the plan-scoped deny is skipped; allow wins.
+    assert resolve("tool", "shell.exec", policies=policies, session_id="s") == "allow"
+
+    # With ONLY the plan-scoped deny present, a non-plan mode matches nothing -> "".
+    only_plan = [policies[0]]
+    assert resolve("tool", "shell.exec", policies=only_plan, session_id="s", mode="edit") == ""
+    assert resolve("tool", "shell.exec", policies=only_plan, session_id="s") == ""
+
+
+def test_on_event_axis_narrows_to_matching_event() -> None:
+    """A row with a non-empty ``on`` matches ONLY the named event; absent ``on`` matches any."""
+    scoped = [
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": "shell.exec",
+            "action": "deny",
+            "on": ["PreToolUse"],
+        }
+    ]
+    assert (
+        resolve("tool", "shell.exec", policies=scoped, session_id="s", event="PreToolUse")
+        == "deny"
+    )
+    # A different event (and the default empty event) does not match the on-scoped row.
+    assert (
+        resolve("tool", "shell.exec", policies=scoped, session_id="s", event="PostToolUse") == ""
+    )
+    assert resolve("tool", "shell.exec", policies=scoped, session_id="s") == ""
+
+    # A row with NO ``on`` matches any event (backward compat).
+    unscoped = [
+        {"scope": "session", "scope_id": "s", "tool_name_pattern": "shell.exec", "action": "deny"}
+    ]
+    assert (
+        resolve("tool", "shell.exec", policies=unscoped, session_id="s", event="PreToolUse")
+        == "deny"
+    )
+    assert resolve("tool", "shell.exec", policies=unscoped, session_id="s") == "deny"
+
+
+def test_axis_backward_compat_rows_without_modes_or_on() -> None:
+    """Rows carrying NO ``modes``/``on`` resolve IDENTICALLY to P0.1, with the new params defaulted."""
+    # Re-assert the priority-band and tie-break cases with mode/event supplied — no change.
+    banded = [
+        {"scope": "session", "scope_id": "s", "tool_name_pattern": "*", "action": "deny", "priority": 40},
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": "fs_read_file",
+            "action": "allow",
+            "priority": 50,
+        },
+    ]
+    assert (
+        resolve("tool", "fs_read_file", policies=banded, session_id="s", mode="plan", event="X")
+        == "allow"
+    )
+    tie = [
+        {"scope": "session", "scope_id": "s", "tool_name_pattern": "shell.exec", "action": "allow", "priority": 50},
+        {"scope": "session", "scope_id": "s", "tool_name_pattern": "shell.exec", "action": "deny", "priority": 50},
+    ]
+    assert (
+        resolve("tool", "shell.exec", policies=tie, session_id="s", mode="edit", event="Y")
+        == "deny"
+    )
+
+
+def test_plan_acl_and_hook_kinds_round_trip_through_grant_record() -> None:
+    """The new ``plan_acl``/``hook`` kinds round-trip through GrantRecord (kind preserved)."""
+    for kind in (KIND_PLAN_ACL, KIND_HOOK):
+        row = {
+            "kind": kind,
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": "shell.*",
+            "action": "deny",
+        }
+        grant = GrantRecord.from_policy_row(row)
+        assert grant.kind == kind
+        assert grant.pattern == "shell.*"
+        assert grant.decision == "deny"
+        round_tripped = grant.to_policy_row()
+        assert round_tripped["kind"] == kind
+        assert round_tripped["tool_name_pattern"] == "shell.*"
+        assert round_tripped["scope"] == "session"
+        assert round_tripped["action"] == "deny"
+
+
+def test_plan_acl_and_hook_grants_preserve_axis_fields_through_grant_record() -> None:
+    """REGRESSION: GrantRecord must NOT silently drop ``modes``/``on`` on round-trip (review finding).
+
+    Before the fix, ``from_policy_row`` never captured the axis fields and ``to_policy_row`` never
+    re-emitted them, so a ``plan_acl`` grant scoped ``modes=["plan"]`` (or a ``hook`` grant scoped
+    ``on=["PreToolUse"]``) built through ``GrantRecord`` would silently WIDEN to match any
+    mode/event the moment it was persisted via ``to_policy_row`` -- exactly the latent
+    grant-widening P1.1/P2's plan-ACL/hook authoring would hit.
+    """
+    plan_row = {
+        "kind": KIND_PLAN_ACL,
+        "scope": "session",
+        "scope_id": "s",
+        "tool_name_pattern": "shell.*",
+        "action": "deny",
+        "modes": ["plan"],
+    }
+    plan_grant = GrantRecord.from_policy_row(plan_row)
+    assert plan_grant.modes == ("plan",)
+    assert plan_grant.on == ()
+    plan_round_tripped = plan_grant.to_policy_row()
+    assert plan_round_tripped["modes"] == ["plan"]
+    assert "on" not in plan_round_tripped  # empty axis: no key added (backward-compat row shape)
+
+    hook_row = {
+        "kind": KIND_HOOK,
+        "scope": "session",
+        "scope_id": "s",
+        "tool_name_pattern": "shell.*",
+        "action": "deny",
+        "on": ["PreToolUse"],
+    }
+    hook_grant = GrantRecord.from_policy_row(hook_row)
+    assert hook_grant.on == ("PreToolUse",)
+    assert hook_grant.modes == ()
+    hook_round_tripped = hook_grant.to_policy_row()
+    assert hook_round_tripped["on"] == ["PreToolUse"]
+    assert "modes" not in hook_round_tripped
+
+    # The round-tripped rows still enforce the SAME axis-narrowed decision through resolve().
+    assert (
+        resolve(
+            "tool",
+            "shell.exec",
+            policies=[plan_round_tripped],
+            session_id="s",
+            mode="plan",
+        )
+        == "deny"
+    )
+    assert (
+        resolve(
+            "tool",
+            "shell.exec",
+            policies=[plan_round_tripped],
+            session_id="s",
+            mode="edit",
+        )
+        == ""
+    )
+    assert (
+        resolve(
+            "tool",
+            "shell.exec",
+            policies=[hook_round_tripped],
+            session_id="s",
+            event="PreToolUse",
+        )
+        == "deny"
+    )
+    assert (
+        resolve(
+            "tool",
+            "shell.exec",
+            policies=[hook_round_tripped],
+            session_id="s",
+            event="PostToolUse",
+        )
+        == ""
+    )
+
+    # A row with NO axis fields at all still round-trips to a row with NO axis keys (no accretion).
+    plain_row = {
+        "kind": KIND_TOOL,
+        "scope": "session",
+        "scope_id": "s",
+        "tool_name_pattern": "shell.*",
+        "action": "deny",
+    }
+    plain_round_tripped = GrantRecord.from_policy_row(plain_row).to_policy_row()
+    assert "modes" not in plain_round_tripped
+    assert "on" not in plain_round_tripped
+
+
+def test_validate_rejects_malformed_modes_and_on() -> None:
+    """A non-list (or non-string entry) ``modes``/``on`` is REJECTED with a typed reason."""
+    _clean, modes_not_list = _validate_permission_policies(
+        [{"scope": "session", "action": "deny", "modes": "plan"}]
+    )
+    assert any(e["field"] == "modes" for e in modes_not_list)
+
+    _clean, modes_bad_entry = _validate_permission_policies(
+        [{"scope": "session", "action": "deny", "modes": ["plan", 3]}]
+    )
+    assert any(e["field"] == "modes" for e in modes_bad_entry)
+
+    _clean, on_not_list = _validate_permission_policies(
+        [{"scope": "session", "action": "deny", "on": {"PreToolUse": True}}]
+    )
+    assert any(e["field"] == "on" for e in on_not_list)
+
+    _clean, on_bad_entry = _validate_permission_policies(
+        [{"scope": "session", "action": "deny", "on": ["PreToolUse", None]}]
+    )
+    assert any(e["field"] == "on" for e in on_bad_entry)
+
+    # Well-formed axis fields (and the new kinds) pass validation and are preserved.
+    clean, ok_errors = _validate_permission_policies(
+        [
+            {
+                "kind": KIND_PLAN_ACL,
+                "scope": "session",
+                "action": "deny",
+                "modes": ["plan"],
+                "on": ["PreToolUse"],
+            }
+        ]
+    )
+    assert ok_errors == []
+    assert clean[0]["modes"] == ["plan"]
+    assert clean[0]["on"] == ["PreToolUse"]
+    assert clean[0]["kind"] == KIND_PLAN_ACL
