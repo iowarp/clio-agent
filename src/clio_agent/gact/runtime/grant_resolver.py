@@ -47,6 +47,20 @@ KIND_ROOT = "fs_root"
 #: The full raw action vocabulary a policy row may carry (never collapsed).
 _VALID_ACTIONS = frozenset({"allow", "allow_session", "allow_workspace", "deny", "ask"})
 
+#: Restrictiveness rank for the same-priority tie-break: higher rank WINS a tie (most
+#: restrictive survives). Order (P0.1 #1059): deny > defer > ask > allow_workspace >
+#: allow_session > allow. ``defer`` is absent from :data:`_VALID_ACTIONS` today (a row
+#: carrying it is skipped as an invalid action) but is ranked here for forward-compat so the
+#: tie-break needs no change when the vocabulary grows.
+_RESTRICTIVENESS: dict[str, int] = {
+    "deny": 6,
+    "defer": 5,
+    "ask": 4,
+    "allow_workspace": 3,
+    "allow_session": 2,
+    "allow": 1,
+}
+
 #: The gate ``context`` kind used for an external MCP tool call. Single-sourced here so the
 #: permission gate + routes import one constant and :func:`is_read_only` needs no back-import.
 EXTERNAL_MCP_CONTEXT_KIND = "external_mcp"
@@ -170,6 +184,89 @@ def _subject_matches(kind: str, policy: Mapping[str, Any], pattern: str, path: s
     return True
 
 
+def _migrated_priority(index: int, total: int) -> int:
+    """Legacy priority for an unprioritized row: unique + DESCENDING by insertion index.
+
+    First row (``index == 0``) gets the highest number, so a stable highest-priority-wins sort
+    reproduces the historical FIRST-MATCH order EXACTLY (P0.1 #1059 migration key). Because the
+    values are unique, no two legacy rows ever share a band and the most-restrictive tie-break
+    can never fire for them — migrated behavior is byte-identical to the old first-match scan.
+    """
+
+    return total - index
+
+
+def _effective_priority(policy: Mapping[str, Any], index: int, total: int) -> int:
+    """Return ``policy``'s explicit integer priority, or its migrated legacy priority.
+
+    An explicit ``priority`` is honoured verbatim (``bool`` is rejected — it is an ``int``
+    subclass but never a valid priority). An absent/legacy priority is migrated deterministically
+    via :func:`_migrated_priority` so mixed and all-legacy lists both resolve stably.
+    """
+
+    raw = policy.get("priority")
+    if isinstance(raw, int) and not isinstance(raw, bool):
+        return raw
+    return _migrated_priority(index, total)
+
+
+def _most_restrictive(actions: list[str]) -> str:
+    """Return the most-restrictive action among a same-priority band (tie-break)."""
+
+    return max(actions, key=lambda action: _RESTRICTIVENESS.get(action, 0))
+
+
+def migrate_priorities(policies: list[Any]) -> list[Any]:
+    """Stamp a stable ``priority`` on every dict row lacking a valid one, in place.
+
+    Applied on load so a persisted legacy store self-heals to explicit descending priorities
+    that reproduce its historical first-match order. Rows already carrying a valid integer
+    priority are left untouched. Returns ``policies`` for call-site convenience.
+    """
+
+    total = len(policies)
+    for index, policy in enumerate(policies):
+        if isinstance(policy, dict):
+            policy["priority"] = _effective_priority(policy, index, total)
+    return policies
+
+
+def next_append_priority(policies: list[Any]) -> int:
+    """Return a priority strictly BELOW every row's effective priority, for a new sticky append.
+
+    Runtime sticky-grant appends (``permission_policies.py``'s ``_appended``, and
+    ``routes/workspaces.py``'s ``_grant_workspace_domain``/``_grant_workspace_tool``) must land in
+    their own lowest band, or an appended row left with no explicit ``priority`` collides with the
+    CURRENT lowest-priority row: on an already-loaded/migrated store, an unprioritized appended row
+    computes to ``total - index`` under :func:`_effective_priority`, which can equal a pre-existing
+    migrated legacy row's stamped priority (both derive to ``1`` in the two-row case) -- firing the
+    most-restrictive tie-break where the old first-match scan would have returned the earlier row.
+    Calling :func:`migrate_priorities` AFTER appending does NOT fix this: it re-derives the same
+    ``total - index`` collision.
+
+    This computes the minimum EFFECTIVE priority across ``policies`` as they stand right now
+    (migrating any still-unprioritized existing row in memory, without mutating it) and returns one
+    below it -- so the new row is always strictly lower than every existing row, never ties, and
+    reproduces "appended = lowest precedence = evaluated last" (today's first-match). The default
+    minimum when ``policies`` holds no dict row is ``1`` (matching a fresh single-row store's
+    migrated priority), so the first-ever append returns ``0``. Callers MUST call this on the list
+    as it stands BEFORE appending the new row; successive calls after each append lands yield a
+    strictly decreasing sequence, so N appends get N unique, monotonically lower priorities.
+    """
+
+    total = len(policies)
+    minimum = 1
+    found = False
+    for index, policy in enumerate(policies):
+        if not isinstance(policy, dict):
+            continue
+        priority = _effective_priority(policy, index, total)
+        if not found or priority < minimum:
+            minimum = priority
+            found = True
+    return minimum - 1
+
+
 def resolve(
     kind: str,
     pattern: str,
@@ -180,15 +277,23 @@ def resolve(
     path: str = "",
     mode: str = "",
 ) -> str:
-    """Return the first matching policy's RAW action, or ``""`` when nothing matches.
+    """Return the winning matching policy's RAW action, or ``""`` when nothing matches.
 
     One matcher over ``permission_policies`` generalizing the former ``_policy_action_for_tool``
     (``kind="tool"``) and ``_host_action_for`` (``kind="domain"``). ``pattern`` is the subject
     string for the kind: the tool name (``tool``), the requested host (``domain``), or the target
     path (``fs_root``). ``path`` supplies the optional path-glob refinement a ``tool`` policy may
     additionally carry; it is unused for ``domain``/``fs_root``. ``mode`` is a pass-through
-    placeholder (#1034 owns the mode enum + default_decision). Matching is first-match, returning
-    the raw ``allow``/``allow_session``/``allow_workspace``/``deny``/``ask`` action verbatim.
+    placeholder (#1034 owns the mode enum + default_decision).
+
+    **Priority-banded evaluation (P0.1 #1059).** Instead of first-match-return, ALL rows matching
+    ``(kind, subject, scope)`` are collected, then the HIGHEST-priority band wins (higher priority
+    number wins across bands). Within a single highest band (a TIE), the MOST-RESTRICTIVE action
+    survives (``deny`` > ``defer`` > ``ask`` > ``allow_workspace`` > ``allow_session`` > ``allow``).
+    Legacy rows without a ``priority`` are migrated to unique descending priorities by insertion
+    index (see :func:`_migrated_priority`), so an all-legacy list reproduces the old first-match
+    order exactly and the tie-break never fires for it. The raw
+    ``allow``/``allow_session``/``allow_workspace``/``deny``/``ask`` action is returned verbatim.
     """
 
     _ = mode  # pass-through placeholder for #1034 (mode enum + default_decision)
@@ -197,7 +302,9 @@ def resolve(
     if kind == KIND_DOMAIN and (not pattern or not workspace_id):
         # _host_action_for guard: an empty host or unknown workspace can never match a host row.
         return ""
-    for policy in policies:
+    total = len(policies)
+    matches: list[tuple[int, str]] = []
+    for index, policy in enumerate(policies):
         if not isinstance(policy, dict):
             continue
         if not _scope_matches(kind, policy, session_id, workspace_id):
@@ -205,9 +312,16 @@ def resolve(
         if not _subject_matches(kind, policy, pattern, path):
             continue
         action = str(policy.get("action") or "").lower()
-        if action in _VALID_ACTIONS:
-            return action
-    return ""
+        if action not in _VALID_ACTIONS:
+            continue
+        matches.append((_effective_priority(policy, index, total), action))
+    if not matches:
+        return ""
+    highest = max(priority for priority, _ in matches)
+    band = [action for priority, action in matches if priority == highest]
+    if len(band) == 1:
+        return band[0]
+    return _most_restrictive(band)
 
 
 @dataclass(frozen=True)
@@ -229,6 +343,7 @@ class GrantRecord:
     scope_id: str = ""
     grantor: str = ""
     created_from_permission_id: str = ""
+    priority: int | None = None
 
     @staticmethod
     def _kind_for_row(row: Mapping[str, Any]) -> str:
@@ -259,6 +374,8 @@ class GrantRecord:
             decision = "deny"
         else:
             decision = "ask"
+        raw_priority = row.get("priority")
+        priority = raw_priority if isinstance(raw_priority, int) and not isinstance(raw_priority, bool) else None
         return cls(
             kind=kind,
             pattern=pattern,
@@ -267,6 +384,7 @@ class GrantRecord:
             scope_id=str(row.get("scope_id") or ""),
             grantor=str(row.get("grantor") or ""),
             created_from_permission_id=str(row.get("created_from_permission_id") or ""),
+            priority=priority,
         )
 
     def to_policy_row(self) -> dict[str, Any]:
@@ -289,6 +407,8 @@ class GrantRecord:
             row["grantor"] = self.grantor
         if self.created_from_permission_id:
             row["created_from_permission_id"] = self.created_from_permission_id
+        if self.priority is not None:
+            row["priority"] = self.priority
         return row
 
 
@@ -300,5 +420,7 @@ __all__ = [
     "KIND_TOOL",
     "annotations_are_read_only",
     "is_read_only",
+    "migrate_priorities",
+    "next_append_priority",
     "resolve",
 ]

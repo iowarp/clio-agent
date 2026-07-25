@@ -33,7 +33,11 @@ from clio_agent.gact.runtime.grant_resolver import (
     is_read_only,
     resolve,
 )
-from clio_agent.gact.runtime.permission_policies import _host_action_for
+from clio_agent.gact.runtime.grant_resolver import migrate_priorities
+from clio_agent.gact.runtime.permission_policies import (
+    _host_action_for,
+    _validate_permission_policies,
+)
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
@@ -190,3 +194,240 @@ def test_tool_kind_treats_empty_scope_id_as_wildcard() -> None:
     """Per-kind divergence: unlike domain, a tool policy's empty scope_id IS a scope wildcard."""
     policies = [{"scope": "session", "scope_id": "", "tool_name_pattern": "*", "action": "deny"}]
     assert resolve("tool", "anything", policies=policies, session_id="sess_x") == "deny"
+
+
+# ---- P0.1 priority bands (#1059) -----------------------------------------------------------
+
+
+def test_golden_legacy_no_priority_reproduces_first_match() -> None:
+    """MIGRATION GOLDEN: legacy (no-priority) rows resolve IDENTICALLY to first-match.
+
+    An allow-THEN-deny pair on the SAME tool must return the EARLIER row's action, and the
+    reversed order must flip the result — proving the descending-by-index migration reproduces
+    the old first-match scan exactly (the most-restrictive tie-break never fires for legacy rows).
+    """
+    allow_then_deny = [
+        {"scope": "session", "scope_id": "s", "tool_name_pattern": "shell.exec", "action": "allow"},
+        {"scope": "session", "scope_id": "s", "tool_name_pattern": "shell.exec", "action": "deny"},
+    ]
+    assert resolve("tool", "shell.exec", policies=allow_then_deny, session_id="s") == "allow"
+
+    deny_then_allow = [
+        {"scope": "session", "scope_id": "s", "tool_name_pattern": "shell.exec", "action": "deny"},
+        {"scope": "session", "scope_id": "s", "tool_name_pattern": "shell.exec", "action": "allow"},
+    ]
+    assert resolve("tool", "shell.exec", policies=deny_then_allow, session_id="s") == "deny"
+
+
+def test_priority_band_higher_number_wins_across_bands() -> None:
+    """Highest-priority band wins: a lower-priority deny loses to a higher-priority allow."""
+    policies = [
+        {"scope": "session", "scope_id": "s", "tool_name_pattern": "*", "action": "deny", "priority": 40},
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": "fs_read_file",
+            "action": "allow",
+            "priority": 50,
+        },
+    ]
+    # allow@50 outranks deny@40 for the read-only subject.
+    assert resolve("tool", "fs_read_file", policies=policies, session_id="s") == "allow"
+
+
+def test_priority_band_specific_write_deny_outranks_broad_allow() -> None:
+    """A higher-priority write-scoped deny beats a lower-priority broad allow."""
+    policies = [
+        {"scope": "session", "scope_id": "s", "tool_name_pattern": "*", "action": "allow", "priority": 40},
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": "fs_apply_edit_write",
+            "action": "deny",
+            "priority": 65,
+        },
+    ]
+    assert resolve("tool", "fs_apply_edit_write", policies=policies, session_id="s") == "deny"
+
+
+def test_priority_band_highest_path_allow_wins() -> None:
+    """An even-higher-priority path-scoped allow wins over a write deny for the matching path."""
+    policies = [
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": "fs_apply_edit_write",
+            "action": "deny",
+            "priority": 65,
+        },
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": "fs_apply_edit_write",
+            "path_pattern": "/tmp/*",
+            "action": "allow",
+            "priority": 70,
+        },
+    ]
+    assert (
+        resolve(
+            "tool",
+            "fs_apply_edit_write",
+            policies=policies,
+            session_id="s",
+            path="/tmp/x",
+        )
+        == "allow"
+    )
+    # A path outside the allow band still falls to the write deny.
+    assert (
+        resolve(
+            "tool",
+            "fs_apply_edit_write",
+            policies=policies,
+            session_id="s",
+            path="/etc/x",
+        )
+        == "deny"
+    )
+
+
+def test_priority_tie_break_most_restrictive_wins() -> None:
+    """A TIE at the highest band resolves to the MOST-RESTRICTIVE action (deny > allow)."""
+    policies = [
+        {"scope": "session", "scope_id": "s", "tool_name_pattern": "shell.exec", "action": "allow", "priority": 50},
+        {"scope": "session", "scope_id": "s", "tool_name_pattern": "shell.exec", "action": "deny", "priority": 50},
+    ]
+    assert resolve("tool", "shell.exec", policies=policies, session_id="s") == "deny"
+    # Order-independent: the tie-break, not insertion order, decides.
+    assert resolve("tool", "shell.exec", policies=list(reversed(policies)), session_id="s") == "deny"
+
+
+def test_grant_record_round_trips_priority() -> None:
+    """A GrantRecord carries an integer ``priority`` through the policy-row round-trip."""
+    row = {
+        "scope": "session",
+        "scope_id": "s",
+        "tool_name_pattern": "shell.*",
+        "action": "deny",
+        "priority": 42,
+    }
+    grant = GrantRecord.from_policy_row(row)
+    assert grant.priority == 42
+    assert grant.to_policy_row()["priority"] == 42
+    # A legacy row without a priority yields ``None`` (migration owns the default).
+    assert GrantRecord.from_policy_row({"scope": "session", "action": "deny"}).priority is None
+
+
+def test_validate_rejects_malformed_priority() -> None:
+    """A non-integer (or bool) priority is REJECTED with a typed reason (no silent default)."""
+    _clean, errors = _validate_permission_policies(
+        [{"scope": "session", "action": "deny", "priority": "high"}]
+    )
+    assert any(e["field"] == "priority" for e in errors)
+    _clean, bool_errors = _validate_permission_policies(
+        [{"scope": "session", "action": "deny", "priority": True}]
+    )
+    assert any(e["field"] == "priority" for e in bool_errors)
+    # A valid integer priority passes and is preserved.
+    clean, ok_errors = _validate_permission_policies(
+        [{"scope": "session", "action": "deny", "priority": 55}]
+    )
+    assert ok_errors == []
+    assert clean[0]["priority"] == 55
+
+
+def test_migrate_priorities_stamps_descending_by_index() -> None:
+    """Migration stamps unique DESCENDING priorities (first row highest) on legacy rows only."""
+    rows = [
+        {"scope": "session", "action": "allow"},
+        {"scope": "session", "action": "deny"},
+        {"scope": "session", "action": "ask", "priority": 999},
+    ]
+    migrate_priorities(rows)
+    assert rows[0]["priority"] == 3
+    assert rows[1]["priority"] == 2
+    assert rows[2]["priority"] == 999  # explicit priority left untouched
+
+
+# ---- P0.1 follow-up: sticky runtime appends must not collide with migrated rows -------------
+
+
+def test_sticky_append_does_not_collide_with_migrated_legacy_row(tmp_path: Path) -> None:
+    """REGRESSION: a sticky runtime append must keep appended-last (lowest) precedence.
+
+    Reproduces the confirmed review probe: a store already loaded/migrated with a single legacy
+    ``allow(tool='git.*')`` row (migrated to ``priority=1``, since it is the sole row) THEN gets a
+    runtime sticky ``deny(tool='git.push')`` row appended through the REAL app code path
+    (``_apply_kind_grant`` -> ``_grant_workspace_tool``, exactly what
+    ``POST /v1/workspaces/{wid}/grants`` with ``kind="tool"`` calls) — not a hand-built dict.
+
+    Before the fix, the appended row got no explicit ``priority``, so ``resolve()``'s live
+    ``_effective_priority`` computed it as ``total - index = 2 - 1 = 1`` -- colliding with the
+    legacy row's migrated ``priority=1`` -- and the most-restrictive tie-break fired, flipping the
+    result to ``deny``. The fix must keep first-match (appended-last = lowest precedence): the
+    legacy ``allow`` row, matched first under the OLD scan order, must still win.
+    """
+    from clio_agent.gact.routes.workspaces import _apply_kind_grant
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    ws = app.state.workspaces.create(name="p", root_path=str(root))
+
+    legacy_row = {
+        "scope": "workspace",
+        "scope_id": ws.id,
+        "tool_name_pattern": "git.*",
+        "action": "allow",
+    }
+    migrate_priorities([legacy_row])
+    assert legacy_row["priority"] == 1  # sole row -> migrated to priority=1
+    app.state.permission_policies = [legacy_row]
+
+    _apply_kind_grant(app, ws.id, "tool", {"pattern": "git.push", "decision": "deny"})
+
+    assert len(app.state.permission_policies) == 2
+    appended = app.state.permission_policies[1]
+    assert appended["action"] == "deny"
+    assert appended["priority"] != legacy_row["priority"]  # no collision
+
+    result = resolve(
+        "tool", "git.push", policies=app.state.permission_policies, workspace_id=ws.id
+    )
+    assert result == "allow"  # appended-last preserved: first-match (allow) still wins
+
+
+def test_two_successive_sticky_appends_both_preserve_first_match(tmp_path: Path) -> None:
+    """Two successive sticky appends each get a strictly-lower unique priority (monotonic)."""
+    from clio_agent.gact.routes.workspaces import _apply_kind_grant
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    ws = app.state.workspaces.create(name="p", root_path=str(root))
+
+    legacy_row = {
+        "scope": "workspace",
+        "scope_id": ws.id,
+        "tool_name_pattern": "git.*",
+        "action": "allow",
+    }
+    migrate_priorities([legacy_row])
+    app.state.permission_policies = [legacy_row]
+
+    _apply_kind_grant(app, ws.id, "tool", {"pattern": "git.push", "decision": "deny"})
+    _apply_kind_grant(app, ws.id, "tool", {"pattern": "git.rebase", "decision": "deny"})
+
+    priorities = [row["priority"] for row in app.state.permission_policies]
+    assert len(set(priorities)) == 3  # all three rows uniquely prioritized, no collisions
+
+    # First-match preserved for BOTH appended tools: the legacy allow still wins for each.
+    assert (
+        resolve("tool", "git.push", policies=app.state.permission_policies, workspace_id=ws.id)
+        == "allow"
+    )
+    assert (
+        resolve("tool", "git.rebase", policies=app.state.permission_policies, workspace_id=ws.id)
+        == "allow"
+    )
