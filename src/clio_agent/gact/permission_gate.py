@@ -139,21 +139,9 @@ def _normalize_mcp_tool_annotations(tool: Any) -> dict[str, Any] | None:
     missing evidence and therefore requires permission.
     """
 
-    raw = getattr(tool, "annotations", None)
-    if raw is None:
-        return None
-    if isinstance(raw, Mapping):
-        return dict(raw)
-    model_dump = getattr(raw, "model_dump", None)
-    if not callable(model_dump):
-        return None
-    try:
-        dumped = model_dump(mode="json", by_alias=True)
-    except TypeError:
-        dumped = model_dump()
-    if not isinstance(dumped, Mapping):
-        return None
-    return dict(dumped)
+    from clio_agent.tools.catalog import normalize_mcp_annotations  # noqa: PLC0415
+
+    return normalize_mcp_annotations(tool)
 
 
 def _external_mcp_permission_context(annotations: Any) -> dict[str, Any]:

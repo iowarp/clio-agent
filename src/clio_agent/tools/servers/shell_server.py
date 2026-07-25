@@ -25,6 +25,24 @@ from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
 
 shell_server = FastMCP("shell")
 
+# Declared MCP ToolAnnotations — the SINGLE source of truth for the shell tool's
+# effect class (#1061). ``bash`` runs an arbitrary command whose writes/egress
+# the gate cannot bound (they live behind the OS fence, not a gate-side parser),
+# so it declares the most-restrictive open-world destructive hints: NOT read-only
+# and openWorldHint=True. This projects to NO catalog read/write tag (effectful/
+# unclassifiable) — preserving the pre-#1061 "no read tag => never read-only, and
+# not an fs-write the auto-edits mode may auto-approve" classification.
+_BASH_ANNOTATIONS: dict[str, Any] = {
+    "readOnlyHint": False,
+    "destructiveHint": True,
+    "openWorldHint": True,
+}
+
+#: Namespaced tool name → declared annotations for the shell built-ins. Exported
+#: so :mod:`clio_agent.tools.catalog` projects read/write tags from the SAME
+#: mapping the decorator declares.
+SHELL_TOOL_ANNOTATIONS: dict[str, dict[str, Any]] = {"shell_bash": _BASH_ANNOTATIONS}
+
 # POSIX text utilities the model tends to reach for (and improvises `wsl bash -c`
 # to get on Windows, booting a resident VM — iowarp/clio-agent#898). Their real
 # presence on the host PATH is probed, not assumed.
@@ -273,7 +291,7 @@ def _clip_output(text: str, max_bytes: int) -> tuple[str, bool]:
     return clipped, True
 
 
-@shell_server.tool(description=_SHELL_TOOL_DESCRIPTION)
+@shell_server.tool(description=_SHELL_TOOL_DESCRIPTION, annotations=_BASH_ANNOTATIONS)
 def bash(
     command: str,
     cwd: str | None = None,
@@ -398,6 +416,7 @@ def bash(
 
 
 __all__ = [
+    "SHELL_TOOL_ANNOTATIONS",
     "ShellEnvFacts",
     "build_shell_tool_description",
     "shell_server",

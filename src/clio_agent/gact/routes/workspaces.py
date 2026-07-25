@@ -111,7 +111,7 @@ def _grant_workspace_domain(app: FastAPI, workspace_id: str, host: str) -> dict[
     """Grant a network domain to a workspace: sticky ``host_pattern`` policy + boundary event."""
     from clio_agent.gact.runtime import grants  # noqa: PLC0415
 
-    policy = {
+    policy: dict[str, Any] = {
         "scope": grants.SCOPE_WORKSPACE,
         "scope_id": workspace_id,
         "tool_name_pattern": "*",
@@ -120,11 +120,18 @@ def _grant_workspace_domain(app: FastAPI, workspace_id: str, host: str) -> dict[
     }
     policies = getattr(app.state, "permission_policies", None)
     if isinstance(policies, list):
-        policies.append(policy)
+        from clio_agent.gact.runtime.grant_resolver import (  # noqa: PLC0415
+            next_append_priority,
+        )
         from clio_agent.gact.runtime.permission_policies import (  # noqa: PLC0415
             _flush_permission_policies,
         )
 
+        # A sticky runtime append must be its own strictly-lowest priority band, or it can
+        # collide with a migrated legacy row's priority and wrongly trigger the most-restrictive
+        # tie-break (P0.1 #1059 follow-up) -- see next_append_priority's docstring.
+        policy["priority"] = next_append_priority(policies)
+        policies.append(policy)
         _flush_permission_policies(app)
     grants.emit_boundary_granted(
         app,
@@ -146,8 +153,19 @@ def _grant_workspace_tool(
     so the ``kind``/scope/action encoding matches exactly what :func:`resolve` enforces, then
     flushes the store. ``decision`` defaults to ``allow`` and validates to the coarse
     ``allow``/``deny``/``ask`` vocabulary; scope defaults to the workspace.
+
+    The appended row is stamped with an explicit, strictly-lowest ``priority`` (P0.1 #1059
+    follow-up) so it never collides with a pre-existing (often already-migrated legacy) row's
+    priority: an unprioritized append would otherwise be assigned ``total - index`` by
+    :func:`resolve`'s live migration, which can equal the current lowest legacy row's priority
+    and wrongly trigger the most-restrictive tie-break instead of preserving appended-last
+    (lowest) precedence.
     """
-    from clio_agent.gact.runtime.grant_resolver import KIND_TOOL, GrantRecord  # noqa: PLC0415
+    from clio_agent.gact.runtime.grant_resolver import (  # noqa: PLC0415
+        KIND_TOOL,
+        GrantRecord,
+        next_append_priority,
+    )
     from clio_agent.gact.runtime.grants import SCOPE_WORKSPACE  # noqa: PLC0415
 
     decision = str(body.get("decision") or body.get("action") or "allow").lower()
@@ -155,6 +173,8 @@ def _grant_workspace_tool(
         decision = "allow"
     scope = str(body.get("scope") or SCOPE_WORKSPACE)
     scope_id = str(body.get("scope_id") or (workspace_id if scope == SCOPE_WORKSPACE else ""))
+    policies = getattr(app.state, "permission_policies", None)
+    priority = next_append_priority(policies) if isinstance(policies, list) else None
     rec = GrantRecord(
         kind=KIND_TOOL,
         pattern=pattern,
@@ -162,8 +182,8 @@ def _grant_workspace_tool(
         scope=scope,
         scope_id=scope_id,
         grantor=_GRANTOR_USER,
+        priority=priority,
     )
-    policies = getattr(app.state, "permission_policies", None)
     if isinstance(policies, list):
         policies.append(rec.to_policy_row())
         from clio_agent.gact.runtime.permission_policies import (  # noqa: PLC0415

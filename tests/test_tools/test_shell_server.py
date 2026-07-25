@@ -20,6 +20,27 @@ from clio_agent.tools.servers.shell_server import (
 )
 
 
+def test_shell_bash_declares_open_world_destructive_annotations() -> None:
+    """#1061: shell_bash declares the most-restrictive open-world destructive annotations,
+    which PROJECT to NO catalog read/write tag — effectful/unclassifiable, so it is never
+    read-only and never an fs-write the auto-edits mode auto-approves (OS fence owns its
+    effects)."""
+    from clio_agent.tools.catalog import classification_tags, get_tool_entry
+    from clio_agent.tools.gateway import _list_tools_sync, _tool_annotations
+
+    listed = {t.name: t for t in _list_tools_sync(shell_server)}
+    annotations = _tool_annotations(listed["bash"])
+    assert annotations is not None
+    assert annotations["readOnlyHint"] is False
+    assert annotations["destructiveHint"] is True
+    assert annotations["openWorldHint"] is True
+    # open-world effectful -> NEITHER read nor write.
+    assert classification_tags(annotations) == frozenset()
+    tags = get_tool_entry("shell_bash").tags
+    assert "read" not in tags
+    assert "write" not in tags
+
+
 def test_shell_description_windows_warns_off_wsl_and_steers_pandas():
     """On Windows the tool description pins PowerShell, no-WSL, and pandas steering (#898)."""
     facts = ShellEnvFacts(

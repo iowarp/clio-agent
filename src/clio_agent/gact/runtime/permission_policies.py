@@ -36,7 +36,11 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from clio_agent.gact.runtime.grant_resolver import resolve
+from clio_agent.gact.runtime.grant_resolver import (
+    migrate_priorities,
+    next_append_priority,
+    resolve,
+)
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -136,6 +140,49 @@ def _validate_permission_policies(
                     }
                 )
 
+        # The P0.2 (#1060) axis fields ``modes``/``on`` are optional list[str] narrowing filters.
+        # A malformed axis (not a list, or a non-string entry) must be REJECTED with a typed reason,
+        # never silently coerced or dropped (⚑ no-silent-fallback) — a typoed axis that were silently
+        # ignored would widen a plan/hook grant the user believed was scoped.
+        for field in ("modes", "on"):
+            value = policy.get(field)
+            if value is None:
+                continue
+            if not isinstance(value, list):
+                policy_has_errors = True
+                errors.append(
+                    {
+                        "index": index,
+                        "field": field,
+                        "message": f"{field} must be a list of strings when present",
+                    }
+                )
+            elif not all(isinstance(entry, str) for entry in value):
+                policy_has_errors = True
+                errors.append(
+                    {
+                        "index": index,
+                        "field": field,
+                        "message": f"{field} entries must all be strings",
+                    }
+                )
+
+        # A malformed priority must be REJECTED with a typed reason, never silently defaulted
+        # (⚑ no-silent-fallback). Absence is legitimate — the load-time migration assigns a
+        # stable descending priority. ``bool`` is an ``int`` subclass but never a valid priority.
+        priority_raw = policy.get("priority")
+        if priority_raw is not None and (
+            not isinstance(priority_raw, int) or isinstance(priority_raw, bool)
+        ):
+            policy_has_errors = True
+            errors.append(
+                {
+                    "index": index,
+                    "field": "priority",
+                    "message": "priority must be an integer when present",
+                }
+            )
+
         if policy_has_errors:
             continue
 
@@ -158,7 +205,10 @@ def _load_permission_policies(path: Path | None) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         return []
     clean, _errors = _validate_permission_policies(raw)
-    return clean
+    # Migrate on load: legacy rows without a priority gain a unique descending priority by
+    # insertion index (first row highest), so the priority-banded resolver reproduces this
+    # store's historical first-match order exactly (P0.1 #1059).
+    return migrate_priorities(clean)
 
 
 def _flush_permission_policies(app: "FastAPI") -> None:
@@ -217,7 +267,19 @@ def _append_permission_policy_from_resolution(
 
 
 def _appended(app: "FastAPI", policy: dict[str, Any]) -> dict[str, Any]:
-    app.state.permission_policies.append(policy)
+    """Append ``policy`` as a sticky runtime grant, in its own strictly-lowest priority band.
+
+    A sticky grant appended at runtime must be evaluated LAST (lowest precedence) to preserve the
+    historical first-match order (P0.1 #1059 follow-up). Stamping an explicit ``priority`` here
+    -- strictly below every existing row's effective priority -- is required: leaving it unset lets
+    :func:`resolve`'s live migration derive ``total - index``, which can collide with the current
+    lowest-priority (often already-migrated legacy) row and wrongly trigger the most-restrictive
+    tie-break. See :func:`~clio_agent.gact.runtime.grant_resolver.next_append_priority`.
+    """
+
+    policies = app.state.permission_policies
+    policy["priority"] = next_append_priority(policies)
+    policies.append(policy)
     return policy
 
 

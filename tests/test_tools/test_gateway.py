@@ -15,11 +15,46 @@ from clio_agent.tools.gateway import (
     _mount_with_namespace,
     _namespace_of,
     build_gateway,
+    build_tool_catalog,
     gateway,
     get_gateway,
     list_capabilities,
 )
 from clio_agent.tools.mcp_config import MCPServerSpec, spec_from_declaration
+
+
+def test_declared_tool_catalog_projects_readwrite_from_annotations():
+    """#1061: external MCP tools classify read/write from their DECLARED annotations, the same
+    projection the built-in catalog uses — one source of truth spanning built-ins + external."""
+    remote = FastMCP("remote")
+
+    @remote.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
+    def lookup(q: str) -> str:
+        return q
+
+    @remote.tool(
+        annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": False}
+    )
+    def mutate(q: str) -> str:
+        return q
+
+    @remote.tool()
+    def unannotated(q: str) -> str:
+        return q
+
+    listed = [t.model_copy(update={"name": f"remote_{t.name}"}) for t in _list_tools_sync(remote)]
+    catalog = build_tool_catalog(remote, tools=listed)
+
+    assert "read" in catalog["remote_lookup"].tags
+    assert "write" not in catalog["remote_lookup"].tags
+
+    assert "write" in catalog["remote_mutate"].tags
+    assert "read" not in catalog["remote_mutate"].tags
+
+    # FAIL-SAFE: a tool with NO annotations is classified effectful (neither read nor write),
+    # never silently read-only.
+    assert "read" not in catalog["remote_unannotated"].tags
+    assert "write" not in catalog["remote_unannotated"].tags
 
 
 def test_mount_helper_uses_namespace_when_supported():

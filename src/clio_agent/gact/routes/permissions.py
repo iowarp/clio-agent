@@ -34,6 +34,7 @@ from fastapi.responses import Response
 
 from clio_agent.gact.permission_gate import resolve_permission
 from clio_agent.gact.routes._body import json_body
+from clio_agent.gact.runtime.grant_resolver import migrate_priorities
 from clio_agent.gact.runtime.grants import GRANTOR_USER
 from clio_agent.gact.runtime.permission_policies import (
     _PERMISSION_POLICY_ACTIONS,
@@ -183,6 +184,11 @@ def register_permissions_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
+        # Materialize the priority band on the whole list before persisting (P0.1 #1059): rows
+        # that omit ``priority`` gain a unique DESCENDING priority by insertion index (first row
+        # highest), so the stored order is the resolver's highest-wins band order and reload is a
+        # no-op. Explicit priorities the client sent are preserved verbatim.
+        migrate_priorities(clean)
         app.state.permission_policies = clean
         _flush_permission_policies(app)
         return {"policies": clean}

@@ -571,6 +571,10 @@ def test_allow_session_resolution_adds_policy_and_audits_future_calls(
         assert resp.status_code == 204
         thread.join(timeout=2.0)
         assert decision_holder["decision"] == "allow"
+        # A sticky runtime append is stamped an explicit priority (P0.1 #1059 follow-up): it must
+        # land in its own strictly-lowest band so it never collides with a migrated legacy row's
+        # priority. This is the sole appended row, so it gets priority=0 (one below the default
+        # minimum of 1 -- see grant_resolver.next_append_priority).
         assert app.state.permission_policies == [
             {
                 "scope": "session",
@@ -579,6 +583,7 @@ def test_allow_session_resolution_adds_policy_and_audits_future_calls(
                 "action": "allow",
                 "created_from_permission_id": pending["id"],
                 "path_pattern": "/tmp/old",
+                "priority": 0,
             }
         ]
 
@@ -853,6 +858,9 @@ def test_put_policies_normalizes_valid_policy_and_preserves_unknown_fields(
         )
 
     assert resp.status_code == 200
+    # PUT materializes the priority band (P0.1 #1059): a single row that omits ``priority`` is
+    # stamped priority=1 (unique descending by insertion index; sole row => 1). Unknown fields
+    # (``description``) and normalization (trim + lowercase) are preserved.
     assert resp.json()["policies"] == [
         {
             "scope": "session",
@@ -861,6 +869,7 @@ def test_put_policies_normalizes_valid_policy_and_preserves_unknown_fields(
             "path_pattern": "",
             "action": "deny",
             "description": "block shell",
+            "priority": 1,
         }
     ]
     assert app.state.permission_policies == resp.json()["policies"]
