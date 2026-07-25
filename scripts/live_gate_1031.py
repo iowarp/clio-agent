@@ -770,6 +770,144 @@ def gate_p2(call: Callable[..., Any], out_path: Path, turn_timeout_s: float, bas
     return verdict
 
 
+def gate_composed(call: Callable[..., Any], out_path: Path, turn_timeout_s: float, base: str) -> dict:
+    """The capstone: ONE synthetic multi-job/multi-workspace pipeline that threads all
+    three pillars. Job A (ws1) produces `sales`. Job B (ws2, SAME root, approval_mode=
+    ask) transforms it via the designated-output xform tool — whose write BLOCKS on a
+    permission prompt; while the turn is blocked we (P2) post a mid-turn user steer
+    (expect 202) and (P1) resolve the pending permission live; the turn then completes
+    and (P3) `summary`'s lineage binds cross-job to `sales`. Requires the xform tool
+    (repo .clio/mcp.yaml) + fence off, like p3."""
+
+    verdict: dict = {"pillar": "composed"}
+    shared_root = (REPO / "out/live_gate_1031_composed_root").resolve()
+    shared_root.mkdir(parents=True, exist_ok=True)
+    sales_path = shared_root / "sales.csv"
+    summary_path = shared_root / "summary.csv"
+    for f in ("sales.csv", "summary.csv", "sales", "summary"):
+        (shared_root / f).unlink(missing_ok=True)
+    sales_path.write_text(_SALES_CSV, encoding="utf-8")
+
+    # --- Job A: produce `sales` in ws1 (bypass, deterministic) --------------
+    _set_policies(call, [])
+    ws1 = _workspace(call, "composed-job-a", str(shared_root))
+    sess_a = _xform_session(call, ws1, "composed-job-a", approval_mode="bypass")
+    _post(call, sess_a, _p3_prompt_a(sales_path))
+    verdict["status_a"] = _wait_turn(call, ws1, sess_a, turn_timeout_s)
+    arts_a = call("GET", f"/v1/sessions/{sess_a}/artifacts").get("artifacts", [])
+    sales = next((a for a in arts_a if "sales" in (a.get("name") or "").lower()), None)
+    verdict["sales_minted"] = bool(sales)
+
+    # --- Job B: transform in ws2 (ask mode) with live grant + steer mid-turn -
+    _set_policies(call, [])  # no allow policy → the write prompts (P1 live grant)
+    ws2 = _workspace(call, "composed-job-b", str(shared_root))
+    verdict["distinct_workspaces"] = ws1 != ws2
+    sess_b = _xform_session(call, ws2, "composed-job-b", approval_mode="ask")
+    sse = _SSECollector(base, sess_b).start()
+    _post_async(
+        call, base, sess_b,
+        f"Transform the sales CSV at {sales_path} into a summary by calling the "
+        f"summarize_csv tool with input_path='{sales_path}' and output_path='{summary_path}'. "
+        "Make that single tool call, then report the total revenue it returns.",
+    )
+    # (P1) the xform write blocks on a permission prompt — resolve it live, mid-turn.
+    row = _wait_pending(call, sess_b, timeout=180.0)
+    verdict["p1_pending_row_appeared"] = bool(row)
+    # (P2) while the turn is in flight, land a mid-turn user steer → expect 202.
+    steer = _post_async(call, base, sess_b, "Note for context: this is the Q3 sales roll-up.")
+    verdict["p2_steer_status"] = steer["status_code"]
+    verdict["p2_steer_202"] = steer["status_code"] == 202
+    if row is not None:
+        _resolve(call, row.get("id") or row.get("pid"), "allow")
+        verdict["p1_grant_resolved"] = True
+    verdict["status_b"] = _wait_turn(call, ws2, sess_b, turn_timeout_s)
+    time.sleep(2)
+    sse.stop()
+    _dump(out_path, "composed_job_b_messages.json", _messages(call, sess_b))
+
+    # (P1) the grant was recorded as a resolved permission row.
+    audit_b = _audit(call, sess_b)
+    verdict["p1_resolved_rows"] = sum(1 for r in audit_b if r.get("status") != "pending")
+    # (P2) the steer surfaced (mid_turn_steer message or the drain marker).
+    trace_b = _trace_text(_messages(call, sess_b))
+    verdict["p2_steer_surfaced"] = ("Q3 sales roll-up" in trace_b) or ("Mid-turn user steer" in trace_b)
+
+    # (P3) cross-job lineage: summary binds to sales' producer across the job boundary.
+    arts_b = call("GET", f"/v1/sessions/{sess_b}/artifacts").get("artifacts", [])
+    summary = next((a for a in arts_b if "summary" in (a.get("name") or "").lower()), None)
+    verdict["summary_minted"] = bool(summary)
+    reaches = False
+    if summary and sales:
+        summary_id, sales_id = _artifact_id(summary), _artifact_id(sales)
+        lin = call("GET", f"/v1/artifacts/{summary_id}/lineage",
+                   params={"direction": "upstream", "depth": 12})
+        _dump(out_path, "composed_lineage.json", lin)
+        node_ids = {n.get("id") or n.get("artifact_id") for n in lin.get("nodes", [])}
+        reaches = sales_id in node_ids
+    verdict["p3_reaches_sales_producer"] = reaches
+
+    verdict["pass"] = bool(
+        verdict.get("sales_minted")
+        and verdict.get("summary_minted")
+        and verdict.get("distinct_workspaces")
+        and verdict.get("p1_pending_row_appeared")
+        and verdict.get("p1_grant_resolved")
+        and verdict.get("p2_steer_202")
+        and reaches
+        and verdict.get("status_b") in ("idle", "completed")
+    )
+    return verdict
+
+
+def gate_extras(call: Callable[..., Any], out_path: Path, turn_timeout_s: float) -> dict:
+    """Targeted live coverage of P1 semantics not exercised by the p1 gate: an explicit
+    DENY policy blocks a write even in a permissive mode (security invariant), and
+    auto-edits mode auto-allows an fs write with no prompt. Uses the leaf react agent."""
+
+    verdict: dict = {"pillar": "extras", "checks": {}}
+    root = (REPO / "out/live_gate_1031_extras_root").resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    wsid = _workspace(call, "extras", str(root))
+
+    # --- A. explicit DENY policy blocks a write even in bypass mode ---------
+    denied_file = root / "should_not_exist.txt"
+    denied_file.unlink(missing_ok=True)
+    _set_policies(call, [{"scope": "workspace", "action": "deny",
+                          "tool_name_pattern": "fs_apply_edit_write"}])
+    sid_d = _leaf_session(call, wsid, "extras-deny", approval_mode="bypass")
+    _post(call, sid_d,
+          f"Create a file at {denied_file} containing the word NOPE using the file-writing tool.")
+    st_d = _wait_turn(call, wsid, sid_d, turn_timeout_s)
+    trace_d = _trace_text(_messages(call, sid_d))
+    verdict["checks"]["explicit_deny_beats_mode"] = {
+        "status": st_d,
+        "file_written": denied_file.exists(),  # MUST be False
+        "deny_in_trace": ("deny" in trace_d.lower() or "denied" in trace_d.lower()
+                          or "not permitted" in trace_d.lower()),
+        "pass": (not denied_file.exists()) and st_d in ("idle", "completed"),
+    }
+    denied_file.unlink(missing_ok=True)
+
+    # --- B. auto-edits mode auto-allows an fs write (no prompt) -------------
+    auto_file = root / "auto_written.txt"
+    auto_file.unlink(missing_ok=True)
+    _set_policies(call, [])
+    sid_a = _leaf_session(call, wsid, "extras-auto", approval_mode="auto-edits")
+    _post(call, sid_a,
+          f"Create a file at {auto_file} containing the word AUTO using the file-writing tool.")
+    st_a = _wait_turn(call, wsid, sid_a, turn_timeout_s)
+    rows_a = _audit(call, sid_a)
+    verdict["checks"]["auto_edits_allows_fs_write"] = {
+        "status": st_a,
+        "file_written": auto_file.exists(),  # auto-allowed → written
+        "permission_rows": len(rows_a),  # ideally 0 (no prompt) or auto-resolved
+        "pass": auto_file.exists() and st_a in ("idle", "completed"),
+    }
+
+    verdict["pass"] = all(c.get("pass") for c in verdict["checks"].values())
+    return verdict
+
+
 def gate_smoke(call: Callable[..., Any], out_path: Path, turn_timeout_s: float) -> dict:
     """Cheap boot/turn smoke: one trivial turn confirms server+provider+CTE+haiku all
     work before the multi-minute pillar scenarios. NOT a pillar gate."""
@@ -800,10 +938,12 @@ GATES: dict[str, Callable[..., dict]] = {
     "p1": gate_p1,
     "p2": gate_p2,
     "p3": gate_p3,
+    "composed": gate_composed,
+    "extras": gate_extras,
 }
 
 # Gates that also need the base URL (for the SSE collector).
-_GATES_NEEDING_BASE = {"p2"}
+_GATES_NEEDING_BASE = {"p2", "composed"}
 
 # P3 needs the xform_summarize_csv designated-output tool. It is a DECLARED stdio MCP
 # server discovered at repo (process-cwd) scope via <repo>/.clio/mcp.yaml, so the BASE
@@ -815,10 +955,11 @@ _GATES_NEEDING_BASE = {"p2"}
 _GATE_BOOT_SCRIPTS: dict[str, str] = {}
 _GATE_EXTRA_ENV: dict[str, dict[str, str]] = {
     "p3": {"CLIO_SANDBOX_ENABLED": "false", "CLIO_ARC_STORE": "local"},
+    "composed": {"CLIO_SANDBOX_ENABLED": "false", "CLIO_ARC_STORE": "local"},
 }
 # Gates that require an <repo>/.clio/mcp.yaml declaring extra stdio MCP servers,
 # written BEFORE boot (the base agent reads it at init) and removed after.
-_GATE_MCP_YAML = {"p3"}
+_GATE_MCP_YAML = {"p3", "composed"}
 
 
 def _write_repo_mcp_yaml() -> Path | None:
