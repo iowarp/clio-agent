@@ -46,7 +46,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from clio_agent.tools.catalog import get_tool_entry
+from clio_agent.tools.catalog import annotations_are_read_only, get_tool_entry
 
 #: Grant ``kind`` discriminators over the existing policy-row fields.
 KIND_TOOL = "tool"
@@ -82,34 +82,11 @@ _RESTRICTIVENESS: dict[str, int] = {
 #: permission gate + routes import one constant and :func:`is_read_only` needs no back-import.
 EXTERNAL_MCP_CONTEXT_KIND = "external_mcp"
 
-#: Standard MCP boolean hint keys. A non-boolean value for any of these makes the annotation
-#: block untrustworthy, so :func:`annotations_are_read_only` requires permission (fail closed).
-_MCP_BOOLEAN_HINTS: tuple[str, ...] = (
-    "readOnlyHint",
-    "destructiveHint",
-    "idempotentHint",
-    "openWorldHint",
-)
-
-
-def annotations_are_read_only(annotations: Any) -> bool:
-    """Return whether MCP annotations explicitly and consistently declare read-only.
-
-    MCP annotations are optional hints, so the boundary uses the one safe positive case only:
-    a real boolean ``readOnlyHint=True`` with well-typed standard boolean hints and no
-    contradictory ``destructiveHint=True``. Everything else (missing, malformed, contradictory)
-    is NOT read-only and therefore asks for permission. Generalized from the former
-    ``_external_mcp_annotations_are_read_only`` (permission_gate) so it can also classify any
-    tool that declares the hint, not just the external-MCP path.
-    """
-
-    if not isinstance(annotations, Mapping):
-        return False
-    for name in _MCP_BOOLEAN_HINTS:
-        value = annotations.get(name)
-        if value is not None and type(value) is not bool:
-            return False
-    return annotations.get("readOnlyHint") is True and annotations.get("destructiveHint") is not True
+#: The MCP annotation read-only classifier now lives in :mod:`clio_agent.tools.catalog` (the
+#: single source of truth for tool effect classification, #1061) and is imported above +
+#: re-exported here so existing importers of ``grant_resolver.annotations_are_read_only`` keep
+#: working. The catalog projects the SAME predicate into each tool's read/write tag, so the
+#: annotation-signal (external MCP context) and the catalog-signal below stay in lockstep.
 
 
 def is_read_only(
@@ -125,13 +102,17 @@ def is_read_only(
     1. **Annotation signal.** An external-MCP gate ``context`` (or any context) whose
        ``annotations`` declare a real boolean ``readOnlyHint=True`` (and not
        ``destructiveHint=True``) — see :func:`annotations_are_read_only`.
-    2. **Catalog signal.** The static tool catalog tags the tool ``"read"`` and NOT ``"write"``.
-       Native ``fs``/``shell`` tools carry NO annotation context (built-ins return ``None``), so
-       this catalog consult is what classifies e.g. ``fs_read_file`` / ``fs_propose_edit``.
+    2. **Catalog signal.** The tool catalog tags the tool ``"read"`` and NOT ``"write"``. Since
+       #1061 that tag is a PROJECTION of the tool's declared MCP annotations
+       (:func:`clio_agent.tools.catalog.classification_tags`), spanning built-ins AND external
+       MCP tools uniformly: native ``fs``/``shell`` tools carry NO gate annotation context
+       (built-ins pass ``None``), so this catalog consult — fed by the fs/shell decorator
+       annotations — is what classifies e.g. ``fs_read_file`` / ``fs_propose_edit``.
 
-    Fails closed (NOT read-only → the gate proceeds to approval): ``fs_apply_edit_write`` (tagged
-    ``write``), ``shell_bash`` (genuinely unclassifiable — the OS fence, not the gate, contains
-    its writes/egress), and any unannotated external tool. ``args``/``kind`` are accepted for a
+    Fails closed (NOT read-only → the gate proceeds to approval): ``fs_apply_edit_write`` (its
+    ``destructiveHint`` projects to the ``write`` tag), ``shell_bash`` (``openWorldHint`` →
+    effectful, no read tag — the OS fence, not the gate, contains its writes/egress), and any
+    tool with NO annotations (fail-safe: no ``read`` tag). ``args``/``kind`` are accepted for a
     stable signature (a future kind may inspect them) but are not consulted by these two signals.
     """
 

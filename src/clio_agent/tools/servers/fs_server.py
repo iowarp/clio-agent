@@ -42,8 +42,37 @@ _MAX_READ_BYTES = conf.resolve(
     "limits.fs_read_bytes", env="CLIO_FS_MAX_READ_BYTES", default=256 * 1024, cast=conf.as_int
 )
 
+# Declared MCP ToolAnnotations — the SINGLE source of truth for each built-in
+# tool's effect class (#1061). The catalog read/write tags are now a PROJECTION
+# of these hints (``clio_agent.tools.catalog.classification_tags``); no
+# hand-authored read/write tag competes with the declaration below.
+#
+#   - read_file: provably read-only, closed-world (local disk read only).
+#   - propose_edit: read-only DELIBERATELY — it stages a unified diff WITHOUT
+#     touching disk, so the permission gate must treat it as a read (preserving
+#     the pre-#1061 "read" classification). readOnlyHint=True carries that truth.
+#   - apply_edit_write: NOT read-only; a bounded, closed-world destructive write
+#     (a single known path), so it projects to the catalog ``write`` tag the
+#     auto-edits approval mode keys on.
+_READ_FILE_ANNOTATIONS: dict[str, Any] = {"readOnlyHint": True, "openWorldHint": False}
+_PROPOSE_EDIT_ANNOTATIONS: dict[str, Any] = {"readOnlyHint": True, "openWorldHint": False}
+_APPLY_EDIT_WRITE_ANNOTATIONS: dict[str, Any] = {
+    "readOnlyHint": False,
+    "destructiveHint": True,
+    "openWorldHint": False,
+}
 
-@fs_server.tool()
+#: Namespaced tool name → declared annotations for the fs built-ins. Exported so
+#: :mod:`clio_agent.tools.catalog` projects the read/write tags from the SAME
+#: mapping the decorators declare — one declaration, two consumers.
+FS_TOOL_ANNOTATIONS: dict[str, dict[str, Any]] = {
+    "fs_read_file": _READ_FILE_ANNOTATIONS,
+    "fs_propose_edit": _PROPOSE_EDIT_ANNOTATIONS,
+    "fs_apply_edit_write": _APPLY_EDIT_WRITE_ANNOTATIONS,
+}
+
+
+@fs_server.tool(annotations=_READ_FILE_ANNOTATIONS)
 def read_file(filepath: str) -> dict[str, Any]:
     """Read a file's contents from disk.
 
@@ -70,7 +99,7 @@ def read_file(filepath: str) -> dict[str, Any]:
     }
 
 
-@fs_server.tool()
+@fs_server.tool(annotations=_PROPOSE_EDIT_ANNOTATIONS)
 def propose_edit(filepath: str, new_content: str) -> dict[str, Any]:
     """Produce a unified diff for an edit WITHOUT touching disk.
 
@@ -116,10 +145,11 @@ def propose_edit(filepath: str, new_content: str) -> dict[str, Any]:
     }
 
 
-@fs_server.tool()
+@fs_server.tool(annotations=_APPLY_EDIT_WRITE_ANNOTATIONS)
 def apply_edit_write(filepath: str, new_content: str) -> dict[str, Any]:
-    """Write ``new_content`` to ``filepath`` on disk. The tool name
-    contains "write" so the destructive-tool permission gate fires
+    """Write ``new_content`` to ``filepath`` on disk. Its declared MCP
+    annotations (``destructiveHint=True``, not read-only) project to the
+    catalog ``write`` tag, so the permission gate treats it as destructive
     automatically — direct agent invocation requires user approval.
 
     Designed for the GACT /diffs/apply path: when the user accepts
@@ -131,4 +161,4 @@ def apply_edit_write(filepath: str, new_content: str) -> dict[str, Any]:
     return write_text_with_policy(filepath, new_content)
 
 
-__all__ = ["fs_server"]
+__all__ = ["FS_TOOL_ANNOTATIONS", "fs_server"]

@@ -139,6 +139,70 @@ def test_is_read_only_signals() -> None:
     assert is_read_only("tool", "remote.lookup", {}, bad) is False
 
 
+def test_catalog_readwrite_tags_are_annotation_projections() -> None:
+    """#1061: the built-in read/write tags are PROJECTIONS of the declared MCP annotations.
+
+    The declared annotations are the single source of truth; the catalog tag is derived from
+    them via ``classification_tags``, not hand-authored — and the 4 known tools keep their
+    pre-#1061 read/write classification (backward compatible).
+    """
+    from clio_agent.tools.catalog import (
+        _BUILTIN_ANNOTATIONS,
+        classification_tags,
+        get_tool_entry,
+    )
+
+    for name, tag in (
+        ("fs_read_file", "read"),
+        ("fs_propose_edit", "read"),
+        ("fs_apply_edit_write", "write"),
+    ):
+        assert classification_tags(_BUILTIN_ANNOTATIONS[name]) == frozenset({tag})
+        assert tag in get_tool_entry(name).tags
+    # shell_bash is open-world effectful: NEITHER read nor write (its writes/egress live behind
+    # the OS fence, not a catalog write tag).
+    assert classification_tags(_BUILTIN_ANNOTATIONS["shell_bash"]) == frozenset()
+    shell_tags = get_tool_entry("shell_bash").tags
+    assert "read" not in shell_tags
+    assert "write" not in shell_tags
+
+
+def test_unannotated_tool_fails_safe_to_not_read_only() -> None:
+    """#1061 fail-safe: a tool with NO annotations is NOT read-only and projects effectful.
+
+    ``classification_tags(None)`` yields no ``read`` tag (most-restrictive default), so
+    ``is_read_only`` returns False for an unannotated/unknown tool — whether via the catalog
+    signal (built-in path) or an external-MCP context carrying no valid ``readOnlyHint``.
+    """
+    from clio_agent.tools.catalog import classification_tags
+
+    assert classification_tags(None) == frozenset()
+    assert classification_tags({"readOnlyHint": "true"}) == frozenset()  # malformed -> fail closed
+    assert is_read_only("tool", "totally_unknown_tool", {}, None) is False
+    absent_ctx = {"kind": "external_mcp", "annotations": None}
+    assert is_read_only("tool", "totally_unknown_tool", {}, absent_ctx) is False
+
+
+def test_partial_annotations_missing_open_world_hint_are_not_write() -> None:
+    """#1061 fail-safe: a mutating tool that OMITS ``openWorldHint`` is NOT catalog ``write``.
+
+    Per the MCP spec ``openWorldHint`` defaults to ``True`` (open-world) when absent, so a
+    bounded ``write`` (auto-approvable under ``auto-edits``) must POSITIVELY declare
+    ``openWorldHint=False``. A present-but-partial block that declares an effect but omits
+    ``openWorldHint`` must fall through to ``frozenset()`` — never auto-approve as bounded.
+    """
+    from clio_agent.tools.catalog import classification_tags
+
+    assert classification_tags({"destructiveHint": True}) == frozenset()
+    assert classification_tags({"readOnlyHint": False}) == frozenset()
+    # An explicit open-world mutation is likewise not a bounded write.
+    assert classification_tags({"destructiveHint": True, "openWorldHint": True}) == frozenset()
+    # Positively-declared closed-world mutation still classifies write.
+    assert classification_tags({"destructiveHint": True, "openWorldHint": False}) == frozenset(
+        {"write"}
+    )
+
+
 def test_grant_record_synthesizes_kind_for_legacy_rows() -> None:
     """A legacy row without ``kind`` normalizes: kind synthesized from the set pattern field."""
     assert GrantRecord.from_policy_row(
