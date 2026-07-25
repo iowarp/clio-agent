@@ -507,8 +507,8 @@ class Session(BaseModel):
     tokens_input: int = 0
     tokens_output: int = 0
     cost_usd: float = 0.0
-    # iowarp/clio-agent — capabilities.plan_mode + edit_modes:
-    mode: Literal["chat", "plan", "edit", "architect"] = "chat"
+    # capabilities.plan_mode + edit_modes. P1.1 #1063 deleted the unenforced ``chat`` mode (== edit).
+    mode: Literal["plan", "edit", "architect"] = "edit"
     edit_mode: Literal["diff", "whole", "patch"] = "diff"
     routing_mode: Literal["auto", "chat", "experts", "reasoning_only"] = "auto"
     # iowarp/clio-agent #1034 — approval axis, ORTHOGONAL to ``mode`` (default
@@ -529,7 +529,7 @@ class CreateSessionRequest(BaseModel):
     title: str = ""
     model: Optional[ModelRef] = None
     agent: Optional[AgentRef] = None
-    mode: Literal["chat", "plan", "edit", "architect"] = "chat"
+    mode: Literal["plan", "edit", "architect"] = "edit"  # P1.1 #1063: no ``chat`` (422 rejects it)
     edit_mode: Literal["diff", "whole", "patch"] = "diff"
     routing_mode: Literal["auto", "chat", "experts", "reasoning_only"] = "auto"
     approval_mode: Literal["ask", "auto-edits", "bypass", "ai-review"] = "ask"
@@ -544,7 +544,7 @@ class UpdateSessionRequest(BaseModel):
     title: Optional[str] = None
     model: Optional[ModelRef] = None
     agent: Optional[AgentRef] = None
-    mode: Optional[Literal["chat", "plan", "edit", "architect"]] = None
+    mode: Optional[Literal["plan", "edit", "architect"]] = None  # P1.1 #1063: no ``chat``
     edit_mode: Optional[Literal["diff", "whole", "patch"]] = None
     # routing_mode overrides the planner. "auto" runs the normal planner;
     # "chat" forces every turn through chat so users don't need a /chat

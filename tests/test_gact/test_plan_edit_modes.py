@@ -171,8 +171,9 @@ def test_apply_edit_refuses_outside_workspace(tmp_path: Path) -> None:
 
 
 def test_apply_edit_refuses_in_plan_mode(tmp_path: Path) -> None:
-    """_apply_edit_to_disk refuses to write when session.mode
-    is plan or architect."""
+    """_apply_edit_to_disk refuses to write in plan mode — now via the unified
+    resolver (the built-in plan_acl @40 deny), not a private ``session.mode``
+    predicate (P1.1 #1063). The deny is typed ``policy_denied``."""
 
     app = build_app(sessions_path=tmp_path / "s.json")
     (tmp_path / "ws").mkdir()
@@ -182,7 +183,7 @@ def test_apply_edit_refuses_in_plan_mode(tmp_path: Path) -> None:
         title="t",
         mode="plan",
     )
-    with pytest.raises(PermissionError, match="session.mode"):
+    with pytest.raises(PermissionError, match="permission policy denied"):
         _apply_edit_to_disk(
             path=str(tmp_path / "ws" / "x.txt"),
             new_content="x",

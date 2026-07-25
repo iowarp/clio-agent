@@ -150,9 +150,9 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
     async def patch_session(sid: str, req: UpdateSessionRequest) -> Session:
         """Update mutable session fields (title + mode + edit_mode).
 
-        Lets the TUI flip plan ↔ edit ↔ chat ↔ architect mid-
-        session without recreating, and rename via the existing
-        rename modal.
+        Lets the TUI flip plan ↔ edit ↔ architect mid-session
+        without recreating, and rename via the existing rename
+        modal (``chat`` mode was deleted in P1.1 #1063).
         """
 
         sess = app.state.sessions.update(

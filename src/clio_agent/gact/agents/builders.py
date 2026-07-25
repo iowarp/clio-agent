@@ -268,7 +268,7 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
             self,
             question: str,
             session_id: str,
-            session_mode: str = "chat",
+            session_mode: str = "edit",
             session_edit_mode: str = "diff",
             cancel_requested: Any | None = None,
         ) -> Any:
@@ -1358,7 +1358,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             self,
             question: str,
             session_id: str,
-            session_mode: str = "chat",
+            session_mode: str = "edit",
             session_edit_mode: str = "diff",
             cancel_requested: Any | None = None,
         ) -> Any:
@@ -1785,7 +1785,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             self,
             question: str,
             session_id: str,
-            session_mode: str = "chat",
+            session_mode: str = "edit",
             session_edit_mode: str = "diff",
             cancel_requested: Any | None = None,
         ) -> Any:

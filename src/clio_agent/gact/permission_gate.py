@@ -9,11 +9,19 @@ and building the closures the tool-execution boundary calls
 Whether a call needs approval is decided structurally, not by tool-name
 substrings: :func:`is_read_only` (in :mod:`clio_agent.gact.runtime.grant_resolver`)
 fast-allows a provably read-only call (MCP ``readOnlyHint`` annotation OR a static
-catalog ``read`` tag); every other call proceeds to the plan/architect lock,
-policy match, and interactive prompt. Policy matching itself delegates to the one
-:func:`~clio_agent.gact.runtime.grant_resolver.resolve` matcher (#1032) — the
-former ``_is_destructive`` substring set and the bounded ``shell_bash`` parser are
-deleted (their read-only diagnostics are now covered by :func:`is_read_only`).
+catalog ``read`` tag); every other call proceeds to the policy match and
+interactive prompt. There is no separate plan/architect lock step: plan/architect
+enforcement is a set of built-in ``plan_acl`` policy rows (P1.1 #1063) that
+:func:`~clio_agent.gact.runtime.grant_resolver.resolve` consults for every
+``kind="tool"`` call whose session ``mode`` is plan-restricted — the same ONE
+matcher that resolves every other policy row, dynamically prioritized above any
+matching user row so it can never be outranked (adversarial-review fix, #1063).
+A resulting deny is recorded with the same ``reason: "policy_deny"`` as any other
+policy denial — there is no separate ``session_mode_readonly`` reason. Policy
+matching delegates to the one :func:`~clio_agent.gact.runtime.grant_resolver.resolve`
+matcher (#1032) — the former ``_is_destructive`` substring set and the bounded
+``shell_bash`` parser are deleted (their read-only diagnostics are now covered by
+:func:`is_read_only`).
 
 It pairs with :mod:`clio_agent.gact.runtime.permission_policies`, which owns the
 *data* layer (validation, on-disk load/flush, resolution-derived policies) and
@@ -192,8 +200,9 @@ def _policy_action_for_tool(
     session: Any | None,
     tool_name: str,
     args: Mapping[str, Any],
+    mode: str = "",
 ) -> str:
-    """Return the first matching permission policy action for a tool call.
+    """Return the winning permission policy action for a tool call.
 
     A thin shim over :func:`~clio_agent.gact.runtime.grant_resolver.resolve`
     (``kind="tool"``): it resolves the call's target path + workspace from the
@@ -202,6 +211,14 @@ def _policy_action_for_tool(
     without enforcing them is a silent safety bypass; matching stays small and
     predictable (scope, tool glob, optional path glob, then the raw action).
     Kept as a named shim because ``enrichment``/``proposal_effects`` bind it.
+
+    ``mode`` (P1.1 #1063) is the session's mode: passing it makes ``resolve``
+    consult the built-in plan-mode ACL (deny every non-read tool in
+    plan/architect; the sole ``<plans>/*.md`` write carve-out in plan), so the
+    plan/architect read-only lock is now this ONE data-driven path — no longer a
+    predicate copy-pasted here + in ``enrichment`` + ``proposal_effects``. The
+    three former lock sites pass ``mode``; direct route actions
+    (:func:`_guard_direct_destructive_action`) leave it empty, unchanged.
     """
 
     path = _permission_path_from_args(args)
@@ -213,6 +230,7 @@ def _policy_action_for_tool(
         session_id=session_id,
         workspace_id=workspace_id,
         path=path,
+        mode=mode,
     )
 
 
@@ -480,45 +498,19 @@ def _make_permission_gate(app: "FastAPI"):
         # Prefer the session currently driving the turn. Recency is
         # only a fallback for truly out-of-band tool calls.
         sid, current = _resolve_tool_session(app)
-        if current is not None:
-            # iowarp/clio-agent — plan_mode + architect mode reject
-            # destructive tool calls without prompting. Read-only
-            # contract is hard, not advisory.
-            if current.mode in {"plan", "architect"}:
-                row = {
-                    "id": f"perm_{uuid.uuid4().hex[:12]}",
-                    "session_id": sid,
-                    "tool_call": {
-                        "tool_name": name,
-                        "input": dict(args),
-                    },
-                    "summary": (f"{subject} {name!r} blocked by session.mode={current.mode!r}"),
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                    "status": "auto_denied",
-                    "action": "deny",
-                    "resolved_at": datetime.now(timezone.utc).isoformat(),
-                }
-                app.state.permissions[row["id"]] = row
-                enforce_dict_bound(app, app.state.permissions, "permissions", session_id=sid)
-                app.state.bus.publish(
-                    Event(
-                        type="permission.resolved",
-                        session_id=sid,
-                        payload={
-                            "permission_id": row["id"],
-                            "action": "deny",
-                            "session_id": sid,
-                            "reason": "session_mode_readonly",
-                        },
-                    )
-                )
-                return "deny"
+        # P1.1 #1063: the plan/architect read-only lock is no longer a predicate here (it was
+        # copy-pasted into three modules). It is now a set of built-in plan_acl rows the ONE
+        # resolver evaluates — passing the session mode makes ``resolve`` deny every non-read tool
+        # in plan/architect (@40) and allow the sole ``<plans>/*.md`` write carve-out in plan (@70).
+        # Read-only calls never reach here (``is_read_only`` fast-allowed above), in every mode.
+        mode = getattr(current, "mode", "") if current is not None else ""
         policy_action = _policy_action_for_tool(
             app,
             session_id=sid,
             session=current,
             tool_name=name,
             args=args,
+            mode=mode,
         )
         if policy_action == "deny":
             _record_resolved_permission(

@@ -127,7 +127,9 @@ class RejectionReason(str, Enum):
     OVER_CAP = "over_cap"  # this turn already hit the per-turn promotion cap
     OVER_BATCH = "over_batch"  # this call carried more proposals than the batch max
     WRITE_FAILED = "write_failed"  # inline content could not be written under policy
-    MODE_READ_ONLY = "mode_read_only"  # content write refused under plan/architect mode
+    # P1.1 #1063: the former MODE_READ_ONLY reason is gone with the copy-pasted plan/architect
+    # lock. A content write in plan/architect is now denied through the ONE resolver (the built-in
+    # plan_acl @40 rule), surfaced as the typed POLICY_DENIED below — no separate mode predicate.
     WOULD_OVERWRITE = "would_overwrite"  # inline content would clobber a non-owned file
     POLICY_DENIED = "policy_denied"  # a permission policy denied the content write
     PERMISSION_REQUIRED = "permission_required"  # policy=ask, no inline approver

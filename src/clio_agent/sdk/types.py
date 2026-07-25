@@ -194,7 +194,7 @@ class Session(_WireModel):
     tokens_input: int = 0
     tokens_output: int = 0
     cost_usd: float = 0.0
-    mode: str = "chat"
+    mode: str = "edit"  # P1.1 #1063: ``chat`` mode removed (unenforced == edit)
     edit_mode: str = "diff"
     routing_mode: str = "auto"
     archived: bool = False

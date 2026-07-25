@@ -215,7 +215,7 @@ def _record_context_frame(
             "id": _session_agent_id(sess),
             "mode": agent_ref.get("mode", "") if isinstance(agent_ref, dict) else "",
             "routing_mode": getattr(sess, "routing_mode", "auto"),
-            "session_mode": getattr(sess, "mode", "chat"),
+            "session_mode": getattr(sess, "mode", "edit"),
             "edit_mode": getattr(sess, "edit_mode", "diff"),
         },
         "prompt": {
@@ -296,11 +296,13 @@ def _apply_edit_to_disk(
             raise PermissionError(
                 f"refused to write {target} outside workspace root {ws.root_path}"
             ) from exc
-    # Mode gate — plan + architect can't apply.
-    if session.mode in {"plan", "architect"}:
-        raise PermissionError(f"refused to write under session.mode={session.mode!r}")
     target = validate_write_path(path, field="path")
 
+    # Mode gate — plan/architect are read-only. P1.1 #1063: this is no longer a private
+    # ``session.mode in {plan, architect}`` predicate; it rides the SAME resolver as the live
+    # tool gate. Passing ``mode`` makes ``_policy_action_for_tool`` consult the built-in plan_acl
+    # rows, so a write here is denied in plan/architect exactly as at the gate (ONE enforcement
+    # path), while a ``<plans>/*.md`` write in plan mode is permitted by the @70 carve-out.
     permission_args = {
         "filepath": str(target),
         "new_content_bytes": len(new_content),
@@ -311,6 +313,7 @@ def _apply_edit_to_disk(
         session=session,
         tool_name="fs_apply_edit_write",
         args=permission_args,
+        mode=str(getattr(session, "mode", "") or ""),
     )
     if policy_action == "deny":
         _record_resolved_permission(
