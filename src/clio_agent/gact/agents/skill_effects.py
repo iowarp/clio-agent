@@ -11,7 +11,7 @@ output. A body containing the string ``effect: enter_mode`` therefore has ZERO r
 effect (injection-safety): only the DECLARED ``effect:`` frontmatter key of an *invoked*
 skill triggers the runtime action.
 
-Two effects ship in P1.0:
+Two effects shipped in P1.0:
 
 * ``enter_mode`` — transition the session mode via the real session-update path
   (:meth:`SessionStore.update`), after which the plan-mode machinery (P1.1/1.2/1.3) takes
@@ -24,6 +24,39 @@ Two effects ship in P1.0:
   caller's context (parity with Claude Code / Codex skill-as-subagent). Returns the task
   handle; the body is NOT inlined.
 
+P4.4 (#1082) GENERALIZES this vocabulary with the **autonomy effects** — each a declared
+frontmatter bundle over the SAME primitives the ``/loop``·``/goal``·``/cron`` surfaces use,
+so "run skill X daily until Y holds" is ONE declared, injection-safe skill:
+
+* ``loop`` — arm a self-paced cross-turn loop for this skill's work via
+  :func:`clio_agent.gact.autonomous_loop.start_loop` (#P4.1) with the declared typed bounds
+  (``max_iters`` / ``interval_s`` / ``max_wallclock_s`` / ``max_tokens`` / ``max_usd`` /
+  ``max_no_progress``). The loop is STILL bounded — an unset bound resolves to a finite hard
+  default and every ``loop_wakeup`` delay is clamped; a skill cannot evade the anti-runaway.
+* ``set_goal`` — arm a run-until-``<condition>`` goal via
+  :func:`clio_agent.gact.goal.arm_goal` (#P4.2). The SANCTIONED skill-arming door (a DECLARED,
+  trusted effect — like ``/goal``; NOT model self-arming, goal stays non-model-tool-armable per
+  #1080). Declare the AUTHORITATIVE deterministic gate with flat ``effect_predicate_*`` siblings
+  (:func:`_flat_predicate`), else the weaker NL-only mode — either way two-tier gated at finalize.
+* ``schedule`` — register a cron / ``run_at`` / ``delay_s`` schedule for this skill via the
+  P4.3 :meth:`ScheduleStore.create` (#P4.3). The schedule is STILL clamped — a sub-floor cron
+  raises the typed :class:`~clio_agent.gact.scheduler.CronError` (min-interval anti-runaway),
+  surfaced as a :class:`SkillEffectError`.
+* ``plan_workflow`` / ``plan_small`` — ``enter_mode`` VARIANTS (P1.6): enter plan mode with a
+  variant tag (a different attachment/thinking budget). Because plan is the strictest mode,
+  they inherit the enter_mode no-relax guard verbatim — they can only ENTER plan, never escape
+  a restrictive posture.
+
+**The P1.0 invariants apply VERBATIM to every autonomy effect.** INJECTION-SAFE: the effect
+is read ONLY from the DECLARED ``effect:`` frontmatter of an invoked skill — a body / read
+file / model output containing ``effect: loop`` (or ``schedule`` / ``set_goal``) has ZERO
+runtime effect. NO PRIVILEGE ESCALATION: a ``loop`` / ``schedule`` / ``set_goal`` effect
+neither touches the session mode (so it cannot escape a restrictive posture) nor over-grants
+— its re-driven/scheduled turns run in the SAME session under the SAME mode gate — and it
+routes through the SAME clamped infra (bounds/clamps of #P4.1/#P4.2/#P4.3 + the goal two-tier
+gate), so it cannot evade the anti-runaway. A ``plan_workflow`` / ``plan_small`` effect is a
+plan-mode enter and can never relax.
+
 Validation is typed and total: an unknown ``kind`` (or a malformed spec) raises
 :class:`SkillEffectError` — never a silent ignore (no-silent-fallback ground rule).
 """
@@ -32,7 +65,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 from clio_agent.gact import context as _ctx
@@ -42,11 +75,39 @@ from clio_agent.runtime import trace
 if TYPE_CHECKING:
     from clio_agent.gact.skills import SkillRef
 
-#: The declared effect kinds P1.0 ships. An ``effect.kind`` outside this set is a typed
-#: validation error, never a silent skip.
+#: The declared effect kinds. An ``effect.kind`` outside this set is a typed validation
+#: error, never a silent skip. P1.0 shipped ``enter_mode`` + ``spawn_subagent_with_skill``;
+#: P4.4 (#1082) adds the autonomy effects ``loop`` / ``set_goal`` / ``schedule`` and the
+#: ``plan_workflow`` / ``plan_small`` enter_mode variants.
 EFFECT_ENTER_MODE: Literal["enter_mode"] = "enter_mode"
 EFFECT_SPAWN_SUBAGENT: Literal["spawn_subagent_with_skill"] = "spawn_subagent_with_skill"
-_KNOWN_EFFECT_KINDS = frozenset({EFFECT_ENTER_MODE, EFFECT_SPAWN_SUBAGENT})
+EFFECT_LOOP: Literal["loop"] = "loop"
+EFFECT_SET_GOAL: Literal["set_goal"] = "set_goal"
+EFFECT_SCHEDULE: Literal["schedule"] = "schedule"
+EFFECT_PLAN_WORKFLOW: Literal["plan_workflow"] = "plan_workflow"
+EFFECT_PLAN_SMALL: Literal["plan_small"] = "plan_small"
+
+#: The ``enter_mode`` VARIANTS (P1.6): each enters PLAN mode carrying a variant tag (a
+#: different attachment / thinking budget). The tag rides through as
+#: :attr:`SkillEffect.plan_variant` and is recorded on the session + provenance event; the
+#: transition itself reuses the tighten-only ``enter_mode`` path (plan is strictest, so a
+#: variant can never relax a restrictive mode).
+_PLAN_VARIANTS: dict[str, str] = {
+    EFFECT_PLAN_WORKFLOW: "workflow",
+    EFFECT_PLAN_SMALL: "small",
+}
+
+_KNOWN_EFFECT_KINDS = frozenset(
+    {
+        EFFECT_ENTER_MODE,
+        EFFECT_SPAWN_SUBAGENT,
+        EFFECT_LOOP,
+        EFFECT_SET_GOAL,
+        EFFECT_SCHEDULE,
+        EFFECT_PLAN_WORKFLOW,
+        EFFECT_PLAN_SMALL,
+    }
+)
 
 #: Session modes and their restrictiveness RANK (higher = MORE restrictive). ``enter_mode``
 #: may only move to an equal-or-more-restrictive posture (target rank >= current rank); a
@@ -88,13 +149,30 @@ class SkillModeTransitionError(SkillEffectError):
         self.target = target
 
 
+_EffectKind = Literal[
+    "enter_mode",
+    "spawn_subagent_with_skill",
+    "loop",
+    "set_goal",
+    "schedule",
+    "plan_workflow",
+    "plan_small",
+]
+
+
 @dataclass(frozen=True)
 class SkillEffect:
-    """A validated, declared skill effect (parsed from trusted frontmatter metadata)."""
+    """A validated, declared skill effect (parsed from trusted frontmatter metadata).
 
-    kind: Literal["enter_mode", "spawn_subagent_with_skill"]
+    The autonomy effects (``loop`` / ``set_goal`` / ``schedule``) carry their already-typed,
+    already-validated declared arguments in :attr:`params` (numeric bounds coerced to int /
+    float at parse time, so a malformed value is a typed error BEFORE any infra is armed)."""
+
+    kind: _EffectKind
     mode: str = ""  # enter_mode target mode
     agent: str = ""  # spawn_subagent_with_skill: optional declared child expert id
+    plan_variant: str = ""  # plan_workflow/plan_small variant tag
+    params: Mapping[str, Any] = field(default_factory=dict)  # loop/set_goal/schedule args
 
 
 @dataclass(frozen=True)
@@ -105,12 +183,18 @@ class SkillEffectOutcome:
     detail: str
     #: True when the effect REPLACES the body (spawn): the caller must NOT inline the body.
     replaces_body: bool = False
-    # enter_mode
+    # enter_mode / plan variants
     mode: str = ""
     previous_mode: str = ""
+    plan_variant: str = ""
     # spawn_subagent_with_skill
     task_id: str = ""
     child_session_id: str = ""
+    # loop / set_goal / schedule (autonomy effects — the armed handle)
+    loop_id: str = ""
+    goal_id: str = ""
+    schedule_id: str = ""
+    next_fire_at: str = ""
 
 
 # ---- parsing / validation --------------------------------------------------------------
@@ -175,6 +259,125 @@ def _coerce_effect_spec(meta: Mapping[str, Any]) -> dict[str, Any] | None:
     )
 
 
+def _coerce_int(spec: Mapping[str, Any], key: str) -> int | None:
+    """Coerce ``spec[key]`` to an int (``None`` when absent/blank; typed error when malformed).
+
+    Frontmatter is stringly-typed, so a declared bound arrives as ``"5"``; a non-numeric value
+    is a :class:`SkillEffectError` (``malformed_effect``) at PARSE time — never a silent 0."""
+
+    raw = spec.get(key)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        raise SkillEffectError(
+            f"effect field {key!r} must be an integer, got {raw!r}", reason="malformed_effect"
+        ) from None
+
+
+def _coerce_float(spec: Mapping[str, Any], key: str) -> float | None:
+    """Coerce ``spec[key]`` to a float (``None`` when absent/blank; typed error when malformed)."""
+
+    raw = spec.get(key)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    try:
+        return float(str(raw).strip())
+    except (TypeError, ValueError):
+        raise SkillEffectError(
+            f"effect field {key!r} must be a number, got {raw!r}", reason="malformed_effect"
+        ) from None
+
+
+def _coerce_bool(spec: Mapping[str, Any], key: str) -> bool | None:
+    """Coerce ``spec[key]`` to a bool (``None`` when absent; typed error when unrecognised).
+
+    Handles the stringly-typed frontmatter case (``"false"`` is FALSE — ``bool("false")`` is
+    True, a classic footgun) as well as a real YAML bool."""
+
+    raw = spec.get(key)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    if isinstance(raw, bool):
+        return raw
+    text = str(raw).strip().lower()
+    if text in {"true", "1", "yes", "on"}:
+        return True
+    if text in {"false", "0", "no", "off"}:
+        return False
+    raise SkillEffectError(
+        f"effect field {key!r} must be a boolean, got {raw!r}", reason="malformed_effect"
+    )
+
+
+def _autonomy_params(
+    spec: Mapping[str, Any],
+    *,
+    str_keys: tuple[str, ...] = (),
+    int_keys: tuple[str, ...] = (),
+    float_keys: tuple[str, ...] = (),
+    bool_keys: tuple[str, ...] = (),
+    passthrough: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """Build a typed, validated params dict for an autonomy effect (absent keys omitted).
+
+    Numerics are coerced (malformed → typed error); ``passthrough`` keys (a programmatic
+    ``predicate`` dict) are carried verbatim — a SKILL.md predicate instead rides flat
+    ``effect_predicate_*`` siblings (:func:`_flat_predicate`). Unset bounds stay unset."""
+
+    out: dict[str, Any] = {}
+    for k in str_keys:
+        v = spec.get(k)
+        if v is not None and str(v).strip():
+            out[k] = str(v).strip()
+    for k in int_keys:
+        iv = _coerce_int(spec, k)
+        if iv is not None:
+            out[k] = iv
+    for k in float_keys:
+        fv = _coerce_float(spec, k)
+        if fv is not None:
+            out[k] = fv
+    for k in bool_keys:
+        bv = _coerce_bool(spec, k)
+        if bv is not None:
+            out[k] = bv
+    for k in passthrough:
+        if k in spec and spec[k] not in (None, ""):
+            out[k] = spec[k]
+    return out
+
+
+def _flat_predicate(spec: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Assemble + validate a deterministic goal predicate from flat ``effect_predicate_*``
+    frontmatter siblings — ``_kind`` (``state``/``file_exists``), ``_field_path``, ``_equals`` or
+    ``_exists`` (bool, ``"false"``-safe), ``_file`` — making the AUTHORITATIVE predicate-backed goal
+    reachable from a real SKILL.md (the flat parser can never carry a nested mapping). ``None`` when
+    none is declared (NL-only); canonical goal validator raises → typed :class:`SkillEffectError`."""
+
+    flat = {
+        k[10:]: spec[k]
+        for k in spec
+        if isinstance(k, str) and k.startswith("predicate_") and str(spec.get(k) or "").strip()
+    }
+    if not flat:
+        return None
+    from clio_agent.gact.goal import GoalError, _validate_predicate  # noqa: PLC0415
+
+    raw: dict[str, Any] = {"kind": str(flat.get("kind") or "state").strip()}
+    for src, dst in (("field_path", "field_path"), ("file", "path"), ("equals", "equals")):
+        if src in flat:
+            raw[dst] = str(flat[src]).strip()
+    exists = _coerce_bool(spec, "predicate_exists")
+    if exists is not None:
+        raw["exists"] = exists
+    try:
+        return _validate_predicate(raw)
+    except GoalError as exc:
+        raise SkillEffectError(str(exc), reason="malformed_predicate") from exc
+
+
 def parse_skill_effect(meta: Mapping[str, Any]) -> SkillEffect | None:
     """Parse + validate the declared effect on a skill's frontmatter ``meta`` (typed).
 
@@ -205,6 +408,48 @@ def parse_skill_effect(meta: Mapping[str, Any]) -> SkillEffect | None:
                 reason="invalid_mode",
             )
         return SkillEffect(kind=EFFECT_ENTER_MODE, mode=mode)
+    if kind in _PLAN_VARIANTS:
+        # A plan_workflow / plan_small VARIANT (P1.6): enter PLAN with a variant tag. The
+        # transition reuses the tighten-only enter_mode path (plan is strictest → never
+        # relaxes a restrictive mode). Kept minimal: enter_mode:plan + the variant tag.
+        return SkillEffect(kind=kind, mode="plan", plan_variant=_PLAN_VARIANTS[kind])  # type: ignore[arg-type]
+    if kind == EFFECT_LOOP:
+        params = _autonomy_params(
+            spec,
+            str_keys=("prompt",),
+            int_keys=("interval_s", "max_iters", "max_tokens", "max_no_progress"),
+            float_keys=("max_wallclock_s", "max_usd"),
+        )
+        return SkillEffect(kind=EFFECT_LOOP, params=params)
+    if kind == EFFECT_SET_GOAL:
+        params = _autonomy_params(
+            spec,
+            str_keys=("condition",),
+            int_keys=("max_goal_iters", "max_tokens"),
+            float_keys=("max_wallclock_s",),
+            passthrough=("predicate",),
+        )
+        if (flat_pred := _flat_predicate(spec)) is not None:
+            params["predicate"] = flat_pred
+        if not params.get("condition"):
+            raise SkillEffectError(
+                "set_goal effect declares no condition to gate completion on",
+                reason="goal_missing_condition",
+            )
+        return SkillEffect(kind=EFFECT_SET_GOAL, params=params)
+    if kind == EFFECT_SCHEDULE:
+        params = _autonomy_params(
+            spec,
+            str_keys=("prompt", "cron", "run_at", "timezone"),
+            int_keys=("delay_s",),
+            bool_keys=("recurring",),
+        )
+        if not (params.get("cron") or params.get("run_at") or int(params.get("delay_s") or 0) > 0):
+            raise SkillEffectError(
+                "schedule effect needs a trigger: one of cron / run_at / delay_s",
+                reason="schedule_missing_trigger",
+            )
+        return SkillEffect(kind=EFFECT_SCHEDULE, params=params)
     # spawn_subagent_with_skill: ``agent`` is optional (defaults to a self-directed
     # subagent running the caller's own expert seeded with the skill body).
     agent = str(spec.get("agent") or "").strip()
@@ -242,6 +487,152 @@ def _execute_enter_mode(effect: SkillEffect, app: Any, session_id: str) -> Skill
         detail=f"entered {target} mode (was {current})",
         mode=target,
         previous_mode=current,
+    )
+
+
+def _execute_plan_variant(effect: SkillEffect, app: Any, session_id: str) -> SkillEffectOutcome:
+    """Perform a ``plan_workflow`` / ``plan_small`` variant: enter PLAN + record the tag.
+
+    Reuses the tighten-only :func:`_execute_enter_mode` (target ``plan`` is strictest, so the
+    no-relax guard passes when the session is edit/architect/plan and REFUSES nothing weaker) —
+    a variant can never escape a restrictive mode. The variant tag is persisted on the session
+    (``metadata["plan_variant"]``, no fifth store) so the plan-mode attachment/budget machinery
+    can read which variant was requested."""
+
+    base = _execute_enter_mode(SkillEffect(kind=EFFECT_ENTER_MODE, mode="plan"), app, session_id)
+    app.state.sessions.update(session_id, metadata_patch={"plan_variant": effect.plan_variant})
+    return SkillEffectOutcome(
+        kind=effect.kind,
+        detail=f"entered plan mode ({effect.plan_variant} variant, was {base.previous_mode})",
+        mode="plan",
+        previous_mode=base.previous_mode,
+        plan_variant=effect.plan_variant,
+    )
+
+
+def _default_skill_prompt(ref: "SkillRef") -> str:
+    """The re-drive/scheduled prompt for a loop/schedule effect that declares none."""
+
+    return f"Continue the procedure defined by skill {ref.id!r} to completion."
+
+
+def _execute_loop(
+    effect: SkillEffect, ref: "SkillRef", app: Any, session_id: str
+) -> SkillEffectOutcome:
+    """Perform the ``loop`` effect: arm a self-paced loop via :func:`start_loop` (#P4.1).
+
+    The declared typed bounds pass straight through; :func:`start_loop` resolves any unset
+    bound to a finite hard default and clamps the interval, so a skill CANNOT arm an
+    unbounded/too-fast loop (the anti-runaway holds). A :class:`LoopError` (e.g. an empty
+    prompt) is re-raised as a :class:`SkillEffectError` carrying its typed reason."""
+
+    from clio_agent.gact.autonomous_loop import LoopError, start_loop  # noqa: PLC0415
+
+    p = effect.params
+    prompt = str(p.get("prompt") or "").strip() or _default_skill_prompt(ref)
+    try:
+        summary = start_loop(
+            app,
+            session_id,
+            prompt=prompt,
+            interval_s=int(p.get("interval_s", 0) or 0),
+            max_iters=int(p.get("max_iters", 0) or 0),
+            max_wallclock_s=float(p.get("max_wallclock_s", 0.0) or 0.0),
+            max_tokens=int(p.get("max_tokens", 0) or 0),
+            max_usd=float(p.get("max_usd", 0.0) or 0.0),
+            max_no_progress=int(p.get("max_no_progress", 0) or 0),
+        )
+    except LoopError as exc:
+        raise SkillEffectError(
+            f"loop effect for skill {ref.id!r} rejected: {exc}", reason=exc.reason
+        ) from exc
+    return SkillEffectOutcome(
+        kind=EFFECT_LOOP,
+        detail=(
+            f"armed loop {summary['loop_id']} (interval {summary['interval_s']}s, "
+            f"max_iters {summary['max_iters']}, next wake {summary['next_fire_at']})"
+        ),
+        loop_id=str(summary["loop_id"]),
+        next_fire_at=str(summary["next_fire_at"]),
+    )
+
+
+def _execute_set_goal(
+    effect: SkillEffect, ref: "SkillRef", app: Any, session_id: str
+) -> SkillEffectOutcome:
+    """Perform the ``set_goal`` effect: arm a goal via :func:`arm_goal` (#P4.2).
+
+    The SANCTIONED skill-arming door (a declared, trusted effect like ``/goal`` — NOT the
+    model self-arming; goal stays non-model-tool-armable per #1080). The goal is STILL two-tier
+    gated at the finalize boundary (deterministic authoritative + LLM first-pass) — arming it
+    only sets the run-until condition; a skill body's prose can never self-satisfy it. A
+    :class:`GoalError` (empty condition / bad predicate) is re-raised as a typed
+    :class:`SkillEffectError`."""
+
+    from clio_agent.gact.goal import GoalError, arm_goal  # noqa: PLC0415
+
+    p = effect.params
+    try:
+        summary = arm_goal(
+            app,
+            session_id,
+            condition=str(p.get("condition") or ""),
+            predicate=p.get("predicate"),
+            max_goal_iters=int(p.get("max_goal_iters", 0) or 0),
+            max_wallclock_s=float(p.get("max_wallclock_s", 0.0) or 0.0),
+            max_tokens=int(p.get("max_tokens", 0) or 0),
+        )
+    except GoalError as exc:
+        raise SkillEffectError(
+            f"set_goal effect for skill {ref.id!r} rejected: {exc}", reason=exc.reason
+        ) from exc
+    gate = "deterministic gate" if summary["predicate_backed"] else "LLM-only (weaker mode)"
+    return SkillEffectOutcome(
+        kind=EFFECT_SET_GOAL,
+        detail=(
+            f"armed goal {summary['goal_id']} gating completion on {summary['condition']!r} "
+            f"({gate}, max_goal_iters {summary['max_goal_iters']})"
+        ),
+        goal_id=str(summary["goal_id"]),
+    )
+
+
+def _execute_schedule(
+    effect: SkillEffect, ref: "SkillRef", app: Any, session_id: str
+) -> SkillEffectOutcome:
+    """Perform the ``schedule`` effect: register a cron / one-shot via ``ScheduleStore.create``.
+
+    Arms the SAME scheduler the ``cron_create`` tool / ``/cron`` command use, so the declared
+    schedule is subject to the SAME anti-runaway clamps: a sub-floor recurring cron raises the
+    typed :class:`CronError` (min-interval floor), surfaced here as a :class:`SkillEffectError`
+    the caller can read — a skill cannot over-schedule."""
+
+    from clio_agent.gact.scheduler import CronError  # noqa: PLC0415
+
+    p = effect.params
+    prompt = str(p.get("prompt") or "").strip() or _default_skill_prompt(ref)
+    try:
+        sch = app.state.schedules.create(
+            session_id=session_id,
+            question=prompt,
+            cron=str(p.get("cron", "") or ""),
+            run_at=str(p.get("run_at", "") or ""),
+            delay_s=int(p.get("delay_s", 0) or 0),
+            recurring=bool(p.get("recurring", True)),
+            timezone_name=str(p.get("timezone", "") or ""),
+        )
+    except CronError as exc:
+        raise SkillEffectError(
+            f"schedule effect for skill {ref.id!r} rejected: {exc}", reason=exc.reason
+        ) from exc
+    return SkillEffectOutcome(
+        kind=EFFECT_SCHEDULE,
+        detail=(
+            f"registered schedule {sch.id} (cron {sch.cron!r} run_at {sch.run_at!r} "
+            f"recurring {sch.recurring}, next fire {sch.next_fire_at})"
+        ),
+        schedule_id=str(sch.id),
+        next_fire_at=str(sch.next_fire_at or ""),
     )
 
 
@@ -314,12 +705,22 @@ def _emit_skill_effect(
         "effect_kind": outcome.kind,
         "agent_id": agent_id,
     }
-    if outcome.kind == EFFECT_ENTER_MODE:
+    if outcome.mode:
         payload["mode"] = outcome.mode
         payload["previous_mode"] = outcome.previous_mode
-    else:
+    if outcome.plan_variant:
+        payload["plan_variant"] = outcome.plan_variant
+    if outcome.task_id:
         payload["task_id"] = outcome.task_id
         payload["child_session_id"] = outcome.child_session_id
+    if outcome.loop_id:
+        payload["loop_id"] = outcome.loop_id
+    if outcome.goal_id:
+        payload["goal_id"] = outcome.goal_id
+    if outcome.schedule_id:
+        payload["schedule_id"] = outcome.schedule_id
+    if outcome.next_fire_at:
+        payload["next_fire_at"] = outcome.next_fire_at
     try:
         _emit_semantic_event(
             app,
@@ -344,11 +745,15 @@ def maybe_apply_skill_effect(ref: "SkillRef", *, agent_id: str) -> str | None:
     normally (backward-compatible). Otherwise the RUNTIME performs the declared effect and
     returns the tool-observation string:
 
-    * ``enter_mode`` → a confirmation line + the skill body (the entered mode's instructions);
+    * ``enter_mode`` / ``plan_workflow`` / ``plan_small`` → a confirmation + the skill body
+      (the entered mode's instructions);
+    * ``loop`` / ``set_goal`` / ``schedule`` → a confirmation (the armed loop/goal/schedule
+      handle) + the skill body (the procedure the autonomy is armed around);
     * ``spawn_subagent_with_skill`` → the spawned task handle (the body is NOT inlined).
 
     Raises :class:`SkillEffectError` for a malformed/unknown effect, a missing session
-    context, or a rejected (mode-relaxing / refused-spawn) effect — never a silent ignore.
+    context, or a rejected (mode-relaxing / refused-spawn / clamp-tripped) effect — never a
+    silent ignore.
     """
 
     effect = parse_skill_effect(ref.meta)
@@ -363,6 +768,14 @@ def maybe_apply_skill_effect(ref: "SkillRef", *, agent_id: str) -> str | None:
         )
     if effect.kind == EFFECT_ENTER_MODE:
         outcome = _execute_enter_mode(effect, app, session_id)
+    elif effect.kind in _PLAN_VARIANTS:
+        outcome = _execute_plan_variant(effect, app, session_id)
+    elif effect.kind == EFFECT_LOOP:
+        outcome = _execute_loop(effect, ref, app, session_id)
+    elif effect.kind == EFFECT_SET_GOAL:
+        outcome = _execute_set_goal(effect, ref, app, session_id)
+    elif effect.kind == EFFECT_SCHEDULE:
+        outcome = _execute_schedule(effect, ref, app, session_id)
     else:
         outcome = _execute_spawn(effect, ref, app, session_id, agent_id)
     _emit_skill_effect(app, session_id, ref, outcome, agent_id)
