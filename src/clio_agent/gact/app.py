@@ -1567,6 +1567,12 @@ def build_app(
         app.state.pending_cancellation_checker = _make_cancellation_checker(app)
         app.state.pending_permission_gate = _make_permission_gate(app)
         app.state.pending_tool_observer = _make_tool_observer(app)
+        # P2.3: synthesize/modify interceptor + PostToolUse producer, so a turn driven
+        # before _construct_agent_async runs still has them wired.
+        from clio_agent.gact.hooks import make_post_tool_hook, pre_tool_interceptor  # noqa: PLC0415
+
+        app.state.pending_tool_interceptor = pre_tool_interceptor
+        app.state.pending_post_tool = make_post_tool_hook(app)
 
     # P2.2 #1070: install the ONE hook dispatcher so PreToolUse / UserPromptSubmit /
     # Stop / SemanticEvent events route to the declarative hooks config

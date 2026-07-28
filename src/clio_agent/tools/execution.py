@@ -30,6 +30,7 @@ from clio_agent.runtime.stream_audit import stream_audit
 from clio_agent.tools import spawn_diet
 from clio_agent.tools.file_policy import FileAccessPolicy
 from clio_agent.tools.mcp_results import call_tool_result_to_observer
+from clio_agent.tools.tool_hooks import InterceptDecision, PostToolHook, apply_post_tool_hook
 
 logger = logging.getLogger(__name__)
 
@@ -130,12 +131,15 @@ class ToolRuntimeHooks:
 
     permission_gate: PermissionGate | None = None
     tool_observer: Optional[ToolObserver | LegacyToolObserver] = None
-    tool_interceptor: Optional[Callable[[str, Mapping[str, Any]], Any | None]] = None
+    tool_interceptor: Optional[Callable[[str, Mapping[str, Any]], "InterceptDecision | None"]] = None
     cancellation_checker: Optional[Callable[[], bool]] = None
     loop_inbox_drain: Optional[Callable[[], "str | None"]] = None  # #1035 injected gact drain
     # The ordinary observer gets only the sanitized public MCP projection; MCP Apps
     # need the full CallToolResult (private ``_meta``) held in a session-local store.
     mcp_app_observer: Optional[MCPAppObserver] = None
+    # P2.3 PostToolUse: applied after a tool result (or a synthesized one) to
+    # observe / rewrite the model-visible observation / feed a deny reason back.
+    post_tool: Optional[PostToolHook] = None
 
 
 @dataclass(frozen=True, repr=False)
@@ -1191,15 +1195,22 @@ class SyncMCPToolExecutor:
             notify_tool_observer(tool_observer, name, effective_args, "completed", circuit_error)
             raise RepeatedToolFailureError(circuit_error)
 
-        tool_interceptor = hooks.tool_interceptor
-        if tool_interceptor is not None:
-            intercepted = tool_interceptor(name, dict(effective_args))
-            if intercepted is not None:
-                notify_tool_observer(tool_observer, name, effective_args, "started", None)
-                notify_tool_observer(
-                    tool_observer, name, effective_args, "completed", None, intercepted
-                )
-                return intercepted
+        # P2.3: gate-stashed, single-fire PreToolUse decision. ``modify`` mutates input;
+        # ``synthesize`` skips the call for a fabricated result (no PostToolUse if raw).
+        intercept = hooks.tool_interceptor(name, dict(effective_args)) if hooks.tool_interceptor else None
+        if intercept is not None and intercept.kind == "modify" and intercept.modified_args is not None:
+            effective_args = dict(intercept.modified_args)
+        elif intercept is not None and intercept.kind == "synthesize":
+            notify_tool_observer(tool_observer, name, effective_args, "started", None)
+            notify_tool_observer(
+                tool_observer, name, effective_args, "completed", None, intercept.result
+            )
+            self._record_tool_success(name)
+            if return_raw:
+                return intercept.result  # MCP Apps bridge is not model-facing: no PostToolUse
+            return apply_post_tool_hook(
+                hooks.post_tool, name, effective_args, intercept.result, is_error=False, synthetic=True
+            )
 
         notify_tool_observer(tool_observer, name, effective_args, "started", None)
 
@@ -1275,9 +1286,14 @@ class SyncMCPToolExecutor:
                     )
 
         if return_raw:
-            return outcome.raw_result
+            return outcome.raw_result  # MCP Apps bridge is not model-facing: no PostToolUse
         drained = hooks.loop_inbox_drain() if hooks.loop_inbox_drain is not None else None
         result = _prepend_repair_notes(repair_records, result) if repair_records else result
+        # P2.3 PostToolUse: rewrite the model-visible observation / feed a deny reason,
+        # AFTER the observer recorded the real effect (trace keeps the actual result).
+        result = apply_post_tool_hook(
+            hooks.post_tool, name, effective_args, result, is_error=structured_error is not None, synthetic=False
+        )
         return f"{result}\n\n{drained}" if drained else result
 
     def read_resource(self, namespace: str | None, uri: str) -> Any:

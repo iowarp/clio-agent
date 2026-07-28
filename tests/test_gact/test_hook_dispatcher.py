@@ -19,8 +19,15 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import _make_permission_gate, build_app
 from clio_agent.gact.hooks import (
+    POST_TOOL_BATCH,
+    POST_TOOL_USE,
+    PRE_COMPACT,
     PRE_TOOL_USE,
     SEMANTIC_EVENT,
+    SESSION_END,
+    SESSION_START,
+    SUBAGENT_START,
+    SUBAGENT_STOP,
     USER_PROMPT_SUBMIT,
     HookDecision,
     HookDispatcher,
@@ -28,10 +35,16 @@ from clio_agent.gact.hooks import (
     HookOutcome,
     hook_reasons,
     install_global_dispatcher,
+    intercept_from_outcome,
     parse_hook_entries,
+    pre_tool_interceptor,
+    run_post_tool,
+    stash_pre_tool_intercept,
+    take_pre_tool_intercept,
     wire_annotations,
 )
 from clio_agent.gact.hooks.config import HookConfigError, _parse_entry
+from clio_agent.gact.hooks.wire import parse_hook_output
 from clio_agent.gact.permission_gate import DenyDecision, _external_mcp_permission_context
 from tests.test_gact._hook_fixtures import (
     command_run,
@@ -394,6 +407,27 @@ def test_merge_most_restrictive_wins() -> None:
     assert outcome.additional_context == "a\nb"
 
 
+def test_modify_with_no_usable_input_records_typed_reason_not_silent() -> None:
+    """No-silent-fallback: a ``modify`` decision whose ``input`` was missing/malformed
+    (``modify_input is None``) must not vanish silently — ``is_modify``/``intercept_from_outcome``
+    fall through to "nothing to intercept" (the tool runs with its ORIGINAL args), and
+    that degradation must be recorded as a typed, queryable ``hook_modify_missing_input``
+    reason so the dropped intent is diagnosable rather than an unqueryable no-op."""
+
+    decisions = [HookDecision(decision="modify", modify_input=None, hook_id="broken-modify")]
+    outcome = HookOutcome.merge(decisions, records=[])
+
+    assert outcome.decision == "modify"
+    assert outcome.modify_input is None
+    assert not outcome.is_modify
+    assert intercept_from_outcome(outcome) is None, "no usable input => nothing to intercept"
+
+    reasons = [r for r in hook_reasons() if r["reason"] == "hook_modify_missing_input"]
+    assert any(r.get("hook_id") == "broken-modify" for r in reasons), (
+        "the dropped modify intent must be recorded as a typed reason, not silently lost"
+    )
+
+
 def test_two_hooks_both_run_records_keyed_by_stable_id(tmp_path: Path) -> None:
     """D4 + identity: with two matching hooks BOTH run and each provenance record is
     keyed by its stable id (never positional)."""
@@ -490,6 +524,35 @@ def test_pre_tool_hook_deny_reaches_model_via_gate(tmp_path: Path) -> None:
         assert isinstance(decision, DenyDecision)
         assert decision == "deny"
         assert decision.deny_message == "no hdf5 today"
+    finally:
+        install_global_dispatcher(None)
+
+
+def test_pre_tool_hook_deny_emits_resolved_permission_audit_record(tmp_path: Path) -> None:
+    """L3 invariant: a PreToolUse hook deny dispatched through the gate must not only
+    return a ``DenyDecision`` to the executor — it must ALSO emit a resolved-permission
+    audit record (the gate deny path calls ``_record_resolved_permission`` with status
+    ``auto_denied``) so the deny is queryable via ``/v1/permissions``, not only visible
+    as a raised error to the model."""
+
+    body = "import json\nprint(json.dumps({'decision': 'deny', 'reason': 'no hdf5 today'}))\n"
+    install_global_dispatcher(
+        make_command_dispatcher(tmp_path, event=PRE_TOOL_USE, body=body, hook_id="hdf5-guard")
+    )
+    try:
+        app = build_app(sessions_path=tmp_path / "s.json")
+        gate = _make_permission_gate(app)
+        before = set(app.state.permissions)
+        decision = gate("hdf5_write", {"path": "/tmp/x"})
+        assert isinstance(decision, DenyDecision)
+
+        new_rows = [row for pid, row in app.state.permissions.items() if pid not in before]
+        assert len(new_rows) == 1, "the hook deny must emit exactly one resolved audit record"
+        row = new_rows[0]
+        assert row["status"] == "auto_denied"
+        assert row["action"] == "deny"
+        assert row["reason"] == "hook_deny"
+        assert row["tool_call"]["tool_name"] == "hdf5_write"
     finally:
         install_global_dispatcher(None)
 
@@ -622,6 +685,299 @@ def test_no_dispatcher_installed_is_no_op() -> None:
     assert not disp.dispatch(PRE_TOOL_USE, _pre_tool_env()).denied
     assert disp.metadata()["backend"] == "declarative"
     assert disp.metadata()["handler_counts"][PRE_TOOL_USE] == 0
+
+
+# --------------------------------------------------------------------------- #
+# P2.3 — modify/synthesize wire + intercept stash + PostToolUse + lifecycle      #
+# --------------------------------------------------------------------------- #
+
+
+class _RecordingDispatcher(HookDispatcher):
+    """A dispatcher that records every event it is asked to fire (allow-all).
+
+    Lets a test drive the REAL code paths (session create/delete, spawn, turn,
+    compact) and assert an event fired EXACTLY ONCE at its point, without any
+    subprocess hooks.
+    """
+
+    def __init__(self) -> None:
+        super().__init__([])
+        self.events: list[tuple[str, HookEnvelope]] = []
+
+    def dispatch(self, event: str, envelope: HookEnvelope) -> HookOutcome:  # type: ignore[override]
+        self.events.append((event, envelope))
+        return HookOutcome()
+
+    def count(self, event: str) -> int:
+        return sum(1 for ev, _ in self.events if ev == event)
+
+    def envelopes(self, event: str) -> list[HookEnvelope]:
+        return [env for ev, env in self.events if ev == event]
+
+
+def test_synthesize_and_modify_decisions_parse() -> None:
+    """P2.3: modify/synthesize are first-class (no longer reserved); their
+    input/result payloads ride the parsed decision, and PostToolUse's
+    updatedToolOutput is carried too."""
+
+    syn = parse_hook_output(
+        {"decision": "synthesize", "result": {"cached": True}},
+        hook_id="s",
+        event=PRE_TOOL_USE,
+    )
+    assert syn.decision == "synthesize"
+    assert syn.synthesize_result == {"cached": True}
+    assert syn.synthesize_present is True
+
+    mod = parse_hook_output(
+        {"decision": "modify", "input": {"path": "/safe"}}, hook_id="m", event=PRE_TOOL_USE
+    )
+    assert mod.decision == "modify"
+    assert mod.modify_input == {"path": "/safe"}
+
+    rewrite = parse_hook_output(
+        {"updatedToolOutput": "REWRITTEN"}, hook_id="r", event=POST_TOOL_USE
+    )
+    assert rewrite.updated_output == "REWRITTEN"
+
+
+def test_intercept_from_synthesize_outcome() -> None:
+    outcome = HookOutcome.merge(
+        [HookDecision(decision="synthesize", synthesize_result={"a": 1}, hook_id="s")],
+        records=[],
+    )
+    assert outcome.is_synthesize
+    decision = intercept_from_outcome(outcome)
+    assert decision is not None and decision.kind == "synthesize"
+    assert decision.result == {"a": 1}
+
+
+def test_deny_beats_synthesize_tighten_only() -> None:
+    """Tighten-only: a deny outranks a synthesize — a hook wanting to fabricate a
+    result can never lift another hook's block."""
+
+    outcome = HookOutcome.merge(
+        [
+            HookDecision(decision="synthesize", synthesize_result={"a": 1}, hook_id="s"),
+            HookDecision(decision="deny", reason="blocked", hook_id="d"),
+        ],
+        records=[],
+    )
+    assert outcome.denied
+    assert not outcome.is_synthesize
+    assert intercept_from_outcome(outcome) is None
+
+
+def test_stash_take_consume_once() -> None:
+    outcome = HookOutcome.merge(
+        [HookDecision(decision="modify", modify_input={"p": "q"}, hook_id="m")], records=[]
+    )
+    stash_pre_tool_intercept(outcome)
+    first = pre_tool_interceptor("echo", {})
+    assert first is not None and first.kind == "modify" and first.modified_args == {"p": "q"}
+    # Consumed: a second read is empty (single-fire discipline).
+    assert pre_tool_interceptor("echo", {}) is None
+
+
+def test_gate_stashes_synthesize_for_the_interceptor(tmp_path: Path) -> None:
+    """A non-denied PreToolUse synthesize hook is stashed by the gate so the
+    already-wired tool_interceptor can consume it. (No session => the policy then
+    fails closed FAST, no blocking wait — the point is the intercept was stashed.)"""
+
+    body = (
+        "import json\n"
+        'print(json.dumps({"decision": "synthesize", "result": {"cached": True}}))\n'
+    )
+    install_global_dispatcher(make_command_dispatcher(tmp_path, event=PRE_TOOL_USE, body=body))
+    try:
+        app = build_app(sessions_path=tmp_path / "s.json")
+        gate = _make_permission_gate(app)
+        stash_pre_tool_intercept(None)
+        gate("hdf5_write", {"path": "/tmp/x"})  # not a hook-deny; stash set before policy
+        taken = take_pre_tool_intercept()
+        assert taken is not None and taken.kind == "synthesize"
+        assert taken.result == {"cached": True}
+    finally:
+        install_global_dispatcher(None)
+
+
+def test_gate_deny_clears_any_intercept(tmp_path: Path) -> None:
+    """A PreToolUse hook deny clears the intercept stash — the (skipped) interceptor
+    must never fire a fabricated result on a call the gate blocked."""
+
+    body = "import json\nprint(json.dumps({'decision': 'deny', 'reason': 'no'}))\n"
+    install_global_dispatcher(make_command_dispatcher(tmp_path, event=PRE_TOOL_USE, body=body))
+    try:
+        app = build_app(sessions_path=tmp_path / "s.json")
+        gate = _make_permission_gate(app)
+        # Pre-seed a stale intercept; the deny path must clear it.
+        stash_pre_tool_intercept(
+            HookOutcome.merge(
+                [HookDecision(decision="synthesize", synthesize_result={"x": 1}, hook_id="s")],
+                records=[],
+            )
+        )
+        decision = gate("hdf5_write", {"path": "/tmp/x"})
+        assert isinstance(decision, DenyDecision)
+        assert take_pre_tool_intercept() is None
+    finally:
+        install_global_dispatcher(None)
+
+
+def test_post_tool_use_rewrite_changes_observation(tmp_path: Path) -> None:
+    """A PostToolUse hook's updatedToolOutput rewrites the model-visible observation."""
+
+    body = "import json\nprint(json.dumps({'updatedToolOutput': 'REWRITTEN'}))\n"
+    install_global_dispatcher(make_command_dispatcher(tmp_path, event=POST_TOOL_USE, body=body))
+    try:
+        out = run_post_tool("echo", {"text": "hi"}, "REAL:hi", False, False)
+        assert out == "REWRITTEN"
+    finally:
+        install_global_dispatcher(None)
+
+
+def test_post_tool_use_deny_feeds_reason(tmp_path: Path) -> None:
+    """A PostToolUse deny cannot un-run the effect — it appends its reason as feedback."""
+
+    body = "import json\nprint(json.dumps({'decision': 'deny', 'reason': 'secret found'}))\n"
+    install_global_dispatcher(make_command_dispatcher(tmp_path, event=POST_TOOL_USE, body=body))
+    try:
+        out = run_post_tool("echo", {"text": "hi"}, "REAL:hi", False, False)
+        assert "REAL:hi" in out
+        assert "secret found" in out
+    finally:
+        install_global_dispatcher(None)
+
+
+def test_session_start_and_end_fire_exactly_once(tmp_path: Path) -> None:
+    """SessionStart fires once when a session is created; SessionEnd once when it is
+    deleted (and never again on a repeat delete)."""
+
+    disp = _RecordingDispatcher()
+    install_global_dispatcher(disp)
+    try:
+        app = build_app(sessions_path=tmp_path / "s.json")
+        before = disp.count(SESSION_START)
+        sess = app.state.sessions.create(workspace_id="w1", title="t")
+        assert disp.count(SESSION_START) - before == 1
+        assert disp.envelopes(SESSION_START)[-1].session_id == sess.id
+
+        assert app.state.sessions.delete(sess.id) is True
+        assert disp.count(SESSION_END) == 1
+        # A repeat delete of a gone session fires no second SessionEnd.
+        app.state.sessions.delete(sess.id)
+        assert disp.count(SESSION_END) == 1
+    finally:
+        install_global_dispatcher(None)
+
+
+def test_subagent_start_and_stop_fire_exactly_once(tmp_path: Path, monkeypatch) -> None:
+    """SubagentStart fires once when a child turn goes queued→running; SubagentStop
+    once at its terminal transition."""
+
+    from clio_agent.gact.turn_spawn import TaskSpec, spawn_child_turn_threadsafe
+
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.resolution._runtime_declared_child_ids",
+        lambda app, pid, session_id="": {"main"},
+    )
+    disp = _RecordingDispatcher()
+    install_global_dispatcher(disp)
+    try:
+        app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+        with TestClient(app) as client:
+            parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+            before_start = disp.count(SUBAGENT_START)
+            task = spawn_child_turn_threadsafe(
+                app,
+                TaskSpec(
+                    child_expert_id="main",
+                    task_text="analyze",
+                    parent_session_id=parent,
+                    requesting_expert_id="main",
+                ),
+            )
+            assert disp.count(SUBAGENT_START) - before_start == 1
+            # Wait for the child to settle => SubagentStop fires exactly once.
+            for _ in range(200):
+                rec = app.state.agent_task_registry.get(task.task_id)
+                if rec is not None and rec.is_terminal:
+                    break
+                time.sleep(0.05)
+            assert disp.count(SUBAGENT_STOP) == 1
+    finally:
+        install_global_dispatcher(None)
+
+
+def test_post_tool_batch_fires_once_per_turn_with_tools(tmp_path: Path) -> None:
+    """PostToolBatch fires exactly once at turn finalize when the turn ran ≥1 tool,
+    and NOT at all for a pure-chat turn (empty batch is not a batch)."""
+
+    from .conftest import complete_turn
+
+    class _ToolAgent:
+        def forward(self, question: str, session_id: str = "default") -> "_PredWithTools":
+            return _PredWithTools()
+
+    disp = _RecordingDispatcher()
+    install_global_dispatcher(disp)
+    try:
+        app = build_app(sessions_path=tmp_path / "s.json", agent=_ToolAgent())
+        with TestClient(app) as c:
+            sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
+            complete_turn(c, sid, "hello")
+            assert disp.count(POST_TOOL_BATCH) == 1
+    finally:
+        install_global_dispatcher(None)
+
+
+def test_post_tool_batch_not_fired_for_pure_chat_turn(tmp_path: Path) -> None:
+    from .conftest import complete_turn
+
+    disp = _RecordingDispatcher()
+    install_global_dispatcher(disp)
+    try:
+        app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+        with TestClient(app) as c:
+            sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
+            complete_turn(c, sid, "hello")
+            assert disp.count(POST_TOOL_BATCH) == 0
+    finally:
+        install_global_dispatcher(None)
+
+
+def test_pre_compact_fires_once(tmp_path: Path) -> None:
+    """PreCompact fires exactly once before a transcript is summarised into memory."""
+
+    from .conftest import complete_turn
+
+    class _CompactAgent:
+        def forward(self, question: str, session_id: str = "default") -> _Pred:
+            return _Pred()
+
+        def _run_chat_agent(self, prompt: str, _ctx: str) -> str:
+            return "COMPACT SUMMARY"
+
+    disp = _RecordingDispatcher()
+    install_global_dispatcher(disp)
+    try:
+        app = build_app(sessions_path=tmp_path / "s.json", agent=_CompactAgent())
+        with TestClient(app) as c:
+            sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
+            complete_turn(c, sid, "hello")
+            before = disp.count(PRE_COMPACT)
+            resp = c.post(f"/v1/sessions/{sid}/compact", json={})
+            assert resp.status_code == 200, resp.text
+            assert disp.count(PRE_COMPACT) - before == 1
+    finally:
+        install_global_dispatcher(None)
+
+
+class _PredWithTools:
+    answer = "done"
+    selected_expert = ""
+    routing_rationale = ""
+    tools_called = [{"name": "echo", "args": {"text": "hi"}, "ok": True}]
 
 
 def test_disabled_hook_excluded_from_metadata(tmp_path: Path) -> None:

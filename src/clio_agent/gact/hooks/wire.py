@@ -36,17 +36,28 @@ logger = logging.getLogger(__name__)
 #: hook scripts written against an older contract (hooks-research §5.3).
 SCHEMA_VERSION = 1
 
-#: The tagged-union decisions this slice (P2.2) understands. ``modify`` /
-#: ``synthesize`` / ``defer`` are recognised as reserved names and rejected with a
-#: typed reason until P2.3 wires the ``tool_interceptor`` producer — never silently
-#: dropped.
-Decision = Literal["allow", "deny", "ask"]
-_SUPPORTED_DECISIONS: frozenset[str] = frozenset({"allow", "deny", "ask"})
-_RESERVED_DECISIONS: frozenset[str] = frozenset({"modify", "synthesize", "defer"})
+#: The tagged-union decisions this build understands. P2.3 promotes ``modify`` and
+#: ``synthesize`` to first-class: they drive the already-wired ``tool_interceptor``
+#: slot (``modify`` mutates the tool input; ``synthesize`` skips the real call and
+#: fabricates the result). ``defer`` remains reserved (P2.6) and is rejected with a
+#: typed reason — never silently dropped.
+Decision = Literal["allow", "deny", "ask", "modify", "synthesize"]
+_SUPPORTED_DECISIONS: frozenset[str] = frozenset(
+    {"allow", "deny", "ask", "modify", "synthesize"}
+)
+_RESERVED_DECISIONS: frozenset[str] = frozenset({"defer"})
 
 #: Most-restrictive-wins ordering (hooks-research invariant 3). A higher rank is
-#: more restrictive and wins the merge.
-_DECISION_RANK: dict[str, int] = {"allow": 0, "ask": 1, "deny": 2}
+#: more restrictive and wins the merge. ``deny`` and ``ask`` outrank the intercept
+#: decisions so tighten-only holds: a ``deny`` (or an ``ask`` needing a human)
+#: always beats a hook that merely wants to ``synthesize``/``modify`` the call.
+_DECISION_RANK: dict[str, int] = {
+    "allow": 0,
+    "modify": 1,
+    "synthesize": 2,
+    "ask": 3,
+    "deny": 4,
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -73,15 +84,29 @@ _HOOK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
     },
     "hook_reserved_decision": {
         "severity": "warning",
-        "detail": "hook returned a decision reserved for a later slice (modify/synthesize/defer)",
+        "detail": "hook returned a decision reserved for a later slice (defer)",
     },
     "hook_unknown_decision": {
         "severity": "warning",
         "detail": "hook returned an unrecognised decision value",
     },
+    "hook_conflicting_intercept": {
+        "severity": "warning",
+        "detail": (
+            "more than one winning-tier hook returned a modify/synthesize/rewrite "
+            "payload for one event; the first by stable id order was applied"
+        ),
+    },
     "hook_fail_closed_deny": {
         "severity": "warning",
         "detail": "a deny-capable hook failed on infrastructure and was denied fail-closed",
+    },
+    "hook_modify_missing_input": {
+        "severity": "warning",
+        "detail": (
+            "a modify decision carried no usable input Mapping (missing/malformed "
+            "'input'); the tool ran with its ORIGINAL args instead"
+        ),
     },
 }
 
@@ -209,13 +234,24 @@ class HookEnvelope:
 
 @dataclass(frozen=True)
 class HookDecision:
-    """One hook's parsed tagged-union output."""
+    """One hook's parsed tagged-union output.
+
+    ``modify_input`` carries the mutated tool input for a ``modify`` decision;
+    ``synthesize_result`` carries the fabricated result for a ``synthesize``
+    decision; ``updated_output`` carries a PostToolUse observation rewrite
+    (``updatedToolOutput``). ``synthesize_present`` disambiguates a genuine
+    ``None`` synthesize result from "no result key".
+    """
 
     decision: Decision = "allow"
     reason: str = ""
     additional_context: str = ""
     system_message: str = ""
     hook_id: str = ""
+    modify_input: Mapping[str, Any] | None = None
+    synthesize_result: Any = None
+    synthesize_present: bool = False
+    updated_output: str = ""
 
 
 def parse_hook_output(
@@ -227,9 +263,10 @@ def parse_hook_output(
     """Parse a hook's stdout JSON object into a :class:`HookDecision`.
 
     ``None`` / empty output is an ``allow`` (exit-0-empty = proceed). A reserved
-    (``modify``/``synthesize``/``defer``) or unknown decision is recorded as a
-    typed reason and treated as ``allow`` (non-blocking) — it never silently
-    denies, and the reason is queryable.
+    (``defer``) or unknown decision is recorded as a typed reason and treated as
+    ``allow`` (non-blocking) — it never silently denies, and the reason is
+    queryable. ``modify``/``synthesize`` are first-class (P2.3): their
+    ``input``/``result`` payloads ride the decision to the ``tool_interceptor``.
     """
 
     if not raw:
@@ -241,12 +278,22 @@ def parse_hook_output(
     elif decision not in _SUPPORTED_DECISIONS:
         record_hook_reason("hook_unknown_decision", hook_id=hook_id, event=event, decision=decision)
         decision = "allow"
+    modify_input: Mapping[str, Any] | None = None
+    if decision == "modify":
+        candidate = raw.get("input")
+        modify_input = candidate if isinstance(candidate, Mapping) else None
+    synthesize_present = decision == "synthesize" and "result" in raw
+    synthesize_result = raw.get("result") if decision == "synthesize" else None
     return HookDecision(
         decision=decision,  # type: ignore[arg-type]
         reason=str(raw.get("reason") or ""),
         additional_context=str(raw.get("additionalContext") or ""),
         system_message=str(raw.get("systemMessage") or ""),
         hook_id=hook_id,
+        modify_input=modify_input,
+        synthesize_result=synthesize_result,
+        synthesize_present=synthesize_present,
+        updated_output=str(raw.get("updatedToolOutput") or ""),
     )
 
 
@@ -259,17 +306,34 @@ class HookOutcome:
     additional_context: str = ""
     system_message: str = ""
     records: list[dict[str, Any]] = field(default_factory=list)
+    modify_input: Mapping[str, Any] | None = None
+    synthesize_result: Any = None
+    synthesize_present: bool = False
+    updated_output: str = ""
 
     @property
     def denied(self) -> bool:
         return self.decision == "deny"
 
+    @property
+    def is_modify(self) -> bool:
+        return self.decision == "modify" and self.modify_input is not None
+
+    @property
+    def is_synthesize(self) -> bool:
+        return self.decision == "synthesize"
+
     @classmethod
     def merge(cls, decisions: list[HookDecision], records: list[dict[str, Any]]) -> "HookOutcome":
         """Merge per-hook decisions most-restrictive-wins (invariant 3).
 
-        ``deny > ask > allow``; the winning tier's reasons are joined; every
-        hook's ``additionalContext``/``systemMessage`` is concatenated in order.
+        ``deny > ask > synthesize > modify > allow``; the winning tier's reasons
+        are joined; every hook's ``additionalContext``/``systemMessage`` is
+        concatenated in order. When the winning tier is an INTERCEPT
+        (``modify``/``synthesize``) or any hook carries a PostToolUse
+        ``updatedToolOutput`` rewrite, the FIRST such payload by stable id order is
+        applied and a ``hook_conflicting_intercept`` reason is recorded if more
+        than one competes — never a silent last-writer-wins.
         """
 
         outcome = cls(records=records)
@@ -285,6 +349,44 @@ class HookOutcome:
         outcome.system_message = "\n".join(
             d.system_message for d in decisions if d.system_message
         )
+        if outcome.decision == "modify":
+            movers = [d for d in winning if d.modify_input is not None]
+            if movers:
+                outcome.modify_input = movers[0].modify_input
+                if len(movers) > 1:
+                    record_hook_reason(
+                        "hook_conflicting_intercept",
+                        hook_id=movers[0].hook_id,
+                        decision="modify",
+                    )
+            else:
+                # No winning "modify" hook carried a usable ``input`` Mapping — the
+                # intercept intent would otherwise vanish silently (the tool boundary
+                # falls through to "nothing to intercept" and runs unmodified args).
+                # Record it as a typed, queryable degradation (no-silent-fallback).
+                record_hook_reason(
+                    "hook_modify_missing_input",
+                    hook_id=winning[0].hook_id,
+                    decision="modify",
+                )
+        elif outcome.decision == "synthesize":
+            outcome.synthesize_result = winning[0].synthesize_result
+            outcome.synthesize_present = winning[0].synthesize_present
+            if len(winning) > 1:
+                record_hook_reason(
+                    "hook_conflicting_intercept",
+                    hook_id=winning[0].hook_id,
+                    decision="synthesize",
+                )
+        rewrites = [d for d in decisions if d.updated_output]
+        if rewrites:
+            outcome.updated_output = rewrites[0].updated_output
+            if len(rewrites) > 1:
+                record_hook_reason(
+                    "hook_conflicting_intercept",
+                    hook_id=rewrites[0].hook_id,
+                    decision="updatedToolOutput",
+                )
         return outcome
 
 

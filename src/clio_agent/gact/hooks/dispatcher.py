@@ -36,9 +36,16 @@ from clio_agent.gact.hooks.adapters import HookAdapter, default_adapters
 from clio_agent.gact.hooks.config import HookEntry, discover_hook_entries
 from clio_agent.gact.hooks.events import (
     KNOWN_EVENTS,
+    POST_TOOL_BATCH,
+    POST_TOOL_USE,
+    PRE_COMPACT,
     PRE_TOOL_USE,
     SEMANTIC_EVENT,
+    SESSION_END,
+    SESSION_START,
     STOP,
+    SUBAGENT_START,
+    SUBAGENT_STOP,
     USER_PROMPT_SUBMIT,
     is_deny_capable,
 )
@@ -315,3 +322,161 @@ def dispatch_semantic_event(
         payload=dict(payload),
     )
     return dispatcher.dispatch(SEMANTIC_EVENT, envelope)
+
+
+def dispatch_post_tool(
+    name: str,
+    args: Mapping[str, Any],
+    *,
+    observation: Any,
+    is_error: bool,
+    synthetic: bool,
+    session_id: str = "",
+    turn_id: str = "",
+    cwd: str = "",
+    context: Mapping[str, Any] | None = None,
+) -> HookOutcome:
+    """Fire ``PostToolUse`` hooks after a tool result (P2.3).
+
+    NOT a blocking gate — the effect already ran. A hook may observe, rewrite the
+    observation (``updatedToolOutput``, carried on ``outcome.updated_output``), or
+    ``deny`` to feed the reason back to the model. Fires on a synthesized result
+    too, flagged ``synthetic: true`` in the envelope payload.
+    """
+
+    dispatcher = _GLOBAL
+    if dispatcher is None:
+        return HookOutcome()
+    envelope = HookEnvelope(
+        hook_event_name=POST_TOOL_USE,
+        session_id=session_id,
+        turn_id=turn_id,
+        cwd=cwd,
+        tool_name=name,
+        tool_input=dict(args),
+        tool_annotations=_envelope_tool_annotations(name, context),
+        payload={"is_error": bool(is_error), "synthetic": bool(synthetic)},
+    )
+    return dispatcher.dispatch(POST_TOOL_USE, envelope)
+
+
+def dispatch_post_tool_batch(
+    payload: Mapping[str, Any],
+    *,
+    session_id: str = "",
+    turn_id: str = "",
+    cwd: str = "",
+) -> HookOutcome:
+    """Fire ``PostToolBatch`` observation hooks after a turn's tool round resolves."""
+
+    dispatcher = _GLOBAL
+    if dispatcher is None:
+        return HookOutcome()
+    envelope = HookEnvelope(
+        hook_event_name=POST_TOOL_BATCH,
+        session_id=session_id,
+        turn_id=turn_id,
+        cwd=cwd,
+        payload=dict(payload),
+    )
+    return dispatcher.dispatch(POST_TOOL_BATCH, envelope)
+
+
+def dispatch_session_start(
+    *,
+    session_id: str = "",
+    cwd: str = "",
+    payload: Mapping[str, Any] | None = None,
+) -> HookOutcome:
+    """Fire ``SessionStart`` observation hooks when a session is created."""
+
+    dispatcher = _GLOBAL
+    if dispatcher is None:
+        return HookOutcome()
+    envelope = HookEnvelope(
+        hook_event_name=SESSION_START,
+        session_id=session_id,
+        cwd=cwd,
+        payload=dict(payload or {}),
+    )
+    return dispatcher.dispatch(SESSION_START, envelope)
+
+
+def dispatch_session_end(
+    *,
+    session_id: str = "",
+    cwd: str = "",
+    payload: Mapping[str, Any] | None = None,
+) -> HookOutcome:
+    """Fire ``SessionEnd`` observation hooks when a session is closed."""
+
+    dispatcher = _GLOBAL
+    if dispatcher is None:
+        return HookOutcome()
+    envelope = HookEnvelope(
+        hook_event_name=SESSION_END,
+        session_id=session_id,
+        cwd=cwd,
+        payload=dict(payload or {}),
+    )
+    return dispatcher.dispatch(SESSION_END, envelope)
+
+
+def dispatch_subagent_start(
+    *,
+    session_id: str = "",
+    cwd: str = "",
+    payload: Mapping[str, Any] | None = None,
+) -> HookOutcome:
+    """Fire ``SubagentStart`` observation hooks when a child turn begins."""
+
+    dispatcher = _GLOBAL
+    if dispatcher is None:
+        return HookOutcome()
+    envelope = HookEnvelope(
+        hook_event_name=SUBAGENT_START,
+        session_id=session_id,
+        cwd=cwd,
+        payload=dict(payload or {}),
+    )
+    return dispatcher.dispatch(SUBAGENT_START, envelope)
+
+
+def dispatch_subagent_stop(
+    *,
+    session_id: str = "",
+    cwd: str = "",
+    payload: Mapping[str, Any] | None = None,
+) -> HookOutcome:
+    """Fire ``SubagentStop`` observation hooks when a child turn reaches terminal."""
+
+    dispatcher = _GLOBAL
+    if dispatcher is None:
+        return HookOutcome()
+    envelope = HookEnvelope(
+        hook_event_name=SUBAGENT_STOP,
+        session_id=session_id,
+        cwd=cwd,
+        payload=dict(payload or {}),
+    )
+    return dispatcher.dispatch(SUBAGENT_STOP, envelope)
+
+
+def dispatch_pre_compact(
+    *,
+    session_id: str = "",
+    cwd: str = "",
+    payload: Mapping[str, Any] | None = None,
+) -> HookOutcome:
+    """Fire ``PreCompact`` observation hooks before a transcript is compacted."""
+
+    dispatcher = _GLOBAL
+    if dispatcher is None:
+        return HookOutcome()
+    envelope = HookEnvelope(
+        hook_event_name=PRE_COMPACT,
+        session_id=session_id,
+        cwd=cwd,
+        payload=dict(payload or {}),
+    )
+    return dispatcher.dispatch(PRE_COMPACT, envelope)

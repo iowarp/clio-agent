@@ -708,6 +708,20 @@ def finalize_turn(
             },
         )
     )
+    # P2.3 PostToolBatch: fire ONCE per turn, after the turn's whole tool batch
+    # resolved and before Stop/next step — only when the turn ran ≥1 tool (an empty
+    # batch is not a batch). ``state.tools_called`` is the honest clio-owned batch
+    # boundary (the DSPy ReAct loop owns per-model-step rounds; when it exposes a
+    # finer seam this moves there with no contract change).
+    if state.tools_called:
+        from clio_agent.gact.hooks import fire_post_tool_batch  # noqa: PLC0415
+
+        fire_post_tool_batch(
+            state.tools_called,
+            session_id=state.sid,
+            turn_id=state.turn_id,
+            cwd=str(getattr(state.sess, "workspace_root", "") or ""),
+        )
     # P2.2 #1070: Stop hooks (the ported ``post_message`` consumer) run AFTER
     # persistence so user audit code sees the settled assistant + can ship to
     # external systems. Observation-only in this slice — errors are swallowed

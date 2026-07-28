@@ -528,6 +528,13 @@ def _make_permission_gate(app: "FastAPI"):
         args: Mapping[str, Any],
         context: Mapping[str, Any] | None = None,
     ) -> str:
+        # P2.3 single-fire hygiene: clear any per-call intercept stash at the very
+        # start so a read-only fast-allow (below) — or a prior call whose interceptor
+        # never ran (a policy deny after a hook allow, a circuit break) — can never
+        # let the NEXT tool's interceptor consume a stale synthesize/modify decision.
+        from clio_agent.gact.hooks import stash_pre_tool_intercept  # noqa: PLC0415
+
+        stash_pre_tool_intercept(None)
         # #1032: reads are NEVER gated. A provably read-only call (MCP
         # readOnlyHint annotation OR a static catalog ``read`` tag) fast-allows
         # here as the FIRST branch — before any hook or the plan/architect lock —
@@ -561,6 +568,9 @@ def _make_permission_gate(app: "FastAPI"):
             context=context,
         )
         if hook_outcome.denied:
+            # Clear any stale intercept so the (skipped) interceptor never fires on
+            # this denied call, then block with the hook's reason.
+            stash_pre_tool_intercept(None)
             _record_resolved_permission(
                 app,
                 session_id=sid,
@@ -574,6 +584,11 @@ def _make_permission_gate(app: "FastAPI"):
             return DenyDecision(
                 hook_outcome.reason or f"tool call {name!r} denied by a PreToolUse hook"
             )
+        # P2.3: a non-denied PreToolUse ``modify``/``synthesize`` rides forward to the
+        # already-wired ``tool_interceptor`` slot. Stash it on the per-call context
+        # var (single-fire: PreToolUse dispatched exactly once, here) — the interceptor
+        # is a pure consumer that reads it after this gate returns "allow".
+        stash_pre_tool_intercept(hook_outcome)
         # P1.1 #1063: the plan/architect read-only lock is no longer a predicate here (it was
         # copy-pasted into three modules). It is now a set of built-in plan_acl rows the ONE
         # resolver evaluates — passing the session mode makes ``resolve`` deny every non-read tool
