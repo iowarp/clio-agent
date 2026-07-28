@@ -24,6 +24,15 @@ Gates:
 Run detached; writes the verdict to --out.
 
     uv run python scripts/live_gate_governance_1057.py --port 17851
+
+ENVIRONMENT PREREQUISITES (an accepted live gate holds the REAL CTE, never the LocalFS
+degrade — see the arc-local-never-for-gates rule): the box needs enough free disk for the
+clio-core file tier (default ``arc.cte.file_capacity`` ~50 GB) or the CTE preflight fails
+and ARC degrades to LocalFSStore (a LOUD degrade, #897) — lower ``CLIO_ARC_CTE_FILE_CAPACITY``
+to fit the disk to keep a REAL (smaller) CTE. Also run against a CLEAN process tree: each
+claude_code turn spawns ``claude.exe`` SDK subprocesses, and accumulated orphans from prior
+runs contend and make the provider-bind call time out. Confirm ``/v1/providers/lm/wait``
+returns ready before posting a turn.
 """
 
 from __future__ import annotations
@@ -42,8 +51,10 @@ REPO = Path(__file__).resolve().parent.parent
 def _client(base: str):
     import requests
 
-    def call(method: str, path: str, body=None, params=None, ok=(200, 201, 202)):
-        r = requests.request(method, f"{base}{path}", json=body, params=params, timeout=180)
+    def call(method: str, path: str, body=None, params=None, ok=(200, 201, 202), timeout=300):
+        # 300s default: the cold claude_code SDK + MCP-fleet boot (uv resolve + geo/etc.
+        # stdio servers) can exceed a 180s read on the first provider-bind call.
+        r = requests.request(method, f"{base}{path}", json=body, params=params, timeout=timeout)
         if r.status_code not in ok:
             raise RuntimeError(f"{method} {path} -> {r.status_code}: {r.text[:300]}")
         return r.json() if r.content else {}
@@ -136,7 +147,7 @@ def main() -> int:
             except Exception:
                 time.sleep(2)
         call("PUT", "/v1/providers/lm", {"provider": "claude_code", "api_base": "", "model": args.model})
-        call("GET", "/v1/providers/lm/wait", params={"timeout": 120}, ok=(200, 503))
+        call("GET", "/v1/providers/lm/wait", params={"timeout": 240}, ok=(200, 503), timeout=300)
         call("PUT", "/v1/policies",
              {"policies": [{"scope": "workspace", "action": "allow", "tool_name_pattern": "*"}]})
         ws = call("POST", "/v1/workspaces", {"name": "gov-gate", "root_path": str(ws_root)})
