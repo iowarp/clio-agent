@@ -54,7 +54,10 @@ from clio_agent.gact.app import build_app
 # /v1/workspaces/{wid}/grants, owned by routes/workspaces.py (grants-on-the-record).
 # 164 -> 166 (#1037 Pillar 2): +2 live-handle routes owned by routes/agent_tasks.py —
 # GET /v1/agent-tasks/{id}/live (read-only projection) + POST /v1/agent-tasks/{id}/steer.
-EXPECTED_ROUTE_METHOD_PAIRS = 166
+# 166 -> 183: +17 document manifest/content, rendition, immutable review,
+# working-copy, native-comment, and optional embedded-editor routes owned by
+# routes/documents.py and composed through routes/artifact_workspace.py.
+EXPECTED_ROUTE_METHOD_PAIRS = 183
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

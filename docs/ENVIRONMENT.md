@@ -43,11 +43,6 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARTIFACT_CAS_BUDGET_BYTES` | `artifacts.cas_budget_bytes` | int | `536870912` | `src/clio_agent/gact/artifacts/cas.py` |
 | `CLIO_ARTIFACT_CAS_MAX_FILE_BYTES` | `artifacts.cas_max_file_bytes` | int | `16777216` | `src/clio_agent/gact/artifacts/cas.py` |
 | `CLIO_ARTIFACT_HASH_STAT_CACHE` | `artifacts.hash_stat_cache` | bool | `false` | `src/clio_agent/gact/artifacts/cas.py` |
-| `CLIO_COLLABORA_URL` | document editor endpoint | str | empty | `src/clio_agent/gact/documents/editors.py` |
-| `CLIO_DOCUMENT_TYPST_FONT` | Pandoc/Typst PDF rendition font | str | `Arial` on Windows, `DejaVu Serif` elsewhere | `src/clio_agent/gact/documents/renditions.py` |
-| `CLIO_GACT_PUBLIC_URL` | editor-reachable GACT base URL | str | `http://host.docker.internal:8000` | `src/clio_agent/gact/documents/editors.py` |
-| `CLIO_ONLYOFFICE_JWT_SECRET` | ONLYOFFICE shared JWT secret | secret str | empty | `src/clio_agent/gact/documents/editors.py` |
-| `CLIO_ONLYOFFICE_URL` | document editor endpoint | str | empty | `src/clio_agent/gact/documents/editors.py` |
 | `CLIO_AUTOCOMPACT_PCT` | `autocompact.pct` | str | `0.85` | `src/clio_agent/gact/runtime/context_tokens.py` |
 | `CLIO_BLUEPRINT_REGISTRY_URL` | `gact.blueprint_registry.url` | str | `https://github.com/iowarp/clio-agent-marketplace.git` | `src/clio_agent/gact/agent_blueprints.py` |
 | `CLIO_CAPTURE_REASONING` | `runtime.capture_reasoning` | bool | `true` | `src/clio_agent/gact/usage.py` |
@@ -161,10 +156,15 @@ These deliberately bypass the config store (a shared file must not be able to re
 | --- | --- | --- |
 | `ALCF_INFERENCE_TOKEN` | secret | `src/clio_agent/gact/routes/providers.py`, `src/clio_agent/providers/credentials.py` |
 | `CLIO_ARGONNE_TOKEN` | secret | `src/clio_agent/gact/routes/providers.py`, `src/clio_agent/providers/credentials.py` |
+| `CLIO_COLLABORA_URL` | unmigrated | `src/clio_agent/gact/documents/editors.py` |
 | `CLIO_CRED_<PROVIDER>_<ACCOUNT>` | secret | `src/clio_agent/providers/credentials.py` |
+| `CLIO_DOCUMENT_TYPST_FONT` | unmigrated | `src/clio_agent/gact/documents/renditions.py` |
 | `CLIO_ENV_FILE` | bootstrap | `src/clio_agent/config.py` |
+| `CLIO_GACT_PUBLIC_URL` | unmigrated | `src/clio_agent/gact/documents/editors.py` |
 | `CLIO_KIT_CACHE_DIR` | unmigrated | `src/clio_agent/runtime/disk_gc.py` |
 | `CLIO_LM_API_KEY` | secret | `src/clio_agent/config.py`, `src/clio_agent/gact/routes/providers.py`, `src/clio_agent/runtime/status.py` |
+| `CLIO_ONLYOFFICE_JWT_SECRET` | unmigrated | `src/clio_agent/gact/documents/editors.py` |
+| `CLIO_ONLYOFFICE_URL` | unmigrated | `src/clio_agent/gact/documents/editors.py` |
 | `CLIO_RUNTIME_STATE_DIR` | unmigrated | `src/clio_agent/arc/clio_core_config.py` |
 | `CLIO_USER_DIR` | bootstrap | `src/clio_agent/paths.py` |
 

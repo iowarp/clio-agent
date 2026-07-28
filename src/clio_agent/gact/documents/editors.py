@@ -188,8 +188,13 @@ def verify_access_token(
 def editor_url(provider: str) -> str:
     """Return the configured editor base URL for ``provider``."""
 
-    variable = "CLIO_ONLYOFFICE_URL" if provider == "onlyoffice" else "CLIO_COLLABORA_URL"
-    return os.environ.get(variable, "").strip().rstrip("/")
+    if provider == "onlyoffice":
+        value = os.environ.get("CLIO_ONLYOFFICE_URL", "")
+    elif provider == "collabora":
+        value = os.environ.get("CLIO_COLLABORA_URL", "")
+    else:
+        raise ValueError(f"unsupported document editor provider: {provider}")
+    return value.strip().rstrip("/")
 
 
 def public_gact_url() -> str:
