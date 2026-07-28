@@ -31,6 +31,7 @@ from clio_agent.gact.agent_tasks import (
     publish_agent_task_event,
 )
 from clio_agent.gact.live_handle import enqueue_steer_or_raise, project_live_handle
+from clio_agent.gact.messaging import raise_on_reserved_metadata
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 if TYPE_CHECKING:
@@ -140,6 +141,15 @@ def register_agent_task_routes(app: FastAPI, deps: "GactDeps") -> None:
         task = app.state.agent_task_registry.get(task_id)
         if task is None:
             raise _not_found("task", task_id)
+        # #1057 B2 (BLOCKER): steer is a THIRD client-writable ingest onto a turn's
+        # ``user_msg.metadata``. ``body.metadata`` rides ``enqueue_user_steer`` onto the
+        # CHILD inbox event; if the child's running turn ends before the drain,
+        # ``drain_inbox_to_new_turn`` merges it into the promoted turn's
+        # ``user_msg.metadata`` and a smuggled ``hook_defer_resume`` makes the
+        # UserPromptSubmit once-gate skip hook dispatch — the same B2 bypass POST
+        # /messages and /retry already reject. Reject (never strip) the reserved key
+        # via the shared chokepoint, keyed on the CHILD session where it would land.
+        raise_on_reserved_metadata(task.child_session_id, body.metadata)
         # No silent stranding: a terminal/gone/idle child never drains its inbox
         # again, so enqueue_steer_or_raise refuses with a typed 409 child_not_running
         # unless the child has a genuinely running turn; only then does it reuse
