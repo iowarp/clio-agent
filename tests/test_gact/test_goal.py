@@ -1,20 +1,20 @@
-"""P4.2 (#1080): run-until-a-predicate GOAL conditions with two-tier evaluation.
+"""P4.2 (#1080): run-until-a-condition GOAL, LLM-judge-only evaluation (A4 #1057).
 
 Asserts the goal completion gate that rides the bounded Stop-loop re-drive seam:
 
-* the PURE two-tier decision (:func:`evaluate_goal`) — the deterministic tier is
-  AUTHORITATIVE (a false LLM "met" is overridden), the NL-only mode falls back to the
-  LLM tier (flagged), and typed bounds (max_goal_iters / budget) backstop against an
-  infinite loop with a typed reason;
+* the PURE decision (:func:`evaluate_goal`) — the bounded LLM judge decides met / not-met,
+  and typed bounds (max_goal_iters / budget) are the HARD STOPS that backstop an infinite
+  loop with a typed reason (the deterministic goal-predicate tier was DELETED — nobody ships
+  predicates over model-authored state; it let the model mark its own homework);
 * the finalize-boundary orchestrator (:func:`dispatch_goal_at_finalize`, judge MOCKED) —
-  re-drives when unmet (loop-inbox seam), settles + auto-clears when met, and a prose
-  "goal met" NEVER satisfies a predicate-backed goal (injection-safe);
+  re-drives when the judge says not-met (loop-inbox seam), settles + auto-clears when met;
 * the model can NEVER set/clear a goal — there is no ``set_goal``/``goal_clear`` tool, only
-  the READ-ONLY ``goal_status``; the ``/goal`` command + the ``arm_goal`` seam are the only
-  arming doors;
+  the READ-ONLY ``goal_status`` (armed-state only — it never runs the judge); the ``/goal``
+  command + the ``arm_goal`` seam are the only arming doors;
+* a ``when_state`` / ``predicate`` command arg no longer arms a self-satisfiable gate;
 * goal state lives on ``session.metadata`` (no fifth store);
-* compose with the loop (#1079) — a satisfied predicate-backed goal ends the loop with the
-  typed ``loop_goal_met`` reason.
+* compose with the loop (#1079) — a judge-met goal stops the loop with the typed
+  ``loop_goal_met`` reason (the finalize glue, LLM-only).
 
 Each body runs in a fresh ``contextvars.copy_context()`` so the (reset-less)
 ``set_app``/``set_session_id`` bindings never leak between tests.
@@ -38,12 +38,9 @@ from clio_agent.gact.goal import (
     arm_goal,
     build_goal_status_tool,
     clear_goal,
-    combine_tiers,
     dispatch_goal_at_finalize,
     evaluate_goal,
-    loop_goal_satisfied,
     parse_goal_command,
-    run_deterministic_gate,
     run_goal_command,
 )
 from clio_agent.gact.scheduler import ScheduleStore
@@ -95,83 +92,42 @@ def _goal_state(app: SimpleNamespace, sid: str) -> dict[str, Any]:
     return dict(app.state.sessions.get(sid).metadata.get("goal") or {})
 
 
-def _set_ws(app: SimpleNamespace, sid: str, ws: dict[str, Any]) -> None:
-    app.state.sessions.update(sid, metadata_patch={"workflow_state": ws})
+def _mock_judge(monkeypatch: Any, *, met: bool, reason: str = "") -> None:
+    monkeypatch.setattr(
+        goal_mod, "run_llm_judge", lambda app, sid, goal: GoalJudgement(met=met, reason=reason)
+    )
 
 
 # =========================================================================== #
-# PURE two-tier decision (evaluate_goal / combine_tiers)                        #
+# PURE decision (evaluate_goal) — the bounded LLM judge decides                 #
 # =========================================================================== #
-def test_combine_tiers_deterministic_is_authoritative() -> None:
-    # Deterministic True wins even when the LLM says not met.
-    met, tier, _reason, overridden = combine_tiers(
-        det_result=True, llm=GoalJudgement(met=False, reason="looks unfinished")
-    )
-    assert met is True and tier == "deterministic" and overridden is False
-    # Deterministic False OVERRIDES a false LLM "met" (flagged).
-    met2, tier2, _r2, overridden2 = combine_tiers(
-        det_result=False, llm=GoalJudgement(met=True, reason="tests pass")
-    )
-    assert met2 is False and tier2 == "deterministic" and overridden2 is True
-    # NL-only: the LLM tier decides (weaker mode, flagged tier == "llm").
-    met3, tier3, _r3, overridden3 = combine_tiers(
-        det_result=None, llm=GoalJudgement(met=True, reason="done")
-    )
-    assert met3 is True and tier3 == "llm" and overridden3 is False
-
-
-def test_evaluate_goal_settles_when_deterministic_met() -> None:
+def test_evaluate_goal_settles_when_judge_met() -> None:
     goal = {"condition": "c", "iters_elapsed": 0, "max_goal_iters": 10}
-    decision = evaluate_goal(goal, det_result=True, llm=GoalJudgement(met=False, reason="unsure"))
+    decision = evaluate_goal(goal, llm=GoalJudgement(met=True, reason="looks done"))
     assert decision.outcome == "met"
     assert decision.reason == "goal_met"
-    assert decision.tier == "deterministic"
     # auto-clear on met.
     assert decision.new_state["active"] is False
     assert decision.new_state["cleared"] is True
     assert decision.new_state["met"] is True
 
 
-def test_evaluate_goal_deterministic_overrides_false_llm_met() -> None:
-    """The LLM proposes met, the deterministic gate says NO -> re-drive (overridden)."""
-
-    goal = {"condition": "all tests pass", "iters_elapsed": 0, "max_goal_iters": 10}
-    decision = evaluate_goal(
-        goal, det_result=False, llm=GoalJudgement(met=True, reason="I ran the tests")
-    )
+def test_evaluate_goal_redrives_when_judge_not_met() -> None:
+    goal = {"condition": "the user seems satisfied", "iters_elapsed": 0, "max_goal_iters": 10}
+    decision = evaluate_goal(goal, llm=GoalJudgement(met=False, reason="not yet"))
     assert decision.outcome == "redrive"
-    assert decision.reason == "goal_llm_overridden"
-    assert decision.llm_overridden is True
-    assert decision.met is False
+    assert decision.reason == "goal_redrive"
     assert decision.new_state["active"] is True
     assert decision.new_state["iters_elapsed"] == 1
 
 
-def test_evaluate_goal_nl_only_uses_llm_tier_flagged() -> None:
-    goal = {"condition": "the user seems satisfied", "iters_elapsed": 0, "max_goal_iters": 10}
-    decision = evaluate_goal(
-        goal, det_result=None, llm=GoalJudgement(met=True, reason="user said thanks")
-    )
-    assert decision.outcome == "met"
-    assert decision.tier == "llm"  # the weaker NL-only mode is flagged
-    # And an NL-only unmet re-drives on the LLM tier.
-    decision2 = evaluate_goal(
-        {"condition": "c", "iters_elapsed": 0, "max_goal_iters": 10},
-        det_result=None,
-        llm=GoalJudgement(met=False, reason="not yet"),
-    )
-    assert decision2.outcome == "redrive"
-    assert decision2.reason == "goal_redrive"
-    assert decision2.tier == "llm"
-
-
 def test_evaluate_goal_max_iters_backstop_typed_reason() -> None:
-    """At the iteration ceiling with an unmet goal -> settle DONE, never re-drive forever."""
+    """At the iteration ceiling with an unmet goal -> settle DONE, never re-drive forever.
+
+    The loop bounds are the HARD STOPS (the deterministic predicate tier is gone)."""
 
     goal = {"condition": "c", "iters_elapsed": 5, "max_goal_iters": 5}
-    decision = evaluate_goal(
-        goal, det_result=False, llm=GoalJudgement(met=False, reason="still going")
-    )
+    decision = evaluate_goal(goal, llm=GoalJudgement(met=False, reason="still going"))
     assert decision.outcome == "capped"
     assert decision.reason == "goal_max_iters"
     assert decision.new_state["active"] is False
@@ -180,19 +136,12 @@ def test_evaluate_goal_max_iters_backstop_typed_reason() -> None:
 
 def test_evaluate_goal_budget_backstop_typed_reason() -> None:
     goal = {"condition": "c", "iters_elapsed": 0, "max_goal_iters": 100, "max_wallclock_s": 10}
-    decision = evaluate_goal(
-        goal,
-        det_result=False,
-        llm=GoalJudgement(met=False, reason="working"),
-        elapsed_s=30.0,
-    )
+    decision = evaluate_goal(goal, llm=GoalJudgement(met=False, reason="working"), elapsed_s=30.0)
     assert decision.outcome == "capped"
     assert decision.reason == "goal_budget"
     # token budget also trips goal_budget.
     goal_t = {"condition": "c", "iters_elapsed": 0, "max_goal_iters": 100, "max_tokens": 50}
-    decision_t = evaluate_goal(
-        goal_t, det_result=False, llm=GoalJudgement(met=False, reason="w"), tokens_spent=80
-    )
+    decision_t = evaluate_goal(goal_t, llm=GoalJudgement(met=False, reason="w"), tokens_spent=80)
     assert decision_t.outcome == "capped" and decision_t.reason == "goal_budget"
 
 
@@ -200,114 +149,22 @@ def test_evaluate_goal_unset_iters_uses_finite_default() -> None:
     """A goal with no explicit iteration bound still terminates (finite default ceiling)."""
 
     goal = {"condition": "c", "iters_elapsed": DEFAULT_MAX_GOAL_ITERS}
-    decision = evaluate_goal(goal, det_result=False, llm=GoalJudgement(met=False, reason="w"))
+    decision = evaluate_goal(goal, llm=GoalJudgement(met=False, reason="w"))
     assert decision.outcome == "capped"
     assert decision.reason == "goal_max_iters"
 
 
 # =========================================================================== #
-# Deterministic gate (StatePredicate over workflow_state) — reuse #948 vocab   #
-# =========================================================================== #
-def test_run_deterministic_gate_state_exists_and_equals(tmp_path: Path) -> None:
-    def body() -> None:
-        app = _app(tmp_path)
-        sid = _session(app)
-        _bind(app, sid)
-        # exists gate over the session's typed workflow_state.
-        arm_goal(
-            app,
-            sid,
-            condition="acquisition done",
-            predicate={
-                "kind": "state",
-                "field_path": "acquisition.status",
-                "check": "exists",
-                "exists": True,
-            },
-        )
-        goal = _goal_state(app, sid)
-        assert run_deterministic_gate(app, sid, goal) is False  # not present yet
-        _set_ws(app, sid, {"acquisition": {"status": "done"}})
-        assert run_deterministic_gate(app, sid, goal) is True
-
-        # equals gate.
-        arm_goal(
-            app,
-            sid,
-            condition="status == done",
-            predicate={
-                "kind": "state",
-                "field_path": "acquisition.status",
-                "check": "equals",
-                "equals": "done",
-            },
-        )
-        goal2 = _goal_state(app, sid)
-        assert run_deterministic_gate(app, sid, goal2) is True
-        _set_ws(app, sid, {"acquisition": {"status": "pending"}})
-        assert run_deterministic_gate(app, sid, goal2) is False
-
-    _in_ctx(body)
-
-
-def test_run_deterministic_gate_nl_only_is_none(tmp_path: Path) -> None:
-    def body() -> None:
-        app = _app(tmp_path)
-        sid = _session(app)
-        _bind(app, sid)
-        arm_goal(app, sid, condition="the report reads well")  # no predicate
-        assert run_deterministic_gate(app, sid, _goal_state(app, sid)) is None
-
-    _in_ctx(body)
-
-
-def test_run_deterministic_gate_file_exists(tmp_path: Path) -> None:
-    def body() -> None:
-        app = _app(tmp_path)
-        sid = _session(app)
-        _bind(app, sid)
-        target = tmp_path / "artifact.txt"
-        arm_goal(
-            app,
-            sid,
-            condition="artifact written",
-            predicate={"kind": "file_exists", "path": str(target)},
-        )
-        goal = _goal_state(app, sid)
-        assert run_deterministic_gate(app, sid, goal) is False
-        target.write_text("done", encoding="utf-8")
-        assert run_deterministic_gate(app, sid, goal) is True
-
-    _in_ctx(body)
-
-
-# =========================================================================== #
 # Orchestrator (dispatch_goal_at_finalize) — judge MOCKED                       #
 # =========================================================================== #
-def _mock_judge(monkeypatch: Any, *, met: bool, reason: str = "") -> None:
-    monkeypatch.setattr(
-        goal_mod, "run_llm_judge", lambda app, sid, goal: GoalJudgement(met=met, reason=reason)
-    )
-
-
-def test_dispatch_redrives_when_predicate_unmet(tmp_path: Path, monkeypatch: Any) -> None:
+def test_dispatch_redrives_when_judge_not_met(tmp_path: Path, monkeypatch: Any) -> None:
     def body() -> None:
         app = _app(tmp_path)
         sid = _session(app)
         _bind(app, sid)
         _mock_judge(monkeypatch, met=False, reason="tests still failing")
-        arm_goal(
-            app,
-            sid,
-            condition="all tests pass",
-            predicate={
-                "kind": "state",
-                "field_path": "tests.passing",
-                "check": "equals",
-                "equals": True,
-            },
-        )
-        # predicate NOT satisfied -> the finalize eval must re-drive one more turn.
+        arm_goal(app, sid, condition="all tests pass")
+        # judge says NOT met -> the finalize eval must re-drive one more turn.
         decision = dispatch_goal_at_finalize(app, session_id=sid, turn_id="t1")
         assert decision is not None and decision.outcome == "redrive"
         goal = _goal_state(app, sid)
@@ -323,30 +180,15 @@ def test_dispatch_redrives_when_predicate_unmet(tmp_path: Path, monkeypatch: Any
     _in_ctx(body)
 
 
-def test_dispatch_settles_and_autoclears_when_deterministic_met(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
+def test_dispatch_settles_and_autoclears_when_judge_met(tmp_path: Path, monkeypatch: Any) -> None:
     def body() -> None:
         app = _app(tmp_path)
         sid = _session(app)
         _bind(app, sid)
-        # The judge says NOT met, but the deterministic gate holds -> deterministic wins.
-        _mock_judge(monkeypatch, met=False, reason="I am unsure")
-        arm_goal(
-            app,
-            sid,
-            condition="tests pass",
-            predicate={
-                "kind": "state",
-                "field_path": "tests.passing",
-                "check": "equals",
-                "equals": True,
-            },
-        )
-        _set_ws(app, sid, {"tests": {"passing": True}})
+        _mock_judge(monkeypatch, met=True, reason="the summary is complete")
+        arm_goal(app, sid, condition="write a good summary")
         decision = dispatch_goal_at_finalize(app, session_id=sid, turn_id="t1")
         assert decision is not None and decision.outcome == "met"
-        assert decision.tier == "deterministic"
         goal = _goal_state(app, sid)
         assert goal["active"] is False  # auto-cleared
         assert goal["cleared"] is True
@@ -359,52 +201,13 @@ def test_dispatch_settles_and_autoclears_when_deterministic_met(
     _in_ctx(body)
 
 
-def test_dispatch_prose_cannot_satisfy_predicate_backed_goal(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
-    """Injection-safety: a transcript claim "tests pass" (LLM met=True) must NOT satisfy a
-    predicate-backed goal whose deterministic gate does not confirm — it re-drives instead."""
-
-    def body() -> None:
-        app = _app(tmp_path)
-        sid = _session(app)
-        _bind(app, sid)
-        _mock_judge(monkeypatch, met=True, reason="the transcript says all tests pass")
-        arm_goal(
-            app,
-            sid,
-            condition="all tests pass",
-            predicate={
-                "kind": "state",
-                "field_path": "tests.passing",
-                "check": "equals",
-                "equals": True,
-            },
-        )
-        # workflow_state does NOT show tests.passing == True (the real gate is unmet).
-        decision = dispatch_goal_at_finalize(app, session_id=sid, turn_id="t1")
-        assert decision is not None
-        assert decision.outcome == "redrive"  # NOT met despite the prose claim
-        assert decision.reason == "goal_llm_overridden"
-        assert decision.llm_overridden is True
-        assert _goal_state(app, sid)["active"] is True  # still gating, not satisfied
-
-    _in_ctx(body)
-
-
 def test_dispatch_max_iters_settles_with_typed_reason(tmp_path: Path, monkeypatch: Any) -> None:
     def body() -> None:
         app = _app(tmp_path)
         sid = _session(app)
         _bind(app, sid)
         _mock_judge(monkeypatch, met=False, reason="not yet")
-        arm_goal(
-            app,
-            sid,
-            condition="c",
-            predicate={"kind": "state", "field_path": "x", "check": "exists", "exists": True},
-            max_goal_iters=1,
-        )
+        arm_goal(app, sid, condition="c", max_goal_iters=1)
         # Iteration 1: unmet -> re-drive (iters 0 < 1).
         d1 = dispatch_goal_at_finalize(app, session_id=sid, turn_id="t1")
         assert d1 is not None and d1.outcome == "redrive"
@@ -428,25 +231,41 @@ def test_dispatch_noop_without_goal(tmp_path: Path) -> None:
     _in_ctx(body)
 
 
-def test_dispatch_nl_only_uses_llm_judge(tmp_path: Path, monkeypatch: Any) -> None:
-    """An NL-only goal (no predicate) settles on the LLM tier (the flagged weaker mode)."""
+def test_when_state_arg_does_not_create_self_satisfiable_gate(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A4 core: the deterministic goal tier is DELETED. A ``when_state`` / ``predicate``
+    command arg no longer arms a gate the model can self-satisfy by writing ``workflow_state``.
+    Completion is the bounded LLM judge only — a not-met judge re-drives even when the named
+    state field is 'satisfied' (the self-grading anti-pattern is closed)."""
 
     def body() -> None:
         app = _app(tmp_path)
         sid = _session(app)
         _bind(app, sid)
-        _mock_judge(monkeypatch, met=True, reason="the summary is complete")
-        arm_goal(app, sid, condition="write a good summary")
+        _mock_judge(monkeypatch, met=False, reason="not actually done")
+        run_goal_command(
+            app,
+            sid,
+            {
+                "input": "the job is done",
+                "args": {"when_state": {"field_path": "done", "check": "equals", "equals": "true"}},
+            },
+        )
+        goal = _goal_state(app, sid)
+        # No deterministic predicate is stored, and the goal is not predicate-backed.
+        assert goal.get("predicate") is None
+        assert goal.get("predicate_backed") in (None, False)
+        # Even with the named state field 'satisfied', the not-met judge re-drives.
+        app.state.sessions.update(sid, metadata_patch={"workflow_state": {"done": "true"}})
         decision = dispatch_goal_at_finalize(app, session_id=sid, turn_id="t1")
-        assert decision is not None and decision.outcome == "met"
-        assert decision.tier == "llm"
-        assert _goal_state(app, sid)["active"] is False
+        assert decision is not None and decision.outcome == "redrive"
 
     _in_ctx(body)
 
 
 # =========================================================================== #
-# Injection-safety: NO model-callable set/clear tool                           #
+# Injection-safety: NO model-callable set/clear tool; goal_status is armed-only #
 # =========================================================================== #
 def test_model_has_no_set_or_clear_goal_tool() -> None:
     from clio_agent.gact.agents.auto_tools import build_auto_react_tools
@@ -465,29 +284,31 @@ def test_goal_status_tool_builds_read_only() -> None:
     assert tool.args == {}  # a pure read-back, no inputs to mutate anything
 
 
-def test_goal_status_reflects_state_deterministic_met(tmp_path: Path) -> None:
+def test_goal_status_does_not_run_judge(tmp_path: Path, monkeypatch: Any) -> None:
+    """``goal_status`` returns ARMED STATE ONLY — it never runs the judge (or any gate) and
+    never exposes a ``met`` / ``predicate_backed`` readback the model could steer toward."""
+
     def body() -> None:
         app = _app(tmp_path)
         sid = _session(app)
         _bind(app, sid)
+
+        def _boom(*_a: Any, **_k: Any) -> GoalJudgement:
+            raise AssertionError("goal_status must never run the judge")
+
+        monkeypatch.setattr(goal_mod, "run_llm_judge", _boom)
         tool = build_goal_status_tool()
         # No goal yet.
         assert tool.func()["active"] is False
-        arm_goal(
-            app,
-            sid,
-            condition="done flag set",
-            predicate={"kind": "state", "field_path": "done", "check": "exists", "exists": True},
-            max_goal_iters=9,
-        )
-        status = tool.func()
+        arm_goal(app, sid, condition="ship the report", max_goal_iters=9)
+        status = tool.func()  # must not raise (no judge call)
         assert status["active"] is True
-        assert status["condition"] == "done flag set"
-        assert status["predicate_backed"] is True
+        assert status["condition"] == "ship the report"
         assert status["max_goal_iters"] == 9
-        assert status["met"] is False  # deterministic gate not yet satisfied
-        _set_ws(app, sid, {"done": True})
-        assert tool.func()["met"] is True  # read-only readback reflects the real gate
+        assert "budget_spent" in status  # deterministic arithmetic stays
+        # No completion readback the model could self-satisfy toward.
+        assert "met" not in status
+        assert "predicate_backed" not in status
 
     _in_ctx(body)
 
@@ -495,27 +316,15 @@ def test_goal_status_reflects_state_deterministic_met(tmp_path: Path) -> None:
 # =========================================================================== #
 # /goal command + arm/clear seam                                               #
 # =========================================================================== #
-def test_parse_goal_command_condition_bounds_predicate() -> None:
-    condition, bounds, predicate, clear = parse_goal_command(
-        {
-            "input": "all tests pass",
-            "args": {
-                "max_goal_iters": 8,
-                "predicate": {
-                    "kind": "state",
-                    "field_path": "tests.passing",
-                    "check": "equals",
-                    "equals": True,
-                },
-            },
-        }
+def test_parse_goal_command_condition_and_bounds() -> None:
+    condition, bounds, clear = parse_goal_command(
+        {"input": "all tests pass", "args": {"max_goal_iters": 8}}
     )
     assert clear is False
     assert condition == "all tests pass"
     assert bounds == {"max_goal_iters": 8}
-    assert predicate["field_path"] == "tests.passing"
     # a clear request.
-    _c, _b, _p, clear2 = parse_goal_command({"input": "clear"})
+    _c, _b, clear2 = parse_goal_command({"input": "clear"})
     assert clear2 is True
 
 
@@ -536,6 +345,20 @@ def test_goal_command_arms_and_clears(tmp_path: Path) -> None:
         cleared_msg = run_goal_command(app, sid, {"input": "clear"})
         assert "cleared" in cleared_msg.lower()
         assert _goal_state(app, sid)["active"] is False
+
+    _in_ctx(body)
+
+
+def test_goal_command_message_says_llm_judge(tmp_path: Path) -> None:
+    """The /goal confirmation is honest about the LLM-judge-only contract + hard bounds."""
+
+    def body() -> None:
+        app = _app(tmp_path)
+        sid = _session(app)
+        _bind(app, sid)
+        msg = run_goal_command(app, sid, {"input": "the report reads well"})
+        assert "LLM judge" in msg
+        assert "deterministic" not in msg.lower()
 
     _in_ctx(body)
 
@@ -563,22 +386,6 @@ def test_arm_goal_rejects_empty_condition(tmp_path: Path) -> None:
         except GoalError as exc:
             raised = True
             assert exc.reason == "goal_missing_condition"
-        assert raised
-
-    _in_ctx(body)
-
-
-def test_arm_goal_rejects_bad_predicate(tmp_path: Path) -> None:
-    def body() -> None:
-        app = _app(tmp_path)
-        sid = _session(app)
-        _bind(app, sid)
-        raised = False
-        try:
-            arm_goal(app, sid, condition="c", predicate={"kind": "state"})  # missing field_path
-        except GoalError as exc:
-            raised = True
-            assert exc.reason == "goal_bad_predicate"
         assert raised
 
     _in_ctx(body)
@@ -617,53 +424,39 @@ def test_goal_state_lives_on_session_metadata(tmp_path: Path) -> None:
 
 
 # =========================================================================== #
-# Compose with the loop (#1079 loop_goal_met seam)                             #
+# Compose with the loop (#1079 loop_goal_met seam) — LLM-only, finalize glue    #
 # =========================================================================== #
-def test_loop_goal_satisfied_seam_deterministic_only(tmp_path: Path) -> None:
-    def body() -> None:
-        app = _app(tmp_path)
-        sid = _session(app)
-        _bind(app, sid)
-        # NL-only goal: the loop seam cannot cheaply/authoritatively decide -> False.
-        arm_goal(app, sid, condition="looks good")
-        assert loop_goal_satisfied(app, sid) is False
-        # Predicate-backed + satisfied -> the loop seam reports True.
-        arm_goal(
-            app,
-            sid,
-            condition="done",
-            predicate={"kind": "state", "field_path": "done", "check": "exists", "exists": True},
-        )
-        assert loop_goal_satisfied(app, sid) is False
-        _set_ws(app, sid, {"done": True})
-        assert loop_goal_satisfied(app, sid) is True
-
-    _in_ctx(body)
-
-
-def test_loop_stops_with_loop_goal_met_when_goal_satisfied(tmp_path: Path) -> None:
-    """End-to-end compose: an autonomous loop stops with the typed ``loop_goal_met`` reason
-    when a predicate-backed goal's deterministic gate holds (the #1079 seam is wired)."""
+def test_loop_stops_with_loop_goal_met_when_judge_met_at_finalize(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """End-to-end compose (the turn_finalize glue): when the finalize goal eval settles ``met``
+    (the bounded LLM judge), the armed loop is stopped with the typed ``loop_goal_met`` reason
+    and its pending wakeup schedule is cancelled (cancel-both)."""
 
     def body() -> None:
-        from clio_agent.gact.autonomous_loop import loop_wakeup_impl, start_loop
+        from clio_agent.gact.autonomous_loop import start_loop, stop_session_loop  # noqa: PLC0415
 
         app = _app(tmp_path)
         sid = _session(app)
         _bind(app, sid)
         start_loop(app, sid, prompt="keep working", interval_s=60, max_iters=100)
-        arm_goal(
-            app,
-            sid,
-            condition="done",
-            predicate={"kind": "state", "field_path": "done", "check": "exists", "exists": True},
-        )
-        _set_ws(app, sid, {"done": True})  # the goal's deterministic gate now holds
-        app.state.bus.bump(sid, 1.0)  # progress so a stall does not trip first
-        result = loop_wakeup_impl(delay_seconds=60, prompt="keep working")
-        assert result["stopped"] is True
+        pending = app.state.sessions.get(sid).metadata["loop"]["pending_schedule_id"]
+        assert pending and app.state.schedules.get(pending) is not None
+        _mock_judge(monkeypatch, met=True, reason="the deliverable is complete")
+        arm_goal(app, sid, condition="the deliverable is complete")
+
+        decision = dispatch_goal_at_finalize(app, session_id=sid, turn_id="t1")
+        assert decision is not None and decision.outcome == "met"
+        # The finalize glue: a met goal stops the loop (the same one-line seam turn_finalize wires).
+        if decision.outcome == "met":
+            stop_session_loop(app, sid, reason="loop_goal_met")
+
         loop = app.state.sessions.get(sid).metadata["loop"]
+        assert loop["stopped"] is True
         assert loop["stop_reason"] == "loop_goal_met"
+        # The pending wakeup schedule was cancelled (no orphan re-fire).
+        assert app.state.schedules.get(pending) is None
+        assert app.state.schedules.list(session_id=sid) == []
 
     _in_ctx(body)
 
@@ -678,9 +471,10 @@ def test_goal_outcome_reasons_are_typed() -> None:
         "goal_budget",
         "goal_abandoned",
         "goal_redrive",
-        "goal_llm_overridden",
     ):
         assert reason in GOAL_OUTCOME_REASONS
+    # the deterministic-override reason was DELETED with the deterministic tier.
+    assert "goal_llm_overridden" not in GOAL_OUTCOME_REASONS
 
 
 def test_goal_command_row_exists() -> None:
@@ -695,7 +489,6 @@ def test_goal_command_row_exists() -> None:
 def test_evaluate_goal_returns_goal_decision_type() -> None:
     decision = evaluate_goal(
         {"condition": "c", "iters_elapsed": 0, "max_goal_iters": 3},
-        det_result=True,
-        llm=GoalJudgement(met=False),
+        llm=GoalJudgement(met=True),
     )
     assert isinstance(decision, GoalDecision)

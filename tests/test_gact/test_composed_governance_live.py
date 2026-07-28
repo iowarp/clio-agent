@@ -68,7 +68,10 @@ def _write_project_hook(ws: Path, marker: Path) -> None:
                         "run": {
                             "type": "command",
                             "command": sys.executable,
-                            "args": ["-c", f"import pathlib; pathlib.Path(r'{marker}').write_text('fired')"],
+                            "args": [
+                                "-c",
+                                f"import pathlib; pathlib.Path(r'{marker}').write_text('fired')",
+                            ],
                         },
                         "timeout_ms": 30000,
                     }
@@ -141,16 +144,15 @@ def test_cron_loop_goal_arm_together(tmp_path: Path) -> None:
         meta: dict[str, Any] = client.app.state.sessions.get(sid).metadata or {}
         assert isinstance(meta.get("loop"), dict), f"loop not armed on metadata: {meta.keys()}"
 
-        # GOAL — arms a predicate-backed goal on session.metadata.
+        # GOAL — arms an NL-condition goal on session.metadata (LLM-judge-only; the
+        # deterministic predicate tier was deleted in A4 #1057).
         r = client.post(
             f"/v1/sessions/{sid}/commands/goal",
-            json={
-                "input": "the done field is true",
-                "args": {"when_state": {"field_path": "done", "check": "equals", "equals": "true"}},
-            },
+            json={"input": "the analysis is complete and written up"},
         )
         assert r.status_code == 200
         meta = client.app.state.sessions.get(sid).metadata or {}
         goal = meta.get("goal")
         assert isinstance(goal, dict), f"goal not armed on metadata: {meta.keys()}"
-        assert goal.get("predicate_backed") is True, f"goal should be predicate-backed: {goal}"
+        assert goal.get("active") is True, f"goal should be armed: {goal}"
+        assert "predicate" not in goal, f"goal must not carry a deterministic predicate: {goal}"

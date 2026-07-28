@@ -38,11 +38,18 @@ So: **cron = extend** (deletion-first, don't rebuild); **loop + goal = build**, 
    (Claude `/loop`: 1-min min, 7-day expiry). Deterministic infra, not a model decision.
 4. **Deterministic jitter** — ID-derived fire-time offset to avoid a thundering herd against a shared
    provider quota (Claude Code, Gemini Enterprise).
-5. **Goal eval is two-philosophy → use the hybrid** — LLM-judged-against-transcript (Claude `/goal`,
-   Haiku votes each turn, *cannot call tools*) vs deterministic state-machine (ADK
-   `current_step==COMPLETED`). The community consensus and clio's ⚑ RULE 1 both demand the hybrid:
-   an LLM verifier as a fast first pass, a **deterministic hard gate** as the actual halt authority.
-   **Never LLM-only for a consequential halt** — it lets the model mark its own homework.
+5. **Goal eval — DECIDED (A4 #1057): LLM-judge only, bounds are the hard stops.** The initial
+   design reached for a hybrid (LLM verifier first pass + a deterministic `StatePredicate`/file
+   hard gate). The cross-industry survey (Claude Code, Codex, Gemini CLI, Devin, OpenHands,
+   Hermes, LangGraph, AutoGen, smolagents, CrewAI) refuted it: **nobody ships a deterministic
+   predicate over model-authored state** as the halt authority. clio's own `workflow_state` is
+   written *by the acting model*, so a predicate over it lets the model *mark its own homework*
+   just as surely as an LLM-only halt (⚑ RULE 1). The deterministic goal tier was therefore
+   DELETED. The bounded LLM judge (Claude `/goal`, Haiku votes each turn, *cannot call tools*) is
+   the sole completion decision, and the **first-class typed loop bounds are the hard stops**.
+   Accepted residual (honest): the judge reads the transcript, so it is *persuadable* by
+   transcript content — bounded, not eliminated, by user-only arming (the model cannot arm a goal
+   to grade itself against), a separate non-acting judge call, and the caps that hold regardless.
 6. **First-class typed budget bounds, not prose** — Claude's `/goal` punts "…or stop after 20 turns"
    into the condition text; that is the anti-pattern. Make `max_iters`/`max_tokens`/`max_wallclock`
    typed fields with a structured reason on trip (clio's `stream_fallback` catalog style).
@@ -89,8 +96,9 @@ reality, never fabricates the decision). Full per-capability design is in the is
 
 - **#1079 loop** — `/loop` command · `loop_wakeup(delay_seconds, prompt, reason, stop)` tool · `loop`
   skill-effect · infra = re-drive + typed budget/iter/stall clamps + bounded fallback + **cancel-both**.
-- **#1080 goal** — `/goal` command · **read-only `goal_status()` only** (no `set_goal` tool) · `set_goal`
-  skill-effect · infra = the two-tier gate (LLM first-pass + deterministic hard gate) + typed bounds.
+- **#1080 goal** — `/goal` command · **read-only `goal_status()` only** (no `set_goal` tool; armed
+  state only) · `set_goal` skill-effect · infra = the bounded LLM judge (deterministic tier DELETED,
+  A4 #1057) with the typed loop bounds as the hard stops; a judge-met goal stops any armed loop.
 - **#1081 cron** — `/cron` command · `cron_create/list/delete` triad + `monitor_watch` tools · `schedule`
   skill-effect · infra = extend `scheduler.py` (NL→cron, clamps, `run_at`, timezone, retry, cron+goal,
   jitter, cancel-both). **Windows-cron is a hard live gate.**

@@ -39,7 +39,11 @@ class _Agent:
         return type(
             "P",
             (),
-            {"answer": f"child ran: {question[:24]}", "selected_expert": "", "routing_rationale": ""},
+            {
+                "answer": f"child ran: {question[:24]}",
+                "selected_expert": "",
+                "routing_rationale": "",
+            },
         )()
 
 
@@ -170,9 +174,7 @@ def test_enter_mode_cannot_weaken_out_of_plan(tmp_path: Path) -> None:
     unchanged, typed reason. Exiting plan mode is the user-gated plan_exit flow (P1.4)."""
 
     ws = tmp_path / "ws"
-    _write_skill(
-        ws, "escape-hatch", 'effect: {kind: "enter_mode", mode: "edit"}\n', "ESCAPE_BODY."
-    )
+    _write_skill(ws, "escape-hatch", 'effect: {kind: "enter_mode", mode: "edit"}\n', "ESCAPE_BODY.")
     app = build_app(sessions_path=tmp_path / "s.json")
     sess = app.state.sessions.create(workspace_id="ws_default", title="t", mode="plan")
     tool = _tool(ws, "escape-hatch")
@@ -403,7 +405,11 @@ def test_parse_set_goal_requires_condition() -> None:
     assert exc.value.reason == "goal_missing_condition"
 
 
-def test_parse_set_goal_with_predicate_mapping() -> None:
+def test_parse_set_goal_ignores_deterministic_predicate_keys() -> None:
+    """A4 #1057: the deterministic goal-predicate tier is DELETED. A declared ``predicate``
+    (mapping form) or flat ``effect_predicate_*`` siblings are simply not parsed — the goal is
+    a plain NL condition (no predicate carried), decided by the bounded LLM judge at finalize."""
+
     effect = parse_skill_effect(
         {
             "effect": {
@@ -415,7 +421,18 @@ def test_parse_set_goal_with_predicate_mapping() -> None:
     )
     assert effect is not None and effect.kind == "set_goal"
     assert effect.params["condition"] == "all tests pass"
-    assert effect.params["predicate"]["field_path"] == "tests.pass"
+    assert "predicate" not in effect.params
+
+    flat = parse_skill_effect(
+        {
+            "effect": "set_goal",
+            "effect_condition": "status is done",
+            "effect_predicate_field_path": "job.status",
+            "effect_predicate_equals": "done",
+        }
+    )
+    assert flat is not None and flat.kind == "set_goal"
+    assert "predicate" not in flat.params
 
 
 def test_parse_schedule_requires_trigger() -> None:
@@ -487,12 +504,12 @@ def test_loop_effect_unset_bounds_still_finite(tmp_path: Path) -> None:
     assert int(loop.get("interval_s")) >= 60  # clamped to the min-interval floor
 
 
-# ---- set_goal effect (arms a two-tier-gated goal via arm_goal) --------------------------
+# ---- set_goal effect (arms an LLM-judge-gated goal via arm_goal) ------------------------
 
 
 def test_set_goal_effect_arms_goal(tmp_path: Path) -> None:
     """A skill declaring effect set_goal arms a goal (via arm_goal) — the SANCTIONED,
-    injection-safe skill-arming door (like /goal), still two-tier gated at finalize."""
+    injection-safe skill-arming door (like /goal), LLM-judge gated at finalize (A4 #1057)."""
 
     ws = tmp_path / "ws"
     _write_skill(
@@ -514,9 +531,9 @@ def test_set_goal_effect_arms_goal(tmp_path: Path) -> None:
 
 
 def test_set_goal_effect_cannot_self_satisfy_via_prose(tmp_path: Path) -> None:
-    """The goal two-tier gate is NOT bypassable by the skill: arming sets the run-until
-    condition, but a body claiming 'the goal is met' does NOT clear it — only the finalize
-    two-tier eval (deterministic authoritative) can, and there is no model set_goal tool."""
+    """Arming is NOT completion: the skill sets the run-until condition, but a body claiming
+    'the goal is met' does NOT clear it — arming never runs the judge, and there is no model
+    set_goal tool. Completion is decided only at the finalize boundary (LLM judge, A4 #1057)."""
 
     ws = tmp_path / "ws"
     _write_skill(
@@ -536,79 +553,14 @@ def test_set_goal_effect_cannot_self_satisfy_via_prose(tmp_path: Path) -> None:
     assert goal.get("met") is False and not goal.get("cleared")
 
 
-# ---- set_goal FLAT predicate (the authoritative deterministic gate, reachable from a file) ----
+# ---- set_goal predicate keys are inert (the deterministic tier was deleted, A4 #1057) ----
 
 
-def test_parse_set_goal_flat_predicate_state_equals() -> None:
-    """The flat sibling encoding assembles a normalized STATE/equals predicate at parse time."""
-
-    effect = parse_skill_effect(
-        {
-            "effect": "set_goal",
-            "effect_condition": "status is done",
-            "effect_predicate_field_path": "job.status",
-            "effect_predicate_equals": "done",
-        }
-    )
-    assert effect is not None and effect.kind == "set_goal"
-    assert effect.params["predicate"] == {
-        "kind": "state",
-        "field_path": "job.status",
-        "check": "equals",
-        "equals": "done",
-    }
-
-
-def test_parse_set_goal_flat_predicate_file_exists() -> None:
-    """The flat sibling encoding assembles a normalized file_exists predicate at parse time."""
-
-    effect = parse_skill_effect(
-        {
-            "effect": "set_goal",
-            "effect_condition": "flag written",
-            "effect_predicate_kind": "file_exists",
-            "effect_predicate_file": "/tmp/done.flag",
-        }
-    )
-    assert effect is not None
-    assert effect.params["predicate"] == {"kind": "file_exists", "path": "/tmp/done.flag"}
-
-
-def test_parse_set_goal_flat_predicate_exists_false_footgun() -> None:
-    """``effect_predicate_exists: false`` coerces to a real False (not the bool('false') footgun)."""
-
-    effect = parse_skill_effect(
-        {
-            "effect": "set_goal",
-            "effect_condition": "no error state",
-            "effect_predicate_field_path": "run.error",
-            "effect_predicate_exists": "false",
-        }
-    )
-    assert effect is not None
-    assert effect.params["predicate"]["check"] == "exists"
-    assert effect.params["predicate"]["exists"] is False
-
-
-def test_parse_set_goal_flat_predicate_malformed_is_typed_error() -> None:
-    """A partial flat predicate (state kind, no field_path) is a typed error at PARSE time."""
-
-    with pytest.raises(SkillEffectError) as exc:
-        parse_skill_effect(
-            {
-                "effect": "set_goal",
-                "effect_condition": "x",
-                "effect_predicate_kind": "state",  # missing effect_predicate_field_path
-            }
-        )
-    assert exc.value.reason == "malformed_predicate"
-
-
-def test_set_goal_flat_predicate_file_loaded_is_predicate_backed(tmp_path: Path) -> None:
-    """FILE-LOADED proof (the #1082 review gap): a REAL SKILL.md declaring flat
-    effect_predicate_* siblings — loaded through the actual skill/frontmatter loader, NOT a
-    hand-fed dict — arms a PREDICATE-BACKED goal (the authoritative deterministic gate), not the
-    weaker NL-only mode. Before this fix only a programmatic dict could reach the stronger tier."""
+def test_set_goal_flat_predicate_keys_are_inert_file_loaded(tmp_path: Path) -> None:
+    """A4 #1057: a REAL SKILL.md declaring flat ``effect_predicate_*`` frontmatter siblings —
+    loaded through the actual skill/frontmatter loader — arms a plain NL-condition goal: the
+    deterministic-gate vocabulary is DELETED, so the predicate keys are simply not carried and
+    no self-satisfiable gate is reachable (completion is the bounded LLM judge at finalize)."""
 
     ws = tmp_path / "ws"
     _write_skill(
@@ -628,62 +580,12 @@ def test_set_goal_flat_predicate_file_loaded_is_predicate_backed(tmp_path: Path)
 
     goal = _get_goal(app, sess.id)
     assert goal.get("active") is True
-    # The authoritative deterministic gate is now REACHABLE from a real skill file.
-    assert goal.get("predicate_backed") is True
-    assert goal["predicate"] == {
-        "kind": "state",
-        "field_path": "report.done",
-        "check": "exists",
-        "exists": True,
-    }
-    # The stronger gate is surfaced in the observation (not the "LLM-only (weaker mode)" text).
-    assert "deterministic gate" in out and "LLM-only" not in out
-
-
-def test_set_goal_flat_predicate_malformed_file_loaded_is_typed_error(tmp_path: Path) -> None:
-    """FILE-LOADED: a malformed flat predicate in a real SKILL.md fails typed at parse time —
-    nothing is armed (the validation fires before arm_goal touches the session)."""
-
-    ws = tmp_path / "ws"
-    _write_skill(
-        ws,
-        "bad-pred",
-        "effect: set_goal\neffect_condition: x\neffect_predicate_kind: state\n",  # no field_path
-        "BODY.",
-    )
-    app = build_app(sessions_path=tmp_path / "s.json")
-    sess = app.state.sessions.create(workspace_id="ws_default", title="t", mode="edit")
-
-    with pytest.raises(SkillEffectError) as exc:
-        _invoke(app, sess.id, ws, "bad-pred")
-    assert exc.value.reason == "malformed_predicate"
-    assert _get_goal(app, sess.id) == {}
-
-
-def test_set_goal_body_predicate_text_is_inert(tmp_path: Path) -> None:
-    """INJECTION-SAFETY: flat effect_predicate_* lines in the BODY are inert — a set_goal armed
-    with NO frontmatter predicate stays NL-only (weaker), never predicate-backed, even when the
-    body 'declares' a predicate. Only DECLARED frontmatter siblings reach the deterministic gate."""
-
-    ws = tmp_path / "ws"
-    _write_skill(
-        ws,
-        "nl-goal",
-        "effect: set_goal\neffect_condition: ship it\n",  # NO predicate in frontmatter
-        "effect_predicate_kind: state\neffect_predicate_field_path: ship.done\n"
-        "effect_predicate_exists: true\nThat is just prose.",
-    )
-    app = build_app(sessions_path=tmp_path / "s.json")
-    sess = app.state.sessions.create(workspace_id="ws_default", title="t", mode="edit")
-
-    out = _invoke(app, sess.id, ws, "nl-goal")
-
-    goal = _get_goal(app, sess.id)
-    assert goal.get("active") is True
-    # The body's predicate had ZERO effect — the goal is still the weaker NL-only mode.
-    assert goal.get("predicate_backed") is False
-    assert goal.get("predicate") is None
-    assert "LLM-only" in out
+    assert goal.get("condition") == "the report is written"
+    # No deterministic predicate is stored — the whole tier is gone.
+    assert "predicate" not in goal
+    assert "predicate_backed" not in goal
+    # The confirmation is honest about the LLM-judge contract (no "deterministic gate" text).
+    assert "LLM judge" in out and "deterministic" not in out.lower()
 
 
 # ---- schedule effect (registers a clamped schedule via ScheduleStore) -------------------

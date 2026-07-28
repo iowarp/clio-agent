@@ -302,6 +302,15 @@ provider/dspy layer (`dspy.LM` wrapper for BeforeModel); `runtime/app_state.py` 
   mode. Epistemic ledger in the plan artifact. No fifth store (state → session record +
   `session.metadata`, the #948 AgentTask pattern — NOT `workflow_state`; audit → semantic
   highway). ✔
+- **P4 goal eval: LLM-judge only; loop bounds are the hard stops** (A4 #1057, review-findings
+  fix). The initial two-tier design (LLM first-pass + deterministic `StatePredicate`/file hard
+  gate over `workflow_state`) was DELETED. The cross-industry survey settled it: nobody ships a
+  predicate over model-authored state as the halt authority, and clio's `workflow_state` is
+  written by the acting model — so the predicate let it *mark its own homework* (`goal.py:251`
+  self-satisfy). The bounded LLM judge is now the sole completion decision; `goal_status` returns
+  armed state only (never runs the judge); a judge-met goal stops any armed loop via the
+  `turn_finalize` glue (`loop_goal_met`). Accepted residual: the judge is transcript-persuadable,
+  bounded by user-only arming + the caps that hold regardless. ✔ (A4)
 
 ## Verification (live gate per slice-group, real box + real CTE + claude/codex)
 

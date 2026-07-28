@@ -258,7 +258,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # P2.3 (#1071): +14 — PostToolBatch fires once per turn over the turn's tool
     # round (thin fire_post_tool_batch call site; the payload build + dispatch live
     # in the owner module gact/hooks/intercept.py).
-    "src/clio_agent/gact/turn_finalize.py": 932,  # +4: goal finalize-boundary dispatch wiring (#1080; logic in gact/goal.py)
+    "src/clio_agent/gact/turn_finalize.py": 940,  # +8: A4 #1057 loop-goal compose (a judge-met goal stops the loop; the glue must own the import so goal.py stays a leaf — no goal->loop cycle)
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (baseline 1143 -> actual); ratchet back below the pre-#947 count with the
     # mcp_app_* owner-module split (see the #947 DEBT block on mcp_apps.py).

@@ -80,7 +80,7 @@ LOOP_STOP_REASONS = (
     "loop_budget",  # wall-clock / token / usd budget exhausted
     "loop_stalled",  # N consecutive iterations made no observable progress
     "loop_user_stopped",  # explicit loop_wakeup(stop=True)
-    "loop_goal_met",  # a declared goal predicate held (#1080 seam)
+    "loop_goal_met",  # the goal's bounded LLM judge settled met (#1080 finalize-glue seam)
     "loop_no_reschedule",  # the bounded fallback fired once and still no reschedule
     "loop_session_ended",  # session end/cancel cancelled the loop (cancel-both)
     "loop_restarted",  # a new start_loop() superseded a still-active prior loop
@@ -251,34 +251,15 @@ def stop_session_loop(app: Any, sid: str, *, reason: str = "loop_session_ended")
 # --------------------------------------------------------------------------- #
 # Typed bounds (first-class, enforced deterministically — NOT prose).          #
 # --------------------------------------------------------------------------- #
-def _loop_goal_met(app: Any, sid: str, loop: dict[str, Any]) -> bool:
-    """Compose seam for the #1080 goal stop-condition (wired in P4.2).
-
-    Delegates to :func:`clio_agent.gact.goal.loop_goal_satisfied` — the loop stops with the
-    typed ``loop_goal_met`` reason when an active, PREDICATE-BACKED goal's DETERMINISTIC gate
-    holds (cheap, no LLM call, authoritative). An NL-only goal returns ``False`` here (the
-    loop cannot cheaply/authoritatively decide it); that goal's own finalize-boundary two-tier
-    eval governs completion. Imported lazily so the loop module stays a leaf (goal.py must not
-    import autonomous_loop — the compose is one-directional)."""
-
-    from clio_agent.gact.goal import loop_goal_satisfied  # noqa: PLC0415
-
-    try:
-        return loop_goal_satisfied(app, sid)
-    except Exception:  # noqa: BLE001 - the goal seam must never break a loop bound check
-        logger.warning("loop goal seam error", exc_info=True)
-        return False
-
-
 def _check_bounds(app: Any, sid: str, loop: dict[str, Any]) -> str:
     """Return the typed stop reason for the FIRST tripped bound, or ``""``.
 
     Evaluated against ``loop``'s already-incremented ``iteration`` /
-    ``no_progress_count`` and the live session token/cost rollup. Order: goal seam ->
-    iters -> wall-clock -> tokens/usd -> stall."""
+    ``no_progress_count`` and the live session token/cost rollup. Order: iters ->
+    wall-clock -> tokens/usd -> stall. (The goal compose is LLM-only and lives in the
+    ``turn_finalize`` glue: a judge-met goal stops the loop with ``loop_goal_met`` — the
+    loop cannot cheaply/authoritatively decide an NL condition here, A4 #1057.)"""
 
-    if _loop_goal_met(app, sid, loop):
-        return "loop_goal_met"
     if int(loop.get("iteration", 0)) >= int(loop.get("max_iters", DEFAULT_MAX_ITERS)):
         return "loop_max_iters"
     created = _parse_iso(loop.get("created_at"))
@@ -299,7 +280,9 @@ def _check_bounds(app: Any, sid: str, loop: dict[str, Any]) -> str:
             cost_at_start = float(loop.get("cost_at_start") or 0.0)
             if float(getattr(sess, "cost_usd", 0.0)) - cost_at_start >= max_usd:
                 return "loop_budget"
-    if int(loop.get("no_progress_count", 0)) >= int(loop.get("max_no_progress", DEFAULT_MAX_NO_PROGRESS)):
+    if int(loop.get("no_progress_count", 0)) >= int(
+        loop.get("max_no_progress", DEFAULT_MAX_NO_PROGRESS)
+    ):
         return "loop_stalled"
     return ""
 
@@ -357,7 +340,9 @@ def start_loop(
         )
     delay, _clamp = clamp_delay(interval_s or DEFAULT_INTERVAL_S)
     eff_iters = int(max_iters) if int(max_iters or 0) > 0 else DEFAULT_MAX_ITERS
-    eff_wall = float(max_wallclock_s) if float(max_wallclock_s or 0.0) > 0 else DEFAULT_MAX_WALLCLOCK_S
+    eff_wall = (
+        float(max_wallclock_s) if float(max_wallclock_s or 0.0) > 0 else DEFAULT_MAX_WALLCLOCK_S
+    )
     eff_stall = int(max_no_progress) if int(max_no_progress or 0) > 0 else DEFAULT_MAX_NO_PROGRESS
     loop_id = "loop_" + uuid.uuid4().hex[:12]
 
@@ -375,7 +360,9 @@ def start_loop(
     tokens_at_start = 0
     cost_at_start = 0.0
     if sess is not None:
-        tokens_at_start = int(getattr(sess, "tokens_input", 0)) + int(getattr(sess, "tokens_output", 0))
+        tokens_at_start = int(getattr(sess, "tokens_input", 0)) + int(
+            getattr(sess, "tokens_output", 0)
+        )
         cost_at_start = float(getattr(sess, "cost_usd", 0.0))
 
     loop: dict[str, Any] = {
@@ -574,10 +561,7 @@ def parse_loop_command(request_body: Mapping[str, Any]) -> tuple[int, str, dict[
     ``max_tokens`` / ``max_usd`` / ``max_no_progress``)."""
 
     text = str(
-        request_body.get("input")
-        or request_body.get("text")
-        or request_body.get("prompt")
-        or ""
+        request_body.get("input") or request_body.get("text") or request_body.get("prompt") or ""
     ).strip()
     raw_args = request_body.get("args")
     args: Mapping[str, Any] = raw_args if isinstance(raw_args, Mapping) else {}

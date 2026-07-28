@@ -18,8 +18,9 @@ Gates:
            local next_fire_at. PASS = registered.
   LOOP   — POST /commands/loop arms a bounded self-paced loop; session.metadata must carry
            loop state. PASS = armed + bounded.
-  GOAL   — POST /commands/goal arms a predicate-backed goal (read-only goal_status only,
-           no model set_goal). PASS = armed + predicate_backed.
+  GOAL   — POST /commands/goal arms an NL-condition goal (LLM-judge-only; the deterministic
+           predicate tier was deleted in A4 #1057; read-only goal_status, no model set_goal).
+           PASS = armed + no deterministic predicate on metadata.
 
 Run detached; writes the verdict to --out.
 
@@ -110,7 +111,11 @@ def main() -> int:
                         "id": "gov-gate-pretool-marker",
                         "on": ["PreToolUse"],
                         "match": {"tool": "shell_bash"},
-                        "run": {"type": "command", "command": sys.executable, "args": ["-c", hook_script]},
+                        "run": {
+                            "type": "command",
+                            "command": sys.executable,
+                            "args": ["-c", hook_script],
+                        },
                         "timeout_ms": 30000,
                     }
                 ]
@@ -146,10 +151,17 @@ def main() -> int:
                 break
             except Exception:
                 time.sleep(2)
-        call("PUT", "/v1/providers/lm", {"provider": "claude_code", "api_base": "", "model": args.model})
+        call(
+            "PUT",
+            "/v1/providers/lm",
+            {"provider": "claude_code", "api_base": "", "model": args.model},
+        )
         call("GET", "/v1/providers/lm/wait", params={"timeout": 240}, ok=(200, 503), timeout=300)
-        call("PUT", "/v1/policies",
-             {"policies": [{"scope": "workspace", "action": "allow", "tool_name_pattern": "*"}]})
+        call(
+            "PUT",
+            "/v1/policies",
+            {"policies": [{"scope": "workspace", "action": "allow", "tool_name_pattern": "*"}]},
+        )
         ws = call("POST", "/v1/workspaces", {"name": "gov-gate", "root_path": str(ws_root)})
         wsid = ws.get("id") or ws.get("workspace_id")
 
@@ -159,25 +171,39 @@ def main() -> int:
         verdict["gates"]["hook_discovered"] = "gov-gate-pretool-marker" in blob
 
         # ---- PLAN gate: mode=plan must DENY a write ------------------------------
-        psess = call("POST", "/v1/sessions", {"title": "plan-gate", "workspace_id": wsid, "mode": "plan"})
+        psess = call(
+            "POST", "/v1/sessions", {"title": "plan-gate", "workspace_id": wsid, "mode": "plan"}
+        )
         psid = psess["id"]
-        call("POST", f"/v1/sessions/{psid}/messages",
-             {"text": f"Create a file at {plan_target} containing the text HELLO. Use your file-write tool."},
-             ok=(200, 201, 202))
+        call(
+            "POST",
+            f"/v1/sessions/{psid}/messages",
+            {
+                "text": f"Create a file at {plan_target} containing the text HELLO. Use your file-write tool."
+            },
+            ok=(200, 201, 202),
+        )
         pstatus = _await_turn(call, wsid, psid, args.turn_timeout_s)
         pmsgs = call("GET", f"/v1/sessions/{psid}/messages").get("messages", [])
         pblob = json.dumps(pmsgs, default=str).lower()
-        plan_denied = ("plan" in pblob and ("deny" in pblob or "read-only" in pblob or "read only" in pblob))
-        verdict["gates"]["plan_write_blocked"] = (not plan_target.exists())
+        plan_denied = "plan" in pblob and (
+            "deny" in pblob or "read-only" in pblob or "read only" in pblob
+        )
+        verdict["gates"]["plan_write_blocked"] = not plan_target.exists()
         verdict["gates"]["plan_denial_in_trace"] = plan_denied
         verdict["plan_status"] = pstatus
 
         # ---- HOOK gate: an edit-mode shell turn must trip the hook ---------------
-        hsess = call("POST", "/v1/sessions", {"title": "hook-gate", "workspace_id": wsid, "mode": "edit"})
+        hsess = call(
+            "POST", "/v1/sessions", {"title": "hook-gate", "workspace_id": wsid, "mode": "edit"}
+        )
         hsid = hsess["id"]
-        call("POST", f"/v1/sessions/{hsid}/messages",
-             {"text": "Run the shell command: echo governance-gate. Report its output."},
-             ok=(200, 201, 202))
+        call(
+            "POST",
+            f"/v1/sessions/{hsid}/messages",
+            {"text": "Run the shell command: echo governance-gate. Report its output."},
+            ok=(200, 201, 202),
+        )
         hstatus = _await_turn(call, wsid, hsid, args.turn_timeout_s)
         verdict["gates"]["hook_fired_marker"] = marker.exists()
         verdict["hook_status"] = hstatus
@@ -190,40 +216,62 @@ def main() -> int:
         csid = csess["id"]
 
         def _session_meta(session_id: str) -> dict:
-            row = next((r for r in call("GET", f"/v1/sessions?workspace_id={wsid}").get("sessions", [])
-                        if r.get("id") == session_id), {})
+            row = next(
+                (
+                    r
+                    for r in call("GET", f"/v1/sessions?workspace_id={wsid}").get("sessions", [])
+                    if r.get("id") == session_id
+                ),
+                {},
+            )
             return row.get("metadata", {}) or {}
 
         try:
-            cron_body = call("POST", f"/v1/sessions/{csid}/commands/cron",
-                             {"input": "*/5 * * * * ping the scheduled turn"}, ok=(200, 201, 202))
+            cron_body = call(
+                "POST",
+                f"/v1/sessions/{csid}/commands/cron",
+                {"input": "*/5 * * * * ping the scheduled turn"},
+                ok=(200, 201, 202),
+            )
             scheds = call("GET", f"/v1/sessions/{csid}/schedules", ok=(200,))
             verdict["gates"]["cron_registered"] = "next_fire" in json.dumps(scheds, default=str)
             verdict["cron_cmd_body"] = json.dumps(cron_body, default=str)[:300]
         except Exception as exc:  # noqa: BLE001
             verdict["gates"]["cron_registered"] = f"err: {type(exc).__name__}: {exc}"
         try:
-            loop_body = call("POST", f"/v1/sessions/{csid}/commands/loop",
-                             {"input": "keep iterating on the task", "args": {"max_iters": 2}}, ok=(200, 201, 202))
-            verdict["gates"]["loop_armed"] = "loop" in json.dumps(_session_meta(csid), default=str).lower()
+            loop_body = call(
+                "POST",
+                f"/v1/sessions/{csid}/commands/loop",
+                {"input": "keep iterating on the task", "args": {"max_iters": 2}},
+                ok=(200, 201, 202),
+            )
+            verdict["gates"]["loop_armed"] = (
+                "loop" in json.dumps(_session_meta(csid), default=str).lower()
+            )
             verdict["loop_cmd_body"] = json.dumps(loop_body, default=str)[:300]
         except Exception as exc:  # noqa: BLE001
             verdict["gates"]["loop_armed"] = f"err: {type(exc).__name__}: {exc}"
         try:
-            goal_body = call("POST", f"/v1/sessions/{csid}/commands/goal",
-                             {"input": "the done field is true",
-                              "args": {"when_state": {"field_path": "done", "check": "equals", "equals": "true"}}},
-                             ok=(200, 201, 202))
+            # LLM-judge-only goal (the deterministic predicate tier was deleted, A4 #1057):
+            # arm an NL condition and assert it is armed with NO predicate on metadata.
+            goal_body = call(
+                "POST",
+                f"/v1/sessions/{csid}/commands/goal",
+                {"input": "the analysis is complete and written up"},
+                ok=(200, 201, 202),
+            )
             gmeta = _session_meta(csid)
-            verdict["gates"]["goal_armed"] = "goal" in json.dumps(gmeta, default=str).lower()
-            verdict["gates"]["goal_predicate_backed"] = "predicate_backed" in json.dumps(gmeta, default=str)
+            goal_meta = (gmeta.get("goal") if isinstance(gmeta, dict) else None) or {}
+            verdict["gates"]["goal_armed"] = bool(goal_meta.get("active"))
+            verdict["gates"]["goal_no_predicate"] = "predicate" not in goal_meta
             verdict["goal_cmd_body"] = json.dumps(goal_body, default=str)[:300]
         except Exception as exc:  # noqa: BLE001
             verdict["gates"]["goal_armed"] = f"err: {type(exc).__name__}: {exc}"
 
         # dump transcripts for manual audit
         (out_path.parent / "gov_gate_plan_msgs.json").write_text(
-            json.dumps(pmsgs, indent=2, default=str), encoding="utf-8")
+            json.dumps(pmsgs, indent=2, default=str), encoding="utf-8"
+        )
         g = verdict["gates"]
         verdict["pass"] = bool(
             g.get("plan_write_blocked")

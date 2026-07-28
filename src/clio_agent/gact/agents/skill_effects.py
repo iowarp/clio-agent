@@ -36,8 +36,9 @@ so "run skill X daily until Y holds" is ONE declared, injection-safe skill:
 * ``set_goal`` — arm a run-until-``<condition>`` goal via
   :func:`clio_agent.gact.goal.arm_goal` (#P4.2). The SANCTIONED skill-arming door (a DECLARED,
   trusted effect — like ``/goal``; NOT model self-arming, goal stays non-model-tool-armable per
-  #1080). Declare the AUTHORITATIVE deterministic gate with flat ``effect_predicate_*`` siblings
-  (:func:`_flat_predicate`), else the weaker NL-only mode — either way two-tier gated at finalize.
+  #1080). Completion is decided by the bounded LLM judge at the finalize boundary and the typed
+  loop bounds are the hard stops (the deterministic goal-predicate tier was deleted, A4 #1057 —
+  a predicate over model-authored state let the model mark its own homework).
 * ``schedule`` — register a cron / ``run_at`` / ``delay_s`` schedule for this skill via the
   P4.3 :meth:`ScheduleStore.create` (#P4.3). The schedule is STILL clamped — a sub-floor cron
   raises the typed :class:`~clio_agent.gact.scheduler.CronError` (min-interval anti-runaway),
@@ -322,9 +323,8 @@ def _autonomy_params(
 ) -> dict[str, Any]:
     """Build a typed, validated params dict for an autonomy effect (absent keys omitted).
 
-    Numerics are coerced (malformed → typed error); ``passthrough`` keys (a programmatic
-    ``predicate`` dict) are carried verbatim — a SKILL.md predicate instead rides flat
-    ``effect_predicate_*`` siblings (:func:`_flat_predicate`). Unset bounds stay unset."""
+    Numerics are coerced (malformed → typed error); ``passthrough`` keys are carried verbatim.
+    Unset bounds stay unset."""
 
     out: dict[str, Any] = {}
     for k in str_keys:
@@ -347,35 +347,6 @@ def _autonomy_params(
         if k in spec and spec[k] not in (None, ""):
             out[k] = spec[k]
     return out
-
-
-def _flat_predicate(spec: Mapping[str, Any]) -> dict[str, Any] | None:
-    """Assemble + validate a deterministic goal predicate from flat ``effect_predicate_*``
-    frontmatter siblings — ``_kind`` (``state``/``file_exists``), ``_field_path``, ``_equals`` or
-    ``_exists`` (bool, ``"false"``-safe), ``_file`` — making the AUTHORITATIVE predicate-backed goal
-    reachable from a real SKILL.md (the flat parser can never carry a nested mapping). ``None`` when
-    none is declared (NL-only); canonical goal validator raises → typed :class:`SkillEffectError`."""
-
-    flat = {
-        k[10:]: spec[k]
-        for k in spec
-        if isinstance(k, str) and k.startswith("predicate_") and str(spec.get(k) or "").strip()
-    }
-    if not flat:
-        return None
-    from clio_agent.gact.goal import GoalError, _validate_predicate  # noqa: PLC0415
-
-    raw: dict[str, Any] = {"kind": str(flat.get("kind") or "state").strip()}
-    for src, dst in (("field_path", "field_path"), ("file", "path"), ("equals", "equals")):
-        if src in flat:
-            raw[dst] = str(flat[src]).strip()
-    exists = _coerce_bool(spec, "predicate_exists")
-    if exists is not None:
-        raw["exists"] = exists
-    try:
-        return _validate_predicate(raw)
-    except GoalError as exc:
-        raise SkillEffectError(str(exc), reason="malformed_predicate") from exc
 
 
 def parse_skill_effect(meta: Mapping[str, Any]) -> SkillEffect | None:
@@ -427,10 +398,7 @@ def parse_skill_effect(meta: Mapping[str, Any]) -> SkillEffect | None:
             str_keys=("condition",),
             int_keys=("max_goal_iters", "max_tokens"),
             float_keys=("max_wallclock_s",),
-            passthrough=("predicate",),
         )
-        if (flat_pred := _flat_predicate(spec)) is not None:
-            params["predicate"] = flat_pred
         if not params.get("condition"):
             raise SkillEffectError(
                 "set_goal effect declares no condition to gate completion on",
@@ -563,10 +531,10 @@ def _execute_set_goal(
     """Perform the ``set_goal`` effect: arm a goal via :func:`arm_goal` (#P4.2).
 
     The SANCTIONED skill-arming door (a declared, trusted effect like ``/goal`` — NOT the
-    model self-arming; goal stays non-model-tool-armable per #1080). The goal is STILL two-tier
-    gated at the finalize boundary (deterministic authoritative + LLM first-pass) — arming it
-    only sets the run-until condition; a skill body's prose can never self-satisfy it. A
-    :class:`GoalError` (empty condition / bad predicate) is re-raised as a typed
+    model self-arming; goal stays non-model-tool-armable per #1080). Completion is decided by
+    the bounded LLM judge at the finalize boundary and the typed loop bounds are the hard stops
+    (the deterministic goal-predicate tier was deleted, A4 #1057) — arming only sets the
+    run-until condition. A :class:`GoalError` (empty condition) is re-raised as a typed
     :class:`SkillEffectError`."""
 
     from clio_agent.gact.goal import GoalError, arm_goal  # noqa: PLC0415
@@ -577,7 +545,6 @@ def _execute_set_goal(
             app,
             session_id,
             condition=str(p.get("condition") or ""),
-            predicate=p.get("predicate"),
             max_goal_iters=int(p.get("max_goal_iters", 0) or 0),
             max_wallclock_s=float(p.get("max_wallclock_s", 0.0) or 0.0),
             max_tokens=int(p.get("max_tokens", 0) or 0),
@@ -586,12 +553,11 @@ def _execute_set_goal(
         raise SkillEffectError(
             f"set_goal effect for skill {ref.id!r} rejected: {exc}", reason=exc.reason
         ) from exc
-    gate = "deterministic gate" if summary["predicate_backed"] else "LLM-only (weaker mode)"
     return SkillEffectOutcome(
         kind=EFFECT_SET_GOAL,
         detail=(
             f"armed goal {summary['goal_id']} gating completion on {summary['condition']!r} "
-            f"({gate}, max_goal_iters {summary['max_goal_iters']})"
+            f"(LLM judge, max_goal_iters {summary['max_goal_iters']})"
         ),
         goal_id=str(summary["goal_id"]),
     )

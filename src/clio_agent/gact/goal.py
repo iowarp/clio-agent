@@ -1,32 +1,40 @@
-"""GOAL conditions — run-until-a-predicate, two-tier evaluation (P4.2, #1080).
+"""GOAL conditions — run-until-a-condition, LLM-judge-only evaluation (P4.2, #1080; A4 #1057).
 
 A GOAL gates completion: when a turn would settle, the goal is evaluated at the finalize
 boundary; if unsatisfied the session RE-DRIVES one more turn (the same #1031 loop-inbox
 seam the bounded Stop-loop rides), and the goal AUTO-CLEARS when satisfied. The clio
-analog of the Claude Code ``/goal`` session Stop-hook condition, hardened per the survey:
+analog of the Claude Code ``/goal`` session Stop-hook condition:
 
-* **Two-tier evaluation** (never LLM-only for a consequential halt). :func:`run_llm_judge`
-  is a bounded cheap-model FIRST PASS — a separate judge LM (via ``dspy.context``) that only
-  *reads* the transcript and PROPOSES "is ``<condition>`` satisfied?"; it never acts.
-  :func:`run_deterministic_gate` is the **authoritative HARD GATE** — a
-  :class:`~clio_agent.gact.workflows.StatePredicate` over ``workflow_state`` (or a
-  file-exists check), the reality-surfacing clio principle #2. A present predicate WINS: a
-  false LLM "met" is OVERRIDDEN (typed ``goal_llm_overridden``) and the turn re-drives. A
-  NL-only goal (no predicate) falls back to the LLM tier — the flagged *weaker* mode.
+* **LLM-judge-only evaluation.** :func:`run_llm_judge` is a bounded cheap-model pass — a
+  separate judge LM (via ``dspy.context``) that only *reads* the transcript and decides
+  "is ``<condition>`` satisfied?"; it never acts. The cross-industry survey (Claude Code,
+  Codex, Gemini CLI, Devin, OpenHands, Hermes, LangGraph, AutoGen, smolagents, CrewAI)
+  settled the design: **nobody ships a deterministic predicate over model-authored state**
+  as the halt authority — a predicate over ``workflow_state`` the acting model itself writes
+  lets it *mark its own homework* (the self-grading anti-pattern ⚑ RULE 1 bans). The prior
+  two-tier deterministic gate was therefore DELETED (A4). **The loop bounds are the hard
+  stops.**
 
-* **First-class typed bounds** back the loop against runaway (``max_goal_iters`` +
+* **First-class typed bounds are the hard stops** against runaway (``max_goal_iters`` +
   ``max_wallclock_s`` / ``max_tokens``): a tripped bound settles DONE with a typed reason
   (:data:`GOAL_OUTCOME_REASONS`) — never an infinite loop, never a silent stop.
 
-* **Injection-safe — the model can NEVER arm or self-satisfy a goal.** There is NO
-  ``set_goal`` / ``goal_clear`` tool (a self-armed halt is the self-grading anti-pattern ⚑
-  RULE 1 bans). A goal is armed ONLY by the USER (``/goal``) or a declared skill-effect
-  (#1082), both via :func:`arm_goal`; the model gets a READ-ONLY
-  :func:`build_goal_status_tool` and may PROPOSE readiness, but the HALT is clio infra.
+* **Injection-safe arming — the model can NEVER arm a goal.** There is NO ``set_goal`` /
+  ``goal_clear`` tool (a self-armed halt is the self-grading anti-pattern). A goal is armed
+  ONLY by the USER (``/goal``) or a declared skill-effect (#1082), both via :func:`arm_goal`;
+  the model gets a READ-ONLY :func:`build_goal_status_tool` reporting armed state only (never
+  a completion readback it could steer toward, and it never runs the judge).
+
+* **Accepted residual (honest).** The judge reads the transcript, so it is *persuadable* by
+  transcript content — a model that narrates "the condition is satisfied" can nudge a met
+  verdict. This is bounded, not eliminated: arming stays USER-only (the model cannot arm a
+  goal to grade itself against), the judge is a SEPARATE non-acting call, and the typed
+  bounds still cap the loop no matter what the judge decides.
 
 Goal state lives on ``session.metadata["goal"]`` (no fifth store, RULE 4). A leaf module:
-it never imports :mod:`clio_agent.gact.app` / :mod:`~clio_agent.gact.autonomous_loop` (the
-loop composes with the goal via :func:`loop_goal_satisfied`, one-directional).
+it never imports :mod:`clio_agent.gact.app` / :mod:`~clio_agent.gact.autonomous_loop`; the
+loop–goal compose (a judge-met goal stops the loop) lives in the ``turn_finalize`` glue,
+one-directional.
 """
 
 from __future__ import annotations
@@ -36,12 +44,10 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Literal, Optional
 
 from clio_agent import conf
 from clio_agent.gact import context as _ctx
-from clio_agent.gact.workflows import StatePredicate, _field_lookup
 from clio_agent.runtime import trace
 
 logger = logging.getLogger(__name__)
@@ -53,12 +59,11 @@ GOAL_METADATA_KEY = "goal"
 #: settlement / re-drive records exactly one so audit + trace branch on a code, never on
 #: prose.
 GOAL_OUTCOME_REASONS = (
-    "goal_met",  # the two-tier gate confirmed satisfaction -> settle + auto-clear
+    "goal_met",  # the bounded LLM judge confirmed satisfaction -> settle + auto-clear
     "goal_max_iters",  # the max_goal_iters backstop tripped -> settle done
     "goal_budget",  # the wall-clock / token budget was exhausted -> settle done
     "goal_abandoned",  # cleared without satisfaction (user /goal clear or session end)
     "goal_redrive",  # unmet -> re-drive one more turn (the continue reason, not a stop)
-    "goal_llm_overridden",  # the LLM proposed met but the deterministic gate OVERRODE it
 )
 
 #: Hard iteration ceiling when ``max_goal_iters`` is unset (0) — a goal always terminates.
@@ -68,8 +73,8 @@ DEFAULT_MAX_GOAL_ITERS = 25
 class GoalError(ValueError):
     """A goal arm / command was rejected with a machine-readable ``reason``.
 
-    Callers branch on ``reason`` (``goal_missing_condition`` / ``goal_bad_predicate``)
-    rather than string-matching the message — never a silent coercion."""
+    Callers branch on ``reason`` (e.g. ``goal_missing_condition``) rather than
+    string-matching the message — never a silent coercion."""
 
     def __init__(self, message: str, *, reason: str) -> None:
         super().__init__(message)
@@ -126,135 +131,7 @@ def _budget_spent(app: Any, sid: str, goal: Mapping[str, Any]) -> tuple[float, i
     return elapsed, tokens_spent
 
 
-# Deterministic hard gate (authoritative) — reuse the StatePredicate vocab.
-def _validate_predicate(predicate: Any) -> dict[str, Any]:
-    """Validate + normalize a deterministic predicate spec (typed error, no silent skip).
-
-    Kinds (⚑ #2 — reality checks): ``state`` — a StatePredicate over ``workflow_state``
-    (``{kind:"state", field_path:"a.b", check:"exists", exists:true}`` or
-    ``{... check:"equals", equals:<v>}``); ``file_exists`` — ``{kind:"file_exists", path:...}``.
-    """
-
-    if not isinstance(predicate, Mapping):
-        raise GoalError(
-            "goal predicate must be a mapping (e.g. {kind: 'state', field_path: ...})",
-            reason="goal_bad_predicate",
-        )
-    kind = str(predicate.get("kind") or "state").strip()
-    if kind == "state":
-        field_path = str(predicate.get("field_path") or "").strip()
-        if not field_path:
-            raise GoalError(
-                "state predicate needs a non-empty field_path", reason="goal_bad_predicate"
-            )
-        check = str(
-            predicate.get("check") or ("equals" if "equals" in predicate else "exists")
-        ).strip()
-        if check == "exists":
-            return {
-                "kind": "state",
-                "field_path": field_path,
-                "check": "exists",
-                "exists": bool(predicate.get("exists", True)),
-            }
-        if check == "equals":
-            if "equals" not in predicate:
-                raise GoalError(
-                    "equals predicate needs an 'equals' value", reason="goal_bad_predicate"
-                )
-            return {
-                "kind": "state",
-                "field_path": field_path,
-                "check": "equals",
-                "equals": predicate["equals"],
-            }
-        raise GoalError(
-            f"state predicate 'check' must be 'exists' or 'equals', got {check!r}",
-            reason="goal_bad_predicate",
-        )
-    if kind == "file_exists":
-        path = str(predicate.get("path") or "").strip()
-        if not path:
-            raise GoalError("file_exists predicate needs a 'path'", reason="goal_bad_predicate")
-        return {"kind": "file_exists", "path": path}
-    raise GoalError(
-        f"unknown goal predicate kind {kind!r} (known: 'state', 'file_exists')",
-        reason="goal_bad_predicate",
-    )
-
-
-def _session_workflow_state(app: Any, sid: str) -> dict[str, Any]:
-    """The session's current typed ``workflow_state`` (for the deterministic gate).
-
-    ``session.metadata["workflow_state"]`` (the accumulated typed landing), else the most-
-    recent typed landing on the session's own event bus — the same store, no fifth history."""
-
-    sess = app.state.sessions.get(sid)
-    meta = getattr(sess, "metadata", None) or {}
-    ws = meta.get("workflow_state") if isinstance(meta, Mapping) else None
-    if isinstance(ws, Mapping) and ws:
-        return dict(ws)
-    bus = getattr(app.state, "bus", None)
-    if bus is None or not hasattr(bus, "session_events_since"):
-        return {}
-    from clio_agent.gact.agents.observe_runtime import _find_workflow_state  # noqa: PLC0415
-
-    latest: dict[str, Any] = {}
-    try:
-        for event in bus.session_events_since(sid, cursor=1):
-            if getattr(event, "type", "") != "semantic.event":
-                continue
-            body = getattr(event, "payload", None) or {}
-            if not isinstance(body, Mapping):
-                continue
-            found = _find_workflow_state(body.get("payload"))
-            if found:
-                latest = found  # keep the highest-id (most recent) non-empty landing
-    except Exception:  # noqa: BLE001 - a bus read must never break the goal gate
-        logger.warning("goal workflow_state bus read failed", exc_info=True)
-    return latest
-
-
-def _state_predicate_satisfied(pred: StatePredicate, state: Mapping[str, Any]) -> bool:
-    """Whether one :class:`StatePredicate` holds over ``state`` (reuse ``_field_lookup``)."""
-
-    found, value = _field_lookup(state, pred.field_path)
-    if pred.kind == "exists":
-        return found == bool(pred.exists)
-    return bool(found) and value == pred.equals
-
-
-def run_deterministic_gate(app: Any, sid: str, goal: Mapping[str, Any]) -> Optional[bool]:
-    """Evaluate the goal's deterministic predicate. ``None`` when the goal is NL-only.
-
-    The AUTHORITATIVE tier: a present predicate overrides the LLM judge (``True``/``False``);
-    ``None`` when no predicate is declared (the weaker NL-only mode, LLM tier decides)."""
-
-    predicate = goal.get("predicate")
-    if not isinstance(predicate, Mapping) or not predicate:
-        return None
-    kind = str(predicate.get("kind") or "state")
-    if kind == "state":
-        state = _session_workflow_state(app, sid)
-        if str(predicate.get("check")) == "exists":
-            sp = StatePredicate(
-                field_path=str(predicate.get("field_path")),
-                kind="exists",
-                exists=bool(predicate.get("exists", True)),
-            )
-        else:
-            sp = StatePredicate(
-                field_path=str(predicate.get("field_path")),
-                kind="equals",
-                equals=predicate.get("equals"),
-            )
-        return _state_predicate_satisfied(sp, state)
-    if kind == "file_exists":
-        return Path(str(predicate.get("path"))).expanduser().exists()
-    raise GoalError(f"unknown goal predicate kind {kind!r}", reason="goal_bad_predicate")
-
-
-# LLM first-pass judge (bounded, cheap, read-only — it does NOT act).
+# LLM judge (bounded, cheap, read-only — it does NOT act; the sole completion decider).
 #: The read-only judge instructions (functional-API signature, no nested class — the
 #: ``module_variants`` reward-signature pattern that keeps the ratchet class-in-function
 #: guard green).
@@ -324,11 +201,12 @@ def _build_transcript(app: Any, sid: str, *, max_messages: int = 40) -> str:
 
 
 def run_llm_judge(app: Any, sid: str, goal: Mapping[str, Any]) -> "GoalJudgement":
-    """Run the bounded cheap-model FIRST PASS: propose whether the condition is satisfied.
+    """Run the bounded cheap-model judge: decide whether the condition is satisfied.
 
     A separate judge model (``dspy.context``) that ONLY reads the transcript — it never acts.
-    Its verdict is a PROPOSAL the deterministic gate overrides for a predicate-backed goal. A
-    judge failure degrades to a not-met proposal with a typed reason (the gate stays authoritative)."""
+    Its verdict is the sole completion decision (the deterministic tier was deleted, A4); the
+    typed loop bounds remain the hard stops. A judge failure degrades to a not-met verdict with
+    a typed reason (so an unavailable judge re-drives until a bound trips, never falsely halts)."""
 
     condition = str(goal.get("condition") or "")
     transcript = _build_transcript(app, sid)
@@ -351,10 +229,10 @@ def run_llm_judge(app: Any, sid: str, goal: Mapping[str, Any]) -> "GoalJudgement
         return GoalJudgement(met=False, reason=f"judge unavailable ({exc})")
 
 
-# Two-tier combination + bounded decision (PURE — no I/O, unit-testable).
+# Bounded decision (PURE — no I/O, unit-testable).
 @dataclass(frozen=True)
 class GoalJudgement:
-    """The LLM first-pass proposal (met + a reason the agent can act on)."""
+    """The LLM judge verdict (met + a reason the agent can act on)."""
 
     met: bool
     reason: str = ""
@@ -362,56 +240,36 @@ class GoalJudgement:
 
 @dataclass(frozen=True)
 class GoalDecision:
-    """The bounded two-tier decision for one finalize-boundary goal evaluation.
+    """The bounded decision for one finalize-boundary goal evaluation.
 
     ``outcome`` is action-bearing: ``"met"`` settles + auto-clears, ``"capped"`` settles DONE
     on a tripped bound, ``"redrive"`` re-drives one more turn carrying ``guidance``. ``reason``
-    is a :data:`GOAL_OUTCOME_REASONS` code; ``tier`` records who decided (``deterministic``
-    authoritative, ``llm`` the weaker NL-only mode); ``llm_overridden`` marks a false LLM met
-    the gate overrode; ``new_state`` is the goal snapshot to persist."""
+    is a :data:`GOAL_OUTCOME_REASONS` code; ``new_state`` is the goal snapshot to persist."""
 
     outcome: Literal["met", "redrive", "capped"]
     reason: str
-    tier: Literal["deterministic", "llm", "none"] = "none"
     guidance: str = ""
-    llm_overridden: bool = False
     met: bool = False
     new_state: dict[str, Any] = field(default_factory=dict)
-
-
-def combine_tiers(
-    *, det_result: Optional[bool], llm: GoalJudgement
-) -> tuple[bool, Literal["deterministic", "llm", "none"], str, bool]:
-    """Combine the deterministic (authoritative) + LLM tiers — PURE.
-
-    Returns ``(met, tier, guidance, llm_overridden)``. When a predicate is present
-    (``det_result is not None``) the deterministic verdict WINS and a disagreeing LLM
-    "met" is flagged as an override. When NL-only (``det_result is None``) the LLM tier
-    decides (the documented weaker mode, ``tier == "llm"``)."""
-
-    if det_result is not None:
-        overridden = bool(llm.met and not det_result)
-        return det_result, "deterministic", llm.reason, overridden
-    return llm.met, "llm", llm.reason, False
 
 
 def evaluate_goal(
     goal: Mapping[str, Any],
     *,
-    det_result: Optional[bool],
     llm: GoalJudgement,
     elapsed_s: float = 0.0,
     tokens_spent: int = 0,
 ) -> GoalDecision:
     """Decide met / re-drive / capped for one goal evaluation — PURE (no I/O).
 
-    Deterministic tier authoritative (:func:`combine_tiers`). met -> settle + auto-clear
-    (``goal_met``). Unmet -> typed bounds backstop the infinite loop: an exhausted
-    ``max_goal_iters`` / ``max_wallclock_s`` / ``max_tokens`` settles DONE with a typed reason,
-    else RE-DRIVE one more turn (bumping ``iters_elapsed``) carrying the judge guidance; a
-    false-LLM-met the gate overrode re-drives under the distinct ``goal_llm_overridden`` code."""
+    The bounded LLM judge decides ``met`` (the deterministic tier was deleted, A4). met ->
+    settle + auto-clear (``goal_met``). Unmet -> the typed bounds are the hard stops: an
+    exhausted ``max_goal_iters`` / ``max_wallclock_s`` / ``max_tokens`` settles DONE with a
+    typed reason, else RE-DRIVE one more turn (bumping ``iters_elapsed``) carrying the judge
+    guidance."""
 
-    met, tier, guidance, overridden = combine_tiers(det_result=det_result, llm=llm)
+    met = llm.met
+    guidance = llm.reason
     state = dict(goal)
     if met:
         state.update(
@@ -420,15 +278,12 @@ def evaluate_goal(
                 "cleared": True,
                 "clear_reason": "goal_met",
                 "met": True,
-                "satisfied_tier": tier,
             }
         )
         return GoalDecision(
             outcome="met",
             reason="goal_met",
-            tier=tier,
             guidance=guidance,
-            llm_overridden=overridden,
             met=True,
             new_state=state,
         )
@@ -452,9 +307,7 @@ def evaluate_goal(
         return GoalDecision(
             outcome="capped",
             reason=capped_reason,
-            tier=tier,
             guidance=guidance,
-            llm_overridden=overridden,
             met=False,
             new_state=state,
         )
@@ -464,10 +317,8 @@ def evaluate_goal(
     state["cleared"] = False
     return GoalDecision(
         outcome="redrive",
-        reason="goal_llm_overridden" if overridden else "goal_redrive",
-        tier=tier,
+        reason="goal_redrive",
         guidance=guidance,
-        llm_overridden=overridden,
         met=False,
         new_state=state,
     )
@@ -479,7 +330,6 @@ def arm_goal(
     sid: str,
     *,
     condition: str,
-    predicate: Any = None,
     max_goal_iters: int = 0,
     max_wallclock_s: float = 0.0,
     max_tokens: int = 0,
@@ -488,16 +338,15 @@ def arm_goal(
 
     The ONE seam both arming doors route through — the ``/goal`` command and the declared
     ``set_goal`` skill-effect (#1082); there is deliberately NO model arming tool (⚑ RULE 1).
-    An unset bound resolves to a finite default (never runs away); a validated ``predicate``
-    makes the goal predicate-backed (deterministic authoritative), its absence the NL-only
-    mode. Raises :class:`GoalError` on an empty condition or a malformed predicate."""
+    Completion is decided by the bounded LLM judge (the deterministic predicate tier was
+    deleted, A4); an unset bound resolves to a finite default (the loop bounds are the hard
+    stops, never runs away). Raises :class:`GoalError` on an empty condition."""
 
     text = (condition or "").strip()
     if not text:
         raise GoalError(
             "a goal needs a condition to gate completion on", reason="goal_missing_condition"
         )
-    normalized_predicate = _validate_predicate(predicate) if predicate else None
     sess = app.state.sessions.get(sid)
     tokens_at_start = 0
     if sess is not None:
@@ -510,8 +359,6 @@ def arm_goal(
         "active": True,
         "cleared": False,
         "condition": text,
-        "predicate": normalized_predicate,
-        "predicate_backed": normalized_predicate is not None,
         "max_goal_iters": int(max_goal_iters)
         if int(max_goal_iters or 0) > 0
         else DEFAULT_MAX_GOAL_ITERS,
@@ -524,19 +371,11 @@ def arm_goal(
         "met": False,
     }
     _put_goal(app, sid, goal)
-    logger.info(
-        "goal armed goal_id=%s predicate_backed=%s max_goal_iters=%s",
-        goal_id,
-        normalized_predicate is not None,
-        goal["max_goal_iters"],
-    )
-    trace.event(
-        "GOAL", "goal %s armed (predicate_backed=%s)", goal_id, normalized_predicate is not None
-    )
+    logger.info("goal armed goal_id=%s max_goal_iters=%s", goal_id, goal["max_goal_iters"])
+    trace.event("GOAL", "goal %s armed (max_goal_iters=%s)", goal_id, goal["max_goal_iters"])
     return {
         "goal_id": goal_id,
         "condition": text,
-        "predicate_backed": normalized_predicate is not None,
         "max_goal_iters": goal["max_goal_iters"],
         "max_wallclock_s": goal["max_wallclock_s"],
         "max_tokens": goal["max_tokens"],
@@ -564,23 +403,6 @@ def stop_session_goal(app: Any, sid: str, *, reason: str = "goal_abandoned") -> 
     """Cancel-both entry for session end / delete — abandon any active goal (idempotent)."""
 
     clear_goal(app, sid, reason=reason)
-
-
-# Loop compose seam (#1079): the loop stops when a predicate-backed goal holds.
-def loop_goal_satisfied(app: Any, sid: str) -> bool:
-    """Whether an active predicate-backed goal's DETERMINISTIC gate holds (the loop seam).
-
-    Wired into :func:`clio_agent.gact.autonomous_loop._loop_goal_met` so a satisfied goal ends
-    the loop with the typed ``loop_goal_met`` reason. Deterministic-ONLY (cheap, no LLM) and
-    authoritative; an NL-only goal returns ``False`` here (the goal's own finalize eval governs it)."""
-
-    goal = _get_goal(app, sid)
-    if not goal or not goal.get("active") or goal.get("cleared"):
-        return False
-    try:
-        return run_deterministic_gate(app, sid, goal) is True
-    except GoalError:
-        return False
 
 
 # Finalize-boundary dispatch — the goal RIDES the Stop-loop re-drive seam.
@@ -620,35 +442,31 @@ def dispatch_goal_at_finalize(
 ) -> "GoalDecision | None":
     """Evaluate the session's goal at the turn-finalize boundary (never raises).
 
-    A no-op when no active goal is set. Otherwise runs the two-tier eval (LLM first-pass
-    PROPOSAL + authoritative deterministic gate -> :func:`evaluate_goal`), persists the
-    snapshot, and: **met / capped** -> auto-clear + settle DONE with a typed reason;
-    **redrive** -> enqueue ONE re-drive on the #1031 loop-inbox seam (the same bounded
-    mechanism the Stop-loop rides), carrying the judge reason as guidance. A dispatch error
-    is swallowed (post-turn contract). Returns the decision, or ``None`` when no goal/failed."""
+    A no-op when no active goal is set. Otherwise runs the bounded LLM judge
+    (-> :func:`evaluate_goal`), persists the snapshot, and: **met / capped** -> auto-clear +
+    settle DONE with a typed reason; **redrive** -> enqueue ONE re-drive on the #1031
+    loop-inbox seam (the same bounded mechanism the Stop-loop rides), carrying the judge reason
+    as guidance. A dispatch error is swallowed (post-turn contract). Returns the decision, or
+    ``None`` when no goal/failed. A judge-met decision also stops any armed loop with the typed
+    ``loop_goal_met`` reason — that compose lives in the ``turn_finalize`` glue (goal is a leaf)."""
 
     try:
         goal = _get_goal(app, session_id)
         if not goal or not goal.get("active") or goal.get("cleared"):
             return None
         llm = run_llm_judge(app, session_id, goal)
-        det = run_deterministic_gate(app, session_id, goal)
         elapsed_s, tokens_spent = _budget_spent(app, session_id, goal)
-        decision = evaluate_goal(
-            goal, det_result=det, llm=llm, elapsed_s=elapsed_s, tokens_spent=tokens_spent
-        )
+        decision = evaluate_goal(goal, llm=llm, elapsed_s=elapsed_s, tokens_spent=tokens_spent)
         if app.state.sessions.get(session_id) is not None:
             _put_goal(app, session_id, decision.new_state)
         if decision.outcome == "redrive":
             _enqueue_goal_redrive(app, session_id, decision, goal)
         _emit_goal_event(app, session_id, decision, turn_id=turn_id, trace_id=trace_id)
         logger.info(
-            "goal eval goal_id=%s outcome=%s reason=%s tier=%s overridden=%s",
+            "goal eval goal_id=%s outcome=%s reason=%s",
             goal.get("goal_id"),
             decision.outcome,
             decision.reason,
-            decision.tier,
-            decision.llm_overridden,
         )
         trace.event(
             "GOAL", "goal %s %s reason=%s", goal.get("goal_id"), decision.outcome, decision.reason
@@ -668,7 +486,7 @@ def _emit_goal_event(
 
     event_type = f"goal.{decision.outcome}"
     status = "running" if decision.outcome == "redrive" else "completed"
-    summary = f"Goal {decision.outcome} (reason={decision.reason}, tier={decision.tier})."
+    summary = f"Goal {decision.outcome} (reason={decision.reason})."
     try:
         _emit_semantic_event(
             app,
@@ -681,8 +499,6 @@ def _emit_goal_event(
             actor={"component": "goal"},
             payload={
                 "reason": decision.reason,
-                "tier": decision.tier,
-                "llm_overridden": decision.llm_overridden,
                 "iters_elapsed": int(decision.new_state.get("iters_elapsed", 0) or 0),
             },
         )
@@ -696,11 +512,12 @@ _CLEAR_TOKENS = frozenset({"clear", "stop", "reset", "cancel", "off"})
 
 def parse_goal_command(
     request_body: Mapping[str, Any],
-) -> tuple[str, dict[str, Any], Any, bool]:
-    """Parse ``/goal <condition>`` (+ ``args`` bounds/predicate) or ``/goal clear``.
+) -> tuple[str, dict[str, Any], bool]:
+    """Parse ``/goal <condition>`` (+ ``args`` bounds) or ``/goal clear``.
 
-    Returns ``(condition, bounds, predicate, clear)``: a leading clear/stop/reset word (or
-    ``args.clear``) clears the goal; typed bounds + an optional ``predicate`` come from ``args``."""
+    Returns ``(condition, bounds, clear)``: a leading clear/stop/reset word (or ``args.clear``)
+    clears the goal; typed bounds come from ``args``. Completion is the bounded LLM judge only
+    (the deterministic predicate tier was deleted, A4), so no predicate/``when_state`` is parsed."""
 
     text = str(
         request_body.get("input") or request_body.get("text") or request_body.get("prompt") or ""
@@ -709,17 +526,14 @@ def parse_goal_command(
     args: Mapping[str, Any] = raw_args if isinstance(raw_args, Mapping) else {}
 
     if text.lower() in _CLEAR_TOKENS or bool(args.get("clear")):
-        return "", {}, None, True
+        return "", {}, True
 
     condition = text or str(args.get("condition") or "").strip()
     bounds: dict[str, Any] = {}
     for key in ("max_goal_iters", "max_wallclock_s", "max_tokens"):
         if key in args:
             bounds[key] = args[key]
-    predicate = args.get("predicate")
-    if predicate is None and isinstance(args.get("when_state"), Mapping):
-        predicate = {"kind": "state", **dict(args["when_state"])}
-    return condition, bounds, predicate, False
+    return condition, bounds, False
 
 
 def run_goal_command(app: Any, sid: str, request_body: Mapping[str, Any]) -> str:
@@ -727,28 +541,24 @@ def run_goal_command(app: Any, sid: str, request_body: Mapping[str, Any]) -> str
 
     Parse + arm + message live here so the catalog dispatch route stays a thin one-liner."""
 
-    condition, bounds, predicate, clear = parse_goal_command(request_body)
+    condition, bounds, clear = parse_goal_command(request_body)
     if clear:
         cleared = clear_goal(app, sid, reason="goal_abandoned")
         return "goal cleared" if cleared else "no active goal to clear"
     if not condition:
         return (
             "usage: /goal <condition> — a condition is required to gate completion "
-            "(e.g. /goal all tests pass). Add args.predicate for a deterministic gate, "
-            "or /goal clear to remove the active goal."
+            "(e.g. /goal all tests pass). Bounds via args (max_goal_iters/max_wallclock_s/"
+            "max_tokens); /goal clear to remove the active goal."
         )
     try:
-        armed = arm_goal(app, sid, condition=condition, predicate=predicate, **bounds)
+        armed = arm_goal(app, sid, condition=condition, **bounds)
     except GoalError as exc:
         return f"/goal rejected: {exc} (reason={exc.reason})"
-    gate = (
-        "deterministic gate (authoritative)"
-        if armed["predicate_backed"]
-        else "LLM-only (weaker mode — no deterministic predicate)"
-    )
     return (
         f"goal {armed['goal_id']} set — gating completion on: {armed['condition']}. "
-        f"Evaluation: {gate}. Bounds max_goal_iters={armed['max_goal_iters']}, "
+        "Evaluation: LLM judge (bounded); bounds are the hard stops. "
+        f"Bounds max_goal_iters={armed['max_goal_iters']}, "
         f"max_wallclock_s={int(armed['max_wallclock_s'])}, max_tokens={armed['max_tokens']}. "
         "The goal re-drives while unmet and auto-clears when satisfied (or a bound trips). "
         "Only you can set or clear it (/goal clear); the agent cannot."
@@ -759,42 +569,36 @@ def run_goal_command(app: Any, sid: str, request_body: Mapping[str, Any]) -> str
 def build_goal_status_tool() -> Any:
     """Build the ``goal_status`` read-only dspy.Tool (auto-attached; mirrors ``cron_list``).
 
-    The ONLY goal surface the acting model gets: it may READ the goal to PROPOSE readiness,
-    but can NEVER set/clear/self-satisfy it (there is deliberately no ``set_goal`` /
-    ``goal_clear`` tool — the self-grading anti-pattern). ``met`` reflects the DETERMINISTIC
-    gate only (a cheap read-only readback; never runs the LLM judge, never settles)."""
+    The ONLY goal surface the acting model gets: it may READ the armed goal to see what it is
+    working toward, but can NEVER set/clear it (there is deliberately no ``set_goal`` /
+    ``goal_clear`` tool — the self-grading anti-pattern). It returns ARMED STATE ONLY: it never
+    runs the judge and never exposes a ``met`` completion readback the model could steer toward
+    (completion is decided at the finalize boundary by the bounded judge, A4)."""
 
     import dspy  # noqa: PLC0415
 
     def goal_status() -> dict:
         """Read THIS session's active goal condition + progress (READ-ONLY).
 
-        Returns ``{active, condition, predicate_backed, iters_elapsed, max_goal_iters,
-        budget_spent, met}``. ``met`` reflects the deterministic gate only (a readback — it does
-        NOT settle the goal or end the turn). You CANNOT set or clear a goal (only the user /goal
-        or a declared skill-effect can) — use this to see what you are working toward."""
+        Returns ``{active, condition, iters_elapsed, max_goal_iters, budget_spent}``. This is
+        armed-state only — it does NOT run any evaluation, settle the goal, or end the turn. You
+        CANNOT set or clear a goal (only the user /goal or a declared skill-effect can) — use
+        this to see what you are working toward."""
 
         app = _ctx.active_app()
         sid = _ctx.active_session_id()
         if app is None or not sid:
-            return {"active": False, "condition": "", "iters_elapsed": 0, "met": False}
+            return {"active": False, "condition": "", "iters_elapsed": 0}
         goal = _get_goal(app, sid)
         if not goal or not goal.get("active"):
-            return {"active": False, "condition": "", "iters_elapsed": 0, "met": False}
+            return {"active": False, "condition": "", "iters_elapsed": 0}
         elapsed_s, tokens_spent = _budget_spent(app, sid, goal)
-        met = False
-        try:
-            met = run_deterministic_gate(app, sid, goal) is True
-        except GoalError:
-            met = False
         return {
             "active": True,
             "condition": str(goal.get("condition") or ""),
-            "predicate_backed": bool(goal.get("predicate_backed")),
             "iters_elapsed": int(goal.get("iters_elapsed", 0) or 0),
             "max_goal_iters": int(goal.get("max_goal_iters", 0) or 0),
             "budget_spent": {"wallclock_s": elapsed_s, "tokens": tokens_spent},
-            "met": met,
         }
 
     return dspy.Tool(func=goal_status, name="goal_status", desc=goal_status.__doc__, args={})

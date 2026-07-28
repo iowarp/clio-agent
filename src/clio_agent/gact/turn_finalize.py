@@ -746,7 +746,15 @@ def finalize_turn(
     # P4.2 #1080: run-until GOAL completion gate (owner module; no-op/never-raises).
     from clio_agent.gact.goal import dispatch_goal_at_finalize  # noqa: PLC0415
 
-    dispatch_goal_at_finalize(state.app, session_id=state.sid, turn_id=state.turn_id, trace_id=state.trace_id)
+    goal_decision = dispatch_goal_at_finalize(
+        state.app, session_id=state.sid, turn_id=state.turn_id, trace_id=state.trace_id
+    )
+    # A4 #1057: a judge-met goal stops any armed loop (loop_goal_met); the compose lives in this
+    # glue so goal.py stays a leaf (no goal->loop import cycle) — LLM-only, no deterministic gate.
+    if goal_decision is not None and goal_decision.outcome == "met":
+        from clio_agent.gact.autonomous_loop import stop_session_loop  # noqa: PLC0415
+
+        stop_session_loop(state.app, state.sid, reason="loop_goal_met")
     if not (
         state.cancelled_turn
         and state.error_info is not None
