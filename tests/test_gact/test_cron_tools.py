@@ -94,6 +94,54 @@ def test_cron_delete_cancel_both_no_orphan(tmp_path: Path) -> None:
     _in_ctx(body)
 
 
+def test_cron_delete_cross_session_refused_row_intact(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A model in session B cannot delete session A's schedule (no cross-session oracle).
+
+    The refusal returns ``False`` (indistinguishable from not-found to the model), leaves
+    the row AND any deferred entry intact, and emits the typed ``cron_delete_not_owner``
+    reason server-side (no-silent-refusal)."""
+
+    def body() -> None:
+        app = _app(tmp_path)
+        _bind(app, "sess_A")
+        result = build_cron_create_tool().func(cron="0 9 * * *", prompt="A's job")
+        sid = result["schedule_id"]
+        app.state.deferred_schedules.add(sid)
+
+        # Switch to session B and attempt to delete A's schedule.
+        _bind(app, "sess_B")
+        with caplog.at_level("WARNING", logger="clio_agent.gact.cron_tools"):
+            deleted = build_cron_delete_tool().func(schedule_id=sid)
+        assert deleted is False  # indistinguishable from not-found
+        # Row + deferred entry untouched — no cross-session cancellation.
+        assert app.state.schedules.get(sid) is not None
+        assert sid in app.state.deferred_schedules
+        # Typed refusal reason surfaced server-side.
+        assert "cron_delete_not_owner" in caplog.text
+
+    _in_ctx(body)
+
+
+def test_cron_delete_own_session_cancels_both(tmp_path: Path) -> None:
+    """The owning session deletes successfully (True) with cancel-both."""
+
+    def body() -> None:
+        app = _app(tmp_path)
+        _bind(app, "sess_A")
+        result = build_cron_create_tool().func(cron="0 9 * * *", prompt="A's job")
+        sid = result["schedule_id"]
+        app.state.deferred_schedules.add(sid)
+
+        deleted = build_cron_delete_tool().func(schedule_id=sid)
+        assert deleted is True
+        assert app.state.schedules.get(sid) is None
+        assert sid not in app.state.deferred_schedules
+
+    _in_ctx(body)
+
+
 def test_cron_create_one_shot_recurring_false(tmp_path: Path) -> None:
     """recurring=False arms a one-shot (auto-deletes after firing)."""
 
@@ -221,6 +269,24 @@ def test_run_cron_command_delete_cancels_both(tmp_path: Path) -> None:
         # Idempotent: a second delete reports nothing to cancel, creates/removes nothing.
         again = run_cron_command(app, "s", {"input": f"cancel {sch_id}"})
         assert "no schedule" in again.lower()
+
+    _in_ctx(body)
+
+
+def test_run_cron_command_delete_cross_session_refused_row_intact(tmp_path: Path) -> None:
+    """`/cron delete <id>` for another session's schedule reports nothing to cancel and
+    leaves the row intact (same owner check as the model tool, no cross-session oracle)."""
+
+    def body() -> None:
+        app = _app(tmp_path)
+        _bind(app, "sess_A")
+        run_cron_command(app, "sess_A", {"input": "0 9 * * * q"})
+        sch_id = app.state.schedules.list(session_id="sess_A")[0].id
+
+        msg = run_cron_command(app, "sess_B", {"input": f"delete {sch_id}"})
+        assert "no schedule" in msg.lower()
+        # A's row is untouched.
+        assert app.state.schedules.get(sch_id) is not None
 
     _in_ctx(body)
 

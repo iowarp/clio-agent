@@ -26,11 +26,14 @@ nothing.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import Any
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.scheduler import CronError, Schedule
+
+logger = logging.getLogger(__name__)
 
 
 def _active() -> tuple[Any, str]:
@@ -58,6 +61,43 @@ def cancel_schedule(app: Any, schedule_id: str) -> bool:
     if deferred is not None:
         deferred.discard(schedule_id)
     return existed
+
+
+def cancel_owned_schedule(app: Any, session_id: str, schedule_id: str) -> bool:
+    """Session-scoped cancel-both for the model tool + ``/cron`` command paths.
+
+    Enforces ownership so a model in one session cannot cancel (or probe the existence
+    of) another session's schedule. Resolving to ``False`` for BOTH the not-found and the
+    wrong-owner case makes the two indistinguishable to the caller — no cross-session
+    enumeration oracle. A wrong-owner attempt emits the typed ``cron_delete_not_owner``
+    reason to the trace/log (no-silent-refusal holds server-side). The HTTP delete route
+    deliberately uses :func:`cancel_schedule` instead — it serves direct user action on
+    arbitrary sessions behind its own destructive-action guard.
+
+    Args:
+        app: The live CLIO app carrying ``state.schedules`` (and optional
+            ``state.deferred_schedules``).
+        session_id: The calling session — must own the schedule to cancel it.
+        schedule_id: The id to cancel.
+
+    Returns:
+        ``True`` only when an owned schedule was removed; ``False`` when no such id
+        exists for this session (missing OR owned by another session).
+    """
+
+    sch = app.state.schedules.get(schedule_id)
+    if sch is None:
+        return False
+    if sch.session_id != session_id:
+        logger.warning(
+            "cron delete refused: cross-session ownership "
+            "reason=cron_delete_not_owner schedule_id=%s caller_session=%s owner_session=%s",
+            schedule_id,
+            session_id,
+            sch.session_id,
+        )
+        return False
+    return cancel_schedule(app, schedule_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -106,10 +146,7 @@ def run_cron_command(app: Any, sid: str, request_body: Mapping[str, Any]) -> str
     """
 
     text = str(
-        request_body.get("input")
-        or request_body.get("text")
-        or request_body.get("prompt")
-        or ""
+        request_body.get("input") or request_body.get("text") or request_body.get("prompt") or ""
     ).strip()
     raw_args = request_body.get("args")
     args: Mapping[str, Any] = raw_args if isinstance(raw_args, Mapping) else {}
@@ -125,7 +162,7 @@ def run_cron_command(app: Any, sid: str, request_body: Mapping[str, Any]) -> str
         ).strip()
         if not schedule_id:
             return "usage: /cron delete <schedule_id> — the id from /cron list or cron_create"
-        removed = cancel_schedule(app, schedule_id)
+        removed = cancel_owned_schedule(app, sid, schedule_id)
         return (
             f"schedule {schedule_id} cancelled (recurring tick + any pending retry cleared)"
             if removed
@@ -243,12 +280,27 @@ def build_cron_create_tool() -> Any:
         name="cron_create",
         desc=cron_create.__doc__,
         args={
-            "cron": {"type": "string", "description": "5-field cron in the session's local tz (or omit for a one-shot)."},
+            "cron": {
+                "type": "string",
+                "description": "5-field cron in the session's local tz (or omit for a one-shot).",
+            },
             "prompt": {"type": "string", "description": "The question the scheduled turn runs."},
-            "recurring": {"type": "boolean", "description": "False = one-shot, auto-deletes after firing once."},
-            "run_at": {"type": "string", "description": "ISO-8601 instant to fire ONCE (mutually exclusive with cron/delay_s)."},
-            "delay_s": {"type": "integer", "description": "Fire ONCE after this many seconds (mutually exclusive with cron/run_at)."},
-            "timezone": {"type": "string", "description": "IANA tz override (e.g. 'America/Chicago'); defaults to the session/system local zone."},
+            "recurring": {
+                "type": "boolean",
+                "description": "False = one-shot, auto-deletes after firing once.",
+            },
+            "run_at": {
+                "type": "string",
+                "description": "ISO-8601 instant to fire ONCE (mutually exclusive with cron/delay_s).",
+            },
+            "delay_s": {
+                "type": "integer",
+                "description": "Fire ONCE after this many seconds (mutually exclusive with cron/run_at).",
+            },
+            "timezone": {
+                "type": "string",
+                "description": "IANA tz override (e.g. 'America/Chicago'); defaults to the session/system local zone.",
+            },
         },
     )
 
@@ -290,18 +342,24 @@ def build_cron_delete_tool() -> Any:
     def cron_delete(schedule_id: str) -> bool:
         """Cancel a scheduled turn by its ``schedule_id`` (from cron_create/cron_list).
 
-        Returns True if a schedule was removed, False if no such id existed. This is
-        cancel-both: it stops the recurring tick AND clears any pending busy-retry, so
-        nothing fires afterward."""
+        Returns True if a schedule was removed, False if no such id existed FOR THIS
+        session (a schedule owned by another session is indistinguishable from one that
+        never existed — you can only cancel your own). This is cancel-both: it stops the
+        recurring tick AND clears any pending busy-retry, so nothing fires afterward."""
 
-        app, _sid = _active()
-        return cancel_schedule(app, str(schedule_id or "").strip())
+        app, sid = _active()
+        return cancel_owned_schedule(app, sid, str(schedule_id or "").strip())
 
     return dspy.Tool(
         func=cron_delete,
         name="cron_delete",
         desc=cron_delete.__doc__,
-        args={"schedule_id": {"type": "string", "description": "The schedule id returned by cron_create / cron_list."}},
+        args={
+            "schedule_id": {
+                "type": "string",
+                "description": "The schedule id returned by cron_create / cron_list.",
+            }
+        },
     )
 
 
