@@ -59,14 +59,13 @@ from clio_agent.gact.enrichment import (
     inject_pending_agent_task_notifications,
 )
 from clio_agent.gact.events import Event, EventBus, _publish_transcript_event
-from clio_agent.gact.evidence import (
-    _propose_edit_diffs_from_pred,
-)
+from clio_agent.gact.evidence import _propose_edit_diffs_from_pred
 from clio_agent.gact.messaging import (
     _agent_accepts_images,
     _image_part_summaries,
     _user_message_parts,
 )
+from clio_agent.gact.plan_mode import inject_plan_mode_reminder
 from clio_agent.gact.runtime.globals import (
     _BlueprintRootDisabled,
     _cancelled_error_info,
@@ -92,6 +91,7 @@ from clio_agent.gact.streaming import (
     _pop_stream_fallback,
     _StreamingOutputError,
 )
+from clio_agent.gact.todos import inject_todo_recitation
 from clio_agent.gact.tool_observer import (
     _merge_tool_call_rows,
     _tool_calls_from_handoff_rows,
@@ -114,9 +114,7 @@ from clio_agent.gact.types import (
     Part,
     Session,
 )
-from clio_agent.gact.usage import (
-    _snapshot_lm_history_index,
-)
+from clio_agent.gact.usage import _snapshot_lm_history_index
 
 # NOTE (#714): every turn helper above is imported from its true *leaf* owner,
 # not from ``clio_agent.gact.app``. The turn loop originally lived in ``app.py``
@@ -301,6 +299,13 @@ async def _run_turn_in_background(
         # run seam below, so a turn aborted after enrichment leaves them pending.
         state.enriched_text, state.pending_notification_task_ids = (
             inject_pending_agent_task_notifications(state.app, state.sid, state.enriched_text)
+        )
+        # P1.2 #1064: surface plan mode to the model each turn (survives compaction; no-op otherwise).
+        state.enriched_text = inject_plan_mode_reminder(
+            state.app, state.sid, state.sess, state.enriched_text
+        )
+        state.enriched_text = inject_todo_recitation(
+            state.app, state.sid, state.sess, state.enriched_text
         )
         # Carry prior turns so a follow-up ("now plot it") reuses resolved state (no-op turn 1).
         state.enriched_text = _compile_session_conversation_history(state.app, state.sid, state.enriched_text)
@@ -531,6 +536,13 @@ async def _run_turn_in_background(
             # finalize region — the seam mints the question, flips the
             # session to waiting_user, and settles the ledger (see
             # turn_finalize.py).
+            return
+        # P1.4 #1066: plan_exit is the SAME turn-ending yield — surface the pending
+        # plan-exit as an N-way approval question and exit before finalize (owner
+        # module gact/plan_mode.py; only the call site lands here).
+        from clio_agent.gact.plan_mode import maybe_pause_for_plan_exit  # noqa: PLC0415
+
+        if maybe_pause_for_plan_exit(state):
             return
         # iowarp/clio-agent#25: data branch reports which execution
         # path it took ("fast" or "expert_loop"). Empty when not

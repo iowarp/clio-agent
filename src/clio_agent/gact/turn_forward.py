@@ -283,7 +283,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
                     state.enriched_text,
                     state.sid,
                     live_emit,
-                    session_mode=getattr(state.sess, "mode", "chat"),
+                    session_mode=getattr(state.sess, "mode", "edit"),
                     session_edit_mode=getattr(state.sess, "edit_mode", "diff"),
                     agent_override=module,
                     images=state.native_images,

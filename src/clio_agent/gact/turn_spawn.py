@@ -60,6 +60,17 @@ def _err_code(error_info: Any) -> str:
 MAX_SPAWN_DEPTH = 8
 _ANSWER_EXCERPT_MAX = 2000
 
+# P1.1 (#1031 governance-surfaces, "subagents inherit structurally"): a child spawned
+# from a RESTRICTIVE parent (plan/architect) must NOT be minted in the default
+# ``edit`` mode — that would let a plan-mode parent escape its own write-deny via a
+# full-authority child (both the normal spawn_agent_task tool and the P1.0
+# spawn_subagent_with_skill effect go through this shared path). The child instead
+# INHERITS the parent's mode verbatim (plan→plan, architect→architect, edit→edit —
+# the net change is only for restrictive parents; an edit parent's children are
+# unaffected). Exiting a restrictive mode stays the user-gated ``plan_exit`` flow;
+# nothing here lets a child relax below its inherited posture.
+_RESTRICTIVE_SESSION_MODES = frozenset({"plan", "architect"})
+
 # Session-scoped activation keys a spawned child MUST inherit from its parent so it
 # resolves its declared expert against the SAME blueprint / expert-pack the parent
 # activated (session-scoped, possibly NOT installed globally) — never the global /
@@ -110,6 +121,15 @@ class TaskSpec:
     # expert, depth) children RUN before the next spawn queues. 0 = only the global
     # per-depth cap applies.
     fanout_bound: int = 0
+    # P1.0 (#1062): verbatim context prepended to the child's staged user message —
+    # used by ``spawn_subagent_with_skill`` to SEED a fresh subagent with a skill body
+    # instead of inlining it into the caller's context. Empty for a normal spawn.
+    seed_context: str = ""
+    # P1.0 (#1062): skip the declared-child routing guard for a SELF-directed spawn (a
+    # skill-as-subagent running the caller's own expert in a fresh context — not a
+    # routing decision to a different declared capability). A documented seam, not a
+    # silent bypass: the depth backstop still applies and the child expert must resolve.
+    skip_declared_check: bool = False
 
 
 class SpawnError(Exception):
@@ -279,15 +299,16 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
             f"spawn depth {spec.depth} exceeds max {MAX_SPAWN_DEPTH}",
             reason="spawn_depth_exceeded",
         )
-    declared = _runtime_declared_child_ids(
-        app, spec.requesting_expert_id, session_id=spec.parent_session_id
-    )
-    if spec.child_expert_id not in declared:
-        raise SpawnError(
-            f"{spec.child_expert_id!r} is not a declared child of "
-            f"{spec.requesting_expert_id!r} (declared: {sorted(declared)})",
-            reason="undeclared_child",
+    if not spec.skip_declared_check:
+        declared = _runtime_declared_child_ids(
+            app, spec.requesting_expert_id, session_id=spec.parent_session_id
         )
+        if spec.child_expert_id not in declared:
+            raise SpawnError(
+                f"{spec.child_expert_id!r} is not a declared child of "
+                f"{spec.requesting_expert_id!r} (declared: {sorted(declared)})",
+                reason="undeclared_child",
+            )
 
     # ---- backpressure: queue (never fail) at the cap ----------------------
     # PER-DEPTH admission: each depth has its own pool, so the cap is counted
@@ -313,12 +334,31 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
     # ---- mint the child session (authoritative store) ----------------------
     parent = app.state.sessions.get(spec.parent_session_id)
     workspace_id = getattr(parent, "workspace_id", "ws_default") if parent else "ws_default"
+    # Structural mode inheritance (P1.1 "subagents inherit structurally"): the child
+    # is minted in the PARENT's session mode, not the default ``edit`` — else a
+    # plan/architect-mode parent could spawn a full-authority edit-mode child and
+    # write what the parent itself is denied (the plan-override bypass). See
+    # ``_RESTRICTIVE_SESSION_MODES`` above.
+    parent_mode = str(getattr(parent, "mode", "") or "edit") if parent else "edit"
     child = app.state.sessions.create(
         workspace_id=workspace_id,
         title=f"{spec.child_expert_id} task",
         parent_session_id=spec.parent_session_id,
         agent={"id": spec.child_expert_id, "mode": "subagent"},
+        mode=parent_mode,
     )
+    if parent_mode in _RESTRICTIVE_SESSION_MODES:
+        # Typed, queryable note (no-silent-fallback ground rule): this is a real
+        # behavior change from the pre-fix default (child always got ``edit``), so
+        # it must be traceable, not just applied silently.
+        logger.info(
+            "spawn_child_turn: child session %s inherits restrictive mode %r from "
+            "parent %s (plan-mode subagent isolation, requesting_expert=%s)",
+            child.id,
+            parent_mode,
+            spec.parent_session_id,
+            spec.requesting_expert_id,
+        )
     # Ensemble run index (#948 S5): computed from the registry BEFORE this task is
     # persisted, so the first spawn of the child in this parent turn gets 0, the next 1…
     run_index = _next_run_index(app, spec)
@@ -350,10 +390,24 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
         child.id,
         metadata_patch={
             **_inherited_session_scope_metadata(parent),
+            # Queryable audit trail for the mode-inheritance fix above: present (and
+            # truthy) only when the child's mode was structurally inherited from a
+            # restrictive parent, so the API/trace can distinguish "child is plan mode
+            # because its own agent defaults there" from "child is plan mode because
+            # its parent was" without guessing from ``session.mode`` alone.
+            **(
+                {"spawn_mode_inherited_from": parent_mode}
+                if parent_mode in _RESTRICTIVE_SESSION_MODES
+                else {}
+            ),
             "pending_spawn": {
                 "task_text": spec.task_text,
                 "workflow_state": spec.workflow_state or {},
                 "mode": spec.mode,
+                # P1.0 (#1062): persist the skill seed + self-directed flag so a QUEUED
+                # skill-subagent launches faithfully later (parity with task_text).
+                "seed_context": spec.seed_context,
+                "skip_declared_check": spec.skip_declared_check,
             },
         },
     )
@@ -492,10 +546,15 @@ def _launch(app: "FastAPI", task: AgentTask, spec: TaskSpec) -> AgentTask:
     # staged user message so the child sees the shared plan (the child's own state
     # rides back on result.workflow_state at completion).
     text = spec.task_text
+    # P1.0 (#1062): a seeded subagent (skill-as-subagent) gets the skill body prepended
+    # verbatim to its staged input, so the child runs the skill's procedure in a fresh
+    # context instead of the caller inlining the body.
+    if spec.seed_context:
+        text = f"{spec.seed_context}\n\n---\n\n{text}"
     if spec.workflow_state:
         import json  # noqa: PLC0415
 
-        text = f"{spec.task_text}\n\n[workflow_state]\n{json.dumps(spec.workflow_state, sort_keys=True, default=str)}"
+        text = f"{text}\n\n[workflow_state]\n{json.dumps(spec.workflow_state, sort_keys=True, default=str)}"
 
     _start_background_user_turn(
         app,
@@ -671,6 +730,8 @@ def _admit_next_queued(app: "FastAPI") -> None:
             mode=pending.get("mode", "async"),
             workflow_state=pending.get("workflow_state") or None,
             fanout_bound=task.fanout_bound,
+            seed_context=pending.get("seed_context", ""),
+            skip_declared_check=bool(pending.get("skip_declared_check", False)),
         )
         reg.register(replace(task, queued_reason=""))  # clear queued_reason as it launches
         _launch(app, reg.get(task.task_id), spec)

@@ -159,16 +159,17 @@ def _gate_content_write(
     Inline content is a real workspace write, so it honors the SAME contract every
     other write path does — instead of the ungated ``write_text`` it previously ran:
 
-    * (b) MODE CONTRACT: plan/architect are read-only (the permission gate HARD-
-      rejects destructive calls there); a content write is refused typed
-      ``mode_read_only``.
     * (a) OVERWRITE: an existing file at the target is never clobbered UNLESS it is
       the current on-disk file of an already-registered artifact of the same
       ``(workspace, name)`` (re-versioning your own artifact); otherwise typed
       ``would_overwrite`` (the model can pick another name — bounded repair).
-    * (c) POLICY: consult the same policy layer the diffs/apply path uses
-      (``_policy_action_for_tool``) and land a resolved permission audit row — so
-      allow/deny/ask policies apply to this native tool exactly as to bridge tools.
+    * (c) POLICY + MODE: consult the same resolver the diffs/apply path and the live
+      tool gate use (``_policy_action_for_tool``, passing the session ``mode``) and
+      land a resolved permission audit row — so allow/deny/ask policies AND the
+      built-in plan_acl rules apply to this native tool exactly as to bridge tools.
+      P1.1 #1063: the read-only mode contract for plan/architect is no longer a
+      private ``session.mode`` predicate here; it rides that ONE resolver (a content
+      write is denied typed ``policy_denied`` in plan/architect via the @40 rule).
 
     Returns a typed rejection outcome to short-circuit the write, or ``None`` to
     proceed. Path-only proposals (registering an EXISTING file) never reach here —
@@ -182,15 +183,6 @@ def _gate_content_write(
 
     session = _session_for(app, sid)
 
-    # (b) Read-only mode contract — refuse a content write, typed.
-    mode = str(getattr(session, "mode", "") or "")
-    if mode in {"plan", "architect"}:
-        return _rejected(
-            proposal.name,
-            RejectionReason.MODE_READ_ONLY,
-            f"content writes are refused under session.mode={mode!r}",
-        )
-
     # (a) Overwrite guard — never silently clobber a non-owned existing file.
     if proposal.name:
         target = (root / proposal.name).resolve(strict=False)
@@ -202,10 +194,17 @@ def _gate_content_write(
                 "can re-version; choose another name",
             )
 
-    # (c) Policy consult + audit row (the same machinery the diffs/apply write uses).
+    # (c) Policy + mode consult + audit row (the same resolver the diffs/apply write and the live
+    # tool gate use). Passing ``mode`` folds the built-in plan_acl rules in, so plan/architect deny
+    # a content write here through the SAME path — no separate mode predicate.
     args = {"name": proposal.name, "content_bytes": len(proposal.content)}
     action = _policy_action_for_tool(
-        app, session_id=sid, session=session, tool_name="create_artifact", args=args
+        app,
+        session_id=sid,
+        session=session,
+        tool_name="create_artifact",
+        args=args,
+        mode=str(getattr(session, "mode", "") or ""),
     )
     if action == "deny":
         _record_resolved_permission(

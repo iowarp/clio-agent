@@ -1144,3 +1144,52 @@ def test_notify_tool_observer_failure_logs_reason(caplog):
     assert matching, "expected a structured tool_observer_failed warning"
     assert "tool=fake_echo" in matching[0].getMessage()
     assert "phase=end" in matching[0].getMessage()
+
+
+def test_permission_gate_deny_message_surfaces_to_model():
+    """P1.2 #1064: a gate ``deny`` carrying a ``deny_message`` (a ``str`` subclass) is raised
+    verbatim to the model, NOT the generic executor string — so plan-mode blocks explain WHY."""
+    from clio_agent.gact.permission_gate import DenyDecision
+
+    fake_client = FakeClient()
+    plan_message = (
+        "You are in Plan Mode: read-only except the plan file at /repo/.clio/plans/*.md. "
+        "This tool (fake_echo) would modify the system, so it is blocked."
+    )
+
+    def gate(_name: str, _args: Mapping[str, Any]) -> str:
+        return DenyDecision(plan_message)
+
+    executor = SyncMCPToolExecutor(
+        object(),
+        timeout=1.0,
+        client_factory=lambda _server: fake_client,
+        permission_gate=gate,
+    )
+    try:
+        with pytest.raises(PermissionError, match="Plan Mode") as excinfo:
+            executor.call_tool("fake_echo", {"value": "blocked"})
+        assert str(excinfo.value) == plan_message
+        assert "denied by permission gate" not in str(excinfo.value)
+    finally:
+        executor.close()
+
+
+def test_plain_deny_string_uses_generic_message():
+    """A plain ``"deny"`` (no ``deny_message``) falls back to the generic executor denial text."""
+    fake_client = FakeClient()
+
+    def gate(_name: str, _args: Mapping[str, Any]) -> str:
+        return "deny"
+
+    executor = SyncMCPToolExecutor(
+        object(),
+        timeout=1.0,
+        client_factory=lambda _server: fake_client,
+        permission_gate=gate,
+    )
+    try:
+        with pytest.raises(PermissionError, match="denied by permission gate"):
+            executor.call_tool("fake_echo", {"value": "blocked"})
+    finally:
+        executor.close()

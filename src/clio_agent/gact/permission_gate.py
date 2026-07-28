@@ -9,11 +9,19 @@ and building the closures the tool-execution boundary calls
 Whether a call needs approval is decided structurally, not by tool-name
 substrings: :func:`is_read_only` (in :mod:`clio_agent.gact.runtime.grant_resolver`)
 fast-allows a provably read-only call (MCP ``readOnlyHint`` annotation OR a static
-catalog ``read`` tag); every other call proceeds to the plan/architect lock,
-policy match, and interactive prompt. Policy matching itself delegates to the one
-:func:`~clio_agent.gact.runtime.grant_resolver.resolve` matcher (#1032) — the
-former ``_is_destructive`` substring set and the bounded ``shell_bash`` parser are
-deleted (their read-only diagnostics are now covered by :func:`is_read_only`).
+catalog ``read`` tag); every other call proceeds to the policy match and
+interactive prompt. There is no separate plan/architect lock step: plan/architect
+enforcement is a set of built-in ``plan_acl`` policy rows (P1.1 #1063) that
+:func:`~clio_agent.gact.runtime.grant_resolver.resolve` consults for every
+``kind="tool"`` call whose session ``mode`` is plan-restricted — the same ONE
+matcher that resolves every other policy row, dynamically prioritized above any
+matching user row so it can never be outranked (adversarial-review fix, #1063).
+A resulting deny is recorded with the same ``reason: "policy_deny"`` as any other
+policy denial — there is no separate ``session_mode_readonly`` reason. Policy
+matching delegates to the one :func:`~clio_agent.gact.runtime.grant_resolver.resolve`
+matcher (#1032) — the former ``_is_destructive`` substring set and the bounded
+``shell_bash`` parser are deleted (their read-only diagnostics are now covered by
+:func:`is_read_only`).
 
 It pairs with :mod:`clio_agent.gact.runtime.permission_policies`, which owns the
 *data* layer (validation, on-disk load/flush, resolution-derived policies) and
@@ -63,6 +71,7 @@ from clio_agent.gact.runtime.grant_resolver import (
     EXTERNAL_MCP_CONTEXT_KIND,
     is_read_only,
     resolve,
+    resolve_detail,
 )
 from clio_agent.gact.runtime.grants import GRANTOR_REVIEWER, GRANTOR_USER
 from clio_agent.gact.runtime.permission_policies import (
@@ -91,6 +100,26 @@ REASON_APPROVAL_AUTO_EDITS = "approval_mode_auto_edits"
 #: ai-review still PROMPTS today (the reviewer agent is the split follow-up slice); the pending
 #: row carries this typed reason so the ask is attributable to the reviewer-pending state.
 REASON_AI_REVIEW_REVIEWER_PENDING = "ai_review_reviewer_pending"
+
+
+class DenyDecision(str):
+    """A gate ``"deny"`` decision carrying a model-facing deny message (P1.2 #1064).
+
+    A ``str`` subclass that IS ``"deny"``, so every existing ``decision == "deny"``
+    comparison and the tool executor's ``decision != "allow"`` branch keep working
+    unchanged. The extra :attr:`deny_message` is the mode-aware text the tool executor
+    raises to the model in place of the generic ``"denied by permission gate"`` string
+    (read via ``getattr`` at the execution boundary, so the low ``tools`` layer never
+    imports gact). The typed audit reason (``policy_deny``) is decided separately and is
+    NOT affected — this class only enriches the human/model-facing wording.
+    """
+
+    deny_message: str
+
+    def __new__(cls, deny_message: str = "") -> "DenyDecision":
+        obj = super().__new__(cls, "deny")
+        obj.deny_message = deny_message
+        return obj
 
 
 def default_decision(
@@ -192,8 +221,9 @@ def _policy_action_for_tool(
     session: Any | None,
     tool_name: str,
     args: Mapping[str, Any],
+    mode: str = "",
 ) -> str:
-    """Return the first matching permission policy action for a tool call.
+    """Return the winning permission policy action for a tool call.
 
     A thin shim over :func:`~clio_agent.gact.runtime.grant_resolver.resolve`
     (``kind="tool"``): it resolves the call's target path + workspace from the
@@ -202,6 +232,14 @@ def _policy_action_for_tool(
     without enforcing them is a silent safety bypass; matching stays small and
     predictable (scope, tool glob, optional path glob, then the raw action).
     Kept as a named shim because ``enrichment``/``proposal_effects`` bind it.
+
+    ``mode`` (P1.1 #1063) is the session's mode: passing it makes ``resolve``
+    consult the built-in plan-mode ACL (deny every non-read tool in
+    plan/architect; the sole ``<plans>/*.md`` write carve-out in plan), so the
+    plan/architect read-only lock is now this ONE data-driven path — no longer a
+    predicate copy-pasted here + in ``enrichment`` + ``proposal_effects``. The
+    three former lock sites pass ``mode``; direct route actions
+    (:func:`_guard_direct_destructive_action`) leave it empty, unchanged.
     """
 
     path = _permission_path_from_args(args)
@@ -213,6 +251,39 @@ def _policy_action_for_tool(
         session_id=session_id,
         workspace_id=workspace_id,
         path=path,
+        mode=mode,
+    )
+
+
+def _policy_detail_for_tool(
+    app: "FastAPI",
+    *,
+    session_id: str,
+    session: Any | None,
+    tool_name: str,
+    args: Mapping[str, Any],
+    mode: str = "",
+) -> tuple[str, str]:
+    """Return ``(action, deny_message)`` for a tool call (P1.2 #1064).
+
+    The detail-returning companion to :func:`_policy_action_for_tool`: it resolves the
+    call through the SAME one matcher (:func:`~clio_agent.gact.runtime.grant_resolver.resolve_detail`)
+    but also carries the plan-mode deny message. ``deny_message`` is non-empty ONLY when
+    the winning deny is authored by the built-in plan_acl mode-lock, so the interactive
+    gate can raise the mode-aware text (states the restriction, points at the plan file,
+    says what IS allowed) while the ``policy_deny`` audit reason is unchanged.
+    """
+
+    path = _permission_path_from_args(args)
+    workspace_id = getattr(session, "workspace_id", "") if session is not None else ""
+    return resolve_detail(
+        "tool",
+        tool_name,
+        policies=getattr(app.state, "permission_policies", []),
+        session_id=session_id,
+        workspace_id=workspace_id,
+        path=path,
+        mode=mode,
     )
 
 
@@ -480,45 +551,19 @@ def _make_permission_gate(app: "FastAPI"):
         # Prefer the session currently driving the turn. Recency is
         # only a fallback for truly out-of-band tool calls.
         sid, current = _resolve_tool_session(app)
-        if current is not None:
-            # iowarp/clio-agent — plan_mode + architect mode reject
-            # destructive tool calls without prompting. Read-only
-            # contract is hard, not advisory.
-            if current.mode in {"plan", "architect"}:
-                row = {
-                    "id": f"perm_{uuid.uuid4().hex[:12]}",
-                    "session_id": sid,
-                    "tool_call": {
-                        "tool_name": name,
-                        "input": dict(args),
-                    },
-                    "summary": (f"{subject} {name!r} blocked by session.mode={current.mode!r}"),
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                    "status": "auto_denied",
-                    "action": "deny",
-                    "resolved_at": datetime.now(timezone.utc).isoformat(),
-                }
-                app.state.permissions[row["id"]] = row
-                enforce_dict_bound(app, app.state.permissions, "permissions", session_id=sid)
-                app.state.bus.publish(
-                    Event(
-                        type="permission.resolved",
-                        session_id=sid,
-                        payload={
-                            "permission_id": row["id"],
-                            "action": "deny",
-                            "session_id": sid,
-                            "reason": "session_mode_readonly",
-                        },
-                    )
-                )
-                return "deny"
-        policy_action = _policy_action_for_tool(
+        # P1.1 #1063: the plan/architect read-only lock is no longer a predicate here (it was
+        # copy-pasted into three modules). It is now a set of built-in plan_acl rows the ONE
+        # resolver evaluates — passing the session mode makes ``resolve`` deny every non-read tool
+        # in plan/architect (@40) and allow the sole ``<plans>/*.md`` write carve-out in plan (@70).
+        # Read-only calls never reach here (``is_read_only`` fast-allowed above), in every mode.
+        mode = getattr(current, "mode", "") if current is not None else ""
+        policy_action, plan_deny_message = _policy_detail_for_tool(
             app,
             session_id=sid,
             session=current,
             tool_name=name,
             args=args,
+            mode=mode,
         )
         if policy_action == "deny":
             _record_resolved_permission(
@@ -531,7 +576,11 @@ def _make_permission_gate(app: "FastAPI"):
                 summary=f"{subject} {name!r} blocked by permission policy",
                 reason="policy_deny",
             )
-            return "deny"
+            # P1.2 #1064: a plan_acl-authored deny carries a mode-aware message so the model
+            # sees WHY the call is blocked (Plan Mode, read-only except the plan file) instead
+            # of the generic executor string. The typed audit reason above stays ``policy_deny``;
+            # a non-plan (user-policy) deny returns an empty message and the plain "deny" string.
+            return DenyDecision(plan_deny_message) if plan_deny_message else "deny"
         if policy_action in {"allow", "allow_session", "allow_workspace"}:
             _record_resolved_permission(
                 app,

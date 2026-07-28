@@ -41,6 +41,7 @@ support for these axes/kinds; it authors NO plan/hook rules (that is P1.1/P2).
 from __future__ import annotations
 
 import fnmatch
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -81,6 +82,234 @@ _RESTRICTIVENESS: dict[str, int] = {
 #: The gate ``context`` kind used for an external MCP tool call. Single-sourced here so the
 #: permission gate + routes import one constant and :func:`is_read_only` needs no back-import.
 EXTERNAL_MCP_CONTEXT_KIND = "external_mcp"
+
+#: Priority FLOOR for the built-in plan-mode ACL (P1.1 #1063). These are engine-level DEFAULT
+#: :data:`KIND_PLAN_ACL` rows consulted by :func:`resolve` for every ``kind="tool"`` call whose
+#: ``mode`` is a plan-restricted mode — they need no on-disk configuration and are NEVER persisted
+#: (so a ``PUT /v1/policies`` cannot drop them and they never pollute the user's policy file). They
+#: replace the mode-in-{plan,architect} read-only lock formerly copy-pasted into three modules
+#: (``permission_gate``/``enrichment``/``proposal_effects``): enforcement is now ONE data-driven
+#: path through :func:`resolve`. Read-only tools never reach here — :func:`is_read_only` fast-allows
+#: them as the gate's structural first branch in EVERY mode, unchanged.
+#:
+#: These two constants are the values :func:`default_plan_acl_rows` ships and the FLOOR
+#: :func:`resolve` actually enforces at runtime — NOT a fixed ceiling. :func:`_plan_acl_priorities`
+#: raises the deny (and the carve-out above it) past any matching user row whose migrated legacy
+#: priority (:func:`_migrated_priority`) exceeds this floor, so the mode-lock can never be
+#: outranked by a large unprioritized policy store (adversarial-review finding #1, #1063).
+PLAN_ACL_DENY_PRIORITY = 40
+#: Priority FLOOR for the plan-mode tool allow-band (P1.4 #1066): one band above the @40 deny so the
+#: non-write tools plan mode NEEDS survive the deny-everything rule. Like the deny/carve-out it is a
+#: floor — :func:`_plan_acl_priorities` raises it above any matching user row so a user ``deny
+#: plan_exit`` can never strand the model in plan mode.
+PLAN_ACL_ALLOW_TOOL_PRIORITY = 50
+PLAN_ACL_PLAN_FILE_PRIORITY = 70
+
+#: The effectful-but-plan-safe tools plan mode ALLOWS despite the @40 deny-everything default (P1.4
+#: #1066): ``plan_exit`` (the turn-ending approval yield), ``ask_user`` (clarify mid-plan), and
+#: ``web_fetch`` (read external context). Reads are already fast-allowed by :func:`is_read_only`.
+PLAN_ACL_PLAN_TOOLS: tuple[str, ...] = ("plan_exit", "ask_user", "web_fetch")
+
+#: The modes the built-in plan ACL constrains. The DENY-everything default applies in both; the
+#: plans-dir write carve-out and the plan-tool allow-band are ``plan`` only (architect proposes
+#: diffs, it never writes files and has no plan_exit).
+_PLAN_ACL_MODES = frozenset({"plan", "architect"})
+
+
+def plans_dir() -> Path:
+    """Return the sole writable plan-artifact directory for plan mode (P1.1 #1063).
+
+    ``<repo>/.clio/plans`` when the current working directory is inside a VCS (``.git``) repo (so
+    the plan file is committable), else ``~/.clio/plans``. Returned resolved+absolute so the
+    ``path_pattern`` glob it seeds matches the resolved target path the gate hands
+    :func:`resolve`. The actual plan artifact is minted in a later slice (P1.3); this helper only
+    defines WHERE the single @70 write carve-out permits a ``*.md`` write.
+    """
+
+    try:
+        cwd = Path.cwd()
+    except OSError:
+        return (Path.home() / ".clio" / "plans").resolve()
+    for base in (cwd, *cwd.parents):
+        # A git worktree carries a ``.git`` FILE (not a dir); ``.exists()`` covers both.
+        if (base / ".git").exists():
+            return (base / ".clio" / "plans").resolve()
+    return (Path.home() / ".clio" / "plans").resolve()
+
+
+def default_plan_acl_rows() -> list[dict[str, Any]]:
+    """Return the built-in plan-mode ACL rows (P1.1 #1063 + P1.4 #1066), scoped by the ``modes`` axis.
+
+    Priority-banded on the P0.1 model (higher wins; same-band ties most-restrictive). Each row
+    carries a ``band`` tag naming its DYNAMIC priority slot (:func:`_plan_acl_priorities`); the static
+    ``priority`` field is the floor that slot starts from:
+
+    * ``deny "*" @40 modes=[plan,architect]`` — deny every non-read-only tool in plan/architect.
+      Read-only tools never reach the resolver (``is_read_only`` fast-allows first), so this denies
+      exactly the write/edit/shell surface, matching the deleted hardcoded lock's behaviour.
+    * ``allow <plan tool> @50 modes=[plan]`` — one row per :data:`PLAN_ACL_PLAN_TOOLS` entry
+      (``plan_exit``/``ask_user``/``web_fetch``): the non-write tools plan mode needs, re-allowed one
+      band above the deny so the ``*`` deny does not sweep them up (P1.4 #1066).
+    * ``allow "*" path=<plans>/*.md @70 modes=[plan]`` — the SOLE writable carve-out: a ``.md``
+      write under the plans dir in plan mode. It beats the @40 deny by band. The ``path_pattern``
+      is matched against the CALLER-NORMALIZED target path (``..`` collapsed) so a traversal such as
+      ``<plans>/../src/x.py`` can never satisfy it (see :func:`_plan_acl_default_matches`).
+
+    These are consulted directly by :func:`resolve`; they are not stored in
+    ``app.state.permission_policies`` and so never migrate, flush, or affect user-row priorities.
+    """
+
+    plans = str(plans_dir())
+    rows: list[dict[str, Any]] = [
+        {
+            "kind": KIND_PLAN_ACL,
+            "action": "deny",
+            "tool_name_pattern": "*",
+            "modes": ["plan", "architect"],
+            "priority": PLAN_ACL_DENY_PRIORITY,
+            "band": "deny",
+        },
+    ]
+    rows.extend(
+        {
+            "kind": KIND_PLAN_ACL,
+            "action": "allow",
+            "tool_name_pattern": tool_name,
+            "modes": ["plan"],
+            "priority": PLAN_ACL_ALLOW_TOOL_PRIORITY,
+            "band": "allow_tool",
+        }
+        for tool_name in PLAN_ACL_PLAN_TOOLS
+    )
+    rows.append(
+        {
+            "kind": KIND_PLAN_ACL,
+            "action": "allow",
+            "tool_name_pattern": "*",
+            "path_pattern": f"{plans}{os.sep}*.md",
+            "modes": ["plan"],
+            "priority": PLAN_ACL_PLAN_FILE_PRIORITY,
+            "band": "plan_file",
+        }
+    )
+    return rows
+
+
+def plan_mode_deny_message(mode: str, tool_name: str = "") -> str:
+    """Return the model-facing deny message for a plan-mode ACL block (P1.2 #1064).
+
+    Replaces the generic ``"denied by permission gate"`` string the tool executor
+    used to raise when a :data:`KIND_PLAN_ACL` deny wins. ``mode`` selects the
+    surface-accurate wording, since ``plan`` and ``architect`` are read-only for
+    DIFFERENT reasons and must not be conflated:
+
+    * ``mode == "plan"``: names the restriction (Plan Mode is read-only), points at
+      the sole writable path (the plan file), and says what IS allowed (write the
+      plan, or exit plan mode to execute).
+    * ``mode == "architect"`` (or any other plan-restricted mode): architect has NO
+      plan-file carve-out — it proposes diffs and never writes files directly — so
+      the message states that instead of pointing at a plan-file path or telling the
+      model to "exit plan mode" (which is inaccurate for architect).
+
+    This is the HUMAN/MODEL-facing text only — the typed audit reason stays
+    ``policy_deny`` — and it deliberately does NOT suggest any workaround that
+    defeats the mode. ``tool_name`` is woven in when known so the model sees which
+    call was blocked.
+    """
+
+    tool_ref = f" ({tool_name})" if tool_name else ""
+    if mode == "plan":
+        plan_glob = f"{plans_dir()}{os.sep}*.md"
+        return (
+            f"You are in Plan Mode: read-only except the plan file at {plan_glob}. "
+            f"This tool{tool_ref} would modify the system, so it is blocked. "
+            "Write your plan to the plan file, or exit plan mode to execute."
+        )
+    return (
+        f"You are in Architect Mode: propose changes as diffs; direct file "
+        f"modification is blocked. This tool{tool_ref} would modify the system, so "
+        "it is blocked. Describe the change as a diff for the user to apply, rather "
+        "than writing or editing files directly."
+    )
+
+
+def _normalized_plan_acl_path(path: str) -> str:
+    """Return the traversal-collapsed absolute form of ``path`` (empty on failure/absence).
+
+    The plan-file carve-out matches ONLY this normalized form — never the raw string — so a
+    ``..`` traversal is resolved away before the glob is applied (``fnmatch``'s ``*`` crosses path
+    separators, which would otherwise let ``<plans>/../evil.md`` satisfy ``<plans>/*.md`` on the
+    raw path). ``resolve(strict=False)`` collapses ``..`` without requiring the file to exist.
+    """
+
+    if not path:
+        return ""
+    try:
+        return str(Path(path).resolve(strict=False))
+    except OSError:
+        return ""
+
+
+def _plan_acl_priorities(user_matches: list[tuple[int, str]]) -> dict[str, int]:
+    """Return the ``{band: priority}`` map for THIS ``resolve()`` call (P1.1 #1063 + P1.4 #1066).
+
+    The static floor is ``(PLAN_ACL_DENY_PRIORITY, PLAN_ACL_PLAN_FILE_PRIORITY)`` = ``(40, 70)`` --
+    the values :func:`default_plan_acl_rows` ships, and what a normal-sized policy store still gets.
+    But a persisted store migrates unprioritized legacy USER rows to effective priority
+    ``total - index`` (:func:`_migrated_priority`, P0.1 #1059): past roughly 60 legacy rows, an
+    early row's migrated priority EXCEEDS the @40 floor and would otherwise outrank the plan-mode
+    deny, letting a stale ``allow`` punch through plan/architect mode (P1.1 adversarial-review
+    finding #1, #1063). Raising the deny to ``max(matching user priority) + 1`` -- and the
+    plan-file carve-out one band above THAT -- makes the mode-lock structurally unbypassable: it
+    always wins the same priority-banded comparison :func:`resolve` already runs over ``policies``,
+    no matter how many legacy rows precede it or how they were migrated. ``user_matches`` is the
+    ``(priority, action)`` pairs already collected from the PERSISTED policy rows for this exact
+    call (same kind/subject/scope/axis filters as the built-in rows themselves), so an empty list
+    (no matching user row at all) leaves the static floor untouched.
+    """
+
+    deny_priority = PLAN_ACL_DENY_PRIORITY
+    if user_matches:
+        deny_priority = max(deny_priority, max(priority for priority, _ in user_matches) + 1)
+    # The allow-band and the plan-file carve-out both sit ABOVE the (possibly-raised) deny, so no
+    # user/built-in deny can strand a plan-safe tool or the plan file; the carve-out stays highest.
+    allow_tool_priority = max(PLAN_ACL_ALLOW_TOOL_PRIORITY, deny_priority + 1)
+    file_priority = max(PLAN_ACL_PLAN_FILE_PRIORITY, allow_tool_priority + 1)
+    return {"deny": deny_priority, "allow_tool": allow_tool_priority, "plan_file": file_priority}
+
+
+def _plan_acl_default_matches(
+    pattern: str, path: str, mode: str, event: str, user_matches: list[tuple[int, str]]
+) -> list[tuple[int, str]]:
+    """Collect ``(priority, action)`` matches from the built-in plan ACL for a tool call.
+
+    Evaluated only for ``kind="tool"`` resolves whose ``mode`` is plan-restricted (the caller
+    gates on :data:`_PLAN_ACL_MODES`). Path-bearing rows match against the NORMALIZED target path
+    (:func:`_normalized_plan_acl_path`) to block traversal; tool-only rows match by the tool glob.
+    The row's own static ``priority`` field is IGNORED here in favor of the dynamic per-``band``
+    priority from :func:`_plan_acl_priorities` (keyed by each row's ``band`` tag) -- computed from
+    ``user_matches``, the matching user rows already collected for this same call -- so the
+    built-in mode-lock always outranks every user row, never just the static @40/@50/@70 floors.
+    """
+
+    priorities = _plan_acl_priorities(user_matches)
+    matches: list[tuple[int, str]] = []
+    for row in default_plan_acl_rows():
+        if not _axis_matches(row, mode, event):
+            continue
+        tool_pattern = str(row.get("tool_name_pattern") or "*")
+        if not fnmatch.fnmatchcase(pattern, tool_pattern):
+            continue
+        path_pattern = str(row.get("path_pattern") or "")
+        if path_pattern:
+            normalized = _normalized_plan_acl_path(path)
+            if not normalized or not fnmatch.fnmatchcase(normalized, path_pattern):
+                continue
+        action = str(row.get("action") or "").lower()
+        if action not in _VALID_ACTIONS:
+            continue
+        matches.append((priorities[str(row.get("band") or "deny")], action))
+    return matches
 
 #: The MCP annotation read-only classifier now lives in :mod:`clio_agent.tools.catalog` (the
 #: single source of truth for tool effect classification, #1061) and is imported above +
@@ -317,13 +546,46 @@ def resolve(
     ``allow``/``allow_session``/``allow_workspace``/``deny``/``ask`` action is returned verbatim.
     """
 
+    return _winning_action(
+        _collect_matches(
+            kind,
+            pattern,
+            policies=policies,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            path=path,
+            mode=mode,
+            event=event,
+        )
+    )
+
+
+def _collect_matches(
+    kind: str,
+    pattern: str,
+    *,
+    policies: list[Any] | None,
+    session_id: str,
+    workspace_id: str,
+    path: str,
+    mode: str,
+    event: str,
+) -> list[tuple[int, str, bool]]:
+    """Collect every matching ``(priority, action, is_plan_acl)`` for a resolve call.
+
+    Shared by :func:`resolve` and :func:`resolve_detail`. The third element flags rows
+    authored by the built-in plan-mode ACL (P1.2 #1064), so :func:`resolve_detail` can
+    attribute a winning deny to the mode-lock and surface its model-facing message while
+    :func:`resolve` (which only needs the action) ignores it.
+    """
+
     if not isinstance(policies, list):
-        return ""
+        return []
     if kind == KIND_DOMAIN and (not pattern or not workspace_id):
         # _host_action_for guard: an empty host or unknown workspace can never match a host row.
-        return ""
+        return []
     total = len(policies)
-    matches: list[tuple[int, str]] = []
+    matches: list[tuple[int, str, bool]] = []
     for index, policy in enumerate(policies):
         if not isinstance(policy, dict):
             continue
@@ -336,14 +598,79 @@ def resolve(
         action = str(policy.get("action") or "").lower()
         if action not in _VALID_ACTIONS:
             continue
-        matches.append((_effective_priority(policy, index, total), action))
+        matches.append((_effective_priority(policy, index, total), action, False))
+    # Built-in plan-mode ACL (P1.1 #1063): the engine-level DEFAULT plan_acl rows are consulted for
+    # every tool call in a plan-restricted mode, in ADDITION to the persisted user policies — never
+    # merged into the user list, so they do not shift user-row insertion-index migration (the P0.1
+    # golden-test key) and cannot be dropped by a ``PUT /v1/policies``. Their priority is DYNAMIC
+    # (:func:`_plan_acl_priorities`), floored at @40/@70 but raised above every matching user row
+    # already collected in ``matches`` -- so the mode-lock deny/carve-out always outranks a legacy
+    # store's migrated priorities, however many unprioritized rows precede it (adversarial-review
+    # finding #1). Gated to ``kind="tool"`` + a plan-restricted mode so a ``domain``/``fs_root``
+    # resolve (or any non-plan mode) is untouched.
+    if kind == KIND_TOOL and mode in _PLAN_ACL_MODES:
+        user_pairs = [(priority, action) for priority, action, _src in matches]
+        for priority, action in _plan_acl_default_matches(pattern, path, mode, event, user_pairs):
+            matches.append((priority, action, True))
+    return matches
+
+
+def _winning_action(matches: list[tuple[int, str, bool]]) -> str:
+    """Return the winning action for a collected match list (band + tie-break)."""
+
     if not matches:
         return ""
-    highest = max(priority for priority, _ in matches)
-    band = [action for priority, action in matches if priority == highest]
+    highest = max(priority for priority, _action, _src in matches)
+    band = [action for priority, action, _src in matches if priority == highest]
     if len(band) == 1:
         return band[0]
     return _most_restrictive(band)
+
+
+def resolve_detail(
+    kind: str,
+    pattern: str,
+    *,
+    policies: list[Any] | None,
+    session_id: str = "",
+    workspace_id: str = "",
+    path: str = "",
+    mode: str = "",
+    event: str = "",
+) -> tuple[str, str]:
+    """Return ``(action, deny_message)`` for a resolve call (P1.2 #1064).
+
+    ``action`` is identical to what :func:`resolve` returns for the same arguments.
+    ``deny_message`` is a non-empty, model-facing string ONLY when the winning action
+    is ``deny`` AND that deny is authored by the built-in plan-mode ACL (a
+    :data:`KIND_PLAN_ACL` row in the top priority band) — i.e. the write is blocked
+    *because the session is in plan/architect mode*. A user-policy deny, an
+    ``ask``/``allow``, or a deny in any non-plan mode returns an empty message, so the
+    gate falls back to its generic denial text and only plan-mode blocks carry the
+    mode-aware guidance. The typed audit reason is decided by the caller and is
+    unaffected by this message.
+    """
+
+    matches = _collect_matches(
+        kind,
+        pattern,
+        policies=policies,
+        session_id=session_id,
+        workspace_id=workspace_id,
+        path=path,
+        mode=mode,
+        event=event,
+    )
+    action = _winning_action(matches)
+    if action == "deny" and matches:
+        highest = max(priority for priority, _action, _src in matches)
+        plan_authored = any(
+            is_plan_acl and match_action == "deny" and priority == highest
+            for priority, match_action, is_plan_acl in matches
+        )
+        if plan_authored:
+            return action, plan_mode_deny_message(mode, pattern)
+    return action, ""
 
 
 @dataclass(frozen=True)
@@ -457,9 +784,17 @@ __all__ = [
     "KIND_PLAN_ACL",
     "KIND_ROOT",
     "KIND_TOOL",
+    "PLAN_ACL_ALLOW_TOOL_PRIORITY",
+    "PLAN_ACL_DENY_PRIORITY",
+    "PLAN_ACL_PLAN_FILE_PRIORITY",
+    "PLAN_ACL_PLAN_TOOLS",
     "annotations_are_read_only",
+    "default_plan_acl_rows",
     "is_read_only",
     "migrate_priorities",
     "next_append_priority",
+    "plan_mode_deny_message",
+    "plans_dir",
     "resolve",
+    "resolve_detail",
 ]

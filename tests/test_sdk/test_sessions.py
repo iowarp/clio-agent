@@ -53,7 +53,8 @@ def test_session_fork_sets_parent_and_store_defaults(client: ClioClient) -> None
     assert fork.parent_session_id == parent.id
     assert fork.title == "the fork"
     # SPEC §6.2: modes are NOT inherited — the fork gets store defaults.
-    assert fork.mode == "chat"
+    # P1.1 #1063: the default mode is now ``edit`` (``chat`` mode was deleted).
+    assert fork.mode == "edit"
     assert fork.edit_mode == "diff"
 
     # Both remain listed and independently fetchable.

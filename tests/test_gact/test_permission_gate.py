@@ -29,6 +29,7 @@ from clio_agent.gact.app import (
     build_app,
 )
 from clio_agent.gact.permission_gate import (
+    DenyDecision,
     _external_mcp_permission_context,
     _normalize_mcp_tool_annotations,
 )
@@ -1225,3 +1226,109 @@ def test_turn_context_reaches_observer_inside_executor_thread(tmp_path: Path) ->
         assert "tool.call.completed" in [e.type for e in older_history]
         assistant = c.get(f"/v1/sessions/{older_sid}/messages").json()["messages"][0]
         assert assistant["metadata"]["tools_called"][0]["name"] == "hdf5_list_datasets"
+
+
+def test_gate_denies_write_tool_in_plan_mode_via_plan_acl(tmp_path: Path) -> None:
+    """P1.1 #1063: a non-read write tool is auto-denied in plan mode through the built-in
+    plan_acl rule (the resolver), not a hardcoded ``session.mode`` lock — with an audit row."""
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={"title": "t", "mode": "plan"}).json()["id"]
+        gate = _make_permission_gate(app)
+        with _tool_session_context(sid):
+            assert gate("fs_apply_edit_write", {"filepath": "src/x.py"}) == "deny"
+        rows = list(app.state.permissions.values())
+        assert len(rows) == 1
+        assert rows[0]["status"] == "auto_denied"
+        assert rows[0]["session_id"] == sid
+
+
+def test_gate_allows_plans_dir_md_write_in_plan_mode(tmp_path: Path) -> None:
+    """P1.1 #1063: the SOLE writable path in plan mode — a ``*.md`` write under the plans dir
+    — is allowed by the @70 carve-out (beats the @40 deny band)."""
+    from clio_agent.gact.runtime.grant_resolver import plans_dir
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={"title": "t", "mode": "plan"}).json()["id"]
+        gate = _make_permission_gate(app)
+        target = str(plans_dir() / "2026-07-25-plan.md")
+        with _tool_session_context(sid):
+            assert gate("fs_apply_edit_write", {"filepath": target}) == "allow"
+
+
+def test_gate_denies_write_tool_in_architect_mode(tmp_path: Path) -> None:
+    """Architect is read-only + diff proposals: a direct write tool is denied (no plan carve-out)."""
+    from clio_agent.gact.runtime.grant_resolver import plans_dir
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={"title": "t", "mode": "architect"}).json()["id"]
+        gate = _make_permission_gate(app)
+        with _tool_session_context(sid):
+            # Even a plans-dir .md write is denied in architect (the carve-out is plan-only).
+            assert gate("fs_apply_edit_write", {"filepath": str(plans_dir() / "p.md")}) == "deny"
+
+
+def test_gate_user_allow_policy_does_not_override_plan_mode(tmp_path: Path) -> None:
+    """An explicit user allow(fs_apply_edit_write, src/**) does NOT beat the plan_acl deny band."""
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={"title": "t", "mode": "plan"}).json()["id"]
+        app.state.permission_policies = [
+            {
+                "scope": "session",
+                "scope_id": sid,
+                "tool_name_pattern": "fs_apply_edit_write",
+                "path_pattern": "src/**",
+                "action": "allow",
+            }
+        ]
+        gate = _make_permission_gate(app)
+        with _tool_session_context(sid):
+            assert gate("fs_apply_edit_write", {"filepath": "src/x.py"}) == "deny"
+
+
+def test_plan_acl_deny_surfaces_mode_aware_message(tmp_path: Path) -> None:
+    """P1.2 #1064: a plan_acl-denied write returns a ``DenyDecision`` carrying the mode-aware
+    message ("Plan Mode" + the plan file path), while the audit reason stays ``policy_deny``."""
+    from clio_agent.gact.runtime.grant_resolver import plans_dir
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={"title": "t", "mode": "plan"}).json()["id"]
+        gate = _make_permission_gate(app)
+        with _tool_session_context(sid):
+            decision = gate("fs_apply_edit_write", {"filepath": "src/x.py"})
+        # Backward compatible: still equals "deny" for every legacy comparison.
+        assert decision == "deny"
+        assert isinstance(decision, DenyDecision)
+        assert "Plan Mode" in decision.deny_message
+        assert str(plans_dir()) in decision.deny_message
+        assert "denied by permission gate" not in decision.deny_message
+        # The typed audit reason is unchanged.
+        rows = list(app.state.permissions.values())
+        assert len(rows) == 1
+        assert rows[0]["status"] == "auto_denied"
+        assert rows[0]["reason"] == "policy_deny"
+
+
+def test_user_policy_deny_in_edit_mode_carries_no_plan_message(tmp_path: Path) -> None:
+    """A user-policy deny (edit mode, no plan lock) returns a plain ``"deny"`` with no message,
+    so only plan-mode blocks carry the mode-aware guidance."""
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={"title": "t", "mode": "edit"}).json()["id"]
+        app.state.permission_policies = [
+            {
+                "scope": "session",
+                "scope_id": sid,
+                "tool_name_pattern": "fs_apply_edit_write",
+                "action": "deny",
+            }
+        ]
+        gate = _make_permission_gate(app)
+        with _tool_session_context(sid):
+            decision = gate("fs_apply_edit_write", {"filepath": "src/x.py"})
+        assert decision == "deny"
+        assert getattr(decision, "deny_message", "") == ""

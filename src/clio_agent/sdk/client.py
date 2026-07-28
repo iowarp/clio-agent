@@ -245,7 +245,7 @@ class SessionsAPI:
         *,
         workspace_id: str = "ws_default",
         title: str = "",
-        mode: str = "chat",
+        mode: str = "edit",  # P1.1 #1063: ``chat`` mode removed (unenforced == edit)
         edit_mode: str = "diff",
         routing_mode: str = "auto",
         metadata: dict[str, Any] | None = None,

@@ -613,9 +613,11 @@ def test_content_write_refused_in_plan_mode(tmp_path, monkeypatch):
         Proposal(name="report.md", kind="report", content="x"),
         workspace_id="ws1",
     )
-    # Sabotage: drop the mode gate -> write proceeds in read-only mode -> red.
+    # P1.1 #1063: plan mode denies a content write through the UNIFIED resolver (the built-in
+    # plan_acl @40 rule), surfaced as the typed POLICY_DENIED — no separate mode predicate.
+    # Sabotage: drop the plan_acl deny -> write proceeds in read-only mode -> red.
     assert out.accepted is False
-    assert out.reason == RejectionReason.MODE_READ_ONLY.value
+    assert out.reason == RejectionReason.POLICY_DENIED.value
     assert not (tmp_path / "report.md").exists()
 
 
