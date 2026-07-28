@@ -26,6 +26,10 @@ wall-clock minute exactly once, this is DST-safe by construction:
 
 * **Fall-back overlap** (a local minute occurs twice): only the first (``fold=0``)
   occurrence is produced, so the schedule fires exactly **once** — no double-fire.
+  A reference instant landing in the *second* pass of the overlap (``fold=1``) would
+  otherwise re-match that wall-clock minute and materialise it back to the already-past
+  first pass; :func:`next_fire` floors every candidate at ``ref`` and skips such past
+  occurrences, so it can never return an instant before its reference (no rapid re-fire).
 * **Spring-forward gap** (a local minute does not occur): the naive minute still
   exists in the calendar; ``fold=0`` maps it through the pre-transition offset, so
   its UTC instant lands just after the jump and the schedule still fires — no skip.
@@ -228,7 +232,9 @@ def default_timezone_name() -> str:
         "scheduler.timezone", env="CLIO_SCHEDULER_TZ", default="", cast=conf.as_str
     )
     if not explicit:
-        explicit = (conf.resolve("scheduler.tz", env="TZ", default="", cast=conf.as_str) or "").strip()
+        explicit = (
+            conf.resolve("scheduler.tz", env="TZ", default="", cast=conf.as_str) or ""
+        ).strip()
     if explicit:
         try:
             ZoneInfo(explicit)
@@ -399,11 +405,18 @@ def next_fire(
     Returns ``None`` when no minute in ``horizon_minutes`` matches. DST-safe: see the
     module docstring. ``jitter_s`` is added to the matched minute boundary."""
 
+    ref_floor = ref.replace(second=0, microsecond=0)
     naive = ref.astimezone(tz).replace(second=0, microsecond=0, tzinfo=None)
     for _ in range(horizon_minutes):
         if cron_matches(cron, naive):
             fire = naive.replace(tzinfo=tz, fold=0).astimezone(timezone.utc)
-            return fire + timedelta(seconds=jitter_s)
+            # During a fall-back overlap the SECOND pass of a repeated wall-clock minute
+            # (ref at fold=1) materialises via fold=0 to the FIRST pass — an instant
+            # already before ``ref``. Skip any such past match so next_fire can never
+            # return an instant before ref (which would rapid-refire). Jitter is added
+            # only after this floor check.
+            if fire >= ref_floor:
+                return fire + timedelta(seconds=jitter_s)
         naive += timedelta(minutes=1)
     return None
 

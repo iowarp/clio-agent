@@ -34,7 +34,7 @@ UTC = timezone.utc
 # Timezone correctness (injected reference — no wall-clock read).             #
 # --------------------------------------------------------------------------- #
 def test_next_fire_local_9am_differs_from_utc_interpretation() -> None:
-    """"0 9 * * *" in America/Chicago computes 9am CHICAGO local, not 09:00 UTC."""
+    """ "0 9 * * *" in America/Chicago computes 9am CHICAGO local, not 09:00 UTC."""
 
     # A summer reference: Chicago is CDT (UTC-5), so 9am local == 14:00 UTC.
     ref = datetime(2026, 7, 1, 0, 0, tzinfo=UTC)
@@ -89,6 +89,56 @@ def test_dst_fall_back_overlap_fires_once_not_twice() -> None:
     assert second is not None
     assert second != datetime(2026, 11, 1, 6, 30, tzinfo=UTC)
     assert second.astimezone(EASTERN).day == 2
+
+
+def test_dst_fall_back_second_pass_ref_never_returns_past_instant() -> None:
+    """A ref in the repeated (fold=1) hour never yields a fire BEFORE ref (no rapid re-fire)."""
+
+    # 06:30Z on 2026-11-01 is 01:30 EST (fold=1) — the SECOND pass of the repeated
+    # 01:00-02:00 hour. A wall-clock match earlier in that hour materialises (fold=0)
+    # to the FIRST pass, an instant already in the past. next_fire must skip it.
+    ref = datetime(2026, 11, 1, 6, 30, tzinfo=UTC)
+
+    # "30 1 * * *": the 01:30 match is the already-past first pass (05:30Z). The guard
+    # skips it and returns the NEXT day's 01:30 EST (06:30Z on 2026-11-02).
+    fire = next_fire("30 1 * * *", ref, EASTERN)
+    assert fire is not None
+    assert fire >= ref
+    assert fire == datetime(2026, 11, 2, 6, 30, tzinfo=UTC)
+
+    # "*/15 * * * *": 01:30 and 01:45 both materialise (fold=0) into the past; the next
+    # valid instant at/after ref is 02:00 EST == 07:00Z.
+    quarter = next_fire("*/15 * * * *", ref, EASTERN)
+    assert quarter is not None
+    assert quarter >= ref
+    assert quarter == datetime(2026, 11, 1, 7, 0, tzinfo=UTC)
+
+    # First-pass ref (05:30Z == 01:30 EDT, fold=0) still fires at its own instant.
+    first_pass = next_fire("30 1 * * *", datetime(2026, 11, 1, 5, 30, tzinfo=UTC), EASTERN)
+    assert first_pass == datetime(2026, 11, 1, 5, 30, tzinfo=UTC)
+
+
+def test_due_now_no_refire_during_fall_back_hour() -> None:
+    """A schedule created in the repeated hour is not immediately re-due (past next_fire_at)."""
+
+    store = ScheduleStore()
+    # 06:00Z == 01:00 EST (fold=1): inside the repeated hour, before this cron's minute.
+    now = datetime(2026, 11, 1, 6, 0, tzinfo=UTC)
+    sch = store.create(
+        session_id="s",
+        question="q",
+        cron="45 1 * * *",
+        timezone_name="America/New_York",
+        now=now,
+    )
+    # The first-pass 01:45 EDT (05:45Z) already passed; next_fire_at must be in the
+    # future (next day 06:45Z), never a past instant that fires the moment it is armed.
+    fire_at = datetime.fromisoformat(sch.next_fire_at)
+    assert fire_at >= now
+    assert fire_at == datetime(2026, 11, 2, 6, 45, tzinfo=UTC)
+    # Nothing is due at any point during the repeated hour.
+    assert list(store.due_now(now)) == []
+    assert list(store.due_now(datetime(2026, 11, 1, 6, 59, tzinfo=UTC))) == []
 
 
 # --------------------------------------------------------------------------- #
@@ -184,9 +234,7 @@ def test_run_at_one_shot_fires_once_then_deleted(tmp_path: Path) -> None:
 
     store = _store(tmp_path)
     ref = datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
-    sch = store.create(
-        session_id="s", question="q", run_at="2026-07-01T12:05:00+00:00", now=ref
-    )
+    sch = store.create(session_id="s", question="q", run_at="2026-07-01T12:05:00+00:00", now=ref)
     assert sch.recurring is False
     assert store.get(sch.id) is not None
     # Not yet due at ref.
@@ -365,7 +413,9 @@ def test_schedule_survives_store_reload(tmp_path: Path) -> None:
 
     path = tmp_path / "schedules.json"
     store = ScheduleStore(path=path)
-    sch = store.create(session_id="s", question="q", cron="0 9 * * *", timezone_name="America/Chicago")
+    sch = store.create(
+        session_id="s", question="q", cron="0 9 * * *", timezone_name="America/Chicago"
+    )
     reloaded = ScheduleStore(path=path)
     got = reloaded.get(sch.id)
     assert got is not None
