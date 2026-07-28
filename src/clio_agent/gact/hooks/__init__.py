@@ -68,6 +68,15 @@ from clio_agent.gact.hooks.intercept import (
     stash_pre_tool_intercept,
     take_pre_tool_intercept,
 )
+from clio_agent.gact.hooks.stop_loop import (
+    STOP_LOOP_GLOBAL_CAP_DEFAULT,
+    STOP_LOOP_METADATA_KEY,
+    StopLoopResult,
+    evaluate_stop_loop,
+    global_cap,
+    read_stop_loop_state,
+    run_stop_hooks,
+)
 from clio_agent.gact.hooks.wire import (
     HookDecision,
     HookEnvelope,
@@ -106,8 +115,15 @@ __all__ = [
     "HookOutcome",
     "HookRun",
     "ModelRequest",
+    "STOP_LOOP_GLOBAL_CAP_DEFAULT",
+    "STOP_LOOP_METADATA_KEY",
+    "StopLoopResult",
     "SubprocessAdapter",
     "build_hook_dispatcher",
+    "evaluate_stop_loop",
+    "global_cap",
+    "read_stop_loop_state",
+    "run_stop_hooks",
     "default_adapters",
     "discover_hook_entries",
     "dispatch_after_model",

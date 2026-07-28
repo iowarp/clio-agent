@@ -43,8 +43,16 @@ POST_TOOL_BATCH = "PostToolBatch"
 #: The turn's user prompt boundary. Deny-capable — validate/reject the prompt.
 USER_PROMPT_SUBMIT = "UserPromptSubmit"
 
-#: End-of-turn observation (the old ``post_message``). Observation-only in this
-#: slice (bounded self-loop is P2.5).
+#: End-of-turn boundary (the old ``post_message``). P2.5 makes it a BOUNDED
+#: completion gate: a Stop hook ``deny`` means "not done — re-drive one more turn"
+#: (tests still failing? todos still open?). Re-entry is bounded by a per-hook
+#: ``loopLimit`` and a global cap (see :mod:`clio_agent.gact.hooks.stop_loop`); the
+#: envelope payload carries ``stop_hook_active`` from the 2nd firing so a hook can
+#: self-limit. When the cap trips the turn settles DONE with the typed
+#: ``stop_loop_cap`` reason — never an infinite loop. Stop is deliberately NOT in
+#: :data:`DENY_CAPABLE_EVENTS`: its "block" is a bounded re-drive evaluated at the
+#: turn-finalize boundary, not a fail-closed pre-effect gate, so a Stop-hook infra
+#: failure must NOT fail-closed into a re-drive (it settles done, typed-recorded).
 STOP = "Stop"
 
 #: A session was created. Observation / inject-context.

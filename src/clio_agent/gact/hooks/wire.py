@@ -126,6 +126,14 @@ _HOOK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
         "severity": "warning",
         "detail": "a BeforeModel hook denied the model request; the call was blocked",
     },
+    "stop_loop_cap": {
+        "severity": "warning",
+        "detail": (
+            "a Stop hook kept blocking (re-driving) the turn; the bounded self-loop "
+            "cap tripped, so the turn was settled DONE without another re-drive "
+            "(never an infinite loop)"
+        ),
+    },
 }
 
 _HOOK_REASONS_MAX = 256
@@ -442,19 +450,32 @@ class HookOutcome:
         )
         if outcome.decision == "modify":
             movers = [d for d in winning if d.modify_input is not None]
-            if movers:
+            if len(movers) > 1:
+                # D5 / invariant 3: two hooks both returning a tool-input ``modify``
+                # is an ERROR, not first/last-writer-wins — applying an arbitrary one
+                # (even deterministically by id) would silently pick a winner. Block
+                # the call instead and surface a diagnostic naming the conflicters,
+                # and record the typed conflict reason (no-silent-fallback).
+                record_hook_reason(
+                    "hook_conflicting_intercept",
+                    hook_id=movers[0].hook_id,
+                    decision="modify",
+                )
+                outcome.decision = "deny"
+                outcome.reason = (
+                    "Conflicting 'modify' decisions from multiple PreToolUse hooks ("
+                    + ", ".join(d.hook_id for d in movers)
+                    + "); the tool was blocked rather than applying an arbitrary one."
+                )
+                outcome.modify_input = None
+            elif len(movers) == 1:
                 outcome.modify_input = movers[0].modify_input
-                if len(movers) > 1:
-                    record_hook_reason(
-                        "hook_conflicting_intercept",
-                        hook_id=movers[0].hook_id,
-                        decision="modify",
-                    )
-            else:
-                # No winning "modify" hook carried a usable ``input`` Mapping — the
-                # intercept intent would otherwise vanish silently (the tool boundary
-                # falls through to "nothing to intercept" and runs unmodified args).
-                # Record it as a typed, queryable degradation (no-silent-fallback).
+            elif not any(d.request_patch is not None or d.model_override for d in winning):
+                # A ``modify`` carrying NO usable payload at all (no ``input`` Mapping,
+                # and — for a model modify — no request_patch/model_override): the
+                # intercept intent would otherwise vanish silently (the boundary falls
+                # through to "nothing to intercept" and runs unmodified). Record it as a
+                # typed, queryable degradation (no-silent-fallback).
                 record_hook_reason(
                     "hook_modify_missing_input",
                     hook_id=winning[0].hook_id,

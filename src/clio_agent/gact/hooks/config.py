@@ -102,6 +102,12 @@ class HookEntry:
     fail_closed: bool = False
     enabled: bool = True
     source: str = ""
+    #: P2.5 bounded self-loops — the per-hook ``Stop`` re-entry cap (``loopLimit``).
+    #: How many times THIS hook's ``Stop`` block may re-drive the turn within one
+    #: stop-sequence before it stops being honored (R5). ``0``/negative means "no
+    #: per-hook limit beyond the global cap" (the global ceiling still binds). Only
+    #: consulted for ``Stop`` hooks; inert for every other event.
+    loop_limit: int = 0
 
     @property
     def timeout_s(self) -> float:
@@ -200,6 +206,7 @@ def _parse_entry(raw: Mapping[str, Any], *, source: str) -> HookEntry:
         fail_closed=bool(raw.get("failClosed", False)),
         enabled=bool(raw.get("enabled", True)),
         source=source,
+        loop_limit=int(raw.get("loopLimit") or 0),
     )
 
 

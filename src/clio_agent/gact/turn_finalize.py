@@ -722,58 +722,27 @@ def finalize_turn(
             turn_id=state.turn_id,
             cwd=str(getattr(state.sess, "workspace_root", "") or ""),
         )
-    # P2.2 #1070: Stop hooks (the ported ``post_message`` consumer) run AFTER
+    # P2.5 #1073: Stop hooks (the ported ``post_message`` consumer) run AFTER
     # persistence so user audit code sees the settled assistant + can ship to
-    # external systems. Observation-only in this slice — errors are swallowed
-    # (the post-turn contract; the deny/bounded-self-loop power is P2.5).
-    try:
-        from clio_agent.gact.hooks import dispatch_stop  # noqa: PLC0415
+    # external systems. They are now a BOUNDED completion gate: a Stop hook ``deny``
+    # means "not done — re-drive one more turn" (test-gate/todo-gate), re-driven on
+    # the #1031 idle-hook seam and hard-bounded by a per-hook ``loopLimit`` + a global
+    # cap. When the cap trips the turn settles DONE with a typed ``stop_loop_cap``
+    # reason — never an infinite loop. The whole finalize-boundary protocol (spans +
+    # bounded self-loop + swallowed-error contract) lives in the hooks owner module
+    # (``stop_loop.dispatch_stop_at_finalize``), not inlined here (no-accretion).
+    from clio_agent.gact.hooks.stop_loop import dispatch_stop_at_finalize  # noqa: PLC0415
 
-        _emit_semantic_event(
-            state.app,
-            state.sid,
-            "hook.invocation.started",
-            turn_id=state.turn_id,
-            trace_id=state.trace_id,
-            status="running",
-            summary="Stop hook dispatch started.",
-            actor={"hook": "Stop"},
-            subject={"message_id": assistant_msg.id},
-            payload={"assistant": assistant_msg.model_dump(exclude_none=True)},
-        )
-        dispatch_stop(
-            {
-                "assistant": assistant_msg.model_dump(exclude_none=True),
-                "blueprint_id": _runtime_active_agent_blueprint_id(state.app, state.sid),
-            },
-            session_id=state.sid,
-            turn_id=state.turn_id,
-            cwd=str(getattr(state.sess, "workspace_root", "") or ""),
-        )
-        _emit_semantic_event(
-            state.app,
-            state.sid,
-            "hook.invocation.completed",
-            turn_id=state.turn_id,
-            trace_id=state.trace_id,
-            summary="Stop hook dispatch completed.",
-            actor={"hook": "Stop"},
-            subject={"message_id": assistant_msg.id},
-            payload={},
-        )
-    except Exception:  # noqa: BLE001
-        _emit_semantic_event(
-            state.app,
-            state.sid,
-            "hook.invocation.failed",
-            turn_id=state.turn_id,
-            trace_id=state.trace_id,
-            status="failed",
-            summary="Stop hook dispatch failed and was swallowed by policy.",
-            actor={"hook": "Stop"},
-            subject={"message_id": assistant_msg.id},
-            payload={},
-        )
+    dispatch_stop_at_finalize(
+        state.app,
+        session_id=state.sid,
+        turn_id=state.turn_id,
+        trace_id=state.trace_id,
+        cwd=str(getattr(state.sess, "workspace_root", "") or ""),
+        assistant_msg_id=assistant_msg.id,
+        assistant_payload=assistant_msg.model_dump(exclude_none=True),
+        blueprint_id=_runtime_active_agent_blueprint_id(state.app, state.sid),
+    )
     if not (
         state.cancelled_turn
         and state.error_info is not None

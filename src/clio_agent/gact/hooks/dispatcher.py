@@ -307,7 +307,14 @@ def dispatch_stop(
     turn_id: str = "",
     cwd: str = "",
 ) -> HookOutcome:
-    """Fire ``Stop`` (post-turn) observation hooks. Never blocks in this slice."""
+    """Fire ``Stop`` (post-turn) hooks and return the merged outcome.
+
+    A Stop hook ``deny`` is a BOUNDED completion-gate block ("not done — re-drive"),
+    evaluated by :func:`clio_agent.gact.hooks.stop_loop.run_stop_hooks` at the turn-
+    finalize boundary — this dispatch itself only fires the hooks and merges. Stop is
+    NOT in :data:`DENY_CAPABLE_EVENTS`, so a Stop-hook infra failure is non-blocking
+    (typed-recorded, never a fail-closed re-drive).
+    """
 
     dispatcher = _GLOBAL
     if dispatcher is None:
