@@ -67,6 +67,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_GACT_CORS_ORIGINS` | `gact.cors.origins` | str | _(unset)_ | `src/clio_agent/gact/app.py` |
 | `CLIO_GACT_MCP_RECONNECT_TIMEOUT_S` | `limits.mcp_reconnect_timeout_s` | float | `15.0` | `src/clio_agent/gact/routes/mcp.py` |
 | `CLIO_GACT_TURN_TIMEOUT_S` | `limits.turn_timeout_s` | float | `900.0` | `src/clio_agent/gact/_params.py` |
+| `CLIO_GOAL_JUDGE_MODEL` | `goal.judge_model` | str | _(unset)_ | `src/clio_agent/gact/goal.py` |
 | `CLIO_HOOKS_ALLOW_MANAGED_ONLY` | `hooks.allow_managed_only` | bool | `false` | `src/clio_agent/gact/hooks/dispatcher.py` |
 | `CLIO_HOOKS_CONFIG` | `hooks.config` | str | _(unset)_ | `src/clio_agent/gact/hooks/dispatcher.py` |
 | `CLIO_HOOKS_DEFER_TIMEOUT` | `hooks.defer_timeout` | float | `86400.0` | `src/clio_agent/gact/hooks/defer.py` |
@@ -129,6 +130,11 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_RESIDENT_LEDGERS_MAX_BYTES` | `gact.resident_ledgers.max_bytes` | int | `536870912` | `src/clio_agent/gact/resident_ledgers.py` |
 | `CLIO_RESIDENT_LEDGERS_TTL_S` | `gact.resident_ledgers.idle_ttl_s` | float | `1800.0` | `src/clio_agent/gact/resident_ledgers.py` |
 | `CLIO_SANDBOX_ENABLED` | `sandbox.enabled` | bool | `true` | `src/clio_agent/runtime/sandbox.py` |
+| `CLIO_SCHEDULER_JITTER_WINDOW_S` | `scheduler.jitter_window_s` | int | `0` | `src/clio_agent/gact/scheduler.py` |
+| `CLIO_SCHEDULER_MAX_LIFETIME_S` | `scheduler.max_lifetime_s` | int | `2592000` | `src/clio_agent/gact/scheduler.py` |
+| `CLIO_SCHEDULER_MAX_RETRIES` | `scheduler.max_retries` | int | `5` | `src/clio_agent/gact/scheduler.py` |
+| `CLIO_SCHEDULER_MIN_INTERVAL_S` | `scheduler.min_interval_s` | int | `60` | `src/clio_agent/gact/scheduler.py` |
+| `CLIO_SCHEDULER_TZ` | `scheduler.timezone` | str | _(unset)_ | `src/clio_agent/gact/scheduler.py` |
 | `CLIO_SEMANTIC_TRACE_BACKEND` | `trace.backend` | str | `none` | `src/clio_agent/arc/memory.py` |
 | `CLIO_SEMANTIC_TRACE_CONFIG` | `trace.semantic_config` | str | _(unset)_ | `src/clio_agent/gact/semantic_events.py` |
 | `CLIO_SEMANTIC_TRACE_DETAIL` | `trace.detail_level` | str | `DEFAULT_DETAIL_LEVEL` _(computed)_ | `src/clio_agent/gact/_params.py` |
