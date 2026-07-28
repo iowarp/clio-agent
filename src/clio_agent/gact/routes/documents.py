@@ -96,9 +96,9 @@ def _artifact_source(
     workspace = app.state.workspaces.get(record.workspace_id)
     workspace_root = Path(str(getattr(workspace, "root_path", "") or "")).resolve(strict=False)
     if version.custody == Custody.CAS and version.sha256:
-        candidate = CASStore(workspace_root).blob_path(version.sha256)
-        if candidate.is_file():
-            return candidate
+        cas_candidate = CASStore(workspace_root).blob_path(version.sha256)
+        if cas_candidate.is_file():
+            return cas_candidate
     candidate = Path(version.path) if version.path else None
     if candidate is None or not candidate.is_file():
         raise _error(409, "artifact_bytes_unavailable", "artifact bytes are unavailable")

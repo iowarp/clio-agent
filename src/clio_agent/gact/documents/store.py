@@ -604,7 +604,7 @@ class DocumentStore:
         store = getattr(self._app.state, "workspaces", None)
         if store is None:
             return []
-        rows = getattr(store, "list", lambda: [])()
+        rows: list[Any] = getattr(store, "list", lambda: [])()
         return [str(getattr(row, "id", "") or "") for row in rows if getattr(row, "id", "")]
 
     @staticmethod
