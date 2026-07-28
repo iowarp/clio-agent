@@ -331,104 +331,15 @@ async def _run_turn_in_background(
             subject={"message_id": state.user_msg.id},
             payload=state.memory_search_metadata,
         )
-    # P2.2 #1070: UserPromptSubmit hooks (the ported ``pre_message`` consumer).
-    # A hook deny VETOES the turn → cancelled error_info (structurally identical to
-    # the old raised-PermissionError veto). The RETURN VALUE IS NOT CONSUMED — no
-    # input transform until P2.3 wires the tagged-union producer.
+    # P2.2 #1070 / P2.6 #1074: UserPromptSubmit hooks (the ported ``pre_message``
+    # consumer). A deny VETOES the turn (session → error); a ``defer`` SUSPENDS it for
+    # out-of-band approval (waiting_user, resume as a new turn). The whole finalize-
+    # boundary protocol lives in the hooks owner module (no-accretion) — this is only
+    # the call site: any non-"proceed" outcome ends the turn here.
     if context_file_error is None:
-        try:
-            from clio_agent.gact.hooks import dispatch_user_prompt_submit  # noqa: PLC0415
+        from clio_agent.gact.hooks.user_prompt import run_user_prompt_submit  # noqa: PLC0415
 
-            _emit_semantic_event(
-                state.app,
-                state.sid,
-                "hook.invocation.started",
-                turn_id=state.turn_id,
-                trace_id=state.trace_id,
-                status="running",
-                summary="UserPromptSubmit hook dispatch started.",
-                actor={"hook": "UserPromptSubmit"},
-                subject={"message_id": state.user_msg.id},
-                payload={"input": state.enriched_text},
-            )
-            _out = dispatch_user_prompt_submit(
-                state.enriched_text, session_id=state.sid, turn_id=state.turn_id,
-                cwd=str(getattr(state.sess, "workspace_root", "") or ""),
-            )
-            if _out.denied:
-                raise PermissionError(_out.reason or "blocked by a UserPromptSubmit hook")
-            _emit_semantic_event(
-                state.app,
-                state.sid,
-                "hook.invocation.completed",
-                turn_id=state.turn_id,
-                trace_id=state.trace_id,
-                summary="UserPromptSubmit hook dispatch completed.",
-                actor={"hook": "UserPromptSubmit"},
-                subject={"message_id": state.user_msg.id},
-                payload={},
-            )
-        except PermissionError as exc:
-            _emit_semantic_event(
-                state.app,
-                state.sid,
-                "hook.invocation.blocked",
-                turn_id=state.turn_id,
-                trace_id=state.trace_id,
-                status="blocked",
-                summary="UserPromptSubmit hook blocked the turn.",
-                actor={"hook": "UserPromptSubmit"},
-                subject={"message_id": state.user_msg.id},
-                payload={"error": str(exc)},
-            )
-            _emit_semantic_event(
-                state.app,
-                state.sid,
-                "turn.failed",
-                turn_id=state.turn_id,
-                trace_id=state.trace_id,
-                status="blocked",
-                summary="CLIO turn was blocked by a UserPromptSubmit hook.",
-                actor={"hook": "UserPromptSubmit"},
-                subject={"message_id": state.user_msg.id},
-                payload={"error": str(exc)},
-            )
-            state.bus.publish(
-                Event(
-                    type="message.completed",
-                    session_id=state.sid,
-                    payload={
-                        "turn_id": state.turn_id,
-                        "message_id": state.user_msg.id,
-                        "stop_reason": "blocked",
-                        "error_info": {
-                            "error": "permission_error",
-                            "message": str(exc),
-                            "recoverable": True,
-                        },
-                    },
-                )
-            )
-            state.app.state.sessions.update(state.sid, status="error")
-            _update_retry_attempt(
-                "failed",
-                metadata_patch={
-                    "execution_error": "permission_error",
-                    "executed_user_message_id": state.user_msg.id,
-                },
-            )
-            state.bus.publish(
-                Event(
-                    type="session.status_changed",
-                    session_id=state.sid,
-                    payload={
-                        "session_id": state.sid,
-                        "status": "error",
-                        "prev_status": "running",
-                        "reason": "pre_message hook blocked turn",
-                    },
-                )
-            )
+        if run_user_prompt_submit(state, update_retry_attempt=_update_retry_attempt) != "proceed":
             return
 
     # iowarp/clio-agent#6: try real per-token streaming via

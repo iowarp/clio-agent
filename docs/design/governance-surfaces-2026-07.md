@@ -208,6 +208,43 @@ references: `agent_blueprints.py:490/494` + `load_hook_descriptors` (727-771),
   offline-replay machinery we already build. **Nothing here is postponed to a later spike** — the
   `defer` *capability* is a governance outcome (suspend→approve-out-of-band→resume), distinct from
   "postpone the work"; we build the capability now and postpone none of it.
+
+  **P2.6 implementation status (#1074).** Owner module `gact/hooks/defer.py`; `defer` is a
+  first-class merge decision in `wire.py` (rank `deny > defer > ask > synthesize > modify > allow`,
+  so *deny beats defer*).
+  - **PreToolUse within-session defer — SHIPPED.** `park_pretool_defer` reuses the interactive
+    gate's parked-`threading.Event` primitive (`app.state.permissions` + `permission_events`, no new
+    store), with the ~600s→deny timeout lifted to a **configurable long bound** (`hooks.defer_timeout`
+    / `CLIO_HOOKS_DEFER_TIMEOUT`, default 24h). `permission_gate._make_permission_gate` evaluates a
+    policy `deny` **before** parking (deny beats defer). An out-of-band `POST /v1/permissions/{pid}`
+    (→ `resolve_permission`) wakes the parked call: `allow` runs the tool (or the `modify`
+    (`input`) / `synthesize` (`result`) the approval carries → the `tool_interceptor`); `deny` →
+    a typed `DenyDecision`. Fail-safe: no-session and timeout → `deny` with a typed reason
+    (`hook_defer_no_session` / `hook_defer_timeout`), never a silent auto-approve. Resume is
+    once-only (`resolve_permission` is idempotent + the event fires once). The **thread-occupancy
+    tradeoff** is documented on `defer_timeout_s` (a bounded long park, never an infinite pin).
+  - **Turn-ending defer (`Stop` / `UserPromptSubmit`) — SHIPPED.** No held thread: `suspend_turn_defer`
+    persists a pending approval (kind `turn_defer`) + flips the session to `waiting_user`; the SAME
+    `resolve_permission` path calls `resume_turn_defer`, which stages the #1031 deferred-resume
+    (loop-inbox fold when busy, else `start_background_user_turn`). UserPromptSubmit: `allow`
+    re-drives the original prompt as a new turn (carrying `HOOK_DEFER_RESUME_META` so the hook does
+    not re-defer the just-approved prompt — the resume once-gate), `deny` rejects it. Stop: `allow`
+    releases (completion accepted), `deny` re-drives one more turn with the feedback. Owner modules
+    `gact/hooks/user_prompt.py` (the UserPromptSubmit boundary, extracted from `turn.py`) +
+    `gact/hooks/stop_loop.py` (`run_stop_hooks` grows a `deferred` branch).
+  - **Cross-restart durability — DURABLE SURFACE shipped; deterministic replay-resume is the flagged
+    RESIDUAL (not stubbed-as-working).** Every defer mirrors its pending state onto `session.metadata`
+    (`hook_defer_pending`, the #948 no-fifth-store projection) so a restart can *see* what was
+    outstanding. What is NOT yet wired: on boot the in-memory `app.state.permissions` ledger starts
+    empty, so a persisted pending defer is not yet resolvable/replayable after a restart. The concrete
+    remaining work (a follow-up slice, riding the P2.3 tool-synthesize + P2.4 `dspy.LM`-synthesize
+    recording): (1) **rehydrate** pending `hook_defer_pending` rows from `session.metadata` into
+    `app.state.permissions` at `build_app` startup so `POST /v1/permissions/{pid}` resolves them again;
+    (2) for a mid-loop PreToolUse defer whose executor thread is gone, **replay** the recorded
+    trajectory deterministically (BeforeModel synthesize + tool synthesize served from the recording)
+    up to the defer point, then inject the approved decision and continue live. Turn-ending defers are
+    closer to restart-durable already (they resume as a *new* turn, needing only the ledger
+    rehydration in (1)), so they are the natural first consumer of the rehydrate step.
 - **P2.7 Trust + introspection + audit.** Content-hash fingerprint for repo-shipped hooks (re-prompt
   on change), `allowManagedHooksOnly` admin lockdown, a `/hooks` inspection route (the real
   registry's `metadata()`/`matching_handlers()` data), **audit via the semantic-event highway**

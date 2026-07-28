@@ -80,6 +80,18 @@ def take_pre_tool_intercept() -> "InterceptDecision | None":
     return decision
 
 
+def set_pre_tool_intercept(decision: "InterceptDecision | None") -> None:
+    """Directly set the per-call intercept stash to an explicit decision.
+
+    Used by the P2.6 defer path (:mod:`clio_agent.gact.hooks.defer`) to apply the
+    modify/synthesize an APPROVED deferred tool call carries — the approval decides an
+    :class:`InterceptDecision` directly, not via a :class:`HookOutcome`, so
+    :func:`stash_pre_tool_intercept` (which derives from an outcome) does not fit.
+    """
+
+    _PENDING_INTERCEPT.set(decision)
+
+
 def pre_tool_interceptor(name: str, args: Mapping[str, Any]) -> "InterceptDecision | None":
     """The ``tool_interceptor`` producer installed on ``app.state``.
 

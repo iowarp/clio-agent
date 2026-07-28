@@ -112,6 +112,12 @@ class StopLoopResult:
     cap_scope: str = ""  # "" | "global" | "per_hook"
     blocking_hook_ids: tuple[str, ...] = ()
     new_state: dict[str, Any] = field(default_factory=lambda: {"count": 0, "per_hook": {}})
+    #: P2.6: a Stop hook returned ``defer`` — the turn SUSPENDED (waiting_user) for an
+    #: out-of-band approval instead of re-driving or settling. Distinct from ``redrive``
+    #: (which continues immediately) and ``capped`` (bounded stop). The pending approval
+    #: id is recorded on ``deferred_permission_id`` when a session was available to park.
+    deferred: bool = False
+    deferred_permission_id: str = ""
 
 
 def _blocking_hook_ids(outcome: HookOutcome) -> tuple[str, ...]:
@@ -272,6 +278,38 @@ def run_stop_hooks(
         turn_id=turn_id,
         cwd=cwd,
     )
+    # P2.6: a Stop hook ``defer`` SUSPENDS the turn for out-of-band approval (a
+    # turn-ending yield) rather than re-driving or settling. deny beats defer in the
+    # merge, so a defer here means no hook denied. Ride the #1031 deferred-resume: park
+    # a pending approval + flip the session to waiting_user; on approve the session
+    # releases, on deny it re-drives one more turn (see gact/hooks/defer.py).
+    if outcome.is_defer:
+        from clio_agent.gact.hooks.defer import suspend_turn_defer  # noqa: PLC0415
+
+        feedback = (outcome.reason or "").strip()
+        if outcome.additional_context.strip():
+            feedback = (
+                f"{feedback}\n\n{outcome.additional_context.strip()}"
+                if feedback
+                else outcome.additional_context.strip()
+            )
+        pid = suspend_turn_defer(
+            app,
+            sid=session_id,
+            hook_event=STOP,
+            reason=outcome.reason or "A Stop hook deferred completion for approval.",
+            resume_text=feedback or "A Stop hook reported the task is not complete; continue working.",
+            prev_status="running",
+        )
+        # A defer leaves the stop-sequence counters untouched (it neither redrove nor
+        # settled); persist the prior state so a post-approval re-drive still counts.
+        return StopLoopResult(
+            deferred=True,
+            deferred_permission_id=pid or "",
+            reason=outcome.reason,
+            additional_context=outcome.additional_context,
+            new_state=prior,
+        )
     result = evaluate_stop_loop(
         outcome,
         prior,
@@ -360,6 +398,19 @@ def dispatch_stop_at_finalize(
                     "count": int(result.new_state.get("count", 0) or 0),
                     "blocking_hooks": list(result.blocking_hook_ids),
                 },
+            )
+        elif result.deferred:
+            _emit_semantic_event(
+                app,
+                session_id,
+                "hook.stop_loop.deferred",
+                turn_id=turn_id,
+                trace_id=trace_id,
+                status="waiting_user",
+                summary="Stop hook deferred completion — turn suspended for out-of-band approval.",
+                actor={"hook": "Stop"},
+                subject={"message_id": assistant_msg_id},
+                payload={"permission_id": result.deferred_permission_id},
             )
         elif result.capped:
             _emit_semantic_event(

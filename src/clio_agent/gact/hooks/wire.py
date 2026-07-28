@@ -39,24 +39,34 @@ SCHEMA_VERSION = 1
 #: The tagged-union decisions this build understands. P2.3 promotes ``modify`` and
 #: ``synthesize`` to first-class: they drive the already-wired ``tool_interceptor``
 #: slot (``modify`` mutates the tool input; ``synthesize`` skips the real call and
-#: fabricates the result). ``defer`` remains reserved (P2.6) and is rejected with a
-#: typed reason — never silently dropped.
-Decision = Literal["allow", "deny", "ask", "modify", "synthesize"]
+#: fabricates the result). P2.6 promotes ``defer`` to first-class: the governance
+#: outcome "suspend this yield point, accept the decision from an OUT-OF-BAND channel
+#: (an API resolve / loop-inbox), resume when approved" (see
+#: :mod:`clio_agent.gact.hooks.defer`). ``defer`` NEVER silently drops or auto-approves
+#: — it persists a pending approval and parks the call/turn until resolved.
+Decision = Literal["allow", "deny", "ask", "modify", "synthesize", "defer"]
 _SUPPORTED_DECISIONS: frozenset[str] = frozenset(
-    {"allow", "deny", "ask", "modify", "synthesize"}
+    {"allow", "deny", "ask", "modify", "synthesize", "defer"}
 )
-_RESERVED_DECISIONS: frozenset[str] = frozenset({"defer"})
+#: No decision string is reserved-but-unimplemented any more (``defer`` shipped in
+#: P2.6). Kept as an (empty) seam so a future reserved decision can be rejected with a
+#: typed reason at :func:`parse_hook_output` without re-introducing the branch.
+_RESERVED_DECISIONS: frozenset[str] = frozenset()
 
 #: Most-restrictive-wins ordering (hooks-research invariant 3). A higher rank is
-#: more restrictive and wins the merge. ``deny`` and ``ask`` outrank the intercept
-#: decisions so tighten-only holds: a ``deny`` (or an ``ask`` needing a human)
-#: always beats a hook that merely wants to ``synthesize``/``modify`` the call.
+#: more restrictive and wins the merge. ``deny`` outranks ``defer`` so the tighten-only
+#: invariant "deny still beats defer" holds: when one hook denies and another defers the
+#: same event, the deny wins the merge (the call is blocked, never merely parked).
+#: ``defer`` in turn outranks ``ask`` and the intercept decisions — a durable
+#: out-of-band hold is a stronger governance posture than an interactive ask or a
+#: synthesize/modify.
 _DECISION_RANK: dict[str, int] = {
     "allow": 0,
     "modify": 1,
     "synthesize": 2,
     "ask": 3,
-    "deny": 4,
+    "defer": 4,
+    "deny": 5,
 }
 
 
@@ -84,7 +94,26 @@ _HOOK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
     },
     "hook_reserved_decision": {
         "severity": "warning",
-        "detail": "hook returned a decision reserved for a later slice (defer)",
+        "detail": "hook returned a decision reserved for a later slice",
+    },
+    "hook_defer_no_session": {
+        "severity": "warning",
+        "detail": (
+            "a PreToolUse hook returned 'defer' but there is no session to park the "
+            "pending approval under; the call was denied fail-safe (never auto-approved)"
+        ),
+    },
+    "hook_defer_timeout": {
+        "severity": "warning",
+        "detail": (
+            "a deferred PreToolUse approval was not resolved within the configured "
+            "bound; the parked call was released and DENIED fail-safe (never a silent "
+            "auto-approve)"
+        ),
+    },
+    "hook_defer_denied": {
+        "severity": "warning",
+        "detail": "a deferred approval was resolved as DENY out-of-band; a typed deny reached the model",
     },
     "hook_unknown_decision": {
         "severity": "warning",
@@ -405,6 +434,18 @@ class HookOutcome:
         return self.decision == "deny"
 
     @property
+    def is_defer(self) -> bool:
+        """Whether the merged decision is a durable OUT-OF-BAND defer (P2.6).
+
+        The consuming yield points (the PreToolUse gate, the turn-ending seams) park
+        the operation and persist a pending approval rather than allow/deny inline.
+        ``deny`` outranks ``defer`` in the merge, so this is never true when any hook
+        denied the same event (deny beats defer).
+        """
+
+        return self.decision == "defer"
+
+    @property
     def is_modify(self) -> bool:
         return self.decision == "modify" and self.modify_input is not None
 
@@ -426,9 +467,10 @@ class HookOutcome:
     def merge(cls, decisions: list[HookDecision], records: list[dict[str, Any]]) -> "HookOutcome":
         """Merge per-hook decisions most-restrictive-wins (invariant 3).
 
-        ``deny > ask > synthesize > modify > allow``; the winning tier's reasons
-        are joined; every hook's ``additionalContext``/``systemMessage`` is
-        concatenated in order. When the winning tier is an INTERCEPT
+        ``deny > defer > ask > synthesize > modify > allow``; the winning tier's
+        reasons are joined; every hook's ``additionalContext``/``systemMessage`` is
+        concatenated in order. ``deny`` outranking ``defer`` is the tighten-only
+        "deny beats defer" invariant (P2.6). When the winning tier is an INTERCEPT
         (``modify``/``synthesize``) or any hook carries a PostToolUse
         ``updatedToolOutput`` rewrite, the FIRST such payload by stable id order is
         applied and a ``hook_conflicting_intercept`` reason is recorded if more

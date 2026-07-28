@@ -234,7 +234,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # P1.4 #1066: +7 for the plan_exit turn-ending-yield seam next to maybe_pause_for_user (import +
     # comment + the 2-line call). The seam (maybe_pause_for_plan_exit) lives in the owner module
     # gact/plan_mode.py. Ratchets back with #714.
-    "src/clio_agent/gact/turn.py": 928,
+    "src/clio_agent/gact/turn.py": 839,
     # #952 S4 Pass C: -9 (the answer-substitution finalize call + import were
     # removed with the settle layer's degradation ledger).
     # #953 [5]: +3 to surface the variant winner stamp (variant_selection) on the
