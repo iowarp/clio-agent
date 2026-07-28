@@ -87,9 +87,7 @@ def _pre_tool_env(name: str = "hdf5_write", args: dict | None = None) -> HookEnv
 def test_exit0_empty_stdout_allows(tmp_path: Path) -> None:
     """C1: exit 0 with empty stdout => allow, no context change."""
 
-    disp = make_command_dispatcher(
-        tmp_path, event=PRE_TOOL_USE, body="import sys\nsys.exit(0)\n"
-    )
+    disp = make_command_dispatcher(tmp_path, event=PRE_TOOL_USE, body="import sys\nsys.exit(0)\n")
     outcome = disp.dispatch(PRE_TOOL_USE, _pre_tool_env())
     assert outcome.decision == "allow"
     assert not outcome.denied
@@ -133,14 +131,69 @@ def test_banner_tolerant_stdout_parse(tmp_path: Path) -> None:
     assert outcome.reason == "banner-safe"
 
 
+def test_json_banner_object_does_not_shadow_decision(tmp_path: Path) -> None:
+    """B3: a JSON-shaped banner object printed BEFORE the real decision object must
+    not shadow it — the decision-bearing object wins, not the first object scanned."""
+
+    body = (
+        "import json\n"
+        'print(json.dumps({"status": "ok", "banner": "corporate shell v3"}))\n'
+        'print(json.dumps({"decision": "deny", "reason": "real-deny"}))\n'
+    )
+    disp = make_command_dispatcher(tmp_path, event=PRE_TOOL_USE, body=body)
+    outcome = disp.dispatch(PRE_TOOL_USE, _pre_tool_env())
+    assert outcome.denied
+    assert outcome.reason == "real-deny"
+
+
+@pytest.mark.parametrize(("first", "second"), [("allow", "deny"), ("deny", "allow")])
+def test_multiple_decision_objects_tighten_to_deny(tmp_path: Path, first: str, second: str) -> None:
+    """B3: two decision-bearing objects on stdout resolve tighten-only (highest rank
+    wins, so a smuggled allow can never beat a real deny) + a typed queryable reason."""
+
+    body = (
+        "import json\n"
+        f'print(json.dumps({{"decision": "{first}", "reason": "{first}-obj"}}))\n'
+        f'print(json.dumps({{"decision": "{second}", "reason": "{second}-obj"}}))\n'
+    )
+    disp = make_command_dispatcher(tmp_path, event=PRE_TOOL_USE, body=body, hook_id="multi")
+    outcome = disp.dispatch(PRE_TOOL_USE, _pre_tool_env())
+    assert outcome.denied
+    reasons = [
+        r
+        for r in hook_reasons()
+        if r["reason"] == "hook_multiple_stdout_objects" and r.get("hook_id") == "multi"
+    ]
+    assert any(r.get("chosen") == "deny" and r.get("count") == 2 for r in reasons)
+
+
+def test_nested_dict_single_object_not_false_multi(tmp_path: Path) -> None:
+    """B3: a single decision object carrying a nested dict must not be double-counted
+    as multiple objects (advance past the decoded span, not to the next inner brace)."""
+
+    body = (
+        "import json\n"
+        'print(json.dumps({"decision": "deny", "reason": "nested",'
+        ' "input": {"a": {"b": 1}}}))\n'
+    )
+    disp = make_command_dispatcher(tmp_path, event=PRE_TOOL_USE, body=body, hook_id="nested-single")
+    outcome = disp.dispatch(PRE_TOOL_USE, _pre_tool_env())
+    assert outcome.denied
+    assert outcome.reason == "nested"
+    reasons = [
+        r
+        for r in hook_reasons()
+        if r["reason"] == "hook_multiple_stdout_objects" and r.get("hook_id") == "nested-single"
+    ]
+    assert not reasons
+
+
 def test_exit0_nonjson_stdout_is_allow_with_typed_reason(tmp_path: Path) -> None:
     """C7: exit 0 but non-JSON stdout on a tool event => allow + a diagnosable reason,
     never a silent fail-open treating the text as a control."""
 
     body = "print('just some noise, no json here')\n"
-    disp = make_command_dispatcher(
-        tmp_path, event=PRE_TOOL_USE, body=body, hook_id="noisy"
-    )
+    disp = make_command_dispatcher(tmp_path, event=PRE_TOOL_USE, body=body, hook_id="noisy")
     outcome = disp.dispatch(PRE_TOOL_USE, _pre_tool_env())
     assert outcome.decision == "allow"
     reasons = [r for r in hook_reasons() if r["reason"] == "hook_unparseable_stdout"]
@@ -151,8 +204,7 @@ def test_additional_context_concatenated(tmp_path: Path) -> None:
     """additionalContext from a hook is carried on the outcome."""
 
     body = (
-        "import json\n"
-        'print(json.dumps({"decision": "allow", "additionalContext": "remember X"}))\n'
+        'import json\nprint(json.dumps({"decision": "allow", "additionalContext": "remember X"}))\n'
     )
     disp = make_command_dispatcher(tmp_path, event=PRE_TOOL_USE, body=body)
     outcome = disp.dispatch(PRE_TOOL_USE, _pre_tool_env())
@@ -193,7 +245,11 @@ def test_timeout_typed_reason_not_user_rejection(tmp_path: Path) -> None:
 
     body = "import time\ntime.sleep(30)\n"
     disp = make_command_dispatcher(
-        tmp_path, event=PRE_TOOL_USE, body=body, fail_closed=True, timeout_ms=200,
+        tmp_path,
+        event=PRE_TOOL_USE,
+        body=body,
+        fail_closed=True,
+        timeout_ms=200,
         hook_id="slowpoke",
     )
     start = time.monotonic()
@@ -210,8 +266,11 @@ def test_timeout_nonblocking_when_not_fail_closed(tmp_path: Path) -> None:
     """A hung non-failClosed hook is non-blocking (proceeds), still typed."""
 
     disp = make_command_dispatcher(
-        tmp_path, event=PRE_TOOL_USE, body="import time\ntime.sleep(30)\n",
-        fail_closed=False, timeout_ms=200,
+        tmp_path,
+        event=PRE_TOOL_USE,
+        body="import time\ntime.sleep(30)\n",
+        fail_closed=False,
+        timeout_ms=200,
     )
     outcome = disp.dispatch(PRE_TOOL_USE, _pre_tool_env())
     assert not outcome.denied
@@ -239,7 +298,11 @@ def test_timeout_kills_child_process_not_just_the_hook(tmp_path: Path) -> None:
         "time.sleep(30)\n"
     )
     disp = make_command_dispatcher(
-        tmp_path, event=PRE_TOOL_USE, body=body, fail_closed=True, timeout_ms=500,
+        tmp_path,
+        event=PRE_TOOL_USE,
+        body=body,
+        fail_closed=True,
+        timeout_ms=500,
         hook_id="forker",
     )
     start = time.monotonic()
@@ -345,9 +408,7 @@ def test_anchored_tool_regex_does_not_overmatch(tmp_path: Path) -> None:
     """M1: matcher ``Edit`` is anchored — it must NOT match ``NotebookEdit``."""
 
     body = "import json\nprint(json.dumps({'decision': 'deny', 'reason': 'nope'}))\n"
-    disp = make_command_dispatcher(
-        tmp_path, event=PRE_TOOL_USE, body=body, match={"tool": "Edit"}
-    )
+    disp = make_command_dispatcher(tmp_path, event=PRE_TOOL_USE, body=body, match={"tool": "Edit"})
     # NotebookEdit must NOT be gated by the anchored ``^Edit$`` matcher.
     out_notebook = disp.dispatch(PRE_TOOL_USE, _pre_tool_env(name="NotebookEdit"))
     assert not out_notebook.denied
@@ -464,8 +525,12 @@ def test_invalid_regex_skips_only_that_hook(tmp_path: Path) -> None:
     good = write_hook_script(tmp_path, "g.py", "import sys\nsys.exit(0)\n")
     entries = parse_hook_entries(
         [
-            {"id": "bad", "on": [PRE_TOOL_USE], "match": {"tool": "([unclosed"},
-             "run": {"type": "command", "command": "x"}},
+            {
+                "id": "bad",
+                "on": [PRE_TOOL_USE],
+                "match": {"tool": "([unclosed"},
+                "run": {"type": "command", "command": "x"},
+            },
             {"id": "good", "on": [PRE_TOOL_USE], "run": command_run(good)},
         ],
         source="t",
@@ -785,8 +850,7 @@ def test_gate_stashes_synthesize_for_the_interceptor(tmp_path: Path) -> None:
     fails closed FAST, no blocking wait — the point is the intercept was stashed.)"""
 
     body = (
-        "import json\n"
-        'print(json.dumps({"decision": "synthesize", "result": {"cached": True}}))\n'
+        'import json\nprint(json.dumps({"decision": "synthesize", "result": {"cached": True}}))\n'
     )
     install_global_dispatcher(make_command_dispatcher(tmp_path, event=PRE_TOOL_USE, body=body))
     try:
@@ -999,9 +1063,7 @@ def test_disabled_hook_excluded_from_metadata(tmp_path: Path) -> None:
     # The disabled entry still exists in the dispatcher (config is preserved) but
     # never matches/dispatches — matching() and metadata() must agree on that.
     assert len(disp.entries) == 2
-    assert disp.matching(PRE_TOOL_USE, _pre_tool_env()) == [
-        e for e in disp.entries if e.id == "on"
-    ]
+    assert disp.matching(PRE_TOOL_USE, _pre_tool_env()) == [e for e in disp.entries if e.id == "on"]
 
 
 # --------------------------------------------------------------------------- #
@@ -1045,9 +1107,7 @@ def test_parse_model_payloads() -> None:
     )
     assert redact.request_patch == {"messages": []}
 
-    rewrite = parse_hook_output(
-        {"llm_response": ["REWRITE"]}, hook_id="a", event=AFTER_MODEL
-    )
+    rewrite = parse_hook_output({"llm_response": ["REWRITE"]}, hook_id="a", event=AFTER_MODEL)
     assert rewrite.llm_response == ["REWRITE"]
     assert rewrite.llm_response_present is True
 
@@ -1059,8 +1119,12 @@ def test_merge_model_payloads_and_conflict_reason() -> None:
     baseline = len(hook_reasons())
     outcome = HookOutcome.merge(
         [
-            HookDecision(decision="synthesize", llm_response=["A"], llm_response_present=True, hook_id="a"),
-            HookDecision(decision="synthesize", llm_response=["B"], llm_response_present=True, hook_id="b"),
+            HookDecision(
+                decision="synthesize", llm_response=["A"], llm_response_present=True, hook_id="a"
+            ),
+            HookDecision(
+                decision="synthesize", llm_response=["B"], llm_response_present=True, hook_id="b"
+            ),
         ],
         records=[],
     )
