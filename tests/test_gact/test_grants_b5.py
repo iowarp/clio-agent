@@ -80,7 +80,9 @@ def test_host_pattern_validation_and_atomic_rejection(tmp_path) -> None:
     bad = {"scope": "workspace", "action": "allow", "host_pattern": 123}  # non-string
     clean, errors = _validate_permission_policies([good, bad])
     assert any(e["field"] == "host_pattern" for e in errors)
-    assert clean == [good]  # only the valid row survives validation
+    # Only the valid row survives validation; B4 #1057 additionally self-heals a host-bearing row to
+    # an explicit ``kind="domain"`` on load (the field the good row omitted).
+    assert clean == [{**good, "kind": "domain"}]
 
     # Route atomicity: a batch with the bad row rejects the WHOLE PUT (no partial apply).
     c = TestClient(build_app(sessions_path=tmp_path / "s.json"))
@@ -143,6 +145,10 @@ def test_network_egress_resolution_derives_host_pattern() -> None:
     assert policy["host_pattern"] == "data.ndp.org"
     assert "path_pattern" not in policy
     assert policy["created_from_permission_id"] == "perm_x"
+    # B4 #1057: the derived sticky domain row is stamped ``kind="domain"`` and carries NO stray
+    # ``tool_name_pattern`` — so it cannot bleed into a ``kind="tool"`` resolve.
+    assert policy["kind"] == "domain"
+    assert "tool_name_pattern" not in policy
 
 
 # --------------------------------------------------------------------------- #
@@ -403,7 +409,12 @@ def test_domain_grant_endpoint_writes_host_pattern_policy(tmp_path, captured_eve
     ws = c.get("/v1/workspaces").json()["workspaces"][0]
     c.post(f"/v1/workspaces/{ws['id']}/grants", json={"domain": "data.ndp.org"})
     policies = c.get("/v1/policies").json()["policies"]
-    assert any(p.get("host_pattern") == "data.ndp.org" for p in policies)
+    domain_rows = [p for p in policies if p.get("host_pattern") == "data.ndp.org"]
+    assert domain_rows
+    # B4 #1057: the persisted domain grant declares ``kind="domain"`` and carries NO stray
+    # ``tool_name_pattern`` (which previously let the row bleed into every tool call).
+    assert domain_rows[0]["kind"] == "domain"
+    assert "tool_name_pattern" not in domain_rows[0]
     dom = [e for e in captured_events if e["event_type"] == "boundary.granted"]
     assert dom and dom[-1]["payload"]["kind"] == "domain"
 

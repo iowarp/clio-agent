@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.runtime.grant_resolver import (
+    KIND_DOMAIN,
     migrate_priorities,
     next_append_priority,
     resolve,
@@ -188,6 +189,14 @@ def _validate_permission_policies(
 
         policy["scope"] = scope
         policy["action"] = action
+        # B4 #1057: a host-bearing row is a DOMAIN grant — stamp ``kind="domain"`` and drop any
+        # stray ``tool_name_pattern`` (legacy domain rows persisted a ``"*"`` glob that let the row
+        # bleed into a ``kind="tool"`` resolve). This self-heals the persisted shape on the next
+        # flush; ``grant_resolver._kind_admitted`` is the belt-and-suspenders match-time guard for
+        # any un-normalized in-memory row.
+        if str(policy.get("host_pattern") or ""):
+            policy["kind"] = KIND_DOMAIN
+            policy.pop("tool_name_pattern", None)
         clean.append(policy)
     return clean, errors
 
@@ -259,6 +268,11 @@ def _append_permission_policy_from_resolution(
         host = _permission_host_from_args(args)
         if host:
             policy["host_pattern"] = host
+        # B4 #1057: the derived sticky row is a DOMAIN grant — stamp ``kind="domain"`` and drop the
+        # tool glob copied in above, so it can never bleed into a ``kind="tool"`` resolve (the stray
+        # ``"*"`` glob was the fleet-egress kind-bleed vector).
+        policy["kind"] = KIND_DOMAIN
+        policy.pop("tool_name_pattern", None)
         return _appended(app, policy)
     path = _permission_path_from_args(args)
     if path:

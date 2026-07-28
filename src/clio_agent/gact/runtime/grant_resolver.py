@@ -1,41 +1,33 @@
 """Unified grant resolver + read-only predicate for the GACT permission model (#1032).
 
-This module is the single matcher behind the permission boundary. Historically two
-near-identical loops walked ``app.state.permission_policies``: :func:`_policy_action_for_tool`
-(tool glob + optional path glob, session/workspace scope) and :func:`_host_action_for`
-(workspace ``host_pattern`` with the deliberate session-scope leak guard). Both now delegate
-to :func:`resolve`, a single ``kind``-discriminated matcher over the SAME row shape — the store
-already carries every subject encoding (``tool_name_pattern`` / ``path_pattern`` /
-``host_pattern`` + ``scope`` / ``scope_id`` / ``action``), so ``kind`` is a discriminator over
-existing fields, not a data migration.
+This module is the single matcher behind the permission boundary. The former
+``_policy_action_for_tool`` (tool glob + optional path glob) and ``_host_action_for`` (workspace
+``host_pattern`` + session-scope leak guard) both delegate to :func:`resolve`, a single
+``kind``-discriminated matcher over the SAME row shape — the store already carries every subject
+encoding (``tool_name_pattern`` / ``path_pattern`` / ``host_pattern`` + ``scope`` / ``scope_id`` /
+``action``), so ``kind`` is a discriminator over existing fields, not a data migration.
 
-Two invariants are load-bearing and preserved verbatim (blast-radius flags 2 & 3):
+Load-bearing invariants preserved verbatim (blast-radius flags 2 & 3):
 
 * :func:`resolve` returns the **RAW action vocabulary**
-  (``allow``/``allow_session``/``allow_workspace``/``deny``/``ask``/``""``) — never collapsed
-  to three values, because ``_append_permission_policy_from_resolution`` and the artifact
-  proposal effects depend on the distinction.
-* **Per-kind scope divergence.** ``kind="domain"`` honours ONLY a WORKSPACE-scoped host row
-  with an EXPLICIT matching ``scope_id`` (the fleet-egress leak guard) — a session-scoped or
-  empty-``scope_id`` host row is skipped. ``kind="tool"``/``"fs_root"`` honour session AND
-  workspace scope, treating an empty ``scope_id`` as a wildcard for that scope type. This is
-  encoded per-kind, not flattened into one uniform matcher.
+  (``allow``/``allow_session``/``allow_workspace``/``deny``/``ask``/``""``) — never collapsed,
+  because ``_append_permission_policy_from_resolution`` + artifact proposal effects need it.
+* **Per-kind scope divergence.** ``kind="domain"`` honours ONLY a WORKSPACE-scoped host row with
+  an EXPLICIT matching ``scope_id`` (the fleet-egress leak guard); ``kind="tool"``/``"fs_root"``
+  honour session AND workspace scope, treating an empty ``scope_id`` as a scope wildcard.
+* **Per-kind admission (B4 #1057).** :func:`_kind_admitted` gates each row FIRST: a domain host
+  row can no longer bleed into a ``kind="tool"`` resolve via a stray ``tool_name_pattern: "*"``.
 
-:func:`is_read_only` is the structural first-branch predicate of the tool gate: a purely
-POSITIVE, data-driven allowlist (MCP ``readOnlyHint`` annotation OR a static catalog ``read``
-tag), with NO tool-name substring matching — that heuristic is exactly what #1032 deletes.
+:func:`is_read_only` is the structural first-branch predicate of the tool gate: a purely POSITIVE,
+data-driven allowlist (MCP ``readOnlyHint`` annotation OR a static catalog ``read`` tag), with NO
+tool-name substring matching — that heuristic is exactly what #1032 deletes.
 
-**Axis scoping (P0.2 #1060).** A policy row may additionally carry two OPTIONAL axis fields:
-``modes`` (a ``list[str]`` of mode names) and ``on`` (a ``list[str]`` of event names). A row
-whose ``modes`` is NON-EMPTY matches only when :func:`resolve`'s ``mode`` argument is one of them;
-an absent/empty ``modes`` matches ANY mode (backward compatible with pre-P0.2 rows). The ``on``
-axis works identically against the ``event`` argument. Two new ``kind`` discriminators ride the
-same row shape: :data:`KIND_PLAN_ACL` (rows a plan-mode ACL scopes ``modes=[plan]``) and
-:data:`KIND_HOOK` (rows a hook policy scopes ``on=[PreToolUse]``). P0.2 adds ONLY the engine
-support for these axes/kinds; it authors NO plan/hook rules (that is P1.1/P2).
-:class:`GrantRecord` round-trips both axes too (as ``tuple[str, ...]``, empty by default), so a
-``plan_acl``/``hook`` grant built via ``GrantRecord(...).to_policy_row()`` keeps its ``modes``/
-``on`` scoping instead of silently widening to match any mode/event on persist.
+**Axis scoping (P0.2 #1060).** A row may carry OPTIONAL ``modes``/``on`` (``list[str]``) axes: a
+NON-EMPTY axis narrows to matching :func:`resolve` ``mode``/``event``, absent/empty matches any
+(pre-P0.2 compatible). Two ``kind`` discriminators ride the tool row shape — :data:`KIND_PLAN_ACL`
+(``modes=[plan]``) and :data:`KIND_HOOK` (``on=[PreToolUse]``); P0.2 authors NO plan/hook rules
+(P1.1/P2 do). :class:`GrantRecord` round-trips both axes (``tuple[str, ...]``, empty default), so a
+grant built via ``to_policy_row()`` keeps its scoping instead of silently widening on persist.
 """
 
 from __future__ import annotations
@@ -62,6 +54,11 @@ KIND_HOOK = "hook"
 #: The full set of explicit ``kind`` discriminators a stored row may declare.
 _VALID_KINDS = frozenset({KIND_TOOL, KIND_DOMAIN, KIND_ROOT, KIND_PLAN_ACL, KIND_HOOK})
 
+#: The tool-axis kinds: all carry their subject in ``tool_name_pattern``, so :func:`_kind_admitted`
+#: treats them as interchangeable — a ``plan_acl``/``hook`` row is admissible to a ``kind="tool"``
+#: resolve (its ``modes``/``on`` axis narrows). ``domain``/``fs_root`` are kept out (B4 #1057).
+_TOOL_AXIS_KINDS = frozenset({KIND_TOOL, KIND_PLAN_ACL, KIND_HOOK})
+
 #: The full raw action vocabulary a policy row may carry (never collapsed).
 _VALID_ACTIONS = frozenset({"allow", "allow_session", "allow_workspace", "deny", "ask"})
 
@@ -83,20 +80,13 @@ _RESTRICTIVENESS: dict[str, int] = {
 #: permission gate + routes import one constant and :func:`is_read_only` needs no back-import.
 EXTERNAL_MCP_CONTEXT_KIND = "external_mcp"
 
-#: Priority FLOOR for the built-in plan-mode ACL (P1.1 #1063). These are engine-level DEFAULT
-#: :data:`KIND_PLAN_ACL` rows consulted by :func:`resolve` for every ``kind="tool"`` call whose
-#: ``mode`` is a plan-restricted mode — they need no on-disk configuration and are NEVER persisted
-#: (so a ``PUT /v1/policies`` cannot drop them and they never pollute the user's policy file). They
-#: replace the mode-in-{plan,architect} read-only lock formerly copy-pasted into three modules
-#: (``permission_gate``/``enrichment``/``proposal_effects``): enforcement is now ONE data-driven
-#: path through :func:`resolve`. Read-only tools never reach here — :func:`is_read_only` fast-allows
-#: them as the gate's structural first branch in EVERY mode, unchanged.
-#:
-#: These two constants are the values :func:`default_plan_acl_rows` ships and the FLOOR
-#: :func:`resolve` actually enforces at runtime — NOT a fixed ceiling. :func:`_plan_acl_priorities`
-#: raises the deny (and the carve-out above it) past any matching user row whose migrated legacy
-#: priority (:func:`_migrated_priority`) exceeds this floor, so the mode-lock can never be
-#: outranked by a large unprioritized policy store (adversarial-review finding #1, #1063).
+#: Priority FLOOR for the built-in plan-mode ACL (P1.1 #1063): engine-level DEFAULT
+#: :data:`KIND_PLAN_ACL` rows :func:`resolve` consults for every plan-restricted ``kind="tool"``
+#: call. They are NEVER persisted (a ``PUT /v1/policies`` cannot drop them) and replace the
+#: read-only lock formerly copy-pasted into ``permission_gate``/``enrichment``/``proposal_effects``.
+#: Read-only tools never reach here (:func:`is_read_only` fast-allows first). This is a FLOOR, not a
+#: ceiling: :func:`_plan_acl_priorities` raises the deny (and the carve-out above it) past any
+#: matching user row's migrated priority, so a large unprioritized store can't outrank the mode-lock.
 PLAN_ACL_DENY_PRIORITY = 40
 #: Priority FLOOR for the plan-mode tool allow-band (P1.4 #1066): one band above the @40 deny so the
 #: non-write tools plan mode NEEDS survive the deny-everything rule. Like the deny/carve-out it is a
@@ -140,23 +130,20 @@ def plans_dir() -> Path:
 def default_plan_acl_rows() -> list[dict[str, Any]]:
     """Return the built-in plan-mode ACL rows (P1.1 #1063 + P1.4 #1066), scoped by the ``modes`` axis.
 
-    Priority-banded on the P0.1 model (higher wins; same-band ties most-restrictive). Each row
-    carries a ``band`` tag naming its DYNAMIC priority slot (:func:`_plan_acl_priorities`); the static
-    ``priority`` field is the floor that slot starts from:
+    Priority-banded on the P0.1 model (higher wins; same-band ties most-restrictive). Each row's
+    ``band`` tag names its DYNAMIC priority slot (:func:`_plan_acl_priorities`); the static
+    ``priority`` is the floor that slot starts from:
 
-    * ``deny "*" @40 modes=[plan,architect]`` — deny every non-read-only tool in plan/architect.
-      Read-only tools never reach the resolver (``is_read_only`` fast-allows first), so this denies
-      exactly the write/edit/shell surface, matching the deleted hardcoded lock's behaviour.
-    * ``allow <plan tool> @50 modes=[plan]`` — one row per :data:`PLAN_ACL_PLAN_TOOLS` entry
-      (``plan_exit``/``ask_user``/``web_fetch``): the non-write tools plan mode needs, re-allowed one
-      band above the deny so the ``*`` deny does not sweep them up (P1.4 #1066).
-    * ``allow "*" path=<plans>/*.md @70 modes=[plan]`` — the SOLE writable carve-out: a ``.md``
-      write under the plans dir in plan mode. It beats the @40 deny by band. The ``path_pattern``
-      is matched against the CALLER-NORMALIZED target path (``..`` collapsed) so a traversal such as
-      ``<plans>/../src/x.py`` can never satisfy it (see :func:`_plan_acl_default_matches`).
+    * ``deny "*" @40 modes=[plan,architect]`` — deny every non-read-only tool (reads fast-allow
+      first, so this is exactly the write/edit/shell surface the deleted hardcoded lock covered).
+    * ``allow <plan tool> @50 modes=[plan]`` — one row per :data:`PLAN_ACL_PLAN_TOOLS` entry, the
+      non-write tools plan mode needs, re-allowed one band above the deny (P1.4 #1066).
+    * ``allow "*" path=<plans>/*.md @70 modes=[plan]`` — the SOLE writable carve-out (a ``.md``
+      write under the plans dir), matched against the CALLER-NORMALIZED target so ``..`` traversal
+      can't satisfy it (see :func:`_plan_acl_default_matches`).
 
-    These are consulted directly by :func:`resolve`; they are not stored in
-    ``app.state.permission_policies`` and so never migrate, flush, or affect user-row priorities.
+    Consulted directly by :func:`resolve`; not stored in ``app.state.permission_policies``, so they
+    never migrate, flush, or affect user-row priorities.
     """
 
     plans = str(plans_dir())
@@ -255,17 +242,13 @@ def _plan_acl_priorities(user_matches: list[tuple[int, str]]) -> dict[str, int]:
 
     The static floor is ``(PLAN_ACL_DENY_PRIORITY, PLAN_ACL_PLAN_FILE_PRIORITY)`` = ``(40, 70)`` --
     the values :func:`default_plan_acl_rows` ships, and what a normal-sized policy store still gets.
-    But a persisted store migrates unprioritized legacy USER rows to effective priority
-    ``total - index`` (:func:`_migrated_priority`, P0.1 #1059): past roughly 60 legacy rows, an
-    early row's migrated priority EXCEEDS the @40 floor and would otherwise outrank the plan-mode
-    deny, letting a stale ``allow`` punch through plan/architect mode (P1.1 adversarial-review
-    finding #1, #1063). Raising the deny to ``max(matching user priority) + 1`` -- and the
-    plan-file carve-out one band above THAT -- makes the mode-lock structurally unbypassable: it
-    always wins the same priority-banded comparison :func:`resolve` already runs over ``policies``,
-    no matter how many legacy rows precede it or how they were migrated. ``user_matches`` is the
-    ``(priority, action)`` pairs already collected from the PERSISTED policy rows for this exact
-    call (same kind/subject/scope/axis filters as the built-in rows themselves), so an empty list
-    (no matching user row at all) leaves the static floor untouched.
+    But a persisted store migrates unprioritized legacy USER rows to ``total - index``
+    (:func:`_migrated_priority`, P0.1 #1059): past ~60 legacy rows an early row's migrated priority
+    EXCEEDS the @40 floor and would outrank the plan-mode deny, letting a stale ``allow`` punch
+    through plan/architect (P1.1 adversarial-review finding #1, #1063). Raising the deny to
+    ``max(matching user priority) + 1`` -- carve-out one band above THAT -- makes the mode-lock
+    structurally unbypassable. ``user_matches`` is the ``(priority, action)`` pairs already collected
+    from PERSISTED rows for this call, so an empty list leaves the static floor untouched.
     """
 
     deny_priority = PLAN_ACL_DENY_PRIORITY
@@ -310,6 +293,7 @@ def _plan_acl_default_matches(
             continue
         matches.append((priorities[str(row.get("band") or "deny")], action))
     return matches
+
 
 #: The MCP annotation read-only classifier now lives in :mod:`clio_agent.tools.catalog` (the
 #: single source of truth for tool effect classification, #1061) and is imported above +
@@ -357,7 +341,9 @@ def is_read_only(
     return False
 
 
-def _scope_matches(kind: str, policy: Mapping[str, Any], session_id: str, workspace_id: str) -> bool:
+def _scope_matches(
+    kind: str, policy: Mapping[str, Any], session_id: str, workspace_id: str
+) -> bool:
     """Return whether ``policy``'s scope admits this ``kind`` call (per-kind divergence)."""
 
     scope = str(policy.get("scope") or "").lower()
@@ -368,7 +354,7 @@ def _scope_matches(kind: str, policy: Mapping[str, Any], session_id: str, worksp
         # widen an unattributable fleet-shared egress connection.
         return scope == "workspace" and scope_id == workspace_id
     # tool / fs_root: honour session AND workspace scope; empty scope_id is a wildcard for that
-    # scope type (preserving _policy_action_for_tool's behaviour verbatim).
+    # scope type (preserving _policy_action_for_tool verbatim).
     if scope == "session":
         return not scope_id or scope_id == session_id
     if scope == "workspace":
@@ -409,6 +395,31 @@ def _subject_matches(kind: str, policy: Mapping[str, Any], pattern: str, path: s
     if path_pattern and not _path_pattern_matches(path_pattern, path):
         return False
     return True
+
+
+def _kind_admitted(kind: str, policy: Mapping[str, Any]) -> bool:
+    """Return whether ``policy``'s OWN kind admits it into a resolve of ``kind`` (B4 #1057).
+
+    The first gate in the match loop, closing the domain kind-bleed: legacy domain grants carried a
+    stray ``tool_name_pattern: "*"`` beside their ``host_pattern``, so with no kind discriminator the
+    ``"*"`` glob leaked a fleet-egress ``allow`` onto EVERY ``kind="tool"`` call in the workspace.
+
+    An EXPLICIT valid ``kind`` must share the caller's AXIS: the tool-axis kinds
+    :data:`_TOOL_AXIS_KINDS` (tool/plan_acl/hook) all ride the ``tool_name_pattern`` shape and so
+    stay mutually admissible (a persisted plan_acl/hook row keeps enforcing on a tool resolve, its
+    ``modes``/``on`` doing the narrowing); ``domain`` (host) and ``fs_root`` (path) each answer only
+    their own resolve. A row with NO explicit kind is classified by ``host_pattern`` presence ONLY
+    (``has_host == (kind == KIND_DOMAIN)``) — we do NOT synthesize ``fs_root`` from ``path_pattern``,
+    since legacy sticky tool+path rows have always matched ``kind="tool"`` and must not reclassify.
+    """
+
+    explicit = str(policy.get("kind") or "").strip()
+    if explicit in _VALID_KINDS:
+        if explicit in _TOOL_AXIS_KINDS:
+            return kind in _TOOL_AXIS_KINDS
+        return explicit == kind
+    has_host = bool(str(policy.get("host_pattern") or ""))
+    return has_host == (kind == KIND_DOMAIN)
 
 
 def _axis_matches(policy: Mapping[str, Any], mode: str, event: str) -> bool:
@@ -481,24 +492,16 @@ def migrate_priorities(policies: list[Any]) -> list[Any]:
 def next_append_priority(policies: list[Any]) -> int:
     """Return a priority strictly BELOW every row's effective priority, for a new sticky append.
 
-    Runtime sticky-grant appends (``permission_policies.py``'s ``_appended``, and
-    ``routes/workspaces.py``'s ``_grant_workspace_domain``/``_grant_workspace_tool``) must land in
-    their own lowest band, or an appended row left with no explicit ``priority`` collides with the
-    CURRENT lowest-priority row: on an already-loaded/migrated store, an unprioritized appended row
-    computes to ``total - index`` under :func:`_effective_priority`, which can equal a pre-existing
-    migrated legacy row's stamped priority (both derive to ``1`` in the two-row case) -- firing the
-    most-restrictive tie-break where the old first-match scan would have returned the earlier row.
-    Calling :func:`migrate_priorities` AFTER appending does NOT fix this: it re-derives the same
-    ``total - index`` collision.
-
-    This computes the minimum EFFECTIVE priority across ``policies`` as they stand right now
-    (migrating any still-unprioritized existing row in memory, without mutating it) and returns one
-    below it -- so the new row is always strictly lower than every existing row, never ties, and
-    reproduces "appended = lowest precedence = evaluated last" (today's first-match). The default
-    minimum when ``policies`` holds no dict row is ``1`` (matching a fresh single-row store's
-    migrated priority), so the first-ever append returns ``0``. Callers MUST call this on the list
-    as it stands BEFORE appending the new row; successive calls after each append lands yield a
-    strictly decreasing sequence, so N appends get N unique, monotonically lower priorities.
+    Runtime sticky-grant appends (``permission_policies._appended``, ``routes/workspaces``'s
+    ``_grant_workspace_domain``/``_grant_workspace_tool``) must land in their own lowest band. An
+    unprioritized appended row would compute to ``total - index`` under :func:`_effective_priority`,
+    which can equal a pre-existing migrated legacy row's stamped priority -- firing the
+    most-restrictive tie-break where the old first-match scan returned the earlier row (and calling
+    :func:`migrate_priorities` afterwards re-derives the same collision). Computing one below the
+    current minimum EFFECTIVE priority makes the new row strictly lowest, never tying, reproducing
+    "appended = evaluated last". The default minimum is ``1`` (a fresh single-row store's migrated
+    priority) so the first-ever append returns ``0``; call this BEFORE appending, and successive
+    calls yield a strictly decreasing sequence (N appends get N unique lower priorities).
     """
 
     total = len(policies)
@@ -528,22 +531,17 @@ def resolve(
     """Return the winning matching policy's RAW action, or ``""`` when nothing matches.
 
     One matcher over ``permission_policies`` generalizing the former ``_policy_action_for_tool``
-    (``kind="tool"``) and ``_host_action_for`` (``kind="domain"``). ``pattern`` is the subject
-    string for the kind: the tool name (``tool``), the requested host (``domain``), or the target
-    path (``fs_root``). ``path`` supplies the optional path-glob refinement a ``tool`` policy may
-    additionally carry; it is unused for ``domain``/``fs_root``. ``mode`` and ``event`` drive the
-    optional ``modes``/``on`` axis narrowing (P0.2 #1060): a row with a non-empty ``modes`` matches
-    only when ``mode`` is in it, and a row with a non-empty ``on`` matches only when ``event`` is in
-    it; absent/empty axes match any ``mode``/``event`` (see :func:`_axis_matches`).
+    (``kind="tool"``) and ``_host_action_for`` (``kind="domain"``). ``pattern`` is the kind's
+    subject: tool name (``tool``), host (``domain``), or path (``fs_root``). ``path`` is the optional
+    path-glob refinement a ``tool`` policy may carry (unused for domain/fs_root); ``mode``/``event``
+    drive the ``modes``/``on`` axis narrowing (P0.2 #1060, see :func:`_axis_matches`).
 
     **Priority-banded evaluation (P0.1 #1059).** Instead of first-match-return, ALL rows matching
-    ``(kind, subject, scope)`` are collected, then the HIGHEST-priority band wins (higher priority
-    number wins across bands). Within a single highest band (a TIE), the MOST-RESTRICTIVE action
-    survives (``deny`` > ``defer`` > ``ask`` > ``allow_workspace`` > ``allow_session`` > ``allow``).
-    Legacy rows without a ``priority`` are migrated to unique descending priorities by insertion
-    index (see :func:`_migrated_priority`), so an all-legacy list reproduces the old first-match
-    order exactly and the tie-break never fires for it. The raw
-    ``allow``/``allow_session``/``allow_workspace``/``deny``/``ask`` action is returned verbatim.
+    ``(kind, subject, scope)`` are collected, then the HIGHEST-priority band wins; within a highest
+    band TIE the MOST-RESTRICTIVE action survives (``deny`` > ``defer`` > ``ask`` > ``allow_workspace``
+    > ``allow_session`` > ``allow``). Legacy rows without a ``priority`` migrate to unique descending
+    priorities by insertion index (:func:`_migrated_priority`), so an all-legacy list reproduces the
+    old first-match order and the tie-break never fires. The raw action is returned verbatim.
     """
 
     return _winning_action(
@@ -573,10 +571,9 @@ def _collect_matches(
 ) -> list[tuple[int, str, bool]]:
     """Collect every matching ``(priority, action, is_plan_acl)`` for a resolve call.
 
-    Shared by :func:`resolve` and :func:`resolve_detail`. The third element flags rows
-    authored by the built-in plan-mode ACL (P1.2 #1064), so :func:`resolve_detail` can
-    attribute a winning deny to the mode-lock and surface its model-facing message while
-    :func:`resolve` (which only needs the action) ignores it.
+    Shared by :func:`resolve` and :func:`resolve_detail`. The third element flags rows authored by
+    the built-in plan-mode ACL (P1.2 #1064), so :func:`resolve_detail` can attribute a winning deny
+    to the mode-lock and surface its message while :func:`resolve` ignores it.
     """
 
     if not isinstance(policies, list):
@@ -589,6 +586,8 @@ def _collect_matches(
     for index, policy in enumerate(policies):
         if not isinstance(policy, dict):
             continue
+        if not _kind_admitted(kind, policy):
+            continue
         if not _scope_matches(kind, policy, session_id, workspace_id):
             continue
         if not _subject_matches(kind, policy, pattern, path):
@@ -599,15 +598,12 @@ def _collect_matches(
         if action not in _VALID_ACTIONS:
             continue
         matches.append((_effective_priority(policy, index, total), action, False))
-    # Built-in plan-mode ACL (P1.1 #1063): the engine-level DEFAULT plan_acl rows are consulted for
-    # every tool call in a plan-restricted mode, in ADDITION to the persisted user policies — never
-    # merged into the user list, so they do not shift user-row insertion-index migration (the P0.1
-    # golden-test key) and cannot be dropped by a ``PUT /v1/policies``. Their priority is DYNAMIC
-    # (:func:`_plan_acl_priorities`), floored at @40/@70 but raised above every matching user row
-    # already collected in ``matches`` -- so the mode-lock deny/carve-out always outranks a legacy
-    # store's migrated priorities, however many unprioritized rows precede it (adversarial-review
-    # finding #1). Gated to ``kind="tool"`` + a plan-restricted mode so a ``domain``/``fs_root``
-    # resolve (or any non-plan mode) is untouched.
+    # Built-in plan-mode ACL (P1.1 #1063): the DEFAULT plan_acl rows are consulted for every tool
+    # call in a plan-restricted mode, in ADDITION to (never merged into) the user policies — so they
+    # neither shift user-row migration nor can be dropped by a ``PUT /v1/policies``. Their DYNAMIC
+    # priority (:func:`_plan_acl_priorities`) is raised above every matching user row already in
+    # ``matches``, so the mode-lock outranks a legacy store's migrated priorities. Gated to
+    # ``kind="tool"`` + a plan-restricted mode so domain/fs_root (or any non-plan mode) is untouched.
     if kind == KIND_TOOL and mode in _PLAN_ACL_MODES:
         user_pairs = [(priority, action) for priority, action, _src in matches]
         for priority, action in _plan_acl_default_matches(pattern, path, mode, event, user_pairs):
@@ -729,7 +725,11 @@ class GrantRecord:
         else:
             decision = "ask"
         raw_priority = row.get("priority")
-        priority = raw_priority if isinstance(raw_priority, int) and not isinstance(raw_priority, bool) else None
+        priority = (
+            raw_priority
+            if isinstance(raw_priority, int) and not isinstance(raw_priority, bool)
+            else None
+        )
         raw_modes = row.get("modes")
         modes = tuple(str(m) for m in raw_modes) if isinstance(raw_modes, list) else ()
         raw_on = row.get("on")
