@@ -188,14 +188,23 @@ gact.resident_ledgers.max_bytes: 536870912
 # CLIO_RESIDENT_LEDGERS_MAX  (int)  <- src/clio_agent/gact/resident_ledgers.py
 gact.resident_ledgers.max_sessions: 512
 
-# CLIO_HOOKS_BACKEND  (str)  <- src/clio_agent/runtime/hooks.py
-hooks.backend: "local_python"
+# CLIO_HOOKS_ALLOW_MANAGED_ONLY  (bool)  <- src/clio_agent/gact/hooks/dispatcher.py
+hooks.allow_managed_only: false
 
-# CLIO_HOOKS_DIR  (str)  <- src/clio_agent/runtime/hooks.py
-# hooks.dir:  # default unset; resolved in code
+# CLIO_HOOKS_CONFIG  (str)  <- src/clio_agent/gact/hooks/dispatcher.py
+# hooks.config:  # default unset; resolved in code
 
-# CLIO_HOOKS_FACTORY  (str)  <- src/clio_agent/runtime/hooks.py
-# hooks.factory:  # default unset; resolved in code
+# CLIO_HOOKS_DEFER_TIMEOUT  (float)  <- src/clio_agent/gact/hooks/defer.py
+hooks.defer_timeout: 86400.0
+
+# CLIO_HOOKS_MANAGED_CONFIG  (str)  <- src/clio_agent/gact/hooks/dispatcher.py
+# hooks.managed_config:  # default unset; resolved in code
+
+# CLIO_HOOKS_STOP_LOOP_CAP  (int)  <- src/clio_agent/gact/hooks/stop_loop.py
+hooks.stop_loop_cap: 8
+
+# CLIO_HOOKS_TRUST_STORE  (str)  <- src/clio_agent/gact/hooks/dispatcher.py
+# hooks.trust_store:  # default unset; resolved in code
 
 # CLIO_CTX_MAX_BYTES  (int)  <- src/clio_agent/gact/runtime/constants.py
 limits.context_inline_bytes: 32768
@@ -205,9 +214,6 @@ limits.extract_repair_attempts: 3.0
 
 # CLIO_FS_MAX_READ_BYTES  (int)  <- src/clio_agent/tools/servers/fs_server.py
 limits.fs_read_bytes: 262144
-
-# CLIO_HOOK_TIMEOUT_S  (float)  <- src/clio_agent/runtime/hooks.py
-limits.hook_timeout_s: 5.0
 
 # CLIO_MAX_LM_CALL_S  (float)  <- src/clio_agent/runtime/lm_activity.py
 limits.lm_call_s: 1800.0

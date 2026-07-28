@@ -496,9 +496,6 @@ from clio_agent.gact.routes.diffs import (  # noqa: E402
 from clio_agent.gact.routes.expert_packs import (  # noqa: E402
     register_expert_packs_routes,
 )
-from clio_agent.gact.routes.hooks import (  # noqa: E402
-    register_hooks_routes,
-)
 from clio_agent.gact.routes.mcp import (  # noqa: E402
     register_mcp_routes,
 )
@@ -1456,13 +1453,6 @@ def build_app(
     # iowarp/clio-agent#333: retry attempts preserve provenance for
     # retry-with-notes/model flows without mutating the original turn.
     app.state.turn_attempts = {}
-    # SPEC §6.17 hooks (declarative event→command/url callouts that
-    # gact-tui drives via /v1/hooks). Distinct from CLIO's runtime
-    # in-process Python hooks (clio_agent.runtime.hooks) — these are
-    # user-configurable callouts the agent fires during the turn
-    # lifecycle, while the Python runtime hooks are framework-level
-    # extension points. In-memory; not persisted across restarts.
-    app.state.declarative_hooks = {}
     # SPEC §6.11.b permission policies — list, not dict. Backends
     # consult this on every tool call to decide allow/deny/ask at the
     # permission boundary. PUT replaces the whole list.
@@ -1577,38 +1567,39 @@ def build_app(
         app.state.pending_cancellation_checker = _make_cancellation_checker(app)
         app.state.pending_permission_gate = _make_permission_gate(app)
         app.state.pending_tool_observer = _make_tool_observer(app)
+        # P2.3: synthesize/modify interceptor + PostToolUse producer, so a turn driven
+        # before _construct_agent_async runs still has them wired.
+        from clio_agent.gact.hooks import make_post_tool_hook, pre_tool_interceptor  # noqa: PLC0415
 
-    # iowarp/clio-agent#20: install the user-hooks registry so
-    # pre_tool / post_tool / pre_message / post_message events
-    # route to ~/.config/clio-agent/hooks/<event>.py. Tests pre-
-    # install their own registry; we only install a default if
-    # nothing's currently wired so the test-side hook stays.
+        app.state.pending_tool_interceptor = pre_tool_interceptor
+        app.state.pending_post_tool = make_post_tool_hook(app)
+
+    # P2.2 #1070: install the ONE hook dispatcher so PreToolUse / UserPromptSubmit /
+    # Stop / SemanticEvent events route to the declarative hooks config
+    # (<user_config>/hooks.json + <cwd>/.clio/hooks.json). Tests pre-install their
+    # own dispatcher; we only build a default when nothing is currently wired so the
+    # test-side dispatcher stays. Metadata lands on app.state for /v1/capabilities
+    # (the same wiring shape the deleted runtime registry used — no new store).
     try:
-        from clio_agent.runtime.hooks import (
-            _registry as _current_registry,
-        )
-        from clio_agent.runtime.hooks import (
-            build_hook_registry,
-            install_global_registry,
+        from clio_agent.gact.hooks import (
+            build_hook_dispatcher,
+            get_global_dispatcher,
+            install_global_dispatcher,
         )
 
-        if _current_registry is None:
-            registry = build_hook_registry()
-            install_global_registry(registry)
-            app.state.runtime_hook_registry_metadata = (
-                registry.metadata() if hasattr(registry, "metadata") else {}
-            )
-        else:
-            app.state.runtime_hook_registry_metadata = (
-                _current_registry.metadata() if hasattr(_current_registry, "metadata") else {}
-            )
-    except Exception:  # pragma: no cover - defensive  # noqa: BLE001 - registry-metadata unavailability recorded in app.state
+        dispatcher = get_global_dispatcher()
+        if dispatcher is None:
+            dispatcher = build_hook_dispatcher()
+            install_global_dispatcher(dispatcher)
+        app.state.runtime_hook_registry_metadata = (
+            dispatcher.metadata() if hasattr(dispatcher, "metadata") else {}
+        )
+    except Exception:  # pragma: no cover - defensive  # noqa: BLE001 - dispatcher-metadata unavailability recorded in app.state
         app.state.runtime_hook_registry_metadata = {
             "backend": "unavailable",
             "enabled": False,
             "error": "failed_to_initialize",
         }
-        pass
 
     # live LM config — what the TUI configured
     # us with. Distinct from boot-time env because PUT /providers/lm
@@ -2424,13 +2415,6 @@ def build_app(
     # The built-in tool catalog and the unified live catalog (bundled gateway +
     # installed third-party MCP servers) are owned by routes/catalog.py and
     # registered below via register_catalog_routes(app, deps).
-
-    # ---- /v1/hooks (SPEC §6.17 declarative hooks) --------------------
-    # Declarative event-hook CRUD is owned by routes/hooks.py; the
-    # direct-destructive-action guard the delete route needs travels on
-    # ``deps``. Distinct from clio_agent.runtime.hooks (in-process Python
-    # hooks the framework fires on tool/message events).
-    register_hooks_routes(app, deps)
 
     # ---- /v1/permissions (BBB23) + /v1/policies (SPEC §6.11.b) --------
     # Permission-request ledger CRUD (list/resolve) + declarative permission-

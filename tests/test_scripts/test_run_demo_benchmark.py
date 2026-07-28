@@ -142,7 +142,6 @@ def test_select_semantic_regression_lane_cases() -> None:
             "reasoning_cross_file_triage_nanoagents",
             "marketplace_mcp_calculator_scope",
             "marketplace_mcp_calculator_enabled_call",
-            "marketplace_packaged_hook_blocked_turn",
             "workspace_memory_scope_policy",
             "provider_swap_memory_followup",
         )
@@ -1809,7 +1808,6 @@ def test_semantic_regression_audit_reports_missing_proof_evidence() -> None:
     assert declared_row["passed"] is False
     assert "command_mcp_skill_scope" in "\n".join(declared_row["details"])
     assert "enabled_mcp_execution" in "\n".join(declared_row["details"])
-    assert "packaged_hook_invocation" in "\n".join(declared_row["details"])
     assert observed_row["passed"] is False
     assert "workspace_memory_scope" in "\n".join(observed_row["details"])
     assert case_row["passed"] is False
@@ -1908,59 +1906,6 @@ def test_enabled_mcp_execution_requires_enable_and_call_actions() -> None:
     )
 
     assert bench._case_observed_semantic_proofs(result) == ("enabled_mcp_execution",)
-
-
-def test_packaged_hook_invocation_requires_enable_and_trace_provenance() -> None:
-    case = bench.DemoCase(
-        case_id="hook_smoke",
-        title="hook smoke",
-        category="test",
-        prompt="prompt",
-        why="why",
-        expected="expected",
-        session_group="semantic",
-        agent_blueprint_id="hook-smoke",
-        semantic_proofs=("packaged_hook_invocation",),
-    )
-    hook_event = {
-        "event_type": "hook.pre_message.blocked",
-        "actor": {"hook": "pre_message"},
-        "payload": {
-            "handlers": [
-                {
-                    "source": "agent_blueprint",
-                    "agent_blueprint_id": "hook-smoke",
-                    "definition_path": "/marketplace/hook-smoke/hooks/pre_message.py",
-                    "status": "blocked",
-                }
-            ]
-        },
-    }
-    result = bench.DemoResult(
-        case=case,
-        session_id="sess_hook",
-        elapsed_s=1.0,
-        message=_message(text="packaged hook smoke"),
-        provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
-        benchmark_lane="semantic_regression",
-        agent_blueprint={"active_agent_blueprint_id": "hook-smoke"},
-        actions=[
-            {
-                "type": "agent_blueprint_hook_enable",
-                "ok": True,
-                "hook_id": "pre_message",
-                "trust": {"trusted": True, "source": "request"},
-            },
-            {
-                "type": "packaged_hook_probe",
-                "ok": True,
-                "hook_id": "pre_message",
-                "semantic_events": [hook_event],
-            },
-        ],
-    )
-
-    assert bench._case_observed_semantic_proofs(result) == ("packaged_hook_invocation",)
 
 
 def test_workspace_memory_scope_requires_structured_policy_actions() -> None:

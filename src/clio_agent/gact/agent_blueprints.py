@@ -387,7 +387,6 @@ def load_agent_blueprints(
 def validate_agent_blueprint_path(path: Path, *, scope: str = "session") -> dict[str, Any]:
     blueprint = parse_agent_blueprint_root(path, scope=scope)
     mcp_descriptors = load_mcp_descriptors(blueprint.root, scope=scope, blueprint_id=blueprint.id)
-    hook_descriptors = load_hook_descriptors(blueprint.root, scope=scope, blueprint_id=blueprint.id)
     declared_servers = blueprint.metadata.get("mcp_servers")
     declared_server_names = (
         list(declared_servers.keys()) if isinstance(declared_servers, dict) else []
@@ -410,20 +409,10 @@ def validate_agent_blueprint_path(path: Path, *, scope: str = "session") -> dict
             f"{descriptor.get('id', 'mcp')}: {warning}"
             for warning in descriptor.get("validation_warnings", [])
         )
-    for descriptor in hook_descriptors:
-        errors.extend(
-            f"{descriptor.get('id', 'hook')}: {error}"
-            for error in descriptor.get("validation_errors", [])
-        )
-        warnings.extend(
-            f"{descriptor.get('id', 'hook')}: {warning}"
-            for warning in descriptor.get("validation_warnings", [])
-        )
     return {
         "agent_blueprint": blueprint.to_wire(),
         "agents": [row.model_dump(exclude_none=True) for row in rows],
         "mcp_descriptors": mcp_descriptors,
-        "hook_descriptors": hook_descriptors,
         "enabled": blueprint.enabled and not errors,
         "validation_errors": errors,
         "validation_warnings": warnings,
@@ -484,16 +473,6 @@ _MEMORY_TOOL_NAMES = {
     "memory_read_session_summary",
     "memory_read_context_frame",
 }
-
-_HOOK_EVENT_NAMES = {
-    "pre_tool",
-    "post_tool",
-    "pre_message",
-    "post_message",
-    "semantic_event",
-    "on_error",
-}
-
 
 def _mapping_field(meta: dict[str, Any], *keys: str) -> dict[str, Any]:
     for key in keys:
@@ -717,53 +696,6 @@ def load_mcp_descriptors(
                 "scope": scope,
                 "agent_blueprint_id": blueprint_id,
                 "definition_path": str(path),
-                "validation_errors": errors,
-                "validation_warnings": warnings,
-            }
-        )
-    return rows
-
-
-def load_hook_descriptors(
-    root: Path,
-    *,
-    scope: str,
-    blueprint_id: str,
-) -> list[dict[str, Any]]:
-    """Discover disabled packaged Python hooks in an Agent Blueprint."""
-
-    hooks_root = root / "hooks"
-    if not hooks_root.is_dir():
-        return []
-    rows: list[dict[str, Any]] = []
-    for path in sorted(hooks_root.glob("*.py")):
-        event = path.stem.strip()
-        errors: list[str] = []
-        warnings = ["Blueprint packaged hooks are disabled until explicitly enabled and trusted"]
-        if event not in _HOOK_EVENT_NAMES:
-            errors.append(f"unsupported hook event: {event}")
-        try:
-            data = path.read_bytes()
-        except OSError as exc:
-            data = b""
-            errors.append(f"unable to read hook file: {exc}")
-        rows.append(
-            {
-                "id": event,
-                "name": event,
-                "title": event.replace("_", " ").title(),
-                "event": event,
-                "status": "disabled",
-                "enabled": False,
-                "source": "agent_blueprint",
-                "scope": scope,
-                "agent_blueprint_id": blueprint_id,
-                "definition_path": str(path),
-                "checksum": hashlib.sha256(data).hexdigest() if data else "",
-                "trust": {
-                    "policy": "explicit",
-                    "trusted": False,
-                },
                 "validation_errors": errors,
                 "validation_warnings": warnings,
             }

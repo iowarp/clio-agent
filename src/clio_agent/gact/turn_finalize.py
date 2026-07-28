@@ -708,59 +708,41 @@ def finalize_turn(
             },
         )
     )
-    # iowarp/clio-agent#20: post_message hook runs AFTER persistence
-    # so user audit code sees the settled assistant + can ship to
-    # external systems. Errors are swallowed (post_* contract).
-    try:
-        from clio_agent.runtime.hooks import fire as _fire_hook  # noqa: PLC0415
+    # P2.3 PostToolBatch: fire ONCE per turn, after the turn's whole tool batch
+    # resolved and before Stop/next step — only when the turn ran ≥1 tool (an empty
+    # batch is not a batch). ``state.tools_called`` is the honest clio-owned batch
+    # boundary (the DSPy ReAct loop owns per-model-step rounds; when it exposes a
+    # finer seam this moves there with no contract change).
+    if state.tools_called:
+        from clio_agent.gact.hooks import fire_post_tool_batch  # noqa: PLC0415
 
-        _emit_semantic_event(
-            state.app,
-            state.sid,
-            "hook.invocation.started",
+        fire_post_tool_batch(
+            state.tools_called,
+            session_id=state.sid,
             turn_id=state.turn_id,
-            trace_id=state.trace_id,
-            status="running",
-            summary="post_message hook dispatch started.",
-            actor={"hook": "post_message"},
-            subject={"message_id": assistant_msg.id},
-            payload={"assistant": assistant_msg.model_dump(exclude_none=True)},
+            cwd=str(getattr(state.sess, "workspace_root", "") or ""),
         )
-        _fire_hook(
-            "post_message",
-            state.sid,
-            assistant_msg.model_dump(exclude_none=True),
-            hook_scope={
-                "session_id": state.sid,
-                "workspace_id": getattr(state.sess, "workspace_id", ""),
-                "blueprint_id": _runtime_active_agent_blueprint_id(state.app, state.sid),
-            },
-        )
-        _emit_semantic_event(
-            state.app,
-            state.sid,
-            "hook.invocation.completed",
-            turn_id=state.turn_id,
-            trace_id=state.trace_id,
-            summary="post_message hook dispatch completed.",
-            actor={"hook": "post_message"},
-            subject={"message_id": assistant_msg.id},
-            payload={},
-        )
-    except Exception:  # noqa: BLE001
-        _emit_semantic_event(
-            state.app,
-            state.sid,
-            "hook.invocation.failed",
-            turn_id=state.turn_id,
-            trace_id=state.trace_id,
-            status="failed",
-            summary="post_message hook dispatch failed and was swallowed by policy.",
-            actor={"hook": "post_message"},
-            subject={"message_id": assistant_msg.id},
-            payload={},
-        )
-        pass
+    # P2.5 #1073: Stop hooks (the ported ``post_message`` consumer) run AFTER
+    # persistence so user audit code sees the settled assistant + can ship to
+    # external systems. They are now a BOUNDED completion gate: a Stop hook ``deny``
+    # means "not done — re-drive one more turn" (test-gate/todo-gate), re-driven on
+    # the #1031 idle-hook seam and hard-bounded by a per-hook ``loopLimit`` + a global
+    # cap. When the cap trips the turn settles DONE with a typed ``stop_loop_cap``
+    # reason — never an infinite loop. The whole finalize-boundary protocol (spans +
+    # bounded self-loop + swallowed-error contract) lives in the hooks owner module
+    # (``stop_loop.dispatch_stop_at_finalize``), not inlined here (no-accretion).
+    from clio_agent.gact.hooks.stop_loop import dispatch_stop_at_finalize  # noqa: PLC0415
+
+    dispatch_stop_at_finalize(
+        state.app,
+        session_id=state.sid,
+        turn_id=state.turn_id,
+        trace_id=state.trace_id,
+        cwd=str(getattr(state.sess, "workspace_root", "") or ""),
+        assistant_msg_id=assistant_msg.id,
+        assistant_payload=assistant_msg.model_dump(exclude_none=True),
+        blueprint_id=_runtime_active_agent_blueprint_id(state.app, state.sid),
+    )
     if not (
         state.cancelled_turn
         and state.error_info is not None

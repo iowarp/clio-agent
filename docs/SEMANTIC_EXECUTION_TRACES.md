@@ -44,7 +44,9 @@ Current CLIO events include:
   `delegation.failed`
 - `tool.call.started`, `tool.call.completed`
 - `hook.invocation.started`, `hook.invocation.completed`,
-  `hook.invocation.failed`, `hook.pre_message.blocked`
+  `hook.invocation.blocked`, `hook.invocation.deferred`
+- `hook.invoked` — the P2.7 per-invocation governance audit (one per hook run;
+  trace-only, never on the live UI wire)
 - `memory.search.completed`, `memory.compacted`
 - `permission.requested`
 - `user_question.created`
@@ -110,71 +112,66 @@ file backend.
 
 ## Hooks
 
-The runtime hook registry supports a side-effect hook:
+CLIO ships ONE hook system (`clio_agent.gact.hooks`, P2.2 #1070): a declarative,
+stable-id, tighten-only dispatcher over an internal adapter interface. A hook is a
+declared entry, not a Python file dropped in a directory — the subprocess adapter
+speaks the industry exit-0/exit-2 wire (a JSON envelope on stdin; exit 0 => parse
+stdout as the tagged-union output, empty => allow; exit 2 => deny with stderr as
+the model-facing reason; any other exit => a non-blocking infrastructure error).
 
-```python
-def semantic_event(event: dict) -> None:
-    ...
+Events this slice ships (the ports of the old registry's live events):
+
+- `PreToolUse` — deny-capable. Fires at the tool gate AFTER the structural
+  `is_read_only` fast-allow, so a hook can never gate a provably read-only call. A
+  hook deny blocks the tool and its reason reaches the model.
+- `UserPromptSubmit` — deny-capable. A deny vetoes the turn.
+- `Stop` — post-turn observation (the old `post_message`).
+- `SemanticEvent` — observation over every emitted semantic event (the old
+  `semantic_event`).
+
+CLIO emits `hook.invocation.*` semantic events around `UserPromptSubmit` and
+`Stop` dispatch so trace consumers see hook activity in the timeline. A blocked
+`UserPromptSubmit` hook records `hook.invocation.blocked` and `turn.failed`. In
+addition, EVERY hook invocation (any event) emits exactly one `hook.invoked`
+governance-audit event — see `docs/HOOKS.md`.
+
+Configuration is a single declarative JSON file discovered at user scope
+(`<user_config_dir>/hooks.json`) then project scope (`<cwd>/.clio/hooks.json`),
+merged so a project entry overrides a user entry with the same `id`. Set
+`CLIO_HOOKS_CONFIG` to point at one explicit file instead. Each entry:
+
+```json
+{
+  "version": 1,
+  "hooks": [
+    {
+      "id": "block-secrets",
+      "on": ["PreToolUse"],
+      "match": { "tool": "^(fs_apply_edit_write)$",
+                 "annotations": { "destructive": true },
+                 "argsPattern": "\\.env" },
+      "run": { "type": "command", "command": "./hooks/secrets.sh" },
+      "timeoutMs": 30000,
+      "failClosed": true,
+      "enabled": true
+    }
+  ]
+}
 ```
 
-Hook failures for `semantic_event` are fail-open and swallowed, matching audit
-hook behavior. Policy/enforcement hooks should continue to use explicit
-pre-event hooks such as `pre_tool` or `pre_message`.
+Invariants: a required stable `id` (never positional); tool regexes are anchored
+by default (`Edit` does not match `NotebookEdit`); annotation matching against the
+wire `tool_annotations` block covers MCP tools nobody enumerated (fail-safe
+defaults per MCP); a hook may only TIGHTEN (a hook `allow` never lifts a policy
+deny); a hook FAILURE is distinct from a user rejection (a timeout/crash for a
+deny-capable `failClosed` hook denies with a typed "not a user rejection"
+message); most-restrictive-wins across N hooks (`deny > ask > allow`).
 
-CLIO also emits `hook.invocation.*` semantic events around `pre_message` and
-`post_message` dispatch so trace consumers can see hook activity in the run
-timeline. Matched handlers are included in the event payload with hook source,
-scope, checksum, installed path, and invocation status. A blocked `pre_message`
-hook records the same handler provenance on `hook.pre_message.blocked` and
-`turn.failed`.
-
-Runtime hook loading is configured through a small backend factory:
-
-```bash
-CLIO_HOOKS_BACKEND=local_python
-CLIO_HOOKS_DIR=/path/to/hooks
-CLIO_HOOK_TIMEOUT_S=5.0
-```
-
-`CLIO_HOOKS_BACKEND` accepts:
-
-- `local_python`: default. Load Python files from `CLIO_HOOKS_DIR` or the XDG
-  default hook directory.
-- `none`: disable runtime hook dispatch.
-- `factory`: load a custom Python factory from `CLIO_HOOKS_FACTORY` using
-  `module:function` syntax. The factory returns a HookRegistry-compatible
-  object with `fire()` and `count()`.
-
-Local Python hooks can be global or scoped:
-
-```text
-hooks/
-  pre_message.py
-  post_message.py
-  workspaces/<workspace_id>/pre_message.py
-  sessions/<session_id>/post_message.py
-  blueprints/<blueprint_id>/semantic_event.py
-```
-
-Global hooks always run. Scoped hooks run only when the runtime dispatch has
-matching scope metadata. Message hooks currently provide session, workspace, and
-active Blueprint ids. `semantic_event` hooks infer session/workspace scope from
-the event payload.
-
-Agent Blueprints may package Python hooks as `hooks/<event>.py`. They are
-reported as disabled descriptors and require an explicit enable/trust call before
-CLIO copies them into `blueprints/<blueprint_id>/` and reloads the local Python
-runtime hook registry. The enablement path also writes sidecar metadata so
-semantic traces can attribute a runtime hook invocation back to the source
-Blueprint file. See [Agent Blueprint Packaged Hooks](AGENT_BLUEPRINT_PACKAGED_HOOKS.md).
-
-`/v1/capabilities` reports `x_clio_hook_backend` and
-`x_clio_hook_events` so clients can see the configured backend and handler
-counts.
-
-`CLIO_HOOK_TIMEOUT_S` bounds individual hook calls. Pre-event hook timeouts fail
-closed through the same `PermissionError` path as other pre-hook failures.
-Post-event and `semantic_event` hook failures are fail-open side effects.
+`/v1/capabilities` reports `x_clio_hook_backend` (`declarative`) and
+`x_clio_hook_events` (per-event handler counts) so clients can see the active
+dispatcher and its configured hooks. Every degraded path (timeout, crash, missing
+binary, unparseable stdout, fail-closed deny) records a typed reason queryable via
+`clio_agent.gact.hooks.hook_reasons()` and the `hook.fallback` audit line.
 
 ## Benchmark Reports
 

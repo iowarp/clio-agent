@@ -276,6 +276,20 @@ class SessionStore:
         with self._lock:
             self._sessions[sid] = sess
             self._flush()
+        # P2.3 SessionStart lifecycle hook (observation): fires exactly once per
+        # created session, after it is persisted. Never blocks — the dispatcher
+        # returns a no-op outcome when no hook is configured.
+        from clio_agent.gact.hooks import dispatch_session_start  # noqa: PLC0415
+
+        dispatch_session_start(
+            session_id=sid,
+            payload={
+                "workspace_id": workspace_id,
+                "parent_session_id": parent_session_id,
+                "agent": dict(sess.agent),
+                "mode": sess.mode,
+            },
+        )
         return sess
 
     def get(self, sid: str) -> Optional[Session]:
@@ -304,6 +318,12 @@ class SessionStore:
             self._sessions.pop(sid, None)
             if existed:
                 self._flush()
+        if existed:
+            # P2.3 SessionEnd lifecycle hook (observation): fires exactly once, only
+            # when a session actually existed and was removed.
+            from clio_agent.gact.hooks import dispatch_session_end  # noqa: PLC0415
+
+            dispatch_session_end(session_id=sid)
         return existed
 
     def update(

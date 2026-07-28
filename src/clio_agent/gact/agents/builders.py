@@ -215,14 +215,12 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
 
     import dspy  # noqa: PLC0415
 
-    from clio_agent.config import (  # noqa: PLC0415
-        create_chat_adapter,
-        create_lm,
-    )
+    from clio_agent.config import create_chat_adapter  # noqa: PLC0415
     from clio_agent.gact.app import (  # noqa: PLC0415
         _cancelled_error_info,
         _coerce_expert_handoff_rows,
     )
+    from clio_agent.lm.hooked_lm import create_hooked_lm  # noqa: PLC0415
     from clio_agent.prompts import PromptRegistry  # noqa: PLC0415
     from clio_agent.providers.credentials import CredentialResolver  # noqa: PLC0415
 
@@ -283,7 +281,7 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
             # dspy.context boundary itself is unchanged (design §4).
             cfg = self._resolved_spec.materialize(self._cred_resolver)
             with dspy.context(
-                lm=create_lm(cfg),
+                lm=create_hooked_lm(cfg),
                 adapter=create_chat_adapter(cfg),
             ):
                 result = self.answer_synthesizer(
@@ -1218,7 +1216,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
 
     import dspy  # noqa: PLC0415
 
-    from clio_agent.config import create_chat_adapter, create_lm  # noqa: PLC0415
+    from clio_agent.config import create_chat_adapter  # noqa: PLC0415
     from clio_agent.gact.agents.module_variants import (  # noqa: PLC0415
         wrap_module_variant as _wrap_module_variant,
     )
@@ -1230,6 +1228,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
         _tool_agent_empty_answer_fallback,
         _workflow_state_from_outputs,
     )
+    from clio_agent.lm.hooked_lm import create_hooked_lm  # noqa: PLC0415
     from clio_agent.providers.credentials import CredentialResolver  # noqa: PLC0415
 
     class BlueprintExpertModule(dspy.Module):
@@ -1500,7 +1499,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                         # auto-compaction can read each call's exact prompt_tokens.
                         with (
                             dspy.track_usage(),
-                            dspy.context(lm=create_lm(_attempt_config), adapter=adapter),
+                            dspy.context(lm=create_hooked_lm(_attempt_config), adapter=adapter),
                         ):
                             result = self.program(**_call_kwargs)
                         break
@@ -1557,7 +1556,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                                     for _re_i in range(1, _max_repairs + 1):
                                         _re_temp = _repair_temperature(_base_temp, _re_i)
                                         with dspy.context(
-                                            lm=create_lm(
+                                            lm=create_hooked_lm(
                                                 replace(_fwd_config, temperature=_re_temp)
                                             ),
                                             adapter=adapter,
@@ -1700,16 +1699,14 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
 
     import dspy  # noqa: PLC0415
 
-    from clio_agent.config import (  # noqa: PLC0415
-        create_chat_adapter,
-        create_lm,
-    )
+    from clio_agent.config import create_chat_adapter  # noqa: PLC0415
     from clio_agent.gact.app import (  # noqa: PLC0415
         _cancelled_error_info,
         _coerce_expert_handoff_rows,
         _extract_tools_called_from_trajectory,
         _tool_agent_empty_answer_fallback,
     )
+    from clio_agent.lm.hooked_lm import create_hooked_lm  # noqa: PLC0415
     from clio_agent.prompts import PromptRegistry  # noqa: PLC0415
     from clio_agent.providers.credentials import CredentialResolver  # noqa: PLC0415
 
@@ -1810,7 +1807,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                 with (
                     dspy.track_usage(),
                     dspy.context(
-                        lm=create_lm(cfg),
+                        lm=create_hooked_lm(cfg),
                         adapter=create_chat_adapter(cfg),
                     ),
                 ):

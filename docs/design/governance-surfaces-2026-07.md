@@ -208,10 +208,74 @@ references: `agent_blueprints.py:490/494` + `load_hook_descriptors` (727-771),
   offline-replay machinery we already build. **Nothing here is postponed to a later spike** — the
   `defer` *capability* is a governance outcome (suspend→approve-out-of-band→resume), distinct from
   "postpone the work"; we build the capability now and postpone none of it.
+
+  **P2.6 implementation status (#1074).** Owner module `gact/hooks/defer.py`; `defer` is a
+  first-class merge decision in `wire.py` (rank `deny > defer > ask > synthesize > modify > allow`,
+  so *deny beats defer*).
+  - **PreToolUse within-session defer — SHIPPED.** `park_pretool_defer` reuses the interactive
+    gate's parked-`threading.Event` primitive (`app.state.permissions` + `permission_events`, no new
+    store), with the ~600s→deny timeout lifted to a **configurable long bound** (`hooks.defer_timeout`
+    / `CLIO_HOOKS_DEFER_TIMEOUT`, default 24h). `permission_gate._make_permission_gate` evaluates a
+    policy `deny` **before** parking (deny beats defer). An out-of-band `POST /v1/permissions/{pid}`
+    (→ `resolve_permission`) wakes the parked call: `allow` runs the tool (or the `modify`
+    (`input`) / `synthesize` (`result`) the approval carries → the `tool_interceptor`); `deny` →
+    a typed `DenyDecision`. Fail-safe: no-session and timeout → `deny` with a typed reason
+    (`hook_defer_no_session` / `hook_defer_timeout`), never a silent auto-approve. Resume is
+    once-only (`resolve_permission` is idempotent + the event fires once). The **thread-occupancy
+    tradeoff** is documented on `defer_timeout_s` (a bounded long park, never an infinite pin).
+  - **Turn-ending defer (`Stop` / `UserPromptSubmit`) — SHIPPED.** No held thread: `suspend_turn_defer`
+    persists a pending approval (kind `turn_defer`) + flips the session to `waiting_user`; the SAME
+    `resolve_permission` path calls `resume_turn_defer`, which stages the #1031 deferred-resume
+    (loop-inbox fold when busy, else `start_background_user_turn`). UserPromptSubmit: `allow`
+    re-drives the original prompt as a new turn (carrying `HOOK_DEFER_RESUME_META` so the hook does
+    not re-defer the just-approved prompt — the resume once-gate), `deny` rejects it. Stop: `allow`
+    releases (completion accepted), `deny` re-drives one more turn with the feedback. Owner modules
+    `gact/hooks/user_prompt.py` (the UserPromptSubmit boundary, extracted from `turn.py`) +
+    `gact/hooks/stop_loop.py` (`run_stop_hooks` grows a `deferred` branch).
+  - **Cross-restart durability — DURABLE SURFACE shipped; deterministic replay-resume is the flagged
+    RESIDUAL (not stubbed-as-working).** Every defer mirrors its pending state onto `session.metadata`
+    (`hook_defer_pending`, the #948 no-fifth-store projection) so a restart can *see* what was
+    outstanding. What is NOT yet wired: on boot the in-memory `app.state.permissions` ledger starts
+    empty, so a persisted pending defer is not yet resolvable/replayable after a restart. The concrete
+    remaining work (a follow-up slice, riding the P2.3 tool-synthesize + P2.4 `dspy.LM`-synthesize
+    recording): (1) **rehydrate** pending `hook_defer_pending` rows from `session.metadata` into
+    `app.state.permissions` at `build_app` startup so `POST /v1/permissions/{pid}` resolves them again;
+    (2) for a mid-loop PreToolUse defer whose executor thread is gone, **replay** the recorded
+    trajectory deterministically (BeforeModel synthesize + tool synthesize served from the recording)
+    up to the defer point, then inject the approved decision and continue live. Turn-ending defers are
+    closer to restart-durable already (they resume as a *new* turn, needing only the ledger
+    rehydration in (1)), so they are the natural first consumer of the rehydrate step.
 - **P2.7 Trust + introspection + audit.** Content-hash fingerprint for repo-shipped hooks (re-prompt
   on change), `allowManagedHooksOnly` admin lockdown, a `/hooks` inspection route (the real
   registry's `metadata()`/`matching_handlers()` data), **audit via the semantic-event highway**
   (RULE 4 / #737 — *not* a new JSONL store), no-TTY.
+
+  **P2.7 implementation status (#1075) — SHIPPED.**
+  - **Trust** — `gact/hooks/trust.py`: a sha256 `compute_fingerprint` over each loaded hook's
+    declarative config + the resolved command/script bytes, keyed by stable `id`, compared to a
+    colocated `hooks.trust.json` (`{id: fingerprint}` — hook config, not a fifth store). `evaluate_trust`
+    (called from `build_hook_dispatcher`) tags each entry `trusted`/`untrusted` (TOFU on first sight);
+    an `untrusted` (content-changed) hook is dropped from `HookEntry.runs_for`/`matching` — it never runs
+    silently — and records the typed `hook_untrusted_content_changed` reason. `allowManagedHooksOnly`
+    (`hooks.allow_managed_only` / `CLIO_HOOKS_ALLOW_MANAGED_ONLY`) drops every non-managed source in
+    `discover_hook_entries`; scopes are `user < project < managed` with a new `HookEntry.scope` label.
+  - **Introspection** — read-only `GET /v1/hooks` in `routes/system.py` off `HookDispatcher.inspect()`
+    (id, on-events, match, source scope, trust, enabled/runs) + the bounded recent audit records.
+  - **Audit** — `gact/hooks/audit.py`: `HookDispatcher.dispatch` emits exactly one `hook.invoked`
+    semantic event per invocation (decision / denial / infra error / pre-exec rejection) on the highway
+    (trace-only, added to `SSE_TRACE_ONLY_EVENT_TYPES`), resolving the live app from the keystone-bound
+    `context.active_app()` (no new global, no `build_app` wiring line). `SemanticEvent`-event invocations
+    are skipped (highway-recursion guard) but still ring-captured. The bounded `_RECENT` ring is the
+    authoritative always-on capture; the highway event is its served projection.
+  - **Deletions (grep-clean)** — the dead packaged-hook enable subsystem: `run_demo_benchmark.py`'s
+    `_enable_blueprint_hook_for_case` / `_probe_packaged_hook_for_case` / `_packaged_hook_invocation_observed`
+    + the `marketplace_packaged_hook_blocked_turn` case + `packaged_hook_invocation` proof (it POSTed to a
+    never-implemented `/v1/agent-blueprints/{id}/hooks/{hook_id}/enable`); `docs/AGENT_BLUEPRINT_PACKAGED_HOOKS.md`
+    + its `docs/README.md` link; stale `hook.pre_message.blocked` doc refs.
+  - **Docs** — `docs/HOOKS.md` (wire contract, config schema, trust, events, exit-0/2 adapter, audit).
+  - **CONTRACT SWEEP (cross-repo, tracked — do NOT edit the gact-tui submodule here):** the gact-tui
+    `contract/SPEC.md` `x_clio_hook_backend` enum needs `declarative` added to match the backend name this
+    build reports (see the note on `_BACKEND_NAME` in `dispatcher.py`).
 
 **Files:** delete `routes/hooks.py`, `runtime/hooks.py`, `tests/test_gact/test_hooks.py`; new
 `gact/hooks/` (dispatcher, adapters, wire, trust); `execution.py` (`tool_interceptor` producer);

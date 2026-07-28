@@ -723,13 +723,6 @@ def test_direct_delete_policy_deny_blocks_app_state_routes(tmp_path: Path) -> No
         assert resp.status_code == 403
         assert c.get(f"/v1/workspaces/{workspace['id']}").status_code == 200
 
-        # Hook delete.
-        hook = c.post("/v1/hooks", json={"event": "post_message", "command": "echo ok"}).json()
-        _put_single_policy(c, tool_name_pattern="gact.hook.delete", action="deny")
-        resp = c.delete(f"/v1/hooks/{hook['id']}")
-        assert resp.status_code == 403
-        assert hook["id"] in app.state.declarative_hooks
-
         # External MCP server delete.
         app.state.external_mcp_servers = {
             "mcp_policy": {

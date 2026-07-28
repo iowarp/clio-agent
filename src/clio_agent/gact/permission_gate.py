@@ -417,6 +417,7 @@ def resolve_permission(
     action: str,
     *,
     grantor: str = GRANTOR_USER,
+    intercept: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Resolve one pending permission row and wake any blocked bridge thread.
 
@@ -444,6 +445,14 @@ def resolve_permission(
     row["action"] = action
     row["resolved_at"] = datetime.now(timezone.utc).isoformat()
     row["grantor"] = grantor
+    # P2.6: an APPROVED PreToolUse defer may carry the modify/synthesize the approval
+    # decides — stashed on the row BEFORE the event wake below so the parked call reads
+    # it and drives the ``tool_interceptor`` (run-with-modified-args / synthesize).
+    if intercept is not None and action in {"allow", "allow_session", "allow_workspace"}:
+        if "result" in intercept:
+            row["resolution_result"] = intercept.get("result")
+        elif isinstance(intercept.get("input"), Mapping):
+            row["resolution_input"] = dict(intercept["input"])
     policy = _append_permission_policy_from_resolution(app, row=row, action=action)
     if policy is not None:
         row["policy"] = policy
@@ -460,9 +469,20 @@ def resolve_permission(
 
         emit_boundary_for_derived_policy(app, row, policy)
     # iowarp/clio-agent#7: wake any MCPToolBridge thread waiting on this permission.
+    # A parked PreToolUse defer (P2.6) waits on this SAME event, so approving/denying
+    # it out-of-band wakes the parked call, which reads ``row["action"]`` and returns
+    # allow (runs the tool / applies the approval's modify/synthesize) or a typed deny.
     evt = app.state.permission_events.pop(pid, None)
     if evt is not None:
         evt.set()
+    # P2.6: a TURN-ending defer (Stop / UserPromptSubmit) holds NO thread — it suspended
+    # the session. Resolving its row stages the deferred-resume (approve → new turn /
+    # release; deny → tighten) via the owner module. Runs exactly once (this body only
+    # runs on the pending→resolved transition, which is idempotent above).
+    if row.get("kind") == "turn_defer":
+        from clio_agent.gact.hooks.defer import resume_turn_defer  # noqa: PLC0415
+
+        resume_turn_defer(app, row, action)
     # B5 #979.8: surface the resolution on the highway/trace too so the request→resolution
     # lifecycle is consistently captured AND SSE-served. Guarded — a resolution must never
     # fail on an emit.
@@ -528,19 +548,19 @@ def _make_permission_gate(app: "FastAPI"):
         args: Mapping[str, Any],
         context: Mapping[str, Any] | None = None,
     ) -> str:
-        # iowarp/clio-agent#20: user-defined pre_tool hook can veto
-        # the call by raising PermissionError. Returns ignored;
-        # only the raise/no-raise distinction matters.
-        try:
-            from clio_agent.runtime.hooks import fire as _fire_hook
+        # P2.3 single-fire hygiene: clear any per-call intercept stash at the very
+        # start so a read-only fast-allow (below) — or a prior call whose interceptor
+        # never ran (a policy deny after a hook allow, a circuit break) — can never
+        # let the NEXT tool's interceptor consume a stale synthesize/modify decision.
+        from clio_agent.gact.hooks import stash_pre_tool_intercept  # noqa: PLC0415
 
-            _fire_hook("pre_tool", name, dict(args))
-        except PermissionError:
-            return "deny"
+        stash_pre_tool_intercept(None)
         # #1032: reads are NEVER gated. A provably read-only call (MCP
         # readOnlyHint annotation OR a static catalog ``read`` tag) fast-allows
-        # here, BEFORE the plan/architect lock — the structural invariant that no
-        # mode or policy can gate a read. Everything else proceeds to approval.
+        # here as the FIRST branch — before any hook or the plan/architect lock —
+        # the structural invariant that no mode, policy, or hook can gate a read.
+        # (P2.2 #1070 fixes the old ordering bug where the pre_tool hook fired
+        # BEFORE this branch and could gate a read-only call.)
         if is_read_only("tool", name, args, context):
             return "allow"
         subject = (
@@ -551,6 +571,72 @@ def _make_permission_gate(app: "FastAPI"):
         # Prefer the session currently driving the turn. Recency is
         # only a fallback for truly out-of-band tool calls.
         sid, current = _resolve_tool_session(app)
+        # P2.2 #1070: PreToolUse hooks (the ported ``pre_tool`` consumer, deny-capable
+        # and TIGHTEN-ONLY). A hook deny blocks the call and its reason reaches the
+        # model via ``DenyDecision``; a hook allow proceeds to the policy match below
+        # (a hook allow can NEVER lift a downstream policy deny). A hook infrastructure
+        # failure is fail-closed per-hook inside the dispatcher and surfaces as a deny
+        # whose message says it is a hook failure, NOT a user rejection.
+        from clio_agent.gact.hooks import dispatch_pre_tool  # noqa: PLC0415
+
+        hook_outcome = dispatch_pre_tool(
+            name,
+            dict(args),
+            session_id=sid,
+            turn_id=str(getattr(current, "current_turn_id", "") or ""),
+            cwd=str(getattr(current, "workspace_root", "") or ""),
+            context=context,
+        )
+        if hook_outcome.denied:
+            # Clear any stale intercept so the (skipped) interceptor never fires on
+            # this denied call, then block with the hook's reason.
+            stash_pre_tool_intercept(None)
+            _record_resolved_permission(
+                app,
+                session_id=sid,
+                tool_name=name,
+                args=args,
+                status="auto_denied",
+                action="deny",
+                summary=f"{subject} {name!r} blocked by a PreToolUse hook",
+                reason="hook_deny",
+            )
+            return DenyDecision(
+                hook_outcome.reason or f"tool call {name!r} denied by a PreToolUse hook"
+            )
+        # P2.6: a PreToolUse ``defer`` PARKS this call for out-of-band approval (the
+        # headline durable-defer path). deny beats defer (tighten-only): a policy deny
+        # is evaluated FIRST so a matching deny-rule still blocks rather than parks;
+        # otherwise the call parks on the existing gate primitive with the timeout
+        # lifted and resolves from any out-of-band channel (see gact/hooks/defer.py).
+        if hook_outcome.is_defer:
+            mode = getattr(current, "mode", "") if current is not None else ""
+            defer_policy_action, defer_plan_msg = _policy_detail_for_tool(
+                app, session_id=sid, session=current, tool_name=name, args=args, mode=mode
+            )
+            if defer_policy_action == "deny":
+                stash_pre_tool_intercept(None)
+                _record_resolved_permission(
+                    app,
+                    session_id=sid,
+                    tool_name=name,
+                    args=args,
+                    status="auto_denied",
+                    action="deny",
+                    summary=f"{subject} {name!r} blocked by permission policy",
+                    reason="policy_deny",
+                )
+                return DenyDecision(defer_plan_msg) if defer_plan_msg else "deny"
+            from clio_agent.gact.hooks.defer import park_pretool_defer  # noqa: PLC0415
+
+            return park_pretool_defer(
+                app, sid=sid, name=name, args=args, subject=subject, outcome=hook_outcome
+            )
+        # P2.3: a non-denied PreToolUse ``modify``/``synthesize`` rides forward to the
+        # already-wired ``tool_interceptor`` slot. Stash it on the per-call context
+        # var (single-fire: PreToolUse dispatched exactly once, here) — the interceptor
+        # is a pure consumer that reads it after this gate returns "allow".
+        stash_pre_tool_intercept(hook_outcome)
         # P1.1 #1063: the plan/architect read-only lock is no longer a predicate here (it was
         # copy-pasted into three modules). It is now a set of built-in plan_acl rows the ONE
         # resolver evaluates — passing the session mode makes ``resolve`` deny every non-read tool

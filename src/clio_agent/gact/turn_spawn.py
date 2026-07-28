@@ -570,6 +570,21 @@ def _launch(app: "FastAPI", task: AgentTask, spec: TaskSpec) -> AgentTask:
     )
     persist_agent_task(app, running)
     publish_agent_task_event(app, running, AGENT_TASK_EVENTS[STATUS_RUNNING])
+    # P2.3 SubagentStart lifecycle hook (observation): fires exactly once when the
+    # child turn transitions queued→running (reuses the AgentTask lifecycle).
+    from clio_agent.gact.hooks import dispatch_subagent_start  # noqa: PLC0415
+
+    dispatch_subagent_start(
+        session_id=task.child_session_id,
+        cwd=str(getattr(child, "workspace_root", "") or ""),
+        payload={
+            "task_id": task.task_id,
+            "parent_session_id": task.parent_session_id,
+            "child_expert_id": spec.child_expert_id,
+            "depth": task.depth,
+            "mode": spec.mode,
+        },
+    )
 
     child_task = app.state.in_flight_turns.get(task.child_session_id)
     if child_task is not None:
@@ -582,6 +597,28 @@ def _launch(app: "FastAPI", task: AgentTask, spec: TaskSpec) -> AgentTask:
         # The turn already settled (a very fast child); collect now.
         _on_child_done(app, task.task_id, task.child_session_id, spec.mode)
     return running
+
+
+def _fire_subagent_stop(app: "FastAPI", updated: AgentTask, child_sid: str) -> None:
+    """Fire the ``SubagentStop`` lifecycle hook exactly once at a child's terminal.
+
+    Observation-only (this slice): reuses the AgentTask terminal transition. The
+    ``is_terminal`` guard in :func:`_on_child_done` ensures one call per child.
+    """
+
+    from clio_agent.gact.hooks import dispatch_subagent_stop  # noqa: PLC0415
+
+    child_sess = app.state.sessions.get(child_sid)
+    dispatch_subagent_stop(
+        session_id=child_sid,
+        cwd=str(getattr(child_sess, "workspace_root", "") or ""),
+        payload={
+            "task_id": updated.task_id,
+            "parent_session_id": updated.parent_session_id,
+            "status": updated.status,
+            "error_reason": getattr(updated, "error_reason", "") or "",
+        },
+    )
 
 
 def _on_child_done(app: "FastAPI", task_id: str, child_sid: str, mode: str) -> None:
@@ -614,6 +651,7 @@ def _on_child_done(app: "FastAPI", task_id: str, child_sid: str, mode: str) -> N
             updated = reg.get(task_id) or task
         persist_agent_task(app, updated)
         publish_agent_task_event(app, updated, AGENT_TASK_EVENTS[updated.status])
+        _fire_subagent_stop(app, updated, child_sid)
         _admit_next_queued(app)
         return
 
@@ -667,6 +705,7 @@ def _on_child_done(app: "FastAPI", task_id: str, child_sid: str, mode: str) -> N
 
     persist_agent_task(app, updated)
     publish_agent_task_event(app, updated, AGENT_TASK_EVENTS[updated.status])
+    _fire_subagent_stop(app, updated, child_sid)
     # Producer A (#1035): a child finishing DURING the parent's turn wakes the
     # parent mid-turn via the loop inbox (gated on the parent being busy). This is
     # a latency optimization only — ``notify_pending`` stays set as the next-turn

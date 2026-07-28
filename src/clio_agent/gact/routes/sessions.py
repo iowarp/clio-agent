@@ -664,6 +664,16 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 "reason": "transcript is empty after part filtering",
             }
 
+        # P2.3 PreCompact lifecycle hook (observation): fires exactly once, before
+        # the transcript is summarised into memory (there is real work to compact).
+        from clio_agent.gact.hooks import dispatch_pre_compact  # noqa: PLC0415
+
+        dispatch_pre_compact(
+            session_id=sid,
+            cwd=str(getattr(sess, "workspace_root", "") or ""),
+            payload={"message_count": len(ledger), "transcript_chars": len(transcript)},
+        )
+
         agent = app.state.agent
         if agent is None:
             raise HTTPException(

@@ -64,7 +64,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # minimized to concise docstrings; the per-op payload passing is irreducible. Ratchet
     # down with the #714/#767 decomposition.
     "src/clio_agent/arc/working_set_fold.py": 919,
-    "src/clio_agent/gact/agent_blueprints.py": 1103,
+    "src/clio_agent/gact/agent_blueprints.py": 1035,
     # #948 S4: +14 for the children-must-be-react hierarchy rule (a predict/CoT
     # parent would silently strand its children now that the settle loop routing
     # for it is deleted; typed validation error instead).
@@ -89,7 +89,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # P1.4 #1066: +1 for the build_plan_exit_tool import; the two react-build call sites stay
     # line-neutral (the create_artifact append became a two-tool extend). All plan_exit logic lives
     # in the owner module gact/plan_mode.py. Ratchets back with the #714/#767 decomposition.
-    "src/clio_agent/gact/agents/builders.py": 1874,
+    "src/clio_agent/gact/agents/builders.py": 1871,
     # #900: +14 for the lifespan child-reaper install + clean-shutdown teardown wiring
     # (both delegate to the owner module runtime/process_tree.py).
     # #918: +7 for the SkillNotDelegatableError exception handler (app.py owns
@@ -124,7 +124,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # _redrive_deferred_resume; the resume fold's re-drive now lives in the owner
     # module gact/loop_inbox.py (drain_inbox_to_new_turn), leaving only the idle-hook
     # wiring here.
-    "src/clio_agent/gact/app.py": 2695,
+    # P2.3 (#1071): +6 — the deferred-boot branch wires the tool_interceptor +
+    # PostToolUse producers (make_post_tool_hook); all logic lives in the owner
+    # module gact/hooks/intercept.py, only the two boot assignments are here.
+    "src/clio_agent/gact/app.py": 2679,
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -183,7 +186,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # P1.4 #1066: +14 for the plan-exit approval branch in the ask-user answer route (reuses the
     # UserQuestion surface, no new store); the mode transition + constraint-lift + resume live in the
     # owner module gact/plan_mode.py (resolve_plan_exit_answer). Ratchets back with the #714 split.
-    "src/clio_agent/gact/routes/sessions.py": 1559,
+    # P2.3 (#1071): +10 — the PreCompact lifecycle hook fires at the compact route
+    # before summarisation (thin dispatch_pre_compact call site; the event set lives
+    # in the owner module gact/hooks/).
+    "src/clio_agent/gact/routes/sessions.py": 1569,
     # #933: +8 for the turn-scoped workspace-fleet lease in _tool_session_context.
     # #933 review hardening: typed workspace_lease_unavailable degrade when a
     # rooted turn has no leasable agent (+9).
@@ -201,7 +207,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # B5 #979.7 (deferred B4 WRITER): +6 for the serving-child join seam in the
     # "started" phase — the join logic lives in the ingest_edges owner module
     # (join_call_to_serving_child); only the import + guarded one-call seam land here.
-    "src/clio_agent/gact/tool_observer.py": 957,
+    # P2.3 (#1071): +7 — _install_tool_runtime_hooks defaults in the tool_interceptor
+    # + PostToolUse producers; both producers live in the owner module
+    # gact/hooks/intercept.py, only the thin default-in wiring is here.
+    "src/clio_agent/gact/tool_observer.py": 964,
     "src/clio_agent/gact/transcript.py": 986,
     # #918: +17 for the typed SkillNotDelegatableError ladder arm (a skill-bound
     # turn fails typed, never as generic agent_error).
@@ -225,7 +234,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # P1.4 #1066: +7 for the plan_exit turn-ending-yield seam next to maybe_pause_for_user (import +
     # comment + the 2-line call). The seam (maybe_pause_for_plan_exit) lives in the owner module
     # gact/plan_mode.py. Ratchets back with #714.
-    "src/clio_agent/gact/turn.py": 930,
+    "src/clio_agent/gact/turn.py": 839,
     # #952 S4 Pass C: -9 (the answer-substitution finalize call + import were
     # removed with the settle layer's degradation ledger).
     # #953 [5]: +3 to surface the variant winner stamp (variant_selection) on the
@@ -243,7 +252,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # #968 S2 review: -3 (946 -> 943) — the artifact.proposed payload dict moved to
     # the owner module (artifacts/wire.proposed_diff_payload, finding [2]); the
     # settle-path buffer clear delegates to artifacts/minting.clear_turn_artifacts.
-    "src/clio_agent/gact/turn_finalize.py": 946,
+    # P2.3 (#1071): +14 — PostToolBatch fires once per turn over the turn's tool
+    # round (thin fire_post_tool_batch call site; the payload build + dispatch live
+    # in the owner module gact/hooks/intercept.py).
+    "src/clio_agent/gact/turn_finalize.py": 928,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (baseline 1143 -> actual); ratchet back below the pre-#947 count with the
     # mcp_app_* owner-module split (see the #947 DEBT block on mcp_apps.py).
@@ -298,7 +310,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # 3-line rationale. Irreducible: execution.py OWNS the PermissionError the model sees, and the
     # low tools layer imports no gact (duck-typed). The message text is produced in
     # grant_resolver.plan_mode_deny_message. Ratchets back with the #714/#767 decomposition.
-    "src/clio_agent/tools/execution.py": 1642,
+    # P2.3 (#1071): +16 — the tool boundary now consults the tool_interceptor
+    # (synthesize/modify) and applies the PostToolUse hook. The seam TYPES + the
+    # applier live in the new owner module tools/tool_hooks.py; only the thin
+    # ToolRuntimeHooks.post_tool field + the two call sites are here.
+    "src/clio_agent/tools/execution.py": 1658,
     # #1001: doctor rendering + disk-GC surface moved to the ui/doctor.py owner module
     # (ratcheted 1156 -> 1135 in the same change).
     # merge(main->develop): +6 (1135 -> 1141) integrating main's release-stream cli deltas.

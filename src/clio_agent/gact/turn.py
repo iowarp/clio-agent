@@ -43,9 +43,6 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
-from clio_agent.gact.agents.resolution import (
-    _runtime_active_agent_blueprint_id,
-)
 from clio_agent.gact.delegation import (
     _coerce_expert_handoff_rows,
     _prediction_workflow_state,
@@ -334,103 +331,15 @@ async def _run_turn_in_background(
             subject={"message_id": state.user_msg.id},
             payload=state.memory_search_metadata,
         )
-    # iowarp/clio-agent#20: pre_message hook can transform the
-    # input or veto the turn. PermissionError → cancelled-style
-    # error_info; the caller sees the hook's reason.
+    # P2.2 #1070 / P2.6 #1074: UserPromptSubmit hooks (the ported ``pre_message``
+    # consumer). A deny VETOES the turn (session → error); a ``defer`` SUSPENDS it for
+    # out-of-band approval (waiting_user, resume as a new turn). The whole finalize-
+    # boundary protocol lives in the hooks owner module (no-accretion) — this is only
+    # the call site: any non-"proceed" outcome ends the turn here.
     if context_file_error is None:
-        try:
-            from clio_agent.runtime.hooks import fire as _fire_hook
+        from clio_agent.gact.hooks.user_prompt import run_user_prompt_submit  # noqa: PLC0415
 
-            _emit_semantic_event(
-                state.app,
-                state.sid,
-                "hook.invocation.started",
-                turn_id=state.turn_id,
-                trace_id=state.trace_id,
-                status="running",
-                summary="pre_message hook dispatch started.",
-                actor={"hook": "pre_message"},
-                subject={"message_id": state.user_msg.id},
-                payload={"input": state.enriched_text},
-            )
-            hook_scope = {
-                "session_id": state.sid,
-                "workspace_id": getattr(state.sess, "workspace_id", ""),
-                "blueprint_id": _runtime_active_agent_blueprint_id(state.app, state.sid),
-            }
-            _fire_hook("pre_message", state.sid, state.enriched_text, hook_scope=hook_scope)
-            _emit_semantic_event(
-                state.app,
-                state.sid,
-                "hook.invocation.completed",
-                turn_id=state.turn_id,
-                trace_id=state.trace_id,
-                summary="pre_message hook dispatch completed.",
-                actor={"hook": "pre_message"},
-                subject={"message_id": state.user_msg.id},
-                payload={},
-            )
-        except PermissionError as exc:
-            _emit_semantic_event(
-                state.app,
-                state.sid,
-                "hook.pre_message.blocked",
-                turn_id=state.turn_id,
-                trace_id=state.trace_id,
-                status="blocked",
-                summary="pre_message hook blocked the turn.",
-                actor={"hook": "pre_message"},
-                subject={"message_id": state.user_msg.id},
-                payload={"error": str(exc)},
-            )
-            _emit_semantic_event(
-                state.app,
-                state.sid,
-                "turn.failed",
-                turn_id=state.turn_id,
-                trace_id=state.trace_id,
-                status="blocked",
-                summary="CLIO turn was blocked by pre_message hook.",
-                actor={"hook": "pre_message"},
-                subject={"message_id": state.user_msg.id},
-                payload={"error": str(exc)},
-            )
-            state.bus.publish(
-                Event(
-                    type="message.completed",
-                    session_id=state.sid,
-                    payload={
-                        "turn_id": state.turn_id,
-                        "message_id": state.user_msg.id,
-                        "stop_reason": "blocked",
-                        "error_info": {
-                            "error": "permission_error",
-                            "message": str(exc),
-                            "recoverable": True,
-                        },
-                    },
-                )
-            )
-            state.app.state.sessions.update(state.sid, status="error")
-            _update_retry_attempt(
-                "failed",
-                metadata_patch={
-                    "execution_error": "permission_error",
-                    "executed_user_message_id": state.user_msg.id,
-                },
-            )
-            state.bus.publish(
-                Event(
-                    type="session.status_changed",
-                    session_id=state.sid,
-                    payload={
-                        "session_id": state.sid,
-                        "status": "error",
-                        "prev_status": "running",
-                        "reason": "pre_message hook blocked turn",
-                    },
-                )
-            )
+        if run_user_prompt_submit(state, update_retry_attempt=_update_retry_attempt) != "proceed":
             return
 
     # iowarp/clio-agent#6: try real per-token streaming via

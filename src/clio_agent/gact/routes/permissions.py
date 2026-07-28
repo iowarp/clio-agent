@@ -139,7 +139,17 @@ def register_permissions_routes(app: FastAPI, deps: "GactDeps") -> None:
         # the HTTP route and the in-process ai-review reviewer share ONE path. The route
         # resolves as ``GRANTOR_USER`` — byte-identical to the prior inline body, now with the
         # grantor stamped on the audit row + both resolved payloads.
-        resolve_permission(app, pid, action, grantor=GRANTOR_USER)
+        #
+        # P2.6: an APPROVED PreToolUse defer may additionally carry the modify/synthesize the
+        # approval decides — an optional ``input`` (run the tool with modified args) OR
+        # ``result`` (skip the real call, use this synthesized result). Only honored on an
+        # allow; ignored on a deny. Passed through as ``intercept``.
+        intercept: dict[str, Any] | None = None
+        if isinstance(body.get("input"), dict):
+            intercept = {"input": body["input"]}
+        elif "result" in body:
+            intercept = {"result": body["result"]}
+        resolve_permission(app, pid, action, grantor=GRANTOR_USER, intercept=intercept)
         return Response(status_code=204)
 
     # ---- /v1/policies (SPEC §6.11.b permission policies) -------------
