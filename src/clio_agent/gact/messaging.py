@@ -34,9 +34,17 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+from fastapi import HTTPException
+
 from clio_agent.gact.hooks.defer import HOOK_DEFER_RESUME_META
 from clio_agent.gact.runtime.globals import _jsonish, _new_part_id
-from clio_agent.gact.types import Part, UserQuestion, UserQuestionOption
+from clio_agent.gact.types import (
+    ErrorEnvelope,
+    ErrorInfo,
+    Part,
+    UserQuestion,
+    UserQuestionOption,
+)
 
 # ------------------------------------------------------------------------- #
 # Reserved client-metadata keys (#1057 B2)                                   #
@@ -92,6 +100,44 @@ def reserved_metadata_keys(metadata: Mapping[str, Any] | None) -> list[str]:
     if not metadata:
         return []
     return sorted(RESERVED_CLIENT_METADATA_KEYS.intersection(metadata))
+
+
+def raise_on_reserved_metadata(session_id: str, metadata: Mapping[str, Any] | None) -> None:
+    """Reject client metadata that carries a reserved internal turn-control key.
+
+    The single typed-rejection chokepoint shared by every client-writable message
+    ingest (POST ``/messages`` and the ``/retry`` sibling): a smuggled
+    ``hook_defer_resume`` (or any :data:`RESERVED_CLIENT_METADATA_KEYS` member) would
+    ride the client mapping onto the staged ``user_msg.metadata`` the UserPromptSubmit
+    hook reads, bypassing governance (the B2 blocker). The mapping is rejected, never
+    stripped — stripping is silent coercion.
+
+    Args:
+        session_id: The session the ingest targets; echoed in the error detail.
+        metadata: The client-supplied per-message metadata (may be ``None``).
+
+    Raises:
+        HTTPException: 400 ``reserved_metadata_key`` naming the offending keys when
+            ``metadata`` intersects :data:`RESERVED_CLIENT_METADATA_KEYS`.
+    """
+
+    offending = reserved_metadata_keys(metadata)
+    if not offending:
+        return
+    raise HTTPException(
+        status_code=400,
+        detail=ErrorEnvelope(
+            error=ErrorInfo(
+                error="reserved_metadata_key",
+                message=(
+                    "request metadata carried reserved internal control "
+                    f"key(s): {', '.join(offending)}"
+                ),
+                details={"session_id": session_id, "reserved_keys": offending},
+                recoverable=True,
+            )
+        ).model_dump(exclude_none=True),
+    )
 
 
 # ------------------------------------------------------------------------- #

@@ -37,7 +37,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Response
 from clio_agent.gact.events import Event
 from clio_agent.gact.loop_inbox import enqueue_user_steer
 from clio_agent.gact.message_wire import normalize_thought_ownership
-from clio_agent.gact.messaging import _user_message_parts, reserved_metadata_keys
+from clio_agent.gact.messaging import _user_message_parts, raise_on_reserved_metadata
 from clio_agent.gact.providers.config import (
     _active_lm_supports_vision,
     _effective_lm_config,
@@ -236,22 +236,7 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         # the fresh-turn and mid-turn-steer ingest paths. Server-side producers
         # (`_stage_resume_turn`, the scheduler, the steer fold) build their metadata
         # internally and never route through this body, so they are unaffected.
-        offending = reserved_metadata_keys(req.metadata)
-        if offending:
-            raise HTTPException(
-                status_code=400,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="reserved_metadata_key",
-                        message=(
-                            "request metadata carried reserved internal control "
-                            f"key(s): {', '.join(offending)}"
-                        ),
-                        details={"session_id": sid, "reserved_keys": offending},
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
+        raise_on_reserved_metadata(sid, req.metadata)
 
         lm_status = getattr(app.state, "lm_config_status", {}) or {}
         if lm_status.get("state") == "configuring":

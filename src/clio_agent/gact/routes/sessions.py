@@ -51,6 +51,7 @@ from clio_agent.gact import context as _ctx
 from clio_agent.gact.events import Event
 from clio_agent.gact.loop_inbox import enqueue_user_steer
 from clio_agent.gact.mcp_apps import cleanup_session_mcp_apps
+from clio_agent.gact.messaging import raise_on_reserved_metadata
 from clio_agent.gact.routes._body import NonObjectBodyError, json_body
 from clio_agent.gact.routes.compaction import build_compact_summary_message
 from clio_agent.gact.routes.session_filters import filter_session_rows
@@ -1320,6 +1321,10 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
+        # #1057 B2 (BLOCKER): retry is a POST /messages sibling — ``req.metadata`` is
+        # spread onto the staged turn's ``user_msg.metadata`` the UserPromptSubmit hook
+        # reads. Reject a smuggled control key via the shared /messages chokepoint.
+        raise_on_reserved_metadata(sid, req.metadata)
         model_payload = (req.model or ModelRef()).model_dump()
         if req.provider_id:
             model_payload["provider_id"] = req.provider_id
