@@ -765,11 +765,14 @@ class SemanticEventSink:
                     )
                 )
             try:
-                from clio_agent.runtime.hooks import fire as _fire_hook
+                from clio_agent.gact.hooks import dispatch_semantic_event  # noqa: PLC0415
 
-                _fire_hook("semantic_event", project_hook(event, full=self.hooks_full))
+                dispatch_semantic_event(
+                    project_hook(event, full=self.hooks_full),
+                    session_id=event.session_id,
+                )
             except Exception:  # noqa: BLE001,S110 - semantic hooks are observability side-effects; never crash the turn
-                # Semantic hooks are observability side-effects. They should
+                # SemanticEvent hooks are observability side-effects. They should
                 # never mutate or crash the turn being observed.
                 pass
         return full

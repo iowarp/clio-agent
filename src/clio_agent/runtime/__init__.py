@@ -10,10 +10,9 @@ __all__ = [
 
 
 # PEP 562 lazy attribute access. ``from clio_agent.runtime import X``
-# still works, but ``import clio_agent.runtime.hooks`` (the only real
-# consumer in the gact backend) no longer triggers status's heavy
-# imports — clio_agent.tools.gateway alone is ~1 s, and gact's
-# build_app pulls runtime.hooks early in startup.
+# still works without triggering status's heavy imports — clio_agent.tools.gateway
+# alone is ~1 s. (The old ``runtime.hooks`` registry was deleted in P2.2 #1070; the
+# hook system now lives in ``clio_agent.gact.hooks``.)
 def __getattr__(name: str):
     if name in {
         "IntegrationState",

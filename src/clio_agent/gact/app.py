@@ -1568,37 +1568,32 @@ def build_app(
         app.state.pending_permission_gate = _make_permission_gate(app)
         app.state.pending_tool_observer = _make_tool_observer(app)
 
-    # iowarp/clio-agent#20: install the user-hooks registry so
-    # pre_tool / post_tool / pre_message / post_message events
-    # route to ~/.config/clio-agent/hooks/<event>.py. Tests pre-
-    # install their own registry; we only install a default if
-    # nothing's currently wired so the test-side hook stays.
+    # P2.2 #1070: install the ONE hook dispatcher so PreToolUse / UserPromptSubmit /
+    # Stop / SemanticEvent events route to the declarative hooks config
+    # (<user_config>/hooks.json + <cwd>/.clio/hooks.json). Tests pre-install their
+    # own dispatcher; we only build a default when nothing is currently wired so the
+    # test-side dispatcher stays. Metadata lands on app.state for /v1/capabilities
+    # (the same wiring shape the deleted runtime registry used — no new store).
     try:
-        from clio_agent.runtime.hooks import (
-            _registry as _current_registry,
-        )
-        from clio_agent.runtime.hooks import (
-            build_hook_registry,
-            install_global_registry,
+        from clio_agent.gact.hooks import (
+            build_hook_dispatcher,
+            get_global_dispatcher,
+            install_global_dispatcher,
         )
 
-        if _current_registry is None:
-            registry = build_hook_registry()
-            install_global_registry(registry)
-            app.state.runtime_hook_registry_metadata = (
-                registry.metadata() if hasattr(registry, "metadata") else {}
-            )
-        else:
-            app.state.runtime_hook_registry_metadata = (
-                _current_registry.metadata() if hasattr(_current_registry, "metadata") else {}
-            )
-    except Exception:  # pragma: no cover - defensive  # noqa: BLE001 - registry-metadata unavailability recorded in app.state
+        dispatcher = get_global_dispatcher()
+        if dispatcher is None:
+            dispatcher = build_hook_dispatcher()
+            install_global_dispatcher(dispatcher)
+        app.state.runtime_hook_registry_metadata = (
+            dispatcher.metadata() if hasattr(dispatcher, "metadata") else {}
+        )
+    except Exception:  # pragma: no cover - defensive  # noqa: BLE001 - dispatcher-metadata unavailability recorded in app.state
         app.state.runtime_hook_registry_metadata = {
             "backend": "unavailable",
             "enabled": False,
             "error": "failed_to_initialize",
         }
-        pass
 
     # live LM config — what the TUI configured
     # us with. Distinct from boot-time env because PUT /providers/lm

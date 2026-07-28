@@ -10,8 +10,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import _make_tool_observer, build_app
-from clio_agent.runtime.hooks import HookRegistry, install_global_registry
+from clio_agent.gact.hooks import install_global_dispatcher
 from tests._config_layer import set_config
+from tests.test_gact._hook_fixtures import make_command_dispatcher
 
 # #948 S4b: default sessions run the blueprint react ``main``; route it to each
 # test's ``build_app(agent=...)`` host fake.
@@ -210,27 +211,28 @@ def test_semantic_event_hook_fires(tmp_path: Path, monkeypatch) -> None:
     from .conftest import complete_turn
 
     marker = tmp_path / "semantic_events.jsonl"
-    hooks_dir = tmp_path / "hooks"
-    hooks_dir.mkdir()
-    (hooks_dir / "semantic_event.py").write_text(
-        f"""
-import json
+    # A real SemanticEvent subprocess hook (the ported ``semantic_event`` consumer):
+    # reads the wire envelope from stdin and appends the projected event's type/trace.
+    body = f"""
+import json, sys
 
-def semantic_event(event):
-    with open({str(marker)!r}, "a", encoding="utf-8") as f:
-        f.write(json.dumps({{"event_type": event["event_type"], "trace_id": event["trace_id"]}}))
-        f.write("\\n")
+envelope = json.load(sys.stdin)
+payload = envelope["payload"]
+with open({str(marker)!r}, "a", encoding="utf-8") as f:
+    f.write(json.dumps({{"event_type": payload["event_type"], "trace_id": payload["trace_id"]}}))
+    f.write("\\n")
 """
-    )
     set_config("trace.backend", "none")  # file-layer (file > env); #985 config-first
-    install_global_registry(HookRegistry(hooks_dir=hooks_dir))
+    install_global_dispatcher(
+        make_command_dispatcher(tmp_path, event="SemanticEvent", body=body)
+    )
     try:
         app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
         client = TestClient(app)
         sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
         complete_turn(client, sid, "hello")
     finally:
-        install_global_registry(None)
+        install_global_dispatcher(None)
 
     rows = [json.loads(line) for line in marker.read_text().splitlines()]
     assert rows[0]["event_type"] == "turn.started"

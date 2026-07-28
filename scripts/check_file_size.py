@@ -124,7 +124,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # _redrive_deferred_resume; the resume fold's re-drive now lives in the owner
     # module gact/loop_inbox.py (drain_inbox_to_new_turn), leaving only the idle-hook
     # wiring here.
-    "src/clio_agent/gact/app.py": 2678,
+    "src/clio_agent/gact/app.py": 2673,
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -225,7 +225,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # P1.4 #1066: +7 for the plan_exit turn-ending-yield seam next to maybe_pause_for_user (import +
     # comment + the 2-line call). The seam (maybe_pause_for_plan_exit) lives in the owner module
     # gact/plan_mode.py. Ratchets back with #714.
-    "src/clio_agent/gact/turn.py": 930,
+    "src/clio_agent/gact/turn.py": 928,
     # #952 S4 Pass C: -9 (the answer-substitution finalize call + import were
     # removed with the settle layer's degradation ledger).
     # #953 [5]: +3 to surface the variant winner stamp (variant_selection) on the
@@ -243,7 +243,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # #968 S2 review: -3 (946 -> 943) — the artifact.proposed payload dict moved to
     # the owner module (artifacts/wire.proposed_diff_payload, finding [2]); the
     # settle-path buffer clear delegates to artifacts/minting.clear_turn_artifacts.
-    "src/clio_agent/gact/turn_finalize.py": 946,
+    "src/clio_agent/gact/turn_finalize.py": 945,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (baseline 1143 -> actual); ratchet back below the pre-#947 count with the
     # mcp_app_* owner-module split (see the #947 DEBT block on mcp_apps.py).

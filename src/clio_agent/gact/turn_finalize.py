@@ -708,11 +708,12 @@ def finalize_turn(
             },
         )
     )
-    # iowarp/clio-agent#20: post_message hook runs AFTER persistence
-    # so user audit code sees the settled assistant + can ship to
-    # external systems. Errors are swallowed (post_* contract).
+    # P2.2 #1070: Stop hooks (the ported ``post_message`` consumer) run AFTER
+    # persistence so user audit code sees the settled assistant + can ship to
+    # external systems. Observation-only in this slice — errors are swallowed
+    # (the post-turn contract; the deny/bounded-self-loop power is P2.5).
     try:
-        from clio_agent.runtime.hooks import fire as _fire_hook  # noqa: PLC0415
+        from clio_agent.gact.hooks import dispatch_stop  # noqa: PLC0415
 
         _emit_semantic_event(
             state.app,
@@ -721,20 +722,19 @@ def finalize_turn(
             turn_id=state.turn_id,
             trace_id=state.trace_id,
             status="running",
-            summary="post_message hook dispatch started.",
-            actor={"hook": "post_message"},
+            summary="Stop hook dispatch started.",
+            actor={"hook": "Stop"},
             subject={"message_id": assistant_msg.id},
             payload={"assistant": assistant_msg.model_dump(exclude_none=True)},
         )
-        _fire_hook(
-            "post_message",
-            state.sid,
-            assistant_msg.model_dump(exclude_none=True),
-            hook_scope={
-                "session_id": state.sid,
-                "workspace_id": getattr(state.sess, "workspace_id", ""),
+        dispatch_stop(
+            {
+                "assistant": assistant_msg.model_dump(exclude_none=True),
                 "blueprint_id": _runtime_active_agent_blueprint_id(state.app, state.sid),
             },
+            session_id=state.sid,
+            turn_id=state.turn_id,
+            cwd=str(getattr(state.sess, "workspace_root", "") or ""),
         )
         _emit_semantic_event(
             state.app,
@@ -742,8 +742,8 @@ def finalize_turn(
             "hook.invocation.completed",
             turn_id=state.turn_id,
             trace_id=state.trace_id,
-            summary="post_message hook dispatch completed.",
-            actor={"hook": "post_message"},
+            summary="Stop hook dispatch completed.",
+            actor={"hook": "Stop"},
             subject={"message_id": assistant_msg.id},
             payload={},
         )
@@ -755,12 +755,11 @@ def finalize_turn(
             turn_id=state.turn_id,
             trace_id=state.trace_id,
             status="failed",
-            summary="post_message hook dispatch failed and was swallowed by policy.",
-            actor={"hook": "post_message"},
+            summary="Stop hook dispatch failed and was swallowed by policy.",
+            actor={"hook": "Stop"},
             subject={"message_id": assistant_msg.id},
             payload={},
         )
-        pass
     if not (
         state.cancelled_turn
         and state.error_info is not None

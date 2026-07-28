@@ -43,9 +43,6 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
-from clio_agent.gact.agents.resolution import (
-    _runtime_active_agent_blueprint_id,
-)
 from clio_agent.gact.delegation import (
     _coerce_expert_handoff_rows,
     _prediction_workflow_state,
@@ -334,12 +331,13 @@ async def _run_turn_in_background(
             subject={"message_id": state.user_msg.id},
             payload=state.memory_search_metadata,
         )
-    # iowarp/clio-agent#20: pre_message hook may VETO via a raised
-    # PermissionError → cancelled error_info. Its RETURN VALUE IS NOT
-    # CONSUMED — no input transform until the P2.2/P2.3 dispatcher rebuild.
+    # P2.2 #1070: UserPromptSubmit hooks (the ported ``pre_message`` consumer).
+    # A hook deny VETOES the turn → cancelled error_info (structurally identical to
+    # the old raised-PermissionError veto). The RETURN VALUE IS NOT CONSUMED — no
+    # input transform until P2.3 wires the tagged-union producer.
     if context_file_error is None:
         try:
-            from clio_agent.runtime.hooks import fire as _fire_hook
+            from clio_agent.gact.hooks import dispatch_user_prompt_submit  # noqa: PLC0415
 
             _emit_semantic_event(
                 state.app,
@@ -348,25 +346,25 @@ async def _run_turn_in_background(
                 turn_id=state.turn_id,
                 trace_id=state.trace_id,
                 status="running",
-                summary="pre_message hook dispatch started.",
-                actor={"hook": "pre_message"},
+                summary="UserPromptSubmit hook dispatch started.",
+                actor={"hook": "UserPromptSubmit"},
                 subject={"message_id": state.user_msg.id},
                 payload={"input": state.enriched_text},
             )
-            hook_scope = {
-                "session_id": state.sid,
-                "workspace_id": getattr(state.sess, "workspace_id", ""),
-                "blueprint_id": _runtime_active_agent_blueprint_id(state.app, state.sid),
-            }
-            _fire_hook("pre_message", state.sid, state.enriched_text, hook_scope=hook_scope)
+            _out = dispatch_user_prompt_submit(
+                state.enriched_text, session_id=state.sid, turn_id=state.turn_id,
+                cwd=str(getattr(state.sess, "workspace_root", "") or ""),
+            )
+            if _out.denied:
+                raise PermissionError(_out.reason or "blocked by a UserPromptSubmit hook")
             _emit_semantic_event(
                 state.app,
                 state.sid,
                 "hook.invocation.completed",
                 turn_id=state.turn_id,
                 trace_id=state.trace_id,
-                summary="pre_message hook dispatch completed.",
-                actor={"hook": "pre_message"},
+                summary="UserPromptSubmit hook dispatch completed.",
+                actor={"hook": "UserPromptSubmit"},
                 subject={"message_id": state.user_msg.id},
                 payload={},
             )
@@ -374,12 +372,12 @@ async def _run_turn_in_background(
             _emit_semantic_event(
                 state.app,
                 state.sid,
-                "hook.pre_message.blocked",
+                "hook.invocation.blocked",
                 turn_id=state.turn_id,
                 trace_id=state.trace_id,
                 status="blocked",
-                summary="pre_message hook blocked the turn.",
-                actor={"hook": "pre_message"},
+                summary="UserPromptSubmit hook blocked the turn.",
+                actor={"hook": "UserPromptSubmit"},
                 subject={"message_id": state.user_msg.id},
                 payload={"error": str(exc)},
             )
@@ -390,8 +388,8 @@ async def _run_turn_in_background(
                 turn_id=state.turn_id,
                 trace_id=state.trace_id,
                 status="blocked",
-                summary="CLIO turn was blocked by pre_message hook.",
-                actor={"hook": "pre_message"},
+                summary="CLIO turn was blocked by a UserPromptSubmit hook.",
+                actor={"hook": "UserPromptSubmit"},
                 subject={"message_id": state.user_msg.id},
                 payload={"error": str(exc)},
             )

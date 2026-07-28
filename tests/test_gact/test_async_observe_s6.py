@@ -762,7 +762,8 @@ def test_vetoed_turn_leaves_notification_pending_for_next_turn(tmp_path: Path, m
     it stays pending and the next (un-vetoed) turn injects it again. Never at-most-
     once dropped."""
 
-    import clio_agent.runtime.hooks as hooks
+    import clio_agent.gact.hooks as hooks
+    from clio_agent.gact.hooks import HookOutcome
 
     _declare(monkeypatch, "data_expert")
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
@@ -770,11 +771,10 @@ def test_vetoed_turn_leaves_notification_pending_for_next_turn(tmp_path: Path, m
         parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
         task = _seed_terminal_task(app, parent, excerpt="must survive the veto")
 
-        def _veto(kind: str, sid: str, text: str, **_kw: Any) -> None:
-            if kind == "pre_message":
-                raise PermissionError("blocked by policy")
+        def _veto(text: str, **_kw: Any) -> HookOutcome:
+            return HookOutcome(decision="deny", reason="blocked by policy")
 
-        monkeypatch.setattr(hooks, "fire", _veto)
+        monkeypatch.setattr(hooks, "dispatch_user_prompt_submit", _veto)
         client.post(f"/v1/sessions/{parent}/messages", json={"text": "hello"})
         _wait_status(app, parent, "error", timeout=10.0)
         # Vetoed after enrichment → the staged task is UNCONSUMED, still pending.
@@ -783,7 +783,7 @@ def test_vetoed_turn_leaves_notification_pending_for_next_turn(tmp_path: Path, m
 
         # Next turn (no veto): it injects the still-pending task and consumes it at
         # the commit seam.
-        monkeypatch.setattr(hooks, "fire", lambda *a, **k: None)
+        monkeypatch.setattr(hooks, "dispatch_user_prompt_submit", lambda *a, **k: HookOutcome())
         client.post(f"/v1/sessions/{parent}/messages", json={"text": "again"})
         _wait_status(app, parent, "idle", timeout=10.0)
         assert app.state.agent_task_registry.get(task.task_id).notify_pending is False

@@ -67,10 +67,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_GACT_CORS_ORIGINS` | `gact.cors.origins` | str | _(unset)_ | `src/clio_agent/gact/app.py` |
 | `CLIO_GACT_MCP_RECONNECT_TIMEOUT_S` | `limits.mcp_reconnect_timeout_s` | float | `15.0` | `src/clio_agent/gact/routes/mcp.py` |
 | `CLIO_GACT_TURN_TIMEOUT_S` | `limits.turn_timeout_s` | float | `900.0` | `src/clio_agent/gact/_params.py` |
-| `CLIO_HOOKS_BACKEND` | `hooks.backend` | str | `local_python` | `src/clio_agent/runtime/hooks.py` |
-| `CLIO_HOOKS_DIR` | `hooks.dir` | str | _(unset)_ | `src/clio_agent/runtime/hooks.py` |
-| `CLIO_HOOKS_FACTORY` | `hooks.factory` | str | _(unset)_ | `src/clio_agent/runtime/hooks.py` |
-| `CLIO_HOOK_TIMEOUT_S` | `limits.hook_timeout_s` | float | `5.0` | `src/clio_agent/runtime/hooks.py` |
+| `CLIO_HOOKS_CONFIG` | `hooks.config` | str | _(unset)_ | `src/clio_agent/gact/hooks/dispatcher.py` |
 | `CLIO_LEDGER_COMMAND_AUDIT_MAX` | `gact.ledger_retention.command_audit.max` | int | `2000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_CONTEXT_FRAMES_MAX` | `gact.ledger_retention.context_frames.max` | int | `200` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_MEMORY_TOOL_AUDIT_MAX` | `gact.ledger_retention.memory_tool_audit.max` | int | `2000` | `src/clio_agent/gact/runtime/retention.py` |

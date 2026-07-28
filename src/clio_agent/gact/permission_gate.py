@@ -528,19 +528,12 @@ def _make_permission_gate(app: "FastAPI"):
         args: Mapping[str, Any],
         context: Mapping[str, Any] | None = None,
     ) -> str:
-        # iowarp/clio-agent#20: user-defined pre_tool hook can veto
-        # the call by raising PermissionError. Returns ignored;
-        # only the raise/no-raise distinction matters.
-        try:
-            from clio_agent.runtime.hooks import fire as _fire_hook
-
-            _fire_hook("pre_tool", name, dict(args))
-        except PermissionError:
-            return "deny"
         # #1032: reads are NEVER gated. A provably read-only call (MCP
         # readOnlyHint annotation OR a static catalog ``read`` tag) fast-allows
-        # here, BEFORE the plan/architect lock — the structural invariant that no
-        # mode or policy can gate a read. Everything else proceeds to approval.
+        # here as the FIRST branch — before any hook or the plan/architect lock —
+        # the structural invariant that no mode, policy, or hook can gate a read.
+        # (P2.2 #1070 fixes the old ordering bug where the pre_tool hook fired
+        # BEFORE this branch and could gate a read-only call.)
         if is_read_only("tool", name, args, context):
             return "allow"
         subject = (
@@ -551,6 +544,36 @@ def _make_permission_gate(app: "FastAPI"):
         # Prefer the session currently driving the turn. Recency is
         # only a fallback for truly out-of-band tool calls.
         sid, current = _resolve_tool_session(app)
+        # P2.2 #1070: PreToolUse hooks (the ported ``pre_tool`` consumer, deny-capable
+        # and TIGHTEN-ONLY). A hook deny blocks the call and its reason reaches the
+        # model via ``DenyDecision``; a hook allow proceeds to the policy match below
+        # (a hook allow can NEVER lift a downstream policy deny). A hook infrastructure
+        # failure is fail-closed per-hook inside the dispatcher and surfaces as a deny
+        # whose message says it is a hook failure, NOT a user rejection.
+        from clio_agent.gact.hooks import dispatch_pre_tool  # noqa: PLC0415
+
+        hook_outcome = dispatch_pre_tool(
+            name,
+            dict(args),
+            session_id=sid,
+            turn_id=str(getattr(current, "current_turn_id", "") or ""),
+            cwd=str(getattr(current, "workspace_root", "") or ""),
+            context=context,
+        )
+        if hook_outcome.denied:
+            _record_resolved_permission(
+                app,
+                session_id=sid,
+                tool_name=name,
+                args=args,
+                status="auto_denied",
+                action="deny",
+                summary=f"{subject} {name!r} blocked by a PreToolUse hook",
+                reason="hook_deny",
+            )
+            return DenyDecision(
+                hook_outcome.reason or f"tool call {name!r} denied by a PreToolUse hook"
+            )
         # P1.1 #1063: the plan/architect read-only lock is no longer a predicate here (it was
         # copy-pasted into three modules). It is now a set of built-in plan_acl rows the ONE
         # resolver evaluates — passing the session mode makes ``resolve`` deny every non-read tool
