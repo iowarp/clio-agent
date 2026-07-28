@@ -127,7 +127,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # P2.3 (#1071): +6 — the deferred-boot branch wires the tool_interceptor +
     # PostToolUse producers (make_post_tool_hook); all logic lives in the owner
     # module gact/hooks/intercept.py, only the two boot assignments are here.
-    "src/clio_agent/gact/app.py": 2679,
+    # P4.3 (#1081): 2679 -> 2552 — the scheduler tick + fire runtime
+    # (_scheduler_tick/_scheduler_tick_once/_fire_schedule/_seconds_until_next_minute)
+    # moved to the owner module gact/scheduler_runtime.py; app.py only re-exports them.
+    "src/clio_agent/gact/app.py": 2552,
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg

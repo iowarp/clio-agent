@@ -78,6 +78,24 @@ BACKEND_COMMANDS: list[dict[str, Any]] = [
         "error": "",
     },
     {
+        # #1081 (P4.3): the /cron user command surfaces the scheduling triad
+        # (create/list/delete) that the model reaches as cron_create/cron_list/
+        # cron_delete tools + the existing HTTP CRUD (routes/schedules.py). A
+        # recurring or one-shot future turn for the active session, evaluated in the
+        # session's LOCAL timezone, with anti-runaway clamps enforced server-side.
+        "id": "/cron",
+        "title": "Schedule a turn (cron / one-shot)",
+        "description": (
+            "Create, list, or delete scheduled turns for this session — a 5-field cron "
+            "(local timezone) or a one-shot run_at/delay. Clamped against runaway."
+        ),
+        "source": "builtin",
+        "status": "available",
+        "enabled": True,
+        "error": "",
+        "aliases": ["/schedule"],
+    },
+    {
         # #801: the optimizer stays as a research surface — this row projects
         # the uniform structured not-implemented stub (reason code + #633
         # pointer) that every optimizer entry point shares.

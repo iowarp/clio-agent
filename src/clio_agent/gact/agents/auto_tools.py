@@ -6,7 +6,9 @@ domain-tool budget (RULE 5), the same way ``load_skill`` and the child-delegatio
 
 * ``create_artifact`` (#969) — designate a session output as a provenance-tracked artifact;
 * ``plan_exit`` (#1066) — the plan-mode turn-ending yield that hands a plan back for approval;
-* ``write_todos`` (#1067) — the execution-phase checklist (whole-list replacement).
+* ``write_todos`` (#1067) — the execution-phase checklist (whole-list replacement);
+* ``cron_create`` / ``cron_list`` / ``cron_delete`` (#1081) — the model-callable scheduling
+  triad (arm a recurring/one-shot future turn for this session; read back; cancel-both).
 
 Collecting them behind one seam keeps ``builders.py`` from re-listing the set (and re-importing
 each builder) at its two attach sites, so a fourth auto-tool lands here, not by growing the
@@ -18,6 +20,7 @@ from __future__ import annotations
 from typing import Any
 
 from clio_agent.gact.artifacts.proposals import build_create_artifact_tool
+from clio_agent.gact.cron_tools import build_cron_tools
 from clio_agent.gact.plan_mode import build_plan_exit_tool
 from clio_agent.gact.todos import build_write_todos_tool
 
@@ -33,4 +36,5 @@ def build_auto_react_tools(agent_def: Any) -> list[Any]:
         build_create_artifact_tool(agent_def),
         build_plan_exit_tool(agent_def),
         build_write_todos_tool(agent_def),
+        *build_cron_tools(),
     ]
