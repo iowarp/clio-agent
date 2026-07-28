@@ -151,6 +151,39 @@ def test_network_egress_resolution_derives_host_pattern() -> None:
     assert "tool_name_pattern" not in policy
 
 
+def test_hostless_egress_resolution_derives_no_policy(caplog) -> None:
+    """A hostless egress resolution derives NO policy (typed reason), not an inert domain row.
+
+    B4 #1057: stamping ``kind="domain"`` with an empty ``host_pattern`` would persist a
+    permanently inert, subject-less grant. The helper must refuse — return ``None`` and record
+    the typed ``egress_grant_missing_host`` reason (⚑ no-silent-fallback) — leaving the store
+    unchanged.
+    """
+    import logging
+
+    from clio_agent.gact.runtime.permission_policies import (
+        _append_permission_policy_from_resolution,
+    )
+
+    policies: list = []
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            permission_policies=policies, sessions=SimpleNamespace(get=lambda _sid: None)
+        )
+    )
+    row = {
+        "id": "perm_x",
+        "session_id": "",
+        "kind": "network_egress",
+        "tool_call": {"tool_name": "network_egress", "input": {"port": 443}},  # no host
+    }
+    with caplog.at_level(logging.WARNING):
+        policy = _append_permission_policy_from_resolution(app, row=row, action="allow_workspace")
+    assert policy is None
+    assert policies == []  # no inert row persisted
+    assert "egress_grant_missing_host" in caplog.text
+
+
 # --------------------------------------------------------------------------- #
 # boundary.* on the three workspace mutations (#979.2)
 # --------------------------------------------------------------------------- #

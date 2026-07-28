@@ -26,6 +26,7 @@ from clio_agent.gact.app import (
 )
 from clio_agent.gact.permission_gate import _policy_action_for_tool
 from clio_agent.gact.runtime.grant_resolver import (
+    _VALID_KINDS,
     KIND_DOMAIN,
     KIND_HOOK,
     KIND_PLAN_ACL,
@@ -1202,3 +1203,31 @@ def test_validate_normalizes_host_bearing_legacy_row() -> None:
     assert "tool_name_pattern" not in clean[0]
     # After self-heal the row no longer bleeds into a tool resolve either.
     assert resolve("tool", "shell_bash", policies=clean, session_id="s", workspace_id="ws_a") == ""
+
+
+def test_validate_rejects_invalid_explicit_kind() -> None:
+    """An EXPLICIT ``kind`` that is not a valid discriminator is REJECTED with a typed reason.
+
+    Without boundary validation a garbage/mis-cased kind (``"Domain"``) would fall through
+    :func:`grant_resolver._kind_admitted` to the legacy host-presence classification and silently
+    mis-route the row (⚑ no-silent-fallback). Absence stays legitimate (kind synthesized at match
+    time), and every valid kind passes.
+    """
+    _clean, bad_kind = _validate_permission_policies(
+        [{"kind": "Domain", "scope": "session", "action": "deny"}]
+    )
+    assert any(e["field"] == "kind" for e in bad_kind)
+
+    _clean, garbage_kind = _validate_permission_policies(
+        [{"kind": "nonsense", "scope": "session", "action": "deny"}]
+    )
+    assert any(e["field"] == "kind" for e in garbage_kind)
+
+    # A missing kind is legitimate (synthesized from row shape); every valid kind is preserved.
+    clean, ok_errors = _validate_permission_policies(
+        [{"scope": "session", "action": "deny"}]
+        + [{"kind": k, "scope": "session", "action": "deny"} for k in sorted(_VALID_KINDS)]
+    )
+    assert ok_errors == []
+    assert "kind" not in clean[0]
+    assert {row["kind"] for row in clean[1:]} == set(_VALID_KINDS)
