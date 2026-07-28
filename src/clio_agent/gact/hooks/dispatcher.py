@@ -35,6 +35,8 @@ from typing import Any
 from clio_agent.gact.hooks.adapters import HookAdapter, default_adapters
 from clio_agent.gact.hooks.config import HookEntry, discover_hook_entries
 from clio_agent.gact.hooks.events import (
+    AFTER_MODEL,
+    BEFORE_MODEL,
     KNOWN_EVENTS,
     POST_TOOL_BATCH,
     POST_TOOL_USE,
@@ -54,6 +56,7 @@ from clio_agent.gact.hooks.wire import (
     HookEnvelope,
     HookInfraError,
     HookOutcome,
+    ModelRequest,
     record_hook_reason,
     wire_annotations,
 )
@@ -93,6 +96,19 @@ class HookDispatcher:
         with self._lock:
             entries = list(self._entries)
         return [entry for entry in entries if entry.runs_for(event, envelope)]
+
+    def has_hooks_for(self, event: str) -> bool:
+        """Return whether ANY enabled entry declares ``event`` in its ``on`` set.
+
+        A cheap, envelope-free pre-check (no ``match`` evaluation): the ``dspy.LM``
+        wrapper uses it to stay pure pass-through when no model hook is configured
+        (zero overhead, identical output), only paying the dispatch cost when a
+        ``BeforeModel``/``AfterModel`` hook actually exists.
+        """
+
+        with self._lock:
+            entries = list(self._entries)
+        return any(entry.enabled and event in entry.on for entry in entries)
 
     def dispatch(self, event: str, envelope: HookEnvelope) -> HookOutcome:
         """Run every matching hook for ``event`` and merge to one outcome.
@@ -480,3 +496,74 @@ def dispatch_pre_compact(
         payload=dict(payload or {}),
     )
     return dispatcher.dispatch(PRE_COMPACT, envelope)
+
+
+def model_hooks_active() -> bool:
+    """Return whether ANY ``BeforeModel``/``AfterModel`` hook is configured (P2.4).
+
+    The ``dspy.LM`` wrapper's pass-through fast path: when this is ``False`` the
+    wrapper is never installed, so a turn with no model hook pays zero overhead and
+    produces byte-identical output to today.
+    """
+
+    dispatcher = _GLOBAL
+    if dispatcher is None:
+        return False
+    return dispatcher.has_hooks_for(BEFORE_MODEL) or dispatcher.has_hooks_for(AFTER_MODEL)
+
+
+def dispatch_before_model(
+    request: ModelRequest,
+    *,
+    session_id: str = "",
+    turn_id: str = "",
+    cwd: str = "",
+) -> HookOutcome:
+    """Fire ``BeforeModel`` hooks for one outgoing model request (P2.4).
+
+    Deny-capable — the wrapper enforces a ``deny`` (block), a ``synthesize`` (skip
+    the real LM with the canned ``llm_response``), and a ``modify`` (``model_override``
+    route / ``request_patch`` redact).
+    """
+
+    dispatcher = _GLOBAL
+    if dispatcher is None:
+        return HookOutcome()
+    envelope = HookEnvelope(
+        hook_event_name=BEFORE_MODEL,
+        session_id=session_id,
+        turn_id=turn_id,
+        cwd=cwd,
+        model_request=request,
+    )
+    return dispatcher.dispatch(BEFORE_MODEL, envelope)
+
+
+def dispatch_after_model(
+    request: ModelRequest,
+    *,
+    response: Any,
+    synthetic: bool,
+    session_id: str = "",
+    turn_id: str = "",
+    cwd: str = "",
+) -> HookOutcome:
+    """Fire ``AfterModel`` hooks for one model response (P2.4).
+
+    NOT a blocking gate — the call already ran. A hook may observe or REWRITE the
+    response entering context (``llm_response``). Fires on a synthesized response
+    too, flagged ``synthetic: true`` in the envelope payload.
+    """
+
+    dispatcher = _GLOBAL
+    if dispatcher is None:
+        return HookOutcome()
+    envelope = HookEnvelope(
+        hook_event_name=AFTER_MODEL,
+        session_id=session_id,
+        turn_id=turn_id,
+        cwd=cwd,
+        model_request=request,
+        payload={"synthetic": bool(synthetic), "response": response},
+    )
+    return dispatcher.dispatch(AFTER_MODEL, envelope)

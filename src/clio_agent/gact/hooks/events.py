@@ -6,7 +6,12 @@ P2.2 shipped the events needed to port the four live consumers of the deleted
 ``PostToolUse``/``PostToolBatch`` (the tool-result + parallel-batch boundaries)
 and the session/subagent/compaction lifecycle points
 (``SessionStart``/``SessionEnd``/``SubagentStart``/``SubagentStop``/
-``PreCompact``). ``BeforeModel`` remains a P2.4 (dspy.LM wrapper) concern.
+``PreCompact``). P2.4 adds the two PER-REQUEST model events fired by the
+``dspy.LM`` wrapper (:mod:`clio_agent.lm.hooked_lm`): ``BeforeModel`` (the outgoing
+model request, deny/synthesize/route/modify-capable) and ``AfterModel`` (the model
+response, observe/rewrite before it enters context). Unlike the turn events these
+fire ONCE PER LM CALL — many per turn — which is the whole point of doing them at
+the LM boundary rather than a turn-level seam.
 
 Names follow the industry contract where the mapping is honest (hooks-research
 §5.2): ``PreToolUse`` and ``UserPromptSubmit`` are the load-bearing deny-capable
@@ -62,6 +67,20 @@ PRE_COMPACT = "PreCompact"
 #: Every emitted semantic event (the old ``semantic_event``). Observation-only.
 SEMANTIC_EVENT = "SemanticEvent"
 
+#: Before ONE model request leaves the ``dspy.LM`` wrapper (P2.4). Fires per LM
+#: call (many per turn). Deny/synthesize/route/modify-capable: a ``synthesize``
+#: carries a canned ``llm_response`` and the real LM is NEVER called (offline
+#: replay + caching); a ``modify`` may carry a ``model_override`` (route this call
+#: to a different LM) and/or a ``request_patch`` (rewrite the outgoing
+#: messages/params — redact); a ``deny`` blocks the call with a typed reason.
+BEFORE_MODEL = "BeforeModel"
+
+#: After ONE model response returns, before it enters context (P2.4). NOT a
+#: blocking gate — the call already ran. A hook may OBSERVE or REWRITE the response
+#: the model sees (``llm_response`` — changes only what enters context). Fires on a
+#: synthesized response too (``synthetic: true``).
+AFTER_MODEL = "AfterModel"
+
 #: All events this build knows about.
 KNOWN_EVENTS: frozenset[str] = frozenset(
     {
@@ -76,8 +95,15 @@ KNOWN_EVENTS: frozenset[str] = frozenset(
         SUBAGENT_STOP,
         PRE_COMPACT,
         SEMANTIC_EVENT,
+        BEFORE_MODEL,
+        AFTER_MODEL,
     }
 )
+
+#: The model events, fired per-request by the ``dspy.LM`` wrapper (P2.4). Kept as a
+#: named set so the wrapper's cheap "is any model hook configured?" pre-check (the
+#: pass-through fast path) never has to hard-code the two names.
+MODEL_EVENTS: frozenset[str] = frozenset({BEFORE_MODEL, AFTER_MODEL})
 
 #: The subset whose hooks may BLOCK an operation (return a ``deny`` that stops it
 #: before an effect runs). ``PostToolUse`` is deliberately EXCLUDED: its effect has
@@ -85,7 +111,15 @@ KNOWN_EVENTS: frozenset[str] = frozenset(
 #: fatal — it must not fail-closed a completed call. Every event not listed here is
 #: a pure observation: a hook cannot gate it, and a hook infrastructure failure
 #: there is swallowed, never fatal to a turn.
-DENY_CAPABLE_EVENTS: frozenset[str] = frozenset({PRE_TOOL_USE, USER_PROMPT_SUBMIT})
+#:
+#: ``BeforeModel`` is deny-capable: a fail-closed BeforeModel hook that fails on
+#: infrastructure blocks the model call (the paused request never leaves) rather
+#: than silently letting an un-vetted request through. ``AfterModel`` is
+#: deliberately EXCLUDED — its call already ran, so its outcome can only rewrite the
+#: observed response, never un-run the request (mirrors ``PostToolUse``).
+DENY_CAPABLE_EVENTS: frozenset[str] = frozenset(
+    {PRE_TOOL_USE, USER_PROMPT_SUBMIT, BEFORE_MODEL}
+)
 
 
 def is_deny_capable(event: str) -> bool:

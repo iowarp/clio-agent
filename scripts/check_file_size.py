@@ -89,7 +89,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # P1.4 #1066: +1 for the build_plan_exit_tool import; the two react-build call sites stay
     # line-neutral (the create_artifact append became a two-tool extend). All plan_exit logic lives
     # in the owner module gact/plan_mode.py. Ratchets back with the #714/#767 decomposition.
-    "src/clio_agent/gact/agents/builders.py": 1874,
+    "src/clio_agent/gact/agents/builders.py": 1871,
     # #900: +14 for the lifespan child-reaper install + clean-shutdown teardown wiring
     # (both delegate to the owner module runtime/process_tree.py).
     # #918: +7 for the SkillNotDelegatableError exception handler (app.py owns

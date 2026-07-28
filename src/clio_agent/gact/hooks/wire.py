@@ -108,6 +108,24 @@ _HOOK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
             "'input'); the tool ran with its ORIGINAL args instead"
         ),
     },
+    "hook_synthesize_missing_llm_response": {
+        "severity": "warning",
+        "detail": (
+            "a BeforeModel synthesize decision carried no 'llm_response'; the real "
+            "LM was called instead of being skipped"
+        ),
+    },
+    "hook_route_unresolved": {
+        "severity": "warning",
+        "detail": (
+            "a BeforeModel model_override named an LM the route resolver could not "
+            "resolve; the call ran on the DEFAULT model instead"
+        ),
+    },
+    "hook_model_denied": {
+        "severity": "warning",
+        "detail": "a BeforeModel hook denied the model request; the call was blocked",
+    },
 }
 
 _HOOK_REASONS_MAX = 256
@@ -196,7 +214,15 @@ def wire_annotations(raw: Any) -> dict[str, bool]:
 
 @dataclass(frozen=True)
 class HookEnvelope:
-    """The context for one hook event — serialized to a hook's stdin as JSON."""
+    """The context for one hook event — serialized to a hook's stdin as JSON.
+
+    ``model_request`` is the P2.4 PUBLIC model-request contract (owner Q3): the
+    minimal, versioned shape a ``BeforeModel``/``AfterModel`` hook sees — the target
+    ``model`` id, the outgoing ``messages``, the sampling ``params``, and any
+    declared ``tools``. It rides the same ``schema_version`` the whole envelope
+    carries, so the shape can evolve without silently breaking a hook script written
+    against an older contract.
+    """
 
     hook_event_name: str
     session_id: str = ""
@@ -207,6 +233,7 @@ class HookEnvelope:
     tool_annotations: Mapping[str, Any] | None = None
     prompt: str | None = None
     payload: Mapping[str, Any] | None = None
+    model_request: "ModelRequest | None" = None
 
     def to_json(self, *, hook_id: str) -> dict[str, Any]:
         """Build the JSON envelope written to the hook process stdin."""
@@ -229,7 +256,34 @@ class HookEnvelope:
             body["prompt"] = self.prompt
         if self.payload is not None:
             body["payload"] = dict(self.payload)
+        if self.model_request is not None:
+            body["model_request"] = self.model_request.to_json()
         return body
+
+
+@dataclass(frozen=True)
+class ModelRequest:
+    """The P2.4 public, minimal, versioned shape of ONE outgoing model request.
+
+    Deliberately small: the target ``model`` id, the chat ``messages``, the sampling
+    ``params`` (temperature/max_tokens/… — api credentials are NEVER included), and
+    any declared ``tools``. A ``BeforeModel`` hook reads it to decide
+    synthesize/route/modify/deny; an ``AfterModel`` hook reads it alongside the
+    produced ``response`` (carried on the envelope ``payload``).
+    """
+
+    model: str = ""
+    messages: list[Any] = field(default_factory=list)
+    params: Mapping[str, Any] = field(default_factory=dict)
+    tools: list[Any] = field(default_factory=list)
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "model": self.model,
+            "messages": list(self.messages),
+            "params": dict(self.params),
+            "tools": list(self.tools),
+        }
 
 
 @dataclass(frozen=True)
@@ -252,6 +306,16 @@ class HookDecision:
     synthesize_result: Any = None
     synthesize_present: bool = False
     updated_output: str = ""
+    # P2.4 model-hook payloads (BeforeModel/AfterModel). ``llm_response`` is the
+    # canned/rewritten completion (a list[dict|str] like ``dspy.BaseLM`` returns, or
+    # a bare string the wrapper wraps); ``llm_response_present`` disambiguates a
+    # genuine ``None``/empty response from "no response key". ``model_override``
+    # names an alternate LM for a route; ``request_patch`` rewrites the outgoing
+    # ``messages``/``params`` for a redact.
+    llm_response: Any = None
+    llm_response_present: bool = False
+    model_override: str = ""
+    request_patch: Mapping[str, Any] | None = None
 
 
 def parse_hook_output(
@@ -284,6 +348,14 @@ def parse_hook_output(
         modify_input = candidate if isinstance(candidate, Mapping) else None
     synthesize_present = decision == "synthesize" and "result" in raw
     synthesize_result = raw.get("result") if decision == "synthesize" else None
+    # P2.4 model payloads — parsed for EVERY decision so an AfterModel rewrite
+    # (which may ride an ``allow``) and a BeforeModel synthesize/route/modify are all
+    # picked up. ``llm_response_present`` records the key's presence explicitly.
+    llm_response_present = "llm_response" in raw
+    llm_response = raw.get("llm_response") if llm_response_present else None
+    model_override = str(raw.get("model_override") or "")
+    patch_candidate = raw.get("request_patch")
+    request_patch = patch_candidate if isinstance(patch_candidate, Mapping) else None
     return HookDecision(
         decision=decision,  # type: ignore[arg-type]
         reason=str(raw.get("reason") or ""),
@@ -294,6 +366,10 @@ def parse_hook_output(
         synthesize_result=synthesize_result,
         synthesize_present=synthesize_present,
         updated_output=str(raw.get("updatedToolOutput") or ""),
+        llm_response=llm_response,
+        llm_response_present=llm_response_present,
+        model_override=model_override,
+        request_patch=request_patch,
     )
 
 
@@ -310,6 +386,11 @@ class HookOutcome:
     synthesize_result: Any = None
     synthesize_present: bool = False
     updated_output: str = ""
+    # P2.4 model-hook merged payloads.
+    llm_response: Any = None
+    llm_response_present: bool = False
+    model_override: str = ""
+    request_patch: Mapping[str, Any] | None = None
 
     @property
     def denied(self) -> bool:
@@ -322,6 +403,16 @@ class HookOutcome:
     @property
     def is_synthesize(self) -> bool:
         return self.decision == "synthesize"
+
+    @property
+    def is_model_synthesize(self) -> bool:
+        """Whether a BeforeModel hook wants to SKIP the real LM with a canned response."""
+
+        return self.decision == "synthesize" and self.llm_response_present
+
+    @property
+    def has_request_patch(self) -> bool:
+        return self.decision == "modify" and self.request_patch is not None
 
     @classmethod
     def merge(cls, decisions: list[HookDecision], records: list[dict[str, Any]]) -> "HookOutcome":
@@ -387,7 +478,63 @@ class HookOutcome:
                     hook_id=rewrites[0].hook_id,
                     decision="updatedToolOutput",
                 )
+        cls._merge_model_payloads(outcome, winning)
         return outcome
+
+    @staticmethod
+    def _merge_model_payloads(outcome: "HookOutcome", winning: list[HookDecision]) -> None:
+        """Fold the P2.4 model payloads (llm_response / model_override / request_patch),
+        scoped to the WINNING decision tier ONLY — consistent with how ``modify_input``/
+        ``synthesize_result`` above are scoped to ``winning``.
+
+        The consuming gates key off the WINNING decision, not off "any hook said so":
+        ``is_model_synthesize`` requires ``decision == "synthesize"``, ``has_request_patch``
+        (and the hooked_lm route branch) require ``decision == "modify"``. Gathering a
+        payload from ALL decisions — irrespective of tier — let a non-winning hook's
+        ``llm_response``/``model_override``/``request_patch`` be picked up in place of the
+        winning hook's own payload (e.g. an ``allow``/``modify`` hook sorted earlier by id
+        also carrying an ``llm_response``, while a DIFFERENT hook's ``synthesize`` actually
+        wins the merge) — the wrong value would then enter context/routing even though the
+        gate correctly identified which decision won. Scoping to ``winning`` closes that:
+        a payload only counts when it rides the SAME decision that won the merge.
+        ``winning`` is exactly the decisions sharing the outcome's decision string (the
+        ``_DECISION_RANK`` mapping is injective, so equal rank implies equal decision) —
+        an AfterModel rewrite rides on whatever tier wins that dispatch (ordinarily
+        ``allow``, since AfterModel hooks have no reason to return anything else) and is
+        scoped the same way for consistency.
+
+        Within the winning tier, first-by-stable-id wins and a second producer records
+        the typed ``hook_conflicting_intercept`` reason — never a silent last-writer-wins.
+        """
+
+        responders = [d for d in winning if d.llm_response_present]
+        if responders:
+            outcome.llm_response = responders[0].llm_response
+            outcome.llm_response_present = True
+            if len(responders) > 1:
+                record_hook_reason(
+                    "hook_conflicting_intercept",
+                    hook_id=responders[0].hook_id,
+                    decision="llm_response",
+                )
+        routers = [d for d in winning if d.model_override]
+        if routers:
+            outcome.model_override = routers[0].model_override
+            if len(routers) > 1:
+                record_hook_reason(
+                    "hook_conflicting_intercept",
+                    hook_id=routers[0].hook_id,
+                    decision="model_override",
+                )
+        patchers = [d for d in winning if d.request_patch is not None]
+        if patchers:
+            outcome.request_patch = patchers[0].request_patch
+            if len(patchers) > 1:
+                record_hook_reason(
+                    "hook_conflicting_intercept",
+                    hook_id=patchers[0].hook_id,
+                    decision="request_patch",
+                )
 
 
 def extract_json_object(text: str) -> dict[str, Any] | None:

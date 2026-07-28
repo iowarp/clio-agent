@@ -1002,3 +1002,156 @@ def test_disabled_hook_excluded_from_metadata(tmp_path: Path) -> None:
     assert disp.matching(PRE_TOOL_USE, _pre_tool_env()) == [
         e for e in disp.entries if e.id == "on"
     ]
+
+
+# --------------------------------------------------------------------------- #
+# P2.4 #1072 — the BeforeModel/AfterModel wire contract (the wrapper itself is  #
+# exercised in test_before_model.py; here we pin the parse/merge/event facts).  #
+# --------------------------------------------------------------------------- #
+def test_model_events_are_known_and_deny_capability() -> None:
+    from clio_agent.gact.hooks import (
+        AFTER_MODEL,
+        BEFORE_MODEL,
+        KNOWN_EVENTS,
+        MODEL_EVENTS,
+    )
+    from clio_agent.gact.hooks.events import is_deny_capable
+
+    assert {BEFORE_MODEL, AFTER_MODEL} <= KNOWN_EVENTS
+    assert MODEL_EVENTS == {BEFORE_MODEL, AFTER_MODEL}
+    # BeforeModel can block the request; AfterModel's call already ran (observe-only).
+    assert is_deny_capable(BEFORE_MODEL) is True
+    assert is_deny_capable(AFTER_MODEL) is False
+
+
+def test_parse_model_payloads() -> None:
+    """BeforeModel synthesize/route/modify payloads parse off the wire."""
+
+    from clio_agent.gact.hooks import AFTER_MODEL, BEFORE_MODEL
+
+    synth = parse_hook_output(
+        {"decision": "synthesize", "llm_response": ["CANNED"]}, hook_id="s", event=BEFORE_MODEL
+    )
+    assert synth.llm_response == ["CANNED"]
+    assert synth.llm_response_present is True
+
+    route = parse_hook_output(
+        {"decision": "modify", "model_override": "cheap"}, hook_id="r", event=BEFORE_MODEL
+    )
+    assert route.model_override == "cheap"
+
+    redact = parse_hook_output(
+        {"decision": "modify", "request_patch": {"messages": []}}, hook_id="m", event=BEFORE_MODEL
+    )
+    assert redact.request_patch == {"messages": []}
+
+    rewrite = parse_hook_output(
+        {"llm_response": ["REWRITE"]}, hook_id="a", event=AFTER_MODEL
+    )
+    assert rewrite.llm_response == ["REWRITE"]
+    assert rewrite.llm_response_present is True
+
+
+def test_merge_model_payloads_and_conflict_reason() -> None:
+    """Merge folds llm_response/model_override/request_patch first-by-id, and a
+    second competing producer records a typed conflict reason (never silent)."""
+
+    baseline = len(hook_reasons())
+    outcome = HookOutcome.merge(
+        [
+            HookDecision(decision="synthesize", llm_response=["A"], llm_response_present=True, hook_id="a"),
+            HookDecision(decision="synthesize", llm_response=["B"], llm_response_present=True, hook_id="b"),
+        ],
+        records=[],
+    )
+    assert outcome.is_model_synthesize
+    assert outcome.llm_response == ["A"]  # first by stable id
+    new = hook_reasons()[baseline:]
+    assert any(r["reason"] == "hook_conflicting_intercept" for r in new)
+
+
+def test_before_model_deny_beats_synthesize_tighten_only() -> None:
+    """A BeforeModel deny outranks a synthesize — a hook wanting a canned response
+    can never lift another hook's block (tighten-only holds at the model layer)."""
+
+    outcome = HookOutcome.merge(
+        [
+            HookDecision(
+                decision="synthesize", llm_response=["X"], llm_response_present=True, hook_id="s"
+            ),
+            HookDecision(decision="deny", reason="blocked", hook_id="d"),
+        ],
+        records=[],
+    )
+    assert outcome.denied
+    assert not outcome.is_model_synthesize
+
+
+def test_merge_model_payloads_scoped_to_winning_tier() -> None:
+    """A losing-tier hook's model payload must NOT be used in place of the winning
+    hook's own payload. The consuming gates (``is_model_synthesize``,
+    ``has_request_patch``, the hooked_lm route branch) key off the WINNING decision,
+    so payload selection must be scoped to the SAME winning tier — gathering
+    first-by-stable-id across ALL decisions (irrespective of tier) previously let a
+    non-winning ``allow``/``modify`` hook sorted earlier by id supply the
+    ``llm_response``/``model_override``/``request_patch`` for a DIFFERENT hook's
+    winning decision."""
+
+    synth_outcome = HookOutcome.merge(
+        [
+            HookDecision(
+                decision="allow",
+                llm_response=["FROM-NON-WINNING"],
+                llm_response_present=True,
+                hook_id="a",
+            ),
+            HookDecision(
+                decision="synthesize",
+                llm_response=["FROM-WINNING"],
+                llm_response_present=True,
+                hook_id="b",
+            ),
+        ],
+        records=[],
+    )
+    assert synth_outcome.decision == "synthesize"
+    assert synth_outcome.is_model_synthesize
+    assert synth_outcome.llm_response == ["FROM-WINNING"]
+
+    override_outcome = HookOutcome.merge(
+        [
+            HookDecision(decision="allow", model_override="FROM-NON-WINNING", hook_id="a"),
+            HookDecision(decision="modify", model_override="FROM-WINNING", hook_id="b"),
+        ],
+        records=[],
+    )
+    assert override_outcome.decision == "modify"
+    assert override_outcome.model_override == "FROM-WINNING"
+
+    patch_outcome = HookOutcome.merge(
+        [
+            HookDecision(
+                decision="allow", request_patch={"messages": ["non-winning"]}, hook_id="a"
+            ),
+            HookDecision(decision="modify", request_patch={"messages": ["winning"]}, hook_id="b"),
+        ],
+        records=[],
+    )
+    assert patch_outcome.decision == "modify"
+    assert patch_outcome.has_request_patch
+    assert patch_outcome.request_patch == {"messages": ["winning"]}
+
+
+def test_dispatcher_has_hooks_for_model_events(tmp_path: Path) -> None:
+    from clio_agent.gact.hooks import AFTER_MODEL, BEFORE_MODEL
+    from clio_agent.gact.hooks.dispatcher import model_hooks_active
+
+    good = write_hook_script(tmp_path, "g.py", "import sys\nsys.exit(0)\n")
+    disp = dispatcher_from_rows([{"id": "bm", "on": [BEFORE_MODEL], "run": command_run(good)}])
+    assert disp.has_hooks_for(BEFORE_MODEL) is True
+    assert disp.has_hooks_for(AFTER_MODEL) is False
+    install_global_dispatcher(disp)
+    try:
+        assert model_hooks_active() is True
+    finally:
+        install_global_dispatcher(None)
