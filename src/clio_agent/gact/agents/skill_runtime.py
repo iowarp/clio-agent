@@ -104,9 +104,19 @@ def effective_declared_skills(agent_def: "AgentDef", catalog: SkillCatalog) -> l
     )
     is_default_root = is_default and is_root
     if is_default_root:
-        for ref in catalog.discover():
-            if ref.scope == "workspace" and ref.layout != "unreadable" and ref.id not in declared:
-                declared.append(ref.id)
+        # Auto-declare the user's workspace skills first (so they lead the surface), then
+        # clio's shipped built-in skills (the ``planning`` entry-skill) — both onto the
+        # default-registry ROOT expert so plain chat can invoke them without editing the
+        # blueprint. Built-ins are appended AFTER workspace so a user skill of the same id
+        # (which shadows the built-in in resolution) also leads it in the declared list.
+        for wanted_scope in ("workspace", "builtin"):
+            for ref in catalog.discover():
+                if (
+                    ref.scope == wanted_scope
+                    and ref.layout != "unreadable"
+                    and ref.id not in declared
+                ):
+                    declared.append(ref.id)
     return declared
 
 

@@ -43,23 +43,20 @@ from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents import skill_runtime as _skill_runtime
+from clio_agent.gact.agents.auto_tools import build_auto_react_tools
 from clio_agent.gact.agents.composition import (
     _runtime_active_workspace_context,
     _runtime_dynamic_agent_children_context,
 )
-from clio_agent.gact.agents.resolution import (
-    _active_workflow_state_schema,
-)
+from clio_agent.gact.agents.resolution import _active_workflow_state_schema
 from clio_agent.gact.agents.runtime import (
     _retaining_react_cls,
 )
-from clio_agent.gact.artifacts.proposals import build_create_artifact_tool
 from clio_agent.gact.events import Event
 from clio_agent.gact.permission_gate import (
     _external_mcp_permission_context,
     _invoke_permission_gate,
 )
-from clio_agent.gact.plan_mode import build_plan_exit_tool
 from clio_agent.gact.runtime.context_tokens import _resolve_expert_context_window
 from clio_agent.gact.runtime.globals import (
     _active_semantic_trace_id,
@@ -1275,8 +1272,8 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     # Auto-attached infra (like child-delegation tools), not a
                     # curated domain tool (#919).
                     tools.append(_skill_runtime.build_load_skill_tool(agent_def, skill_rt))
-                # create_artifact (#969) + plan_exit (#1066): auto-attached for EVERY react expert.
-                tools += [build_create_artifact_tool(agent_def), build_plan_exit_tool(agent_def)]
+                # create_artifact (#969) + plan_exit (#1066) + write_todos (#1067): auto-attached.
+                tools += build_auto_react_tools(agent_def)
                 self.tools = tools
                 # The iteration default scales with the declared children — an
                 # orchestrator pays spawn+wait per child inside this loop (#948 S4).
@@ -1736,8 +1733,8 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             if skill_rt.resolved:
                 # Same react tier-1 + load_skill contract as blueprint experts (#919).
                 self.tools.append(_skill_runtime.build_load_skill_tool(agent_def, skill_rt))
-            # create_artifact (#969) + plan_exit (#1066): auto-attached for EVERY react expert.
-            self.tools += [build_create_artifact_tool(agent_def), build_plan_exit_tool(agent_def)]
+            # create_artifact (#969) + plan_exit (#1066) + write_todos (#1067): auto-attached.
+            self.tools += build_auto_react_tools(agent_def)
             runtime = PromptRegistry().resolve("clio.runtime.tool_user_agent")
             runtime_text = str(getattr(runtime, "text", "") or "").strip()
             agent_prompt = agent_def.system_prompt.strip() or agent_def.description

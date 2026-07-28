@@ -177,7 +177,9 @@ def test_default_root_auto_declares_workspace_skills_on_real_runtime_rows(
         title="Main",
         metadata={"source_blueprint": "default_registry"},
     )
-    assert effective_declared_skills(listing_root, catalog) == ["user-skill"]
+    # Workspace skills lead the surface; clio's shipped built-in skills (the ``planning``
+    # entry-skill) are auto-declared after them onto the default-registry root (P1.5 #1067).
+    assert effective_declared_skills(listing_root, catalog) == ["user-skill", "planning"]
     # A non-default blueprint root does NOT auto-declare:
     other_root = AgentDef(
         id="root",

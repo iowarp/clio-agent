@@ -36,10 +36,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-SkillScope = Literal["pack", "workspace", "global"]
+SkillScope = Literal["pack", "workspace", "global", "builtin"]
 SkillStatus = Literal["resolved", "missing", "ambiguous", "unreadable"]
 
-_SCOPE_ORDER: tuple[SkillScope, ...] = ("pack", "workspace", "global")
+#: Precedence order for :meth:`SkillCatalog.resolve`. ``builtin`` is LAST (lowest
+#: precedence) so a user-authored ``pack``/``workspace``/``global`` skill of the same id
+#: always shadows a shipped built-in — the built-ins (e.g. ``planning``) are defaults, not
+#: overrides.
+_SCOPE_ORDER: tuple[SkillScope, ...] = ("pack", "workspace", "global", "builtin")
+
+#: Root holding clio's shipped built-in skills (the ``planning`` entry-skill lives here).
+#: It is package-relative and independent of ``home``/``cwd``, so every catalog scan finds
+#: the built-ins regardless of where the daemon was launched.
+_BUILTIN_SKILLS_ROOT = Path(__file__).resolve().parent / "builtin_skills"
 
 
 class SkillNotDelegatableError(RuntimeError):
@@ -154,7 +163,7 @@ class SkillCatalog:
     # ---- discovery -----------------------------------------------------
 
     def discover(self) -> list[SkillRef]:
-        """All workspace + global skills, in scan order (no id dedup).
+        """All built-in + global + workspace skills, in scan order (no id dedup).
 
         Callers that need one-ref-per-id apply their own precedence;
         :meth:`resolve` is the canonical way to get "the" skill for an id.
@@ -344,12 +353,14 @@ class SkillCatalog:
 
 
 def _skill_search_roots(home: Path, cwd: Path) -> list[tuple[Path, str, SkillScope]]:
-    """Return (root, source, scope) skill roots in scan order — workspace last
-    so a project skill with the same id overrides a global one for consumers
-    that fold by id in scan order. Scope is EXPLICIT, never inferred from path
-    containment (cwd==home or symlinked roots would misclassify)."""
+    """Return (root, source, scope) skill roots in scan order — built-in FIRST (lowest
+    precedence) then global, then workspace LAST so a project skill with the same id
+    overrides a global (or built-in) one for consumers that fold by id in scan order.
+    Scope is EXPLICIT, never inferred from path containment (cwd==home or symlinked roots
+    would misclassify)."""
 
     return [
+        (_BUILTIN_SKILLS_ROOT, "builtin", "builtin"),
         (home / ".claude" / "skills", "claude", "global"),
         (home / ".codex" / "skills", "codex", "global"),
         (home / ".agents" / "skills", "agents", "global"),

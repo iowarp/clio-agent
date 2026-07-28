@@ -59,9 +59,7 @@ from clio_agent.gact.enrichment import (
     inject_pending_agent_task_notifications,
 )
 from clio_agent.gact.events import Event, EventBus, _publish_transcript_event
-from clio_agent.gact.evidence import (
-    _propose_edit_diffs_from_pred,
-)
+from clio_agent.gact.evidence import _propose_edit_diffs_from_pred
 from clio_agent.gact.messaging import (
     _agent_accepts_images,
     _image_part_summaries,
@@ -93,6 +91,7 @@ from clio_agent.gact.streaming import (
     _pop_stream_fallback,
     _StreamingOutputError,
 )
+from clio_agent.gact.todos import inject_todo_recitation
 from clio_agent.gact.tool_observer import (
     _merge_tool_call_rows,
     _tool_calls_from_handoff_rows,
@@ -115,9 +114,7 @@ from clio_agent.gact.types import (
     Part,
     Session,
 )
-from clio_agent.gact.usage import (
-    _snapshot_lm_history_index,
-)
+from clio_agent.gact.usage import _snapshot_lm_history_index
 
 # NOTE (#714): every turn helper above is imported from its true *leaf* owner,
 # not from ``clio_agent.gact.app``. The turn loop originally lived in ``app.py``
@@ -305,6 +302,9 @@ async def _run_turn_in_background(
         )
         # P1.2 #1064: surface plan mode to the model each turn (survives compaction; no-op otherwise).
         state.enriched_text = inject_plan_mode_reminder(
+            state.app, state.sid, state.sess, state.enriched_text
+        )
+        state.enriched_text = inject_todo_recitation(
             state.app, state.sid, state.sess, state.enriched_text
         )
         # Carry prior turns so a follow-up ("now plot it") reuses resolved state (no-op turn 1).
