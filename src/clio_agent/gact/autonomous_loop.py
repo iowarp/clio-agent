@@ -40,6 +40,7 @@ probe, and context; it never imports :mod:`clio_agent.gact.app`.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 import uuid
 from collections.abc import Mapping
@@ -103,12 +104,24 @@ CLAMP_CEILING = "loop_delay_clamped_ceiling"
 class LoopError(ValueError):
     """A ``/loop`` start (or ``loop_wakeup``) was rejected with a machine-readable
     ``reason`` (``loop_missing_prompt``, ``no_active_session``,
-    ``loop_bound_tripped_rearm_denied``) so callers branch on a code rather than
-    string-matching the message — never a silent coercion."""
+    ``loop_bound_tripped_rearm_denied``, ``loop_cancelled``) so callers branch on a code
+    rather than string-matching the message — never a silent coercion."""
 
     def __init__(self, message: str, *, reason: str) -> None:
         super().__init__(message)
         self.reason = reason
+
+
+#: Serialises every read-check-write of the loop state dict. Loop mutations arrive on TWO
+#: OS threads — a ``loop_wakeup`` runs on the turn worker thread while ``stop_session_loop``
+#: (session end/cancel) runs on the event-loop thread — and :func:`_put_loop` overwrites the
+#: WHOLE dict (``SessionStore.update`` shallow-merges ``metadata["loop"]``). Re-read-and-
+#: compare alone is insufficient: without a lock a wakeup can read an active loop, be
+#: pre-empted by an end that stops it, then resume and write its stale (still-active) copy
+#: back — resurrecting a stopped loop with a fresh, orphaned wakeup. Every mutation body
+#: holds this reentrant lock; :func:`_arm` additionally re-reads under it and refuses to
+#: arm a loop that was cancelled or superseded meanwhile (``loop_cancelled``).
+_LOOP_MUTEX = threading.RLock()
 
 
 # --------------------------------------------------------------------------- #
@@ -185,23 +198,42 @@ def _arm(app: Any, sid: str, loop: dict[str, Any], prompt: str, delay_s: int) ->
     fires, :func:`clio_agent.gact.scheduler_runtime._fire_schedule` stages ``prompt`` as a
     background user turn (the cross-turn re-drive seam) — no parallel scheduler. Cancels
     any prior pending wakeup first (cancel-both) so at most one loop wakeup is ever armed.
-    Returns the next-fire UTC instant. Persists the mutated ``loop``."""
+    Returns the next-fire UTC instant. Persists the mutated ``loop``.
 
-    old = str(loop.get("pending_schedule_id") or "")
-    if old:
-        cancel_schedule(app, old)
-    sch = app.state.schedules.create(
-        session_id=sid,
-        question=prompt,
-        delay_s=int(delay_s),
-        recurring=False,
-    )
-    loop["pending_schedule_id"] = sch.id
-    loop["armed"] = True
-    loop["prompt"] = prompt
-    loop["fallback_pending"] = False
-    _put_loop(app, sid, loop)
-    return str(sch.next_fire_at or "")
+    Staleness guard (under :data:`_LOOP_MUTEX`): re-reads the STORED loop and refuses with
+    :class:`LoopError` (``loop_cancelled``) when the caller's ``loop`` was cancelled or
+    superseded on another thread since it was read — the stored ``loop_id`` differs, or the
+    stored loop is ``stopped`` / no longer ``active``. Arming would otherwise write the
+    stale copy back and resurrect a dead loop with a live, orphaned wakeup."""
+
+    with _LOOP_MUTEX:
+        stored = _get_loop(app, sid)
+        caller_id = str(loop.get("loop_id") or "")
+        stored_id = str(stored.get("loop_id") or "")
+        if (
+            (caller_id and stored_id and caller_id != stored_id)
+            or not stored.get("active")
+            or stored.get("stopped")
+        ):
+            raise LoopError(
+                "the loop was cancelled or superseded before this wakeup could arm",
+                reason="loop_cancelled",
+            )
+        old = str(loop.get("pending_schedule_id") or "")
+        if old:
+            cancel_schedule(app, old)
+        sch = app.state.schedules.create(
+            session_id=sid,
+            question=prompt,
+            delay_s=int(delay_s),
+            recurring=False,
+        )
+        loop["pending_schedule_id"] = sch.id
+        loop["armed"] = True
+        loop["prompt"] = prompt
+        loop["fallback_pending"] = False
+        _put_loop(app, sid, loop)
+        return str(sch.next_fire_at or "")
 
 
 def end_loop(
@@ -215,23 +247,32 @@ def end_loop(
     """End the loop with a typed ``reason`` and cancel its pending wakeup (cancel-both).
 
     Idempotent: a no-op when there is no loop or it is already stopped. Cancelling the
-    pending schedule closes the orphan window (store row + daemon deferred entry)."""
+    pending schedule closes the orphan window (store row + daemon deferred entry).
 
-    if loop is None:
-        loop = _get_loop(app, sid)
-    if not loop or loop.get("stopped"):
-        return
-    pending = str(loop.get("pending_schedule_id") or "")
-    if pending:
-        cancel_schedule(app, pending)  # cancel-both
-    loop["active"] = False
-    loop["stopped"] = True
-    loop["stop_reason"] = reason
-    loop["armed"] = False
-    loop["pending_schedule_id"] = ""
-    loop["fallback_pending"] = False
-    if app.state.sessions.get(sid) is not None:
-        _put_loop(app, sid, loop)
+    Held under :data:`_LOOP_MUTEX` and re-reads the STORED loop: a passed-in ``loop`` copy
+    can carry a stale ``pending_schedule_id`` (a concurrent ``_arm`` may have installed a
+    fresher one), so the id actually recorded in the store — when it belongs to the same
+    loop — is what gets cancelled to truly close the orphan window."""
+
+    with _LOOP_MUTEX:
+        if loop is None:
+            loop = _get_loop(app, sid)
+        if not loop or loop.get("stopped"):
+            return
+        stored = _get_loop(app, sid)
+        pending = str(loop.get("pending_schedule_id") or "")
+        if str(stored.get("loop_id") or "") == str(loop.get("loop_id") or ""):
+            pending = str(stored.get("pending_schedule_id") or pending)
+        if pending:
+            cancel_schedule(app, pending)  # cancel-both
+        loop["active"] = False
+        loop["stopped"] = True
+        loop["stop_reason"] = reason
+        loop["armed"] = False
+        loop["pending_schedule_id"] = ""
+        loop["fallback_pending"] = False
+        if app.state.sessions.get(sid) is not None:
+            _put_loop(app, sid, loop)
     logger.info(
         "loop stopped reason=%s loop_id=%s iteration=%s detail=%s",
         reason,
@@ -356,50 +397,54 @@ def start_loop(
     eff_stall = int(max_no_progress) if int(max_no_progress or 0) > 0 else DEFAULT_MAX_NO_PROGRESS
     loop_id = "loop_" + uuid.uuid4().hex[:12]
 
-    # Restarting a loop (a fresh /loop or a model self-initiate racing an existing loop)
-    # must cancel the PRIOR loop's pending wakeup before arming a new one, or the old
-    # one-shot survives in the schedule store and fires unattended later (orphaned
-    # wakeup) — violating the "at most one loop wakeup is ever armed" invariant
-    # (cancel-both). end_loop is idempotent, so this is a safe no-op when no prior loop
-    # is active.
-    prior = _get_loop(app, sid)
-    if prior and prior.get("active") and not prior.get("stopped"):
-        end_loop(app, sid, reason="loop_restarted", loop=prior)
+    # The restart-cancel, fresh-dict write, and first arm are one atomic read-check-write
+    # under _LOOP_MUTEX so a concurrent stop/restart on the other OS thread cannot
+    # interleave (resurrectable-cancel race, A2).
+    with _LOOP_MUTEX:
+        # Restarting a loop (a fresh /loop or a model self-initiate racing an existing
+        # loop) must cancel the PRIOR loop's pending wakeup before arming a new one, or the
+        # old one-shot survives in the schedule store and fires unattended later (orphaned
+        # wakeup) — violating the "at most one loop wakeup is ever armed" invariant
+        # (cancel-both). end_loop is idempotent, so this is a safe no-op when no prior loop
+        # is active.
+        prior = _get_loop(app, sid)
+        if prior and prior.get("active") and not prior.get("stopped"):
+            end_loop(app, sid, reason="loop_restarted", loop=prior)
 
-    sess = app.state.sessions.get(sid)
-    tokens_at_start = 0
-    cost_at_start = 0.0
-    if sess is not None:
-        tokens_at_start = int(getattr(sess, "tokens_input", 0)) + int(
-            getattr(sess, "tokens_output", 0)
-        )
-        cost_at_start = float(getattr(sess, "cost_usd", 0.0))
+        sess = app.state.sessions.get(sid)
+        tokens_at_start = 0
+        cost_at_start = 0.0
+        if sess is not None:
+            tokens_at_start = int(getattr(sess, "tokens_input", 0)) + int(
+                getattr(sess, "tokens_output", 0)
+            )
+            cost_at_start = float(getattr(sess, "cost_usd", 0.0))
 
-    loop: dict[str, Any] = {
-        "loop_id": loop_id,
-        "active": True,
-        "prompt": text,
-        "iteration": 0,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "max_iters": eff_iters,
-        "max_wallclock_s": eff_wall,
-        "max_tokens": int(max_tokens or 0),
-        "max_usd": float(max_usd or 0.0),
-        "tokens_at_start": tokens_at_start,
-        "cost_at_start": cost_at_start,
-        "max_no_progress": eff_stall,
-        "no_progress_count": 0,
-        "last_activity_monotonic": app.state.bus.last_publish_monotonic(sid),
-        "interval_s": delay,
-        "pending_schedule_id": "",
-        "armed": False,
-        "fallback_pending": False,
-        "stopped": False,
-        "stop_reason": "",
-        "clamp_reason": "",
-    }
-    _put_loop(app, sid, loop)
-    next_fire = _arm(app, sid, loop, text, delay)
+        loop: dict[str, Any] = {
+            "loop_id": loop_id,
+            "active": True,
+            "prompt": text,
+            "iteration": 0,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "max_iters": eff_iters,
+            "max_wallclock_s": eff_wall,
+            "max_tokens": int(max_tokens or 0),
+            "max_usd": float(max_usd or 0.0),
+            "tokens_at_start": tokens_at_start,
+            "cost_at_start": cost_at_start,
+            "max_no_progress": eff_stall,
+            "no_progress_count": 0,
+            "last_activity_monotonic": app.state.bus.last_publish_monotonic(sid),
+            "interval_s": delay,
+            "pending_schedule_id": "",
+            "armed": False,
+            "fallback_pending": False,
+            "stopped": False,
+            "stop_reason": "",
+            "clamp_reason": "",
+        }
+        _put_loop(app, sid, loop)
+        next_fire = _arm(app, sid, loop, text, delay)
     logger.info(
         "loop started loop_id=%s interval_s=%s max_iters=%s max_wallclock_s=%s "
         "max_tokens=%s max_no_progress=%s next_fire_at=%s",
@@ -439,68 +484,75 @@ def loop_wakeup_impl(
     iteration that just ran into the no-progress counter, increments the iteration, and —
     if no typed bound trips — arms the next wakeup (reusing the scheduler one-shot). When
     a bound trips OR ``stop:true``, the loop ends with a typed reason and the pending
-    wakeup is cancelled (cancel-both). Returns ``{loop_id, next_fire_at, stopped}``."""
+    wakeup is cancelled (cancel-both). Returns ``{loop_id, next_fire_at, stopped}``.
+
+    The read-check-write body runs under :data:`_LOOP_MUTEX` so a concurrent
+    ``stop_session_loop`` (session end on the event-loop thread) cannot interleave and be
+    silently overwritten. When the loop was cancelled/superseded meanwhile, ``_arm`` raises
+    ``loop_cancelled`` and it PROPAGATES to the model (the model owns the recovery)."""
 
     app, sid = _active()
-    loop = _get_loop(app, sid)
+    with _LOOP_MUTEX:
+        loop = _get_loop(app, sid)
 
-    # No active loop: the model self-initiates one (the /loop command is the other door).
-    if not loop or not loop.get("active"):
+        # No active loop: the model self-initiates one (the /loop command is the other).
+        if not loop or not loop.get("active"):
+            if stop:
+                return {"loop_id": "", "next_fire_at": "", "stopped": True}
+            # Sticky bounds: a loop that stopped on a HARD bound (iters / budget / session
+            # end) cannot be re-armed from a tool — the model would otherwise escape the
+            # very ceiling that stopped it. The user must re-issue /loop (start_loop writes
+            # a fresh dict, clearing the sticky state). The model's own stop
+            # (loop_user_stopped) is NOT sticky, so this branch still self-initiates after
+            # a voluntary stop.
+            prior_reason = str(loop.get("stop_reason") or "")
+            if loop.get("stopped") and prior_reason in LOOP_STICKY_STOP_REASONS:
+                raise LoopError(
+                    f"this loop already stopped on a hard bound ({prior_reason}) and cannot "
+                    "be re-armed from loop_wakeup; the user must restart it via /loop.",
+                    reason="loop_bound_tripped_rearm_denied",
+                )
+            started = start_loop(app, sid, prompt=prompt, interval_s=delay_seconds)
+            return {
+                "loop_id": started["loop_id"],
+                "next_fire_at": started["next_fire_at"],
+                "stopped": False,
+            }
+
+        loop_id = str(loop.get("loop_id") or "")
         if stop:
-            return {"loop_id": "", "next_fire_at": "", "stopped": True}
-        # Sticky bounds: a loop that stopped on a HARD bound (iters / budget / session
-        # end) cannot be re-armed from a tool — the model would otherwise escape the very
-        # ceiling that stopped it. The user must re-issue /loop (start_loop writes a fresh
-        # dict, clearing the sticky state). The model's own stop (loop_user_stopped) is
-        # NOT sticky, so this branch still self-initiates after a voluntary stop.
-        prior_reason = str(loop.get("stop_reason") or "")
-        if loop.get("stopped") and prior_reason in LOOP_STICKY_STOP_REASONS:
-            raise LoopError(
-                f"this loop already stopped on a hard bound ({prior_reason}) and cannot be "
-                "re-armed from loop_wakeup; the user must restart it via /loop.",
-                reason="loop_bound_tripped_rearm_denied",
+            end_loop(app, sid, reason="loop_user_stopped", loop=loop, detail=reason)
+            return {"loop_id": loop_id, "next_fire_at": "", "stopped": True}
+
+        delay, clamp_reason = clamp_delay(delay_seconds)
+        if clamp_reason:
+            loop["clamp_reason"] = clamp_reason
+            logger.info(
+                "loop delay clamped reason=%s loop_id=%s requested=%s applied=%s",
+                clamp_reason,
+                loop_id,
+                delay_seconds,
+                delay,
             )
-        started = start_loop(app, sid, prompt=prompt, interval_s=delay_seconds)
-        return {
-            "loop_id": started["loop_id"],
-            "next_fire_at": started["next_fire_at"],
-            "stopped": False,
-        }
 
-    loop_id = str(loop.get("loop_id") or "")
-    if stop:
-        end_loop(app, sid, reason="loop_user_stopped", loop=loop, detail=reason)
-        return {"loop_id": loop_id, "next_fire_at": "", "stopped": True}
+        _record_progress(app, sid, loop)
+        loop["iteration"] = int(loop.get("iteration", 0)) + 1
 
-    delay, clamp_reason = clamp_delay(delay_seconds)
-    if clamp_reason:
-        loop["clamp_reason"] = clamp_reason
+        stop_reason = _check_bounds(app, sid, loop)
+        if stop_reason:
+            end_loop(app, sid, reason=stop_reason, loop=loop, detail=reason)
+            return {"loop_id": loop_id, "next_fire_at": "", "stopped": True}
+
+        next_prompt = (prompt or "").strip() or str(loop.get("prompt") or "")
+        next_fire = _arm(app, sid, loop, next_prompt, delay)
         logger.info(
-            "loop delay clamped reason=%s loop_id=%s requested=%s applied=%s",
-            clamp_reason,
+            "loop wakeup armed loop_id=%s iteration=%s delay_s=%s reason=%s",
             loop_id,
-            delay_seconds,
+            loop.get("iteration"),
             delay,
+            reason,
         )
-
-    _record_progress(app, sid, loop)
-    loop["iteration"] = int(loop.get("iteration", 0)) + 1
-
-    stop_reason = _check_bounds(app, sid, loop)
-    if stop_reason:
-        end_loop(app, sid, reason=stop_reason, loop=loop, detail=reason)
-        return {"loop_id": loop_id, "next_fire_at": "", "stopped": True}
-
-    next_prompt = (prompt or "").strip() or str(loop.get("prompt") or "")
-    next_fire = _arm(app, sid, loop, next_prompt, delay)
-    logger.info(
-        "loop wakeup armed loop_id=%s iteration=%s delay_s=%s reason=%s",
-        loop_id,
-        loop.get("iteration"),
-        delay,
-        reason,
-    )
-    return {"loop_id": loop_id, "next_fire_at": next_fire, "stopped": False}
+        return {"loop_id": loop_id, "next_fire_at": next_fire, "stopped": False}
 
 
 # --------------------------------------------------------------------------- #
@@ -523,33 +575,39 @@ def dispatch_loop_at_finalize(app: Any, *, session_id: str, turn_id: str = "") -
       bounded retry, never an unbounded silent wait."""
 
     try:
-        loop = _get_loop(app, session_id)
-        if not loop or not loop.get("active") or loop.get("stopped") or not loop.get("armed"):
-            return
-        pending_id = str(loop.get("pending_schedule_id") or "")
-        if pending_id and app.state.schedules.get(pending_id) is not None:
-            # The armed wakeup is still queued (a fresh reschedule, or a not-yet-fired
-            # future wakeup on an unrelated turn). Nothing to decide.
-            return
-        if loop.get("fallback_pending"):
-            # The one fallback wakeup fired and STILL no reschedule — end (bounded).
-            end_loop(app, session_id, reason="loop_no_reschedule", loop=loop)
-            return
-        # A loop iteration ran and the model armed no replacement: grant ONE bounded
-        # fallback turn, but only if no typed bound trips first.
-        loop["iteration"] = int(loop.get("iteration", 0)) + 1
-        stop_reason = _check_bounds(app, session_id, loop)
-        if stop_reason:
-            end_loop(app, session_id, reason=stop_reason, loop=loop)
-            return
-        next_fire = _arm(app, session_id, loop, str(loop.get("prompt") or ""), FALLBACK_DELAY_S)
-        loop["fallback_pending"] = True
-        _put_loop(app, session_id, loop)
-        logger.info(
-            "loop fallback armed reason=loop_no_reschedule loop_id=%s next_fire_at=%s",
-            loop.get("loop_id"),
-            next_fire,
-        )
+        with _LOOP_MUTEX:
+            loop = _get_loop(app, session_id)
+            if not loop or not loop.get("active") or loop.get("stopped") or not loop.get("armed"):
+                return
+            pending_id = str(loop.get("pending_schedule_id") or "")
+            if pending_id and app.state.schedules.get(pending_id) is not None:
+                # The armed wakeup is still queued (a fresh reschedule, or a not-yet-fired
+                # future wakeup on an unrelated turn). Nothing to decide.
+                return
+            if loop.get("fallback_pending"):
+                # The one fallback wakeup fired and STILL no reschedule — end (bounded).
+                end_loop(app, session_id, reason="loop_no_reschedule", loop=loop)
+                return
+            # A loop iteration ran and the model armed no replacement: grant ONE bounded
+            # fallback turn, but only if no typed bound trips first.
+            loop["iteration"] = int(loop.get("iteration", 0)) + 1
+            stop_reason = _check_bounds(app, session_id, loop)
+            if stop_reason:
+                end_loop(app, session_id, reason=stop_reason, loop=loop)
+                return
+            next_fire = _arm(app, session_id, loop, str(loop.get("prompt") or ""), FALLBACK_DELAY_S)
+            loop["fallback_pending"] = True
+            _put_loop(app, session_id, loop)
+            logger.info(
+                "loop fallback armed reason=loop_no_reschedule loop_id=%s next_fire_at=%s",
+                loop.get("loop_id"),
+                next_fire,
+            )
+    except LoopError as exc:
+        # A concurrent stop/restart cancelled or superseded the loop before the fallback
+        # could arm (loop_cancelled) — the finalize hook quietly declines (typed, logged);
+        # the surviving state (stopped, or the new loop) is authoritative.
+        logger.info("loop finalize fallback skipped reason=%s", exc.reason)
     except Exception:  # noqa: BLE001 - the finalize hook must never crash a turn
         logger.warning("loop finalize hook error", exc_info=True)
 

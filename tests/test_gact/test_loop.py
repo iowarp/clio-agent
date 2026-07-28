@@ -556,6 +556,126 @@ def test_user_loop_restart_clears_sticky(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Mutation lock + staleness guard — resurrectable-cancel regression (A2)         #
+# --------------------------------------------------------------------------- #
+def test_arm_refuses_after_stop(tmp_path: Path) -> None:
+    """A stale wakeup that arms AFTER the loop was stopped must be REFUSED, not resurrect
+    it. This is the resurrectable-cancel race: a wakeup thread captures the loop dict, the
+    event-loop thread cancels the loop (session end), then the wakeup's ``_arm`` writes the
+    stale (still-active) dict back with a fresh live schedule — reviving a stopped loop and
+    orphaning a token-burning wakeup. ``_arm`` must re-read stored state under the lock and
+    raise ``loop_cancelled`` instead of writing."""
+
+    def body() -> None:
+        app = _app(tmp_path)
+        sid = _session(app)
+        _bind(app, sid)
+        start_loop(app, sid, prompt="p", interval_s=120)
+        # A wakeup thread's captured, still-active view of the loop.
+        stale = loop_mod._get_loop(app, sid)
+        assert stale["stopped"] is False
+
+        # Meanwhile the session ends and cancels the loop (the other OS thread).
+        stop_session_loop(app, sid)
+        assert _loop_state(app, sid)["stopped"] is True
+        assert app.state.schedules.list(session_id=sid) == []
+
+        # The stale wakeup now tries to arm — it MUST be refused (loop_cancelled), never
+        # resurrect the stopped loop with a fresh schedule.
+        raised = False
+        try:
+            loop_mod._arm(app, sid, stale, "p", 120)
+        except LoopError as exc:
+            raised = True
+            assert exc.reason == "loop_cancelled"
+        assert raised
+        assert _loop_state(app, sid)["stopped"] is True
+        assert app.state.schedules.list(session_id=sid) == []
+
+    _in_ctx(body)
+
+
+def test_arm_refuses_when_superseded(tmp_path: Path) -> None:
+    """A wakeup belonging to a loop that a restart has SUPERSEDED (fresh ``loop_id``) must
+    be refused, and must not disturb the new loop's armed wakeup."""
+
+    def body() -> None:
+        app = _app(tmp_path)
+        sid = _session(app)
+        _bind(app, sid)
+        start_loop(app, sid, prompt="first", interval_s=120)
+        stale = loop_mod._get_loop(app, sid)  # loop L1's view
+
+        # A restart supersedes L1 with a fresh loop L2 (different loop_id).
+        start_loop(app, sid, prompt="second", interval_s=120)
+        l2 = _loop_state(app, sid)
+        assert l2["loop_id"] != stale["loop_id"]
+        sched_b = l2["pending_schedule_id"]
+
+        # Arming the superseded L1 must be refused; L2's wakeup stays untouched.
+        raised = False
+        try:
+            loop_mod._arm(app, sid, stale, "first", 120)
+        except LoopError as exc:
+            raised = True
+            assert exc.reason == "loop_cancelled"
+        assert raised
+        remaining = [s.id for s in app.state.schedules.list(session_id=sid)]
+        assert remaining == [sched_b]
+
+    _in_ctx(body)
+
+
+def test_loop_mutation_lock_concurrency_smoke(tmp_path: Path) -> None:
+    """Hammer a wakeup arm-loop against a concurrent ``stop_session_loop`` on two OS
+    threads: the mutex + staleness guard must leave a single, consistent final state —
+    the loop STOPPED and NO schedule surviving (no resurrection, no orphan)."""
+
+    def body() -> None:
+        import threading
+
+        app = _app(tmp_path)
+        sid = _session(app)
+        _bind(app, sid)
+        start_loop(app, sid, prompt="p", interval_s=120, max_iters=100000)
+
+        errors: list[Exception] = []
+        start = threading.Event()
+
+        def hammer() -> None:
+            start.wait()
+            for _ in range(400):
+                loop = loop_mod._get_loop(app, sid)
+                if not loop or loop.get("stopped"):
+                    break
+                try:
+                    loop_mod._arm(app, sid, loop, "p", 120)
+                except LoopError:
+                    break
+                except Exception as exc:  # pragma: no cover - unexpected
+                    errors.append(exc)
+                    break
+
+        def stopper() -> None:
+            start.wait()
+            stop_session_loop(app, sid)
+
+        threads = [threading.Thread(target=hammer), threading.Thread(target=stopper)]
+        for t in threads:
+            t.start()
+        start.set()
+        for t in threads:
+            t.join()
+
+        assert not errors, errors
+        final = _loop_state(app, sid)
+        assert final["stopped"] is True
+        assert app.state.schedules.list(session_id=sid) == []
+
+    _in_ctx(body)
+
+
+# --------------------------------------------------------------------------- #
 # /loop command + tool registration                                            #
 # --------------------------------------------------------------------------- #
 def test_loop_command_row_exists() -> None:
