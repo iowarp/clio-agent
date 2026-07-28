@@ -26,10 +26,11 @@ nothing.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from clio_agent.gact import context as _ctx
-from clio_agent.gact.scheduler import CronError
+from clio_agent.gact.scheduler import CronError, Schedule
 
 
 def _active() -> tuple[Any, str]:
@@ -57,6 +58,134 @@ def cancel_schedule(app: Any, schedule_id: str) -> bool:
     if deferred is not None:
         deferred.discard(schedule_id)
     return existed
+
+
+# --------------------------------------------------------------------------- #
+# /cron command parsing (owner-module logic; the catalog route stays thin).    #
+# Mirrors run_loop_command / run_goal_command exactly: same body-parse          #
+# convention, same typed-error style, same result-message shape (#1081 P4.3     #
+# gap — the command dispatch was never wired, so POSTing /commands/cron         #
+# returned "unhandled command").                                                #
+# --------------------------------------------------------------------------- #
+_LIST_TOKENS = frozenset({"list", "ls", "show"})
+_DELETE_TOKENS = frozenset({"delete", "cancel", "rm", "remove"})
+
+
+def _has_create_args(args: Mapping[str, Any]) -> bool:
+    """True when the structured ``args`` carry a create trigger (cron/run_at/delay_s)."""
+
+    return bool(
+        str(args.get("cron") or "").strip()
+        or str(args.get("run_at") or "").strip()
+        or int(args.get("delay_s") or 0) > 0
+    )
+
+
+def _format_schedule_line(s: Schedule) -> str:
+    """One readable row for the ``/cron list`` body (mirrors cron_list's fields)."""
+
+    trigger = f"cron {s.cron}" if s.cron else f"run_at {s.run_at}"
+    kind = "recurring" if s.recurring else "one-shot"
+    return (
+        f"  {s.id}  {trigger}  next_fire_at={s.next_fire_at or '-'}  "
+        f"tz={s.timezone}  {kind}  prompt={s.question!r}"
+    )
+
+
+def run_cron_command(app: Any, sid: str, request_body: Mapping[str, Any]) -> str:
+    """Execute the ``/cron`` (alias ``/schedule``) user command; return the message body.
+
+    Surfaces the create/list/delete triad the command advertises, reusing the SAME
+    :meth:`ScheduleStore.create` / :func:`cancel_schedule` logic the model tools and HTTP
+    route use (no duplicated scheduler logic — clamps, local-tz, one-shot, and cancel-both
+    are all enforced there). Parse + dispatch + message live here so the catalog route
+    stays a thin one-liner (no-accretion — that file is a ratcheted god-file).
+
+    Body-parse convention matches :func:`parse_loop_command` / :func:`parse_goal_command`:
+    text from ``input``/``text``/``prompt`` plus an optional ``args`` mapping.
+    """
+
+    text = str(
+        request_body.get("input")
+        or request_body.get("text")
+        or request_body.get("prompt")
+        or ""
+    ).strip()
+    raw_args = request_body.get("args")
+    args: Mapping[str, Any] = raw_args if isinstance(raw_args, Mapping) else {}
+
+    first, _, rest = text.partition(" ")
+    verb = first.strip().lower()
+    rest = rest.strip()
+
+    # DELETE / cancel / rm <id> — id from the next token or args.schedule_id (cancel-both).
+    if verb in _DELETE_TOKENS:
+        schedule_id = (rest.split()[0] if rest else "") or str(
+            args.get("schedule_id") or ""
+        ).strip()
+        if not schedule_id:
+            return "usage: /cron delete <schedule_id> — the id from /cron list or cron_create"
+        removed = cancel_schedule(app, schedule_id)
+        return (
+            f"schedule {schedule_id} cancelled (recurring tick + any pending retry cleared)"
+            if removed
+            else f"no schedule {schedule_id} to cancel (already gone or never armed)"
+        )
+
+    # LIST — explicit verb, or a bare /cron with no create intent (empty text + no args).
+    if verb in _LIST_TOKENS or (not text and not _has_create_args(args)):
+        rows = app.state.schedules.list(session_id=sid)
+        if not rows:
+            return (
+                "no schedules armed for this session — "
+                "/cron <5-field-cron> <prompt> to add one (e.g. /cron 0 9 * * * daily digest)"
+            )
+        return "scheduled turns for this session:\n" + "\n".join(
+            _format_schedule_line(s) for s in rows
+        )
+
+    # CREATE — structured args win; else parse the text form `<5-field-cron> <prompt>`.
+    cron = str(args.get("cron") or "").strip()
+    run_at = str(args.get("run_at") or "").strip()
+    delay_s = int(args.get("delay_s") or 0)
+    recurring = bool(args.get("recurring", True))
+    timezone_name = str(args.get("timezone") or "").strip()
+    prompt = str(args.get("prompt") or "").strip()
+
+    if not (cron or run_at or delay_s > 0):
+        tokens = text.split()
+        if len(tokens) >= 5:
+            cron = " ".join(tokens[:5])
+            prompt = " ".join(tokens[5:]).strip()
+
+    if not (cron or run_at or delay_s > 0):
+        return (
+            "usage: /cron <5-field-cron> <prompt> — e.g. /cron 0 9 * * * post the daily "
+            "standup. Or pass args.run_at / args.delay_s for a one-shot, /cron list to "
+            "review, /cron delete <id> to cancel."
+        )
+    if not prompt:
+        return "usage: /cron <5-field-cron> <prompt> — a prompt is required for the scheduled turn"
+
+    try:
+        sch = app.state.schedules.create(
+            session_id=sid,
+            question=prompt,
+            cron=cron,
+            run_at=run_at,
+            delay_s=delay_s,
+            recurring=recurring,
+            timezone_name=timezone_name,
+        )
+    except CronError as exc:
+        return f"/cron rejected: {exc} (reason={exc.reason})"
+    kind = "recurring" if sch.recurring else "one-shot"
+    trigger = f"cron {sch.cron}" if sch.cron else f"run_at {sch.run_at}"
+    return (
+        f"schedule {sch.id} armed — {kind} {trigger} ({sch.timezone}); "
+        f"next fire {sch.next_fire_at}. Use /cron list to review or "
+        f"/cron delete {sch.id} to cancel."
+    )
 
 
 def build_cron_create_tool() -> Any:

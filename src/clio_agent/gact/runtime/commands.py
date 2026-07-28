@@ -20,7 +20,7 @@ imports only leaf packages (catalog, agents.resolution, types, the dependency-fr
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -377,6 +377,29 @@ def all_command_rows(
     for command in user_command_rows(app, cwd=cwd, extra_roots=extra_roots):
         rows.setdefault(command["id"], command)
     return list(rows.values())
+
+
+def command_index(rows: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Index command rows by id AND each declared alias (alias -> canonical row).
+
+    The dispatch route resolves an incoming ``/cmd`` through this map so an aliased
+    command (e.g. ``/schedule`` for ``/cron``) reaches the SAME handler as its canonical
+    id instead of 404-ing as unknown. The canonical id wins on a collision; aliases only
+    fill gaps (``setdefault``)."""
+
+    materialized = list(rows)
+    index: dict[str, dict[str, Any]] = {}
+    for row in materialized:
+        cid = str(row.get("id") or "")
+        if not cid:
+            continue
+        index[cid] = row
+    for row in materialized:
+        for alias in row.get("aliases") or []:
+            key = normalize_command_id(alias)
+            if key:
+                index.setdefault(key, row)
+    return index
 
 
 def agent_allowed_command_ids(agent_def: AgentDef) -> set[str]:

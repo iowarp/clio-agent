@@ -50,6 +50,7 @@ from clio_agent.gact.runtime.commands import (
     agent_allowed_command_ids,
     all_command_rows,
     command_context_for_request,
+    command_index,
     planner_command_rows,
 )
 from clio_agent.gact.runtime.globals import (
@@ -553,9 +554,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
         # Accept "clear" or "/clear"; the TUI sends both shapes.
         cmd_id = cmd if cmd.startswith("/") else "/" + cmd
         cwd, extra_roots = command_context_for_request(app, sid)
-        commands_by_id = {
-            c["id"]: c for c in all_command_rows(app, cwd=cwd, extra_roots=extra_roots)
-        }
+        commands_by_id = command_index(all_command_rows(app, cwd=cwd, extra_roots=extra_roots))
         command_meta = commands_by_id.get(cmd_id)
         if command_meta is None:
             raise HTTPException(
@@ -857,12 +856,13 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         elif cmd_id == "/loop":  # P4.1 #1079: start an autonomous loop (owner module)
             from clio_agent.gact.autonomous_loop import run_loop_command  # noqa: PLC0415
-
             body_text = run_loop_command(app, sid, request_body)
         elif cmd_id == "/goal":  # P4.2 #1080: arm/clear a run-until goal (owner module)
             from clio_agent.gact.goal import run_goal_command  # noqa: PLC0415
-
             body_text = run_goal_command(app, sid, request_body)
+        elif cmd_id in ("/cron", "/schedule"):  # P4.3 #1081: cron triad (owner module)
+            from clio_agent.gact.cron_tools import run_cron_command  # noqa: PLC0415
+            body_text = run_cron_command(app, sid, request_body)
         elif cmd_id == "/dump-trace":
             log = app.state.messages.get(sid, [])
             last_asst = next((m for m in reversed(log) if m.role == "assistant"), None)
