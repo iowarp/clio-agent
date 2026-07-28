@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact.agent_tasks import STATUS_FAILED, STATUS_RUNNING, AgentTask
 from clio_agent.gact.app import build_app
+from clio_agent.gact.permission_gate import _policy_action_for_tool
 from clio_agent.gact.turn_forward import _forward_executor
 from clio_agent.gact.turn_spawn import (
     MAX_SPAWN_DEPTH,
@@ -464,3 +465,150 @@ def test_spawn_inherits_session_scoped_blueprint_so_child_resolves(
         assert resolved is not None and resolved.id == "worker", (
             "child expert failed to resolve → would fail typed not_implemented"
         )
+
+
+# ---------------------------------------------------------------------------
+# Plan-override bypass fix (governance-surfaces P1.1, "subagents inherit
+# structurally"): a child spawned from a RESTRICTIVE parent (plan/architect) must
+# be minted in THAT mode, not the default ``edit`` — else a plan-mode parent could
+# spawn a full-authority edit-mode child and write what the parent itself is
+# denied. Covers the shared ``spawn_child_turn`` path used by BOTH the normal
+# ``spawn_agent_task`` tool and the P1.0 ``spawn_subagent_with_skill`` effect.
+#
+# Sabotage check: before the fix, ``spawn_child_turn`` minted every child with
+# ``sessions.create(...)`` and NO ``mode=`` kwarg, so ``Session.mode`` defaulted to
+# ``"edit"`` regardless of the parent's mode — these tests fail on that code with
+# ``child.mode == "edit"`` and the write tool resolving "allow" instead of "deny".
+# ---------------------------------------------------------------------------
+
+
+def test_plan_mode_parent_spawns_plan_mode_child_write_denied(tmp_path: Path, monkeypatch) -> None:
+    """A PLAN-mode parent's spawned child session is ALSO plan mode, and a write
+    tool resolved for that child (in its own mode) is denied by the plan_acl."""
+
+    _declare(monkeypatch, "main")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p", "mode": "plan"}).json()["id"]
+        assert app.state.sessions.get(parent).mode == "plan"
+
+        task = spawn_child_turn_threadsafe(
+            app,
+            TaskSpec(
+                child_expert_id="main",
+                task_text="do something",
+                parent_session_id=parent,
+                requesting_expert_id="main",
+            ),
+        )
+        child = app.state.sessions.get(task.child_session_id)
+
+        assert child.mode == "plan", (
+            f"child must inherit the plan-mode parent's mode, got {child.mode!r}"
+        )
+        action = _policy_action_for_tool(
+            app,
+            session_id=child.id,
+            session=child,
+            tool_name="shell.exec",
+            args={"cmd": "rm -rf /"},
+            mode=child.mode,
+        )
+        assert action == "deny", (
+            "a write tool resolved for a plan-mode child must be denied by plan_acl "
+            f"(got {action!r}) — a plan-mode parent must not be able to spawn a "
+            "full-authority child"
+        )
+
+
+def test_architect_mode_parent_spawns_architect_mode_child_write_denied(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An ARCHITECT-mode parent's spawned child inherits architect mode (also a
+    read-only posture: no direct file writes)."""
+
+    _declare(monkeypatch, "main")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post(
+            "/v1/sessions", json={"title": "p", "mode": "architect"}
+        ).json()["id"]
+        assert app.state.sessions.get(parent).mode == "architect"
+
+        task = spawn_child_turn_threadsafe(
+            app,
+            TaskSpec(
+                child_expert_id="main",
+                task_text="do something",
+                parent_session_id=parent,
+                requesting_expert_id="main",
+            ),
+        )
+        child = app.state.sessions.get(task.child_session_id)
+
+        assert child.mode == "architect", (
+            f"child must inherit the architect-mode parent's mode, got {child.mode!r}"
+        )
+        action = _policy_action_for_tool(
+            app,
+            session_id=child.id,
+            session=child,
+            tool_name="shell.exec",
+            args={"cmd": "rm -rf /"},
+            mode=child.mode,
+        )
+        assert action == "deny", (
+            f"a write tool resolved for an architect-mode child must be denied (got {action!r})"
+        )
+
+
+def test_edit_mode_parent_spawns_edit_mode_child_unchanged(tmp_path: Path, monkeypatch) -> None:
+    """Regression guard: an EDIT-mode parent's spawned child stays edit mode
+    (UNCHANGED behaviour) — the fix must not affect the common case."""
+
+    _declare(monkeypatch, "main")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p", "mode": "edit"}).json()["id"]
+        assert app.state.sessions.get(parent).mode == "edit"
+
+        task = spawn_child_turn_threadsafe(
+            app,
+            TaskSpec(
+                child_expert_id="main",
+                task_text="do something",
+                parent_session_id=parent,
+                requesting_expert_id="main",
+            ),
+        )
+        child = app.state.sessions.get(task.child_session_id)
+
+        assert child.mode == "edit"
+        action = _policy_action_for_tool(
+            app,
+            session_id=child.id,
+            session=child,
+            tool_name="shell.exec",
+            args={"cmd": "rm -rf /"},
+            mode=child.mode,
+        )
+        # No plan_acl row matches outside plan/architect -> no built-in deny.
+        assert action in ("", "allow"), (
+            f"an edit-mode child must not be plan-acl-denied (got {action!r})"
+        )
+
+
+def test_spawn_with_no_parent_session_defaults_to_edit(tmp_path: Path, monkeypatch) -> None:
+    """A spawn whose ``parent_session_id`` does not resolve to a real session (unit
+    tests exercising the guard in isolation) must still default the child to
+    ``edit`` — the pre-fix default — never crash on a missing parent."""
+
+    _declare(monkeypatch, "data_expert")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app):
+        task = spawn_child_turn_threadsafe(
+            app,
+            TaskSpec(child_expert_id="data_expert", task_text="x", parent_session_id="sess_missing"),
+        )
+        child = app.state.sessions.get(task.child_session_id)
+        assert child.mode == "edit"

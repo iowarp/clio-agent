@@ -290,6 +290,18 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
             trace.event("SKILLS", "agent %s loaded %s file %s", agent_id, skill_id, file)
             _emit_loaded(len(content.encode("utf-8")), bundled_file=file)
             return content
+        # P1.0 (#1062): a skill may declare a PRIVILEGED runtime EFFECT in its
+        # frontmatter (enter_mode / spawn_subagent_with_skill). Invoking the skill
+        # (no bundled ``file=``) PERFORMS the effect via the runtime — never parsed
+        # from the body/model output (injection-safe). enter_mode returns a
+        # confirmation + the body; spawn returns the task handle (body NOT inlined).
+        from clio_agent.gact.agents.skill_effects import (  # noqa: PLC0415
+            maybe_apply_skill_effect,
+        )
+
+        effect_output = maybe_apply_skill_effect(ref, agent_id=agent_id)
+        if effect_output is not None:
+            return effect_output
         body = read_skill_body(ref)  # fresh read: edits since scan are honored
         bundled: list[str] = []
         if ref.layout == "skill_md":
