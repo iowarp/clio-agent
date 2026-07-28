@@ -384,6 +384,80 @@ def test_retry_execute_queues_new_turn_with_attempt_provenance(tmp_path: Path) -
     assert "turn.retry_completed" in event_types
 
 
+def test_retry_rejects_reserved_metadata_key(client: TestClient) -> None:
+    """B2 (BLOCKER): the retry ingest is a sibling of POST /messages — a client's
+    ``req.metadata`` is spread verbatim into the staged turn's ``user_msg.metadata``,
+    which the UserPromptSubmit hook reads. A record-only retry carrying an internal
+    turn-control key (``hook_defer_resume``) must be rejected 400 (typed
+    ``reserved_metadata_key``), NOT stripped, and NO attempt recorded."""
+
+    sid = _create_session(client)
+    _seed_message(client, sid, "msg_original")
+
+    resp = client.post(
+        f"/v1/sessions/{sid}/messages/msg_original/retry",
+        json={
+            "notes": "sneak a control key in",
+            "metadata": {"hook_defer_resume": True},
+        },
+    )
+
+    assert resp.status_code == 400, resp.text
+    inner = resp.json()["error"]
+    assert inner["error"] == "reserved_metadata_key"
+    assert inner["details"]["reserved_keys"] == ["hook_defer_resume"]
+    # Rejected, not run: no attempt recorded.
+    assert client.get(f"/v1/sessions/{sid}/attempts").json()["attempts"] == []
+
+
+def test_retry_execute_rejects_reserved_metadata_key(tmp_path: Path) -> None:
+    """B2 (BLOCKER): the execute path is the actual escalation vector — the reserved
+    key would ride ``**req.metadata`` into ``start_background_user_turn`` and land on
+    the resumed ``user_msg.metadata``, bypassing the governance hook. The guard rejects
+    400 before any turn stages: no attempt, no queued user message, agent never runs."""
+
+    agent = _FakeAgent()
+    client = TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=agent))
+    sid = _create_session(client)
+    _seed_turn(client, sid, user_text="Inspect the large dataset.")
+
+    resp = client.post(
+        f"/v1/sessions/{sid}/messages/msg_original/retry",
+        json={
+            "execute": True,
+            "notes": "Bypass the hook.",
+            "metadata": {"hook_defer_resume": True},
+        },
+    )
+
+    assert resp.status_code == 400, resp.text
+    inner = resp.json()["error"]
+    assert inner["error"] == "reserved_metadata_key"
+    assert inner["details"]["reserved_keys"] == ["hook_defer_resume"]
+    assert client.get(f"/v1/sessions/{sid}/attempts").json()["attempts"] == []
+    assert agent.questions == []
+
+
+def test_retry_accepts_benign_metadata(client: TestClient) -> None:
+    """B2: benign retry metadata that collides with no reserved control key is
+    accepted and the attempt is recorded normally."""
+
+    sid = _create_session(client)
+    _seed_message(client, sid, "msg_original")
+
+    resp = client.post(
+        f"/v1/sessions/{sid}/messages/msg_original/retry",
+        json={"metadata": {"requested_by": "user"}},
+    )
+
+    assert resp.status_code == 202, resp.text
+    attempt = resp.json()
+    assert attempt["metadata"]["source_message_role"] == "assistant"
+    assert [row["id"] for row in client.get(f"/v1/sessions/{sid}/attempts").json()["attempts"]] == [
+        attempt["id"]
+    ]
+
+
 def test_retry_execute_with_model_override_returns_structured_policy_error(
     tmp_path: Path,
 ) -> None:

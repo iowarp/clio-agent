@@ -160,7 +160,13 @@ def test_maybe_pause_mints_approval_question_and_yields(
     assert len(questions) == 1
     q = questions[0]
     assert q.status == "pending"
-    assert {o.value for o in q.options} >= {"auto", "interactive", "exit_only", "reject", "clear_context"}
+    assert {o.value for o in q.options} >= {
+        "auto",
+        "interactive",
+        "exit_only",
+        "reject",
+        "clear_context",
+    }
     # Session flipped to waiting_user; the request is marked surfaced (never re-minted).
     fresh = app.state.sessions.get(sess.id)
     assert fresh.status == "waiting_user"
@@ -169,7 +175,13 @@ def test_maybe_pause_mints_approval_question_and_yields(
     # A second seam call is a no-op (already surfaced) — no double question.
     assert maybe_pause_for_plan_exit(state) is False
     assert (
-        len([q for q in app.state.user_questions.values() if q.metadata.get(PLAN_EXIT_APPROVAL_META)])
+        len(
+            [
+                q
+                for q in app.state.user_questions.values()
+                if q.metadata.get(PLAN_EXIT_APPROVAL_META)
+            ]
+        )
         == 1
     )
 
@@ -359,6 +371,83 @@ def test_durable_defer_resume_when_turn_already_ended(tmp_path: Path) -> None:
     assert len(deps._calls["resume"]) == 1  # resumed as ONE new turn
     assert app.state.sessions.get(sess.id).mode == "edit"  # transition fired on resume
     assert "[STATE TRANSITION OVERRIDE]" in deps._calls["resume"][0]["text"]  # constraints lifted
+
+
+def _mint_and_resolve(
+    app: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, decision: str, answer: str = ""
+) -> tuple[Any, int]:
+    """Record → seam-mint an approval question → resolve it with ``decision``.
+
+    Returns the plan session and the count of plan-exit approval questions minted before the
+    post-resolution seam is driven again (the phantom-re-approval regression setup).
+    """
+
+    sess = _plan_session(app, tmp_path)
+    _call_plan_exit(app, sess.id, summary="ship it", recommendedMode="auto")
+
+    monkeypatch.setattr("clio_agent.gact.turn_stream.settle_turn_transcript", lambda state: None)
+    monkeypatch.setattr("clio_agent.gact.enrichment._finalize_context_frame", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "clio_agent.gact.runtime.globals._emit_semantic_event", lambda *a, **k: None
+    )
+
+    assert maybe_pause_for_plan_exit(_fake_state(app, sess)) is True
+    q = next(
+        q for q in app.state.user_questions.values() if q.metadata.get(PLAN_EXIT_APPROVAL_META)
+    )
+
+    deps = _fake_deps()
+    app.state.agent = object()
+    resolve_plan_exit_answer(app, deps, sess.id, _answer(q, selected=[decision], answer=answer))
+
+    minted = len(
+        [q for q in app.state.user_questions.values() if q.metadata.get(PLAN_EXIT_APPROVAL_META)]
+    )
+    return sess, minted
+
+
+def test_seam_no_phantom_reapproval_after_approve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After an APPROVED plan-exit, the resolved-tombstone ``pending_plan_exit == {}`` must read as
+    absent: a fresh next-turn seam call returns False and mints NO second (phantom) approval question.
+
+    Regression for the plan-exit phantom re-approval BLOCKER (plan_mode.py:483/707): the resolve
+    tombstone writes ``{}``, which an ``isinstance(pending, Mapping)``-only guard treated as a live,
+    un-surfaced request and re-surfaced — hijacking the resumed execution turn with a second approval.
+    """
+
+    app = _make_app(tmp_path)
+    sess, minted = _mint_and_resolve(app, tmp_path, monkeypatch, decision="auto")
+    assert minted == 1  # only the original approval question exists
+
+    # The resume turn runs the seam again against the {} tombstone: it must not re-surface.
+    assert maybe_pause_for_plan_exit(_fake_state(app, sess)) is False
+    after = len(
+        [q for q in app.state.user_questions.values() if q.metadata.get(PLAN_EXIT_APPROVAL_META)]
+    )
+    assert after == minted  # no phantom re-approval
+
+
+def test_seam_no_phantom_reapproval_after_reject(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After a REJECTED plan-exit, the seam must likewise not re-surface a phantom question on the
+    feedback-revision turn — the worst path, where a phantom approval would hijack the revision.
+    """
+
+    app = _make_app(tmp_path)
+    sess, minted = _mint_and_resolve(
+        app, tmp_path, monkeypatch, decision="reject", answer="add a rollback section"
+    )
+    assert minted == 1
+
+    assert maybe_pause_for_plan_exit(_fake_state(app, sess)) is False
+    after = len(
+        [q for q in app.state.user_questions.values() if q.metadata.get(PLAN_EXIT_APPROVAL_META)]
+    )
+    assert after == minted  # no phantom re-approval on the revision turn
+    assert app.state.sessions.get(sess.id).mode == "plan"  # reject stayed in plan mode
 
 
 def test_durable_defer_busy_folds_into_loop_inbox(

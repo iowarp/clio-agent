@@ -34,8 +34,111 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+from fastapi import HTTPException
+
+from clio_agent.gact.hooks.defer import HOOK_DEFER_RESUME_META
 from clio_agent.gact.runtime.globals import _jsonish, _new_part_id
-from clio_agent.gact.types import Part, UserQuestion, UserQuestionOption
+from clio_agent.gact.types import (
+    ErrorEnvelope,
+    ErrorInfo,
+    Part,
+    UserQuestion,
+    UserQuestionOption,
+)
+
+# ------------------------------------------------------------------------- #
+# Reserved client-metadata keys (#1057 B2)                                   #
+# ------------------------------------------------------------------------- #
+
+# Internal turn-control metadata keys that server-side producers stamp on a
+# staged/resumed/steered message to drive privileged turn behaviour (skip a
+# just-approved hook, redrive a deferred stop, resume a plan-exit, mark a turn
+# synthetic/scheduled, ...). A client message body must NEVER be allowed to carry
+# any of these: a smuggled ``hook_defer_resume`` bypasses the UserPromptSubmit
+# hook outright (the B2 blocker), and the rest are equivalent privilege-escalation
+# vectors. The POST /messages ingest rejects (never strips — stripping is silent
+# coercion) any client metadata intersecting this set with a typed 400.
+#
+# Each literal names the OWNER module that legitimately produces it; the one
+# defined owner constant (``HOOK_DEFER_RESUME_META``) is imported rather than
+# duplicated. Keys marked "P4" are forward-compat reservations for the loop/goal
+# merge (feat/p4-loop-goal-cron) so a client can never race the feature in.
+RESERVED_CLIENT_METADATA_KEYS: frozenset[str] = frozenset(
+    {
+        HOOK_DEFER_RESUME_META,  # hooks/defer.py — UserPromptSubmit resume once-gate
+        "retry_attempt_id",  # routes/sessions.py — retry staging
+        "ask_user_resume",  # routes/sessions.py — ask-user answer fold
+        "question_id",  # plan_mode.py / hooks/defer.py — pending-question join key
+        "plan_exit_resume",  # plan_mode.py — plan-exit approval resume
+        "plan_exit_result",  # plan_mode.py — plan-exit outcome
+        "plan_exit_mode",  # plan_mode.py — approved plan-exit mode
+        "plan_exit_context_cleared",  # plan_mode.py — plan-exit context-clear marker
+        "stop_defer_redrive",  # hooks/defer.py — Stop-defer redrive
+        "goal_redrive",  # goal.py (P4) — goal redrive
+        "goal_id",  # goal.py (P4)
+        "goal_iters",  # goal.py (P4)
+        "goal_reason",  # goal.py (P4)
+        "mid_turn_steer",  # loop_inbox.py — mid-turn steer marker
+        "scheduled",  # app.py — scheduler-fired turn marker
+        "schedule_id",  # app.py — scheduler-fired turn id
+        "synthetic",  # compaction/catalog — server-synthesized message marker
+    }
+)
+
+
+def reserved_metadata_keys(metadata: Mapping[str, Any] | None) -> list[str]:
+    """Return the sorted reserved control keys a client metadata mapping carries.
+
+    Args:
+        metadata: The client-supplied per-message metadata (may be ``None``).
+
+    Returns:
+        The sorted list of keys in ``metadata`` that intersect
+        :data:`RESERVED_CLIENT_METADATA_KEYS`; empty when the mapping is benign.
+    """
+
+    if not metadata:
+        return []
+    return sorted(RESERVED_CLIENT_METADATA_KEYS.intersection(metadata))
+
+
+def raise_on_reserved_metadata(session_id: str, metadata: Mapping[str, Any] | None) -> None:
+    """Reject client metadata that carries a reserved internal turn-control key.
+
+    The single typed-rejection chokepoint shared by every client-writable message
+    ingest (POST ``/messages`` and the ``/retry`` sibling): a smuggled
+    ``hook_defer_resume`` (or any :data:`RESERVED_CLIENT_METADATA_KEYS` member) would
+    ride the client mapping onto the staged ``user_msg.metadata`` the UserPromptSubmit
+    hook reads, bypassing governance (the B2 blocker). The mapping is rejected, never
+    stripped — stripping is silent coercion.
+
+    Args:
+        session_id: The session the ingest targets; echoed in the error detail.
+        metadata: The client-supplied per-message metadata (may be ``None``).
+
+    Raises:
+        HTTPException: 400 ``reserved_metadata_key`` naming the offending keys when
+            ``metadata`` intersects :data:`RESERVED_CLIENT_METADATA_KEYS`.
+    """
+
+    offending = reserved_metadata_keys(metadata)
+    if not offending:
+        return
+    raise HTTPException(
+        status_code=400,
+        detail=ErrorEnvelope(
+            error=ErrorInfo(
+                error="reserved_metadata_key",
+                message=(
+                    "request metadata carried reserved internal control "
+                    f"key(s): {', '.join(offending)}"
+                ),
+                details={"session_id": session_id, "reserved_keys": offending},
+                recoverable=True,
+            )
+        ).model_dump(exclude_none=True),
+    )
+
 
 # ------------------------------------------------------------------------- #
 # Trace summaries                                                            #

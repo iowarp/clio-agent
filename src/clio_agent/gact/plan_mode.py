@@ -178,8 +178,7 @@ def _plan_mode_reminder_block(*, full: bool, plan_file: str, exists: bool) -> st
             "the ONLY writable path in plan mode)."
         )
     return (
-        PLAN_MODE_REMINDER_MARKER
-        + "\n\n"
+        PLAN_MODE_REMINDER_MARKER + "\n\n"
         "You are in PLAN MODE. Investigate freely, but do NOT modify the system: every write, "
         "edit, and file-mutating tool is blocked.\n"
         f"- {create_or_edit}\n"
@@ -382,7 +381,12 @@ def build_plan_exit_tool(agent_def: Any) -> Any:
         if session is None:
             raise PlanExitError("plan_exit could not resolve the active session.")
         return _record_plan_exit_request(
-            app, sid, session, summary=summary, recommended_mode=recommendedMode, risk_notes=riskNotes
+            app,
+            sid,
+            session,
+            summary=summary,
+            recommended_mode=recommendedMode,
+            risk_notes=riskNotes,
         )
 
     return dspy.Tool(
@@ -480,7 +484,11 @@ def maybe_pause_for_plan_exit(state: "TurnState") -> bool:
         return False
     metadata = getattr(session, "metadata", None)
     pending = metadata.get(_PLAN_EXIT_PENDING_KEY) if isinstance(metadata, Mapping) else None
-    if not isinstance(pending, Mapping) or pending.get("surfaced"):
+    # An empty dict is the resolved tombstone `resolve_plan_exit_answer` writes (a shallow
+    # `sessions.update` merge cannot delete the key). Treat `{}` as ABSENT — matching how
+    # `_get_loop`/`_get_goal` read `{}` — so a resumed turn never re-surfaces a phantom second
+    # approval. `_record_plan_exit_request` always writes a non-empty dict, so this is unambiguous.
+    if not isinstance(pending, Mapping) or not pending or pending.get("surfaced"):
         return False
 
     from clio_agent.gact.enrichment import _finalize_context_frame  # noqa: PLC0415
@@ -529,7 +537,9 @@ def maybe_pause_for_plan_exit(state: "TurnState") -> bool:
             _PLAN_EXIT_PENDING_KEY: {**dict(pending), "surfaced": True, "question_id": question.id},
         },
     )
-    _finalize_context_frame(app, state.sid, state.context_frame["id"], "", "completed", error_info=None)
+    _finalize_context_frame(
+        app, state.sid, state.context_frame["id"], "", "completed", error_info=None
+    )
     _emit_semantic_event(
         app,
         state.sid,
@@ -667,9 +677,7 @@ def _stage_plan_exit_resume(
     )
 
 
-def resolve_plan_exit_answer(
-    app: "FastAPI", deps: "GactDeps", sid: str, question: Any
-) -> None:
+def resolve_plan_exit_answer(app: "FastAPI", deps: "GactDeps", sid: str, question: Any) -> None:
     """Apply an answered plan-exit approval: mode transition + constraint-lift + resume (P1.4 #1066).
 
     Called from the ask-user answer route when the answered question carries
@@ -756,7 +764,11 @@ def resolve_plan_exit_answer(
             Event(
                 type="plan_exit.resolved",
                 session_id=sid,
-                payload={"decision": "exit_only", "cleared_context": cleared, "plan_file": plan_file},
+                payload={
+                    "decision": "exit_only",
+                    "cleared_context": cleared,
+                    "plan_file": plan_file,
+                },
             )
         )
         return

@@ -111,7 +111,9 @@ class SubprocessAdapter(HookAdapter):
 
         returncode = proc.returncode
         if returncode == 0:
-            obj = extract_json_object(stdout or "")
+            obj = extract_json_object(
+                stdout or "", hook_id=entry.id, event=envelope.hook_event_name
+            )
             if obj is None and (stdout or "").strip():
                 # exit 0 but stdout carried no JSON object: proceed (exit 0 = allow),
                 # but record a diagnosable reason — never a silent fail-open (C7/C8).
