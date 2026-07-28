@@ -111,6 +111,13 @@ SSE_UI_EVENT_TYPES: frozenset[str] = frozenset(
         "artifact.created",
         "artifact.version.added",
         "artifact.alias.moved",
+        # Document artifacts: native comments, watched saves, and conflicts are
+        # protocol-specific UI atoms, never inferred from generic artifacts.
+        "document.review.created",
+        "document.review.dispatched",
+        "document.native_comment.imported",
+        "document.working_copy.changed",
+        "document.working_copy.conflict",
         # Grants on the record (B5 #979): every effective-boundary change is a
         # user/model DECISION the TUI renders — a workspace/session write-root grant
         # or revoke (``boundary.granted``/``boundary.revoked``, ``kind: root|domain``)

@@ -242,6 +242,14 @@ class Part(_WireModel):
     mime_type: str = ""
     height: int = 0
 
+    # artifact_review
+    review_id: str = ""
+    artifact_id: str = ""
+    artifact_version: int = 0
+    artifact_sha256: str = ""
+    review_text: str = ""
+    anchor: dict[str, Any] = Field(default_factory=dict)
+
     # routing_decision
     selected_agent: str = ""
     rationale: str = ""
@@ -290,6 +298,106 @@ class PostMessageAck(_WireModel):
 
     message_id: str
     accepted_at: str = ""
+
+
+# --------------------------------------------------------------------------- #
+# CLIO document artifacts
+# --------------------------------------------------------------------------- #
+
+
+class DocumentAnchor(_WireModel):
+    """One artifact-version-bound selection."""
+
+    profile: str
+    exact: str = ""
+    prefix: str = ""
+    suffix: str = ""
+    source_path: str = ""
+    start: int | None = None
+    end: int | None = None
+    page_index: int | None = None
+    quads: list[list[float]] = Field(default_factory=list)
+    selector: str = ""
+    stable_id: str = ""
+    sheet: str = ""
+    cell_range: str = ""
+    slide_id: str = ""
+    shape_id: str = ""
+    native_comment_id: str = ""
+    source: dict[str, Any] = Field(default_factory=dict)
+
+
+class ArtifactReview(_WireModel):
+    """A durable user-to-agent document review instruction."""
+
+    id: str
+    session_id: str
+    workspace_id: str
+    artifact_id: str
+    artifact_name: str
+    artifact_version: int
+    artifact_sha256: str
+    anchor: DocumentAnchor
+    text: str
+    status: str
+    native: bool = False
+    message_id: str = ""
+    created_at: str = ""
+    error: str = ""
+
+
+class DocumentManifest(_WireModel):
+    """Viewer and editor routing for an immutable document version."""
+
+    artifact_id: str
+    workspace_id: str
+    name: str
+    version: int
+    sha256: str
+    mime_type: str
+    profile: str
+    content_url: str
+    anchors: list[str] = Field(default_factory=list)
+    native_open: bool = False
+    embedded_editors: list[str] = Field(default_factory=list)
+    rendition_formats: list[str] = Field(default_factory=list)
+    provenance: dict[str, Any] = Field(default_factory=dict)
+
+
+class DocumentWorkingCopy(_WireModel):
+    """A confined mutable file whose saves mint immutable revisions."""
+
+    id: str
+    session_id: str
+    workspace_id: str
+    artifact_name: str
+    base_artifact_id: str
+    head_artifact_id: str
+    base_version: int
+    head_version: int
+    base_sha256: str
+    last_sha256: str
+    path: str
+    provider: str
+    writable: bool
+    auto_checkpoint: bool
+    status: str
+    conflict_head_artifact_id: str = ""
+    error: str = ""
+
+
+class DocumentEditorSession(_WireModel):
+    """One short-lived ONLYOFFICE or Collabora editor launch."""
+
+    id: str
+    working_copy_id: str
+    provider: str
+    status: str
+    editor_url: str = ""
+    token: str = ""
+    expires_at: str = ""
+    config: dict[str, Any] = Field(default_factory=dict)
+    error: str = ""
 
 
 # --------------------------------------------------------------------------- #

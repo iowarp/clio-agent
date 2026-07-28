@@ -43,6 +43,11 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARTIFACT_CAS_BUDGET_BYTES` | `artifacts.cas_budget_bytes` | int | `536870912` | `src/clio_agent/gact/artifacts/cas.py` |
 | `CLIO_ARTIFACT_CAS_MAX_FILE_BYTES` | `artifacts.cas_max_file_bytes` | int | `16777216` | `src/clio_agent/gact/artifacts/cas.py` |
 | `CLIO_ARTIFACT_HASH_STAT_CACHE` | `artifacts.hash_stat_cache` | bool | `false` | `src/clio_agent/gact/artifacts/cas.py` |
+| `CLIO_COLLABORA_URL` | document editor endpoint | str | empty | `src/clio_agent/gact/documents/editors.py` |
+| `CLIO_DOCUMENT_TYPST_FONT` | Pandoc/Typst PDF rendition font | str | `Arial` on Windows, `DejaVu Serif` elsewhere | `src/clio_agent/gact/documents/renditions.py` |
+| `CLIO_GACT_PUBLIC_URL` | editor-reachable GACT base URL | str | `http://host.docker.internal:8000` | `src/clio_agent/gact/documents/editors.py` |
+| `CLIO_ONLYOFFICE_JWT_SECRET` | ONLYOFFICE shared JWT secret | secret str | empty | `src/clio_agent/gact/documents/editors.py` |
+| `CLIO_ONLYOFFICE_URL` | document editor endpoint | str | empty | `src/clio_agent/gact/documents/editors.py` |
 | `CLIO_AUTOCOMPACT_PCT` | `autocompact.pct` | str | `0.85` | `src/clio_agent/gact/runtime/context_tokens.py` |
 | `CLIO_BLUEPRINT_REGISTRY_URL` | `gact.blueprint_registry.url` | str | `https://github.com/iowarp/clio-agent-marketplace.git` | `src/clio_agent/gact/agent_blueprints.py` |
 | `CLIO_CAPTURE_REASONING` | `runtime.capture_reasoning` | bool | `true` | `src/clio_agent/gact/usage.py` |

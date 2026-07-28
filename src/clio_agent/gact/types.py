@@ -133,6 +133,10 @@ class CapabilityFlags(BaseModel):
     # #966 S2 / #968 — the /v1/artifacts read surface + user-pin channel, the
     # artifact.* SSE family, and resource_link parts carrying artifact:// wire ids.
     x_clio_artifacts: bool = False
+    # Document artifacts build on immutable artifacts with format-aware viewing,
+    # version-bound review anchors, native-file working copies, and optional
+    # embedded editors. The object is intentionally additive vendor metadata.
+    x_clio_document_artifacts: dict[str, Any] = Field(default_factory=dict)
     x_clio_semantic_trace_backend: str = ""
     x_clio_semantic_trace_detail: str = ""
     x_clio_hook_backend: str = ""
@@ -672,6 +676,16 @@ class Part(BaseModel):
     data_ref: str = ""
     mime_type: str = ""
     height: int = 0
+
+    # artifact_review. The user selected a region of one exact immutable
+    # artifact version and sent an instruction to the agent. The anchor is a
+    # typed, profile-specific structure disclosed by x_clio_document_artifacts.
+    review_id: str = ""
+    artifact_id: str = ""
+    artifact_version: int = 0
+    artifact_sha256: str = ""
+    review_text: str = ""
+    anchor: dict[str, Any] = Field(default_factory=dict)
 
     # file_diff (BBB21 + #4): a proposed edit awaiting apply/reject.
     # ``new_content`` (when present) is what the apply path writes

@@ -493,6 +493,7 @@ from clio_agent.gact.routes.deps import GactDeps  # noqa: E402
 from clio_agent.gact.routes.diffs import (  # noqa: E402
     register_diffs_routes,
 )
+from clio_agent.gact.routes.documents import register_document_routes  # noqa: E402
 from clio_agent.gact.routes.expert_packs import (  # noqa: E402
     register_expert_packs_routes,
 )
@@ -965,6 +966,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # not run (honest: no false 'resumed' claim), consistent with shutdown losing
     # other in-memory in-flight state.
     app.state.turn_runner.set_idle_hook(None)
+    document_store = getattr(app.state, "document_store", None)
+    document_store_close = getattr(document_store, "close", None)
+    if callable(document_store_close):
+        await asyncio.to_thread(document_store_close)
 
     # #948 S1 (#662): quiesce the internal turn-PRODUCERS (the scheduler tick, the
     # agent-construction and lm-config tasks) BEFORE draining turns, so nothing can
@@ -2317,6 +2322,7 @@ def build_app(
     # ---- /v1/artifacts + /v1/{sessions,workspaces}/{id}/artifacts (#966 S2/#968) ----
     # Artifact registry read surface + user-pin channel, owned by routes/artifacts.py.
     register_artifacts_routes(app, deps)
+    register_document_routes(app, deps)
 
     # ---- /v1/workspaces -------------------------
     # Workspace store CRUD + file listing/reading are owned by

@@ -163,6 +163,33 @@ class LoopInbox:
             self._events.clear()
             return events
 
+    def put_coalesced_user_message(self, event: InboxEvent) -> None:
+        """Append a steer, replacing an older steer with the same coalesce key.
+
+        Document editors can autosave repeatedly while the agent is already
+        working. The latest immutable revision is sufficient grounding, so
+        redundant pending autosave notices collapse without affecting ordinary
+        user messages or explicit review instructions.
+        """
+
+        coalesce_key = str(event.metadata.get("coalesce_key", ""))
+        if not coalesce_key:
+            self.put(event)
+            return
+        with self._lock:
+            self._events = deque(
+                (
+                    pending
+                    for pending in self._events
+                    if not (
+                        pending.kind == "user_message"
+                        and pending.metadata.get("coalesce_key") == coalesce_key
+                    )
+                ),
+                maxlen=self._events.maxlen,
+            )
+            self.put(event)
+
     def peek_nonempty(self) -> bool:
         """True iff at least one event is buffered (cheap, does not consume)."""
 
@@ -251,17 +278,20 @@ def enqueue_user_steer(
     mid-turn behavior is unchanged.
     """
 
-    inbox_for(app, session_id).put(
-        InboxEvent(
-            kind="user_message",
-            task_id="",
-            text=text,
-            metadata=dict(metadata or {}),
-            steer_message_id=steer_message_id,
-            steer_created_at=steer_created_at,
-            steer_parts=list(steer_parts or []),
-        )
+    event = InboxEvent(
+        kind="user_message",
+        task_id="",
+        text=text,
+        metadata=dict(metadata or {}),
+        steer_message_id=steer_message_id,
+        steer_created_at=steer_created_at,
+        steer_parts=list(steer_parts or []),
     )
+    inbox = inbox_for(app, session_id)
+    if event.metadata.get("coalesce_key"):
+        inbox.put_coalesced_user_message(event)
+    else:
+        inbox.put(event)
 
 
 def drain_inbox_to_new_turn(app: "FastAPI", sid: str) -> None:
@@ -492,9 +522,7 @@ def _persist_steer_at_consumption(
             metadata=metadata,
         )
         _append_session_message(app, sid, msg)
-        app.state.bus.publish(
-            Event(type="message.created", session_id=sid, payload=msg.to_wire())
-        )
+        app.state.bus.publish(Event(type="message.created", session_id=sid, payload=msg.to_wire()))
     except Exception as exc:  # noqa: BLE001 - a persist hiccup must not drop the steer block
         logger.warning(
             "loop_inbox steer persist failed reason=steer_persist_error steer_id=%s err=%r",

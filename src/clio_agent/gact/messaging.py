@@ -188,14 +188,14 @@ def _user_message_parts(
     request_parts: list[Part],
     user_text: str,
 ) -> list[Part]:
-    """Return transcript parts for a user turn, preserving image parts."""
+    """Return transcript parts for a user turn, preserving typed user parts."""
 
     if not request_parts:
         return [Part(id=_new_part_id(), type="text", text=user_text)]
     parts: list[Part] = []
     has_text = False
     for part in request_parts:
-        if part.type not in {"text", "image"}:
+        if part.type not in {"text", "image", "artifact_review"}:
             continue
         metadata = dict(part.metadata)
         if part.type == "image":
