@@ -749,12 +749,7 @@ def finalize_turn(
     goal_decision = dispatch_goal_at_finalize(
         state.app, session_id=state.sid, turn_id=state.turn_id, trace_id=state.trace_id
     )
-    # A4 #1057: a judge-met goal stops any armed loop (loop_goal_met); the compose lives in this
-    # glue so goal.py stays a leaf (no goal->loop import cycle) — LLM-only, no deterministic gate.
-    if goal_decision is not None and goal_decision.outcome == "met":
-        from clio_agent.gact.autonomous_loop import stop_session_loop  # noqa: PLC0415
-
-        stop_session_loop(state.app, state.sid, reason="loop_goal_met")
+    compose_goal_loop_stop_at_finalize(state.app, state.sid, goal_decision)
     if not (
         state.cancelled_turn
         and state.error_info is not None
@@ -762,6 +757,39 @@ def finalize_turn(
     ):
         if state.app.state.cancel_events.get(state.sid) is state.turn_cancel_event:
             state.app.state.cancel_events.pop(state.sid, None)
+
+
+def compose_goal_loop_stop_at_finalize(
+    app: "FastAPI",
+    sid: str,
+    goal_decision: Any,
+) -> bool:
+    """Stop an armed loop when the finalize goal judge settled ``met`` (A4 #1057).
+
+    The loop--goal composition seam. A run-until goal whose bounded LLM judge decides
+    ``met`` at finalize also stops any armed loop with the typed ``loop_goal_met`` reason
+    (cancel-both: the pending wakeup schedule is cancelled too). The compose lives in this
+    ``turn_finalize`` glue — NOT in ``goal.py`` — so ``goal.py`` stays a leaf with no
+    ``goal -> autonomous_loop`` import cycle. LLM-only: the deterministic goal-predicate
+    tier was deleted in A4, so a met goal is always a judge decision.
+
+    Args:
+        app: The FastAPI app carrying the session/schedule stores.
+        sid: The session whose loop should be stopped.
+        goal_decision: The :class:`~clio_agent.gact.goal.GoalDecision` from
+            :func:`~clio_agent.gact.goal.dispatch_goal_at_finalize`, or ``None`` when no
+            goal was armed this turn.
+
+    Returns:
+        ``True`` when a met goal drove a loop stop, ``False`` otherwise.
+    """
+
+    if goal_decision is None or getattr(goal_decision, "outcome", None) != "met":
+        return False
+    from clio_agent.gact.autonomous_loop import stop_session_loop  # noqa: PLC0415
+
+    stop_session_loop(app, sid, reason="loop_goal_met")
+    return True
 
 
 def settle_failed_finalize(

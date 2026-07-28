@@ -122,9 +122,9 @@ _MODE_RESTRICTIVENESS: dict[str, int] = {"edit": 0, "architect": 1, "plan": 2}
 class SkillEffectError(RuntimeError):
     """A declared skill effect could not be validated or performed (typed reason).
 
-    Carries a machine-readable ``reason`` (e.g. ``unknown_effect_kind``, ``invalid_mode``,
-    ``no_active_session``, ``mode_update_failed``, ``spawn_refused``) so callers/audit can
-    branch without string-matching the message.
+    Carries a machine-readable ``reason`` (e.g. ``unknown_effect_kind``,
+    ``unknown_effect_param``, ``invalid_mode``, ``no_active_session``, ``mode_update_failed``,
+    ``spawn_refused``) so callers/audit can branch without string-matching the message.
     """
 
     def __init__(self, message: str, *, reason: str) -> None:
@@ -324,8 +324,23 @@ def _autonomy_params(
     """Build a typed, validated params dict for an autonomy effect (absent keys omitted).
 
     Numerics are coerced (malformed → typed error); ``passthrough`` keys are carried verbatim.
-    Unset bounds stay unset."""
+    Unset bounds stay unset.
 
+    Validation is TOTAL over the declared spec: any key outside the effect's known parameter
+    set (plus ``kind``) is a typed :class:`SkillEffectError` (``unknown_effect_param``) — never
+    a silent drop (no-silent-fallback ground rule). This is what stops a deleted-tier gate from
+    arming a *different* effect: a skill declaring the removed deterministic goal-predicate keys
+    (``effect_predicate_*`` → ``predicate_*`` in the spec) is REJECTED with a typed reason that
+    reaches trace/API, rather than silently arming a semantically different NL-judge goal."""
+
+    known = {"kind", *str_keys, *int_keys, *float_keys, *bool_keys, *passthrough}
+    unknown = sorted(str(k) for k in spec if str(k) not in known)
+    if unknown:
+        raise SkillEffectError(
+            f"skill effect declares unknown parameter(s) {unknown} "
+            f"(known for this effect: {sorted(known - {'kind'})})",
+            reason="unknown_effect_param",
+        )
     out: dict[str, Any] = {}
     for k in str_keys:
         v = spec.get(k)

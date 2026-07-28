@@ -405,34 +405,35 @@ def test_parse_set_goal_requires_condition() -> None:
     assert exc.value.reason == "goal_missing_condition"
 
 
-def test_parse_set_goal_ignores_deterministic_predicate_keys() -> None:
-    """A4 #1057: the deterministic goal-predicate tier is DELETED. A declared ``predicate``
-    (mapping form) or flat ``effect_predicate_*`` siblings are simply not parsed — the goal is
-    a plain NL condition (no predicate carried), decided by the bounded LLM judge at finalize."""
+def test_parse_set_goal_rejects_deterministic_predicate_keys() -> None:
+    """A4 #1057: the deterministic goal-predicate tier is DELETED, so its vocabulary is an
+    UNKNOWN param — not a silent drop. A declared ``predicate`` (mapping form) or flat
+    ``effect_predicate_*`` siblings are REJECTED with a typed ``unknown_effect_param`` reason
+    that reaches trace/API, so a skill author's deleted-tier gate can never silently arm a
+    semantically different NL-judge goal. Completion is the bounded LLM judge at finalize."""
 
-    effect = parse_skill_effect(
-        {
-            "effect": {
-                "kind": "set_goal",
-                "condition": "all tests pass",
-                "predicate": {"kind": "state", "field_path": "tests.pass", "exists": True},
+    with pytest.raises(SkillEffectError) as mapping_exc:
+        parse_skill_effect(
+            {
+                "effect": {
+                    "kind": "set_goal",
+                    "condition": "all tests pass",
+                    "predicate": {"kind": "state", "field_path": "tests.pass", "exists": True},
+                }
             }
-        }
-    )
-    assert effect is not None and effect.kind == "set_goal"
-    assert effect.params["condition"] == "all tests pass"
-    assert "predicate" not in effect.params
+        )
+    assert mapping_exc.value.reason == "unknown_effect_param"
 
-    flat = parse_skill_effect(
-        {
-            "effect": "set_goal",
-            "effect_condition": "status is done",
-            "effect_predicate_field_path": "job.status",
-            "effect_predicate_equals": "done",
-        }
-    )
-    assert flat is not None and flat.kind == "set_goal"
-    assert "predicate" not in flat.params
+    with pytest.raises(SkillEffectError) as flat_exc:
+        parse_skill_effect(
+            {
+                "effect": "set_goal",
+                "effect_condition": "status is done",
+                "effect_predicate_field_path": "job.status",
+                "effect_predicate_equals": "done",
+            }
+        )
+    assert flat_exc.value.reason == "unknown_effect_param"
 
 
 def test_parse_schedule_requires_trigger() -> None:
@@ -556,11 +557,14 @@ def test_set_goal_effect_cannot_self_satisfy_via_prose(tmp_path: Path) -> None:
 # ---- set_goal predicate keys are inert (the deterministic tier was deleted, A4 #1057) ----
 
 
-def test_set_goal_flat_predicate_keys_are_inert_file_loaded(tmp_path: Path) -> None:
+def test_set_goal_flat_predicate_keys_are_rejected_file_loaded(tmp_path: Path) -> None:
     """A4 #1057: a REAL SKILL.md declaring flat ``effect_predicate_*`` frontmatter siblings —
-    loaded through the actual skill/frontmatter loader — arms a plain NL-condition goal: the
-    deterministic-gate vocabulary is DELETED, so the predicate keys are simply not carried and
-    no self-satisfiable gate is reachable (completion is the bounded LLM judge at finalize)."""
+    loaded through the actual skill/frontmatter loader — is REJECTED with a typed
+    ``unknown_effect_param`` reason, NOT silently downgraded to a plain NL-judge goal. The
+    deterministic-gate vocabulary is DELETED, so a skill author's declared deterministic gate
+    can never silently arm a semantically different goal — the refusal reaches trace/API and
+    NOTHING is armed (completion is the bounded LLM judge at finalize, armed only via a clean
+    declaration)."""
 
     ws = tmp_path / "ws"
     _write_skill(
@@ -576,16 +580,12 @@ def test_set_goal_flat_predicate_keys_are_inert_file_loaded(tmp_path: Path) -> N
     app = build_app(sessions_path=tmp_path / "s.json")
     sess = app.state.sessions.create(workspace_id="ws_default", title="t", mode="edit")
 
-    out = _invoke(app, sess.id, ws, "until-report")
-
-    goal = _get_goal(app, sess.id)
-    assert goal.get("active") is True
-    assert goal.get("condition") == "the report is written"
-    # No deterministic predicate is stored — the whole tier is gone.
-    assert "predicate" not in goal
-    assert "predicate_backed" not in goal
-    # The confirmation is honest about the LLM-judge contract (no "deterministic gate" text).
-    assert "LLM judge" in out and "deterministic" not in out.lower()
+    with pytest.raises(SkillEffectError) as exc:
+        _invoke(app, sess.id, ws, "until-report")
+    assert exc.value.reason == "unknown_effect_param"
+    # The deleted-tier keys are named in the typed message (audit trail), and nothing armed.
+    assert "predicate_field_path" in str(exc.value)
+    assert _get_goal(app, sess.id) == {}
 
 
 # ---- schedule effect (registers a clamped schedule via ScheduleStore) -------------------

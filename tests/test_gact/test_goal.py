@@ -434,7 +434,10 @@ def test_loop_stops_with_loop_goal_met_when_judge_met_at_finalize(
     and its pending wakeup schedule is cancelled (cancel-both)."""
 
     def body() -> None:
-        from clio_agent.gact.autonomous_loop import start_loop, stop_session_loop  # noqa: PLC0415
+        from clio_agent.gact.autonomous_loop import start_loop  # noqa: PLC0415
+        from clio_agent.gact.turn_finalize import (  # noqa: PLC0415
+            compose_goal_loop_stop_at_finalize,
+        )
 
         app = _app(tmp_path)
         sid = _session(app)
@@ -447,9 +450,11 @@ def test_loop_stops_with_loop_goal_met_when_judge_met_at_finalize(
 
         decision = dispatch_goal_at_finalize(app, session_id=sid, turn_id="t1")
         assert decision is not None and decision.outcome == "met"
-        # The finalize glue: a met goal stops the loop (the same one-line seam turn_finalize wires).
-        if decision.outcome == "met":
-            stop_session_loop(app, sid, reason="loop_goal_met")
+        # Drive the SHIPPED finalize seam (the exact function turn_finalize.finalize_turn
+        # calls) — not a hand-rolled stop — so deleting its stop_session_loop body turns
+        # this test red (the A4 review: the glue must be verified, not silently deletable).
+        stopped = compose_goal_loop_stop_at_finalize(app, sid, decision)
+        assert stopped is True
 
         loop = app.state.sessions.get(sid).metadata["loop"]
         assert loop["stopped"] is True
@@ -457,6 +462,41 @@ def test_loop_stops_with_loop_goal_met_when_judge_met_at_finalize(
         # The pending wakeup schedule was cancelled (no orphan re-fire).
         assert app.state.schedules.get(pending) is None
         assert app.state.schedules.list(session_id=sid) == []
+
+    _in_ctx(body)
+
+
+# =========================================================================== #
+# The finalize seam is inert when the goal did not settle 'met'                 #
+# =========================================================================== #
+def test_finalize_seam_leaves_loop_running_when_goal_not_met(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The shipped seam is a no-op unless the judge settled ``met``: an unmet goal (or no
+    goal at all) must NOT stop the armed loop. Guards the seam against firing on the wrong
+    outcome — the counterpart to the met-path test above."""
+
+    def body() -> None:
+        from clio_agent.gact.autonomous_loop import start_loop  # noqa: PLC0415
+        from clio_agent.gact.turn_finalize import (  # noqa: PLC0415
+            compose_goal_loop_stop_at_finalize,
+        )
+
+        app = _app(tmp_path)
+        sid = _session(app)
+        _bind(app, sid)
+        start_loop(app, sid, prompt="keep working", interval_s=60, max_iters=100)
+        _mock_judge(monkeypatch, met=False, reason="not done yet")
+        arm_goal(app, sid, condition="the deliverable is complete")
+
+        decision = dispatch_goal_at_finalize(app, session_id=sid, turn_id="t1")
+        assert decision is not None and decision.outcome != "met"
+        assert compose_goal_loop_stop_at_finalize(app, sid, decision) is False
+        # A None decision (no goal armed) is inert too.
+        assert compose_goal_loop_stop_at_finalize(app, sid, None) is False
+
+        loop = app.state.sessions.get(sid).metadata["loop"]
+        assert loop.get("stopped") is not True
 
     _in_ctx(body)
 
