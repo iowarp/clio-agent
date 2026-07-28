@@ -26,6 +26,7 @@ from clio_agent.gact.app import (
 )
 from clio_agent.gact.permission_gate import _policy_action_for_tool
 from clio_agent.gact.runtime.grant_resolver import (
+    _VALID_KINDS,
     KIND_DOMAIN,
     KIND_HOOK,
     KIND_PLAN_ACL,
@@ -111,7 +112,9 @@ def test_resolve_tool_honors_optional_path_glob() -> None:
             "action": "allow",
         }
     ]
-    assert resolve("tool", "shell.exec", policies=policies, session_id="s", path="/tmp/x") == "allow"
+    assert (
+        resolve("tool", "shell.exec", policies=policies, session_id="s", path="/tmp/x") == "allow"
+    )
     assert resolve("tool", "shell.exec", policies=policies, session_id="s", path="/etc/x") == ""
 
 
@@ -213,15 +216,24 @@ def test_partial_annotations_missing_open_world_hint_are_not_write() -> None:
 
 def test_grant_record_synthesizes_kind_for_legacy_rows() -> None:
     """A legacy row without ``kind`` normalizes: kind synthesized from the set pattern field."""
-    assert GrantRecord.from_policy_row(
-        {"scope": "session", "tool_name_pattern": "shell.*", "action": "deny"}
-    ).kind == KIND_TOOL
-    assert GrantRecord.from_policy_row(
-        {"scope": "workspace", "scope_id": "w", "host_pattern": "ok.test", "action": "allow"}
-    ).kind == KIND_DOMAIN
-    assert GrantRecord.from_policy_row(
-        {"scope": "session", "path_pattern": "/tmp/*", "action": "ask"}
-    ).kind == KIND_ROOT
+    assert (
+        GrantRecord.from_policy_row(
+            {"scope": "session", "tool_name_pattern": "shell.*", "action": "deny"}
+        ).kind
+        == KIND_TOOL
+    )
+    assert (
+        GrantRecord.from_policy_row(
+            {"scope": "workspace", "scope_id": "w", "host_pattern": "ok.test", "action": "allow"}
+        ).kind
+        == KIND_DOMAIN
+    )
+    assert (
+        GrantRecord.from_policy_row(
+            {"scope": "session", "path_pattern": "/tmp/*", "action": "ask"}
+        ).kind
+        == KIND_ROOT
+    )
 
 
 def test_grant_record_round_trips_through_policy_row() -> None:
@@ -296,7 +308,13 @@ def test_golden_legacy_no_priority_reproduces_first_match() -> None:
 def test_priority_band_higher_number_wins_across_bands() -> None:
     """Highest-priority band wins: a lower-priority deny loses to a higher-priority allow."""
     policies = [
-        {"scope": "session", "scope_id": "s", "tool_name_pattern": "*", "action": "deny", "priority": 40},
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": "*",
+            "action": "deny",
+            "priority": 40,
+        },
         {
             "scope": "session",
             "scope_id": "s",
@@ -312,7 +330,13 @@ def test_priority_band_higher_number_wins_across_bands() -> None:
 def test_priority_band_specific_write_deny_outranks_broad_allow() -> None:
     """A higher-priority write-scoped deny beats a lower-priority broad allow."""
     policies = [
-        {"scope": "session", "scope_id": "s", "tool_name_pattern": "*", "action": "allow", "priority": 40},
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": "*",
+            "action": "allow",
+            "priority": 40,
+        },
         {
             "scope": "session",
             "scope_id": "s",
@@ -369,12 +393,26 @@ def test_priority_band_highest_path_allow_wins() -> None:
 def test_priority_tie_break_most_restrictive_wins() -> None:
     """A TIE at the highest band resolves to the MOST-RESTRICTIVE action (deny > allow)."""
     policies = [
-        {"scope": "session", "scope_id": "s", "tool_name_pattern": "shell.exec", "action": "allow", "priority": 50},
-        {"scope": "session", "scope_id": "s", "tool_name_pattern": "shell.exec", "action": "deny", "priority": 50},
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": "shell.exec",
+            "action": "allow",
+            "priority": 50,
+        },
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": "shell.exec",
+            "action": "deny",
+            "priority": 50,
+        },
     ]
     assert resolve("tool", "shell.exec", policies=policies, session_id="s") == "deny"
     # Order-independent: the tie-break, not insertion order, decides.
-    assert resolve("tool", "shell.exec", policies=list(reversed(policies)), session_id="s") == "deny"
+    assert (
+        resolve("tool", "shell.exec", policies=list(reversed(policies)), session_id="s") == "deny"
+    )
 
 
 def test_grant_record_round_trips_priority() -> None:
@@ -466,9 +504,7 @@ def test_sticky_append_does_not_collide_with_migrated_legacy_row(tmp_path: Path)
     assert appended["action"] == "deny"
     assert appended["priority"] != legacy_row["priority"]  # no collision
 
-    result = resolve(
-        "tool", "git.push", policies=app.state.permission_policies, workspace_id=ws.id
-    )
+    result = resolve("tool", "git.push", policies=app.state.permission_policies, workspace_id=ws.id)
     assert result == "allow"  # appended-last preserved: first-match (allow) still wins
 
 
@@ -558,13 +594,10 @@ def test_on_event_axis_narrows_to_matching_event() -> None:
         }
     ]
     assert (
-        resolve("tool", "shell.exec", policies=scoped, session_id="s", event="PreToolUse")
-        == "deny"
+        resolve("tool", "shell.exec", policies=scoped, session_id="s", event="PreToolUse") == "deny"
     )
     # A different event (and the default empty event) does not match the on-scoped row.
-    assert (
-        resolve("tool", "shell.exec", policies=scoped, session_id="s", event="PostToolUse") == ""
-    )
+    assert resolve("tool", "shell.exec", policies=scoped, session_id="s", event="PostToolUse") == ""
     assert resolve("tool", "shell.exec", policies=scoped, session_id="s") == ""
 
     # A row with NO ``on`` matches any event (backward compat).
@@ -582,7 +615,13 @@ def test_axis_backward_compat_rows_without_modes_or_on() -> None:
     """Rows carrying NO ``modes``/``on`` resolve IDENTICALLY to P0.1, with the new params defaulted."""
     # Re-assert the priority-band and tie-break cases with mode/event supplied — no change.
     banded = [
-        {"scope": "session", "scope_id": "s", "tool_name_pattern": "*", "action": "deny", "priority": 40},
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": "*",
+            "action": "deny",
+            "priority": 40,
+        },
         {
             "scope": "session",
             "scope_id": "s",
@@ -601,8 +640,20 @@ def test_axis_backward_compat_rows_without_modes_or_on() -> None:
         == "allow"
     )
     tie = [
-        {"scope": "session", "scope_id": "s", "tool_name_pattern": "shell.exec", "action": "allow", "priority": 50},
-        {"scope": "session", "scope_id": "s", "tool_name_pattern": "shell.exec", "action": "deny", "priority": 50},
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": "shell.exec",
+            "action": "allow",
+            "priority": 50,
+        },
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": "shell.exec",
+            "action": "deny",
+            "priority": 50,
+        },
     ]
     assert (
         resolve("tool", "shell.exec", policies=tie, session_id="s", mode="edit", event="Y")
@@ -798,9 +849,9 @@ def test_default_plan_acl_rows_shape() -> None:
 def test_plan_acl_allows_plan_safe_tools_in_plan_mode() -> None:
     """plan_exit / ask_user / web_fetch resolve ALLOW in plan mode; a write tool stays DENIED."""
     for tool_name in PLAN_ACL_PLAN_TOOLS:
-        assert (
-            resolve("tool", tool_name, policies=[], session_id="s", mode="plan") == "allow"
-        ), tool_name
+        assert resolve("tool", tool_name, policies=[], session_id="s", mode="plan") == "allow", (
+            tool_name
+        )
     # A write/edit tool is still denied by the @40 deny band (the allow-band is name-scoped).
     assert resolve("tool", _WRITE_TOOL, policies=[], session_id="s", mode="plan") == "deny"
 
@@ -819,6 +870,46 @@ def test_plan_acl_allow_band_beats_user_deny_for_plan_exit() -> None:
     assert resolve("tool", "plan_exit", policies=policies, session_id="s", mode="plan") == "allow"
     # Outside plan mode the plan-tool allow-band does not apply — the user deny stands.
     assert resolve("tool", "plan_exit", policies=policies, session_id="s", mode="edit") == "deny"
+
+
+def test_plan_acl_user_deny_wins_over_allow_band_for_non_plan_exit_tool() -> None:
+    """B5 F1 (#1057): a user ``deny web_fetch`` wins in plan mode (tighten-only).
+
+    The plan-tool allow-band re-allows the plan-safe tools above the deny so plan mode isn't
+    stranded — but ONLY ``plan_exit`` needs anti-lockout. A user who explicitly denies
+    ``web_fetch``/``ask_user`` should have that deny win; the allow-band is suppressed for the
+    non-``plan_exit`` tool when any matching user row is a deny.
+    """
+    policies = [
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": "web_fetch",
+            "action": "deny",
+        }
+    ]
+    # web_fetch is denied by the user; the allow-band no longer overrides it.
+    assert resolve("tool", "web_fetch", policies=policies, session_id="s", mode="plan") == "deny"
+    # The SAME store's plan_exit stays allowed — the suppression is name-scoped, not global.
+    assert resolve("tool", "plan_exit", policies=policies, session_id="s", mode="plan") == "allow"
+
+
+def test_plan_acl_user_deny_plan_exit_still_allowed_anti_lockout() -> None:
+    """B5 F1 (#1057): even a user ``deny plan_exit`` cannot strand the model — anti-lockout holds."""
+    policies = [
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": "plan_exit",
+            "action": "deny",
+        }
+    ]
+    assert resolve("tool", "plan_exit", policies=policies, session_id="s", mode="plan") == "allow"
+
+
+def test_plan_acl_web_fetch_allowed_in_plan_with_empty_store() -> None:
+    """B5 F1 (#1057): with no user rows, web_fetch is still allowed in plan mode (unchanged)."""
+    assert resolve("tool", "web_fetch", policies=[], session_id="s", mode="plan") == "allow"
 
 
 def test_plans_dir_uses_repo_dot_clio_in_vcs() -> None:
@@ -859,9 +950,10 @@ def test_plan_acl_carve_out_blocks_traversal_escape() -> None:
     # Even a ``.md`` traversal (which would match the raw glob because fnmatch ``*`` crosses
     # separators) is blocked once the path is normalized away from the plans dir.
     md_escape = str(plans_dir() / ".." / "evil.md")
-    assert resolve(
-        "tool", _WRITE_TOOL, policies=[], session_id="s", path=md_escape, mode="plan"
-    ) == "deny"
+    assert (
+        resolve("tool", _WRITE_TOOL, policies=[], session_id="s", path=md_escape, mode="plan")
+        == "deny"
+    )
 
 
 def test_plan_acl_carve_out_rejects_wrong_extension() -> None:
@@ -874,17 +966,19 @@ def test_plan_acl_carve_out_rejects_wrong_extension() -> None:
 
 def test_plan_acl_denies_source_write_in_plan_mode() -> None:
     """A plain source-file write in plan mode is denied (only the plans dir is carved out)."""
-    assert resolve(
-        "tool", _WRITE_TOOL, policies=[], session_id="s", path="src/app.py", mode="plan"
-    ) == "deny"
+    assert (
+        resolve("tool", _WRITE_TOOL, policies=[], session_id="s", path="src/app.py", mode="plan")
+        == "deny"
+    )
 
 
 def test_plans_carve_out_does_not_apply_in_architect() -> None:
     """Architect has no plan-file write (the @70 carve-out is ``modes=[plan]`` only) — deny."""
     target = str(plans_dir() / "plan.md")
-    assert resolve(
-        "tool", _WRITE_TOOL, policies=[], session_id="s", path=target, mode="architect"
-    ) == "deny"
+    assert (
+        resolve("tool", _WRITE_TOOL, policies=[], session_id="s", path=target, mode="architect")
+        == "deny"
+    )
 
 
 def test_user_allow_policy_does_not_override_plan_mode_deny() -> None:
@@ -902,9 +996,12 @@ def test_user_allow_policy_does_not_override_plan_mode_deny() -> None:
     assert resolve("tool", _WRITE_TOOL, policies=policies, session_id="s", path="src/x.py") == (
         "allow"
     )
-    assert resolve(
-        "tool", _WRITE_TOOL, policies=policies, session_id="s", path="src/x.py", mode="plan"
-    ) == "deny"
+    assert (
+        resolve(
+            "tool", _WRITE_TOOL, policies=policies, session_id="s", path="src/x.py", mode="plan"
+        )
+        == "deny"
+    )
 
 
 def test_plan_acl_defaults_not_consulted_for_domain_kind() -> None:
@@ -937,7 +1034,12 @@ def test_plan_acl_deny_unbypassable_by_large_legacy_migrated_priority() -> None:
     # comfortably above the static @40 floor (none of these match the write tool below).
     for _ in range(59):
         rows.append(
-            {"scope": "session", "scope_id": "s", "tool_name_pattern": "some.other.tool", "action": "ask"}
+            {
+                "scope": "session",
+                "scope_id": "s",
+                "tool_name_pattern": "some.other.tool",
+                "action": "ask",
+            }
         )
     assert len(rows) == 60
 
@@ -949,9 +1051,7 @@ def test_plan_acl_deny_unbypassable_by_large_legacy_migrated_priority() -> None:
     )
     # Outside a plan-restricted mode, the SAME store resolves the legacy allow unchanged (P0's
     # golden migration behavior is untouched by this fix).
-    assert (
-        resolve("tool", _WRITE_TOOL, policies=rows, session_id="s", path="src/x.py") == "allow"
-    )
+    assert resolve("tool", _WRITE_TOOL, policies=rows, session_id="s", path="src/x.py") == "allow"
     # The plans-dir carve-out is still the sole writable path in plan mode: it beats the (now
     # dynamically-raised) deny even with this same large legacy list present.
     target = str(plans_dir() / "foo.md")
@@ -1036,6 +1136,88 @@ def test_resolve_detail_architect_deny_is_not_plan_text() -> None:
     assert "Architect Mode" in deny_message
 
 
+def test_resolve_detail_user_deny_plan_safe_tool_has_no_plan_message() -> None:
+    """B5 F1 (#1057): a user ``deny web_fetch`` in plan mode carries NO plan-mode message.
+
+    The plan-ACL deny ``"*"`` band is raised above the user deny (mode-lock unbypassable), so it
+    tops the winning band — but the tool is only blocked because the USER denied it: web_fetch is
+    plan-safe and its deny persists into edit mode. The mode-aware message ("would modify the
+    system... exit plan mode to execute") is doubly misleading here, so ``resolve_detail`` must
+    attribute the block to the user deny (empty message → generic denial text at the gate).
+    """
+    rows = [
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": "web_fetch",
+            "action": "deny",
+        }
+    ]
+    action, deny_message = resolve_detail(
+        "tool", "web_fetch", policies=rows, session_id="s", mode="plan"
+    )
+    assert action == "deny"
+    assert deny_message == ""
+    # The block genuinely persists in edit mode (proving it is a user deny, not a plan lock).
+    assert resolve("tool", "web_fetch", policies=rows, session_id="s", mode="edit") == "deny"
+
+
+def test_resolve_detail_user_deny_write_tool_in_plan_has_no_plan_message() -> None:
+    """B5 F1 (#1057): a user ``deny`` of a genuine write tool in plan mode still has no plan text.
+
+    Exiting plan mode would NOT unblock (the user deny outlives the mode), so telling the model to
+    "exit plan mode to execute" is misleading — the generic denial text is the honest surface.
+    """
+    rows = [
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": _WRITE_TOOL,
+            "action": "deny",
+        }
+    ]
+    action, deny_message = resolve_detail(
+        "tool", _WRITE_TOOL, policies=rows, session_id="s", path="src/x.py", mode="plan"
+    )
+    assert action == "deny"
+    assert deny_message == ""
+
+
+def test_resolve_detail_plan_deny_keeps_message_when_edit_would_unblock() -> None:
+    """B5 F1 (#1057): a pure plan-mode block (edit mode unblocks) KEEPS the mode-aware message.
+
+    A user ``allow@90`` + broad ``deny@10`` resolves to ALLOW in edit but DENY in plan (the
+    allow-band is suppressed by the matching user deny). Here exiting plan mode really does unblock,
+    so the plan message is accurate and must be preserved.
+    """
+    rows = [
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": _WRITE_TOOL,
+            "action": "allow",
+            "priority": 90,
+        },
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": "*",
+            "action": "deny",
+            "priority": 10,
+        },
+    ]
+    # Edit mode: the explicit allow@90 wins.
+    assert (
+        resolve("tool", _WRITE_TOOL, policies=rows, session_id="s", path="src/x.py", mode="edit")
+        == "allow"
+    )
+    action, deny_message = resolve_detail(
+        "tool", _WRITE_TOOL, policies=rows, session_id="s", path="src/x.py", mode="plan"
+    )
+    assert action == "deny"
+    assert "Plan Mode" in deny_message
+
+
 def test_resolve_detail_matches_resolve_action() -> None:
     """resolve_detail's action is byte-identical to resolve for the same arguments."""
     rows = [
@@ -1055,3 +1237,119 @@ def test_resolve_detail_matches_resolve_action() -> None:
             "tool", _WRITE_TOOL, policies=rows, session_id="s", path="src/x.py", mode=mode
         )
         assert action_only == action_detail
+
+
+# --------------------------------------------------------------------------------------
+# B4 #1057 — grant-resolver kind enforcement (a domain host row must NOT bleed into a
+# kind="tool" resolve via a stray ``tool_name_pattern: "*"``).
+# --------------------------------------------------------------------------------------
+
+
+def test_legacy_domain_row_does_not_bleed_into_tool_resolve() -> None:
+    """A host-bearing (domain) row must never answer a ``kind="tool"`` resolve (kind-bleed).
+
+    Legacy domain grants were persisted with BOTH ``host_pattern`` and a stray
+    ``tool_name_pattern: "*"``; without a kind check the ``"*"`` glob let the domain row's
+    ``allow`` leak onto EVERY tool call in the workspace (a security bleed). The same row must
+    still answer its own ``kind="domain"`` resolve unchanged.
+    """
+    legacy_domain = {
+        "scope": "workspace",
+        "scope_id": "ws_a",
+        "host_pattern": "ok.test",
+        "tool_name_pattern": "*",  # the stray glob that caused the bleed
+        "action": "allow",
+    }
+    # The bleed: shell_bash (or any tool) must NOT be allowed by a domain row.
+    assert (
+        resolve("tool", "shell_bash", policies=[legacy_domain], session_id="s", workspace_id="ws_a")
+        == ""
+    )
+    # The domain row still allows its own host resolve (no regression to egress grants).
+    assert resolve("domain", "ok.test", policies=[legacy_domain], workspace_id="ws_a") == "allow"
+
+
+def test_explicit_domain_kind_row_does_not_bleed_into_tool_resolve() -> None:
+    """An EXPLICIT ``kind="domain"`` row is likewise inadmissible to a tool resolve."""
+    explicit_domain = {
+        "kind": KIND_DOMAIN,
+        "scope": "workspace",
+        "scope_id": "ws_a",
+        "host_pattern": "ok.test",
+        "tool_name_pattern": "*",
+        "action": "allow",
+    }
+    assert (
+        resolve(
+            "tool", "shell_bash", policies=[explicit_domain], session_id="s", workspace_id="ws_a"
+        )
+        == ""
+    )
+    assert resolve("domain", "ok.test", policies=[explicit_domain], workspace_id="ws_a") == "allow"
+
+
+def test_legacy_tool_path_row_unregressed_by_kind_enforcement() -> None:
+    """A legacy (no-kind) tool+path row still matches a ``kind="tool"`` resolve.
+
+    The kind synthesis is host-presence ONLY: a ``path_pattern``-bearing row is NOT reclassified
+    to ``fs_root`` — such sticky tool+path grants have always matched as ``kind="tool"``.
+    """
+    tool_path = {
+        "scope": "session",
+        "scope_id": "s",
+        "tool_name_pattern": "fs_*",
+        "path_pattern": "/data/*",
+        "action": "allow",
+    }
+    assert (
+        resolve("tool", "fs_read_file", policies=[tool_path], session_id="s", path="/data/x.txt")
+        == "allow"
+    )
+
+
+def test_validate_normalizes_host_bearing_legacy_row() -> None:
+    """Load-time normalization: a host-bearing row is stamped ``kind="domain"`` + stray glob dropped."""
+    clean, errors = _validate_permission_policies(
+        [
+            {
+                "scope": "workspace",
+                "scope_id": "ws_a",
+                "host_pattern": "ok.test",
+                "tool_name_pattern": "*",
+                "action": "allow",
+            }
+        ]
+    )
+    assert errors == []
+    assert clean[0]["kind"] == KIND_DOMAIN
+    assert "tool_name_pattern" not in clean[0]
+    # After self-heal the row no longer bleeds into a tool resolve either.
+    assert resolve("tool", "shell_bash", policies=clean, session_id="s", workspace_id="ws_a") == ""
+
+
+def test_validate_rejects_invalid_explicit_kind() -> None:
+    """An EXPLICIT ``kind`` that is not a valid discriminator is REJECTED with a typed reason.
+
+    Without boundary validation a garbage/mis-cased kind (``"Domain"``) would fall through
+    :func:`grant_resolver._kind_admitted` to the legacy host-presence classification and silently
+    mis-route the row (⚑ no-silent-fallback). Absence stays legitimate (kind synthesized at match
+    time), and every valid kind passes.
+    """
+    _clean, bad_kind = _validate_permission_policies(
+        [{"kind": "Domain", "scope": "session", "action": "deny"}]
+    )
+    assert any(e["field"] == "kind" for e in bad_kind)
+
+    _clean, garbage_kind = _validate_permission_policies(
+        [{"kind": "nonsense", "scope": "session", "action": "deny"}]
+    )
+    assert any(e["field"] == "kind" for e in garbage_kind)
+
+    # A missing kind is legitimate (synthesized from row shape); every valid kind is preserved.
+    clean, ok_errors = _validate_permission_policies(
+        [{"scope": "session", "action": "deny"}]
+        + [{"kind": k, "scope": "session", "action": "deny"} for k in sorted(_VALID_KINDS)]
+    )
+    assert ok_errors == []
+    assert "kind" not in clean[0]
+    assert {row["kind"] for row in clean[1:]} == set(_VALID_KINDS)

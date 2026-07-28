@@ -92,6 +92,14 @@ _HOOK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
         "severity": "warning",
         "detail": "hook exited 0 but stdout was not parseable as the tagged-union output",
     },
+    "hook_multiple_stdout_objects": {
+        "severity": "warning",
+        "detail": (
+            "hook stdout carried more than one decision-bearing JSON object; the "
+            "most-restrictive decision was applied (tighten-only, so a smuggled allow "
+            "can never beat a real deny)"
+        ),
+    },
     "hook_reserved_decision": {
         "severity": "warning",
         "detail": "hook returned a decision reserved for a later slice",
@@ -382,7 +390,9 @@ def parse_hook_output(
         return HookDecision(decision="allow", hook_id=hook_id)
     decision = str(raw.get("decision") or "allow").lower()
     if decision in _RESERVED_DECISIONS:
-        record_hook_reason("hook_reserved_decision", hook_id=hook_id, event=event, decision=decision)
+        record_hook_reason(
+            "hook_reserved_decision", hook_id=hook_id, event=event, decision=decision
+        )
         decision = "allow"
     elif decision not in _SUPPORTED_DECISIONS:
         record_hook_reason("hook_unknown_decision", hook_id=hook_id, event=event, decision=decision)
@@ -495,9 +505,7 @@ class HookOutcome:
         outcome.additional_context = "\n".join(
             d.additional_context for d in decisions if d.additional_context
         )
-        outcome.system_message = "\n".join(
-            d.system_message for d in decisions if d.system_message
-        )
+        outcome.system_message = "\n".join(d.system_message for d in decisions if d.system_message)
         if outcome.decision == "modify":
             movers = [d for d in winning if d.modify_input is not None]
             if len(movers) > 1:
@@ -608,26 +616,79 @@ class HookOutcome:
                 )
 
 
-def extract_json_object(text: str) -> dict[str, Any] | None:
-    """Banner-tolerant parse of hook stdout (hooks-research C8).
+def extract_json_object(
+    text: str,
+    *,
+    hook_id: str = "",
+    event: str = "",
+) -> dict[str, Any] | None:
+    """Banner-tolerant, multi-object parse of hook stdout (hooks-research C8 / B3).
 
     A shell-profile banner printed before the JSON is common and the #1 hook
-    support issue. Scan for the first ``{`` that begins a decodable JSON object
-    (via ``raw_decode``, which tolerates trailing content/whitespace) and return
-    it. Returns ``None`` when the text carries no JSON object at all — the caller
+    support issue — and the banner is itself sometimes JSON-shaped (a status line,
+    a version blob), which a first-object-wins scan would mistake for the real
+    decision. Scan EVERY decodable JSON object in ``text`` (advancing past each
+    decoded span via ``raw_decode``'s end offset, never to the next inner ``{``,
+    so a nested dict is not double-counted as a separate top-level object), then
+    partition on whether the object carries a ``"decision"`` key:
+
+    * exactly one decision-bearing object -> return it (a JSON-shaped banner no
+      longer shadows the real decision);
+    * two or more decision-bearing objects -> the most-restrictive by
+      :data:`_DECISION_RANK` wins (tighten-only: a smuggled ``allow`` can never
+      beat a real ``deny``), recording the typed, queryable
+      ``hook_multiple_stdout_objects`` reason (no-silent-fallback);
+    * no decision-bearing object -> the first object scanned (unchanged behavior,
+      so a lone banner/status object still parses as before).
+
+    Returns ``None`` when the text carries no JSON object at all — the caller
     decides whether that is "empty => allow" or a diagnosable unparseable error.
+
+    Args:
+        text: The hook process stdout.
+        hook_id: The originating hook's id, for the typed multi-object reason.
+        event: The hook event name, for the typed multi-object reason.
+
+    Returns:
+        The chosen decision object, the first object when none bears a decision,
+        or ``None`` when no JSON object is present.
     """
 
     if not text or not text.strip():
         return None
     decoder = json.JSONDecoder()
+    objects: list[dict[str, Any]] = []
     idx = text.find("{")
     while idx != -1:
         try:
-            obj, _ = decoder.raw_decode(text[idx:])
+            obj, end = decoder.raw_decode(text[idx:])
         except json.JSONDecodeError:
-            obj = None
+            idx = text.find("{", idx + 1)
+            continue
         if isinstance(obj, dict):
-            return obj
-        idx = text.find("{", idx + 1)
-    return None
+            objects.append(obj)
+            # Advance past the whole decoded span so a ``{`` nested inside this
+            # object is not re-scanned as a separate top-level object.
+            idx = text.find("{", idx + end)
+        else:
+            idx = text.find("{", idx + 1)
+    if not objects:
+        return None
+    decision_bearing = [obj for obj in objects if "decision" in obj]
+    if len(decision_bearing) == 1:
+        return decision_bearing[0]
+    if len(decision_bearing) >= 2:
+        chosen = max(
+            decision_bearing,
+            key=lambda obj: _DECISION_RANK.get(str(obj.get("decision") or "allow").lower(), 0),
+        )
+        record_hook_reason(
+            "hook_multiple_stdout_objects",
+            hook_id=hook_id,
+            event=event,
+            count=len(decision_bearing),
+            decisions=[str(obj.get("decision") or "allow").lower() for obj in decision_bearing],
+            chosen=str(chosen.get("decision") or "allow").lower(),
+        )
+        return chosen
+    return objects[0]

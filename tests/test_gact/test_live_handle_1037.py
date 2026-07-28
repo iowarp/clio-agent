@@ -317,6 +317,62 @@ def test_steer_running_child_enqueues_into_child_inbox(tmp_path: Path) -> None:
         assert app.state.loop_inboxes.get(parent) is None
 
 
+def test_steer_rejects_reserved_metadata_key(tmp_path: Path) -> None:
+    """#1057 B2 (BLOCKER): the agent-task steer is a THIRD client-writable ingest onto a
+    turn's ``user_msg.metadata`` (POST /messages + /retry are the other two). A client
+    smuggling a reserved turn-control key (``hook_defer_resume``) via ``metadata`` would
+    ride ``enqueue_user_steer`` onto the CHILD inbox and — if the child turn ends before
+    the drain — into the promoted turn's ``user_msg.metadata``, making the
+    UserPromptSubmit once-gate skip hook dispatch. The steer is rejected 400 (typed
+    ``reserved_metadata_key``), NOT stripped, and NOTHING is enqueued."""
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        task = seed_agent_task(
+            app, parent_session_id=parent, agent_ref={"expert_id": "data_expert"}
+        )
+        child = task.child_session_id
+        _mark_running(app, child)
+
+        resp = client.post(
+            f"/v1/agent-tasks/{task.task_id}/steer",
+            json={"text": "focus on LA", "metadata": {"hook_defer_resume": True}},
+        )
+        assert resp.status_code == 400
+        inner = resp.json()["error"]
+        assert inner["error"] == "reserved_metadata_key"
+        assert inner["details"]["reserved_keys"] == ["hook_defer_resume"]
+        assert inner["details"]["session_id"] == child
+        # The reserved key was rejected, never smuggled — nothing buffered on the child.
+        assert app.state.loop_inboxes.get(child) is None
+
+
+def test_steer_benign_metadata_still_accepted(tmp_path: Path) -> None:
+    """A steer with benign (non-reserved) metadata is unaffected by the B2 guard: it is
+    accepted 202 and enqueued onto the child inbox verbatim."""
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        task = seed_agent_task(
+            app, parent_session_id=parent, agent_ref={"expert_id": "data_expert"}
+        )
+        child = task.child_session_id
+        _mark_running(app, child)
+
+        resp = client.post(
+            f"/v1/agent-tasks/{task.task_id}/steer",
+            json={"text": "focus on LA", "metadata": {"note": "human steer"}},
+        )
+        assert resp.status_code == 202
+        inbox = app.state.loop_inboxes.get(child)
+        assert inbox is not None
+        events = inbox.drain()
+        assert len(events) == 1
+        assert events[0].metadata == {"note": "human steer"}
+
+
 def test_steer_empty_text_rejected_422(tmp_path: Path) -> None:
     """An empty/whitespace steer would enqueue an empty ### steer block — reject 422,
     and enqueue NOTHING (even for a genuinely running child)."""

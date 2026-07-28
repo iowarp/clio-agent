@@ -34,7 +34,11 @@ from clio_agent.gact.hooks import (
     install_global_dispatcher,
     take_pre_tool_intercept,
 )
-from clio_agent.gact.hooks.defer import HOOK_DEFER_PENDING_META, PRETOOL_DEFER_KIND
+from clio_agent.gact.hooks.defer import (
+    HOOK_DEFER_PENDING_META,
+    HOOK_DEFER_RESUME_META,
+    PRETOOL_DEFER_KIND,
+)
 from clio_agent.gact.hooks.wire import parse_hook_output
 from clio_agent.gact.permission_gate import DenyDecision, resolve_permission
 from tests.test_gact._hook_fixtures import (
@@ -389,6 +393,54 @@ def test_user_prompt_submit_defer_suspends_then_resumes_on_approve(tmp_path: Pat
             # keeps the UserPromptSubmit hook from re-deferring the approved prompt).
             resolve_permission(app, pid, "allow")
             assert _poll_status(c, sid, {"idle", "completed"}) in {"idle", "completed"}
+    finally:
+        install_global_dispatcher(None)
+
+
+def test_client_cannot_smuggle_hook_defer_resume_to_bypass_the_hook(tmp_path: Path) -> None:
+    """B2 (BLOCKER): ``HOOK_DEFER_RESUME_META`` is the resume once-gate that tells
+    the UserPromptSubmit dispatch to skip re-deferring a just-approved prompt. A
+    client that stamps it on a FIRST POST would bypass the defer hook entirely.
+    The reserved-metadata guard rejects that POST 400 before the turn starts, so
+    the hook still fires (the session parks ``waiting_user`` on a genuine send)."""
+
+    body = (
+        "import json, sys\n"
+        "envelope = json.load(sys.stdin)\n"
+        "if 'defer' in (envelope.get('prompt') or '').lower():\n"
+        "    print(json.dumps({'decision': 'defer', 'reason': 'await signoff'}))\n"
+        "sys.exit(0)\n"
+    )
+    install_global_dispatcher(
+        make_command_dispatcher(tmp_path, event=USER_PROMPT_SUBMIT, body=body)
+    )
+    try:
+        app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+        with TestClient(app) as c:
+            sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
+
+            smuggle = c.post(
+                f"/v1/sessions/{sid}/messages",
+                json={
+                    "parts": [{"type": "text", "text": "please defer this request"}],
+                    "metadata": {HOOK_DEFER_RESUME_META: True},
+                },
+            )
+            assert smuggle.status_code == 400, smuggle.text
+            inner = smuggle.json()["error"]
+            assert inner["error"] == "reserved_metadata_key"
+            assert inner["details"]["reserved_keys"] == [HOOK_DEFER_RESUME_META]
+            # The smuggled turn never ran: nothing persisted, session still idle.
+            assert c.get(f"/v1/sessions/{sid}/messages").json()["messages"] == []
+            assert c.get(f"/v1/sessions/{sid}").json()["status"] == "idle"
+
+            # A genuine send (no reserved key) still triggers the defer hook.
+            ack = c.post(
+                f"/v1/sessions/{sid}/messages",
+                json={"parts": [{"type": "text", "text": "please defer this request"}]},
+            )
+            assert ack.status_code == 200
+            assert _poll_status(c, sid, {"waiting_user"}) == "waiting_user"
     finally:
         install_global_dispatcher(None)
 

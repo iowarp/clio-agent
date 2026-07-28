@@ -6,6 +6,19 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Changed
+
+- **Permissions — grant kind enforcement (#1057, B4).** A workspace domain
+  grant is now resolved strictly on the domain axis: a host-bearing
+  (`host_pattern`) policy row is stamped `kind="domain"` and no longer carries a
+  stray `tool_name_pattern: "*"`, and the resolver admits a row into a resolve
+  only when its kind shares the caller's axis. Previously a persisted domain
+  grant's `"*"` tool glob bled into every `kind="tool"` resolve, so a
+  fleet-egress allow authorized every tool call in the workspace. **Behavior
+  change:** any deployment that relied on that domain→tool kind-bleed to
+  authorize tool calls loses it — re-grant the tools explicitly. Persisted rows
+  self-heal to the corrected shape on the next load/flush.
+
 ## [0.8.1] — 2026-07-24
 
 ### Added — post-#974 three-pillar redesign (#1031)

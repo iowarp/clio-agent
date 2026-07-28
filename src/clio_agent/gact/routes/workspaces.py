@@ -111,10 +111,14 @@ def _grant_workspace_domain(app: FastAPI, workspace_id: str, host: str) -> dict[
     """Grant a network domain to a workspace: sticky ``host_pattern`` policy + boundary event."""
     from clio_agent.gact.runtime import grants  # noqa: PLC0415
 
+    # B4 #1057: a domain grant declares ``kind="domain"`` and carries NO ``tool_name_pattern`` —
+    # the legacy stray ``"*"`` glob let this fleet-egress row bleed into every ``kind="tool"``
+    # resolve (grant_resolver._kind_admitted now refuses it at match time; not persisting the glob
+    # keeps the stored shape honest so a self-heal on load has nothing to strip).
     policy: dict[str, Any] = {
+        "kind": grants.KIND_DOMAIN,
         "scope": grants.SCOPE_WORKSPACE,
         "scope_id": workspace_id,
-        "tool_name_pattern": "*",
         "host_pattern": host,
         "action": "allow",
     }

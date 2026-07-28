@@ -189,7 +189,12 @@ RATCHET_BASELINE: dict[str, int] = {
     # P2.3 (#1071): +10 — the PreCompact lifecycle hook fires at the compact route
     # before summarisation (thin dispatch_pre_compact call site; the event set lives
     # in the owner module gact/hooks/).
-    "src/clio_agent/gact/routes/sessions.py": 1569,
+    # #1057 B2 review repair: +5 for the reserved-metadata guard at the /retry ingest
+    # (a POST /messages sibling that spreads client metadata onto the staged turn). The
+    # typed rejection itself lives in the owner module gact/messaging.py
+    # (raise_on_reserved_metadata, shared with the /messages guard); only the thin call
+    # site + import land here. Irreducible: the guard must sit in this endpoint.
+    "src/clio_agent/gact/routes/sessions.py": 1574,
     # #933: +8 for the turn-scoped workspace-fleet lease in _tool_session_context.
     # #933 review hardening: typed workspace_lease_unavailable degrade when a
     # rooted turn has no leasable agent (+9).
