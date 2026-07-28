@@ -20,13 +20,16 @@ import pytest
 
 from clio_agent.gact.app import build_app
 from clio_agent.gact.plan_mode import (
+    _PLAN_FILE_METADATA_KEY,
     _PLAN_REMINDER_FULL_INTERVAL,
     _PLAN_REMINDER_STATE_KEY,
     PLAN_MODE_REMINDER_MARKER,
     inject_plan_mode_reminder,
+    plan_file_exists,
+    recorded_plan_file,
 )
 from clio_agent.gact.routes.compaction import build_compact_summary_message
-from clio_agent.gact.runtime.grant_resolver import plans_dir
+from clio_agent.gact.runtime.grant_resolver import plans_dir, resolve
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
@@ -115,3 +118,120 @@ def test_suppression_state_lives_on_session_metadata(tmp_path: Path) -> None:
     assert state["turn_index"] == 1
     assert state["last_full_turn"] == 1
     assert state["compactions_at_last_full"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# P1.3 #1065 — plan-file lifecycle (path + existence + create/edit guidance)   #
+# --------------------------------------------------------------------------- #
+
+_LEDGER_HEADERS = "Given / Learned / To look up / To derive"
+_STRUCTURE_HINT = "Structure the plan to fit the task"
+_STALENESS = "evaluate whether it is still relevant to THIS task"
+_SHOW_THE_PLAN = "Show the plan to the user"
+_CREATE_ONLY = "No plan file exists yet"
+_EDIT_ONLY = "already exists at"
+
+
+def test_plan_file_path_recorded_on_first_plan_turn(tmp_path: Path) -> None:
+    """The deterministic plan-file path is computed and recorded on session.metadata."""
+    app, sess = _plan_session(tmp_path)
+    assert _PLAN_FILE_METADATA_KEY not in (sess.metadata or {})
+    inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)
+
+    fresh = app.state.sessions.get(sess.id)
+    plan_file = fresh.metadata[_PLAN_FILE_METADATA_KEY]
+    assert plan_file  # a non-empty path was recorded
+    recorded = Path(plan_file)
+    assert recorded.parent == plans_dir()  # lives directly under the plans dir
+    assert recorded.suffix == ".md"
+    assert recorded_plan_file(fresh) == plan_file
+
+
+def test_plan_file_path_is_stable_across_turns(tmp_path: Path) -> None:
+    """The recorded path does not change turn to turn (recorded once, re-read thereafter)."""
+    app, sess = _plan_session(tmp_path)
+    inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)
+    first = app.state.sessions.get(sess.id).metadata[_PLAN_FILE_METADATA_KEY]
+    for _ in range(3):
+        inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)
+    later = app.state.sessions.get(sess.id).metadata[_PLAN_FILE_METADATA_KEY]
+    assert first == later
+
+
+def test_recorded_plan_path_is_within_plan_acl_carveout(tmp_path: Path) -> None:
+    """A write to the recorded plan path resolves ALLOW in plan mode (the @70 carve-out)."""
+    app, sess = _plan_session(tmp_path)
+    inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)
+    plan_file = app.state.sessions.get(sess.id).metadata[_PLAN_FILE_METADATA_KEY]
+    # No persisted user policies — ALLOW must come purely from the built-in plan-file carve-out.
+    action = resolve(
+        "tool",
+        "fs_apply_edit_write",
+        policies=[],
+        session_id=sess.id,
+        path=plan_file,
+        mode="plan",
+    )
+    assert action == "allow"
+
+
+def test_reminder_shows_create_guidance_when_file_absent(tmp_path: Path) -> None:
+    """With no plan file on disk, the FULL reminder tells the model to CREATE it at the path."""
+    app, sess = _plan_session(tmp_path)
+    out = inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)
+    plan_file = app.state.sessions.get(sess.id).metadata[_PLAN_FILE_METADATA_KEY]
+    assert _CREATE_ONLY in out
+    assert _EDIT_ONLY not in out
+    assert plan_file in out
+    assert not plan_file_exists(app.state.sessions.get(sess.id))
+
+
+def test_reminder_shows_edit_guidance_when_file_present(tmp_path: Path) -> None:
+    """Once the plan file exists on disk, the FULL reminder switches to incremental-edit guidance."""
+    app, sess = _plan_session(tmp_path)
+    # Turn 1 computes + records the path (file not yet written).
+    inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)
+    plan_file = Path(app.state.sessions.get(sess.id).metadata[_PLAN_FILE_METADATA_KEY])
+    # The MODEL writes the plan (simulated) -> existence flips.
+    plan_file.parent.mkdir(parents=True, exist_ok=True)
+    plan_file.write_text("# Plan\n", encoding="utf-8")
+    assert plan_file_exists(app.state.sessions.get(sess.id))
+    # Force a FULL reminder (post-compaction) so the create/edit branch is visible.
+    _append_compaction(app, sess.id)
+    out = inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)
+    assert _FULL_ONLY in out
+    assert _EDIT_ONLY in out
+    assert _CREATE_ONLY not in out
+
+
+def test_full_reminder_contains_ledger_structure_staleness_and_show_rules(tmp_path: Path) -> None:
+    """The FULL reminder carries the epistemic ledger, structure hint, staleness + show rules."""
+    app, sess = _plan_session(tmp_path)
+    out = inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)
+    assert _LEDGER_HEADERS in out
+    assert _STRUCTURE_HINT in out
+    assert _STALENESS in out
+    assert _SHOW_THE_PLAN in out
+
+
+def test_sparse_reminder_stays_a_one_liner(tmp_path: Path) -> None:
+    """The SPARSE reminder is a single line: no ledger/structure/staleness/show guidance."""
+    app, sess = _plan_session(tmp_path)
+    inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)  # turn 1 -> full
+    out = inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)  # turn 2 -> sparse
+    assert out.count("\n\n---\n\n") == 1
+    reminder = out.split("\n\n---\n\n", 1)[0]
+    assert "\n" not in reminder  # the sparse block itself is one line
+    for absent in (_LEDGER_HEADERS, _STRUCTURE_HINT, _STALENESS, _SHOW_THE_PLAN):
+        assert absent not in out
+
+
+@pytest.mark.parametrize("mode", ["edit", "architect"])
+def test_non_plan_mode_records_no_plan_file(tmp_path: Path, mode: str) -> None:
+    """edit/architect sessions get no plan reminder AND no recorded plan-file path."""
+    app, sess = _plan_session(tmp_path, mode=mode)
+    out = inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)
+    assert out == _USER_TEXT
+    fresh = app.state.sessions.get(sess.id)
+    assert _PLAN_FILE_METADATA_KEY not in (fresh.metadata or {})
+    assert recorded_plan_file(fresh) is None
