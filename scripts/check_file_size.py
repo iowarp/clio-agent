@@ -64,7 +64,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # minimized to concise docstrings; the per-op payload passing is irreducible. Ratchet
     # down with the #714/#767 decomposition.
     "src/clio_agent/arc/working_set_fold.py": 919,
-    "src/clio_agent/gact/agent_blueprints.py": 1103,
+    "src/clio_agent/gact/agent_blueprints.py": 1035,
     # #948 S4: +14 for the children-must-be-react hierarchy rule (a predict/CoT
     # parent would silently strand its children now that the settle loop routing
     # for it is deleted; typed validation error instead).
@@ -124,7 +124,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # _redrive_deferred_resume; the resume fold's re-drive now lives in the owner
     # module gact/loop_inbox.py (drain_inbox_to_new_turn), leaving only the idle-hook
     # wiring here.
-    "src/clio_agent/gact/app.py": 2695,
+    "src/clio_agent/gact/app.py": 2678,
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg

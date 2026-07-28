@@ -735,10 +735,6 @@ class SemanticEventSink:
     def trace_backend_name(self) -> str:
         return self.trace_backend.name
 
-    def add_live_consumer(self, consumer: Callable[[SemanticEvent], None]) -> None:
-        """Register a live consumer (e.g. ARC) that folds the RAW full event."""
-        self.live_consumers.append(consumer)
-
     def emit(self, event: SemanticEvent) -> dict[str, Any]:
         event.detail_level = normalize_detail_level(event.detail_level or self.detail_level)
         # Durable canonical store + live consumers (ARC) ALWAYS get the FULL

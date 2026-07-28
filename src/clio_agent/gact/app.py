@@ -496,9 +496,6 @@ from clio_agent.gact.routes.diffs import (  # noqa: E402
 from clio_agent.gact.routes.expert_packs import (  # noqa: E402
     register_expert_packs_routes,
 )
-from clio_agent.gact.routes.hooks import (  # noqa: E402
-    register_hooks_routes,
-)
 from clio_agent.gact.routes.mcp import (  # noqa: E402
     register_mcp_routes,
 )
@@ -1456,13 +1453,6 @@ def build_app(
     # iowarp/clio-agent#333: retry attempts preserve provenance for
     # retry-with-notes/model flows without mutating the original turn.
     app.state.turn_attempts = {}
-    # SPEC §6.17 hooks (declarative event→command/url callouts that
-    # gact-tui drives via /v1/hooks). Distinct from CLIO's runtime
-    # in-process Python hooks (clio_agent.runtime.hooks) — these are
-    # user-configurable callouts the agent fires during the turn
-    # lifecycle, while the Python runtime hooks are framework-level
-    # extension points. In-memory; not persisted across restarts.
-    app.state.declarative_hooks = {}
     # SPEC §6.11.b permission policies — list, not dict. Backends
     # consult this on every tool call to decide allow/deny/ask at the
     # permission boundary. PUT replaces the whole list.
@@ -2424,13 +2414,6 @@ def build_app(
     # The built-in tool catalog and the unified live catalog (bundled gateway +
     # installed third-party MCP servers) are owned by routes/catalog.py and
     # registered below via register_catalog_routes(app, deps).
-
-    # ---- /v1/hooks (SPEC §6.17 declarative hooks) --------------------
-    # Declarative event-hook CRUD is owned by routes/hooks.py; the
-    # direct-destructive-action guard the delete route needs travels on
-    # ``deps``. Distinct from clio_agent.runtime.hooks (in-process Python
-    # hooks the framework fires on tool/message events).
-    register_hooks_routes(app, deps)
 
     # ---- /v1/permissions (BBB23) + /v1/policies (SPEC §6.11.b) --------
     # Permission-request ledger CRUD (list/resolve) + declarative permission-

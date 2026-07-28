@@ -334,9 +334,9 @@ async def _run_turn_in_background(
             subject={"message_id": state.user_msg.id},
             payload=state.memory_search_metadata,
         )
-    # iowarp/clio-agent#20: pre_message hook can transform the
-    # input or veto the turn. PermissionError → cancelled-style
-    # error_info; the caller sees the hook's reason.
+    # iowarp/clio-agent#20: pre_message hook may VETO via a raised
+    # PermissionError → cancelled error_info. Its RETURN VALUE IS NOT
+    # CONSUMED — no input transform until the P2.2/P2.3 dispatcher rebuild.
     if context_file_error is None:
         try:
             from clio_agent.runtime.hooks import fire as _fire_hook
