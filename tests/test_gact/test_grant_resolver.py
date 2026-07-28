@@ -1136,6 +1136,88 @@ def test_resolve_detail_architect_deny_is_not_plan_text() -> None:
     assert "Architect Mode" in deny_message
 
 
+def test_resolve_detail_user_deny_plan_safe_tool_has_no_plan_message() -> None:
+    """B5 F1 (#1057): a user ``deny web_fetch`` in plan mode carries NO plan-mode message.
+
+    The plan-ACL deny ``"*"`` band is raised above the user deny (mode-lock unbypassable), so it
+    tops the winning band — but the tool is only blocked because the USER denied it: web_fetch is
+    plan-safe and its deny persists into edit mode. The mode-aware message ("would modify the
+    system... exit plan mode to execute") is doubly misleading here, so ``resolve_detail`` must
+    attribute the block to the user deny (empty message → generic denial text at the gate).
+    """
+    rows = [
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": "web_fetch",
+            "action": "deny",
+        }
+    ]
+    action, deny_message = resolve_detail(
+        "tool", "web_fetch", policies=rows, session_id="s", mode="plan"
+    )
+    assert action == "deny"
+    assert deny_message == ""
+    # The block genuinely persists in edit mode (proving it is a user deny, not a plan lock).
+    assert resolve("tool", "web_fetch", policies=rows, session_id="s", mode="edit") == "deny"
+
+
+def test_resolve_detail_user_deny_write_tool_in_plan_has_no_plan_message() -> None:
+    """B5 F1 (#1057): a user ``deny`` of a genuine write tool in plan mode still has no plan text.
+
+    Exiting plan mode would NOT unblock (the user deny outlives the mode), so telling the model to
+    "exit plan mode to execute" is misleading — the generic denial text is the honest surface.
+    """
+    rows = [
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": _WRITE_TOOL,
+            "action": "deny",
+        }
+    ]
+    action, deny_message = resolve_detail(
+        "tool", _WRITE_TOOL, policies=rows, session_id="s", path="src/x.py", mode="plan"
+    )
+    assert action == "deny"
+    assert deny_message == ""
+
+
+def test_resolve_detail_plan_deny_keeps_message_when_edit_would_unblock() -> None:
+    """B5 F1 (#1057): a pure plan-mode block (edit mode unblocks) KEEPS the mode-aware message.
+
+    A user ``allow@90`` + broad ``deny@10`` resolves to ALLOW in edit but DENY in plan (the
+    allow-band is suppressed by the matching user deny). Here exiting plan mode really does unblock,
+    so the plan message is accurate and must be preserved.
+    """
+    rows = [
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": _WRITE_TOOL,
+            "action": "allow",
+            "priority": 90,
+        },
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": "*",
+            "action": "deny",
+            "priority": 10,
+        },
+    ]
+    # Edit mode: the explicit allow@90 wins.
+    assert (
+        resolve("tool", _WRITE_TOOL, policies=rows, session_id="s", path="src/x.py", mode="edit")
+        == "allow"
+    )
+    action, deny_message = resolve_detail(
+        "tool", _WRITE_TOOL, policies=rows, session_id="s", path="src/x.py", mode="plan"
+    )
+    assert action == "deny"
+    assert "Plan Mode" in deny_message
+
+
 def test_resolve_detail_matches_resolve_action() -> None:
     """resolve_detail's action is byte-identical to resolve for the same arguments."""
     rows = [
