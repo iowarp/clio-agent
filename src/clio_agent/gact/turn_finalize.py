@@ -708,11 +708,10 @@ def finalize_turn(
             },
         )
     )
-    # P2.3 PostToolBatch: fire ONCE per turn, after the turn's whole tool batch
-    # resolved and before Stop/next step — only when the turn ran ≥1 tool (an empty
-    # batch is not a batch). ``state.tools_called`` is the honest clio-owned batch
-    # boundary (the DSPy ReAct loop owns per-model-step rounds; when it exposes a
-    # finer seam this moves there with no contract change).
+    # P2.3 PostToolBatch: fire ONCE per turn, after the turn's whole tool batch resolved
+    # and before Stop/next step — only when the turn ran ≥1 tool (an empty batch is not a
+    # batch). ``state.tools_called`` is the honest clio-owned batch boundary (the DSPy ReAct
+    # loop owns per-model-step rounds; when it exposes a finer seam this moves there).
     if state.tools_called:
         from clio_agent.gact.hooks import fire_post_tool_batch  # noqa: PLC0415
 
@@ -722,15 +721,12 @@ def finalize_turn(
             turn_id=state.turn_id,
             cwd=str(getattr(state.sess, "workspace_root", "") or ""),
         )
-    # P2.5 #1073: Stop hooks (the ported ``post_message`` consumer) run AFTER
-    # persistence so user audit code sees the settled assistant + can ship to
-    # external systems. They are now a BOUNDED completion gate: a Stop hook ``deny``
-    # means "not done — re-drive one more turn" (test-gate/todo-gate), re-driven on
-    # the #1031 idle-hook seam and hard-bounded by a per-hook ``loopLimit`` + a global
-    # cap. When the cap trips the turn settles DONE with a typed ``stop_loop_cap``
-    # reason — never an infinite loop. The whole finalize-boundary protocol (spans +
-    # bounded self-loop + swallowed-error contract) lives in the hooks owner module
-    # (``stop_loop.dispatch_stop_at_finalize``), not inlined here (no-accretion).
+    # P2.5 #1073: Stop hooks (the ported ``post_message`` consumer) run AFTER persistence
+    # so user audit code sees the settled assistant. They are a BOUNDED completion gate: a
+    # ``deny`` means "not done — re-drive one more turn", re-driven on the #1031 idle-hook
+    # seam, hard-bounded by a per-hook ``loopLimit`` + a global cap that settles DONE with a
+    # typed ``stop_loop_cap`` reason (never infinite). The whole finalize-boundary protocol
+    # lives in the hooks owner module (``stop_loop.dispatch_stop_at_finalize``, no-accretion).
     from clio_agent.gact.hooks.stop_loop import dispatch_stop_at_finalize  # noqa: PLC0415
 
     dispatch_stop_at_finalize(
@@ -743,6 +739,10 @@ def finalize_turn(
         assistant_payload=assistant_msg.model_dump(exclude_none=True),
         blueprint_id=_runtime_active_agent_blueprint_id(state.app, state.sid),
     )
+    # P4.1 #1079: the autonomous-loop bounded fallback (owner module; no-op when idle).
+    from clio_agent.gact.autonomous_loop import dispatch_loop_at_finalize  # noqa: PLC0415
+
+    dispatch_loop_at_finalize(state.app, session_id=state.sid, turn_id=state.turn_id)
     if not (
         state.cancelled_turn
         and state.error_info is not None

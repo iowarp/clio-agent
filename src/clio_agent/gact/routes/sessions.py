@@ -48,6 +48,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.autonomous_loop import stop_session_loop
 from clio_agent.gact.events import Event
 from clio_agent.gact.loop_inbox import enqueue_user_steer
 from clio_agent.gact.mcp_apps import cleanup_session_mcp_apps
@@ -253,6 +254,8 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             summary=f"delete session {sid}",
             reason="user_requested_session_delete",
         )
+        # P4.1 #1079 cancel-both: a deleted session must not orphan its loop wakeup.
+        stop_session_loop(app, sid)
         try:
             await cleanup_session_mcp_apps(app, sid)
         except RuntimeError as exc:
@@ -1473,22 +1476,14 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
     async def cancel_session(sid: str) -> Response:
         """Best-effort cancel of an in-flight turn on this session.
 
-        The agent loop and sync MCP bridge observe a scoped cancellation
-        checker between planner/expert/tool boundaries and return early
-        with ``error_info.error == "cancelled"`` when possible. The
-        endpoint itself flips the flag + publishes a
-        ``session.cancelled`` event so any live SSE subscriber sees
-        the transition without waiting for the next turn boundary.
-
-        If the turn is already blocked inside executor-thread provider
-        or tool work, cancelling the asyncio Task settles the GACT
-        envelope as cancelled but cannot kill the underlying Python
-        thread. The emitted status event marks this as best-effort so
-        clients do not mistake it for a guaranteed provider abort.
-
-        Returns 204 whether a turn was actually running — the TUI
-        fires this on Esc/Ctrl+C speculatively and doesn't want an
-        error if the race finished on its own.
+        The agent loop and sync MCP bridge observe a scoped cancellation checker between
+        planner/expert/tool boundaries and return early with ``error_info.error ==
+        "cancelled"`` when possible; the endpoint flips the flag + publishes a
+        ``session.cancelled`` event so live SSE subscribers see the transition immediately.
+        If the turn is already blocked inside executor-thread provider/tool work, cancelling
+        the asyncio Task settles the GACT envelope as cancelled but cannot kill the Python
+        thread — the status event marks this best-effort. Returns 204 whether or not a turn
+        was running (the TUI fires this speculatively on Esc/Ctrl+C).
         """
 
         sess = app.state.sessions.get(sid)
@@ -1518,6 +1513,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         from clio_agent.gact.turn_spawn import cancel_children_of  # noqa: PLC0415
 
         cancel_children_of(app, sid)
+        stop_session_loop(app, sid)  # P4.1 #1079 cancel-both: no orphaned loop wakeup
         in_flight = app.state.in_flight_turns.get(sid)
         cancellation_pending = False
         if in_flight is not None and not in_flight.done():

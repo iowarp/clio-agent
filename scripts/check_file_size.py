@@ -158,7 +158,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # catalog + reconnect/streamable-http route growth). Part of the #947 MCP-apps
     # decomposition debt; ratchets back with the mcp_app_* owner-module split.
     "src/clio_agent/gact/routes/blueprints.py": 861,
-    "src/clio_agent/gact/routes/catalog.py": 936,
+    "src/clio_agent/gact/routes/catalog.py": 934,
     "src/clio_agent/gact/routes/mcp.py": 993,
     # #947 DEBT (recorded 2026-07-18, #948 S4 branch): the MCP-apps landing grew
     # these files past their baselines without a ratchet update (it merged to
@@ -192,7 +192,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # P2.3 (#1071): +10 — the PreCompact lifecycle hook fires at the compact route
     # before summarisation (thin dispatch_pre_compact call site; the event set lives
     # in the owner module gact/hooks/).
-    "src/clio_agent/gact/routes/sessions.py": 1569,
+    "src/clio_agent/gact/routes/sessions.py": 1565,
     # #933: +8 for the turn-scoped workspace-fleet lease in _tool_session_context.
     # #933 review hardening: typed workspace_lease_unavailable degrade when a
     # rooted turn has no leasable agent (+9).

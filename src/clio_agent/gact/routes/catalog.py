@@ -855,16 +855,17 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                 f"hit_rate={stats.get('hit_rate', 0.0):.2f} "
                 f"capacity={stats.get('capacity', 0)}"
             )
+        elif cmd_id == "/loop":  # P4.1 #1079: start an autonomous loop (owner module)
+            from clio_agent.gact.autonomous_loop import run_loop_command  # noqa: PLC0415
+
+            body_text = run_loop_command(app, sid, request_body)
         elif cmd_id == "/dump-trace":
             log = app.state.messages.get(sid, [])
             last_asst = next((m for m in reversed(log) if m.role == "assistant"), None)
             if last_asst is None:
                 body_text = "no assistant turns yet"
             else:
-                trace_part = next(
-                    (p for p in last_asst.parts if p.type == "thinking"),
-                    None,
-                )
+                trace_part = next((p for p in last_asst.parts if p.type == "thinking"), None)
                 body_text = (
                     trace_part.text
                     if trace_part is not None
@@ -873,12 +874,9 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
         else:  # pragma: no cover - guarded above
             body_text = f"unhandled command: {cmd_id}"
 
-        # Materialise body_text as a real assistant message so the TUI
-        # actually shows the result. Previously the body_text was only
-        # in the POST response — the TUI's runCommandCmd discards that,
-        # so /cache-stats, /dump-trace, /optimize, and /clear all looked
-        # like they did nothing. Persist + publish so SSE redraws and
-        # GET /messages reflects.
+        # Materialise body_text as a real assistant message so the TUI shows the result
+        # (its runCommandCmd discards the POST response); persist + publish so SSE and GET
+        # /messages reflect it.
         from clio_agent.gact.types import Message, Part, Tokens  # noqa: PLC0415
 
         sys_msg = Message(

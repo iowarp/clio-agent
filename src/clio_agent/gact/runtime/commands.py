@@ -96,6 +96,24 @@ BACKEND_COMMANDS: list[dict[str, Any]] = [
         "aliases": ["/schedule"],
     },
     {
+        # #1079 (P4.1): the /loop user command STARTS an autonomous loop — it re-drives
+        # this session's turn repeatedly (self-paced via the P4.3 scheduler) toward
+        # continued work, under first-class typed bounds (max iters / wall-clock / tokens
+        # / no-progress) with a bounded fallback and cancel-both. The model self-paces via
+        # the loop_wakeup tool; ending/cancelling the session cancels the pending wakeup.
+        "id": "/loop",
+        "title": "Start an autonomous loop",
+        "description": (
+            "Re-drive this session repeatedly toward continued work: /loop [interval] "
+            "<prompt>. Self-paced, hard-bounded (iters/wall-clock/tokens/no-progress), "
+            "and cancelled when the session ends. Never runs away."
+        ),
+        "source": "builtin",
+        "status": "available",
+        "enabled": True,
+        "error": "",
+    },
+    {
         # #801: the optimizer stays as a research surface — this row projects
         # the uniform structured not-implemented stub (reason code + #633
         # pointer) that every optimizer entry point shares.
