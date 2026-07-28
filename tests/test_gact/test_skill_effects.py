@@ -399,6 +399,18 @@ def test_parse_loop_malformed_bound_is_typed_error() -> None:
     assert exc.value.reason == "malformed_effect"
 
 
+def test_parse_loop_rejects_deleted_max_no_progress() -> None:
+    """A3 #1057: the ``loop_stalled`` no-progress bound is DELETED (dead in production —
+    the heartbeat is the session's own bus, which advances every iteration). Its declared
+    ``effect_max_no_progress`` frontmatter key is therefore an UNKNOWN loop param and is
+    REJECTED with a typed ``unknown_effect_param`` reason that reaches trace/API — never a
+    silent drop that would let a skill author think a (non-existent) stall bound is armed."""
+
+    with pytest.raises(SkillEffectError) as exc:
+        parse_skill_effect({"effect": "loop", "effect_max_no_progress": "2"})
+    assert exc.value.reason == "unknown_effect_param"
+
+
 def test_parse_set_goal_requires_condition() -> None:
     with pytest.raises(SkillEffectError) as exc:
         parse_skill_effect({"effect": "set_goal", "effect_max_goal_iters": "3"})

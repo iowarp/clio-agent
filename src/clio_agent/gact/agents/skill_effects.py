@@ -30,9 +30,9 @@ so "run skill X daily until Y holds" is ONE declared, injection-safe skill:
 
 * ``loop`` — arm a self-paced cross-turn loop for this skill's work via
   :func:`clio_agent.gact.autonomous_loop.start_loop` (#P4.1) with the declared typed bounds
-  (``max_iters`` / ``interval_s`` / ``max_wallclock_s`` / ``max_tokens`` / ``max_usd`` /
-  ``max_no_progress``). The loop is STILL bounded — an unset bound resolves to a finite hard
-  default and every ``loop_wakeup`` delay is clamped; a skill cannot evade the anti-runaway.
+  (``max_iters`` / ``interval_s`` / ``max_wallclock_s`` / ``max_tokens`` / ``max_usd``). The
+  loop is STILL bounded — an unset bound resolves to a finite hard default and every
+  ``loop_wakeup`` delay is clamped; a skill cannot evade the anti-runaway.
 * ``set_goal`` — arm a run-until-``<condition>`` goal via
   :func:`clio_agent.gact.goal.arm_goal` (#P4.2). The SANCTIONED skill-arming door (a DECLARED,
   trusted effect — like ``/goal``; NOT model self-arming, goal stays non-model-tool-armable per
@@ -403,7 +403,7 @@ def parse_skill_effect(meta: Mapping[str, Any]) -> SkillEffect | None:
         params = _autonomy_params(
             spec,
             str_keys=("prompt",),
-            int_keys=("interval_s", "max_iters", "max_tokens", "max_no_progress"),
+            int_keys=("interval_s", "max_iters", "max_tokens"),
             float_keys=("max_wallclock_s", "max_usd"),
         )
         return SkillEffect(kind=EFFECT_LOOP, params=params)
@@ -523,7 +523,6 @@ def _execute_loop(
             max_wallclock_s=float(p.get("max_wallclock_s", 0.0) or 0.0),
             max_tokens=int(p.get("max_tokens", 0) or 0),
             max_usd=float(p.get("max_usd", 0.0) or 0.0),
-            max_no_progress=int(p.get("max_no_progress", 0) or 0),
         )
     except LoopError as exc:
         raise SkillEffectError(

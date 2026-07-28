@@ -14,11 +14,8 @@ turn repeatedly** toward continued work — by **reusing the P4.3 scheduler** (#
   (the ``ScheduleWakeup`` analog): reschedule yourself after a delay, or ``stop:true``.
 
 * **First-class typed bounds (NOT prose).** :func:`_check_bounds` enforces ``max_iters``,
-  ``max_wallclock_s``, ``max_tokens`` / ``max_usd`` (token accounting is available via the
-  session rollup), and **no-progress detection** — the same activity signal
-  :mod:`clio_agent.gact.workflow_step_watch` trusts
-  (:func:`~clio_agent.gact.workflow_step_watch.step_activity_monotonic`), not a wall-clock
-  bound. Every stop emits a **typed reason** (:data:`LOOP_STOP_REASONS`, the
+  ``max_wallclock_s``, and ``max_tokens`` / ``max_usd`` (token accounting is available via
+  the session rollup). Every stop emits a **typed reason** (:data:`LOOP_STOP_REASONS`, the
   ``stream_fallback`` catalog convention), never a silent halt.
 
 * **Bounded fallback.** If a loop iteration ends calling NEITHER a fresh ``loop_wakeup``
@@ -33,15 +30,14 @@ turn repeatedly** toward continued work — by **reusing the P4.3 scheduler** (#
   + daemon deferred entry), so no orphan wakeup burns tokens unattended.
 
 Loop state lives on ``session.metadata["loop"]`` (#948 pattern — no fifth store). The
-module is a stdlib+leaf: it imports the scheduler cancel helper, the workflow activity
-probe, and context; it never imports :mod:`clio_agent.gact.app`.
+module is a stdlib+leaf: it imports the scheduler cancel helper and context; it never
+imports :mod:`clio_agent.gact.app`.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-import time
 import uuid
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -49,7 +45,6 @@ from typing import Any, Optional
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.cron_tools import cancel_schedule
-from clio_agent.gact.workflow_step_watch import step_activity_monotonic
 from clio_agent.runtime import trace
 
 logger = logging.getLogger(__name__)
@@ -71,15 +66,12 @@ DEFAULT_INTERVAL_S = 300
 DEFAULT_MAX_ITERS = 100
 #: Hard wall-clock ceiling (seconds) applied when ``max_wallclock_s`` is unset.
 DEFAULT_MAX_WALLCLOCK_S = 24 * 60 * 60
-#: Consecutive no-progress iterations tolerated before ``loop_stalled``.
-DEFAULT_MAX_NO_PROGRESS = 3
 
 #: Typed stop reasons (the ``stream_fallback`` catalog convention): every loop halt
 #: records exactly one so audit/trace branch on a code, never on prose.
 LOOP_STOP_REASONS = (
     "loop_max_iters",  # iteration ceiling reached
     "loop_budget",  # wall-clock / token / usd budget exhausted
-    "loop_stalled",  # N consecutive iterations made no observable progress
     "loop_user_stopped",  # the MODEL's own loop_wakeup(stop=True) — a decision, not a bound
     "loop_goal_met",  # the goal's bounded LLM judge settled met (#1080 finalize-glue seam)
     "loop_no_reschedule",  # the bounded fallback fired once and still no reschedule
@@ -305,11 +297,11 @@ def stop_session_loop(app: Any, sid: str, *, reason: str = "loop_session_ended")
 def _check_bounds(app: Any, sid: str, loop: dict[str, Any]) -> str:
     """Return the typed stop reason for the FIRST tripped bound, or ``""``.
 
-    Evaluated against ``loop``'s already-incremented ``iteration`` /
-    ``no_progress_count`` and the live session token/cost rollup. Order: iters ->
-    wall-clock -> tokens/usd -> stall. (The goal compose is LLM-only and lives in the
-    ``turn_finalize`` glue: a judge-met goal stops the loop with ``loop_goal_met`` — the
-    loop cannot cheaply/authoritatively decide an NL condition here, A4 #1057.)"""
+    Evaluated against ``loop``'s already-incremented ``iteration`` and the live session
+    token/cost rollup. Order: iters -> wall-clock -> tokens/usd. (The goal compose is
+    LLM-only and lives in the ``turn_finalize`` glue: a judge-met goal stops the loop with
+    ``loop_goal_met`` — the loop cannot cheaply/authoritatively decide an NL condition
+    here, A4 #1057.)"""
 
     if int(loop.get("iteration", 0)) >= int(loop.get("max_iters", DEFAULT_MAX_ITERS)):
         return "loop_max_iters"
@@ -331,29 +323,7 @@ def _check_bounds(app: Any, sid: str, loop: dict[str, Any]) -> str:
             cost_at_start = float(loop.get("cost_at_start") or 0.0)
             if float(getattr(sess, "cost_usd", 0.0)) - cost_at_start >= max_usd:
                 return "loop_budget"
-    if int(loop.get("no_progress_count", 0)) >= int(
-        loop.get("max_no_progress", DEFAULT_MAX_NO_PROGRESS)
-    ):
-        return "loop_stalled"
     return ""
-
-
-def _record_progress(app: Any, sid: str, loop: dict[str, Any]) -> None:
-    """Fold the iteration that just ran into the no-progress counter.
-
-    Uses the SAME activity probe the declared-workflow step watch trusts
-    (:func:`~clio_agent.gact.workflow_step_watch.step_activity_monotonic`): the session's
-    bus heartbeat (plus an in-flight LM call), NOT a wall-clock bound — a legitimately
-    heavy iteration that keeps publishing is not stalled. When the heartbeat has not
-    advanced since the previous iteration, the iteration made no observable progress."""
-
-    activity = step_activity_monotonic(app, sid, now=time.monotonic())
-    last = float(loop.get("last_activity_monotonic") or 0.0)
-    if activity > last:
-        loop["no_progress_count"] = 0
-    else:
-        loop["no_progress_count"] = int(loop.get("no_progress_count", 0)) + 1
-    loop["last_activity_monotonic"] = activity
 
 
 # --------------------------------------------------------------------------- #
@@ -369,7 +339,6 @@ def start_loop(
     max_wallclock_s: float = 0.0,
     max_tokens: int = 0,
     max_usd: float = 0.0,
-    max_no_progress: int = 0,
 ) -> dict[str, Any]:
     """Initialise loop state on ``session.metadata`` and arm the first wakeup.
 
@@ -394,7 +363,6 @@ def start_loop(
     eff_wall = (
         float(max_wallclock_s) if float(max_wallclock_s or 0.0) > 0 else DEFAULT_MAX_WALLCLOCK_S
     )
-    eff_stall = int(max_no_progress) if int(max_no_progress or 0) > 0 else DEFAULT_MAX_NO_PROGRESS
     loop_id = "loop_" + uuid.uuid4().hex[:12]
 
     # The restart-cancel, fresh-dict write, and first arm are one atomic read-check-write
@@ -432,9 +400,6 @@ def start_loop(
             "max_usd": float(max_usd or 0.0),
             "tokens_at_start": tokens_at_start,
             "cost_at_start": cost_at_start,
-            "max_no_progress": eff_stall,
-            "no_progress_count": 0,
-            "last_activity_monotonic": app.state.bus.last_publish_monotonic(sid),
             "interval_s": delay,
             "pending_schedule_id": "",
             "armed": False,
@@ -447,13 +412,12 @@ def start_loop(
         next_fire = _arm(app, sid, loop, text, delay)
     logger.info(
         "loop started loop_id=%s interval_s=%s max_iters=%s max_wallclock_s=%s "
-        "max_tokens=%s max_no_progress=%s next_fire_at=%s",
+        "max_tokens=%s next_fire_at=%s",
         loop_id,
         delay,
         eff_iters,
         eff_wall,
         int(max_tokens or 0),
-        eff_stall,
         next_fire,
     )
     return {
@@ -463,7 +427,6 @@ def start_loop(
         "max_iters": eff_iters,
         "max_wallclock_s": eff_wall,
         "max_tokens": int(max_tokens or 0),
-        "max_no_progress": eff_stall,
         "stopped": False,
     }
 
@@ -480,11 +443,11 @@ def loop_wakeup_impl(
     """Reschedule this session's loop after a delay, or ``stop:true`` to end it.
 
     The model's control door (⚑ RULE 1 — the model decides; clio enforces). On a
-    non-stop call: clamps ``delay_seconds`` (typed reason if clamped), folds the
-    iteration that just ran into the no-progress counter, increments the iteration, and —
-    if no typed bound trips — arms the next wakeup (reusing the scheduler one-shot). When
-    a bound trips OR ``stop:true``, the loop ends with a typed reason and the pending
-    wakeup is cancelled (cancel-both). Returns ``{loop_id, next_fire_at, stopped}``.
+    non-stop call: clamps ``delay_seconds`` (typed reason if clamped), increments the
+    iteration, and — if no typed bound trips — arms the next wakeup (reusing the scheduler
+    one-shot). When a bound trips OR ``stop:true``, the loop ends with a typed reason and
+    the pending wakeup is cancelled (cancel-both). Returns
+    ``{loop_id, next_fire_at, stopped}``.
 
     The read-check-write body runs under :data:`_LOOP_MUTEX` so a concurrent
     ``stop_session_loop`` (session end on the event-loop thread) cannot interleave and be
@@ -535,7 +498,6 @@ def loop_wakeup_impl(
                 delay,
             )
 
-        _record_progress(app, sid, loop)
         loop["iteration"] = int(loop.get("iteration", 0)) + 1
 
         stop_reason = _check_bounds(app, sid, loop)
@@ -638,7 +600,7 @@ def parse_loop_command(request_body: Mapping[str, Any]) -> tuple[int, str, dict[
 
     Returns ``(interval_s, prompt, bounds)``. A leading interval token is consumed off the
     text; typed bounds come from an ``args`` mapping (``max_iters`` / ``max_wallclock_s`` /
-    ``max_tokens`` / ``max_usd`` / ``max_no_progress``)."""
+    ``max_tokens`` / ``max_usd``)."""
 
     text = str(
         request_body.get("input") or request_body.get("text") or request_body.get("prompt") or ""
@@ -658,7 +620,7 @@ def parse_loop_command(request_body: Mapping[str, Any]) -> tuple[int, str, dict[
     prompt = text or str(args.get("prompt") or "").strip()
 
     bounds: dict[str, Any] = {}
-    for key in ("max_iters", "max_wallclock_s", "max_tokens", "max_usd", "max_no_progress"):
+    for key in ("max_iters", "max_wallclock_s", "max_tokens", "max_usd"):
         if key in args:
             bounds[key] = args[key]
     return interval_s, prompt, bounds
@@ -684,7 +646,7 @@ def run_loop_command(app: Any, sid: str, request_body: Mapping[str, Any]) -> str
         f"loop {started['loop_id']} started — re-driving every {started['interval_s']}s "
         f"(next wake {started['next_fire_at']}); bounds max_iters={started['max_iters']}, "
         f"max_wallclock_s={int(started['max_wallclock_s'])}, "
-        f"max_tokens={started['max_tokens']}, max_no_progress={started['max_no_progress']}. "
+        f"max_tokens={started['max_tokens']}. "
         f"The loop stops on any bound, on loop_wakeup(stop=true), or when this session ends."
     )
 
@@ -714,8 +676,8 @@ def build_loop_wakeup_tool() -> Any:
 
         ``reason`` is a short note logged to the trace (why you continued/stopped). If no
         loop is active yet, a non-stop call STARTS one with default bounds. The loop also
-        stops on its own when a typed bound trips: max iterations, wall-clock / token /
-        cost budget, or no-progress detection. Returns ``{loop_id, next_fire_at, stopped}``.
+        stops on its own when a typed bound trips: max iterations, or the wall-clock /
+        token / cost budget. Returns ``{loop_id, next_fire_at, stopped}``.
         """
 
         return loop_wakeup_impl(

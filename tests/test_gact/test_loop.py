@@ -3,8 +3,8 @@
 Asserts the loop primitive built on the P4.3 scheduler one-shot:
 
 * ``loop_wakeup`` clamps its delay into [60, 3600] with a TYPED reason (no silent clamp);
-* the loop stops on EACH typed bound — max_iters / max_wallclock / token-budget / stall
-  (progress-liveness via ``workflow_step_watch``) — with a structured reason;
+* the loop stops on EACH typed bound — max_iters / max_wallclock / token-budget — with a
+  structured reason;
 * the bounded fallback fires exactly once then ENDS when a turn neither reschedules nor
   stops (``dispatch_loop_at_finalize``);
 * ``stop:true`` ends immediately;
@@ -43,19 +43,6 @@ from clio_agent.gact.scheduler import ScheduleStore
 from clio_agent.gact.sessions import SessionStore
 
 
-class _Bus:
-    """Minimal bus exposing the activity heartbeat the loop's stall probe reads."""
-
-    def __init__(self) -> None:
-        self._m: dict[str, float] = {}
-
-    def last_publish_monotonic(self, sid: str) -> float:
-        return self._m.get(sid, 0.0)
-
-    def bump(self, sid: str, value: float) -> None:
-        self._m[sid] = value
-
-
 def _app(tmp_path: Path) -> SimpleNamespace:
     """A minimal app carrying only what the loop module touches."""
 
@@ -63,7 +50,6 @@ def _app(tmp_path: Path) -> SimpleNamespace:
         schedules=ScheduleStore(path=tmp_path / "schedules.json"),
         deferred_schedules=set(),
         sessions=SessionStore(path=None),
-        bus=_Bus(),
     )
     return SimpleNamespace(state=state)
 
@@ -104,7 +90,6 @@ def test_loop_wakeup_clamps_delay_with_typed_reason(tmp_path: Path) -> None:
         start_loop(app, sid, prompt="keep going", interval_s=300)
         # simulate the armed wakeup firing: the one-shot is popped by the scheduler.
         app.state.schedules.delete(_loop_state(app, sid)["pending_schedule_id"])
-        app.state.bus.bump(sid, 5.0)  # progress so stall does not trip
 
         result = loop_wakeup_impl(delay_seconds=1, prompt="keep going", reason="tick")
         assert result["stopped"] is False
@@ -126,12 +111,10 @@ def test_loop_stops_on_max_iters(tmp_path: Path) -> None:
         sid = _session(app)
         _bind(app, sid)
         start_loop(app, sid, prompt="p", interval_s=60, max_iters=2)
-        # Iteration 1: progresses, arms again.
-        app.state.bus.bump(sid, 1.0)
+        # Iteration 1: arms again.
         r1 = loop_wakeup_impl(delay_seconds=60, prompt="p")
         assert r1["stopped"] is False
         # Iteration 2: reaching max_iters -> stop with the typed reason.
-        app.state.bus.bump(sid, 2.0)
         r2 = loop_wakeup_impl(delay_seconds=60, prompt="p")
         assert r2["stopped"] is True
         loop = _loop_state(app, sid)
@@ -153,7 +136,6 @@ def test_loop_stops_on_max_wallclock(tmp_path: Path) -> None:
         loop = _loop_state(app, sid)
         loop["created_at"] = (datetime.now(timezone.utc) - timedelta(seconds=30)).isoformat()
         app.state.sessions.update(sid, metadata_patch={"loop": loop})
-        app.state.bus.bump(sid, 1.0)  # progress so stall does not trip first
 
         result = loop_wakeup_impl(delay_seconds=60, prompt="p")
         assert result["stopped"] is True
@@ -169,49 +151,10 @@ def test_loop_stops_on_token_budget(tmp_path: Path) -> None:
         _bind(app, sid)
         start_loop(app, sid, prompt="p", interval_s=60, max_iters=100, max_tokens=100)
         app.state.sessions.update(sid, add_tokens_input=150, add_tokens_output=50)
-        app.state.bus.bump(sid, 1.0)
 
         result = loop_wakeup_impl(delay_seconds=60, prompt="p")
         assert result["stopped"] is True
         assert _loop_state(app, sid)["stop_reason"] == "loop_budget"
-
-    _in_ctx(body)
-
-
-def test_loop_stops_on_stall_via_progress_liveness(tmp_path: Path) -> None:
-    """No bus activity across iterations -> stall stop (workflow_step_watch signal)."""
-
-    def body() -> None:
-        app = _app(tmp_path)
-        sid = _session(app)
-        _bind(app, sid)
-        # Bus heartbeat stays 0.0 (never bumped) => no observable progress per iteration.
-        start_loop(app, sid, prompt="p", interval_s=60, max_iters=100, max_no_progress=2)
-        r1 = loop_wakeup_impl(delay_seconds=60, prompt="p")
-        assert r1["stopped"] is False
-        r2 = loop_wakeup_impl(delay_seconds=60, prompt="p")
-        assert r2["stopped"] is True
-        assert _loop_state(app, sid)["stop_reason"] == "loop_stalled"
-
-    _in_ctx(body)
-
-
-def test_progress_resets_stall_counter(tmp_path: Path) -> None:
-    """An iteration that DOES publish resets the no-progress counter (not a false stall)."""
-
-    def body() -> None:
-        app = _app(tmp_path)
-        sid = _session(app)
-        _bind(app, sid)
-        start_loop(app, sid, prompt="p", interval_s=60, max_iters=100, max_no_progress=2)
-        app.state.bus.bump(sid, 1.0)
-        loop_wakeup_impl(delay_seconds=60, prompt="p")  # progress
-        app.state.bus.bump(sid, 2.0)
-        loop_wakeup_impl(delay_seconds=60, prompt="p")  # progress
-        app.state.bus.bump(sid, 3.0)
-        r = loop_wakeup_impl(delay_seconds=60, prompt="p")  # progress
-        assert r["stopped"] is False
-        assert _loop_state(app, sid)["no_progress_count"] == 0
 
     _in_ctx(body)
 
@@ -284,7 +227,6 @@ def test_finalize_hook_noop_when_model_rescheduled(tmp_path: Path) -> None:
         first_id = _loop_state(app, sid)["pending_schedule_id"]
         # Wakeup fired (popped), then the model rescheduled via loop_wakeup.
         app.state.schedules.delete(first_id)
-        app.state.bus.bump(sid, 1.0)
         loop_wakeup_impl(delay_seconds=60, prompt="p")
         new_id = _loop_state(app, sid)["pending_schedule_id"]
         assert new_id and new_id != first_id
@@ -377,7 +319,6 @@ def test_loop_budget_measures_delta_since_loop_start(tmp_path: Path) -> None:
         app.state.sessions.update(sid, add_tokens_input=500, add_tokens_output=100)
         _bind(app, sid)
         start_loop(app, sid, prompt="p", interval_s=60, max_iters=100, max_tokens=100)
-        app.state.bus.bump(sid, 1.0)
 
         # Iteration 1: cumulative (600) >= max_tokens (100), but the loop itself has
         # spent nothing yet -> must NOT trip loop_budget.
@@ -387,7 +328,6 @@ def test_loop_budget_measures_delta_since_loop_start(tmp_path: Path) -> None:
 
         # Now the loop itself spends 150 tokens (delta) -> trips loop_budget.
         app.state.sessions.update(sid, add_tokens_input=150)
-        app.state.bus.bump(sid, 2.0)
         r2 = loop_wakeup_impl(delay_seconds=60, prompt="p")
         assert r2["stopped"] is True
         assert _loop_state(app, sid)["stop_reason"] == "loop_budget"
@@ -458,7 +398,6 @@ def test_rearm_denied_after_max_iters(tmp_path: Path) -> None:
         sid = _session(app)
         _bind(app, sid)
         start_loop(app, sid, prompt="p", interval_s=60, max_iters=1)
-        app.state.bus.bump(sid, 1.0)  # progress so stall does not trip first
 
         # Grace: reaching max_iters RETURNS stopped (turn continues), never raises.
         tripped = loop_wakeup_impl(delay_seconds=60, prompt="p")
@@ -535,7 +474,6 @@ def test_user_loop_restart_clears_sticky(tmp_path: Path) -> None:
         sid = _session(app)
         _bind(app, sid)
         start_loop(app, sid, prompt="p", interval_s=60, max_iters=1)
-        app.state.bus.bump(sid, 1.0)
         loop_wakeup_impl(delay_seconds=60, prompt="p")  # trips sticky loop_max_iters
         assert _loop_state(app, sid)["stop_reason"] == "loop_max_iters"
 
@@ -548,7 +486,6 @@ def test_user_loop_restart_clears_sticky(tmp_path: Path) -> None:
         assert loop["prompt"] == "restart"
 
         # A model wakeup now succeeds again (not denied).
-        app.state.bus.bump(sid, 2.0)
         resumed = loop_wakeup_impl(delay_seconds=60, prompt="restart")
         assert resumed["stopped"] is False
 
@@ -758,10 +695,22 @@ def test_module_stop_reasons_are_typed() -> None:
     for reason in (
         "loop_max_iters",
         "loop_budget",
-        "loop_stalled",
         "loop_user_stopped",
         "loop_goal_met",
         "loop_no_reschedule",
         "loop_session_ended",
     ):
         assert reason in loop_mod.LOOP_STOP_REASONS
+
+
+def test_loop_stalled_bound_deleted() -> None:
+    """A3 #1057: the dead ``loop_stalled`` no-progress bound is fully removed — its typed
+    reason, its default constant, and the ``max_no_progress`` ``start_loop`` parameter are
+    gone (the heartbeat is the session's own bus, which advances every iteration, so the
+    bound was unreachable in production)."""
+
+    assert "loop_stalled" not in loop_mod.LOOP_STOP_REASONS
+    assert not hasattr(loop_mod, "DEFAULT_MAX_NO_PROGRESS")
+    import inspect
+
+    assert "max_no_progress" not in inspect.signature(loop_mod.start_loop).parameters
