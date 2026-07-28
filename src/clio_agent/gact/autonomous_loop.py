@@ -79,12 +79,21 @@ LOOP_STOP_REASONS = (
     "loop_max_iters",  # iteration ceiling reached
     "loop_budget",  # wall-clock / token / usd budget exhausted
     "loop_stalled",  # N consecutive iterations made no observable progress
-    "loop_user_stopped",  # explicit loop_wakeup(stop=True)
+    "loop_user_stopped",  # the MODEL's own loop_wakeup(stop=True) — a decision, not a bound
     "loop_goal_met",  # the goal's bounded LLM judge settled met (#1080 finalize-glue seam)
     "loop_no_reschedule",  # the bounded fallback fired once and still no reschedule
     "loop_session_ended",  # session end/cancel cancelled the loop (cancel-both)
     "loop_restarted",  # a new start_loop() superseded a still-active prior loop
 )
+
+#: STICKY stop reasons: a loop that halted for one of these hit a HARD bound (the
+#: iteration ceiling, a budget, or session end) rather than deciding to stop. The model
+#: MUST NOT re-arm such a loop via ``loop_wakeup`` — only the user re-issuing ``/loop``
+#: (:func:`start_loop`, which writes a fresh dict) clears the tripped state. This adopts
+#: the field pattern (Claude ``/loop``, Codex): a tripped hard bound is a wall the model
+#: cannot self-lift. ``loop_user_stopped`` is deliberately EXCLUDED — the model's own
+#: stop is a decision it may reverse; a bound is not.
+LOOP_STICKY_STOP_REASONS = frozenset({"loop_max_iters", "loop_budget", "loop_session_ended"})
 
 #: Typed delay-clamp reasons (never a silent clamp).
 CLAMP_FLOOR = "loop_delay_clamped_floor"
@@ -93,8 +102,9 @@ CLAMP_CEILING = "loop_delay_clamped_ceiling"
 
 class LoopError(ValueError):
     """A ``/loop`` start (or ``loop_wakeup``) was rejected with a machine-readable
-    ``reason`` (``loop_missing_prompt``, ``no_active_session``) so callers branch on a
-    code rather than string-matching the message — never a silent coercion."""
+    ``reason`` (``loop_missing_prompt``, ``no_active_session``,
+    ``loop_bound_tripped_rearm_denied``) so callers branch on a code rather than
+    string-matching the message — never a silent coercion."""
 
     def __init__(self, message: str, *, reason: str) -> None:
         super().__init__(message)
@@ -438,6 +448,18 @@ def loop_wakeup_impl(
     if not loop or not loop.get("active"):
         if stop:
             return {"loop_id": "", "next_fire_at": "", "stopped": True}
+        # Sticky bounds: a loop that stopped on a HARD bound (iters / budget / session
+        # end) cannot be re-armed from a tool — the model would otherwise escape the very
+        # ceiling that stopped it. The user must re-issue /loop (start_loop writes a fresh
+        # dict, clearing the sticky state). The model's own stop (loop_user_stopped) is
+        # NOT sticky, so this branch still self-initiates after a voluntary stop.
+        prior_reason = str(loop.get("stop_reason") or "")
+        if loop.get("stopped") and prior_reason in LOOP_STICKY_STOP_REASONS:
+            raise LoopError(
+                f"this loop already stopped on a hard bound ({prior_reason}) and cannot be "
+                "re-armed from loop_wakeup; the user must restart it via /loop.",
+                reason="loop_bound_tripped_rearm_denied",
+            )
         started = start_loop(app, sid, prompt=prompt, interval_s=delay_seconds)
         return {
             "loop_id": started["loop_id"],

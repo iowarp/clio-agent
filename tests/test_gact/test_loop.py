@@ -30,6 +30,7 @@ from clio_agent.gact import context as _ctx
 from clio_agent.gact.autonomous_loop import (
     CLAMP_CEILING,
     CLAMP_FLOOR,
+    LoopError,
     build_loop_wakeup_tool,
     clamp_delay,
     dispatch_loop_at_finalize,
@@ -440,6 +441,116 @@ def test_loop_wakeup_self_initiates_when_no_loop(tmp_path: Path) -> None:
         loop = _loop_state(app, sid)
         assert loop["active"] is True
         assert loop["prompt"] == "start looping"
+
+    _in_ctx(body)
+
+
+# --------------------------------------------------------------------------- #
+# Sticky bounds — a tripped hard bound cannot be re-armed by the model (A1)      #
+# --------------------------------------------------------------------------- #
+def test_rearm_denied_after_max_iters(tmp_path: Path) -> None:
+    """A loop that hit ``loop_max_iters`` cannot be re-armed by a model ``loop_wakeup``;
+    the user must re-issue ``/loop``. Also pins GRACE — the bound trip RETURNS
+    ``{stopped: True}`` (the turn continues), it does not raise."""
+
+    def body() -> None:
+        app = _app(tmp_path)
+        sid = _session(app)
+        _bind(app, sid)
+        start_loop(app, sid, prompt="p", interval_s=60, max_iters=1)
+        app.state.bus.bump(sid, 1.0)  # progress so stall does not trip first
+
+        # Grace: reaching max_iters RETURNS stopped (turn continues), never raises.
+        tripped = loop_wakeup_impl(delay_seconds=60, prompt="p")
+        assert tripped["stopped"] is True
+        assert _loop_state(app, sid)["stop_reason"] == "loop_max_iters"
+
+        # A model re-arm attempt on the tripped loop is DENIED (sticky bound).
+        raised = False
+        try:
+            loop_wakeup_impl(delay_seconds=60, prompt="again")
+        except LoopError as exc:
+            raised = True
+            assert exc.reason == "loop_bound_tripped_rearm_denied"
+        assert raised
+        # No new wakeup was armed by the denied re-arm.
+        assert app.state.schedules.list(session_id=sid) == []
+
+    _in_ctx(body)
+
+
+def test_rearm_denied_after_session_cancel(tmp_path: Path) -> None:
+    """A loop cancelled by session end (``loop_session_ended``) is sticky too — a model
+    ``loop_wakeup`` cannot resurrect it."""
+
+    def body() -> None:
+        app = _app(tmp_path)
+        sid = _session(app)
+        _bind(app, sid)
+        start_loop(app, sid, prompt="p", interval_s=120)
+        stop_session_loop(app, sid)
+        assert _loop_state(app, sid)["stop_reason"] == "loop_session_ended"
+
+        raised = False
+        try:
+            loop_wakeup_impl(delay_seconds=60, prompt="again")
+        except LoopError as exc:
+            raised = True
+            assert exc.reason == "loop_bound_tripped_rearm_denied"
+        assert raised
+        assert app.state.schedules.list(session_id=sid) == []
+
+    _in_ctx(body)
+
+
+def test_rearm_allowed_after_model_stop(tmp_path: Path) -> None:
+    """The model's OWN ``stop=True`` (``loop_user_stopped``) is NOT a tripped bound, so it
+    is not sticky — a subsequent non-stop ``loop_wakeup`` self-initiates a fresh loop."""
+
+    def body() -> None:
+        app = _app(tmp_path)
+        sid = _session(app)
+        _bind(app, sid)
+        start_loop(app, sid, prompt="p", interval_s=120)
+        stopped = loop_wakeup_impl(stop=True, reason="done")
+        assert stopped["stopped"] is True
+        assert _loop_state(app, sid)["stop_reason"] == "loop_user_stopped"
+
+        restarted = loop_wakeup_impl(delay_seconds=120, prompt="resume")
+        assert restarted["stopped"] is False
+        assert restarted["loop_id"].startswith("loop_")
+        loop = _loop_state(app, sid)
+        assert loop["active"] is True
+        assert loop["prompt"] == "resume"
+
+    _in_ctx(body)
+
+
+def test_user_loop_restart_clears_sticky(tmp_path: Path) -> None:
+    """The USER path (``start_loop`` / ``/loop``) writes a fresh loop dict, clearing a
+    prior sticky stop so a model ``loop_wakeup`` works again."""
+
+    def body() -> None:
+        app = _app(tmp_path)
+        sid = _session(app)
+        _bind(app, sid)
+        start_loop(app, sid, prompt="p", interval_s=60, max_iters=1)
+        app.state.bus.bump(sid, 1.0)
+        loop_wakeup_impl(delay_seconds=60, prompt="p")  # trips sticky loop_max_iters
+        assert _loop_state(app, sid)["stop_reason"] == "loop_max_iters"
+
+        # The user re-issues /loop — a fresh dict clears the sticky state.
+        start_loop(app, sid, prompt="restart", interval_s=60, max_iters=5)
+        loop = _loop_state(app, sid)
+        assert loop["active"] is True
+        assert loop["stopped"] is False
+        assert loop["stop_reason"] == ""
+        assert loop["prompt"] == "restart"
+
+        # A model wakeup now succeeds again (not denied).
+        app.state.bus.bump(sid, 2.0)
+        resumed = loop_wakeup_impl(delay_seconds=60, prompt="restart")
+        assert resumed["stopped"] is False
 
     _in_ctx(body)
 
