@@ -120,217 +120,229 @@ def _coerce_outputs(response: Any) -> list[Any]:
 _HOOKED_LM_CLS: Any = None
 
 
-def _hooked_lm_mixin() -> type:
-    """Build (once) the behaviour mixin — the per-request hook dance, no base LM."""
+class _HookedLMBehaviour:
+    """The per-request ``BeforeModel``/``AfterModel`` dance over an inner LM.
 
-    class _HookedLMBehaviour:
-        """The per-request ``BeforeModel``/``AfterModel`` dance over an inner LM.
+    Delegates every real behaviour (provider transport, streaming/token-liveness,
+    the ``lm.call`` trace, transient retry) to the inner ``dspy.BaseLM``; only the
+    hook logic lives here. Combined with ``dspy.BaseLM`` in :func:`hooked_lm_cls`
+    so ``isinstance(lm, dspy.BaseLM)`` holds and adapters can read
+    ``model``/``kwargs``/``supports_*`` off the wrapper (delegated to the inner).
 
-        Delegates every real behaviour (provider transport, streaming/token-liveness,
-        the ``lm.call`` trace, transient retry) to the inner ``dspy.BaseLM``; only the
-        hook logic lives here. Combined with ``dspy.BaseLM`` in :func:`hooked_lm_cls`
-        so ``isinstance(lm, dspy.BaseLM)`` holds and adapters can read
-        ``model``/``kwargs``/``supports_*`` off the wrapper (delegated to the inner).
+    Defined at module level (not inside :func:`_hooked_lm_mixin`) because it does
+    NOT itself subclass ``dspy.BaseLM`` — it is only combined with ``dspy.BaseLM``
+    lazily in :func:`hooked_lm_cls`, so this class carries no top-level ``dspy``
+    import cost on the boot path.
+    """
+
+    # Mirror ``dspy.LM``'s class attribute so the base-LM typed-migration probe
+    # never trips for the wrapper.
+    forward_contract = "legacy"
+
+    def __init__(self, inner: Any, *, route_resolver: RouteResolver | None = None) -> None:
+        self._inner = inner
+        # A per-instance resolver overrides the process-global one (tests + any
+        # future per-turn routing table); ``None`` falls back to the global.
+        self._route_resolver = route_resolver
+
+    # ----------------------------------------------------------------- #
+    # Identity / capability delegation (dspy reads these off the lm).     #
+    # ----------------------------------------------------------------- #
+    def __getattr__(self, name: str) -> Any:
+        # Reached only when normal lookup fails: delegate to the inner LM so
+        # ``model``/``kwargs``/``history``/``model_type``/``cache``/
+        # ``num_retries``/``callbacks`` and any un-overridden method resolve to
+        # the real backend.
+        if name in ("_inner", "_route_resolver"):
+            raise AttributeError(name)
+        return getattr(self._inner, name)
+
+    @property
+    def supports_function_calling(self) -> bool:
+        return bool(getattr(self._inner, "supports_function_calling", False))
+
+    @property
+    def supports_reasoning(self) -> bool:
+        return bool(getattr(self._inner, "supports_reasoning", False))
+
+    @property
+    def supports_response_schema(self) -> bool:
+        return bool(getattr(self._inner, "supports_response_schema", False))
+
+    @property
+    def supported_params(self) -> set[str]:
+        return set(getattr(self._inner, "supported_params", set()) or set())
+
+    def copy(self, **kwargs: Any) -> Any:
+        """Return a wrapper over a copy of the inner LM, preserving the resolver.
+
+        DSPy copies the bound LM in some paths (rollout/temperature bumps).
+        Re-wrapping keeps the hook dance alive across a copy while applying
+        ``kwargs`` to the REAL inner LM (so per-call config still lands on the
+        provider).
         """
 
-        # Mirror ``dspy.LM``'s class attribute so the base-LM typed-migration probe
-        # never trips for the wrapper.
-        forward_contract = "legacy"
+        return hooked_lm_cls()(
+            self._inner.copy(**kwargs), route_resolver=self._route_resolver
+        )
 
-        def __init__(self, inner: Any, *, route_resolver: RouteResolver | None = None) -> None:
-            self._inner = inner
-            # A per-instance resolver overrides the process-global one (tests + any
-            # future per-turn routing table); ``None`` falls back to the global.
-            self._route_resolver = route_resolver
+    def forward(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> Any:
+        """Delegate ``forward`` to the inner LM (defensive; hot path is ``__call__``)."""
 
-        # ----------------------------------------------------------------- #
-        # Identity / capability delegation (dspy reads these off the lm).     #
-        # ----------------------------------------------------------------- #
-        def __getattr__(self, name: str) -> Any:
-            # Reached only when normal lookup fails: delegate to the inner LM so
-            # ``model``/``kwargs``/``history``/``model_type``/``cache``/
-            # ``num_retries``/``callbacks`` and any un-overridden method resolve to
-            # the real backend.
-            if name in ("_inner", "_route_resolver"):
-                raise AttributeError(name)
-            return getattr(self._inner, name)
+        return self._inner.forward(prompt=prompt, messages=messages, **kwargs)
 
-        @property
-        def supports_function_calling(self) -> bool:
-            return bool(getattr(self._inner, "supports_function_calling", False))
+    async def aforward(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> Any:
+        """Delegate ``aforward`` to the inner LM (defensive)."""
 
-        @property
-        def supports_reasoning(self) -> bool:
-            return bool(getattr(self._inner, "supports_reasoning", False))
+        return await self._inner.aforward(prompt=prompt, messages=messages, **kwargs)
 
-        @property
-        def supports_response_schema(self) -> bool:
-            return bool(getattr(self._inner, "supports_response_schema", False))
+    # ----------------------------------------------------------------- #
+    # The per-request hook dance.                                        #
+    # ----------------------------------------------------------------- #
+    def __call__(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> list[Any]:
+        request = self._build_request(prompt, messages, kwargs)
+        sid, turn_id, cwd = _resolve_call_context()
+        before = dispatch_before_model(request, session_id=sid, turn_id=turn_id, cwd=cwd)
+        self._enforce_deny(before)
+        if self._should_synthesize(before):
+            outputs = _coerce_outputs(before.llm_response)
+            synthetic = True
+        else:
+            target, call_messages, call_kwargs = self._resolve_call(before, messages, kwargs)
+            outputs = target(prompt=prompt, messages=call_messages, **call_kwargs)
+            synthetic = False
+        return self._apply_after(request, outputs, synthetic, sid, turn_id, cwd)
 
-        @property
-        def supported_params(self) -> set[str]:
-            return set(getattr(self._inner, "supported_params", set()) or set())
+    async def acall(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> list[Any]:
+        request = self._build_request(prompt, messages, kwargs)
+        sid, turn_id, cwd = _resolve_call_context()
+        before = dispatch_before_model(request, session_id=sid, turn_id=turn_id, cwd=cwd)
+        self._enforce_deny(before)
+        if self._should_synthesize(before):
+            outputs = _coerce_outputs(before.llm_response)
+            synthetic = True
+        else:
+            target, call_messages, call_kwargs = self._resolve_call(before, messages, kwargs)
+            outputs = await target.acall(prompt=prompt, messages=call_messages, **call_kwargs)
+            synthetic = False
+        return self._apply_after(request, outputs, synthetic, sid, turn_id, cwd)
 
-        def copy(self, **kwargs: Any) -> Any:
-            """Return a wrapper over a copy of the inner LM, preserving the resolver.
+    # ----------------------------------------------------------------- #
+    # Helpers (kept tiny so __call__/acall read as the contract).       #
+    # ----------------------------------------------------------------- #
+    def _build_request(
+        self, prompt: Any, messages: Any, kwargs: Mapping[str, Any]
+    ) -> ModelRequest:
+        """Assemble the public :class:`ModelRequest` a hook inspects (creds stripped)."""
 
-            DSPy copies the bound LM in some paths (rollout/temperature bumps).
-            Re-wrapping keeps the hook dance alive across a copy while applying
-            ``kwargs`` to the REAL inner LM (so per-call config still lands on the
-            provider).
-            """
+        if messages is not None:
+            msgs = list(messages)
+        elif prompt is not None:
+            msgs = [{"role": "user", "content": prompt}]
+        else:
+            msgs = []
+        tools = list(kwargs.get("tools") or [])
+        params = {
+            key: value
+            for key, value in kwargs.items()
+            if key != "tools" and not key.startswith("api_")
+        }
+        return ModelRequest(
+            model=str(getattr(self._inner, "model", "") or ""),
+            messages=msgs,
+            params=params,
+            tools=tools,
+        )
 
-            return hooked_lm_cls()(
-                self._inner.copy(**kwargs), route_resolver=self._route_resolver
-            )
+    @staticmethod
+    def _enforce_deny(before: HookOutcome) -> None:
+        if before.denied:
+            record_hook_reason("hook_model_denied", deny_reason=before.reason)
+            raise HookDeniedModelCall(before.reason)
 
-        def forward(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> Any:
-            """Delegate ``forward`` to the inner LM (defensive; hot path is ``__call__``)."""
+    @staticmethod
+    def _should_synthesize(before: HookOutcome) -> bool:
+        """Whether a BeforeModel hook truly skips the real LM (synthesize + response)."""
 
-            return self._inner.forward(prompt=prompt, messages=messages, **kwargs)
-
-        async def aforward(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> Any:
-            """Delegate ``aforward`` to the inner LM (defensive)."""
-
-            return await self._inner.aforward(prompt=prompt, messages=messages, **kwargs)
-
-        # ----------------------------------------------------------------- #
-        # The per-request hook dance.                                        #
-        # ----------------------------------------------------------------- #
-        def __call__(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> list[Any]:
-            request = self._build_request(prompt, messages, kwargs)
-            sid, turn_id, cwd = _resolve_call_context()
-            before = dispatch_before_model(request, session_id=sid, turn_id=turn_id, cwd=cwd)
-            self._enforce_deny(before)
-            if self._should_synthesize(before):
-                outputs = _coerce_outputs(before.llm_response)
-                synthetic = True
-            else:
-                target, call_messages, call_kwargs = self._resolve_call(before, messages, kwargs)
-                outputs = target(prompt=prompt, messages=call_messages, **call_kwargs)
-                synthetic = False
-            return self._apply_after(request, outputs, synthetic, sid, turn_id, cwd)
-
-        async def acall(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> list[Any]:
-            request = self._build_request(prompt, messages, kwargs)
-            sid, turn_id, cwd = _resolve_call_context()
-            before = dispatch_before_model(request, session_id=sid, turn_id=turn_id, cwd=cwd)
-            self._enforce_deny(before)
-            if self._should_synthesize(before):
-                outputs = _coerce_outputs(before.llm_response)
-                synthetic = True
-            else:
-                target, call_messages, call_kwargs = self._resolve_call(before, messages, kwargs)
-                outputs = await target.acall(prompt=prompt, messages=call_messages, **call_kwargs)
-                synthetic = False
-            return self._apply_after(request, outputs, synthetic, sid, turn_id, cwd)
-
-        # ----------------------------------------------------------------- #
-        # Helpers (kept tiny so __call__/acall read as the contract).       #
-        # ----------------------------------------------------------------- #
-        def _build_request(
-            self, prompt: Any, messages: Any, kwargs: Mapping[str, Any]
-        ) -> ModelRequest:
-            """Assemble the public :class:`ModelRequest` a hook inspects (creds stripped)."""
-
-            if messages is not None:
-                msgs = list(messages)
-            elif prompt is not None:
-                msgs = [{"role": "user", "content": prompt}]
-            else:
-                msgs = []
-            tools = list(kwargs.get("tools") or [])
-            params = {
-                key: value
-                for key, value in kwargs.items()
-                if key != "tools" and not key.startswith("api_")
-            }
-            return ModelRequest(
-                model=str(getattr(self._inner, "model", "") or ""),
-                messages=msgs,
-                params=params,
-                tools=tools,
-            )
-
-        @staticmethod
-        def _enforce_deny(before: HookOutcome) -> None:
-            if before.denied:
-                record_hook_reason("hook_model_denied", deny_reason=before.reason)
-                raise HookDeniedModelCall(before.reason)
-
-        @staticmethod
-        def _should_synthesize(before: HookOutcome) -> bool:
-            """Whether a BeforeModel hook truly skips the real LM (synthesize + response)."""
-
-            if before.decision != "synthesize":
-                return False
-            if before.llm_response_present:
-                return True
-            # A synthesize with no ``llm_response`` cannot skip the call — record the
-            # typed degradation and let the real LM run (no silent fail-open).
-            record_hook_reason("hook_synthesize_missing_llm_response")
+        if before.decision != "synthesize":
             return False
+        if before.llm_response_present:
+            return True
+        # A synthesize with no ``llm_response`` cannot skip the call — record the
+        # typed degradation and let the real LM run (no silent fail-open).
+        record_hook_reason("hook_synthesize_missing_llm_response")
+        return False
 
-        def _resolve_call(
-            self, before: HookOutcome, messages: Any, kwargs: Mapping[str, Any]
-        ) -> tuple[Any, Any, dict[str, Any]]:
-            """Resolve the (target LM, messages, kwargs) for a real call after BeforeModel.
+    def _resolve_call(
+        self, before: HookOutcome, messages: Any, kwargs: Mapping[str, Any]
+    ) -> tuple[Any, Any, dict[str, Any]]:
+        """Resolve the (target LM, messages, kwargs) for a real call after BeforeModel.
 
-            Applies routing (``model_override`` → an alternate LM, or a typed
-            ``hook_route_unresolved`` degradation falling back to the default) and a
-            ``request_patch`` redact (rewrites messages/params) before the call.
-            """
+        Applies routing (``model_override`` → an alternate LM, or a typed
+        ``hook_route_unresolved`` degradation falling back to the default) and a
+        ``request_patch`` redact (rewrites messages/params) before the call.
+        """
 
-            target = self._inner
-            if before.model_override:
-                routed = self._resolve_route(before.model_override)
-                if routed is not None:
-                    target = routed
-                else:
-                    record_hook_reason(
-                        "hook_route_unresolved", model_override=before.model_override
-                    )
-            call_messages = messages
-            call_kwargs = dict(kwargs)
-            if before.has_request_patch and before.request_patch is not None:
-                patch = before.request_patch
-                if "messages" in patch:
-                    call_messages = list(patch["messages"])
-                patch_params = patch.get("params")
-                if isinstance(patch_params, Mapping):
-                    call_kwargs.update(patch_params)
-            return target, call_messages, call_kwargs
+        target = self._inner
+        if before.model_override:
+            routed = self._resolve_route(before.model_override)
+            if routed is not None:
+                target = routed
+            else:
+                record_hook_reason(
+                    "hook_route_unresolved", model_override=before.model_override
+                )
+        call_messages = messages
+        call_kwargs = dict(kwargs)
+        if before.has_request_patch and before.request_patch is not None:
+            patch = before.request_patch
+            if "messages" in patch:
+                call_messages = list(patch["messages"])
+            patch_params = patch.get("params")
+            if isinstance(patch_params, Mapping):
+                call_kwargs.update(patch_params)
+        return target, call_messages, call_kwargs
 
-        def _resolve_route(self, name: str) -> Any:
-            """Resolve a ``model_override`` name via the per-instance/global resolver."""
+    def _resolve_route(self, name: str) -> Any:
+        """Resolve a ``model_override`` name via the per-instance/global resolver."""
 
-            resolver = self._route_resolver or _ROUTE_RESOLVER
-            if resolver is None:
-                return None
-            return resolver(name)
+        resolver = self._route_resolver or _ROUTE_RESOLVER
+        if resolver is None:
+            return None
+        return resolver(name)
 
-        def _apply_after(
-            self,
-            request: ModelRequest,
-            outputs: list[Any],
-            synthetic: bool,
-            sid: str,
-            turn_id: str,
-            cwd: str,
-        ) -> list[Any]:
-            """Fire ``AfterModel`` and apply a response rewrite (what enters context only)."""
+    def _apply_after(
+        self,
+        request: ModelRequest,
+        outputs: list[Any],
+        synthetic: bool,
+        sid: str,
+        turn_id: str,
+        cwd: str,
+    ) -> list[Any]:
+        """Fire ``AfterModel`` and apply a response rewrite (what enters context only)."""
 
-            after = dispatch_after_model(
-                request,
-                response=outputs,
-                synthetic=synthetic,
-                session_id=sid,
-                turn_id=turn_id,
-                cwd=cwd,
-            )
-            if after.llm_response_present:
-                return _coerce_outputs(after.llm_response)
-            return outputs
+        after = dispatch_after_model(
+            request,
+            response=outputs,
+            synthetic=synthetic,
+            session_id=sid,
+            turn_id=turn_id,
+            cwd=cwd,
+        )
+        if after.llm_response_present:
+            return _coerce_outputs(after.llm_response)
+        return outputs
+
+
+def _hooked_lm_mixin() -> type:
+    """Return the behaviour mixin — the per-request hook dance, no base LM.
+
+    The mixin is a module-level class (:class:`_HookedLMBehaviour`); this
+    function just names the seam :func:`hooked_lm_cls` calls to fetch it,
+    preserving the lazy-build entry point without needing a class body defined
+    per call.
+    """
 
     return _HookedLMBehaviour
 
