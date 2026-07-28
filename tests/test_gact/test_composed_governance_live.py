@@ -27,10 +27,13 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
+from clio_agent.gact import goal as goal_mod
 from clio_agent.gact.app import build_app
+from clio_agent.gact.goal import GoalJudgement
 from clio_agent.gact.hooks import HookEnvelope, build_hook_dispatcher
 from clio_agent.gact.hooks.events import PRE_TOOL_USE
 from clio_agent.gact.runtime.grant_resolver import is_read_only, resolve
+from tests.test_gact.conftest import complete_turn
 
 
 class _Pred:
@@ -156,3 +159,71 @@ def test_cron_loop_goal_arm_together(tmp_path: Path) -> None:
         assert isinstance(goal, dict), f"goal not armed on metadata: {meta.keys()}"
         assert goal.get("active") is True, f"goal should be armed: {goal}"
         assert "predicate" not in goal, f"goal must not carry a deterministic predicate: {goal}"
+
+
+def test_loop_goal_compose_stops_loop_through_real_finalize(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """LOOP+GOAL compose through the REAL finalize path (A4 review residual, #1057).
+
+    The seam under proof is the ``finalize_turn`` call site
+    ``compose_goal_loop_stop_at_finalize(app, sid, goal_decision)`` — the glue that lets a
+    judge-met run-until goal stop an armed loop. The existing ``test_goal.py`` seam test drives
+    the extracted function directly; this drives a WHOLE turn through the shipped finalize path
+    so no-op'ing the call site turns a test RED (the residual: the glue was silently deletable).
+
+    Only the LLM judge (``clio_agent.gact.goal.run_llm_judge``) is patched (-> met). The real
+    chain runs: ``finalize_turn`` -> ``dispatch_goal_at_finalize`` (met) ->
+    ``compose_goal_loop_stop_at_finalize`` -> ``stop_session_loop`` (cancel-both). Neither
+    ``finalize_turn`` nor the goal/compose functions are patched."""
+
+    # The bounded LLM judge is the ONLY completion authority (the deterministic tier was
+    # deleted in A4). Patch it met=True so the real finalize goal eval settles 'met'.
+    monkeypatch.setattr(
+        goal_mod,
+        "run_llm_judge",
+        lambda app, sid, goal: GoalJudgement(met=True, reason="the deliverable is complete"),
+    )
+
+    with TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent())) as client:
+        sid = client.post("/v1/sessions", json={"title": "loop-goal-compose"}).json()["id"]
+
+        # Arm the loop (a bounded re-drive) — it installs a pending wakeup schedule.
+        r = client.post(
+            f"/v1/sessions/{sid}/commands/loop",
+            json={"input": "keep working on the deliverable", "args": {"max_iters": 100}},
+        )
+        assert r.status_code == 200
+        loop = (client.app.state.sessions.get(sid).metadata or {}).get("loop")
+        assert isinstance(loop, dict), "loop not armed"
+        pending = str(loop.get("pending_schedule_id") or "")
+        assert pending and client.app.state.schedules.get(pending) is not None
+        assert len(client.app.state.schedules.list(session_id=sid)) == 1
+
+        # Arm the run-until goal (NL condition, LLM-judge-only).
+        r = client.post(
+            f"/v1/sessions/{sid}/commands/goal",
+            json={"input": "the deliverable is complete and written up"},
+        )
+        assert r.status_code == 200
+        assert (client.app.state.sessions.get(sid).metadata or {})["goal"]["active"] is True
+
+        # Drive a REAL turn: the fake agent returns a canned prediction, but finalize_turn
+        # runs its hooks regardless — dispatch_goal_at_finalize (judge met) then the compose
+        # call site under test.
+        complete_turn(client, sid, "work on it")
+
+        # GOAL: the finalize judge settled met -> auto-cleared, met recorded.
+        goal = (client.app.state.sessions.get(sid).metadata or {})["goal"]
+        assert goal["met"] is True, f"goal should be met at finalize: {goal}"
+        assert goal["active"] is False, f"a met goal must auto-clear: {goal}"
+
+        # LOOP: the compose glue stopped the loop with the typed reason (this is what a
+        # no-op'd call site fails to do).
+        loop = (client.app.state.sessions.get(sid).metadata or {})["loop"]
+        assert loop["stopped"] is True, f"the loop must be stopped by the compose: {loop}"
+        assert loop["stop_reason"] == "loop_goal_met", f"wrong stop reason: {loop}"
+
+        # The pending wakeup schedule was cancelled (cancel-both — no orphan re-fire).
+        assert client.app.state.schedules.get(pending) is None
+        assert client.app.state.schedules.list(session_id=sid) == []
