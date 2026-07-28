@@ -168,18 +168,23 @@ def test_multiple_decision_objects_tighten_to_deny(tmp_path: Path, first: str, s
 
 
 def test_nested_dict_single_object_not_false_multi(tmp_path: Path) -> None:
-    """B3: a single decision object carrying a nested dict must not be double-counted
-    as multiple objects (advance past the decoded span, not to the next inner brace)."""
+    """B3: a single decision object whose NESTED payload itself carries a ``decision``
+    key must not be double-counted (advance past the decoded span, not to the next inner
+    brace). The nested ``deny`` is deliberately more restrictive than the outer ``allow``
+    so the naive advance the plan forbids (``find("{", idx + 1)``) fails this test two
+    ways: it would re-scan the inner brace, record a false ``hook_multiple_stdout_objects``
+    reason, AND tighten to the nested ``deny`` — flipping the outer ``allow`` outcome."""
 
     body = (
         "import json\n"
-        'print(json.dumps({"decision": "deny", "reason": "nested",'
-        ' "input": {"a": {"b": 1}}}))\n'
+        'print(json.dumps({"decision": "allow", "reason": "outer-wins",'
+        ' "modifyInput": {"decision": "deny"}}))\n'
     )
     disp = make_command_dispatcher(tmp_path, event=PRE_TOOL_USE, body=body, hook_id="nested-single")
     outcome = disp.dispatch(PRE_TOOL_USE, _pre_tool_env())
-    assert outcome.denied
-    assert outcome.reason == "nested"
+    # The OUTER object wins: allow (nested deny is inert), never tightened to deny.
+    assert outcome.decision == "allow"
+    assert not outcome.denied
     reasons = [
         r
         for r in hook_reasons()
