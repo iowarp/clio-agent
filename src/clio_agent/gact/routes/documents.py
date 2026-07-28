@@ -4,14 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import quote, urlparse
-from urllib.request import HTTPRedirectHandler, build_opener
-from urllib.request import Request as UrlRequest
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
@@ -19,6 +16,10 @@ from fastapi.responses import FileResponse
 from clio_agent.gact.artifacts.cas import CASStore, sha256_file
 from clio_agent.gact.artifacts.records import ArtifactRecord, ArtifactVersion, Custody
 from clio_agent.gact.artifacts.registry import get_registry
+from clio_agent.gact.documents.editor_callbacks import (
+    download_editor_save,
+    write_working_copy,
+)
 from clio_agent.gact.documents.editors import (
     editor_url,
     endpoint_health,
@@ -59,8 +60,6 @@ from clio_agent.gact.types import Part
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
-
-_MAX_EDITOR_SAVE_BYTES = 512 * 1024 * 1024
 
 
 def _now_iso() -> str:
@@ -278,61 +277,6 @@ def _dispatch_checkpoint(
             "coalesce_key": f"document-save:{working_copy.id}",
         },
     )
-
-
-def _write_working_copy(path: Path, payload: bytes) -> None:
-    if len(payload) > _MAX_EDITOR_SAVE_BYTES:
-        raise ValueError("editor save exceeds the configured size limit")
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    temporary.write_bytes(payload)
-    os.replace(temporary, path)
-
-
-def _exact_http_origin(left: str, right: str) -> bool:
-    try:
-        source = urlparse(left)
-        allowed = urlparse(right)
-        source_port = source.port or (443 if source.scheme == "https" else 80)
-        allowed_port = allowed.port or (443 if allowed.scheme == "https" else 80)
-    except ValueError:
-        return False
-    return (
-        source.scheme in {"http", "https"}
-        and source.scheme == allowed.scheme
-        and source.hostname is not None
-        and source.hostname.lower() == (allowed.hostname or "").lower()
-        and source_port == allowed_port
-        and source.username is None
-        and source.password is None
-    )
-
-
-class _RejectEditorRedirects(HTTPRedirectHandler):
-    def redirect_request(
-        self,
-        req: UrlRequest,
-        fp: Any,
-        code: int,
-        msg: str,
-        headers: Any,
-        newurl: str,
-    ) -> None:
-        raise ValueError("editor callback redirects are not allowed")
-
-
-def _download_editor_save(url: str, provider_base: str) -> bytes:
-    if not _exact_http_origin(url, provider_base):
-        raise ValueError("editor callback download URL is outside the configured origin")
-    request = UrlRequest(url, headers={"User-Agent": "clio-agent"})
-    opener = build_opener(_RejectEditorRedirects())
-    with opener.open(request, timeout=30.0) as response:  # noqa: S310 - exact origin checked
-        length = int(response.headers.get("Content-Length", "0") or "0")
-        if length > _MAX_EDITOR_SAVE_BYTES:
-            raise ValueError("editor save exceeds the configured size limit")
-        payload = response.read(_MAX_EDITOR_SAVE_BYTES + 1)
-    if len(payload) > _MAX_EDITOR_SAVE_BYTES:
-        raise ValueError("editor save exceeds the configured size limit")
-    return payload
 
 
 def register_document_routes(app: FastAPI, deps: "GactDeps") -> None:
@@ -680,9 +624,9 @@ def register_document_routes(app: FastAPI, deps: "GactDeps") -> None:
         download_url = str(body.get("url", ""))
         try:
             payload = await asyncio.to_thread(
-                _download_editor_save, download_url, editor_url("onlyoffice")
+                download_editor_save, download_url, editor_url("onlyoffice")
             )
-            await asyncio.to_thread(_write_working_copy, Path(row.path), payload)
+            await asyncio.to_thread(write_working_copy, Path(row.path), payload)
             await asyncio.to_thread(store.checkpoint, working_copy_id)
         except (OSError, ValueError, DocumentStoreError):
             return {"error": 1}
@@ -804,7 +748,7 @@ def register_document_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         payload = await request.body()
         try:
-            await asyncio.to_thread(_write_working_copy, Path(row.path), payload)
+            await asyncio.to_thread(write_working_copy, Path(row.path), payload)
             updated = await asyncio.to_thread(store.checkpoint, working_copy_id)
         except (OSError, ValueError, DocumentStoreError) as exc:
             raise _error(422, "editor_save_failed", str(exc)) from exc

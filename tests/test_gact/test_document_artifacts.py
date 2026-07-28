@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
 from clio_agent.gact.documents import renditions
+from clio_agent.gact.documents.editor_callbacks import exact_http_origin
 from clio_agent.gact.documents.editors import issue_access_token, verify_access_token
 from clio_agent.gact.documents.native_comments import (
     UnsafeDocumentArchiveError,
@@ -23,7 +24,6 @@ from clio_agent.gact.documents.native_comments import (
 from clio_agent.gact.documents.profiles import document_format
 from clio_agent.gact.documents.store import get_document_store
 from clio_agent.gact.loop_inbox import InboxEvent, LoopInbox
-from clio_agent.gact.routes.documents import _exact_http_origin
 from tests.test_gact.test_post_messages import FakeClioAgent
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
@@ -281,23 +281,23 @@ def test_editor_tokens_are_short_lived_scoped_and_write_aware(tmp_path: Path) ->
 
 
 def test_editor_callback_download_requires_an_exact_origin() -> None:
-    assert _exact_http_origin(
+    assert exact_http_origin(
         "https://editor.example.test/download/file",
         "https://editor.example.test",
     )
-    assert _exact_http_origin(
+    assert exact_http_origin(
         "https://editor.example.test:443/download/file",
         "https://editor.example.test",
     )
-    assert not _exact_http_origin(
+    assert not exact_http_origin(
         "http://editor.example.test/download/file",
         "https://editor.example.test",
     )
-    assert not _exact_http_origin(
+    assert not exact_http_origin(
         "https://editor.example.test:444/download/file",
         "https://editor.example.test",
     )
-    assert not _exact_http_origin(
+    assert not exact_http_origin(
         "https://user:secret@editor.example.test/download/file",
         "https://editor.example.test",
     )
