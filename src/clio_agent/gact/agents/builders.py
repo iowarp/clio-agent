@@ -59,6 +59,7 @@ from clio_agent.gact.permission_gate import (
     _external_mcp_permission_context,
     _invoke_permission_gate,
 )
+from clio_agent.gact.plan_mode import build_plan_exit_tool
 from clio_agent.gact.runtime.context_tokens import _resolve_expert_context_window
 from clio_agent.gact.runtime.globals import (
     _active_semantic_trace_id,
@@ -1274,8 +1275,8 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     # Auto-attached infra (like child-delegation tools), not a
                     # curated domain tool (#919).
                     tools.append(_skill_runtime.build_load_skill_tool(agent_def, skill_rt))
-                # create_artifact (#969): auto-attached for EVERY react expert (#966.2).
-                tools.append(build_create_artifact_tool(agent_def))
+                # create_artifact (#969) + plan_exit (#1066): auto-attached for EVERY react expert.
+                tools += [build_create_artifact_tool(agent_def), build_plan_exit_tool(agent_def)]
                 self.tools = tools
                 # The iteration default scales with the declared children — an
                 # orchestrator pays spawn+wait per child inside this loop (#948 S4).
@@ -1735,8 +1736,8 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             if skill_rt.resolved:
                 # Same react tier-1 + load_skill contract as blueprint experts (#919).
                 self.tools.append(_skill_runtime.build_load_skill_tool(agent_def, skill_rt))
-            # create_artifact (#969): auto-attached for EVERY react expert (#966.2).
-            self.tools.append(build_create_artifact_tool(agent_def))
+            # create_artifact (#969) + plan_exit (#1066): auto-attached for EVERY react expert.
+            self.tools += [build_create_artifact_tool(agent_def), build_plan_exit_tool(agent_def)]
             runtime = PromptRegistry().resolve("clio.runtime.tool_user_agent")
             runtime_text = str(getattr(runtime, "text", "") or "").strip()
             agent_prompt = agent_def.system_prompt.strip() or agent_def.description

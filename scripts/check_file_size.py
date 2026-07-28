@@ -86,7 +86,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # merge(main->develop): +43 (1833 -> 1876) integrating main's #962 external-MCP
     # permission-gate enforcement (_invoke_permission_gate / _external_mcp_permission_context)
     # + #964 sanitized-observer projection at the external MCP call site.
-    "src/clio_agent/gact/agents/builders.py": 1876,
+    # P1.4 #1066: +1 for the build_plan_exit_tool import; the two react-build call sites stay
+    # line-neutral (the create_artifact append became a two-tool extend). All plan_exit logic lives
+    # in the owner module gact/plan_mode.py. Ratchets back with the #714/#767 decomposition.
+    "src/clio_agent/gact/agents/builders.py": 1877,
     # #900: +14 for the lifespan child-reaper install + clean-shutdown teardown wiring
     # (both delegate to the owner module runtime/process_tree.py).
     # #918: +7 for the SkillNotDelegatableError exception handler (app.py owns
@@ -177,7 +180,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # lines; the axis logic lives in sessions.py + permission_gate.py, no accretion here).
     # #1036: 1551 -> 1545 — the ask-user resume fold replaced the inline deferred_resumes
     # stash with a one-call enqueue_user_steer + a hoisted resume_metadata (dedup).
-    "src/clio_agent/gact/routes/sessions.py": 1545,
+    # P1.4 #1066: +14 for the plan-exit approval branch in the ask-user answer route (reuses the
+    # UserQuestion surface, no new store); the mode transition + constraint-lift + resume live in the
+    # owner module gact/plan_mode.py (resolve_plan_exit_answer). Ratchets back with the #714 split.
+    "src/clio_agent/gact/routes/sessions.py": 1559,
     # #933: +8 for the turn-scoped workspace-fleet lease in _tool_session_context.
     # #933 review hardening: typed workspace_lease_unavailable degrade when a
     # rooted turn has no leasable agent (+9).
@@ -216,7 +222,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # + the 3-line call). All logic (full/sparse selection, compaction detection, the
     # session.metadata suppression counter) lives in the owner module gact/plan_mode.py; only
     # the call site lands here (the #1035/#966 call-site precedent). Ratchets back with #714.
-    "src/clio_agent/gact/turn.py": 923,
+    # P1.4 #1066: +7 for the plan_exit turn-ending-yield seam next to maybe_pause_for_user (import +
+    # comment + the 2-line call). The seam (maybe_pause_for_plan_exit) lives in the owner module
+    # gact/plan_mode.py. Ratchets back with #714.
+    "src/clio_agent/gact/turn.py": 930,
     # #952 S4 Pass C: -9 (the answer-substitution finalize call + import were
     # removed with the settle layer's degradation ledger).
     # #953 [5]: +3 to surface the variant winner stamp (variant_selection) on the

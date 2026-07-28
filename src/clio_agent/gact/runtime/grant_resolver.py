@@ -98,10 +98,21 @@ EXTERNAL_MCP_CONTEXT_KIND = "external_mcp"
 #: priority (:func:`_migrated_priority`) exceeds this floor, so the mode-lock can never be
 #: outranked by a large unprioritized policy store (adversarial-review finding #1, #1063).
 PLAN_ACL_DENY_PRIORITY = 40
+#: Priority FLOOR for the plan-mode tool allow-band (P1.4 #1066): one band above the @40 deny so the
+#: non-write tools plan mode NEEDS survive the deny-everything rule. Like the deny/carve-out it is a
+#: floor — :func:`_plan_acl_priorities` raises it above any matching user row so a user ``deny
+#: plan_exit`` can never strand the model in plan mode.
+PLAN_ACL_ALLOW_TOOL_PRIORITY = 50
 PLAN_ACL_PLAN_FILE_PRIORITY = 70
 
+#: The effectful-but-plan-safe tools plan mode ALLOWS despite the @40 deny-everything default (P1.4
+#: #1066): ``plan_exit`` (the turn-ending approval yield), ``ask_user`` (clarify mid-plan), and
+#: ``web_fetch`` (read external context). Reads are already fast-allowed by :func:`is_read_only`.
+PLAN_ACL_PLAN_TOOLS: tuple[str, ...] = ("plan_exit", "ask_user", "web_fetch")
+
 #: The modes the built-in plan ACL constrains. The DENY-everything default applies in both; the
-#: plans-dir write carve-out is ``plan`` only (architect proposes diffs, it never writes files).
+#: plans-dir write carve-out and the plan-tool allow-band are ``plan`` only (architect proposes
+#: diffs, it never writes files and has no plan_exit).
 _PLAN_ACL_MODES = frozenset({"plan", "architect"})
 
 
@@ -127,13 +138,18 @@ def plans_dir() -> Path:
 
 
 def default_plan_acl_rows() -> list[dict[str, Any]]:
-    """Return the built-in plan-mode ACL rows (P1.1 #1063), scoped by the ``modes`` axis.
+    """Return the built-in plan-mode ACL rows (P1.1 #1063 + P1.4 #1066), scoped by the ``modes`` axis.
 
-    Two rows, priority-banded on the P0.1 model (higher wins; same-band ties most-restrictive):
+    Priority-banded on the P0.1 model (higher wins; same-band ties most-restrictive). Each row
+    carries a ``band`` tag naming its DYNAMIC priority slot (:func:`_plan_acl_priorities`); the static
+    ``priority`` field is the floor that slot starts from:
 
     * ``deny "*" @40 modes=[plan,architect]`` — deny every non-read-only tool in plan/architect.
       Read-only tools never reach the resolver (``is_read_only`` fast-allows first), so this denies
       exactly the write/edit/shell surface, matching the deleted hardcoded lock's behaviour.
+    * ``allow <plan tool> @50 modes=[plan]`` — one row per :data:`PLAN_ACL_PLAN_TOOLS` entry
+      (``plan_exit``/``ask_user``/``web_fetch``): the non-write tools plan mode needs, re-allowed one
+      band above the deny so the ``*`` deny does not sweep them up (P1.4 #1066).
     * ``allow "*" path=<plans>/*.md @70 modes=[plan]`` — the SOLE writable carve-out: a ``.md``
       write under the plans dir in plan mode. It beats the @40 deny by band. The ``path_pattern``
       is matched against the CALLER-NORMALIZED target path (``..`` collapsed) so a traversal such as
@@ -144,14 +160,28 @@ def default_plan_acl_rows() -> list[dict[str, Any]]:
     """
 
     plans = str(plans_dir())
-    return [
+    rows: list[dict[str, Any]] = [
         {
             "kind": KIND_PLAN_ACL,
             "action": "deny",
             "tool_name_pattern": "*",
             "modes": ["plan", "architect"],
             "priority": PLAN_ACL_DENY_PRIORITY,
+            "band": "deny",
         },
+    ]
+    rows.extend(
+        {
+            "kind": KIND_PLAN_ACL,
+            "action": "allow",
+            "tool_name_pattern": tool_name,
+            "modes": ["plan"],
+            "priority": PLAN_ACL_ALLOW_TOOL_PRIORITY,
+            "band": "allow_tool",
+        }
+        for tool_name in PLAN_ACL_PLAN_TOOLS
+    )
+    rows.append(
         {
             "kind": KIND_PLAN_ACL,
             "action": "allow",
@@ -159,8 +189,10 @@ def default_plan_acl_rows() -> list[dict[str, Any]]:
             "path_pattern": f"{plans}{os.sep}*.md",
             "modes": ["plan"],
             "priority": PLAN_ACL_PLAN_FILE_PRIORITY,
-        },
-    ]
+            "band": "plan_file",
+        }
+    )
+    return rows
 
 
 def plan_mode_deny_message(mode: str, tool_name: str = "") -> str:
@@ -218,8 +250,8 @@ def _normalized_plan_acl_path(path: str) -> str:
         return ""
 
 
-def _plan_acl_priorities(user_matches: list[tuple[int, str]]) -> tuple[int, int]:
-    """Return ``(deny_priority, file_priority)`` for THIS ``resolve()`` call.
+def _plan_acl_priorities(user_matches: list[tuple[int, str]]) -> dict[str, int]:
+    """Return the ``{band: priority}`` map for THIS ``resolve()`` call (P1.1 #1063 + P1.4 #1066).
 
     The static floor is ``(PLAN_ACL_DENY_PRIORITY, PLAN_ACL_PLAN_FILE_PRIORITY)`` = ``(40, 70)`` --
     the values :func:`default_plan_acl_rows` ships, and what a normal-sized policy store still gets.
@@ -239,8 +271,11 @@ def _plan_acl_priorities(user_matches: list[tuple[int, str]]) -> tuple[int, int]
     deny_priority = PLAN_ACL_DENY_PRIORITY
     if user_matches:
         deny_priority = max(deny_priority, max(priority for priority, _ in user_matches) + 1)
-    file_priority = max(PLAN_ACL_PLAN_FILE_PRIORITY, deny_priority + 1)
-    return deny_priority, file_priority
+    # The allow-band and the plan-file carve-out both sit ABOVE the (possibly-raised) deny, so no
+    # user/built-in deny can strand a plan-safe tool or the plan file; the carve-out stays highest.
+    allow_tool_priority = max(PLAN_ACL_ALLOW_TOOL_PRIORITY, deny_priority + 1)
+    file_priority = max(PLAN_ACL_PLAN_FILE_PRIORITY, allow_tool_priority + 1)
+    return {"deny": deny_priority, "allow_tool": allow_tool_priority, "plan_file": file_priority}
 
 
 def _plan_acl_default_matches(
@@ -251,17 +286,15 @@ def _plan_acl_default_matches(
     Evaluated only for ``kind="tool"`` resolves whose ``mode`` is plan-restricted (the caller
     gates on :data:`_PLAN_ACL_MODES`). Path-bearing rows match against the NORMALIZED target path
     (:func:`_normalized_plan_acl_path`) to block traversal; tool-only rows match by the tool glob.
-    The row's own static ``priority`` field is IGNORED here in favor of the dynamic
-    ``(deny_priority, file_priority)`` pair from :func:`_plan_acl_priorities` -- computed from
+    The row's own static ``priority`` field is IGNORED here in favor of the dynamic per-``band``
+    priority from :func:`_plan_acl_priorities` (keyed by each row's ``band`` tag) -- computed from
     ``user_matches``, the matching user rows already collected for this same call -- so the
-    built-in mode-lock always outranks every user row, never just the static @40/@70 floor.
+    built-in mode-lock always outranks every user row, never just the static @40/@50/@70 floors.
     """
 
-    deny_priority, file_priority = _plan_acl_priorities(user_matches)
+    priorities = _plan_acl_priorities(user_matches)
     matches: list[tuple[int, str]] = []
-    for row, dynamic_priority in zip(
-        default_plan_acl_rows(), (deny_priority, file_priority), strict=True
-    ):
+    for row in default_plan_acl_rows():
         if not _axis_matches(row, mode, event):
             continue
         tool_pattern = str(row.get("tool_name_pattern") or "*")
@@ -275,7 +308,7 @@ def _plan_acl_default_matches(
         action = str(row.get("action") or "").lower()
         if action not in _VALID_ACTIONS:
             continue
-        matches.append((dynamic_priority, action))
+        matches.append((priorities[str(row.get("band") or "deny")], action))
     return matches
 
 #: The MCP annotation read-only classifier now lives in :mod:`clio_agent.tools.catalog` (the
@@ -751,8 +784,10 @@ __all__ = [
     "KIND_PLAN_ACL",
     "KIND_ROOT",
     "KIND_TOOL",
+    "PLAN_ACL_ALLOW_TOOL_PRIORITY",
     "PLAN_ACL_DENY_PRIORITY",
     "PLAN_ACL_PLAN_FILE_PRIORITY",
+    "PLAN_ACL_PLAN_TOOLS",
     "annotations_are_read_only",
     "default_plan_acl_rows",
     "is_read_only",

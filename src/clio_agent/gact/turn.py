@@ -537,6 +537,13 @@ async def _run_turn_in_background(
             # session to waiting_user, and settles the ledger (see
             # turn_finalize.py).
             return
+        # P1.4 #1066: plan_exit is the SAME turn-ending yield — surface the pending
+        # plan-exit as an N-way approval question and exit before finalize (owner
+        # module gact/plan_mode.py; only the call site lands here).
+        from clio_agent.gact.plan_mode import maybe_pause_for_plan_exit  # noqa: PLC0415
+
+        if maybe_pause_for_plan_exit(state):
+            return
         # iowarp/clio-agent#25: data branch reports which execution
         # path it took ("fast" or "expert_loop"). Empty when not
         # populated by ClioAgent.forward (older code paths, non-data

@@ -31,8 +31,10 @@ from clio_agent.gact.runtime.grant_resolver import (
     KIND_PLAN_ACL,
     KIND_ROOT,
     KIND_TOOL,
+    PLAN_ACL_ALLOW_TOOL_PRIORITY,
     PLAN_ACL_DENY_PRIORITY,
     PLAN_ACL_PLAN_FILE_PRIORITY,
+    PLAN_ACL_PLAN_TOOLS,
     GrantRecord,
     default_plan_acl_rows,
     is_read_only,
@@ -771,10 +773,12 @@ _WRITE_TOOL = "fs_apply_edit_write"
 
 
 def test_default_plan_acl_rows_shape() -> None:
-    """The engine ships exactly two banded plan_acl defaults (deny-all @40, plan-file @70)."""
+    """The engine ships banded plan_acl defaults: deny-all @40, a plan-tool allow-band @50, plan-file @70."""
     rows = default_plan_acl_rows()
-    assert len(rows) == 2
-    deny, allow = rows
+    # 1 deny + one allow row per plan tool + 1 plan-file carve-out.
+    assert len(rows) == 2 + len(PLAN_ACL_PLAN_TOOLS)
+    deny = rows[0]
+    allow = rows[-1]
     assert deny["action"] == "deny"
     assert deny["priority"] == PLAN_ACL_DENY_PRIORITY == 40
     assert set(deny["modes"]) == {"plan", "architect"}
@@ -782,6 +786,39 @@ def test_default_plan_acl_rows_shape() -> None:
     assert allow["priority"] == PLAN_ACL_PLAN_FILE_PRIORITY == 70
     assert allow["modes"] == ["plan"]
     assert allow["path_pattern"].endswith(".md")
+    # The middle band re-allows exactly the plan-safe tools, scoped to plan mode, @50 (above deny).
+    allow_tools = rows[1:-1]
+    assert {r["tool_name_pattern"] for r in allow_tools} == set(PLAN_ACL_PLAN_TOOLS)
+    for r in allow_tools:
+        assert r["action"] == "allow"
+        assert r["priority"] == PLAN_ACL_ALLOW_TOOL_PRIORITY == 50
+        assert r["modes"] == ["plan"]
+
+
+def test_plan_acl_allows_plan_safe_tools_in_plan_mode() -> None:
+    """plan_exit / ask_user / web_fetch resolve ALLOW in plan mode; a write tool stays DENIED."""
+    for tool_name in PLAN_ACL_PLAN_TOOLS:
+        assert (
+            resolve("tool", tool_name, policies=[], session_id="s", mode="plan") == "allow"
+        ), tool_name
+    # A write/edit tool is still denied by the @40 deny band (the allow-band is name-scoped).
+    assert resolve("tool", _WRITE_TOOL, policies=[], session_id="s", mode="plan") == "deny"
+
+
+def test_plan_acl_allow_band_beats_user_deny_for_plan_exit() -> None:
+    """A user ``deny plan_exit`` cannot strand the model: the dynamic allow-band outranks it."""
+    policies = [
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": "plan_exit",
+            "action": "deny",
+            "priority": 999,
+        }
+    ]
+    assert resolve("tool", "plan_exit", policies=policies, session_id="s", mode="plan") == "allow"
+    # Outside plan mode the plan-tool allow-band does not apply — the user deny stands.
+    assert resolve("tool", "plan_exit", policies=policies, session_id="s", mode="edit") == "deny"
 
 
 def test_plans_dir_uses_repo_dot_clio_in_vcs() -> None:
