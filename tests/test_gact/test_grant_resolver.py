@@ -872,6 +872,46 @@ def test_plan_acl_allow_band_beats_user_deny_for_plan_exit() -> None:
     assert resolve("tool", "plan_exit", policies=policies, session_id="s", mode="edit") == "deny"
 
 
+def test_plan_acl_user_deny_wins_over_allow_band_for_non_plan_exit_tool() -> None:
+    """B5 F1 (#1057): a user ``deny web_fetch`` wins in plan mode (tighten-only).
+
+    The plan-tool allow-band re-allows the plan-safe tools above the deny so plan mode isn't
+    stranded — but ONLY ``plan_exit`` needs anti-lockout. A user who explicitly denies
+    ``web_fetch``/``ask_user`` should have that deny win; the allow-band is suppressed for the
+    non-``plan_exit`` tool when any matching user row is a deny.
+    """
+    policies = [
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": "web_fetch",
+            "action": "deny",
+        }
+    ]
+    # web_fetch is denied by the user; the allow-band no longer overrides it.
+    assert resolve("tool", "web_fetch", policies=policies, session_id="s", mode="plan") == "deny"
+    # The SAME store's plan_exit stays allowed — the suppression is name-scoped, not global.
+    assert resolve("tool", "plan_exit", policies=policies, session_id="s", mode="plan") == "allow"
+
+
+def test_plan_acl_user_deny_plan_exit_still_allowed_anti_lockout() -> None:
+    """B5 F1 (#1057): even a user ``deny plan_exit`` cannot strand the model — anti-lockout holds."""
+    policies = [
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": "plan_exit",
+            "action": "deny",
+        }
+    ]
+    assert resolve("tool", "plan_exit", policies=policies, session_id="s", mode="plan") == "allow"
+
+
+def test_plan_acl_web_fetch_allowed_in_plan_with_empty_store() -> None:
+    """B5 F1 (#1057): with no user rows, web_fetch is still allowed in plan mode (unchanged)."""
+    assert resolve("tool", "web_fetch", policies=[], session_id="s", mode="plan") == "allow"
+
+
 def test_plans_dir_uses_repo_dot_clio_in_vcs() -> None:
     """In a VCS repo (the test tree has a ``.git``), the plans dir is ``<repo>/.clio/plans``."""
     p = plans_dir()

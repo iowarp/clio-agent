@@ -91,13 +91,18 @@ PLAN_ACL_DENY_PRIORITY = 40
 #: Priority FLOOR for the plan-mode tool allow-band (P1.4 #1066): one band above the @40 deny so the
 #: non-write tools plan mode NEEDS survive the deny-everything rule. Like the deny/carve-out it is a
 #: floor — :func:`_plan_acl_priorities` raises it above any matching user row so a user ``deny
-#: plan_exit`` can never strand the model in plan mode.
+#: plan_exit`` can never strand the model in plan mode. F1 (#1057 B5): this anti-lockout override is
+#: NARROWED to ``plan_exit`` — for the other allow-band tools a user ``deny`` wins (tighten-only, see
+#: :func:`_plan_acl_default_matches`); the band still RISES with any user match so a frozen allow can
+#: never break a legitimately-matched user row.
 PLAN_ACL_ALLOW_TOOL_PRIORITY = 50
 PLAN_ACL_PLAN_FILE_PRIORITY = 70
 
 #: The effectful-but-plan-safe tools plan mode ALLOWS despite the @40 deny-everything default (P1.4
 #: #1066): ``plan_exit`` (the turn-ending approval yield), ``ask_user`` (clarify mid-plan), and
 #: ``web_fetch`` (read external context). Reads are already fast-allowed by :func:`is_read_only`.
+#: Only ``plan_exit`` gets the unconditional anti-lockout allow (F1 #1057 B5); a user ``deny`` on
+#: ``ask_user``/``web_fetch`` is honoured.
 PLAN_ACL_PLAN_TOOLS: tuple[str, ...] = ("plan_exit", "ask_user", "web_fetch")
 
 #: The modes the built-in plan ACL constrains. The DENY-everything default applies in both; the
@@ -273,15 +278,33 @@ def _plan_acl_default_matches(
     priority from :func:`_plan_acl_priorities` (keyed by each row's ``band`` tag) -- computed from
     ``user_matches``, the matching user rows already collected for this same call -- so the
     built-in mode-lock always outranks every user row, never just the static @40/@50/@70 floors.
+
+    F1 narrowing (#1057 B5): the ``allow_tool`` band is TIGHTEN-ONLY except for ``plan_exit``. When
+    any matching user row is a ``deny``, the allow-band row for a non-``plan_exit`` tool
+    (``ask_user``/``web_fetch``) is NOT emitted, so the user's deny wins. ``plan_exit`` always keeps
+    its allow (anti-lockout: a user ``deny plan_exit`` can never strand the model in plan mode).
     """
 
     priorities = _plan_acl_priorities(user_matches)
+    # F1 (#1057 B5): the allow-band re-allows the plan-safe tools ABOVE the deny so plan mode
+    # isn't stranded, but only ``plan_exit`` MUST stay reachable (anti-lockout). For the other
+    # plan-safe tools (``ask_user``/``web_fetch``) a user's explicit ``deny`` should WIN
+    # (tighten-only), so the allow-band row is suppressed for a non-``plan_exit`` tool when any
+    # matching user row is a deny. ``plan_exit``'s allow always emits (a user ``deny plan_exit``
+    # can never strand the model in plan mode).
+    user_has_deny = any(action == "deny" for _, action in user_matches)
     matches: list[tuple[int, str]] = []
     for row in default_plan_acl_rows():
         if not _axis_matches(row, mode, event):
             continue
         tool_pattern = str(row.get("tool_name_pattern") or "*")
         if not fnmatch.fnmatchcase(pattern, tool_pattern):
+            continue
+        if (
+            str(row.get("band") or "") == "allow_tool"
+            and tool_pattern != "plan_exit"
+            and user_has_deny
+        ):
             continue
         path_pattern = str(row.get("path_pattern") or "")
         if path_pattern:
