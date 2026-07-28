@@ -743,6 +743,10 @@ def finalize_turn(
     from clio_agent.gact.autonomous_loop import dispatch_loop_at_finalize  # noqa: PLC0415
 
     dispatch_loop_at_finalize(state.app, session_id=state.sid, turn_id=state.turn_id)
+    # P4.2 #1080: run-until GOAL completion gate (owner module; no-op/never-raises).
+    from clio_agent.gact.goal import dispatch_goal_at_finalize  # noqa: PLC0415
+
+    dispatch_goal_at_finalize(state.app, session_id=state.sid, turn_id=state.turn_id, trace_id=state.trace_id)
     if not (
         state.cancelled_turn
         and state.error_info is not None

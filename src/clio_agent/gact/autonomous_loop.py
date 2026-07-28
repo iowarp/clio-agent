@@ -252,15 +252,22 @@ def stop_session_loop(app: Any, sid: str, *, reason: str = "loop_session_ended")
 # Typed bounds (first-class, enforced deterministically — NOT prose).          #
 # --------------------------------------------------------------------------- #
 def _loop_goal_met(app: Any, sid: str, loop: dict[str, Any]) -> bool:
-    """Seam for the #1080 goal stop-condition — always ``False`` here.
+    """Compose seam for the #1080 goal stop-condition (wired in P4.2).
 
-    Goal EVALUATION (the LLM first-pass + deterministic hard gate) lands with P4.2
-    (#1080); this is the compose point so a satisfied goal ends the loop with the typed
-    ``loop_goal_met`` reason.
-    TODO(#1080): evaluate the declared goal predicate against the transcript here.
-    """
+    Delegates to :func:`clio_agent.gact.goal.loop_goal_satisfied` — the loop stops with the
+    typed ``loop_goal_met`` reason when an active, PREDICATE-BACKED goal's DETERMINISTIC gate
+    holds (cheap, no LLM call, authoritative). An NL-only goal returns ``False`` here (the
+    loop cannot cheaply/authoritatively decide it); that goal's own finalize-boundary two-tier
+    eval governs completion. Imported lazily so the loop module stays a leaf (goal.py must not
+    import autonomous_loop — the compose is one-directional)."""
 
-    return False
+    from clio_agent.gact.goal import loop_goal_satisfied  # noqa: PLC0415
+
+    try:
+        return loop_goal_satisfied(app, sid)
+    except Exception:  # noqa: BLE001 - the goal seam must never break a loop bound check
+        logger.warning("loop goal seam error", exc_info=True)
+        return False
 
 
 def _check_bounds(app: Any, sid: str, loop: dict[str, Any]) -> str:

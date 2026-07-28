@@ -114,6 +114,26 @@ BACKEND_COMMANDS: list[dict[str, Any]] = [
         "error": "",
     },
     {
+        # #1080 (P4.2): the /goal user command ARMS a run-until-a-predicate goal — it
+        # gates turn completion until a condition holds, re-driving one more turn while
+        # unmet (the bounded Stop-loop re-drive seam) and auto-clearing when satisfied.
+        # Evaluation is two-tier: an LLM cheap first-pass PROPOSES, a deterministic
+        # StatePredicate/file gate CONFIRMS (authoritative). Injection-safe: only the user
+        # (or a declared skill-effect) can set/clear a goal — never the model. /goal clear
+        # removes the active goal.
+        "id": "/goal",
+        "title": "Set a run-until goal condition",
+        "description": (
+            "Gate completion on a condition: /goal <condition> [args.predicate]. Re-drives "
+            "while unmet, auto-clears when satisfied, hard-bounded (max_goal_iters/budget). "
+            "Two-tier eval (LLM proposes, deterministic gate confirms). /goal clear to remove."
+        ),
+        "source": "builtin",
+        "status": "available",
+        "enabled": True,
+        "error": "",
+    },
+    {
         # #801: the optimizer stays as a research surface — this row projects
         # the uniform structured not-implemented stub (reason code + #633
         # pointer) that every optimizer entry point shares.

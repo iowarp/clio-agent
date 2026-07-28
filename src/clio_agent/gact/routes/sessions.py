@@ -50,6 +50,7 @@ from fastapi.responses import JSONResponse
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.autonomous_loop import stop_session_loop
 from clio_agent.gact.events import Event
+from clio_agent.gact.goal import stop_session_goal
 from clio_agent.gact.loop_inbox import enqueue_user_steer
 from clio_agent.gact.mcp_apps import cleanup_session_mcp_apps
 from clio_agent.gact.routes._body import NonObjectBodyError, json_body
@@ -256,6 +257,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         )
         # P4.1 #1079 cancel-both: a deleted session must not orphan its loop wakeup.
         stop_session_loop(app, sid)
+        stop_session_goal(app, sid)  # P4.2 #1080: abandon any active goal (goal_abandoned)
         try:
             await cleanup_session_mcp_apps(app, sid)
         except RuntimeError as exc:
@@ -1514,6 +1516,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         cancel_children_of(app, sid)
         stop_session_loop(app, sid)  # P4.1 #1079 cancel-both: no orphaned loop wakeup
+        stop_session_goal(app, sid)  # P4.2 #1080: abandon any active goal on cancel
         in_flight = app.state.in_flight_turns.get(sid)
         cancellation_pending = False
         if in_flight is not None and not in_flight.done():

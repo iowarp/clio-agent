@@ -859,6 +859,10 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
             from clio_agent.gact.autonomous_loop import run_loop_command  # noqa: PLC0415
 
             body_text = run_loop_command(app, sid, request_body)
+        elif cmd_id == "/goal":  # P4.2 #1080: arm/clear a run-until goal (owner module)
+            from clio_agent.gact.goal import run_goal_command  # noqa: PLC0415
+
+            body_text = run_goal_command(app, sid, request_body)
         elif cmd_id == "/dump-trace":
             log = app.state.messages.get(sid, [])
             last_asst = next((m for m in reversed(log) if m.role == "assistant"), None)
