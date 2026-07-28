@@ -1567,6 +1567,102 @@ def test_post_message_model_matching_global_config_runs(
     assert fake_agent.calls == [("hi", sid)]
 
 
+def test_post_message_rejects_reserved_metadata_key(
+    client: TestClient,
+    fake_agent: FakeClioAgent,
+) -> None:
+    """B2 (BLOCKER): a client must not be able to smuggle an internal control key
+    (e.g. ``hook_defer_resume``) via ``metadata`` to bypass the UserPromptSubmit
+    hook. The POST is rejected 400 (typed ``reserved_metadata_key``), NOT stripped
+    (stripping is silent coercion), and the turn never runs."""
+
+    sid = _create_session(client)
+    resp = client.post(
+        f"/v1/sessions/{sid}/messages",
+        json={
+            "parts": [{"type": "text", "text": "hi"}],
+            "metadata": {"hook_defer_resume": True},
+        },
+    )
+
+    assert resp.status_code == 400, resp.text
+    inner = resp.json()["error"]
+    assert inner["error"] == "reserved_metadata_key"
+    assert inner["details"]["reserved_keys"] == ["hook_defer_resume"]
+    # Rejected, not run: no message persisted, agent never invoked.
+    assert client.get(f"/v1/sessions/{sid}/messages").json()["messages"] == []
+    assert fake_agent.calls == []
+
+
+def test_post_message_accepts_benign_metadata(
+    client: TestClient,
+    fake_agent: FakeClioAgent,
+) -> None:
+    """B2: benign client metadata that does not collide with any reserved control
+    key is accepted and the turn runs normally."""
+
+    from .conftest import complete_turn
+
+    sid = _create_session(client)
+    assistant = complete_turn(
+        client,
+        sid,
+        "hi",
+        json_override={"metadata": {"client_note": "keep me"}},
+    )
+
+    assert assistant.get("error_info") is None
+    assert assistant["parts"][-1]["text"] == "hello from fake"
+    assert fake_agent.calls == [("hi", sid)]
+
+
+def test_post_message_reserved_metadata_key_rejected_on_busy_steer_path(
+    tmp_path: Path,
+) -> None:
+    """B2: the reserved-key guard sits BEFORE the busy/steer branch, so a steer
+    POST (arriving while a turn is in flight) carrying a reserved control key is
+    rejected 400 — never enqueued as a mid-turn steer that would inject internal
+    metadata into the running turn's inbox. A benign steer during the same busy
+    window still acks 202 (proving the session was genuinely busy)."""
+
+    agent = SlowClioAgent(delay_s=1.0)
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    with TestClient(app) as c:
+        sid = _create_session(c)
+        first = c.post(
+            f"/v1/sessions/{sid}/messages",
+            json={"parts": [{"type": "text", "text": "first"}]},
+        )
+        assert first.status_code == 200, first.text
+
+        # Poll until the turn is actually in flight: a benign steer acks 202.
+        deadline = time.monotonic() + 5.0
+        benign: Any | None = None
+        while time.monotonic() < deadline:
+            r = c.post(
+                f"/v1/sessions/{sid}/messages",
+                json={"parts": [{"type": "text", "text": "benign steer"}]},
+            )
+            if r.status_code == 202:
+                benign = r
+                break
+            time.sleep(0.02)
+        assert benign is not None, "session never became busy to exercise the steer path"
+
+        # While still busy, a steer carrying a reserved key is rejected 400 — not 202.
+        reserved = c.post(
+            f"/v1/sessions/{sid}/messages",
+            json={
+                "parts": [{"type": "text", "text": "reserved steer"}],
+                "metadata": {"mid_turn_steer": True},
+            },
+        )
+        assert reserved.status_code == 400, reserved.text
+        inner = reserved.json()["error"]
+        assert inner["error"] == "reserved_metadata_key"
+        assert inner["details"]["reserved_keys"] == ["mid_turn_steer"]
+
+
 def test_post_message_without_routing_emits_text_only(
     tmp_path: Path,
 ) -> None:

@@ -37,7 +37,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Response
 from clio_agent.gact.events import Event
 from clio_agent.gact.loop_inbox import enqueue_user_steer
 from clio_agent.gact.message_wire import normalize_thought_ownership
-from clio_agent.gact.messaging import _user_message_parts
+from clio_agent.gact.messaging import _user_message_parts, reserved_metadata_keys
 from clio_agent.gact.providers.config import (
     _active_lm_supports_vision,
     _effective_lm_config,
@@ -227,6 +227,32 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         sess = app.state.sessions.get(sid)
         if sess is None:
             raise _session_not_found(sid)
+
+        # #1057 B2 (BLOCKER): reject — never strip — any client metadata that
+        # collides with an internal turn-control key. A smuggled ``hook_defer_resume``
+        # bypasses the UserPromptSubmit hook; the rest are equivalent escalation
+        # vectors (plan-exit resume, stop-defer redrive, scheduled/synthetic
+        # markers, ...). Guard sits BEFORE the busy/steer branch so it covers BOTH
+        # the fresh-turn and mid-turn-steer ingest paths. Server-side producers
+        # (`_stage_resume_turn`, the scheduler, the steer fold) build their metadata
+        # internally and never route through this body, so they are unaffected.
+        offending = reserved_metadata_keys(req.metadata)
+        if offending:
+            raise HTTPException(
+                status_code=400,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="reserved_metadata_key",
+                        message=(
+                            "request metadata carried reserved internal control "
+                            f"key(s): {', '.join(offending)}"
+                        ),
+                        details={"session_id": sid, "reserved_keys": offending},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
         lm_status = getattr(app.state, "lm_config_status", {}) or {}
         if lm_status.get("state") == "configuring":
             raise HTTPException(
