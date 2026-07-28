@@ -130,6 +130,14 @@ _HOOK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
         "severity": "warning",
         "detail": "a deny-capable hook failed on infrastructure and was denied fail-closed",
     },
+    "hook_untrusted_content_changed": {
+        "severity": "warning",
+        "detail": (
+            "a loaded hook's content fingerprint changed since it was last trusted "
+            "(e.g. a repo hook edited by a git pull); it is marked UNTRUSTED and will "
+            "NOT run until re-approved — never a silent run of changed content"
+        ),
+    },
     "hook_modify_missing_input": {
         "severity": "warning",
         "detail": (

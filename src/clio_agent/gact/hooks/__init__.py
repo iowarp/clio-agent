@@ -12,6 +12,13 @@ See ``docs/design/governance-surfaces-2026-07.md`` (Pillar 2) and
 from __future__ import annotations
 
 from clio_agent.gact.hooks.adapters import HookAdapter, SubprocessAdapter, default_adapters
+from clio_agent.gact.hooks.audit import (
+    HOOK_INVOKED_EVENT,
+    emit_hook_audit,
+    get_hook_audit_emitter,
+    install_hook_audit_emitter,
+    recent_hook_invocations,
+)
 from clio_agent.gact.hooks.config import (
     HookConfigError,
     HookEntry,
@@ -89,6 +96,10 @@ from clio_agent.gact.hooks.stop_loop import (
     read_stop_loop_state,
     run_stop_hooks,
 )
+from clio_agent.gact.hooks.trust import (
+    compute_fingerprint,
+    evaluate_trust,
+)
 from clio_agent.gact.hooks.wire import (
     HookDecision,
     HookEnvelope,
@@ -128,6 +139,13 @@ __all__ = [
     "HookRun",
     "HOOK_DEFER_PENDING_META",
     "HOOK_DEFER_RESUME_META",
+    "HOOK_INVOKED_EVENT",
+    "compute_fingerprint",
+    "emit_hook_audit",
+    "evaluate_trust",
+    "get_hook_audit_emitter",
+    "install_hook_audit_emitter",
+    "recent_hook_invocations",
     "PRETOOL_DEFER_KIND",
     "REASON_HOOK_DEFER",
     "TURN_DEFER_KIND",

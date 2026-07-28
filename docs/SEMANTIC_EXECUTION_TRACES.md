@@ -44,7 +44,9 @@ Current CLIO events include:
   `delegation.failed`
 - `tool.call.started`, `tool.call.completed`
 - `hook.invocation.started`, `hook.invocation.completed`,
-  `hook.invocation.failed`, `hook.pre_message.blocked`
+  `hook.invocation.blocked`, `hook.invocation.deferred`
+- `hook.invoked` — the P2.7 per-invocation governance audit (one per hook run;
+  trace-only, never on the live UI wire)
 - `memory.search.completed`, `memory.compacted`
 - `permission.requested`
 - `user_question.created`
@@ -129,7 +131,9 @@ Events this slice ships (the ports of the old registry's live events):
 
 CLIO emits `hook.invocation.*` semantic events around `UserPromptSubmit` and
 `Stop` dispatch so trace consumers see hook activity in the timeline. A blocked
-`UserPromptSubmit` hook records `hook.pre_message.blocked` and `turn.failed`.
+`UserPromptSubmit` hook records `hook.invocation.blocked` and `turn.failed`. In
+addition, EVERY hook invocation (any event) emits exactly one `hook.invoked`
+governance-audit event — see `docs/HOOKS.md`.
 
 Configuration is a single declarative JSON file discovered at user scope
 (`<user_config_dir>/hooks.json`) then project scope (`<cwd>/.clio/hooks.json`),

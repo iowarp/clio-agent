@@ -102,6 +102,21 @@ class HookEntry:
     fail_closed: bool = False
     enabled: bool = True
     source: str = ""
+    #: P2.7 provenance label — the tier this hook was discovered from
+    #: (``"user"``/``"project"``/``"managed"``; empty for a directly-constructed
+    #: entry). Distinct from :attr:`source` (the file PATH): ``scope`` is what
+    #: ``GET /v1/hooks`` reports as the source label and what the ``allowManagedHooksOnly``
+    #: admin lockdown filters on.
+    scope: str = ""
+    #: P2.7 content trust — ``"trusted"`` (runs) or ``"untrusted"`` (content changed
+    #: since it was last trusted; does NOT run silently). Defaults ``"trusted"`` so a
+    #: directly-constructed entry (unit tests) is never gated on a fingerprint; the
+    #: discovery/load path (:func:`build_hook_dispatcher` → ``trust.evaluate_trust``)
+    #: overwrites it from the persisted fingerprint comparison.
+    trust: str = "trusted"
+    #: P2.7 content fingerprint (empty until evaluated at load). See
+    #: :mod:`clio_agent.gact.hooks.trust`.
+    fingerprint: str = ""
     #: P2.5 bounded self-loops — the per-hook ``Stop`` re-entry cap (``loopLimit``).
     #: How many times THIS hook's ``Stop`` block may re-drive the turn within one
     #: stop-sequence before it stops being honored (R5). ``0``/negative means "no
@@ -113,10 +128,26 @@ class HookEntry:
     def timeout_s(self) -> float:
         return max(self.timeout_ms, 0) / 1000.0
 
-    def runs_for(self, event: str, envelope: HookEnvelope) -> bool:
-        """Return whether this hook runs for ``event`` given ``envelope``."""
+    @property
+    def is_trusted(self) -> bool:
+        """Whether this hook is content-trusted (P2.7). An untrusted hook never runs."""
 
-        return self.enabled and event in self.on and self.match.matches(envelope)
+        return self.trust == "trusted"
+
+    def runs_for(self, event: str, envelope: HookEnvelope) -> bool:
+        """Return whether this hook runs for ``event`` given ``envelope``.
+
+        An ``untrusted`` hook (content changed since it was last trusted, P2.7) NEVER
+        runs — the tighten-only invariant extends to trust: a silently-rewritten hook
+        must be re-approved before it fires again.
+        """
+
+        return (
+            self.enabled
+            and self.is_trusted
+            and event in self.on
+            and self.match.matches(envelope)
+        )
 
 
 def _compile_anchored(pattern: str, *, hook_id: str) -> re.Pattern[str]:
@@ -135,7 +166,7 @@ def _compile_anchored(pattern: str, *, hook_id: str) -> re.Pattern[str]:
         ) from exc
 
 
-def _parse_entry(raw: Mapping[str, Any], *, source: str) -> HookEntry:
+def _parse_entry(raw: Mapping[str, Any], *, source: str, scope: str = "") -> HookEntry:
     """Parse + validate one raw entry into a :class:`HookEntry` (typed errors)."""
 
     hook_id = str(raw.get("id") or "").strip()
@@ -206,11 +237,12 @@ def _parse_entry(raw: Mapping[str, Any], *, source: str) -> HookEntry:
         fail_closed=bool(raw.get("failClosed", False)),
         enabled=bool(raw.get("enabled", True)),
         source=source,
+        scope=scope,
         loop_limit=int(raw.get("loopLimit") or 0),
     )
 
 
-def parse_hook_entries(rows: Any, *, source: str) -> list[HookEntry]:
+def parse_hook_entries(rows: Any, *, source: str, scope: str = "") -> list[HookEntry]:
     """Parse a list of raw hook rows, skipping (with a diagnostic) any malformed one."""
 
     if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
@@ -222,13 +254,13 @@ def parse_hook_entries(rows: Any, *, source: str) -> list[HookEntry]:
             logger.warning("[clio-hooks] %s: skipping non-object hook entry", source)
             continue
         try:
-            entries.append(_parse_entry(row, source=source))
+            entries.append(_parse_entry(row, source=source, scope=scope))
         except HookConfigError as exc:
             logger.warning("[clio-hooks] %s: %s", source, exc)
     return entries
 
 
-def _load_file(path: Path) -> list[HookEntry]:
+def _load_file(path: Path, *, scope: str = "") -> list[HookEntry]:
     """Load hook entries from one JSON config file, or ``[]`` if absent/malformed."""
 
     if not path.is_file():
@@ -241,7 +273,7 @@ def _load_file(path: Path) -> list[HookEntry]:
     if not isinstance(data, Mapping):
         logger.warning("[clio-hooks] hook config %s is not an object; ignoring", path)
         return []
-    return parse_hook_entries(data.get("hooks"), source=str(path))
+    return parse_hook_entries(data.get("hooks"), source=str(path), scope=scope)
 
 
 def discover_hook_entries(
@@ -249,12 +281,21 @@ def discover_hook_entries(
     cwd: Path | None = None,
     user_config_path: Path | None = None,
     project_config_path: Path | None = None,
+    managed_config_path: Path | None = None,
+    allow_managed_only: bool = False,
 ) -> list[HookEntry]:
-    """Discover hook entries from the user + project config files.
+    """Discover hook entries from the managed + user + project config files.
 
-    Precedence: project overrides user by ``id`` (an admin/managed tier is P2.7).
-    An explicit ``*_config_path`` overrides the default location (used by tests
-    and the ``CLIO_HOOKS_CONFIG`` env in :func:`build_hook_dispatcher`).
+    Precedence by ``id`` collision: ``user`` < ``project`` < ``managed`` — a managed
+    (admin) entry always wins, then a project entry, then a user entry. Each surviving
+    entry carries its ``scope`` label (``"user"``/``"project"``/``"managed"``).
+
+    ``allow_managed_only`` is the ``allowManagedHooksOnly`` admin lockdown: when set
+    it DROPS every non-managed source, so only admin/managed hooks run (the
+    project/user tiers are discovered but discarded). An explicit ``*_config_path``
+    overrides the default location (used by tests and the ``CLIO_HOOKS_*`` env in
+    :func:`build_hook_dispatcher`); ``managed_config_path`` has no default location
+    (managed hooks are opt-in, configured by an operator).
     """
 
     if user_config_path is None:
@@ -266,8 +307,13 @@ def discover_hook_entries(
         project_config_path = base / ".clio" / "hooks.json"
 
     merged: dict[str, HookEntry] = {}
-    for entry in _load_file(user_config_path):
+    for entry in _load_file(user_config_path, scope="user"):
         merged[entry.id] = entry
-    for entry in _load_file(project_config_path):
-        merged[entry.id] = entry  # project wins on id collision
+    for entry in _load_file(project_config_path, scope="project"):
+        merged[entry.id] = entry  # project wins over user on id collision
+    if managed_config_path is not None:
+        for entry in _load_file(managed_config_path, scope="managed"):
+            merged[entry.id] = entry  # managed (admin) wins over everything
+    if allow_managed_only:
+        return [entry for entry in merged.values() if entry.scope == "managed"]
     return list(merged.values())

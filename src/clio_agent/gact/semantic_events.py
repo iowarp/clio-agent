@@ -138,6 +138,11 @@ SSE_UI_EVENT_TYPES: frozenset[str] = frozenset(
 # data-dependent clean-stream violation this set closes (S5 gate3 C5).
 SSE_TRACE_ONLY_EVENT_TYPES: frozenset[str] = frozenset(
     {
+        # P2.7 hook audit (#1075): one ``hook.invoked`` per hook invocation — the
+        # governance audit (decision/denial/error/pre-exec rejection). Durable-trace +
+        # ARC substrate the operator queries after the fact, NEVER a UI row; declared
+        # trace-only so no status can lift it onto the served wire.
+        "hook.invoked",
         "artifact.used",
         "artifact.transform.recorded",
         "artifact.transform.failed",

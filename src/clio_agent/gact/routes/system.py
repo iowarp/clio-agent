@@ -520,6 +520,40 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
             auth=AuthInfo(schemes=["trust_socket"], current="trust_socket"),
         )
 
+    @app.get("/v1/hooks")
+    async def hooks_inspect() -> dict[str, Any]:
+        """Read-only inspection of every LOADED hook (P2.7 #1075).
+
+        The debugging entry point (the ``/hooks``-command analog) that REPLACES the
+        CRUD deleted in P2.1: it never mutates hook state. Lists each loaded hook with
+        its stable ``id``, the events it runs ``on``, its ``match`` predicate, its
+        source scope label (user/project/managed), its content ``trust`` state, and
+        whether it is ``enabled`` — plus the bounded recent per-invocation audit
+        records (the same ``hook.invoked`` records carried on the semantic highway) so
+        an operator can see what fired and how it decided without reading the trace.
+        """
+
+        from clio_agent.gact.hooks import (  # noqa: PLC0415 - lazy: keep system.py leaf-only
+            get_global_dispatcher,
+            recent_hook_invocations,
+        )
+
+        dispatcher = get_global_dispatcher()
+        # Prefer the LIVE dispatcher (a test may install one after build_app); fall back
+        # to the boot-time metadata stamped on app.state for /v1/capabilities parity.
+        if dispatcher is not None:
+            metadata = dispatcher.metadata()
+            hooks = dispatcher.inspect()
+        else:
+            metadata = getattr(app.state, "runtime_hook_registry_metadata", {}) or {}
+            hooks = []
+        return {
+            "backend": str(metadata.get("backend", "")),
+            "enabled": bool(metadata.get("enabled", False)),
+            "hooks": hooks,
+            "recent_invocations": recent_hook_invocations(),
+        }
+
     @app.get("/v1/capability-gaps")
     async def capability_gaps() -> dict[str, Any]:
         """Return intentionally unsupported or future CLIO capability rows.

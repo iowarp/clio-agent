@@ -250,6 +250,33 @@ references: `agent_blueprints.py:490/494` + `load_hook_descriptors` (727-771),
   registry's `metadata()`/`matching_handlers()` data), **audit via the semantic-event highway**
   (RULE 4 / #737 — *not* a new JSONL store), no-TTY.
 
+  **P2.7 implementation status (#1075) — SHIPPED.**
+  - **Trust** — `gact/hooks/trust.py`: a sha256 `compute_fingerprint` over each loaded hook's
+    declarative config + the resolved command/script bytes, keyed by stable `id`, compared to a
+    colocated `hooks.trust.json` (`{id: fingerprint}` — hook config, not a fifth store). `evaluate_trust`
+    (called from `build_hook_dispatcher`) tags each entry `trusted`/`untrusted` (TOFU on first sight);
+    an `untrusted` (content-changed) hook is dropped from `HookEntry.runs_for`/`matching` — it never runs
+    silently — and records the typed `hook_untrusted_content_changed` reason. `allowManagedHooksOnly`
+    (`hooks.allow_managed_only` / `CLIO_HOOKS_ALLOW_MANAGED_ONLY`) drops every non-managed source in
+    `discover_hook_entries`; scopes are `user < project < managed` with a new `HookEntry.scope` label.
+  - **Introspection** — read-only `GET /v1/hooks` in `routes/system.py` off `HookDispatcher.inspect()`
+    (id, on-events, match, source scope, trust, enabled/runs) + the bounded recent audit records.
+  - **Audit** — `gact/hooks/audit.py`: `HookDispatcher.dispatch` emits exactly one `hook.invoked`
+    semantic event per invocation (decision / denial / infra error / pre-exec rejection) on the highway
+    (trace-only, added to `SSE_TRACE_ONLY_EVENT_TYPES`), resolving the live app from the keystone-bound
+    `context.active_app()` (no new global, no `build_app` wiring line). `SemanticEvent`-event invocations
+    are skipped (highway-recursion guard) but still ring-captured. The bounded `_RECENT` ring is the
+    authoritative always-on capture; the highway event is its served projection.
+  - **Deletions (grep-clean)** — the dead packaged-hook enable subsystem: `run_demo_benchmark.py`'s
+    `_enable_blueprint_hook_for_case` / `_probe_packaged_hook_for_case` / `_packaged_hook_invocation_observed`
+    + the `marketplace_packaged_hook_blocked_turn` case + `packaged_hook_invocation` proof (it POSTed to a
+    never-implemented `/v1/agent-blueprints/{id}/hooks/{hook_id}/enable`); `docs/AGENT_BLUEPRINT_PACKAGED_HOOKS.md`
+    + its `docs/README.md` link; stale `hook.pre_message.blocked` doc refs.
+  - **Docs** — `docs/HOOKS.md` (wire contract, config schema, trust, events, exit-0/2 adapter, audit).
+  - **CONTRACT SWEEP (cross-repo, tracked — do NOT edit the gact-tui submodule here):** the gact-tui
+    `contract/SPEC.md` `x_clio_hook_backend` enum needs `declarative` added to match the backend name this
+    build reports (see the note on `_BACKEND_NAME` in `dispatcher.py`).
+
 **Files:** delete `routes/hooks.py`, `runtime/hooks.py`, `tests/test_gact/test_hooks.py`; new
 `gact/hooks/` (dispatcher, adapters, wire, trust); `execution.py` (`tool_interceptor` producer);
 provider/dspy layer (`dspy.LM` wrapper for BeforeModel); `runtime/app_state.py` (wiring);

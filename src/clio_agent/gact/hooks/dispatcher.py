@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from clio_agent.gact.hooks.adapters import HookAdapter, default_adapters
+from clio_agent.gact.hooks.audit import emit_hook_audit, should_audit
 from clio_agent.gact.hooks.config import HookEntry, discover_hook_entries
 from clio_agent.gact.hooks.events import (
     AFTER_MODEL,
@@ -108,7 +109,9 @@ class HookDispatcher:
 
         with self._lock:
             entries = list(self._entries)
-        return any(entry.enabled and event in entry.on for entry in entries)
+        return any(
+            entry.enabled and entry.is_trusted and event in entry.on for entry in entries
+        )
 
     def dispatch(self, event: str, envelope: HookEnvelope) -> HookOutcome:
         """Run every matching hook for ``event`` and merge to one outcome.
@@ -128,11 +131,14 @@ class HookDispatcher:
                 "hook_id": entry.id,
                 "event": event,
                 "source": entry.source,
+                "scope": entry.scope,
+                "trust": entry.trust,
                 "run_type": entry.run.type,
             }
             if adapter is None:  # pragma: no cover - default_adapters covers every declared type
                 record["status"] = "error"
                 record["error"] = f"no adapter for run.type {entry.run.type!r}"
+                self._audit(event, envelope, record)
                 records.append(record)
                 continue
             try:
@@ -160,15 +166,40 @@ class HookDispatcher:
                             hook_id=entry.id,
                         )
                     )
+                self._audit(event, envelope, record)
                 records.append(record)
                 continue
             record["status"] = "denied" if decision.decision == "deny" else "completed"
             record["decision"] = decision.decision
             if decision.reason:
                 record["reason"] = decision.reason
+            self._audit(event, envelope, record)
             decisions.append(decision)
             records.append(record)
         return HookOutcome.merge(decisions, records)
+
+    @staticmethod
+    def _audit(event: str, envelope: HookEnvelope, record: dict[str, Any]) -> None:
+        """Audit ONE hook invocation on the semantic highway (P2.7), exactly once.
+
+        Every branch of :meth:`dispatch` (a decision, a denial, an infra error/timeout,
+        a pre-execution rejection carried as a ``deny``) routes here so the audit is
+        complete. ``SemanticEvent``-event invocations are skipped to avoid the
+        highway-recursion the observation hooks would otherwise cause (see
+        :mod:`clio_agent.gact.hooks.audit`). Never raises — audit must not crash a
+        dispatch it observes.
+        """
+
+        if not should_audit(event):
+            return
+        emit_hook_audit(
+            {
+                **record,
+                "session_id": envelope.session_id,
+                "turn_id": envelope.turn_id,
+                "tool_name": envelope.tool_name or "",
+            }
+        )
 
     def metadata(self) -> dict[str, Any]:
         """Return capability metadata for ``/v1/capabilities`` (x_clio_hook_*).
@@ -182,7 +213,10 @@ class HookDispatcher:
 
         with self._lock:
             entries = list(self._entries)
-        active = [entry for entry in entries if entry.enabled]
+        # Only ENABLED and TRUSTED entries actually dispatch (mirrors ``matching``'s
+        # ``runs_for`` filter): a disabled or content-untrusted (P2.7) entry is declared
+        # but never fires, so it must not inflate the capability a caller relies on.
+        active = [entry for entry in entries if entry.enabled and entry.is_trusted]
         counts: dict[str, int] = dict.fromkeys(sorted(KNOWN_EVENTS), 0)
         for entry in active:
             for event in entry.on:
@@ -194,6 +228,43 @@ class HookDispatcher:
             "handler_counts": counts,
             "hook_ids": [entry.id for entry in active],
         }
+
+    def inspect(self) -> list[dict[str, Any]]:
+        """Return a read-only per-hook view for ``GET /v1/hooks`` (P2.7 introspection).
+
+        Lists EVERY loaded hook (including disabled and content-untrusted ones — the
+        whole point of the debugging surface is to SEE the hook a changed fingerprint
+        just stopped running), each with its stable ``id``, the events it runs ``on``,
+        its ``match`` predicate, its source ``scope`` label (user/project/managed), its
+        content ``trust`` state, and whether it is ``enabled``.
+        """
+
+        with self._lock:
+            entries = list(self._entries)
+        rows: list[dict[str, Any]] = []
+        for entry in entries:
+            match = entry.match
+            rows.append(
+                {
+                    "id": entry.id,
+                    "on": sorted(entry.on),
+                    "match": {
+                        "tool": match.tool.pattern if match.tool is not None else None,
+                        "annotations": dict(match.annotations),
+                        "argsPattern": (
+                            match.args_pattern.pattern if match.args_pattern is not None else None
+                        ),
+                    },
+                    "run_type": entry.run.type,
+                    "source": entry.scope or "unknown",
+                    "source_path": entry.source,
+                    "trust": entry.trust,
+                    "fingerprint": entry.fingerprint,
+                    "enabled": entry.enabled,
+                    "runs": entry.enabled and entry.is_trusted,
+                }
+            )
+        return rows
 
 
 # --------------------------------------------------------------------------- #
@@ -218,22 +289,62 @@ def get_global_dispatcher() -> HookDispatcher | None:
 
 
 def build_hook_dispatcher(*, cwd: Path | None = None) -> HookDispatcher:
-    """Build the configured dispatcher from the user + project config files.
+    """Build the configured dispatcher from the managed + user + project config files.
 
-    ``CLIO_HOOKS_CONFIG`` overrides the discovery paths with a single explicit
-    file (used by tests and single-file deployments).
+    Config knobs (file → env → default, via ``conf.resolve``):
+
+    * ``hooks.config`` / ``CLIO_HOOKS_CONFIG`` — a single explicit file that overrides
+      the user+project discovery paths (tests / single-file deployments).
+    * ``hooks.managed_config`` / ``CLIO_HOOKS_MANAGED_CONFIG`` — the admin/managed hook
+      file (highest precedence; no default location — managed hooks are opt-in).
+    * ``hooks.allow_managed_only`` / ``CLIO_HOOKS_ALLOW_MANAGED_ONLY`` — the
+      ``allowManagedHooksOnly`` lockdown: drop every non-managed source.
+    * ``hooks.trust_store`` / ``CLIO_HOOKS_TRUST_STORE`` — override the trusted-
+      fingerprint store path (default: colocated with the hook config).
+
+    Every LOADED hook is then trust-evaluated (:mod:`clio_agent.gact.hooks.trust`): a
+    hook whose content fingerprint changed since it was last trusted is marked
+    ``untrusted`` and will NOT run (no silent run of changed content).
     """
 
     from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+    from clio_agent.gact.hooks.trust import evaluate_trust, trust_store_path_for  # noqa: PLC0415
 
     explicit = conf.resolve(
         "hooks.config", env="CLIO_HOOKS_CONFIG", default="", cast=conf.as_str
     ).strip()
+    managed = conf.resolve(
+        "hooks.managed_config", env="CLIO_HOOKS_MANAGED_CONFIG", default="", cast=conf.as_str
+    ).strip()
+    allow_managed_only = conf.resolve(
+        "hooks.allow_managed_only",
+        env="CLIO_HOOKS_ALLOW_MANAGED_ONLY",
+        default=False,
+        cast=conf.as_bool,
+    )
+    managed_path = Path(managed).expanduser() if managed else None
     if explicit:
         path = Path(explicit).expanduser()
-        entries = discover_hook_entries(user_config_path=path, project_config_path=path)
+        entries = discover_hook_entries(
+            user_config_path=path,
+            project_config_path=path,
+            managed_config_path=managed_path,
+            allow_managed_only=allow_managed_only,
+        )
+        store_path = trust_store_path_for(path)
     else:
-        entries = discover_hook_entries(cwd=cwd)
+        from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
+
+        entries = discover_hook_entries(
+            cwd=cwd, managed_config_path=managed_path, allow_managed_only=allow_managed_only
+        )
+        store_path = paths.user_config_dir() / "hooks.trust.json"
+    override = conf.resolve(
+        "hooks.trust_store", env="CLIO_HOOKS_TRUST_STORE", default="", cast=conf.as_str
+    ).strip()
+    if override:
+        store_path = Path(override).expanduser()
+    entries = evaluate_trust(entries, store_path=store_path)
     return HookDispatcher(entries)
 
 

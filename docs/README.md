@@ -18,7 +18,7 @@ lives under [archive/](archive/README.md).
 - [ARC_MEMORY_LAYER.md](ARC_MEMORY_LAYER.md) — the ARC memory model and storage.
 - [DSPY_BLUEPRINT_EXPERT_RUNTIME.md](DSPY_BLUEPRINT_EXPERT_RUNTIME.md) — DSPy-backed expert runtime.
 - [AGENT_BLUEPRINT_RUNTIME.md](AGENT_BLUEPRINT_RUNTIME.md) — agent blueprint composition and runtime.
-- [AGENT_BLUEPRINT_PACKAGED_HOOKS.md](AGENT_BLUEPRINT_PACKAGED_HOOKS.md) — packaged hooks in agent blueprints.
+- [HOOKS.md](HOOKS.md) — the declarative hook system: wire contract, config, trust, events.
 - [PROMPT_SYSTEM.md](PROMPT_SYSTEM.md) — the external, editable prompt system.
 - [PROMPT_ALIGNMENT_REFERENCE_MATRIX.md](PROMPT_ALIGNMENT_REFERENCE_MATRIX.md) — prompt families mapped to public sources.
 - [SEMANTIC_EXECUTION_TRACES.md](SEMANTIC_EXECUTION_TRACES.md) — the semantic event log and traces.
