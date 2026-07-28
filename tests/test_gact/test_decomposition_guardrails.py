@@ -54,7 +54,11 @@ from clio_agent.gact.app import build_app
 # /v1/workspaces/{wid}/grants, owned by routes/workspaces.py (grants-on-the-record).
 # 164 -> 166 (#1037 Pillar 2): +2 live-handle routes owned by routes/agent_tasks.py —
 # GET /v1/agent-tasks/{id}/live (read-only projection) + POST /v1/agent-tasks/{id}/steer.
-EXPECTED_ROUTE_METHOD_PAIRS = 166
+# 166 -> 163 (#1057 P2.1): -3 dead /v1/hooks CRUD routes (GET/POST/DELETE) deleted
+# from routes/hooks.py — a registry no dispatcher ever fired.
+# 163 -> 164 (#1057 P2.7): +1 read-only GET /v1/hooks introspection route, owned by
+# routes/system.py, replacing the deleted CRUD surface with a debugging endpoint.
+EXPECTED_ROUTE_METHOD_PAIRS = 164
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

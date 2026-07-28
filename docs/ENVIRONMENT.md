@@ -67,7 +67,12 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_GACT_CORS_ORIGINS` | `gact.cors.origins` | str | _(unset)_ | `src/clio_agent/gact/app.py` |
 | `CLIO_GACT_MCP_RECONNECT_TIMEOUT_S` | `limits.mcp_reconnect_timeout_s` | float | `15.0` | `src/clio_agent/gact/routes/mcp.py` |
 | `CLIO_GACT_TURN_TIMEOUT_S` | `limits.turn_timeout_s` | float | `900.0` | `src/clio_agent/gact/_params.py` |
+| `CLIO_HOOKS_ALLOW_MANAGED_ONLY` | `hooks.allow_managed_only` | bool | `false` | `src/clio_agent/gact/hooks/dispatcher.py` |
 | `CLIO_HOOKS_CONFIG` | `hooks.config` | str | _(unset)_ | `src/clio_agent/gact/hooks/dispatcher.py` |
+| `CLIO_HOOKS_DEFER_TIMEOUT` | `hooks.defer_timeout` | float | `86400.0` | `src/clio_agent/gact/hooks/defer.py` |
+| `CLIO_HOOKS_MANAGED_CONFIG` | `hooks.managed_config` | str | _(unset)_ | `src/clio_agent/gact/hooks/dispatcher.py` |
+| `CLIO_HOOKS_STOP_LOOP_CAP` | `hooks.stop_loop_cap` | int | `8` | `src/clio_agent/gact/hooks/stop_loop.py` |
+| `CLIO_HOOKS_TRUST_STORE` | `hooks.trust_store` | str | _(unset)_ | `src/clio_agent/gact/hooks/dispatcher.py` |
 | `CLIO_LEDGER_COMMAND_AUDIT_MAX` | `gact.ledger_retention.command_audit.max` | int | `2000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_CONTEXT_FRAMES_MAX` | `gact.ledger_retention.context_frames.max` | int | `200` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_MEMORY_TOOL_AUDIT_MAX` | `gact.ledger_retention.memory_tool_audit.max` | int | `2000` | `src/clio_agent/gact/runtime/retention.py` |
