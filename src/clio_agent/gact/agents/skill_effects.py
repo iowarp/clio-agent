@@ -30,33 +30,26 @@ so "run skill X daily until Y holds" is ONE declared, injection-safe skill:
 
 * ``loop`` — arm a self-paced cross-turn loop for this skill's work via
   :func:`clio_agent.gact.autonomous_loop.start_loop` (#P4.1) with the declared typed bounds
-  (``max_iters`` / ``interval_s`` / ``max_wallclock_s`` / ``max_tokens`` / ``max_usd``). The
-  loop is STILL bounded — an unset bound resolves to a finite hard default and every
-  ``loop_wakeup`` delay is clamped; a skill cannot evade the anti-runaway.
-* ``set_goal`` — arm a run-until-``<condition>`` goal via
-  :func:`clio_agent.gact.goal.arm_goal` (#P4.2). The SANCTIONED skill-arming door (a DECLARED,
-  trusted effect — like ``/goal``; NOT model self-arming, goal stays non-model-tool-armable per
-  #1080). Completion is decided by the bounded LLM judge at the finalize boundary and the typed
-  loop bounds are the hard stops (the deterministic goal-predicate tier was deleted, A4 #1057 —
-  a predicate over model-authored state let the model mark its own homework).
-* ``schedule`` — register a cron / ``run_at`` / ``delay_s`` schedule for this skill via the
-  P4.3 :meth:`ScheduleStore.create` (#P4.3). The schedule is STILL clamped — a sub-floor cron
-  raises the typed :class:`~clio_agent.gact.scheduler.CronError` (min-interval anti-runaway),
-  surfaced as a :class:`SkillEffectError`.
+  (``max_iters`` / ``interval_s`` / ``max_wallclock_s`` / ``max_tokens`` / ``max_usd``). STILL
+  bounded — an unset bound resolves to a finite hard default and the delay is clamped.
+* ``set_goal`` — arm a run-until-``<condition>`` goal via :func:`clio_agent.gact.goal.arm_goal`
+  (#P4.2). The SANCTIONED skill-arming door (a DECLARED, trusted effect like ``/goal``; NOT model
+  self-arming per #1080). Completion is decided by the bounded LLM judge and the typed loop bounds
+  are the hard stops (the deterministic goal-predicate tier was deleted, A4 #1057).
+* ``schedule`` — register a cron / ``run_at`` / ``delay_s`` schedule via the P4.3
+  :meth:`ScheduleStore.create` (#P4.3). STILL clamped — a sub-floor cron raises the typed
+  :class:`~clio_agent.gact.scheduler.CronError` (min-interval), surfaced as a :class:`SkillEffectError`.
 * ``plan_workflow`` / ``plan_small`` — ``enter_mode`` VARIANTS (P1.6): enter plan mode with a
-  variant tag (a different attachment/thinking budget). Because plan is the strictest mode,
-  they inherit the enter_mode no-relax guard verbatim — they can only ENTER plan, never escape
-  a restrictive posture.
+  variant tag (a different attachment/thinking budget). Because plan is the strictest mode, they
+  inherit the enter_mode no-relax guard verbatim — they can only ENTER plan, never escape.
 
-**The P1.0 invariants apply VERBATIM to every autonomy effect.** INJECTION-SAFE: the effect
-is read ONLY from the DECLARED ``effect:`` frontmatter of an invoked skill — a body / read
-file / model output containing ``effect: loop`` (or ``schedule`` / ``set_goal``) has ZERO
-runtime effect. NO PRIVILEGE ESCALATION: a ``loop`` / ``schedule`` / ``set_goal`` effect
-neither touches the session mode (so it cannot escape a restrictive posture) nor over-grants
-— its re-driven/scheduled turns run in the SAME session under the SAME mode gate — and it
-routes through the SAME clamped infra (bounds/clamps of #P4.1/#P4.2/#P4.3 + the goal two-tier
-gate), so it cannot evade the anti-runaway. A ``plan_workflow`` / ``plan_small`` effect is a
-plan-mode enter and can never relax.
+**The P1.0 invariants apply VERBATIM to every autonomy effect.** INJECTION-SAFE: the effect is
+read ONLY from the DECLARED ``effect:`` frontmatter of an invoked skill — a body / read file /
+model output containing ``effect: loop`` has ZERO runtime effect. NO PRIVILEGE ESCALATION: a
+``loop`` / ``schedule`` / ``set_goal`` effect neither touches the session mode nor over-grants
+(its re-driven/scheduled turns run in the SAME session under the SAME mode gate) and routes
+through the SAME clamped infra (#P4.1/#P4.2/#P4.3 + the goal two-tier gate), so it cannot evade
+the anti-runaway. A ``plan_workflow`` / ``plan_small`` effect is a plan-mode enter, never a relax.
 
 Validation is typed and total: an unknown ``kind`` (or a malformed spec) raises
 :class:`SkillEffectError` — never a silent ignore (no-silent-fallback ground rule).
@@ -70,11 +63,12 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 from clio_agent.gact import context as _ctx
-from clio_agent.gact.planning import PLAN_VARIANT_SMALL, PLAN_VARIANT_WORKFLOW
+from clio_agent.gact import planning
 from clio_agent.gact.skills import read_skill_body
 from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
+    from clio_agent.gact.planning import Playbook
     from clio_agent.gact.skills import SkillRef
 
 #: The declared effect kinds. An ``effect.kind`` outside this set is a typed validation
@@ -97,8 +91,8 @@ EFFECT_PLAN_SMALL: Literal["plan_small"] = "plan_small"
 _PLAN_VARIANTS: dict[str, str] = {
     # Values are the consumer's own constants (gact.planning, the tag READER) so the
     # writer and reader can never drift apart silently.
-    EFFECT_PLAN_WORKFLOW: PLAN_VARIANT_WORKFLOW,
-    EFFECT_PLAN_SMALL: PLAN_VARIANT_SMALL,
+    EFFECT_PLAN_WORKFLOW: planning.PLAN_VARIANT_WORKFLOW,
+    EFFECT_PLAN_SMALL: planning.PLAN_VARIANT_SMALL,
 }
 
 _KNOWN_EFFECT_KINDS = frozenset(
@@ -177,6 +171,7 @@ class SkillEffect:
     agent: str = ""  # spawn_subagent_with_skill: optional declared child expert id
     plan_variant: str = ""  # plan_workflow/plan_small variant tag
     params: Mapping[str, Any] = field(default_factory=dict)  # loop/set_goal/schedule args
+    playbook: Playbook | None = None  # operator playbook skeleton (plan-entering effects only)
 
 
 @dataclass(frozen=True)
@@ -367,18 +362,31 @@ def _autonomy_params(
     return out
 
 
+def _parse_playbook_field(raw: Any, *, plan_entering: bool) -> "Playbook | None":
+    """Parse a declared playbook, re-raising a typed :class:`planning.PlaybookError` as :class:`SkillEffectError` (never a silent drop)."""
+
+    try:
+        return planning.parse_effect_playbook(raw, plan_entering=plan_entering)
+    except planning.PlaybookError as exc:
+        raise SkillEffectError(str(exc), reason=exc.reason) from exc
+
+
 def parse_skill_effect(meta: Mapping[str, Any]) -> SkillEffect | None:
     """Parse + validate the declared effect on a skill's frontmatter ``meta`` (typed).
 
     Returns ``None`` when the skill declares no effect (the common, backward-compatible
     case — an effect-less skill is unchanged). Raises :class:`SkillEffectError` for a
-    malformed spec or an unknown ``kind`` (no silent ignore).
+    malformed spec or an unknown ``kind`` (no silent ignore). A ``playbook:`` declared on
+    an effect-LESS skill is MISPLACED (a playbook only rides a plan-entering effect): it is
+    typed-rejected (``playbook_requires_plan_mode`` / ``malformed_playbook``), never dropped.
     """
 
     if not isinstance(meta, Mapping):
         return None
     spec = _coerce_effect_spec(meta)
     if spec is None:
+        # An orphan playbook on an effect-less skill is misplaced -> typed reject (never dropped).
+        _parse_playbook_field(meta.get("playbook"), plan_entering=False)
         return None
     kind = str(spec.get("kind") or "").strip()
     if not kind:
@@ -388,6 +396,11 @@ def parse_skill_effect(meta: Mapping[str, Any]) -> SkillEffect | None:
             f"unknown skill effect kind {kind!r} (known: {sorted(_KNOWN_EFFECT_KINDS)})",
             reason="unknown_effect_kind",
         )
+    plan_entering = kind in _PLAN_VARIANTS or (
+        kind == EFFECT_ENTER_MODE and str(spec.get("mode") or "").strip() == "plan"
+    )
+    pb_raw = spec.get("playbook", meta.get("playbook"))
+    playbook = _parse_playbook_field(pb_raw, plan_entering=plan_entering)
     if kind == EFFECT_ENTER_MODE:
         mode = str(spec.get("mode") or "").strip()
         if mode not in _MODE_RESTRICTIVENESS:
@@ -396,12 +409,14 @@ def parse_skill_effect(meta: Mapping[str, Any]) -> SkillEffect | None:
                 f"(valid: {sorted(_MODE_RESTRICTIVENESS)})",
                 reason="invalid_mode",
             )
-        return SkillEffect(kind=EFFECT_ENTER_MODE, mode=mode)
+        return SkillEffect(kind=EFFECT_ENTER_MODE, mode=mode, playbook=playbook)
     if kind in _PLAN_VARIANTS:
         # A plan_workflow / plan_small VARIANT (P1.6): enter PLAN with a variant tag. The
         # transition reuses the tighten-only enter_mode path (plan is strictest → never
         # relaxes a restrictive mode). Kept minimal: enter_mode:plan + the variant tag.
-        return SkillEffect(kind=kind, mode="plan", plan_variant=_PLAN_VARIANTS[kind])  # type: ignore[arg-type]
+        return SkillEffect(
+            kind=kind, mode="plan", plan_variant=_PLAN_VARIANTS[kind], playbook=playbook
+        )  # type: ignore[arg-type]
     if kind == EFFECT_LOOP:
         params = _autonomy_params(
             spec,
@@ -761,6 +776,11 @@ def maybe_apply_skill_effect(ref: "SkillRef", *, agent_id: str) -> str | None:
         outcome = _execute_schedule(effect, ref, app, session_id)
     else:
         outcome = _execute_spawn(effect, ref, app, session_id, agent_id)
+    # P1.6b #1068: a plan-entering effect declaring an operator playbook records it as the session's
+    # ACTIVE playbook (no fifth store — rides session.metadata like the variant tag); owner module
+    # stamps the skill id as the name when unnamed + emits the typed trace.
+    if effect.playbook is not None and outcome.mode == "plan":
+        planning.record_effect_playbook(app, session_id, effect.playbook, default_name=ref.id)
     _emit_skill_effect(app, session_id, ref, outcome, agent_id)
     trace.event(
         "SKILLS", "agent %s skill %s effect %s (%s)", agent_id, ref.id, outcome.kind, outcome.detail

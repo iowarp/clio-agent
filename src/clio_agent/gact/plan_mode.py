@@ -45,9 +45,11 @@ from typing import TYPE_CHECKING, Any
 from clio_agent.gact.planning import (
     PLAN_MODE_REMINDER_MARKER,
     PLAN_VARIANT_METADATA_KEY,
+    clear_playbook,
     plan_mode_reminder_block,
     plan_variant_guidance,
     recorded_plan_variant,
+    recorded_playbook,
 )
 from clio_agent.runtime import trace
 
@@ -198,6 +200,11 @@ def inject_plan_mode_reminder(app: "FastAPI", sid: str, session: Any, enriched_t
     variant = recorded_plan_variant(session)
     guidance = plan_variant_guidance(variant)
 
+    # P1.6b #1068: an ACTIVE operator playbook presents its ordered steps as the required plan
+    # skeleton, replacing the (variant or default) structure hint. No playbook resolves to None,
+    # leaving the block byte-for-byte unchanged.
+    playbook = recorded_playbook(session)
+
     compactions = _session_compaction_count(app, sid)
     prev_turn = int(state.get("turn_index", 0)) if isinstance(state, Mapping) else 0
     last_full = int(state.get("last_full_turn", 0)) if isinstance(state, Mapping) else 0
@@ -227,7 +234,9 @@ def inject_plan_mode_reminder(app: "FastAPI", sid: str, session: Any, enriched_t
             guidance.full_interval,
         )
     return (
-        _plan_mode_reminder_block(full=full, plan_file=plan_file, exists=exists, guidance=guidance)
+        _plan_mode_reminder_block(
+            full=full, plan_file=plan_file, exists=exists, guidance=guidance, playbook=playbook
+        )
         + "\n\n---\n\n"
         + enriched_text
     )
@@ -712,9 +721,10 @@ def resolve_plan_exit_answer(app: "FastAPI", deps: "GactDeps", sid: str, questio
         return
 
     # Approve: the SANCTIONED plan-mode exit (unlike the enter_mode no-escape guard). Clear any
-    # plan VARIANT tag (P1.6a #1068) as the session leaves plan mode, so a later plan re-entry does
-    # not inherit the previous variant's scaffold. (Reject stays in plan mode and returns earlier,
-    # keeping the variant so the revision turn gets the same scaffold.)
+    # plan VARIANT tag (P1.6a #1068) and any ACTIVE operator playbook (P1.6b #1068) as the session
+    # leaves plan mode, so a later plan re-entry does not inherit the previous scaffold/skeleton.
+    # (Reject stays in plan mode and returns earlier, keeping both so the revision turn gets the
+    # same scaffold.)
     approval_mode = "auto-edits" if decision == "auto" else "ask"
     app.state.sessions.update(
         sid,
@@ -722,6 +732,7 @@ def resolve_plan_exit_answer(app: "FastAPI", deps: "GactDeps", sid: str, questio
         approval_mode=approval_mode,
         metadata_patch={PLAN_VARIANT_METADATA_KEY: ""},
     )
+    clear_playbook(app, sid)
     cleared = False
     if clear_context:
         deps.replace_session_messages(app, sid, [])

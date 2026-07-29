@@ -17,6 +17,7 @@ value of :data:`grant_resolver.KIND_PLAN_ACL`, the vocabulary owner) to keep thi
 
 from __future__ import annotations
 
+import fnmatch
 import os
 from pathlib import Path
 from typing import Any
@@ -135,6 +136,61 @@ def default_plan_acl_rows() -> list[dict[str, Any]]:
         }
     )
     return rows
+
+
+#: Priority FLOOR for an ACTIVE operator-playbook step's narrowing deny (P1.6b #1068), used ONLY
+#: outside a plan-restricted mode (execution phase). In plan mode the resolver bands the narrowing
+#: at ``allow_tool + 1`` instead (see :func:`grant_resolver._plan_acl_priorities`), so it can deny a
+#: plan-safe tool (``web_fetch``/``ask_user``) the @50 allow-band would otherwise grant, yet stays
+#: BELOW the @70 plan-file carve-out. It is TIGHTEN-ONLY — only ``deny`` rows are ever emitted, so a
+#: playbook can only remove reach, never grant it.
+PLAYBOOK_STEP_DENY_PRIORITY = 41
+
+#: Tools EXEMPT from operator-playbook narrowing (anti-lockout). ``plan_exit`` must ALWAYS remain
+#: reachable — because the plan-mode narrowing band sits ABOVE the @50 plan-tool allow-band, a
+#: playbook that omitted ``plan_exit`` would otherwise strand the model in plan mode. This mirrors
+#: the F1 plan-ACL anti-lockout (#1057 B5), which is likewise ``plan_exit``-only: ``ask_user`` /
+#: ``web_fetch`` ARE narrowable (a playbook step may legitimately forbid them).
+PLAYBOOK_EXEMPT_TOOLS: tuple[str, ...] = ("plan_exit",)
+
+
+def playbook_step_matches(
+    pattern: str, allowed: tuple[str, ...], deny_priority: int
+) -> list[tuple[int, str]]:
+    """Return the narrowing ``(priority, "deny")`` for an active playbook step, or ``[]`` (P1.6b).
+
+    When an operator playbook is active, its current step's ``tools_allowed`` is a CUGA-style
+    per-step allowlist. This is the built-in consult :func:`grant_resolver.resolve` runs for a
+    ``kind="tool"`` call when a step allowlist is passed (parallel to the plan-mode ACL): a tool
+    whose name matches ANY allowlist glob imposes NO narrowing (``[]`` — mode + user policy decide
+    it unchanged), while a tool OUTSIDE the allowlist yields a single ``deny`` so the step can only
+    NARROW the surface. TIGHTEN-ONLY by construction — no ``allow`` is ever emitted, so a playbook
+    can never grant a tool that mode/policy would otherwise deny.
+
+    An EMPTY ``allowed`` (a step that declares no ``tools_allowed``) imposes no narrowing at all —
+    ``tools_allowed`` is an optional per-step field. A tool in :data:`PLAYBOOK_EXEMPT_TOOLS`
+    (``plan_exit``) is NEVER narrowed (anti-lockout). The caller supplies ``deny_priority`` already
+    positioned for the resolve context — above the plan-tool allow-band but below the plan-file
+    carve-out in plan mode, or above any matching user row otherwise — so the narrowing can neither
+    be bypassed nor strand plan mode's essential paths.
+
+    Args:
+        pattern: The tool name being resolved.
+        allowed: The active playbook step's ``tools_allowed`` globs (empty = no narrowing).
+        deny_priority: The priority the resolver has computed for this narrowing in this context.
+
+    Returns:
+        ``[(deny_priority, "deny")]`` when the tool is outside a non-empty allowlist and not
+        exempt, else ``[]``.
+    """
+
+    if not allowed:
+        return []
+    if pattern in PLAYBOOK_EXEMPT_TOOLS:
+        return []
+    if any(fnmatch.fnmatchcase(pattern, glob) for glob in allowed):
+        return []
+    return [(deny_priority, "deny")]
 
 
 def plan_mode_deny_message(mode: str, tool_name: str = "") -> str:

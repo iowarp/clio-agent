@@ -44,10 +44,12 @@ from clio_agent.gact.runtime.plan_acl import (
     PLAN_ACL_MODES,
     PLAN_ACL_PLAN_FILE_PRIORITY,
     PLAN_ACL_PLAN_TOOLS,
+    PLAYBOOK_STEP_DENY_PRIORITY,
     default_plan_acl_rows,
     normalized_plan_acl_path,
     plan_mode_deny_message,
     plans_dir,
+    playbook_step_matches,
 )
 from clio_agent.tools.catalog import annotations_are_read_only, get_tool_entry
 
@@ -117,8 +119,18 @@ def _plan_acl_priorities(user_matches: list[tuple[int, str]]) -> dict[str, int]:
     # The allow-band and the plan-file carve-out both sit ABOVE the (possibly-raised) deny, so no
     # user/built-in deny can strand a plan-safe tool or the plan file; the carve-out stays highest.
     allow_tool_priority = max(PLAN_ACL_ALLOW_TOOL_PRIORITY, deny_priority + 1)
-    file_priority = max(PLAN_ACL_PLAN_FILE_PRIORITY, allow_tool_priority + 1)
-    return {"deny": deny_priority, "allow_tool": allow_tool_priority, "plan_file": file_priority}
+    # P1.6b #1068: the operator-playbook narrowing band sits ONE above the plan-tool allow-band, so
+    # it can deny a plan-safe tool (web_fetch/ask_user) the allow-band would grant — yet BELOW the
+    # plan-file carve-out (now allow_tool+2) so the sole plan-file write always survives. plan_exit
+    # is exempt in playbook_step_matches, so raising this band never strands plan mode (anti-lockout).
+    playbook_priority = allow_tool_priority + 1
+    file_priority = max(PLAN_ACL_PLAN_FILE_PRIORITY, playbook_priority + 1)
+    return {
+        "deny": deny_priority,
+        "allow_tool": allow_tool_priority,
+        "playbook": playbook_priority,
+        "plan_file": file_priority,
+    }
 
 
 def _plan_acl_default_matches(
@@ -405,6 +417,7 @@ def resolve(
     path: str = "",
     mode: str = "",
     event: str = "",
+    playbook_allowed: tuple[str, ...] | None = None,
 ) -> str:
     """Return the winning matching policy's RAW action, or ``""`` when nothing matches.
 
@@ -420,6 +433,12 @@ def resolve(
     > ``allow_session`` > ``allow``). Legacy rows without a ``priority`` migrate to unique descending
     priorities by insertion index (:func:`_migrated_priority`), so an all-legacy list reproduces the
     old first-match order and the tie-break never fires. The raw action is returned verbatim.
+
+    ``playbook_allowed`` (P1.6b #1068) is the ACTIVE operator-playbook step's ``tools_allowed``
+    allowlist (or ``None`` — the default, no playbook active). When present it TIGHTENS the
+    resolution: a ``kind="tool"`` call outside the allowlist is narrowed to ``deny`` (see
+    :func:`plan_acl.playbook_step_matches`). ``None`` leaves the resolution byte-identical to
+    P1.6a — so a no-playbook session is completely unaffected.
     """
 
     return _winning_action(
@@ -432,6 +451,7 @@ def resolve(
             path=path,
             mode=mode,
             event=event,
+            playbook_allowed=playbook_allowed,
         )
     )
 
@@ -446,12 +466,18 @@ def _collect_matches(
     path: str,
     mode: str,
     event: str,
+    playbook_allowed: tuple[str, ...] | None = None,
 ) -> list[tuple[int, str, bool]]:
     """Collect every matching ``(priority, action, is_plan_acl)`` for a resolve call.
 
     Shared by :func:`resolve` and :func:`resolve_detail`. The third element flags rows authored by
     the built-in plan-mode ACL (P1.2 #1064), so :func:`resolve_detail` can attribute a winning deny
     to the mode-lock and surface its message while :func:`resolve` ignores it.
+
+    ``playbook_allowed`` (P1.6b #1068) is the active operator-playbook step's ``tools_allowed``
+    allowlist (``None`` when no playbook is active); its narrowing deny is appended for a
+    ``kind="tool"`` call outside the allowlist. It is flagged ``is_plan_acl=False`` — a playbook
+    narrowing is NOT a mode-lock, so it carries the generic deny message, not the plan-mode one.
     """
 
     if not isinstance(policies, list):
@@ -486,6 +512,23 @@ def _collect_matches(
         user_pairs = [(priority, action) for priority, action, _src in matches]
         for priority, action in _plan_acl_default_matches(pattern, path, mode, event, user_pairs):
             matches.append((priority, action, True))
+    # Operator-playbook narrowing (P1.6b #1068): the ACTIVE step's ``tools_allowed`` narrows a
+    # ``kind="tool"`` call to deny when the tool is outside the allowlist. Computed from the REAL
+    # user rows (not the plan-ACL rows appended above) so its band lines up with the plan-ACL bands
+    # from the SAME base. In a plan-restricted mode the narrowing takes the dedicated ``playbook``
+    # band (above the plan-tool allow-band, below the plan-file carve-out) so it can deny a plan-safe
+    # tool the allow-band would grant while never stranding plan mode; outside plan mode it just
+    # outranks any matching user row. TIGHTEN-ONLY: it appends only denies.
+    if kind == KIND_TOOL and playbook_allowed is not None:
+        user_pairs = [(priority, action) for priority, action, src in matches if not src]
+        if mode in _PLAN_ACL_MODES:
+            deny_priority = _plan_acl_priorities(user_pairs)["playbook"]
+        else:
+            deny_priority = PLAYBOOK_STEP_DENY_PRIORITY
+            if user_pairs:
+                deny_priority = max(deny_priority, max(p for p, _ in user_pairs) + 1)
+        for priority, action in playbook_step_matches(pattern, playbook_allowed, deny_priority):
+            matches.append((priority, action, False))
     return matches
 
 
@@ -511,6 +554,7 @@ def resolve_detail(
     path: str = "",
     mode: str = "",
     event: str = "",
+    playbook_allowed: tuple[str, ...] | None = None,
 ) -> tuple[str, str]:
     """Return ``(action, deny_message)`` for a resolve call (P1.2 #1064).
 
@@ -544,6 +588,7 @@ def resolve_detail(
         path=path,
         mode=mode,
         event=event,
+        playbook_allowed=playbook_allowed,
     )
     action = _winning_action(matches)
     if action == "deny" and matches:
@@ -561,6 +606,7 @@ def resolve_detail(
             path=path,
             mode=mode,
             event=event,
+            playbook_allowed=playbook_allowed,
         ):
             return action, plan_mode_deny_message(mode, pattern)
     return action, ""
@@ -576,6 +622,7 @@ def _plan_lock_is_the_cause(
     path: str,
     mode: str,
     event: str,
+    playbook_allowed: tuple[str, ...] | None = None,
 ) -> bool:
     """Return whether the plan mode-lock -- not a user deny -- is what blocks this call (B5 #1057).
 
@@ -616,6 +663,7 @@ def _plan_lock_is_the_cause(
         path=path,
         mode="",
         event=event,
+        playbook_allowed=playbook_allowed,
     )
     return _winning_action(edit_matches) != "deny"
 
