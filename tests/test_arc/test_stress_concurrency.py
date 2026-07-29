@@ -623,6 +623,68 @@ def test_concurrent_ops_with_release_and_clear_no_deadlock(tmp_path):
     assert any(s.content.get("text") == "after" for s in live)
 
 
+def test_release_does_not_iterate_locator_dict_deterministic(tmp_path):
+    """DETERMINISTIC regression for the ``dictionary changed size during iteration``
+    race that ``release`` hit at ``SegmentIndex.drop_session`` (segments.py:244).
+
+    The old ``release`` cleared the locator by iterating the whole ``_index._by_scope``
+    dict (``[k for k in self._by_scope if k[0] == session_id]``) while holding only the
+    RELEASED session's scope locks. A concurrent cold-load (``_segs``) on a DIFFERENT
+    session inserts a brand-new ``(session, scope)`` key into that same dict under only
+    its own scope lock — so the release-thread's iteration could observe the size change
+    and raise ``RuntimeError: dictionary changed size during iteration``.
+
+    We reproduce that interleaving deterministically without threads by swapping in a
+    locator dict that inserts a fresh key (exactly what a concurrent cold-load does) the
+    first time it is iterated. If ``release`` iterates the dict, this raises; the correct
+    per-known-key drop never iterates it, so it must stay clean. This test fails on the
+    pre-fix code and passes on the fixed code."""
+
+    class _MutatesOnFirstIter(dict):
+        """A dict that, once armed, simulates a concurrent cold-load inserting a NEW
+        scope key the moment something starts iterating it — the precise mutation that
+        made the pre-fix ``drop_session`` scan raise."""
+
+        armed = False
+
+        def __iter__(self):
+            base = dict.__iter__(self)
+            first = True
+            for k in base:
+                if self.armed and first:
+                    first = False
+                    # a different session's cold-load lands a brand-new locator entry
+                    dict.__setitem__(self, ("concurrent-coldload", "scope"), object())
+                yield k
+
+    ss = _fresh_store(tmp_path)
+    # Load several scopes for the session being released, plus one for another session,
+    # so the locator dict holds >=2 keys (needed for the iterator to advance past the
+    # mid-iteration insert) and release has real work to do.
+    for i in range(3):
+        ss.append(SID, f"agentA/exp{i}", "thought", {"text": f"a{i}"})
+    ss.append("other", "agentB/exp", "thought", {"text": "b"})
+
+    # Swap the locator's backing dict for the hostile one (preserving current contents),
+    # then arm it so the next iteration (if any) triggers the concurrent-insert race.
+    hostile = _MutatesOnFirstIter(ss._index._by_scope)
+    ss._index._by_scope = hostile
+    hostile.armed = True
+
+    # Must NOT raise: the fixed release drops locator entries by known key (pop), never
+    # by scanning the dict. Pre-fix this raised RuntimeError.
+    released = ss.release(SID)
+    hostile.armed = False
+
+    assert released == 3, f"release should have dropped 3 scopes, got {released}"
+    # the released session's locator entries are gone; the other session's survive
+    remaining = set(dict.keys(ss._index._by_scope))
+    assert all(k[0] != SID for k in remaining), "release left a released-session locator entry"
+    assert ("other", "agentB/exp") in remaining, "release wrongly dropped another session"
+    # the store is still coherent for the untouched session
+    assert len(ss.render("other", "agentB/exp")) == 1
+
+
 def test_clock_unique_across_scopes_under_per_scope_locks(tmp_path):
     """The shared clock has its OWN lock now; concurrent ops across MANY scopes must
     still issue every creation logical_time exactly once (no collision, no skip from

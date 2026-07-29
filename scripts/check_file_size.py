@@ -46,7 +46,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # once the dead Tier-1 planner half was deleted (host-only surface). Now
     # under DEFAULT_MAX_LINES, so its ratchet entry is removed entirely.
     "src/clio_agent/arc/memory.py": 1394,
-    "src/clio_agent/arc/segments.py": 1117,
+    "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
     # owner ruling 2026-07-14: +3 to route explicit =local through the loud
     # DEGRADED banner (owner module: arc/init_degradation.py).
