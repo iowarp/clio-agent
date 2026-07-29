@@ -463,6 +463,26 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0915 - a live gate is an inherentl
         ws = call("POST", "/v1/workspaces", {"name": "gov-gate", "root_path": str(ws_root)})
         wsid = ws.get("id") or ws.get("workspace_id")
 
+        # Gate-declared shell-capable agent (hermetic against box agent config: the default
+        # ``main`` agent on a given box may be a domain blueprint with NO shell tool, in which
+        # case the P2 hook proof would silently degrade to "model declined"). POST upserts.
+        call(
+            "POST",
+            "/v1/agents",
+            {
+                "id": "gov-gate-shell-agent",
+                "title": "Gov Gate Shell Agent",
+                "description": "Gate-declared react agent with shell for the PreToolUse proof.",
+                "system_prompt": (
+                    "You are a helpful autonomous agent. Use your tools to complete the "
+                    "task, then give a clear final answer."
+                ),
+                "tools": ["shell_bash", "fs_read_file"],
+                "metadata": {"module": {"kind": "react"}},
+            },
+            ok=(200, 201),
+        )
+
         # ---- P2 HOOK discovery (GET /v1/hooks) ------------------------------------
         hooks_seen = call("GET", "/v1/hooks", ok=(200,))
         _record("hook_discovered", "gov-gate-pretool-marker" in json.dumps(hooks_seen, default=str))
@@ -560,7 +580,14 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0915 - a live gate is an inherentl
 
         # ---- P2 HOOK: an edit-mode shell turn must trip the hook -------------------
         hsess = call(
-            "POST", "/v1/sessions", {"title": "hook-gate", "workspace_id": wsid, "mode": "edit"}
+            "POST",
+            "/v1/sessions",
+            {
+                "title": "hook-gate",
+                "workspace_id": wsid,
+                "mode": "edit",
+                "agent": {"id": "gov-gate-shell-agent"},
+            },
         )
         hsid = hsess["id"]
         call(
@@ -789,6 +816,12 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0915 - a live gate is an inherentl
     finally:
         out_path.write_text(json.dumps(verdict, indent=2, default=str), encoding="utf-8")
         print(json.dumps(verdict, indent=2, default=str), flush=True)
+        # Drop the gate-declared agent so the USER agent store is not polluted across runs
+        # (best-effort: the server may already be gone on a harness error).
+        try:
+            call("DELETE", "/v1/agents/gov-gate-shell-agent", ok=(200, 204, 404))
+        except Exception:  # noqa: BLE001 - best-effort teardown
+            pass
         # Tear down the gact server first.
         try:
             proc.terminate()
