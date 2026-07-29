@@ -310,6 +310,14 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0915 - a live gate is an inherentl
     state_dir = core_dir / "state"
     (ws_root / ".clio").mkdir(parents=True, exist_ok=True)
     state_dir.mkdir(parents=True, exist_ok=True)
+    # The gate workspace must be its OWN git repo: plans_dir() walks up from the server cwd
+    # (ws_root) to the nearest .git — without one here it resolves to the ENCLOSING repo's
+    # .clio/plans, which is OUTSIDE the gate workspace root, so the plan-mode plan-file write
+    # would trip create_artifact's escapes_root containment instead of exercising plan_exit.
+    if not (ws_root / ".git").exists():
+        subprocess.run(
+            ["git", "init", "-q"], cwd=str(ws_root), check=True, capture_output=True
+        )
 
     # Fresh CTE recipe for THIS run (private port, repo-local paths, bounded caps).
     cte_yaml = _write_cte_yaml(core_dir, args.core_port)
@@ -358,6 +366,11 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0915 - a live gate is an inherentl
     env["CLIO_SERVER_CONF"] = str(cte_yaml)
     env["CLIO_CORE_PORT"] = str(args.core_port)
     env["CLIO_RUNTIME_STATE_DIR"] = str(state_dir)
+    # Fresh per-run hook trust store: the default store is the USER-scope hooks.trust.json,
+    # which persists across gate runs — a fingerprint recorded by an older script iteration
+    # reads this run's regenerated hooks.json as hook_untrusted_content_changed and the
+    # marker hook silently never runs. Trust-on-first-use inside the run's own workspace.
+    env["CLIO_HOOKS_TRUST_STORE"] = str(ws_root / ".clio" / "hooks.json.trust.json")
     # Belt-and-suspenders: these only govern GENERATED configs (we ship the file), but keep
     # any generated-path code consistent with the recipe's bounded caps.
     env["CLIO_ARC_CTE_RAM_CAPACITY"] = "1GB"
@@ -641,7 +654,13 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0915 - a live gate is an inherentl
                 "POST",
                 f"/v1/sessions/{lsid}/commands/loop",
                 {
-                    "input": "keep iterating on the task",
+                    "input": (
+                        "Each iteration: state the current iteration number and one new prime "
+                        "number, then reschedule yourself with loop_wakeup (a short delay is "
+                        "fine). NEVER pass stop=true and never decide the task is finished — "
+                        "the harness's own bounds are the only stop. This exercises the bound "
+                        "machinery; an unbounded task is intentional."
+                    ),
                     "args": {"max_iters": 2, "max_wallclock_s": 90},
                 },
             )
