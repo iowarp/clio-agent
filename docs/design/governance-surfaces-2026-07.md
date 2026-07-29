@@ -338,6 +338,18 @@ provider/dspy layer (`dspy.LM` wrapper for BeforeModel); `runtime/app_state.py` 
   (P0 priority row), and a `plan_exit → defer` is approved out-of-band — one pipeline.
 - **Smoke (every merge):** `pytest -m "not integration"`, `ruff check src/`, baseline `cli.py`.
 
+**Campaign acceptance record (2026-07-28).** The composed P0–P4 live gate
+(`scripts/live_gate_governance_1057.py`) **passed all 17 required gates** on a real
+self-provisioned CTE (private port, `clio_run.exe` listener, zero degrade reasons):
+plan write-deny + denial in trace · plan-exit approve with no phantom re-approval, landing in
+edit mode (B1 repro) · PreToolUse marker hook fired · reserved-metadata 400 (B2 repro) ·
+cron registered + fired a real scheduled turn · loop armed → sticky `loop_budget` bound →
+live `loop_wakeup` re-arm refused typed · LLM-judge goal met + cleared. Verdict JSON:
+`docs/design/live-gate-governance-1057-verdict.json`. The gate run itself caught and fixed a
+real P1 defect the unit suite missed (the `create_artifact` policy consult omitted the write
+target path, so plan mode could not write its designated plan file — `plan_exit` was
+unreachable end-to-end until `eaa8015d`).
+
 ## Awaiting an external dependency (the ONLY postponed item)
 - **Harden the Windows shell fence from floor → hard.** Today file-writes are hard-denied on Windows;
   shell-command writes are a recorded floor. A better OS sandbox is in the works but still in **alpha**
