@@ -21,13 +21,16 @@ import pytest
 from clio_agent.gact.app import build_app
 from clio_agent.gact.plan_mode import (
     _PLAN_FILE_METADATA_KEY,
-    _PLAN_REMINDER_FULL_INTERVAL,
     _PLAN_REMINDER_STATE_KEY,
     PLAN_MODE_REMINDER_MARKER,
     inject_plan_mode_reminder,
     plan_file_exists,
     recorded_plan_file,
 )
+
+# Single source of truth for the default full-reminder cadence (P1.6a #1068 deleted the
+# duplicate plan_mode._PLAN_REMINDER_FULL_INTERVAL; the composer reads guidance.full_interval).
+from clio_agent.gact.planning import _DEFAULT_FULL_INTERVAL
 from clio_agent.gact.routes.compaction import build_compact_summary_message
 from clio_agent.gact.runtime.grant_resolver import plans_dir, resolve
 
@@ -91,13 +94,13 @@ def test_post_compaction_turn_reinjects_full(tmp_path: Path) -> None:
 def test_full_reinjects_once_window_elapses(tmp_path: Path) -> None:
     app, sess = _plan_session(tmp_path)
     seen_full = []
-    for _ in range(_PLAN_REMINDER_FULL_INTERVAL + 1):
+    for _ in range(_DEFAULT_FULL_INTERVAL + 1):
         out = inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)
         seen_full.append(_FULL_ONLY in out)
     # Turn 1 full, then sparse until the window elapses at turn (interval+1).
     assert seen_full[0] is True
     assert seen_full[1] is False
-    assert seen_full[_PLAN_REMINDER_FULL_INTERVAL] is True
+    assert seen_full[_DEFAULT_FULL_INTERVAL] is True
 
 
 @pytest.mark.parametrize("mode", ["edit", "architect"])

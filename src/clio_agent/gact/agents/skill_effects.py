@@ -70,6 +70,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.planning import PLAN_VARIANT_SMALL, PLAN_VARIANT_WORKFLOW
 from clio_agent.gact.skills import read_skill_body
 from clio_agent.runtime import trace
 
@@ -94,8 +95,10 @@ EFFECT_PLAN_SMALL: Literal["plan_small"] = "plan_small"
 #: transition itself reuses the tighten-only ``enter_mode`` path (plan is strictest, so a
 #: variant can never relax a restrictive mode).
 _PLAN_VARIANTS: dict[str, str] = {
-    EFFECT_PLAN_WORKFLOW: "workflow",
-    EFFECT_PLAN_SMALL: "small",
+    # Values are the consumer's own constants (gact.planning, the tag READER) so the
+    # writer and reader can never drift apart silently.
+    EFFECT_PLAN_WORKFLOW: PLAN_VARIANT_WORKFLOW,
+    EFFECT_PLAN_SMALL: PLAN_VARIANT_SMALL,
 }
 
 _KNOWN_EFFECT_KINDS = frozenset(
