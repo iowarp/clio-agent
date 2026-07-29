@@ -4,20 +4,159 @@ All notable changes to clio-agent's GACT-contract surface are
 documented in this file. Internal changes that don't affect the
 TUI/HTTP surface aren't tracked here.
 
-## Unreleased
+## [0.9.0] — 2026-07-29
+
+### Governance surfaces campaign (#1057)
+
+Rebuilds three model-governance surfaces — planning mode, hooks, and
+loop/goal/cron autonomy — as ONE declarative, priority-ordered, tighten-only
+policy layer on the #1031 `grant_resolver`, plus the P0 permission-engine uplift
+they all ride. Deletion-first: the hardcoded plan lock, both old hook systems,
+and the `chat` session mode are removed, not extended. Live-gated end-to-end:
+all 17 required gates pass on a real self-provisioned CTE (private port, zero
+untyped degrade reasons) — plan write-deny, plan-exit approve with no phantom
+re-approval, a PreToolUse hook firing on a live tool call, reserved-metadata
+400, cron firing a scheduled turn, a loop tripping a sticky bound, and an
+LLM-judge goal met + cleared.
+
+### Added
+
+- **New user commands `/loop`, `/goal`, `/cron` (+ `/schedule` alias)** (#1079-#1082).
+  Model-callable tools land alongside: `loop_wakeup` (self-paced cross-turn
+  iteration), read-only `goal_status`, `cron_create`/`cron_list`/`cron_delete`,
+  and `write_todos` (execution-phase checklist). All auto-attached to react
+  experts; `create_artifact` and `plan_exit` join the same auto-tool set.
+- **Autonomous loop** (#1079). `loop_wakeup(delay_seconds, prompt, reason, stop)`
+  arms at most one pending wakeup (delay clamped [60,3600], typed reason) with
+  first-class typed bounds — `loop_max_iters` (default 100) and a
+  `max_wallclock`/`max_tokens`/`max_usd` budget measured as delta since loop
+  start. The first tripped bound ends the loop with a structured reason;
+  end/cancel/delete cancels the pending wakeup (store row + daemon entry).
+- **Goal conditions** (#1080). A goal is a built-in Stop-hook condition
+  (`/goal` or a declared `set_goal` skill-effect only — never a model-callable
+  set_goal, RULE 1) evaluated at turn-finalize by a bounded LLM judge and
+  re-driven on the loop-inbox seam until met (`goal_met`) or a bound trips
+  (`goal_max_iters`/`goal_budget`). The model gets only read-only `goal_status`.
+- **Cron scheduler improvements** (#1081). Local-timezone/DST-correct `next_fire`
+  (per-schedule IANA tz, system-local default), `run_at`/`delay_s` one-shots,
+  exponential-backoff retry, anti-runaway clamps (min-interval, max-lifetime,
+  max_fires/until — all typed), explicit overlap policy, and the
+  `cron_create`/`list`/`delete` tool triad with cancel-both (store row + daemon
+  deferred entry).
+- **Planning mode, engine-backed** (#1062-#1068). Plan/architect read-only
+  enforcement is now declarative `plan_acl` rows resolved through the one
+  `grant_resolver`, structurally unbypassable by any user policy store. Adds: a
+  clio-owned per-session plan-file lifecycle with a create-vs-edit reminder that
+  survives compaction; the sole writable path is `<repo>/.clio/plans/*.md`; a
+  `plan_exit` tool with an N-way approval flow (auto / interactive / exit-only /
+  reject-with-feedback, decisionless = reject-safe); a built-in `planning` skill
+  entry (declares `enter_mode:plan`); `plan_workflow`/`plan_small` variants that
+  shape the reminder; skill-supplied operator playbooks with per-step
+  `tools_allowed` allowlists (tighten-only through the resolver); save-and-reuse
+  of an approved plan as a provenance-tracked, replayable playbook; and
+  stall-triggered replanning suggestions injected next turn.
+- **Declarative hooks — one new system** (#1069-#1075). A single subprocess
+  hook system driven by `.clio/hooks.json` (user/project/managed scope, required
+  stable id) on the industry exit-0 (allow/parse stdout) / exit-2 (deny + stderr
+  to model) wire. Events: `PreToolUse`, `PostToolUse`, `PostToolBatch`,
+  `UserPromptSubmit`, `Stop` (bounded block-to-re-drive, capped), `BeforeModel`/
+  `AfterModel` (per-request LM wrapper: synthesize/route/modify), `SessionStart`/
+  `End`, `SubagentStart`/`Stop`, `PreCompact`, `SemanticEvent`. Decisions rank
+  most-restrictive-wins (deny > defer > ask > synthesize > modify > allow),
+  reads are never gated, and a hook allow can never override a permission deny.
+  Read-only `GET /v1/hooks` introspects every loaded hook (id/events/match/
+  source/trust/enabled + recent audit); sha256 trust fingerprinting drops a hook
+  whose config/script bytes changed (`hook_untrusted_content_changed`); `defer`
+  is a durable first-class decision at every yield point including `PreToolUse`.
+  Audit rides the semantic highway (`hook.invoked`, trace-only); a `hooks.*`
+  config family replaces the old `CLIO_HOOKS_*`/`hooks.backend` keys.
+- **Skill privileged-effects substrate** (#1062, #1082). A skill may declare a
+  frontmatter-only, runtime-executed effect (never body text or model prose):
+  `enter_mode`, `spawn_subagent_with_skill`, `loop`, `set_goal`, `schedule`,
+  `plan_workflow`/`plan_small`. Every effect is bound to the same bounded infra
+  and cannot escape a restrictive mode, over-grant, or evade the loop/goal/cron
+  bounds; malformed/unknown effects raise typed errors.
 
 ### Changed
 
-- **Permissions — grant kind enforcement (#1057, B4).** A workspace domain
-  grant is now resolved strictly on the domain axis: a host-bearing
-  (`host_pattern`) policy row is stamped `kind="domain"` and no longer carries a
-  stray `tool_name_pattern: "*"`, and the resolver admits a row into a resolve
-  only when its kind shares the caller's axis. Previously a persisted domain
-  grant's `"*"` tool glob bled into every `kind="tool"` resolve, so a
-  fleet-egress allow authorized every tool call in the workspace. **Behavior
-  change:** any deployment that relied on that domain→tool kind-bleed to
-  authorize tool calls loses it — re-grant the tools explicitly. Persisted rows
-  self-heal to the corrected shape on the next load/flush.
+- **Permissions — engine uplift** (#1059-#1061). `resolve()` no longer returns on
+  first match: it collects all matching rows, takes the highest-priority band,
+  and breaks a same-band tie most-restrictively (deny > defer > ask >
+  allow_workspace > allow_session > allow). Rows gain optional `modes` (session
+  mode) and `on` (hook event) scope axes and the `plan_acl`/`hook` kind
+  discriminators. Built-in fs/shell tools now declare MCP `ToolAnnotations`
+  (readOnly/destructive/openWorld) as the single classification source of truth;
+  absent/partial annotations are treated most-restrictively. Migration preserves
+  legacy first-match behavior exactly.
+- **Permissions — grant kind enforcement (#1057, B4).** A workspace domain grant
+  is now resolved strictly on the domain axis: a host-bearing (`host_pattern`)
+  policy row is stamped `kind="domain"` and no longer carries a stray
+  `tool_name_pattern: "*"`, and the resolver admits a row into a resolve only
+  when its kind shares the caller's axis. Previously a persisted domain grant's
+  `"*"` tool glob bled into every `kind="tool"` resolve, so a fleet-egress allow
+  authorized every tool call in the workspace. **Behavior change:** any
+  deployment that relied on that domain→tool kind-bleed to authorize tool calls
+  loses it — re-grant the tools explicitly. Persisted rows self-heal to the
+  corrected shape on the next load/flush.
+- **Reserved client-metadata keys are rejected** (#1057, B2). A client-supplied
+  message `metadata` carrying an internal turn-control key (e.g.
+  `hook_defer_resume`, plan-exit/stop-defer resume markers) is now rejected with
+  a typed `400 reserved_metadata_key` — **breaking for any client that sent one**
+  — across every client-writable ingest (`POST /messages`, `.../retry`,
+  `/agent-tasks/{id}/steer`). Reject, not strip (no silent coercion).
+- **Goal completion is LLM-judge only** (#1057, A4). The deterministic
+  workflow_state predicate tier was removed as the halt authority — a predicate
+  over model-authored state let the model grade its own homework (RULE 1). The
+  bounded LLM judge is the sole completion decision; the typed loop/goal bounds
+  remain the hard stops. A goal is armed only by the user (`/goal`) or a declared
+  `set_goal` skill-effect.
+- **Loop hard bounds are sticky** (#1057, A1). After a loop halts on a hard bound
+  (`loop_max_iters`/`loop_budget`/session-ended), the model can no longer
+  silently re-arm a fresh loop — `loop_wakeup` raises
+  `loop_bound_tripped_rearm_denied`; only a user `/loop` clears it (the model's
+  own `stop` is not sticky).
+
+### Fixed
+
+- **Plan-exit phantom re-approval** (#1057, B1, blocker). A resolved plan-exit
+  request stored as `{}` read as a live request, so the resumed turn minted a
+  second approval question and hijacked the turn. The pause seam now treats `{}`
+  as absent.
+- **Hook stdout multi-object parse** (#1057, B3, blocker). A JSON-shaped banner
+  printed before a hook's real tagged-union output shadowed the decision (a real
+  deny read as allow). The parser now scans every decodable object and resolves
+  most-restrictively (tighten-only — a smuggled allow can never beat a real deny).
+- **`create_artifact` in plan mode** (#1057). The content-write gate consulted the
+  resolver without the resolved target path, so the `<plans>/*.md` carve-out
+  never won over the plan-mode deny — the model could not write its designated
+  plan file and `plan_exit` was unreachable end-to-end. The consult now carries
+  the resolved path, making plan mode workable end-to-end.
+- **`cron_delete` cross-session leak** (#1057, A5). `cron_delete` discarded the
+  active session, so a model could cancel another session's schedule and use the
+  return as an enumeration oracle. It now cancels only owned schedules (a
+  wrong-owner request is indistinguishable from missing; typed
+  `cron_delete_not_owner`). The HTTP delete route keeps its cross-session reach.
+- **DST fall-back rapid re-fire** (#1057, A6). `next_fire` could return an instant
+  before its reference during a fall-back overlap, rapid-refiring through the
+  repeated hour. Every candidate is now floored at the reference instant.
+- **Plan-ACL anti-lockout narrowed to `plan_exit`** (#1057, B5). A user's explicit
+  deny of a plan-safe tool (`ask_user`/`web_fetch`) was overridden by the
+  plan-mode allow-band. Only `plan_exit` now keeps the anti-lockout override so
+  the user's denies are honored; the mode-aware denial message is shown only when
+  leaving plan mode would actually unblock the call.
+- **`PreToolUse` ordering** (#1070). The ported `PreToolUse` consumer now fires
+  after the read-only fast-allow, fixing the prior reads-gated ordering bug.
+
+### Removed
+
+- **The `chat` session mode** (#1063). It was documented as no-destructive but no
+  code enforced it; `mode="chat"` now **422s**. Default mode stays `edit`.
+- **Both legacy hook systems** (#1069, #1070, #1075). The dead `/v1/hooks` CRUD +
+  `declarative_hooks` registry, `runtime/hooks.py`, blueprint-packaged
+  `load_hook_descriptors`, and the dead packaged-hook enable subsystem are
+  deleted, replaced by the one declarative system above.
+- **The deterministic goal-predicate tier** (#1057, A4) and the unreachable
+  `loop_stalled` no-progress bound (#1057, A3) — see Changed for the goal rationale.
 
 ## [0.8.1] — 2026-07-24
 
