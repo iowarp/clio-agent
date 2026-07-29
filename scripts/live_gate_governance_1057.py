@@ -728,7 +728,13 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0915 - a live gate is an inherentl
                 )
                 lblob = json.dumps(_messages(call, lsid), default=str)
                 msg_blobs.append(lblob)
-                _record("loop_rearm_denied_live", "loop_bound_tripped_rearm_denied" in lblob)
+                # The refusal surfaces to the model as the LoopError MESSAGE (the typed
+                # reason token stays server-side), so match either signature.
+                _record(
+                    "loop_rearm_denied_live",
+                    "loop_bound_tripped_rearm_denied" in lblob
+                    or "cannot be re-armed from loop_wakeup" in lblob,
+                )
             else:
                 _record("loop_rearm_denied_live", "skipped: non-sticky stop reason")
         except Exception as exc:  # noqa: BLE001
