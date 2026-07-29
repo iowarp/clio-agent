@@ -164,7 +164,7 @@ def _gate_content_write(
       ``(workspace, name)`` (re-versioning your own artifact); otherwise typed
       ``would_overwrite`` (the model can pick another name — bounded repair).
     * (c) POLICY + MODE: consult the same resolver the diffs/apply path and the live
-      tool gate use (``_policy_action_for_tool``, passing the session ``mode``) and
+      tool gate use (``_policy_detail_for_tool``, passing the session ``mode``) and
       land a resolved permission audit row — so allow/deny/ask policies AND the
       built-in plan_acl rules apply to this native tool exactly as to bridge tools.
       P1.1 #1063: the read-only mode contract for plan/architect is no longer a
@@ -177,7 +177,7 @@ def _gate_content_write(
     """
     from clio_agent.gact.artifacts.proposals import RejectionReason, _rejected  # noqa: PLC0415
     from clio_agent.gact.permission_gate import (  # noqa: PLC0415
-        _policy_action_for_tool,
+        _policy_detail_for_tool,
         _record_resolved_permission,
     )
 
@@ -211,7 +211,7 @@ def _gate_content_write(
     args: dict[str, Any] = {"name": proposal.name, "content_bytes": len(proposal.content)}
     if target is not None:
         args["path"] = str(target)
-    action = _policy_action_for_tool(
+    action, deny_message = _policy_detail_for_tool(
         app,
         session_id=sid,
         session=session,
@@ -230,11 +230,14 @@ def _gate_content_write(
             summary=f"create_artifact content write {proposal.name!r} blocked by permission policy",
             reason="policy_deny",
         )
-        return _rejected(
-            proposal.name,
-            RejectionReason.POLICY_DENIED,
-            "a permission policy denied create_artifact",
-        )
+        # Actionable rejection (live-gate run-5 regression): carry the mode-aware deny
+        # message (names Plan Mode + the sole writable plan file) AND the RESOLVED target
+        # that was judged — a wrong ``name`` (bare filename -> workspace-root target) is
+        # then self-evident and the model can repair instead of concluding a blanket block.
+        detail = deny_message or "a permission policy denied create_artifact"
+        if target is not None:
+            detail = f"{detail} (judged write target: {target})"
+        return _rejected(proposal.name, RejectionReason.POLICY_DENIED, detail)
     if action == "ask":
         _record_resolved_permission(
             app,

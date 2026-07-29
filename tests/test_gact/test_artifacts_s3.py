@@ -963,3 +963,55 @@ def test_concurrent_dedup_reports_created_false_and_consumes_no_cap(tmp_path, mo
     assert P.proposal_count(app, sess.id, "t1") == 1
     # Still exactly one version in the chain.
     assert len(real_get("ws1", "race.md").versions) == 1
+
+
+def test_plan_mode_deny_carries_mode_message_and_target(tmp_path, monkeypatch):
+    """A plan-mode content-write deny tells the model WHY and WHAT target was judged.
+
+    Live gate run 5 regression: the model authored the plan with a bare ``name``
+    (target landed at the workspace ROOT, correctly denied) but the rejection said
+    only "a permission policy denied create_artifact" — no mode context, no target —
+    so the model concluded a blanket block and deadlocked instead of repairing the
+    name. The rejection detail must carry the plan-mode deny message (names the sole
+    writable path) AND the resolved target that was judged.
+
+    Sabotage: revert the consult to the action-only shim (drop the detail) -> red.
+    """
+    from clio_agent.gact.runtime import plan_acl  # noqa: PLC0415
+
+    plans = tmp_path / ".clio" / "plans"
+    monkeypatch.setattr(plan_acl, "plans_dir", lambda: plans.resolve())
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    app, sess, _ = _make_app(tmp_path, mode="plan")
+    out = promote_proposal(
+        app,
+        sess.id,
+        # The run-5 shape: a bare filename, so the inline target resolves to the
+        # workspace ROOT (not the plans dir) and the @40 mode deny correctly wins.
+        Proposal(name="my-plan.md", kind="report", content="# Plan\n"),
+        workspace_id="ws1",
+    )
+    assert out.accepted is False
+    assert out.reason == RejectionReason.POLICY_DENIED.value
+    detail = str(getattr(out, "detail", "") or getattr(out, "message", "") or out.to_wire())
+    # The mode-aware message (names Plan Mode + the writable plan file) reached the model.
+    assert "plan" in detail.lower() and "read-only" in detail.lower() or "plan file" in detail.lower()
+    # The judged target is named, so a wrong `name` is self-evident to the model.
+    assert str((tmp_path / "my-plan.md").resolve()) in detail
+
+
+def test_create_artifact_tool_doc_states_name_is_target_path():
+    """The model-facing tool contract says `name` is the inline write TARGET PATH.
+
+    Live gate run 5: with no docstring the model read `name` as a display name,
+    passed a bare filename, and the plan write landed at the workspace root. The
+    dspy tool description is the model's only contract — it must state that inline
+    content lands at `name` (workspace-relative or absolute path, directories kept).
+    """
+    from clio_agent.gact.artifacts.proposals import build_create_artifact_tool
+    from clio_agent.gact.types import AgentDef
+
+    tool = build_create_artifact_tool(AgentDef(id="main", title="m"))
+    doc = str(getattr(tool, "desc", "") or getattr(tool, "__doc__", "") or "")
+    lowered = doc.lower()
+    assert "target path" in lowered and "content" in lowered
