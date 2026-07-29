@@ -414,9 +414,10 @@ def parse_skill_effect(meta: Mapping[str, Any]) -> SkillEffect | None:
         # A plan_workflow / plan_small VARIANT (P1.6): enter PLAN with a variant tag. The
         # transition reuses the tighten-only enter_mode path (plan is strictest → never
         # relaxes a restrictive mode). Kept minimal: enter_mode:plan + the variant tag.
+        variant_kind = EFFECT_PLAN_WORKFLOW if kind == EFFECT_PLAN_WORKFLOW else EFFECT_PLAN_SMALL
         return SkillEffect(
-            kind=kind, mode="plan", plan_variant=_PLAN_VARIANTS[kind], playbook=playbook
-        )  # type: ignore[arg-type]
+            kind=variant_kind, mode="plan", plan_variant=_PLAN_VARIANTS[kind], playbook=playbook
+        )
     if kind == EFFECT_LOOP:
         params = _autonomy_params(
             spec,
