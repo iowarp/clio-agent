@@ -13,6 +13,7 @@ optional). Exits 1 (printing nothing to stdout) when the section is absent.
 
 from __future__ import annotations
 
+import io
 import re
 import sys
 from pathlib import Path
@@ -40,7 +41,7 @@ def main() -> int:
         print("usage: release_notes_from_changelog.py <tag>", file=sys.stderr)
         return 2
     # CHANGELOG carries arrows/dashes; Windows consoles default to cp1252.
-    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
     version = sys.argv[1].lstrip("v")
     body = section_for(version)
     if body is None:
