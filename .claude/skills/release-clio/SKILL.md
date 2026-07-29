@@ -113,19 +113,32 @@ request #NNNN from iowarp/develop") — the v0.8.0/v0.8.1/v0.9.0 pages all shipp
 that way and had to be healed after the fact. Right after the tag push:
 
 ```sh
-gh release edit vX.Y.Z --title "vX.Y.Z — <campaign / theme name>" --notes-file notes.md
+gh release edit vX.Y.Z --title "vX.Y.Z" --notes-file notes.md
 ```
 
-`notes.md` is CURATED from the CHANGELOG's `[X.Y.Z]` section, not pasted verbatim:
-- One intro paragraph: what this release IS (the campaign/theme), with the epic ref
-  and the acceptance evidence (live-gate verdict link when one exists).
-- Feature groups as `##` sections, each bullet = **feature name** (#issues, PRs) +
-  1–2 plain sentences. Map every feature to its issues/PRs — a reader must be able
-  to click from a feature to its implementation.
-- Call out **breaking changes** explicitly (their own bullet or section).
-- End with a CHANGELOG link + the `uv tool install ... clio-agent==X.Y.Z` line.
-- Length: shorter than the CHANGELOG section. Clean feature → issue mapping beats
-  prose volume (the open-webui releases are the calibration: clear, not long).
+The title is the bare version — nothing appended, no campaign or theme name.
+`notes.md` is written for an external user or engineer who has never read this
+repo's design docs; it is NOT a condensed CHANGELOG. Owner-locked style rules
+(the first curated v0.9.0 page was rejected for breaking them):
+
+- **Audience**: name each feature by what the user can now DO ("Planning mode:
+  the agent works out a plan before touching anything"), never by internal
+  vocabulary. If a term only means something to someone who read the design docs
+  (resolver, policy rows, tighten-only, typed reasons, campaign/slice/epic, live
+  gate, settle loop, wire/SSE, CAS/GC roots), translate it into its user-visible
+  outcome or drop it.
+- **Shape**: a 1–2 sentence intro; then one `###` heading per feature with 2–3
+  plain sentences, ending with its issue/PR refs in parentheses; then `## Fixed`
+  / `## Changed` / `## Breaking` as applicable; end with the CHANGELOG link and
+  (newest release only) the `uv tool install ... clio-agent==X.Y.Z` line.
+- **Punctuation**: NO em-dashes or en-dashes anywhere in the published page; use
+  semicolons, colons, and parentheses. Write issue ranges as lists ("#1069,
+  #1070") or with "to", never with a dash.
+- **Voice**: it must not read AI-written — no bold-name-plus-dash bullet pattern,
+  no rhetorical flourishes, no marketing adjectives, no emoji. Calibration: the
+  open-webui releases, but shorter.
+- **Accuracy**: before publishing, verify every issue/PR number resolves to what
+  the sentence claims (`gh issue view N` / `gh pr view N`).
 
 The `release-check` job auto-fills the body from the CHANGELOG section as a
 BACKSTOP when the page is still bare, but the curated edit above is the standard —
