@@ -183,5 +183,8 @@ def test_segment_index_unit_irange():
     assert idx.locate_ids("u", "s", lt_min=2, lt_max=4) == ["id2", "id3", "id4"]
     # unknown scope -> empty
     assert idx.locate_ids("u", "nope") == []
-    idx.drop_session("u")
+    # per-scope drop forgets just that scope's locator. release() drives eviction per
+    # known key rather than scanning _by_scope, which raced a concurrent cold-load
+    # inserting into the same dict ("dictionary changed size during iteration").
+    idx.drop_scope("u", "s")
     assert idx.locate_ids("u", "s") == []
