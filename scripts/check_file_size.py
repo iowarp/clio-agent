@@ -127,7 +127,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # P2.3 (#1071): +6 — the deferred-boot branch wires the tool_interceptor +
     # PostToolUse producers (make_post_tool_hook); all logic lives in the owner
     # module gact/hooks/intercept.py, only the two boot assignments are here.
-    "src/clio_agent/gact/app.py": 2679,
+    # P4.3 (#1081): 2679 -> 2552 — the scheduler tick + fire runtime
+    # (_scheduler_tick/_scheduler_tick_once/_fire_schedule/_seconds_until_next_minute)
+    # moved to the owner module gact/scheduler_runtime.py; app.py only re-exports them.
+    "src/clio_agent/gact/app.py": 2552,
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -155,7 +158,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # catalog + reconnect/streamable-http route growth). Part of the #947 MCP-apps
     # decomposition debt; ratchets back with the mcp_app_* owner-module split.
     "src/clio_agent/gact/routes/blueprints.py": 861,
-    "src/clio_agent/gact/routes/catalog.py": 936,
+    "src/clio_agent/gact/routes/catalog.py": 938,  # +4: /goal command dispatch wiring (#1080; logic in gact/goal.py)
     "src/clio_agent/gact/routes/mcp.py": 993,
     # #947 DEBT (recorded 2026-07-18, #948 S4 branch): the MCP-apps landing grew
     # these files past their baselines without a ratchet update (it merged to
@@ -190,11 +193,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # before summarisation (thin dispatch_pre_compact call site; the event set lives
     # in the owner module gact/hooks/).
     # #1057 B2 review repair: +5 for the reserved-metadata guard at the /retry ingest
-    # (a POST /messages sibling that spreads client metadata onto the staged turn). The
-    # typed rejection itself lives in the owner module gact/messaging.py
-    # (raise_on_reserved_metadata, shared with the /messages guard); only the thin call
-    # site + import land here. Irreducible: the guard must sit in this endpoint.
-    "src/clio_agent/gact/routes/sessions.py": 1574,
+    # (typed rejection lives in gact/messaging.py; only the thin call site lands here).
+    # #1080: +3 stop_session_goal cancel-both wiring (logic in gact/goal.py). Merged
+    # baseline = actual post-merge count (both additions present).
+    "src/clio_agent/gact/routes/sessions.py": 1573,
     # #933: +8 for the turn-scoped workspace-fleet lease in _tool_session_context.
     # #933 review hardening: typed workspace_lease_unavailable degrade when a
     # rooted turn has no leasable agent (+9).
@@ -260,7 +262,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # P2.3 (#1071): +14 — PostToolBatch fires once per turn over the turn's tool
     # round (thin fire_post_tool_batch call site; the payload build + dispatch live
     # in the owner module gact/hooks/intercept.py).
-    "src/clio_agent/gact/turn_finalize.py": 928,
+    "src/clio_agent/gact/turn_finalize.py": 968,  # +36 (A4 #1057): the loop-goal compose glue is extracted into the named, tested `compose_goal_loop_stop_at_finalize` seam (A4 review: the inline glue was silently deletable — the extracted function is driven by the finalize seam test); the glue owns the goal->loop import so goal.py stays a leaf (no cycle)
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (baseline 1143 -> actual); ratchet back below the pre-#947 count with the
     # mcp_app_* owner-module split (see the #947 DEBT block on mcp_apps.py).

@@ -43,7 +43,6 @@ _install_sigusr1_diagnostic()
 
 from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional, cast
 
@@ -1162,143 +1161,17 @@ async def _construct_agent_async(app: "FastAPI") -> None:
     print("[clio-agent-gact] agent ready.", flush=True)
 
 
-def _seconds_until_next_minute(now: datetime) -> float:
-    """Seconds from ``now`` to just past the next UTC minute boundary.
-
-    Aligning the inter-tick sleep to the boundary (instead of a flat
-    ``sleep(60)`` after processing) keeps slow ticks from drifting past
-    cron minutes (#766). The small epsilon lands the wake *after* the
-    boundary so ``due_now``'s minute-truncation sees the new minute; the
-    floor guards against a zero/negative sleep hot loop right at the
-    boundary (``due_now`` already dedupes within a minute).
-    """
-
-    remaining = 60.0 - (now.second + now.microsecond / 1_000_000.0)
-    return max(0.5, remaining + 0.05)
-
-
-def _fire_schedule(app: "FastAPI", sch: Any) -> None:
-    """Fire one due schedule through the standard user-turn staging.
-
-    Marks the schedule fired, then stages the question via the same
-    :func:`_start_background_user_turn` engine POST /messages uses (#766):
-    the user message is persisted + published, the session flips to
-    ``running`` with a ``session.status_changed`` event, and the turn task
-    is registered in ``app.state.in_flight_turns`` so cancellation can
-    reach it (and the task reference is held, so it cannot be GC'd
-    mid-run). A schedule pointing at a missing session is logged with a
-    structured reason instead of firing into nothing.
-    """
-
-    sess = app.state.sessions.get(sch.session_id)
-    if sess is None:
-        app.state.schedules.mark_fired(sch.id)
-        logger.warning(
-            "scheduler tick error reason=schedule_session_not_found schedule_id=%s session_id=%s",
-            sch.id,
-            sch.session_id,
-        )
-        return
-    # #948 S1: the within-session busy gate applies to EVERY turn producer, not
-    # just POST /messages. A due schedule whose session already has a turn in
-    # flight must NOT double-stage a concurrent turn (which would orphan the
-    # running one — both writing the same session + ARC, only the last reachable
-    # via /cancel). Leave the schedule UNMARKED so the next tick retries once the
-    # session is free; the skip is logged with a structured reason (never silent).
-    if app.state.turn_runner.busy(sch.session_id):
-        # DEFER (do not drop). A coarse cron ('0 9 * * *') won't re-match the next
-        # minute, so relying on due_now to re-yield would silently lose the
-        # occurrence. Record the id in the deferred set; _scheduler_tick_once
-        # retries it every tick until the session frees. Left unmarked
-        # (mark_fired not called) so the schedule state stays truthful.
-        app.state.deferred_schedules.add(sch.id)
-        logger.info(
-            "scheduler tick deferred reason=schedule_session_busy schedule_id=%s session_id=%s",
-            sch.id,
-            sch.session_id,
-        )
-        return
-    app.state.deferred_schedules.discard(sch.id)
-    app.state.schedules.mark_fired(sch.id)
-    _turn_start_background_user_turn(
-        app,
-        sch.session_id,
-        sess,
-        sch.question,
-        metadata={"scheduled": True, "schedule_id": sch.id},
-        prev_status=str(getattr(sess, "status", "idle") or "idle"),
-    )
-
-
-def _scheduler_tick_once(app: "FastAPI") -> None:
-    """Process one scheduler tick: fire every currently-due schedule.
-
-    Never raises: a due-scan failure or a per-schedule firing failure is
-    logged with a structured reason (``schedule_due_scan_failed`` /
-    ``schedule_fire_failed``) so failed schedules are visible instead of
-    silently swallowed (#766), and one bad schedule cannot starve the rest.
-    """
-
-    # #948 S1: retry any schedule deferred because its session was busy at its cron
-    # minute (a coarse cron won't re-match, so due_now can't retry it). Fire each
-    # whose session has since freed; keep the rest deferred. Runs before the due
-    # scan so a freed session fires its pending occurrence promptly.
-    deferred = getattr(app.state, "deferred_schedules", None)
-    if deferred:
-        for sched_id in list(deferred):
-            sch = app.state.schedules.get(sched_id)
-            if sch is None:
-                deferred.discard(sched_id)
-                continue
-            if app.state.turn_runner.busy(sch.session_id):
-                continue  # still busy — keep deferred, retry next tick
-            deferred.discard(sched_id)
-            try:
-                _fire_schedule(app, sch)
-            except Exception:  # noqa: BLE001 - one bad schedule must not kill the loop
-                logger.warning(
-                    "scheduler tick error reason=schedule_fire_failed schedule_id=%s session_id=%s",
-                    sched_id,
-                    sch.session_id,
-                    exc_info=True,
-                )
-
-    try:
-        now = datetime.now(timezone.utc)
-        due = list(app.state.schedules.due_now(now))
-    except Exception:  # noqa: BLE001 - the tick loop must survive a bad store
-        logger.warning(
-            "scheduler tick error reason=schedule_due_scan_failed",
-            exc_info=True,
-        )
-        return
-    for sch in due:
-        try:
-            _fire_schedule(app, sch)
-        except Exception:  # noqa: BLE001 - one bad schedule must not kill the loop
-            logger.warning(
-                "scheduler tick error reason=schedule_fire_failed schedule_id=%s session_id=%s",
-                sch.id,
-                sch.session_id,
-                exc_info=True,
-            )
-
-
-async def _scheduler_tick(app: "FastAPI") -> None:
-    """Once-a-minute loop: fire any due schedules (UTC cron, #21/#766).
-
-    Each due schedule is staged through the same
-    :func:`_start_background_user_turn` engine a regular POST /messages
-    uses, so the session status, ``in_flight_turns`` registration,
-    cancellation, and SSE stream all behave exactly like a user turn.
-    Errors are logged with a structured reason (never silently dropped),
-    and the sleep is aligned to just past the next minute boundary so
-    slow ticks don't drift past cron minutes.
-    """
-
-    while True:
-        _scheduler_tick_once(app)
-        await asyncio.sleep(_seconds_until_next_minute(datetime.now(timezone.utc)))
+# #1081 (no-accretion): the scheduler tick + fire runtime lives in its owner module
+# clio_agent.gact.scheduler_runtime. Re-exported here so the boot _lifespan hook and
+# the scheduler tests keep importing them from clio_agent.gact.app, and so the
+# monkeypatch of _turn_start_background_user_turn (resolved through THIS module at fire
+# time) still steers the staging path.
+from clio_agent.gact.scheduler_runtime import (  # noqa: E402,F401 - re-exported for tests + _lifespan
+    _fire_schedule,  # noqa: F401
+    _scheduler_tick,
+    _scheduler_tick_once,  # noqa: F401
+    _seconds_until_next_minute,  # noqa: F401
+)
 
 
 class ARCLike(Protocol):

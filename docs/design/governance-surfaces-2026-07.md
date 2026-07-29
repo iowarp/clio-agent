@@ -302,6 +302,15 @@ provider/dspy layer (`dspy.LM` wrapper for BeforeModel); `runtime/app_state.py` 
   mode. Epistemic ledger in the plan artifact. No fifth store (state → session record +
   `session.metadata`, the #948 AgentTask pattern — NOT `workflow_state`; audit → semantic
   highway). ✔
+- **P4 goal eval: LLM-judge only; loop bounds are the hard stops** (A4 #1057, review-findings
+  fix). The initial two-tier design (LLM first-pass + deterministic `StatePredicate`/file hard
+  gate over `workflow_state`) was DELETED. The cross-industry survey settled it: nobody ships a
+  predicate over model-authored state as the halt authority, and clio's `workflow_state` is
+  written by the acting model — so the predicate let it *mark its own homework* (`goal.py:251`
+  self-satisfy). The bounded LLM judge is now the sole completion decision; `goal_status` returns
+  armed state only (never runs the judge); a judge-met goal stops any armed loop via the
+  `turn_finalize` glue (`loop_goal_met`). Accepted residual: the judge is transcript-persuadable,
+  bounded by user-only arming + the caps that hold regardless. ✔ (A4)
 
 ## Verification (live gate per slice-group, real box + real CTE + claude/codex)
 
@@ -328,6 +337,18 @@ provider/dspy layer (`dspy.LM` wrapper for BeforeModel); `runtime/app_state.py` 
   synthesize a marketplace call (served from cache), a mid-run "allow this host" grant applies live
   (P0 priority row), and a `plan_exit → defer` is approved out-of-band — one pipeline.
 - **Smoke (every merge):** `pytest -m "not integration"`, `ruff check src/`, baseline `cli.py`.
+
+**Campaign acceptance record (2026-07-28).** The composed P0–P4 live gate
+(`scripts/live_gate_governance_1057.py`) **passed all 17 required gates** on a real
+self-provisioned CTE (private port, `clio_run.exe` listener, zero degrade reasons):
+plan write-deny + denial in trace · plan-exit approve with no phantom re-approval, landing in
+edit mode (B1 repro) · PreToolUse marker hook fired · reserved-metadata 400 (B2 repro) ·
+cron registered + fired a real scheduled turn · loop armed → sticky `loop_budget` bound →
+live `loop_wakeup` re-arm refused typed · LLM-judge goal met + cleared. Verdict JSON:
+`docs/design/live-gate-governance-1057-verdict.json`. The gate run itself caught and fixed a
+real P1 defect the unit suite missed (the `create_artifact` policy consult omitted the write
+target path, so plan mode could not write its designated plan file — `plan_exit` was
+unreachable end-to-end until `eaa8015d`).
 
 ## Awaiting an external dependency (the ONLY postponed item)
 - **Harden the Windows shell fence from floor → hard.** Today file-writes are hard-denied on Windows;

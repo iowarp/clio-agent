@@ -213,7 +213,10 @@
             "commands": [
               "/cache-stats",
               "/clear",
+              "/cron",
               "/dump-trace",
+              "/goal",
+              "/loop",
               "/optimize"
             ],
             "execution_mode": "blueprint_react",

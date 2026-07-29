@@ -183,9 +183,18 @@ def _gate_content_write(
 
     session = _session_for(app, sid)
 
+    # The RESOLVED write target — computed once and reused by the overwrite guard AND the policy
+    # consult. It MUST reach the resolver as a path arg (``_permission_path_from_args`` keys on
+    # ``path``): the built-in plan_acl @70 ``<plans>/*.md`` carve-out (and any user path_pattern
+    # row) matches on ``path_pattern`` against this value, so omitting it made every plan-mode
+    # create_artifact write fall to the @40 deny — the model could never write its designated plan
+    # file and ``plan_exit`` was unreachable (P4). Empty when the proposal has no name: no path key
+    # is added below, so behaviour is unchanged (a nameless inline content proposal is rejected
+    # downstream in :func:`_write_inline_content` with ``MISSING_INPUT``).
+    target = (root / proposal.name).resolve(strict=False) if proposal.name else None
+
     # (a) Overwrite guard — never silently clobber a non-owned existing file.
-    if proposal.name:
-        target = (root / proposal.name).resolve(strict=False)
+    if proposal.name and target is not None:
         if target.exists() and not _own_registered_target(app, workspace_id, proposal.name, target):
             return _rejected(
                 proposal.name,
@@ -196,8 +205,12 @@ def _gate_content_write(
 
     # (c) Policy + mode consult + audit row (the same resolver the diffs/apply write and the live
     # tool gate use). Passing ``mode`` folds the built-in plan_acl rules in, so plan/architect deny
-    # a content write here through the SAME path — no separate mode predicate.
-    args = {"name": proposal.name, "content_bytes": len(proposal.content)}
+    # a content write here through the SAME path — no separate mode predicate. ``path`` carries the
+    # resolved target so path-pattern rows (the @70 plan-file carve-out; user path grants) can match
+    # and the audit row records the true write target.
+    args: dict[str, Any] = {"name": proposal.name, "content_bytes": len(proposal.content)}
+    if target is not None:
+        args["path"] = str(target)
     action = _policy_action_for_tool(
         app,
         session_id=sid,
