@@ -390,7 +390,7 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -403,3 +403,22 @@ jobs:
           set -euo pipefail
           gh release view "$GITHUB_REF_NAME" --json assets -q '.assets[].name' \
             | python3 scripts/check_release_completeness.py
+      - name: Backstop release notes from CHANGELOG
+        # action-gh-release creates the release page with only the tag/commit
+        # subject as its body. The release-clio skill's curated notes (step 6b)
+        # are the standard; this backstop fills a still-bare body with the
+        # CHANGELOG's section for the tag so a release page is never just
+        # "Merge pull request #NNNN". It NEVER overwrites a non-bare body.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/release_notes_from_changelog.py "$GITHUB_REF_NAME" > /tmp/notes.md || {
+            echo "no CHANGELOG section for $GITHUB_REF_NAME; leaving release body untouched"; exit 0; }
+          BODY_LEN=$(gh release view "$GITHUB_REF_NAME" --json body -q '.body' | wc -c)
+          if [ "$BODY_LEN" -lt 200 ]; then
+            gh release edit "$GITHUB_REF_NAME" --notes-file /tmp/notes.md
+            echo "backstop notes applied (previous body was ${BODY_LEN} bytes)"
+          else
+            echo "body already curated (${BODY_LEN} bytes); not touching it"
+          fi
