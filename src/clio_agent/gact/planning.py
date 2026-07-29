@@ -26,6 +26,7 @@ never invents a parallel store. It is also the planned home for P1.6b-d.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Any
@@ -413,22 +414,69 @@ def parse_playbook(raw: Any, *, name: str = "") -> Playbook | None:
     return Playbook(name=str(name or "").strip(), steps=steps)
 
 
-def parse_effect_playbook(raw: Any, *, plan_entering: bool) -> Playbook | None:
+#: Top-level skill frontmatter key naming a SAVED-PLAN artifact to derive the playbook from
+#: (P1.6c #1068). Owned here (the parse/placement owner); ``plan_reuse`` re-exports it and
+#: resolves the reference at effect-apply time.
+PLAYBOOK_FROM_PLAN_META_KEY = "playbook_from_plan"
+
+
+def validate_plan_ref_placement(meta: Any, *, plan_entering: bool, inline: Any) -> None:
+    """Typed placement guard for ``playbook_from_plan`` at PARSE time (never a silent ignore).
+
+    Mirrors the inline playbook's misplacement guard: a ``playbook_from_plan`` reference on an
+    effect-less or non-plan-entering skill would never reach ``plan_reuse.record_plan_playbook``
+    and be silently dropped — a no-silent-fallback violation. Declaring it BESIDE an inline
+    ``playbook`` is ambiguous (record would silently prefer the inline one) and likewise rejected.
+
+    Args:
+        meta: The skill frontmatter mapping (non-mappings impose nothing).
+        plan_entering: Whether the carrying effect enters plan mode.
+        inline: The raw inline ``playbook`` declaration (``None``/empty = absent).
+
+    Raises:
+        PlaybookError: ``playbook_requires_plan_mode`` on misplacement,
+            ``conflicting_playbook_declarations`` when both forms are declared.
+    """
+
+    if not isinstance(meta, Mapping):
+        return
+    plan_ref = str(meta.get(PLAYBOOK_FROM_PLAN_META_KEY) or "").strip()
+    if not plan_ref:
+        return
+    if not plan_entering:
+        raise PlaybookError(
+            f"playbook_from_plan {plan_ref!r} is only valid on a plan-entering effect "
+            "(enter_mode:plan / plan_workflow / plan_small)",
+            reason="playbook_requires_plan_mode",
+        )
+    if inline not in (None, ""):
+        raise PlaybookError(
+            f"skill declares BOTH an inline playbook and playbook_from_plan {plan_ref!r} — "
+            "declare exactly one",
+            reason="conflicting_playbook_declarations",
+        )
+
+
+def parse_effect_playbook(raw: Any, *, plan_entering: bool, meta: Any = None) -> Playbook | None:
     """Parse a skill-effect playbook declaration + enforce the plan-only rule (P1.6b #1068).
 
     Wraps :func:`parse_playbook` (typed :class:`PlaybookError` on malformed) and adds the guard that
     a playbook is a PLAN skeleton: declared beside a non-plan-entering effect it is rejected with a
-    typed ``playbook_requires_plan_mode`` reason (never a silent drop). ``skill_effects`` re-raises
-    the :class:`PlaybookError` as its own :class:`SkillEffectError`.
+    typed ``playbook_requires_plan_mode`` reason (never a silent drop). When ``meta`` is supplied,
+    the ``playbook_from_plan`` placement guard (:func:`validate_plan_ref_placement`) runs first, so
+    a misplaced/conflicting saved-plan reference is typed-rejected at the same seam (P1.6c).
+    ``skill_effects`` re-raises the :class:`PlaybookError` as its own :class:`SkillEffectError`.
 
     Args:
         raw: The declared playbook value (JSON string / list / ``None``).
         plan_entering: Whether the carrying effect enters plan mode (enter_mode:plan / plan variant).
+        meta: The full frontmatter mapping (enables the by-reference placement guard).
 
     Returns:
         The validated :class:`Playbook`, or ``None`` when none is declared.
     """
 
+    validate_plan_ref_placement(meta, plan_entering=plan_entering, inline=raw)
     playbook = parse_playbook(raw)
     if playbook is not None and not plan_entering:
         raise PlaybookError(
@@ -509,6 +557,99 @@ def clear_playbook(app: Any, session_id: str) -> None:
     """Clear the session's active playbook (writes the ``{}`` tombstone). Called on plan_exit approve."""
 
     app.state.sessions.update(session_id, metadata_patch={PLAN_PLAYBOOK_METADATA_KEY: {}})
+
+
+# =========================================================================== #
+# P1.6c #1068 — save-and-reuse: derive a Playbook skeleton from a saved plan   #
+# =========================================================================== #
+#
+# The GENERALIZE half of save-and-reuse (the REGISTER + REUSE halves are the owner module
+# gact/plan_reuse). :func:`playbook_from_saved_plan` is a PURE function: given the markdown body
+# of a saved plan artifact, it lifts the plan's structure (numbered implementation steps, else
+# section headings) into a :class:`Playbook` skeleton — keeping step names + verification intent,
+# stripping session-specific literals (concrete file paths, backtick-quoted values) into
+# placeholders where obvious, and dropping per-step tool narrowing (a reusable skeleton must not
+# carry one session's concrete allowlist). No I/O, no app state — the same discipline as
+# :func:`parse_playbook`.
+
+#: Cap a derived step name so a runaway plan line cannot bloat the skeleton / reminder.
+_PLAN_STEP_NAME_MAX = 120
+
+#: A numbered list item (``1.`` / ``2)`` …) — the preferred step source (concrete implementation
+#: steps) when the plan carries them.
+_PLAN_NUMBERED_RE = re.compile(r"^\s*\d+[.)]\s+(.+)$")
+
+#: A section heading (``##``…``####``) — the fallback step source when the plan has no numbered list.
+_PLAN_HEADING_RE = re.compile(r"^\s*#{2,4}\s+(.+?)\s*$")
+
+#: A backtick-quoted span → a ``<value>`` placeholder (a session-specific literal value).
+_PLAN_BACKTICK_RE = re.compile(r"`[^`]*`")
+
+#: A concrete file path/name → a ``<path>`` placeholder: a token with a path separator, OR a
+#: filename-with-known-extension token (targeted so ordinary prose like "e.g." is NOT genericized).
+_PLAN_PATH_RE = re.compile(
+    r"\S*[\\/]\S+"
+    r"|[\w.\-]+\.(?:md|py|txt|json|ya?ml|toml|cfg|ini|sh|js|tsx?|csv|png|jpe?g|h5|parquet|sql|rs|go|cpp|hpp|ipynb)\b",
+    re.IGNORECASE,
+)
+
+
+def _genericize_plan_step(text: str) -> str:
+    """Strip a plan step's session-specific literals to placeholders (paths/values) + normalise ws.
+
+    Backtick values first (so a path INSIDE backticks becomes one ``<value>``, not a nested
+    replace), then bare path tokens, then whitespace collapse + stray markdown emphasis removal.
+    """
+
+    cleaned = _PLAN_BACKTICK_RE.sub("<value>", text)
+    cleaned = _PLAN_PATH_RE.sub("<path>", cleaned)
+    cleaned = cleaned.replace("**", "").replace("`", "")
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def playbook_from_saved_plan(content: str, *, name: str = "") -> Playbook:
+    """Derive a generalized :class:`Playbook` skeleton from a saved plan's markdown (P1.6c #1068).
+
+    Pure + deterministic: prefers the plan's numbered implementation steps; falls back to its
+    section headings (``##``…``####``) when it has none. Each step's text is genericized
+    (:func:`_genericize_plan_step`) so no concrete file path / quoted value from the originating
+    session leaks into the reusable skeleton, and per-step ``tools_allowed`` is dropped. Verification
+    steps ("… verify …", "Verification") are kept verbatim by name — they carry the plan's intent.
+
+    Args:
+        content: The saved plan's markdown body.
+        name: The playbook name to stamp (typically the saved plan artifact's name).
+
+    Returns:
+        A :class:`Playbook` whose steps mirror the plan's structure.
+
+    Raises:
+        PlaybookError: ``reason="unstructured_plan"`` when no numbered step or heading is present —
+            a typed reject (never a silent empty playbook).
+    """
+
+    numbered: list[str] = []
+    headings: list[str] = []
+    for line in content.splitlines():
+        m = _PLAN_NUMBERED_RE.match(line)
+        if m is not None:
+            numbered.append(m.group(1))
+            continue
+        h = _PLAN_HEADING_RE.match(line)
+        if h is not None:
+            headings.append(h.group(1))
+    raw_steps = numbered if numbered else headings
+    steps = tuple(
+        PlaybookStep(name=cleaned[:_PLAN_STEP_NAME_MAX])
+        for cleaned in (_genericize_plan_step(raw) for raw in raw_steps)
+        if cleaned
+    )
+    if not steps:
+        raise PlaybookError(
+            "saved plan has no derivable step structure (no numbered steps or section headings)",
+            reason="unstructured_plan",
+        )
+    return Playbook(name=str(name or "").strip(), steps=steps)
 
 
 def _playbook_structure_bullet(playbook: Playbook) -> str:

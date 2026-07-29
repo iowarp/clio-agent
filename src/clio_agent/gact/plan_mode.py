@@ -733,6 +733,11 @@ def resolve_plan_exit_answer(app: "FastAPI", deps: "GactDeps", sid: str, questio
         metadata_patch={PLAN_VARIANT_METADATA_KEY: ""},
     )
     clear_playbook(app, sid)
+    # P1.6c #1068: register the approved plan as a provenance-tracked artifact (save-and-reuse).
+    # Guarded + non-fatal: a degraded save records a typed reason but never blocks this resume.
+    from clio_agent.gact.plan_reuse import save_approved_plan  # noqa: PLC0415
+
+    save_approved_plan(app, sid, plan_file=plan_file)
     cleared = False
     if clear_context:
         deps.replace_session_messages(app, sid, [])

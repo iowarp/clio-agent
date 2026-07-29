@@ -63,7 +63,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 from clio_agent.gact import context as _ctx
-from clio_agent.gact import planning
+from clio_agent.gact import plan_reuse, planning
 from clio_agent.gact.skills import read_skill_body
 from clio_agent.runtime import trace
 
@@ -362,11 +362,11 @@ def _autonomy_params(
     return out
 
 
-def _parse_playbook_field(raw: Any, *, plan_entering: bool) -> "Playbook | None":
-    """Parse a declared playbook, re-raising a typed :class:`planning.PlaybookError` as :class:`SkillEffectError` (never a silent drop)."""
+def _parse_playbook_field(raw: Any, *, plan_entering: bool, meta: Any = None) -> "Playbook | None":
+    """Parse a declared playbook (+ ``playbook_from_plan`` placement), typed — never a silent drop."""
 
     try:
-        return planning.parse_effect_playbook(raw, plan_entering=plan_entering)
+        return planning.parse_effect_playbook(raw, plan_entering=plan_entering, meta=meta)
     except planning.PlaybookError as exc:
         raise SkillEffectError(str(exc), reason=exc.reason) from exc
 
@@ -386,7 +386,7 @@ def parse_skill_effect(meta: Mapping[str, Any]) -> SkillEffect | None:
     spec = _coerce_effect_spec(meta)
     if spec is None:
         # An orphan playbook on an effect-less skill is misplaced -> typed reject (never dropped).
-        _parse_playbook_field(meta.get("playbook"), plan_entering=False)
+        _parse_playbook_field(meta.get("playbook"), plan_entering=False, meta=meta)
         return None
     kind = str(spec.get("kind") or "").strip()
     if not kind:
@@ -400,7 +400,7 @@ def parse_skill_effect(meta: Mapping[str, Any]) -> SkillEffect | None:
         kind == EFFECT_ENTER_MODE and str(spec.get("mode") or "").strip() == "plan"
     )
     pb_raw = spec.get("playbook", meta.get("playbook"))
-    playbook = _parse_playbook_field(pb_raw, plan_entering=plan_entering)
+    playbook = _parse_playbook_field(pb_raw, plan_entering=plan_entering, meta=meta)
     if kind == EFFECT_ENTER_MODE:
         mode = str(spec.get("mode") or "").strip()
         if mode not in _MODE_RESTRICTIVENESS:
@@ -776,11 +776,10 @@ def maybe_apply_skill_effect(ref: "SkillRef", *, agent_id: str) -> str | None:
         outcome = _execute_schedule(effect, ref, app, session_id)
     else:
         outcome = _execute_spawn(effect, ref, app, session_id, agent_id)
-    # P1.6b #1068: a plan-entering effect declaring an operator playbook records it as the session's
-    # ACTIVE playbook (no fifth store — rides session.metadata like the variant tag); owner module
-    # stamps the skill id as the name when unnamed + emits the typed trace.
-    if effect.playbook is not None and outcome.mode == "plan":
-        planning.record_effect_playbook(app, session_id, effect.playbook, default_name=ref.id)
+    # P1.6b/c #1068: a plan-entering effect records its operator playbook — inline (P1.6b) OR by
+    # reference to a saved plan artifact (P1.6c playbook_from_plan) — as the ACTIVE playbook.
+    if outcome.mode == "plan":
+        plan_reuse.record_plan_playbook(app, session_id, ref, effect.playbook, default_name=ref.id)
     _emit_skill_effect(app, session_id, ref, outcome, agent_id)
     trace.event(
         "SKILLS", "agent %s skill %s effect %s (%s)", agent_id, ref.id, outcome.kind, outcome.detail
