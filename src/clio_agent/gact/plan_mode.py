@@ -45,11 +45,11 @@ from typing import TYPE_CHECKING, Any
 from clio_agent.gact.planning import (
     PLAN_MODE_REMINDER_MARKER,
     PLAN_VARIANT_METADATA_KEY,
-    clear_playbook,
     plan_mode_reminder_block,
     plan_variant_guidance,
     recorded_plan_variant,
     recorded_playbook,
+    transition_playbook_to_execution,
 )
 from clio_agent.runtime import trace
 
@@ -721,10 +721,11 @@ def resolve_plan_exit_answer(app: "FastAPI", deps: "GactDeps", sid: str, questio
         return
 
     # Approve: the SANCTIONED plan-mode exit (unlike the enter_mode no-escape guard). Clear any
-    # plan VARIANT tag (P1.6a #1068) and any ACTIVE operator playbook (P1.6b #1068) as the session
-    # leaves plan mode, so a later plan re-entry does not inherit the previous scaffold/skeleton.
-    # (Reject stays in plan mode and returns earlier, keeping both so the revision turn gets the
-    # same scaffold.)
+    # plan VARIANT tag (P1.6a #1068) as the session leaves plan mode. An ACTIVE operator playbook
+    # (P1.6b) does NOT just clear — it is CARRIED into an execution record (P1.6d #1068) so its
+    # per-step tools_allowed keeps narrowing during execution and its active step advances off the
+    # write_todos signal. (Reject stays in plan mode and returns earlier, keeping the plan-phase
+    # scaffold so the revision turn is unchanged.)
     approval_mode = "auto-edits" if decision == "auto" else "ask"
     app.state.sessions.update(
         sid,
@@ -732,7 +733,7 @@ def resolve_plan_exit_answer(app: "FastAPI", deps: "GactDeps", sid: str, questio
         approval_mode=approval_mode,
         metadata_patch={PLAN_VARIANT_METADATA_KEY: ""},
     )
-    clear_playbook(app, sid)
+    transition_playbook_to_execution(app, sid)
     # P1.6c #1068: register the approved plan as a provenance-tracked artifact (save-and-reuse).
     # Guarded + non-fatal: a degraded save records a typed reason but never blocks this resume.
     from clio_agent.gact.plan_reuse import save_approved_plan  # noqa: PLC0415

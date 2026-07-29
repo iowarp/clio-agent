@@ -286,15 +286,12 @@ def finalize_turn(
         )
 
     # ---- #767 PR3: finalize is a READER of the TurnTranscript ledger. ----
-    # Live parts already streamed at the moment they happened; finalize only
-    # appends ITS OWN parts (route banner, wrap-up thinking, the canonical
-    # answer channel, file diffs) through the same producer API and then
-    # persists the ledger verbatim. No live-parts scans, no rebuild-from-rows,
-    # no text swap, no dedup, no re-publish.
-    #
-    # Capture stream provenance BEFORE any finalize-time append: an atomic
-    # append is the runtime boundary and clears ``current_stream_part_id``
-    # (the legacy closure var was only reset by mid-turn boundaries).
+    # Live parts already streamed as they happened; finalize only appends ITS OWN parts (route
+    # banner, wrap-up thinking, the canonical answer channel, file diffs) through the same producer
+    # API and persists the ledger verbatim — no live-parts scans, no rebuild-from-rows, no text swap,
+    # no dedup, no re-publish. Capture stream provenance BEFORE any finalize-time append: an atomic
+    # append is the runtime boundary and clears ``current_stream_part_id`` (the legacy closure var
+    # was only reset by mid-turn boundaries).
     current_stream_part_id = state.transcript.current_stream_part_id
     live_assistant_parts = state.transcript.snapshot()
     has_live_parts = bool(live_assistant_parts or current_stream_part_id)
@@ -708,10 +705,9 @@ def finalize_turn(
             },
         )
     )
-    # P2.3 PostToolBatch: fire ONCE per turn, after the turn's whole tool batch resolved
-    # and before Stop/next step — only when the turn ran ≥1 tool (an empty batch is not a
-    # batch). ``state.tools_called`` is the honest clio-owned batch boundary (the DSPy ReAct
-    # loop owns per-model-step rounds; when it exposes a finer seam this moves there).
+    # P2.3 PostToolBatch: fire ONCE per turn, after the turn's whole tool batch resolved and before
+    # Stop/next step — only when the turn ran ≥1 tool. ``state.tools_called`` is the honest clio-owned
+    # batch boundary (the DSPy ReAct loop owns per-model-step rounds; a finer seam moves this there).
     if state.tools_called:
         from clio_agent.gact.hooks import fire_post_tool_batch  # noqa: PLC0415
 
@@ -721,12 +717,10 @@ def finalize_turn(
             turn_id=state.turn_id,
             cwd=str(getattr(state.sess, "workspace_root", "") or ""),
         )
-    # P2.5 #1073: Stop hooks (the ported ``post_message`` consumer) run AFTER persistence
-    # so user audit code sees the settled assistant. They are a BOUNDED completion gate: a
-    # ``deny`` means "not done — re-drive one more turn", re-driven on the #1031 idle-hook
-    # seam, hard-bounded by a per-hook ``loopLimit`` + a global cap that settles DONE with a
-    # typed ``stop_loop_cap`` reason (never infinite). The whole finalize-boundary protocol
-    # lives in the hooks owner module (``stop_loop.dispatch_stop_at_finalize``, no-accretion).
+    # P2.5 #1073: Stop hooks (the ported ``post_message`` consumer) run AFTER persistence so user
+    # audit code sees the settled assistant. A BOUNDED completion gate: a ``deny`` re-drives one more
+    # turn on the #1031 idle-hook seam, hard-bounded by a per-hook ``loopLimit`` + a global cap that
+    # settles DONE with a typed ``stop_loop_cap`` reason. Protocol lives in the hooks owner module.
     from clio_agent.gact.hooks.stop_loop import dispatch_stop_at_finalize  # noqa: PLC0415
 
     dispatch_stop_at_finalize(
@@ -750,6 +744,12 @@ def finalize_turn(
         state.app, session_id=state.sid, turn_id=state.turn_id, trace_id=state.trace_id
     )
     compose_goal_loop_stop_at_finalize(state.app, state.sid, goal_decision)
+    # P1.6d #1068: stall-monitor leaky bucket (owner module; no-op for unstructured sessions).
+    from clio_agent.gact.replanning import dispatch_stall_monitor_at_finalize  # noqa: PLC0415
+
+    dispatch_stall_monitor_at_finalize(
+        state.app, session_id=state.sid, turn_id=state.turn_id, tools_called=state.tools_called
+    )
     if not (
         state.cancelled_turn
         and state.error_info is not None

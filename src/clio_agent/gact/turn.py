@@ -63,6 +63,7 @@ from clio_agent.gact.messaging import (
     _user_message_parts,
 )
 from clio_agent.gact.plan_mode import inject_plan_mode_reminder
+from clio_agent.gact.replanning import inject_replan_suggestion
 from clio_agent.gact.runtime.globals import (
     _BlueprintRootDisabled,
     _cancelled_error_info,
@@ -304,6 +305,10 @@ async def _run_turn_in_background(
         state.enriched_text = inject_todo_recitation(
             state.app, state.sid, state.sess, state.enriched_text
         )
+        # P1.6d #1068: surface a pending stall-triggered replanning suggestion once (no-op otherwise).
+        state.enriched_text = inject_replan_suggestion(
+            state.app, state.sid, state.sess, state.enriched_text
+        )
         # Carry prior turns so a follow-up ("now plot it") reuses resolved state (no-op turn 1).
         state.enriched_text = _compile_session_conversation_history(state.app, state.sid, state.enriched_text)
     except _ContextFileAccessError as exc:
@@ -342,22 +347,16 @@ async def _run_turn_in_background(
         if run_user_prompt_submit(state, update_retry_attempt=_update_retry_attempt) != "proceed":
             return
 
-    # iowarp/clio-agent#6: try real per-token streaming via
-    # dspy.streamify when the LM supports it; fall back to the
-    # synchronous executor path otherwise. Streaming produces
-    # message.part.delta events as chunks arrive — without it the
-    # text part lands as one big delta after forward returns.
+    # iowarp/clio-agent#6: try real per-token streaming via dspy.streamify when the LM supports it;
+    # fall back to the synchronous executor path otherwise. Streaming produces message.part.delta
+    # events as chunks arrive — without it the text part lands as one big delta after forward.
     #
-    # #767 PR2: the TurnTranscript ledger owns the streamed-part state machine
-    # (lazy message mint, per-(agent, field) part open/close, per-part buffers,
-    # whole-buffer clean at close, the runtime boundary) that used to live here
-    # as ~10 closure vars + _close_streamed_part + the cross-module boundary
-    # hook. The turn loop owns the ledger's LIFECYCLE: opened here, settled on
-    # every exit path (success, the #756 finalize error envelope, the ask_user
-    # early return). :func:`~clio_agent.gact.turn_stream.emit_chunk` (extracted to
-    # turn_stream.py, #767 Phase B Slice 3) is now a thin adapter: semantic
-    # lm.token.delta + the parent-resume suppression gate (PR4 retires it) +
-    # stream_audit, then one transcript call.
+    # #767 PR2: the TurnTranscript ledger owns the streamed-part state machine (lazy message mint,
+    # per-(agent, field) part open/close, per-part buffers, whole-buffer clean at close, the runtime
+    # boundary). The turn loop owns the ledger's LIFECYCLE: opened here, settled on every exit path
+    # (success, the #756 finalize error envelope, the ask_user early return).
+    # :func:`~clio_agent.gact.turn_stream.emit_chunk` is a thin adapter: semantic lm.token.delta +
+    # the parent-resume suppression gate + stream_audit, then one transcript call.
     from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
         _active_workflow_state_schema,
     )

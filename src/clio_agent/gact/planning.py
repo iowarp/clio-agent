@@ -542,21 +542,123 @@ def recorded_playbook(session: Any) -> Playbook | None:
 def active_playbook_allowed_tools(session: Any) -> tuple[str, ...] | None:
     """Return the ACTIVE playbook step's ``tools_allowed`` allowlist, or ``None`` (no narrowing).
 
-    ``None`` when no playbook is active OR the active step declares no ``tools_allowed`` (the
-    optional per-step field) — both cases impose NO narrowing, leaving grant resolution unchanged.
-    The gate passes this straight to :func:`grant_resolver.resolve` as ``playbook_allowed``.
+    Consults the PLAN-phase playbook first (:func:`recorded_playbook`, active while planning) and
+    falls back to the EXECUTION-phase record (:func:`recorded_execution_playbook`, active after
+    plan-exit approve — P1.6d #1068), so the active step's allowlist keeps narrowing across BOTH
+    phases. Plan-phase precedence means a fresh plan re-entry's skeleton wins over a stale execution
+    record. ``None`` when neither is active OR the active step declares no ``tools_allowed`` (the
+    optional per-step field) — all impose NO narrowing. The gate passes this straight to
+    :func:`grant_resolver.resolve` as ``playbook_allowed``.
     """
 
-    playbook = recorded_playbook(session)
+    playbook = recorded_playbook(session) or recorded_execution_playbook(session)
     if playbook is None:
         return None
     return playbook.active().tools_allowed or None
 
 
 def clear_playbook(app: Any, session_id: str) -> None:
-    """Clear the session's active playbook (writes the ``{}`` tombstone). Called on plan_exit approve."""
+    """Clear the session's active PLAN-phase playbook (``{}`` tombstone). Called on plan_exit approve."""
 
     app.state.sessions.update(session_id, metadata_patch={PLAN_PLAYBOOK_METADATA_KEY: {}})
+
+
+# =========================================================================== #
+# P1.6d #1068 — execution-phase playbook carry (absorbs the P1.6b residual)    #
+# =========================================================================== #
+#
+# The P1.6b residual: the active playbook cleared at plan-exit approve and there was NO
+# execution-phase step tracking (active_step frozen at 0). This section carries an approved
+# playbook into the EXECUTION (edit) phase so its per-step ``tools_allowed`` keeps narrowing while
+# the plan runs, and ADVANCES the active step off a TYPED signal — the ``write_todos`` completed
+# count (:mod:`clio_agent.gact.todos`, #1067), the execution-phase checklist the model maintains.
+# Each completed todo advances the active step by one (clamped, forward-only), so the gate narrows
+# to where the model is in the work. The record rides its own ``session.metadata`` key (no fifth
+# store), distinct from the plan-phase key so the two phases never collide.
+
+#: ``session.metadata`` key holding the EXECUTION-phase playbook record (steps + active_step). The
+#: plan-phase playbook transitions here on plan-exit approve. An empty ``{}`` (the clear tombstone)
+#: reads as ABSENT, matching every other no-fifth-store projection.
+PLAYBOOK_EXECUTION_METADATA_KEY = "playbook_execution"
+
+
+def recorded_execution_playbook(session: Any) -> Playbook | None:
+    """Return the EXECUTION-phase playbook on ``session.metadata`` (``None`` when unset/cleared)."""
+
+    metadata = getattr(session, "metadata", None)
+    if isinstance(metadata, Mapping):
+        value = metadata.get(PLAYBOOK_EXECUTION_METADATA_KEY)
+        if isinstance(value, Mapping) and value:
+            return Playbook.from_metadata(value)
+    return None
+
+
+def clear_execution_playbook(app: Any, session_id: str) -> None:
+    """Clear the EXECUTION-phase playbook record (writes the ``{}`` tombstone)."""
+
+    app.state.sessions.update(session_id, metadata_patch={PLAYBOOK_EXECUTION_METADATA_KEY: {}})
+
+
+def transition_playbook_to_execution(app: Any, session_id: str) -> Playbook | None:
+    """Carry the active PLAN-phase playbook into an EXECUTION record on plan-exit APPROVE (P1.6d).
+
+    Replaces the bare :func:`clear_playbook` the approve path used to call: an active playbook is
+    re-recorded under :data:`PLAYBOOK_EXECUTION_METADATA_KEY` (``active_step`` reset to 0) so its
+    per-step ``tools_allowed`` keeps narrowing during execution, and the plan-phase key is cleared.
+    With no active playbook it clears BOTH keys (idempotent, and drops any stale execution record
+    from a prior cycle). Returns the execution playbook, or ``None`` when none was active.
+    """
+
+    session = app.state.sessions.get(session_id)
+    playbook = recorded_playbook(session) if session is not None else None
+    clear_playbook(app, session_id)
+    if playbook is None:
+        clear_execution_playbook(app, session_id)
+        return None
+    execution = replace(playbook, active_step=0)
+    app.state.sessions.update(
+        session_id, metadata_patch={PLAYBOOK_EXECUTION_METADATA_KEY: execution.to_metadata()}
+    )
+    trace.event(
+        "PLAN",
+        "carried playbook %r (%d steps) into execution for %s",
+        execution.name,
+        len(execution.steps),
+        session_id,
+    )
+    return execution
+
+
+def advance_execution_step(app: Any, session_id: str, *, completed_todos: int) -> int | None:
+    """Advance the EXECUTION playbook's active step to match checklist progress (P1.6d #1068).
+
+    The typed step-advancement signal is the ``write_todos`` completed-count (#1067): each completed
+    todo advances the active step by one, clamped to the last step and NEVER moving backward (a
+    monotonic progress projection). Called from :func:`clio_agent.gact.todos._write_todos` after a
+    successful whole-list write. Returns the new ``active_step`` when it advanced, else ``None`` (no
+    execution playbook, or no forward movement) — so a session without an execution playbook is a
+    strict no-op.
+    """
+
+    session = app.state.sessions.get(session_id)
+    execution = recorded_execution_playbook(session) if session is not None else None
+    if execution is None:
+        return None
+    target = min(max(int(completed_todos), 0), len(execution.steps) - 1)
+    if target <= execution.active_step:
+        return None
+    advanced = replace(execution, active_step=target)
+    app.state.sessions.update(
+        session_id, metadata_patch={PLAYBOOK_EXECUTION_METADATA_KEY: advanced.to_metadata()}
+    )
+    trace.event(
+        "PLAN",
+        "execution step advanced to %d/%d for %s",
+        target,
+        len(execution.steps),
+        session_id,
+    )
+    return target
 
 
 # =========================================================================== #

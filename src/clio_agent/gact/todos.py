@@ -160,7 +160,14 @@ def _write_todos(app: "FastAPI", sid: str, session: Any, todos: Any) -> str:
             sid,
             metadata_patch={_TODOS_METADATA_KEY: normalized, _TODOS_WRITE_STEP_KEY: step_key},
         )
-    counts = {status: sum(1 for t in normalized if t["status"] == status) for status in _TODO_STATUSES}
+    counts = {
+        status: sum(1 for t in normalized if t["status"] == status) for status in _TODO_STATUSES
+    }
+    # P1.6d #1068: the completed-todo count is the TYPED step-advancement signal for an active
+    # execution-phase playbook — advance its active step to match (forward-only, no-op without one).
+    from clio_agent.gact.planning import advance_execution_step  # noqa: PLC0415
+
+    advance_execution_step(app, sid, completed_todos=counts["completed"])
     return (
         f"Recorded {len(normalized)} todo(s): "
         f"{counts['completed']} completed, {counts['in_progress']} in_progress, "
@@ -201,10 +208,15 @@ def build_write_todos_tool(agent_def: Any) -> Any:
         app = _ctx.active_app()
         sid = _ctx.active_session_id()
         if app is None or not sid:
-            raise TodoError("write_todos requires an active CLIO app/session context.", reason="no_active_session")
+            raise TodoError(
+                "write_todos requires an active CLIO app/session context.",
+                reason="no_active_session",
+            )
         session = app.state.sessions.get(sid)
         if session is None:
-            raise TodoError("write_todos could not resolve the active session.", reason="no_active_session")
+            raise TodoError(
+                "write_todos could not resolve the active session.", reason="no_active_session"
+            )
         return _write_todos(app, sid, session, todos)
 
     return dspy.Tool(
@@ -246,9 +258,5 @@ def inject_todo_recitation(app: "FastAPI", sid: str, session: Any, enriched_text
     if not todos:
         return enriched_text
     return (
-        TODO_RECITATION_MARKER
-        + "\n\n"
-        + _render_checklist(todos)
-        + "\n\n---\n\n"
-        + enriched_text
+        TODO_RECITATION_MARKER + "\n\n" + _render_checklist(todos) + "\n\n---\n\n" + enriched_text
     )
