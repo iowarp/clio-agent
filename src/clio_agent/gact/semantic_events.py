@@ -143,6 +143,11 @@ SSE_TRACE_ONLY_EVENT_TYPES: frozenset[str] = frozenset(
         # ARC substrate the operator queries after the fact, NEVER a UI row; declared
         # trace-only so no status can lift it onto the served wire.
         "hook.invoked",
+        # Stall-triggered replanning (P1.6d #1068): the leaky-bucket score change per turn and the
+        # threshold suggestion are governance substrate the operator queries after the fact — never a
+        # UI atom (the suggestion reaches the model via a per-turn-input attachment, not an SSE row).
+        "replan.stall_scored",
+        "replan.suggested",
         "artifact.used",
         "artifact.transform.recorded",
         "artifact.transform.failed",

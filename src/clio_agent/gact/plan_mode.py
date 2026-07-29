@@ -22,7 +22,8 @@ clio never pre-writes the file's content; the reminder only points the model at 
 Kept LEAN so plan mode never bloats context: a FULL reminder (create-vs-edit branch, adaptive
 structure hint, epistemic-ledger headers, staleness + show-the-plan rules) is injected only on the
 first plan turn, immediately after a compaction (which drops the earlier one from the model's
-view), and once per :data:`_PLAN_REMINDER_FULL_INTERVAL` turns; every turn in between carries a
+view), and once per the active variant's ``full_interval`` turns (the default cadence lives at
+:data:`clio_agent.gact.planning._DEFAULT_FULL_INTERVAL`); every turn in between carries a
 single-line marker. The tiny suppression counter lives on ``session.metadata`` alongside the plan
 path.
 
@@ -41,18 +42,29 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from clio_agent.gact.planning import (
+    PLAN_MODE_REMINDER_MARKER,
+    PLAN_VARIANT_METADATA_KEY,
+    plan_mode_reminder_block,
+    plan_variant_guidance,
+    recorded_plan_variant,
+    recorded_playbook,
+    transition_playbook_to_execution,
+)
+from clio_agent.runtime import trace
+
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
     from clio_agent.gact.routes.deps import GactDeps
     from clio_agent.gact.turn_state import TurnState
 
-#: Marker heading the plan-mode reminder block (stable + greppable; #881 discipline).
-PLAN_MODE_REMINDER_MARKER = "## Plan Mode active — read-only except the plan file"
+#: Re-export: the plan-mode reminder marker + block composer now live in the owner module
+#: gact/planning.py (P1.6a #1068). Importers of these names from plan_mode keep working.
+__all__ = ["PLAN_MODE_REMINDER_MARKER", "plan_mode_reminder_block"]
 
-#: Re-inject the FULL reminder at most once per this many plan-mode turns (a sparse one-liner
-#: in between); a compaction forces a full re-inject immediately regardless of the window.
-_PLAN_REMINDER_FULL_INTERVAL = 10
+#: The block composer under its historical private name (kept for existing importers/tests).
+_plan_mode_reminder_block = plan_mode_reminder_block
 
 #: ``session.metadata`` key holding the tiny per-session suppression counter (no fifth store).
 _PLAN_REMINDER_STATE_KEY = "plan_mode_reminder"
@@ -152,59 +164,16 @@ def plan_file_exists(session: Any) -> bool:
     return path is not None and Path(path).exists()
 
 
-def _plan_mode_reminder_block(*, full: bool, plan_file: str, exists: bool) -> str:
-    """Compose the plan-mode reminder block (full contract or sparse one-liner).
-
-    The FULL block carries the create-vs-edit branch (keyed on ``exists``), an adaptive-structure
-    hint, the epistemic-ledger headers, the re-entry staleness note, the show-the-plan rule, the
-    read-only restriction, and the turn-ending contract. The SPARSE block is a single line naming
-    the restriction + the recorded plan path, so most turns cost almost nothing (do not bloat
-    context). ``plan_file`` is the deterministic per-session path recorded on ``session.metadata``.
-    """
-
-    if not full:
-        return (
-            PLAN_MODE_REMINDER_MARKER
-            + f" ({plan_file}). Keep writing your plan there; end your turn to hand it back "
-            "for approval rather than executing it yourself."
-        )
-    if exists:
-        create_or_edit = (
-            f"A plan file already exists at {plan_file}. Make incremental edits to it as you learn."
-        )
-    else:
-        create_or_edit = (
-            f"No plan file exists yet. Create your plan at {plan_file} (write a *.md there — it is "
-            "the ONLY writable path in plan mode)."
-        )
-    return (
-        PLAN_MODE_REMINDER_MARKER + "\n\n"
-        "You are in PLAN MODE. Investigate freely, but do NOT modify the system: every write, "
-        "edit, and file-mutating tool is blocked.\n"
-        f"- {create_or_edit}\n"
-        "- Structure the plan to fit the task: Simple change → Changes + Verification; Standard "
-        "task → Objective, Key Files & Context, Implementation Steps, Verification; Complex / "
-        "architectural → Background, Scope, Proposed Solution, Alternatives, a phased Plan, "
-        "Verification, Migration/Rollback.\n"
-        "- Keep an epistemic ledger of what you know vs. must find out, under the headers: "
-        "Given / Learned / To look up / To derive.\n"
-        "- If a plan already exists, evaluate whether it is still relevant to THIS task before "
-        "editing; treat a new task as a fresh plan.\n"
-        "- Show the plan to the user in your response — don't just write it to disk.\n"
-        "- Turn-ending contract: when the plan is complete, END YOUR TURN and hand it back for "
-        "approval — do NOT try to execute the plan while in plan mode."
-    )
-
-
 def inject_plan_mode_reminder(app: "FastAPI", sid: str, session: Any, enriched_text: str) -> str:
     """Prepend the plan-mode reminder to this turn's input when the session is in plan mode.
 
     Returns ``enriched_text`` unchanged for every non-plan mode (edit/architect) — the
     attachment is scoped to ``plan`` for now (P1.2). In plan mode it prepends a reminder block
     and advances a tiny suppression counter on ``session.metadata`` so the FULL contract is
-    injected on the first plan turn, immediately after any compaction, and once per
-    :data:`_PLAN_REMINDER_FULL_INTERVAL` turns; a one-line marker is injected on every turn in
-    between. Because it rides the per-turn input (not the system prompt), it survives compaction
+    injected on the first plan turn, immediately after any compaction, and once per the active
+    variant's ``full_interval`` turns (default :data:`clio_agent.gact.planning._DEFAULT_FULL_INTERVAL`);
+    a one-line marker is injected on every turn in between. Because it rides the per-turn input
+    (not the system prompt), it survives compaction
     without invalidating the KV-cache prefix — the fix for "plan mode lost after compaction".
     """
 
@@ -225,6 +194,17 @@ def inject_plan_mode_reminder(app: "FastAPI", sid: str, session: Any, enriched_t
         metadata_patch[_PLAN_FILE_METADATA_KEY] = plan_file
     exists = Path(plan_file).exists()
 
+    # P1.6a #1068: a recorded plan VARIANT (plan_workflow / plan_small) shapes the reminder — a
+    # different structure hint, extra plan sections, and a different full-reminder cadence. No tag
+    # resolves to the default guidance, whose pieces reproduce the pre-P1.6 block byte-for-byte.
+    variant = recorded_plan_variant(session)
+    guidance = plan_variant_guidance(variant)
+
+    # P1.6b #1068: an ACTIVE operator playbook presents its ordered steps as the required plan
+    # skeleton, replacing the (variant or default) structure hint. No playbook resolves to None,
+    # leaving the block byte-for-byte unchanged.
+    playbook = recorded_playbook(session)
+
     compactions = _session_compaction_count(app, sid)
     prev_turn = int(state.get("turn_index", 0)) if isinstance(state, Mapping) else 0
     last_full = int(state.get("last_full_turn", 0)) if isinstance(state, Mapping) else 0
@@ -234,7 +214,7 @@ def inject_plan_mode_reminder(app: "FastAPI", sid: str, session: Any, enriched_t
     turn_index = prev_turn + 1
 
     compacted_since_full = compactions > last_full_compactions
-    window_elapsed = (turn_index - last_full) >= _PLAN_REMINDER_FULL_INTERVAL
+    window_elapsed = (turn_index - last_full) >= guidance.full_interval
     full = first_time or compacted_since_full or window_elapsed
 
     metadata_patch[_PLAN_REMINDER_STATE_KEY] = {
@@ -243,8 +223,20 @@ def inject_plan_mode_reminder(app: "FastAPI", sid: str, session: Any, enriched_t
         "compactions_at_last_full": compactions if full else last_full_compactions,
     }
     app.state.sessions.update(sid, metadata_patch=metadata_patch)
+    if variant and full:
+        # Typed, greppable trace when a variant actually shapes the (full) reminder — the plan
+        # variants change behaviour, so the change is never silent (no-silent-fallback ground rule).
+        trace.event(
+            "PLAN",
+            "plan variant %s shaping full reminder for %s (full_interval=%d)",
+            variant,
+            sid,
+            guidance.full_interval,
+        )
     return (
-        _plan_mode_reminder_block(full=full, plan_file=plan_file, exists=exists)
+        _plan_mode_reminder_block(
+            full=full, plan_file=plan_file, exists=exists, guidance=guidance, playbook=playbook
+        )
         + "\n\n---\n\n"
         + enriched_text
     )
@@ -728,9 +720,25 @@ def resolve_plan_exit_answer(app: "FastAPI", deps: "GactDeps", sid: str, questio
         )
         return
 
-    # Approve: the SANCTIONED plan-mode exit (unlike the enter_mode no-escape guard).
+    # Approve: the SANCTIONED plan-mode exit (unlike the enter_mode no-escape guard). Clear any
+    # plan VARIANT tag (P1.6a #1068) as the session leaves plan mode. An ACTIVE operator playbook
+    # (P1.6b) does NOT just clear — it is CARRIED into an execution record (P1.6d #1068) so its
+    # per-step tools_allowed keeps narrowing during execution and its active step advances off the
+    # write_todos signal. (Reject stays in plan mode and returns earlier, keeping the plan-phase
+    # scaffold so the revision turn is unchanged.)
     approval_mode = "auto-edits" if decision == "auto" else "ask"
-    app.state.sessions.update(sid, mode="edit", approval_mode=approval_mode)
+    app.state.sessions.update(
+        sid,
+        mode="edit",
+        approval_mode=approval_mode,
+        metadata_patch={PLAN_VARIANT_METADATA_KEY: ""},
+    )
+    transition_playbook_to_execution(app, sid)
+    # P1.6c #1068: register the approved plan as a provenance-tracked artifact (save-and-reuse).
+    # Guarded + non-fatal: a degraded save records a typed reason but never blocks this resume.
+    from clio_agent.gact.plan_reuse import save_approved_plan  # noqa: PLC0415
+
+    save_approved_plan(app, sid, plan_file=plan_file)
     cleared = False
     if clear_context:
         deps.replace_session_messages(app, sid, [])

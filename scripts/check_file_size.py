@@ -241,7 +241,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # P1.4 #1066: +7 for the plan_exit turn-ending-yield seam next to maybe_pause_for_user (import +
     # comment + the 2-line call). The seam (maybe_pause_for_plan_exit) lives in the owner module
     # gact/plan_mode.py. Ratchets back with #714.
-    "src/clio_agent/gact/turn.py": 839,
+    # P1.6d #1068: -1 (839 -> 838) — the plan/todo/replan enrichment injects share one comment and a
+    # verbose #6/#767 streaming comment was condensed; the inject_replan_suggestion call site (+4) is
+    # more than offset. The stall-monitor + suggestion logic lives in the owner module replanning.py.
+    "src/clio_agent/gact/turn.py": 838,
     # #952 S4 Pass C: -9 (the answer-substitution finalize call + import were
     # removed with the settle layer's degradation ledger).
     # #953 [5]: +3 to surface the variant winner stamp (variant_selection) on the

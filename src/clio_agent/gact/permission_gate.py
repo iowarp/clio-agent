@@ -66,6 +66,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import HTTPException
 
 from clio_agent.gact.events import Event
+from clio_agent.gact.planning import active_playbook_allowed_tools
 from clio_agent.gact.runtime.globals import _resolve_tool_session
 from clio_agent.gact.runtime.grant_resolver import (
     EXTERNAL_MCP_CONTEXT_KIND,
@@ -252,6 +253,7 @@ def _policy_action_for_tool(
         workspace_id=workspace_id,
         path=path,
         mode=mode,
+        playbook_allowed=active_playbook_allowed_tools(session),
     )
 
 
@@ -284,6 +286,7 @@ def _policy_detail_for_tool(
         workspace_id=workspace_id,
         path=path,
         mode=mode,
+        playbook_allowed=active_playbook_allowed_tools(session),
     )
 
 
