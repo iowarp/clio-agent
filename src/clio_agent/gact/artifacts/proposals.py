@@ -127,7 +127,9 @@ class RejectionReason(str, Enum):
     OVER_CAP = "over_cap"  # this turn already hit the per-turn promotion cap
     OVER_BATCH = "over_batch"  # this call carried more proposals than the batch max
     WRITE_FAILED = "write_failed"  # inline content could not be written under policy
-    MODE_READ_ONLY = "mode_read_only"  # content write refused under plan/architect mode
+    # P1.1 #1063: the former MODE_READ_ONLY reason is gone with the copy-pasted plan/architect
+    # lock. A content write in plan/architect is now denied through the ONE resolver (the built-in
+    # plan_acl @40 rule), surfaced as the typed POLICY_DENIED below — no separate mode predicate.
     WOULD_OVERWRITE = "would_overwrite"  # inline content would clobber a non-owned file
     POLICY_DENIED = "policy_denied"  # a permission policy denied the content write
     PERMISSION_REQUIRED = "permission_required"  # policy=ask, no inline approver
@@ -694,6 +696,11 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
         annotation: str = "",
         artifacts: Optional[list[dict[str, Any]]] = None,
     ) -> dict[str, Any]:
+        """Register a session output as an artifact (model contract lives in the dspy ``desc``).
+
+        ``path`` registers an EXISTING file; ``content`` authors a NEW file WRITTEN AT
+        ``name`` — the target path (workspace-relative or absolute), not a display label.
+        """
         app = _ctx.active_app()
         sid = _ctx.active_session_id()
         if app is None or not sid:
@@ -732,8 +739,11 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
             "Designate a deliverable as a first-class artifact — YOU decide what is "
             "worth keeping (a report, a document you wrote, a generated file). "
             "Register an existing workspace file with path=<workspace path>, OR "
-            "author content in this turn and pass it as content=<text> with a "
-            "name=<filename> (it is saved as a workspace file). kind is one of "
+            "author content in this turn and pass it as content=<text> with "
+            "name=<target path> — the file is WRITTEN AT name (workspace-relative "
+            "or absolute; directories kept, e.g. '.clio/plans/my-plan.md'), so when "
+            "a specific destination is required, name must be that full path, not a "
+            "bare filename. kind is one of "
             "dataset|image|report|script|config|model|ui_payload|other. Put your "
             "intent (why it matters, deliverable vs scratch) in annotation. To "
             "designate several at once pass artifacts=[{name,kind,path|content,"
@@ -745,7 +755,10 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
         args={
             "name": {
                 "type": "string",
-                "description": "Artifact name (filename); required for inline content.",
+                "description": (
+                    "Target path the inline content is written to (workspace-relative "
+                    "or absolute; directories kept); required for inline content."
+                ),
             },
             "kind": {
                 "type": "string",

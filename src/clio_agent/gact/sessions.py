@@ -115,14 +115,17 @@ class Session:
     cost_usd: float = 0.0
     # iowarp/clio-agent — capabilities.plan_mode + edit_modes:
     # mode controls what the agent can do; edit_mode controls how
-    # it proposes changes when it can. Default {chat, diff} preserves
-    # current behaviour.
+    # it proposes changes when it can. Default {edit, diff}.
     #
-    #   chat       — answer/respond, no destructive tools
     #   plan       — read-only; permission gate denies any destructive op
+    #                (built-in plan_acl rules), except the sole <plans>/*.md write
     #   edit       — full read+write authority; agent can modify files
     #   architect  — high-level plan + diff proposals; no direct file writes
-    mode: str = "chat"
+    #
+    # P1.1 #1063 deleted the ``chat`` mode: nothing ever checked mode=="chat", so
+    # it behaved identically to ``edit`` — its removal is behavior-preserving and
+    # the default moved to ``edit``.
+    mode: str = "edit"
     edit_mode: str = "diff"
     # iowarp/clio-agent #1034 — approval axis, ORTHOGONAL to ``mode``. One of
     # {ask, auto-edits, bypass, ai-review}; default "ask" preserves today's
@@ -238,7 +241,7 @@ class SessionStore:
         parent_session_id: str = "",
         model: Optional[dict[str, str]] = None,
         agent: Optional[dict[str, str]] = None,
-        mode: str = "chat",
+        mode: str = "edit",
         edit_mode: str = "diff",
         routing_mode: str = "auto",
         approval_mode: str = "ask",
@@ -265,7 +268,7 @@ class SessionStore:
             parent_session_id=parent_session_id,
             model=dict(model or {}),
             agent=dict(agent or {"id": "main"}),
-            mode=mode if mode in {"chat", "plan", "edit", "architect"} else "chat",
+            mode=mode if mode in {"plan", "edit", "architect"} else "edit",
             edit_mode=edit_mode if edit_mode in {"diff", "whole", "patch"} else "diff",
             routing_mode=routing_mode if routing_mode in valid_routing_modes else "auto",
             approval_mode=approval_mode if approval_mode in valid_approval_modes else "ask",
@@ -273,6 +276,20 @@ class SessionStore:
         with self._lock:
             self._sessions[sid] = sess
             self._flush()
+        # P2.3 SessionStart lifecycle hook (observation): fires exactly once per
+        # created session, after it is persisted. Never blocks — the dispatcher
+        # returns a no-op outcome when no hook is configured.
+        from clio_agent.gact.hooks import dispatch_session_start  # noqa: PLC0415
+
+        dispatch_session_start(
+            session_id=sid,
+            payload={
+                "workspace_id": workspace_id,
+                "parent_session_id": parent_session_id,
+                "agent": dict(sess.agent),
+                "mode": sess.mode,
+            },
+        )
         return sess
 
     def get(self, sid: str) -> Optional[Session]:
@@ -301,6 +318,12 @@ class SessionStore:
             self._sessions.pop(sid, None)
             if existed:
                 self._flush()
+        if existed:
+            # P2.3 SessionEnd lifecycle hook (observation): fires exactly once, only
+            # when a session actually existed and was removed.
+            from clio_agent.gact.hooks import dispatch_session_end  # noqa: PLC0415
+
+            dispatch_session_end(session_id=sid)
         return existed
 
     def update(
@@ -348,7 +371,7 @@ class SessionStore:
                 sess.tokens_output += add_tokens_output
             if add_cost_usd:
                 sess.cost_usd += add_cost_usd
-            if mode is not None and mode in {"chat", "plan", "edit", "architect"}:
+            if mode is not None and mode in {"plan", "edit", "architect"}:
                 sess.mode = mode
             if edit_mode is not None and edit_mode in {"diff", "whole", "patch"}:
                 sess.edit_mode = edit_mode

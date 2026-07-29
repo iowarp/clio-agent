@@ -172,12 +172,23 @@ def test_script_under_output_arg_is_not_designated(tmp_path):
 
 def test_freshly_written_script_is_not_designated(tmp_path):
     app, sess, _arc = _make_app(tmp_path, ["ws1"])
-    call_t0 = time.time()
+    # Fixed synthetic call start; the script's mtime is pinned deterministically PAST
+    # it (mirroring test_artifacts_s5's os.utime pattern). Sampling ``time.time()`` and
+    # then writing the file microseconds later — the previous form — leaves both
+    # timestamps within one float64 ULP (~238 ns at epoch-2026 magnitudes), so a
+    # re-statted ``st_mtime`` (an OS 100 ns-tick FILETIME converted to a float) rounds
+    # to exactly one ULP BELOW ``call_t0`` ~9% of the time and inverts the
+    # ``mtime >= call_started_at`` guard — the historical Windows + CI-Linux flake
+    # (a false HASH_PAIR edge). The runtime guard is correct (production tool runs put
+    # ms+ between call start and any written output); only this fixture manufactured a
+    # sub-ULP gap. os.utime pins mtime = call_t0 + 100 so the comparison is exact.
+    call_t0 = 1_000_000.0
     script = tmp_path / "scratch.py"
     # Written AT/AFTER the call start -> the freshness guard flags it as an output
     # candidate, never a used input. Sabotage: drop the mtime>=call_started_at guard
     # -> it mints -> red (and the note disappears).
     script.write_bytes(b"# just written this call\n")
+    os.utime(script, (call_t0 + 100, call_t0 + 100))
     scan = detect_used_edges(
         app,
         sess["ws1"].id,

@@ -32,14 +32,25 @@ Responsibilities:
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from clio_agent.gact.runtime.grant_resolver import resolve
+from clio_agent.gact.runtime.grant_resolver import (
+    _VALID_KINDS as VALID_KINDS,  # kind enumeration owner (B4 #1057 — validate at the boundary)
+)
+from clio_agent.gact.runtime.grant_resolver import (
+    KIND_DOMAIN,
+    migrate_priorities,
+    next_append_priority,
+    resolve,
+)
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+
+logger = logging.getLogger(__name__)
 
 _PERMISSION_POLICY_SCOPES = {"session", "workspace"}
 _PERMISSION_POLICY_ACTIONS = {"allow", "allow_session", "allow_workspace", "deny", "ask"}
@@ -124,6 +135,24 @@ def _validate_permission_policies(
                 }
             )
 
+        # B4 #1057: an EXPLICIT ``kind`` must be one of the resolver's valid discriminators.
+        # Reject garbage (e.g. ``"Domain"``, a typo) with a typed reason rather than letting it
+        # fall through :func:`grant_resolver._kind_admitted` to the legacy host-presence
+        # classification, where a mis-cased kind would silently mis-route the row (⚑ no-silent-
+        # fallback). Absence is legitimate — the kind is synthesized from row shape at match time.
+        kind_raw = policy.get("kind")
+        if kind_raw is not None and (
+            not isinstance(kind_raw, str) or kind_raw.strip() not in VALID_KINDS
+        ):
+            policy_has_errors = True
+            errors.append(
+                {
+                    "index": index,
+                    "field": "kind",
+                    "message": f"kind must be one of {', '.join(sorted(VALID_KINDS))} when present",
+                }
+            )
+
         for field in ("scope_id", "tool_name_pattern", "path_pattern", "host_pattern"):
             value = policy.get(field)
             if value is not None and not isinstance(value, str):
@@ -136,11 +165,62 @@ def _validate_permission_policies(
                     }
                 )
 
+        # The P0.2 (#1060) axis fields ``modes``/``on`` are optional list[str] narrowing filters.
+        # A malformed axis (not a list, or a non-string entry) must be REJECTED with a typed reason,
+        # never silently coerced or dropped (⚑ no-silent-fallback) — a typoed axis that were silently
+        # ignored would widen a plan/hook grant the user believed was scoped.
+        for field in ("modes", "on"):
+            value = policy.get(field)
+            if value is None:
+                continue
+            if not isinstance(value, list):
+                policy_has_errors = True
+                errors.append(
+                    {
+                        "index": index,
+                        "field": field,
+                        "message": f"{field} must be a list of strings when present",
+                    }
+                )
+            elif not all(isinstance(entry, str) for entry in value):
+                policy_has_errors = True
+                errors.append(
+                    {
+                        "index": index,
+                        "field": field,
+                        "message": f"{field} entries must all be strings",
+                    }
+                )
+
+        # A malformed priority must be REJECTED with a typed reason, never silently defaulted
+        # (⚑ no-silent-fallback). Absence is legitimate — the load-time migration assigns a
+        # stable descending priority. ``bool`` is an ``int`` subclass but never a valid priority.
+        priority_raw = policy.get("priority")
+        if priority_raw is not None and (
+            not isinstance(priority_raw, int) or isinstance(priority_raw, bool)
+        ):
+            policy_has_errors = True
+            errors.append(
+                {
+                    "index": index,
+                    "field": "priority",
+                    "message": "priority must be an integer when present",
+                }
+            )
+
         if policy_has_errors:
             continue
 
         policy["scope"] = scope
         policy["action"] = action
+        # B4 #1057: a host-bearing row is a DOMAIN grant — stamp ``kind="domain"`` and drop any
+        # stray ``tool_name_pattern`` (legacy domain rows persisted a ``"*"`` glob that let the row
+        # bleed into a ``kind="tool"`` resolve). This self-heals the persisted shape on the next
+        # flush; ``grant_resolver._kind_admitted`` is the belt-and-suspenders match-time guard for
+        # any un-normalized in-memory row.
+        if str(policy.get("host_pattern") or ""):
+            policy["kind"] = KIND_DOMAIN
+            policy.pop("tool_name_pattern", None)
         clean.append(policy)
     return clean, errors
 
@@ -158,7 +238,10 @@ def _load_permission_policies(path: Path | None) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         return []
     clean, _errors = _validate_permission_policies(raw)
-    return clean
+    # Migrate on load: legacy rows without a priority gain a unique descending priority by
+    # insertion index (first row highest), so the priority-banded resolver reproduces this
+    # store's historical first-match order exactly (P0.1 #1059).
+    return migrate_priorities(clean)
 
 
 def _flush_permission_policies(app: "FastAPI") -> None:
@@ -207,8 +290,25 @@ def _append_permission_policy_from_resolution(
     # analogue of ``path_pattern``) the chokepoint consults, NOT a file path_pattern.
     if str(row.get("kind") or "") == NETWORK_EGRESS_REQUEST_KIND:
         host = _permission_host_from_args(args)
-        if host:
-            policy["host_pattern"] = host
+        if not host:
+            # B4 #1057: a hostless egress resolution has no domain SUBJECT. Stamping
+            # ``kind="domain"`` with an empty ``host_pattern`` would persist a permanently inert,
+            # subject-less row (:func:`grant_resolver._policy_pattern_matches` never matches an
+            # empty host pattern). Refuse to derive a policy and record the typed reason instead
+            # of silently writing an unmatchable grant (⚑ no-silent-fallback).
+            logger.warning(
+                "egress sticky policy skipped reason=egress_grant_missing_host "
+                "session=%s permission=%s",
+                session_id,
+                str(row.get("id") or ""),
+            )
+            return None
+        # B4 #1057: the derived sticky row is a DOMAIN grant — stamp ``kind="domain"`` and drop the
+        # tool glob copied in above, so it can never bleed into a ``kind="tool"`` resolve (the stray
+        # ``"*"`` glob was the fleet-egress kind-bleed vector).
+        policy["host_pattern"] = host
+        policy["kind"] = KIND_DOMAIN
+        policy.pop("tool_name_pattern", None)
         return _appended(app, policy)
     path = _permission_path_from_args(args)
     if path:
@@ -217,7 +317,19 @@ def _append_permission_policy_from_resolution(
 
 
 def _appended(app: "FastAPI", policy: dict[str, Any]) -> dict[str, Any]:
-    app.state.permission_policies.append(policy)
+    """Append ``policy`` as a sticky runtime grant, in its own strictly-lowest priority band.
+
+    A sticky grant appended at runtime must be evaluated LAST (lowest precedence) to preserve the
+    historical first-match order (P0.1 #1059 follow-up). Stamping an explicit ``priority`` here
+    -- strictly below every existing row's effective priority -- is required: leaving it unset lets
+    :func:`resolve`'s live migration derive ``total - index``, which can collide with the current
+    lowest-priority (often already-migrated legacy) row and wrongly trigger the most-restrictive
+    tie-break. See :func:`~clio_agent.gact.runtime.grant_resolver.next_append_priority`.
+    """
+
+    policies = app.state.permission_policies
+    policy["priority"] = next_append_priority(policies)
+    policies.append(policy)
     return policy
 
 

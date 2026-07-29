@@ -159,16 +159,17 @@ def _gate_content_write(
     Inline content is a real workspace write, so it honors the SAME contract every
     other write path does — instead of the ungated ``write_text`` it previously ran:
 
-    * (b) MODE CONTRACT: plan/architect are read-only (the permission gate HARD-
-      rejects destructive calls there); a content write is refused typed
-      ``mode_read_only``.
     * (a) OVERWRITE: an existing file at the target is never clobbered UNLESS it is
       the current on-disk file of an already-registered artifact of the same
       ``(workspace, name)`` (re-versioning your own artifact); otherwise typed
       ``would_overwrite`` (the model can pick another name — bounded repair).
-    * (c) POLICY: consult the same policy layer the diffs/apply path uses
-      (``_policy_action_for_tool``) and land a resolved permission audit row — so
-      allow/deny/ask policies apply to this native tool exactly as to bridge tools.
+    * (c) POLICY + MODE: consult the same resolver the diffs/apply path and the live
+      tool gate use (``_policy_detail_for_tool``, passing the session ``mode``) and
+      land a resolved permission audit row — so allow/deny/ask policies AND the
+      built-in plan_acl rules apply to this native tool exactly as to bridge tools.
+      P1.1 #1063: the read-only mode contract for plan/architect is no longer a
+      private ``session.mode`` predicate here; it rides that ONE resolver (a content
+      write is denied typed ``policy_denied`` in plan/architect via the @40 rule).
 
     Returns a typed rejection outcome to short-circuit the write, or ``None`` to
     proceed. Path-only proposals (registering an EXISTING file) never reach here —
@@ -176,24 +177,24 @@ def _gate_content_write(
     """
     from clio_agent.gact.artifacts.proposals import RejectionReason, _rejected  # noqa: PLC0415
     from clio_agent.gact.permission_gate import (  # noqa: PLC0415
-        _policy_action_for_tool,
+        _policy_detail_for_tool,
         _record_resolved_permission,
     )
 
     session = _session_for(app, sid)
 
-    # (b) Read-only mode contract — refuse a content write, typed.
-    mode = str(getattr(session, "mode", "") or "")
-    if mode in {"plan", "architect"}:
-        return _rejected(
-            proposal.name,
-            RejectionReason.MODE_READ_ONLY,
-            f"content writes are refused under session.mode={mode!r}",
-        )
+    # The RESOLVED write target — computed once and reused by the overwrite guard AND the policy
+    # consult. It MUST reach the resolver as a path arg (``_permission_path_from_args`` keys on
+    # ``path``): the built-in plan_acl @70 ``<plans>/*.md`` carve-out (and any user path_pattern
+    # row) matches on ``path_pattern`` against this value, so omitting it made every plan-mode
+    # create_artifact write fall to the @40 deny — the model could never write its designated plan
+    # file and ``plan_exit`` was unreachable (P4). Empty when the proposal has no name: no path key
+    # is added below, so behaviour is unchanged (a nameless inline content proposal is rejected
+    # downstream in :func:`_write_inline_content` with ``MISSING_INPUT``).
+    target = (root / proposal.name).resolve(strict=False) if proposal.name else None
 
     # (a) Overwrite guard — never silently clobber a non-owned existing file.
-    if proposal.name:
-        target = (root / proposal.name).resolve(strict=False)
+    if proposal.name and target is not None:
         if target.exists() and not _own_registered_target(app, workspace_id, proposal.name, target):
             return _rejected(
                 proposal.name,
@@ -202,10 +203,21 @@ def _gate_content_write(
                 "can re-version; choose another name",
             )
 
-    # (c) Policy consult + audit row (the same machinery the diffs/apply write uses).
-    args = {"name": proposal.name, "content_bytes": len(proposal.content)}
-    action = _policy_action_for_tool(
-        app, session_id=sid, session=session, tool_name="create_artifact", args=args
+    # (c) Policy + mode consult + audit row (the same resolver the diffs/apply write and the live
+    # tool gate use). Passing ``mode`` folds the built-in plan_acl rules in, so plan/architect deny
+    # a content write here through the SAME path — no separate mode predicate. ``path`` carries the
+    # resolved target so path-pattern rows (the @70 plan-file carve-out; user path grants) can match
+    # and the audit row records the true write target.
+    args: dict[str, Any] = {"name": proposal.name, "content_bytes": len(proposal.content)}
+    if target is not None:
+        args["path"] = str(target)
+    action, deny_message = _policy_detail_for_tool(
+        app,
+        session_id=sid,
+        session=session,
+        tool_name="create_artifact",
+        args=args,
+        mode=str(getattr(session, "mode", "") or ""),
     )
     if action == "deny":
         _record_resolved_permission(
@@ -218,11 +230,14 @@ def _gate_content_write(
             summary=f"create_artifact content write {proposal.name!r} blocked by permission policy",
             reason="policy_deny",
         )
-        return _rejected(
-            proposal.name,
-            RejectionReason.POLICY_DENIED,
-            "a permission policy denied create_artifact",
-        )
+        # Actionable rejection (live-gate run-5 regression): carry the mode-aware deny
+        # message (names Plan Mode + the sole writable plan file) AND the RESOLVED target
+        # that was judged — a wrong ``name`` (bare filename -> workspace-root target) is
+        # then self-evident and the model can repair instead of concluding a blanket block.
+        detail = deny_message or "a permission policy denied create_artifact"
+        if target is not None:
+            detail = f"{detail} (judged write target: {target})"
+        return _rejected(proposal.name, RejectionReason.POLICY_DENIED, detail)
     if action == "ask":
         _record_resolved_permission(
             app,

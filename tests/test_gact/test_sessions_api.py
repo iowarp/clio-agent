@@ -519,3 +519,22 @@ def test_sessions_persisted_across_app_instances(tmp_path: Path) -> None:
         resp = b.get(f"/v1/sessions/{created['id']}")
         assert resp.status_code == 200
         assert resp.json()["title"] == "keep"
+
+
+def test_create_session_defaults_to_edit_mode(client: TestClient) -> None:
+    """P1.1 #1063: with ``chat`` mode deleted, a new session defaults to ``edit``."""
+    body = client.post("/v1/sessions", json={"title": "t"}).json()
+    assert body["mode"] == "edit"
+
+
+def test_create_session_rejects_deleted_chat_mode(client: TestClient) -> None:
+    """P1.1 #1063: ``chat`` is no longer a valid Session.mode — the wire Literal rejects it (422)."""
+    resp = client.post("/v1/sessions", json={"title": "t", "mode": "chat"})
+    assert resp.status_code == 422
+
+
+def test_patch_session_rejects_deleted_chat_mode(client: TestClient) -> None:
+    """PATCH to mode=chat is likewise rejected by the typed Literal (422)."""
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    resp = client.patch(f"/v1/sessions/{sid}", json={"mode": "chat"})
+    assert resp.status_code == 422

@@ -341,7 +341,14 @@ def allow_pytest_tmp_path(tmp_path, monkeypatch):
 
     def _isolated_skill_roots(home: Path, cwd: Path) -> list[tuple[Path, str, str]]:
         roots = _orig_skill_roots(home, cwd)
-        return [(r, s, scope) for (r, s, scope) in roots if _path_under(r, tmp_path)]
+        # Keep roots under tmp_path (per-test skills) AND clio's SHIPPED built-in root
+        # (the deterministic ``planning`` entry-skill, P1.5 #1067) — the latter is clio's
+        # own surface, not the ambient repo/home leakage this isolation exists to drop.
+        return [
+            (r, s, scope)
+            for (r, s, scope) in roots
+            if _path_under(r, tmp_path) or _path_under(r, _skills._BUILTIN_SKILLS_ROOT)
+        ]
 
     monkeypatch.setattr(_skills, "_skill_search_roots", _isolated_skill_roots)
 

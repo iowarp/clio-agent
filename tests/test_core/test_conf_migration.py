@@ -71,25 +71,6 @@ class TestLmCallTimeout:
         assert _max_lm_call_seconds() == 123.0
 
 
-class TestHookTimeout:
-    def test_env_and_default(self, monkeypatch, tmp_path):
-        from clio_agent.runtime.hooks import HookRegistry
-
-        monkeypatch.delenv("CLIO_HOOK_TIMEOUT_S", raising=False)
-        reg = HookRegistry(hooks_dir=tmp_path / "hooks")
-        assert reg._timeout_s == 5.0
-        monkeypatch.setenv("CLIO_HOOK_TIMEOUT_S", "2.5")
-        reg2 = HookRegistry(hooks_dir=tmp_path / "hooks")
-        assert reg2._timeout_s == 2.5
-
-    def test_explicit_arg_beats_config(self, monkeypatch, tmp_path):
-        from clio_agent.runtime.hooks import HookRegistry
-
-        monkeypatch.setenv("CLIO_HOOK_TIMEOUT_S", "2.5")
-        reg = HookRegistry(hooks_dir=tmp_path / "hooks", timeout_s=9.0)
-        assert reg._timeout_s == 9.0
-
-
 class TestGactTurnTimeout:
     def test_env_and_file(self, monkeypatch, tmp_path):
         from clio_agent.gact import app
@@ -773,113 +754,6 @@ class TestSemanticTraceFactory:
         backend = build_trace_backend(tmp_path)
         assert backend.name == "conf-mig-trace-backend"
         assert backend.config == {"b": 2}
-
-
-_HOOK_FACTORY_MODULE = """\
-class _Registry:
-    backend_name = "conf-mig-hooks"
-
-    def fire(self, *args, **kwargs):
-        return []
-
-    def count(self, *args, **kwargs):
-        return 0
-
-    def metadata(self):
-        return {"backend": self.backend_name}
-
-
-def make():
-    return _Registry()
-"""
-
-
-class TestHooksBackend:
-    """``hooks.backend`` / ``CLIO_HOOKS_BACKEND`` — hook registry selection."""
-
-    def test_default(self, monkeypatch, tmp_path):
-        from clio_agent.runtime.hooks import (
-            DisabledHookRegistry,
-            HookRegistry,
-            build_hook_registry,
-        )
-
-        monkeypatch.delenv("CLIO_HOOKS_BACKEND", raising=False)
-        monkeypatch.setenv("CLIO_HOOKS_DIR", str(tmp_path / "hooks"))
-        reg = build_hook_registry()
-        assert isinstance(reg, HookRegistry)
-        assert not isinstance(reg, DisabledHookRegistry)
-
-    def test_env_none(self, monkeypatch):
-        from clio_agent.runtime.hooks import DisabledHookRegistry, build_hook_registry
-
-        monkeypatch.setenv("CLIO_HOOKS_BACKEND", "none")
-        assert isinstance(build_hook_registry(), DisabledHookRegistry)
-
-    def test_file_wins(self, monkeypatch, tmp_path):
-        from clio_agent.runtime.hooks import DisabledHookRegistry, build_hook_registry
-
-        monkeypatch.setenv("CLIO_HOOKS_BACKEND", "local_python")
-        monkeypatch.setenv("CLIO_HOOKS_DIR", str(tmp_path / "hooks"))
-        _write_user_config(monkeypatch, tmp_path, "hooks:\n  backend: none\n")
-        assert isinstance(build_hook_registry(), DisabledHookRegistry)
-
-
-class TestHooksDir:
-    """``hooks.dir`` / ``CLIO_HOOKS_DIR`` — local_python hooks directory."""
-
-    def test_env(self, monkeypatch, tmp_path):
-        from clio_agent.runtime.hooks import build_hook_registry
-
-        monkeypatch.delenv("CLIO_HOOKS_BACKEND", raising=False)
-        monkeypatch.setenv("CLIO_HOOKS_DIR", str(tmp_path / "h1"))
-        assert build_hook_registry().hooks_dir == tmp_path / "h1"
-
-    def test_file_wins(self, monkeypatch, tmp_path):
-        from clio_agent.runtime.hooks import build_hook_registry
-
-        monkeypatch.delenv("CLIO_HOOKS_BACKEND", raising=False)
-        monkeypatch.setenv("CLIO_HOOKS_DIR", str(tmp_path / "h1"))
-        file_dir = (tmp_path / "h2").as_posix()
-        _write_user_config(monkeypatch, tmp_path, f"hooks:\n  dir: {file_dir}\n")
-        assert build_hook_registry().hooks_dir == tmp_path / "h2"
-
-
-class TestHooksFactory:
-    """``hooks.factory`` / ``CLIO_HOOKS_FACTORY`` — custom registry factory."""
-
-    @staticmethod
-    def _install_factory_module(tmp_path, monkeypatch) -> str:
-        mod_dir = tmp_path / "hook_factory_mods"
-        mod_dir.mkdir(exist_ok=True)
-        (mod_dir / "conf_mig_hook_factory.py").write_text(_HOOK_FACTORY_MODULE, encoding="utf-8")
-        monkeypatch.syspath_prepend(str(mod_dir))
-        return "conf_mig_hook_factory:make"
-
-    def test_missing_factory_raises(self, monkeypatch):
-        from clio_agent.runtime.hooks import build_hook_registry
-
-        monkeypatch.setenv("CLIO_HOOKS_BACKEND", "factory")
-        monkeypatch.delenv("CLIO_HOOKS_FACTORY", raising=False)
-        with pytest.raises(ValueError, match="CLIO_HOOKS_FACTORY"):
-            build_hook_registry()
-
-    def test_env(self, monkeypatch, tmp_path):
-        from clio_agent.runtime.hooks import build_hook_registry
-
-        factory_path = self._install_factory_module(tmp_path, monkeypatch)
-        monkeypatch.setenv("CLIO_HOOKS_BACKEND", "factory")
-        monkeypatch.setenv("CLIO_HOOKS_FACTORY", factory_path)
-        assert build_hook_registry().backend_name == "conf-mig-hooks"
-
-    def test_file_wins(self, monkeypatch, tmp_path):
-        from clio_agent.runtime.hooks import build_hook_registry
-
-        factory_path = self._install_factory_module(tmp_path, monkeypatch)
-        monkeypatch.setenv("CLIO_HOOKS_BACKEND", "factory")
-        monkeypatch.setenv("CLIO_HOOKS_FACTORY", "no_such_module:make")
-        _write_user_config(monkeypatch, tmp_path, f"hooks:\n  factory: {factory_path}\n")
-        assert build_hook_registry().backend_name == "conf-mig-hooks"
 
 
 class TestLmStudioFlashAttention:

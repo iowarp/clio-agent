@@ -48,9 +48,12 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.autonomous_loop import stop_session_loop
 from clio_agent.gact.events import Event
+from clio_agent.gact.goal import stop_session_goal
 from clio_agent.gact.loop_inbox import enqueue_user_steer
 from clio_agent.gact.mcp_apps import cleanup_session_mcp_apps
+from clio_agent.gact.messaging import raise_on_reserved_metadata
 from clio_agent.gact.routes._body import NonObjectBodyError, json_body
 from clio_agent.gact.routes.compaction import build_compact_summary_message
 from clio_agent.gact.routes.session_filters import filter_session_rows
@@ -150,9 +153,9 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
     async def patch_session(sid: str, req: UpdateSessionRequest) -> Session:
         """Update mutable session fields (title + mode + edit_mode).
 
-        Lets the TUI flip plan ↔ edit ↔ chat ↔ architect mid-
-        session without recreating, and rename via the existing
-        rename modal.
+        Lets the TUI flip plan ↔ edit ↔ architect mid-session
+        without recreating, and rename via the existing rename
+        modal (``chat`` mode was deleted in P1.1 #1063).
         """
 
         sess = app.state.sessions.update(
@@ -253,6 +256,9 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             summary=f"delete session {sid}",
             reason="user_requested_session_delete",
         )
+        # P4.1 #1079 cancel-both: a deleted session must not orphan its loop wakeup.
+        stop_session_loop(app, sid)
+        stop_session_goal(app, sid)  # P4.2 #1080: abandon any active goal (goal_abandoned)
         try:
             await cleanup_session_mcp_apps(app, sid)
         except RuntimeError as exc:
@@ -663,6 +669,16 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 "compacted": False,
                 "reason": "transcript is empty after part filtering",
             }
+
+        # P2.3 PreCompact lifecycle hook (observation): fires exactly once, before
+        # the transcript is summarised into memory (there is real work to compact).
+        from clio_agent.gact.hooks import dispatch_pre_compact  # noqa: PLC0415
+
+        dispatch_pre_compact(
+            session_id=sid,
+            cwd=str(getattr(sess, "workspace_root", "") or ""),
+            payload={"message_count": len(ledger), "transcript_chars": len(transcript)},
+        )
 
         agent = app.state.agent
         if agent is None:
@@ -1148,6 +1164,20 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             }
         )
         app.state.user_questions[question_id] = updated
+        # P1.4 #1066: a plan-exit approval reuses THIS ask-user answer surface (no new store) but
+        # applies the mode transition + constraint-lift + resume in the owner module.
+        if updated.metadata.get("plan_exit_approval"):
+            from clio_agent.gact.plan_mode import resolve_plan_exit_answer  # noqa: PLC0415
+
+            resolve_plan_exit_answer(app, deps, sid, updated)
+            app.state.bus.publish(
+                Event(
+                    type="user_question.answered",
+                    session_id=sid,
+                    payload=updated.model_dump(exclude_none=True),
+                )
+            )
+            return updated
         if not _pending_user_questions(sid):
             sess = app.state.sessions.get(sid)
             should_resume = bool(updated.metadata.get("resume_on_answer")) and sess is not None
@@ -1296,6 +1326,10 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
+        # #1057 B2 (BLOCKER): retry is a POST /messages sibling — ``req.metadata`` is
+        # spread onto the staged turn's ``user_msg.metadata`` the UserPromptSubmit hook
+        # reads. Reject a smuggled control key via the shared /messages chokepoint.
+        raise_on_reserved_metadata(sid, req.metadata)
         model_payload = (req.model or ModelRef()).model_dump()
         if req.provider_id:
             model_payload["provider_id"] = req.provider_id
@@ -1449,22 +1483,14 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
     async def cancel_session(sid: str) -> Response:
         """Best-effort cancel of an in-flight turn on this session.
 
-        The agent loop and sync MCP bridge observe a scoped cancellation
-        checker between planner/expert/tool boundaries and return early
-        with ``error_info.error == "cancelled"`` when possible. The
-        endpoint itself flips the flag + publishes a
-        ``session.cancelled`` event so any live SSE subscriber sees
-        the transition without waiting for the next turn boundary.
-
-        If the turn is already blocked inside executor-thread provider
-        or tool work, cancelling the asyncio Task settles the GACT
-        envelope as cancelled but cannot kill the underlying Python
-        thread. The emitted status event marks this as best-effort so
-        clients do not mistake it for a guaranteed provider abort.
-
-        Returns 204 whether a turn was actually running — the TUI
-        fires this on Esc/Ctrl+C speculatively and doesn't want an
-        error if the race finished on its own.
+        The agent loop and sync MCP bridge observe a scoped cancellation checker between
+        planner/expert/tool boundaries and return early with ``error_info.error ==
+        "cancelled"`` when possible; the endpoint flips the flag + publishes a
+        ``session.cancelled`` event so live SSE subscribers see the transition immediately.
+        If the turn is already blocked inside executor-thread provider/tool work, cancelling
+        the asyncio Task settles the GACT envelope as cancelled but cannot kill the Python
+        thread — the status event marks this best-effort. Returns 204 whether or not a turn
+        was running (the TUI fires this speculatively on Esc/Ctrl+C).
         """
 
         sess = app.state.sessions.get(sid)
@@ -1494,6 +1520,8 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         from clio_agent.gact.turn_spawn import cancel_children_of  # noqa: PLC0415
 
         cancel_children_of(app, sid)
+        stop_session_loop(app, sid)  # P4.1 #1079 cancel-both: no orphaned loop wakeup
+        stop_session_goal(app, sid)  # P4.2 #1080: abandon any active goal on cancel
         in_flight = app.state.in_flight_turns.get(sid)
         cancellation_pending = False
         if in_flight is not None and not in_flight.done():

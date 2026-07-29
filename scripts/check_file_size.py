@@ -46,7 +46,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # once the dead Tier-1 planner half was deleted (host-only surface). Now
     # under DEFAULT_MAX_LINES, so its ratchet entry is removed entirely.
     "src/clio_agent/arc/memory.py": 1394,
-    "src/clio_agent/arc/segments.py": 1117,
+    "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
     # owner ruling 2026-07-14: +3 to route explicit =local through the loud
     # DEGRADED banner (owner module: arc/init_degradation.py).
@@ -64,7 +64,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # minimized to concise docstrings; the per-op payload passing is irreducible. Ratchet
     # down with the #714/#767 decomposition.
     "src/clio_agent/arc/working_set_fold.py": 919,
-    "src/clio_agent/gact/agent_blueprints.py": 1103,
+    "src/clio_agent/gact/agent_blueprints.py": 1035,
     # #948 S4: +14 for the children-must-be-react hierarchy rule (a predict/CoT
     # parent would silently strand its children now that the settle loop routing
     # for it is deleted; typed validation error instead).
@@ -86,7 +86,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # merge(main->develop): +43 (1833 -> 1876) integrating main's #962 external-MCP
     # permission-gate enforcement (_invoke_permission_gate / _external_mcp_permission_context)
     # + #964 sanitized-observer projection at the external MCP call site.
-    "src/clio_agent/gact/agents/builders.py": 1876,
+    # P1.4 #1066: +1 for the build_plan_exit_tool import; the two react-build call sites stay
+    # line-neutral (the create_artifact append became a two-tool extend). All plan_exit logic lives
+    # in the owner module gact/plan_mode.py. Ratchets back with the #714/#767 decomposition.
+    "src/clio_agent/gact/agents/builders.py": 1871,
     # #900: +14 for the lifespan child-reaper install + clean-shutdown teardown wiring
     # (both delegate to the owner module runtime/process_tree.py).
     # #918: +7 for the SkillNotDelegatableError exception handler (app.py owns
@@ -121,7 +124,13 @@ RATCHET_BASELINE: dict[str, int] = {
     # _redrive_deferred_resume; the resume fold's re-drive now lives in the owner
     # module gact/loop_inbox.py (drain_inbox_to_new_turn), leaving only the idle-hook
     # wiring here.
-    "src/clio_agent/gact/app.py": 2695,
+    # P2.3 (#1071): +6 — the deferred-boot branch wires the tool_interceptor +
+    # PostToolUse producers (make_post_tool_hook); all logic lives in the owner
+    # module gact/hooks/intercept.py, only the two boot assignments are here.
+    # P4.3 (#1081): 2679 -> 2552 — the scheduler tick + fire runtime
+    # (_scheduler_tick/_scheduler_tick_once/_fire_schedule/_seconds_until_next_minute)
+    # moved to the owner module gact/scheduler_runtime.py; app.py only re-exports them.
+    "src/clio_agent/gact/app.py": 2552,
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -149,7 +158,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # catalog + reconnect/streamable-http route growth). Part of the #947 MCP-apps
     # decomposition debt; ratchets back with the mcp_app_* owner-module split.
     "src/clio_agent/gact/routes/blueprints.py": 861,
-    "src/clio_agent/gact/routes/catalog.py": 936,
+    "src/clio_agent/gact/routes/catalog.py": 938,  # +4: /goal command dispatch wiring (#1080; logic in gact/goal.py)
     "src/clio_agent/gact/routes/mcp.py": 993,
     # #947 DEBT (recorded 2026-07-18, #948 S4 branch): the MCP-apps landing grew
     # these files past their baselines without a ratchet update (it merged to
@@ -177,7 +186,17 @@ RATCHET_BASELINE: dict[str, int] = {
     # lines; the axis logic lives in sessions.py + permission_gate.py, no accretion here).
     # #1036: 1551 -> 1545 — the ask-user resume fold replaced the inline deferred_resumes
     # stash with a one-call enqueue_user_steer + a hoisted resume_metadata (dedup).
-    "src/clio_agent/gact/routes/sessions.py": 1545,
+    # P1.4 #1066: +14 for the plan-exit approval branch in the ask-user answer route (reuses the
+    # UserQuestion surface, no new store); the mode transition + constraint-lift + resume live in the
+    # owner module gact/plan_mode.py (resolve_plan_exit_answer). Ratchets back with the #714 split.
+    # P2.3 (#1071): +10 — the PreCompact lifecycle hook fires at the compact route
+    # before summarisation (thin dispatch_pre_compact call site; the event set lives
+    # in the owner module gact/hooks/).
+    # #1057 B2 review repair: +5 for the reserved-metadata guard at the /retry ingest
+    # (typed rejection lives in gact/messaging.py; only the thin call site lands here).
+    # #1080: +3 stop_session_goal cancel-both wiring (logic in gact/goal.py). Merged
+    # baseline = actual post-merge count (both additions present).
+    "src/clio_agent/gact/routes/sessions.py": 1573,
     # #933: +8 for the turn-scoped workspace-fleet lease in _tool_session_context.
     # #933 review hardening: typed workspace_lease_unavailable degrade when a
     # rooted turn has no leasable agent (+9).
@@ -195,7 +214,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # B5 #979.7 (deferred B4 WRITER): +6 for the serving-child join seam in the
     # "started" phase — the join logic lives in the ingest_edges owner module
     # (join_call_to_serving_child); only the import + guarded one-call seam land here.
-    "src/clio_agent/gact/tool_observer.py": 957,
+    # P2.3 (#1071): +7 — _install_tool_runtime_hooks defaults in the tool_interceptor
+    # + PostToolUse producers; both producers live in the owner module
+    # gact/hooks/intercept.py, only the thin default-in wiring is here.
+    "src/clio_agent/gact/tool_observer.py": 964,
     "src/clio_agent/gact/transcript.py": 986,
     # #918: +17 for the typed SkillNotDelegatableError ladder arm (a skill-bound
     # turn fails typed, never as generic agent_error).
@@ -212,7 +234,17 @@ RATCHET_BASELINE: dict[str, int] = {
     # seam — the secondary/optional designation channel mints declared output paths at
     # turn finalize. The mint funnel lives in the artifacts owner package; only the
     # guarded finalize helper + its one call site land here (never load-bearing).
-    "src/clio_agent/gact/turn.py": 918,
+    # P1.2 #1064: +5 for the plan-mode reminder enrichment call site (import + one-line comment
+    # + the 3-line call). All logic (full/sparse selection, compaction detection, the
+    # session.metadata suppression counter) lives in the owner module gact/plan_mode.py; only
+    # the call site lands here (the #1035/#966 call-site precedent). Ratchets back with #714.
+    # P1.4 #1066: +7 for the plan_exit turn-ending-yield seam next to maybe_pause_for_user (import +
+    # comment + the 2-line call). The seam (maybe_pause_for_plan_exit) lives in the owner module
+    # gact/plan_mode.py. Ratchets back with #714.
+    # P1.6d #1068: -1 (839 -> 838) — the plan/todo/replan enrichment injects share one comment and a
+    # verbose #6/#767 streaming comment was condensed; the inject_replan_suggestion call site (+4) is
+    # more than offset. The stall-monitor + suggestion logic lives in the owner module replanning.py.
+    "src/clio_agent/gact/turn.py": 838,
     # #952 S4 Pass C: -9 (the answer-substitution finalize call + import were
     # removed with the settle layer's degradation ledger).
     # #953 [5]: +3 to surface the variant winner stamp (variant_selection) on the
@@ -230,7 +262,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # #968 S2 review: -3 (946 -> 943) — the artifact.proposed payload dict moved to
     # the owner module (artifacts/wire.proposed_diff_payload, finding [2]); the
     # settle-path buffer clear delegates to artifacts/minting.clear_turn_artifacts.
-    "src/clio_agent/gact/turn_finalize.py": 946,
+    # P2.3 (#1071): +14 — PostToolBatch fires once per turn over the turn's tool
+    # round (thin fire_post_tool_batch call site; the payload build + dispatch live
+    # in the owner module gact/hooks/intercept.py).
+    "src/clio_agent/gact/turn_finalize.py": 968,  # +36 (A4 #1057): the loop-goal compose glue is extracted into the named, tested `compose_goal_loop_stop_at_finalize` seam (A4 review: the inline glue was silently deletable — the extracted function is driven by the finalize seam test); the glue owns the goal->loop import so goal.py stays a leaf (no cycle)
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (baseline 1143 -> actual); ratchet back below the pre-#947 count with the
     # mcp_app_* owner-module split (see the #947 DEBT block on mcp_apps.py).
@@ -280,7 +315,16 @@ RATCHET_BASELINE: dict[str, int] = {
     # #966 S1 (artifacts): -109 (1747 -> 1638) — the grounding-hook constants +
     # _ground_output_paths moved to the artifacts designation owner module; only a
     # thin re-export wrapper remains here (deletion inventory item 2).
-    "src/clio_agent/tools/execution.py": 1638,
+    # P1.2 #1064: +4 at the tool-gate denial to surface a mode-aware ``deny_message`` (a str
+    # subclass carrying the plan-mode text) instead of the generic string — a getattr read + a
+    # 3-line rationale. Irreducible: execution.py OWNS the PermissionError the model sees, and the
+    # low tools layer imports no gact (duck-typed). The message text is produced in
+    # grant_resolver.plan_mode_deny_message. Ratchets back with the #714/#767 decomposition.
+    # P2.3 (#1071): +16 — the tool boundary now consults the tool_interceptor
+    # (synthesize/modify) and applies the PostToolUse hook. The seam TYPES + the
+    # applier live in the new owner module tools/tool_hooks.py; only the thin
+    # ToolRuntimeHooks.post_tool field + the two call sites are here.
+    "src/clio_agent/tools/execution.py": 1658,
     # #1001: doctor rendering + disk-GC surface moved to the ui/doctor.py owner module
     # (ratcheted 1156 -> 1135 in the same change).
     # merge(main->develop): +6 (1135 -> 1141) integrating main's release-stream cli deltas.

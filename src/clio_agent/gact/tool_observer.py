@@ -358,10 +358,17 @@ def _install_tool_runtime_hooks(app: "FastAPI") -> None:
     observer = getattr(app.state, "pending_tool_observer", None)
     if observer is None:
         observer = _make_tool_observer(app)
-    interceptor = getattr(app.state, "pending_tool_interceptor", None)
+    # P2.3: the interceptor (pure consumer of the gate-stashed PreToolUse
+    # modify/synthesize decision) + the PostToolUse producer, defaulting in when a
+    # caller (test) has not pre-installed one.
+    from clio_agent.gact.hooks import make_post_tool_hook, pre_tool_interceptor  # noqa: PLC0415
+
+    interceptor = getattr(app.state, "pending_tool_interceptor", None) or pre_tool_interceptor
+    post_tool = getattr(app.state, "pending_post_tool", None) or make_post_tool_hook(app)
     app.state.pending_cancellation_checker = checker
     app.state.pending_permission_gate = gate
     app.state.pending_tool_interceptor = interceptor
+    app.state.pending_post_tool = post_tool
     app.state.pending_tool_observer = observer
     app.state.tool_hooks_installed = True
     # #735 (unified §1): install ONLY stamps this app's ``pending_*`` hooks. The

@@ -20,7 +20,7 @@ imports only leaf packages (catalog, agents.resolution, types, the dependency-fr
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -72,6 +72,63 @@ BACKEND_COMMANDS: list[dict[str, Any]] = [
         "id": "/dump-trace",
         "title": "Dump last reasoning trace",
         "description": "Append the last assistant turn's DSPy reasoning (when available).",
+        "source": "builtin",
+        "status": "available",
+        "enabled": True,
+        "error": "",
+    },
+    {
+        # #1081 (P4.3): the /cron user command surfaces the scheduling triad
+        # (create/list/delete) that the model reaches as cron_create/cron_list/
+        # cron_delete tools + the existing HTTP CRUD (routes/schedules.py). A
+        # recurring or one-shot future turn for the active session, evaluated in the
+        # session's LOCAL timezone, with anti-runaway clamps enforced server-side.
+        "id": "/cron",
+        "title": "Schedule a turn (cron / one-shot)",
+        "description": (
+            "Create, list, or delete scheduled turns for this session — a 5-field cron "
+            "(local timezone) or a one-shot run_at/delay. Clamped against runaway."
+        ),
+        "source": "builtin",
+        "status": "available",
+        "enabled": True,
+        "error": "",
+        "aliases": ["/schedule"],
+    },
+    {
+        # #1079 (P4.1): the /loop user command STARTS an autonomous loop — it re-drives
+        # this session's turn repeatedly (self-paced via the P4.3 scheduler) toward
+        # continued work, under first-class typed bounds (max iters / wall-clock / tokens
+        # / no-progress) with a bounded fallback and cancel-both. The model self-paces via
+        # the loop_wakeup tool; ending/cancelling the session cancels the pending wakeup.
+        "id": "/loop",
+        "title": "Start an autonomous loop",
+        "description": (
+            "Re-drive this session repeatedly toward continued work: /loop [interval] "
+            "<prompt>. Self-paced, hard-bounded (iters/wall-clock/tokens/no-progress), "
+            "and cancelled when the session ends. Never runs away."
+        ),
+        "source": "builtin",
+        "status": "available",
+        "enabled": True,
+        "error": "",
+    },
+    {
+        # #1080 (P4.2): the /goal user command ARMS a run-until-a-condition goal — it
+        # gates turn completion until a condition holds, re-driving one more turn while
+        # unmet (the bounded Stop-loop re-drive seam) and auto-clearing when satisfied.
+        # Evaluation is the bounded LLM judge and the typed loop bounds are the hard stops
+        # (the deterministic goal-predicate tier was deleted, A4 #1057 — nobody ships
+        # predicates over model-authored state; it lets the model mark its own homework).
+        # Injection-safe: only the user (or a declared skill-effect) can set/clear a goal —
+        # never the model. /goal clear removes the active goal.
+        "id": "/goal",
+        "title": "Set a run-until goal condition",
+        "description": (
+            "Gate completion on a condition: /goal <condition>. Re-drives while unmet, "
+            "auto-clears when satisfied, hard-bounded (max_goal_iters/budget). Evaluation is "
+            "the bounded LLM judge; the bounds are the hard stops. /goal clear to remove."
+        ),
         "source": "builtin",
         "status": "available",
         "enabled": True,
@@ -321,6 +378,29 @@ def all_command_rows(
     for command in user_command_rows(app, cwd=cwd, extra_roots=extra_roots):
         rows.setdefault(command["id"], command)
     return list(rows.values())
+
+
+def command_index(rows: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Index command rows by id AND each declared alias (alias -> canonical row).
+
+    The dispatch route resolves an incoming ``/cmd`` through this map so an aliased
+    command (e.g. ``/schedule`` for ``/cron``) reaches the SAME handler as its canonical
+    id instead of 404-ing as unknown. The canonical id wins on a collision; aliases only
+    fill gaps (``setdefault``)."""
+
+    materialized = list(rows)
+    index: dict[str, dict[str, Any]] = {}
+    for row in materialized:
+        cid = str(row.get("id") or "")
+        if not cid:
+            continue
+        index[cid] = row
+    for row in materialized:
+        for alias in row.get("aliases") or []:
+            key = normalize_command_id(alias)
+            if key:
+                index.setdefault(key, row)
+    return index
 
 
 def agent_allowed_command_ids(agent_def: AgentDef) -> set[str]:

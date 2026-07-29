@@ -40,18 +40,26 @@ The gate decides in this order:
    `fs_propose_edit`). A read returns `allow` **before** the mode lock and
    records no permission row, in every `session.mode`. Reads are never gated.
 
-2. **Auto-deny (read-only session lock)** — when `session.mode` is `plan` or
-   `architect`, the gate refuses a non-read call without prompting (read-only
-   contract). Row: `status: auto_denied`, `action: deny`,
-   `reason: session_mode_readonly`.
-
-3. **Policy resolution** — `grant_resolver.resolve(kind, pattern, …)` (which
+2. **Policy resolution** — `grant_resolver.resolve(kind, pattern, …)` (which
    `_policy_action_for_tool` and the egress `_host_action_for` both delegate to)
    consults the declarative `/v1/policies` rules. A matching `deny` blocks; a
    matching `allow`/`allow_session`/`allow_workspace` fast-allows (recorded as a
    resolved audit row).
 
-4. **Interactive** — for an un-resolved non-read call (e.g. an LM-driven ReAct
+   Plan/architect enforcement lives here too, not as a separate lock step: when
+   `session.mode` is `plan` or `architect`, `resolve()` also consults a pair of
+   built-in, never-persisted `plan_acl` rows — deny every non-read tool in
+   plan/architect, with the sole `<plans>/*.md` write carve-out in plan mode.
+   These rows carry a **dynamically computed priority**, raised above every
+   matching user policy row for that call (so a permissive `/v1/policies` entry
+   — however it was prioritized or migrated — can never outrank the mode lock;
+   the carve-out is raised one band above the deny so it still wins for the
+   plan file itself). A resulting denial is recorded exactly like any other
+   policy denial: `status: auto_denied`, `action: deny`, `reason: policy_deny`.
+   There is no `session_mode_readonly` reason and no separate predicate — this
+   is the same one-matcher path every other policy row resolves through.
+
+3. **Interactive** — for an un-resolved non-read call (e.g. an LM-driven ReAct
    loop calling `fs_apply_edit_write` or `shell_bash` mid-turn), the gate
    publishes a `permission.requested` event and blocks on a `threading.Event`
    for up to `DEFAULT_TIMEOUT_S = 600.0` s (a timeout fails safe: `deny`; a call
@@ -61,7 +69,7 @@ The gate decides in this order:
 
 > Note: because classification is positive, a tool that is read-only *in fact*
 > but declares neither a `readOnlyHint` annotation nor a catalog `read` tag is
-> treated as non-read and routes to steps 2–4. Closing the headless case (no
+> treated as non-read and routes to steps 2–3. Closing the headless case (no
 > interactive approver) for such calls is the job of the approval-mode work
 > (#1034); until then, give such tools a `read` tag or `readOnlyHint`.
 

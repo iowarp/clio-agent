@@ -286,15 +286,12 @@ def finalize_turn(
         )
 
     # ---- #767 PR3: finalize is a READER of the TurnTranscript ledger. ----
-    # Live parts already streamed at the moment they happened; finalize only
-    # appends ITS OWN parts (route banner, wrap-up thinking, the canonical
-    # answer channel, file diffs) through the same producer API and then
-    # persists the ledger verbatim. No live-parts scans, no rebuild-from-rows,
-    # no text swap, no dedup, no re-publish.
-    #
-    # Capture stream provenance BEFORE any finalize-time append: an atomic
-    # append is the runtime boundary and clears ``current_stream_part_id``
-    # (the legacy closure var was only reset by mid-turn boundaries).
+    # Live parts already streamed as they happened; finalize only appends ITS OWN parts (route
+    # banner, wrap-up thinking, the canonical answer channel, file diffs) through the same producer
+    # API and persists the ledger verbatim — no live-parts scans, no rebuild-from-rows, no text swap,
+    # no dedup, no re-publish. Capture stream provenance BEFORE any finalize-time append: an atomic
+    # append is the runtime boundary and clears ``current_stream_part_id`` (the legacy closure var
+    # was only reset by mid-turn boundaries).
     current_stream_part_id = state.transcript.current_stream_part_id
     live_assistant_parts = state.transcript.snapshot()
     has_live_parts = bool(live_assistant_parts or current_stream_part_id)
@@ -708,59 +705,51 @@ def finalize_turn(
             },
         )
     )
-    # iowarp/clio-agent#20: post_message hook runs AFTER persistence
-    # so user audit code sees the settled assistant + can ship to
-    # external systems. Errors are swallowed (post_* contract).
-    try:
-        from clio_agent.runtime.hooks import fire as _fire_hook  # noqa: PLC0415
+    # P2.3 PostToolBatch: fire ONCE per turn, after the turn's whole tool batch resolved and before
+    # Stop/next step — only when the turn ran ≥1 tool. ``state.tools_called`` is the honest clio-owned
+    # batch boundary (the DSPy ReAct loop owns per-model-step rounds; a finer seam moves this there).
+    if state.tools_called:
+        from clio_agent.gact.hooks import fire_post_tool_batch  # noqa: PLC0415
 
-        _emit_semantic_event(
-            state.app,
-            state.sid,
-            "hook.invocation.started",
+        fire_post_tool_batch(
+            state.tools_called,
+            session_id=state.sid,
             turn_id=state.turn_id,
-            trace_id=state.trace_id,
-            status="running",
-            summary="post_message hook dispatch started.",
-            actor={"hook": "post_message"},
-            subject={"message_id": assistant_msg.id},
-            payload={"assistant": assistant_msg.model_dump(exclude_none=True)},
+            cwd=str(getattr(state.sess, "workspace_root", "") or ""),
         )
-        _fire_hook(
-            "post_message",
-            state.sid,
-            assistant_msg.model_dump(exclude_none=True),
-            hook_scope={
-                "session_id": state.sid,
-                "workspace_id": getattr(state.sess, "workspace_id", ""),
-                "blueprint_id": _runtime_active_agent_blueprint_id(state.app, state.sid),
-            },
-        )
-        _emit_semantic_event(
-            state.app,
-            state.sid,
-            "hook.invocation.completed",
-            turn_id=state.turn_id,
-            trace_id=state.trace_id,
-            summary="post_message hook dispatch completed.",
-            actor={"hook": "post_message"},
-            subject={"message_id": assistant_msg.id},
-            payload={},
-        )
-    except Exception:  # noqa: BLE001
-        _emit_semantic_event(
-            state.app,
-            state.sid,
-            "hook.invocation.failed",
-            turn_id=state.turn_id,
-            trace_id=state.trace_id,
-            status="failed",
-            summary="post_message hook dispatch failed and was swallowed by policy.",
-            actor={"hook": "post_message"},
-            subject={"message_id": assistant_msg.id},
-            payload={},
-        )
-        pass
+    # P2.5 #1073: Stop hooks (the ported ``post_message`` consumer) run AFTER persistence so user
+    # audit code sees the settled assistant. A BOUNDED completion gate: a ``deny`` re-drives one more
+    # turn on the #1031 idle-hook seam, hard-bounded by a per-hook ``loopLimit`` + a global cap that
+    # settles DONE with a typed ``stop_loop_cap`` reason. Protocol lives in the hooks owner module.
+    from clio_agent.gact.hooks.stop_loop import dispatch_stop_at_finalize  # noqa: PLC0415
+
+    dispatch_stop_at_finalize(
+        state.app,
+        session_id=state.sid,
+        turn_id=state.turn_id,
+        trace_id=state.trace_id,
+        cwd=str(getattr(state.sess, "workspace_root", "") or ""),
+        assistant_msg_id=assistant_msg.id,
+        assistant_payload=assistant_msg.model_dump(exclude_none=True),
+        blueprint_id=_runtime_active_agent_blueprint_id(state.app, state.sid),
+    )
+    # P4.1 #1079: the autonomous-loop bounded fallback (owner module; no-op when idle).
+    from clio_agent.gact.autonomous_loop import dispatch_loop_at_finalize  # noqa: PLC0415
+
+    dispatch_loop_at_finalize(state.app, session_id=state.sid, turn_id=state.turn_id)
+    # P4.2 #1080: run-until GOAL completion gate (owner module; no-op/never-raises).
+    from clio_agent.gact.goal import dispatch_goal_at_finalize  # noqa: PLC0415
+
+    goal_decision = dispatch_goal_at_finalize(
+        state.app, session_id=state.sid, turn_id=state.turn_id, trace_id=state.trace_id
+    )
+    compose_goal_loop_stop_at_finalize(state.app, state.sid, goal_decision)
+    # P1.6d #1068: stall-monitor leaky bucket (owner module; no-op for unstructured sessions).
+    from clio_agent.gact.replanning import dispatch_stall_monitor_at_finalize  # noqa: PLC0415
+
+    dispatch_stall_monitor_at_finalize(
+        state.app, session_id=state.sid, turn_id=state.turn_id, tools_called=state.tools_called
+    )
     if not (
         state.cancelled_turn
         and state.error_info is not None
@@ -768,6 +757,39 @@ def finalize_turn(
     ):
         if state.app.state.cancel_events.get(state.sid) is state.turn_cancel_event:
             state.app.state.cancel_events.pop(state.sid, None)
+
+
+def compose_goal_loop_stop_at_finalize(
+    app: "FastAPI",
+    sid: str,
+    goal_decision: Any,
+) -> bool:
+    """Stop an armed loop when the finalize goal judge settled ``met`` (A4 #1057).
+
+    The loop--goal composition seam. A run-until goal whose bounded LLM judge decides
+    ``met`` at finalize also stops any armed loop with the typed ``loop_goal_met`` reason
+    (cancel-both: the pending wakeup schedule is cancelled too). The compose lives in this
+    ``turn_finalize`` glue — NOT in ``goal.py`` — so ``goal.py`` stays a leaf with no
+    ``goal -> autonomous_loop`` import cycle. LLM-only: the deterministic goal-predicate
+    tier was deleted in A4, so a met goal is always a judge decision.
+
+    Args:
+        app: The FastAPI app carrying the session/schedule stores.
+        sid: The session whose loop should be stopped.
+        goal_decision: The :class:`~clio_agent.gact.goal.GoalDecision` from
+            :func:`~clio_agent.gact.goal.dispatch_goal_at_finalize`, or ``None`` when no
+            goal was armed this turn.
+
+    Returns:
+        ``True`` when a met goal drove a loop stop, ``False`` otherwise.
+    """
+
+    if goal_decision is None or getattr(goal_decision, "outcome", None) != "met":
+        return False
+    from clio_agent.gact.autonomous_loop import stop_session_loop  # noqa: PLC0415
+
+    stop_session_loop(app, sid, reason="loop_goal_met")
+    return True
 
 
 def settle_failed_finalize(

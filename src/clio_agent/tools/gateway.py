@@ -27,7 +27,12 @@ from typing import Any, cast
 
 from fastmcp import Client, FastMCP
 
-from clio_agent.tools.catalog import TOOL_CATALOG, ToolCatalogEntry
+from clio_agent.tools.catalog import (
+    TOOL_CATALOG,
+    ToolCatalogEntry,
+    classification_tags,
+    normalize_mcp_annotations,
+)
 from clio_agent.tools.mcp_config import BUILTIN_SERVER_NAMES, MCPServerSpec, transport_for
 from clio_agent.tools.servers.fs_server import fs_server
 from clio_agent.tools.servers.shell_server import shell_server
@@ -374,6 +379,18 @@ def _tool_tags(tool: Any) -> frozenset[str]:
     return frozenset()
 
 
+def _tool_annotations(tool: Any) -> Mapping[str, Any] | None:
+    """Return a JSON-compatible MCP annotation mapping from a listed tool, or ``None``.
+
+    FastMCP exposes ``annotations`` as an ``mcp.types.ToolAnnotations`` model on listed tools,
+    while tests/persisted rows use plain mappings. Normalizes both to a mapping so the catalog
+    can project the read/write tag from the SAME annotations the permission gate consults for
+    external MCP calls (#1061). Unknown shapes → ``None`` (fail-safe: classified as effectful).
+    """
+
+    return normalize_mcp_annotations(tool)
+
+
 def _expert_visibility(experts: Iterable[Any] | None) -> dict[str, set[str]]:
     """Map each declared tool name to the expert ids that list it in ``tools:``.
 
@@ -441,7 +458,10 @@ def build_tool_catalog(
             # Built-in namespaces are owned by the static catalog; skip any
             # built-in tool not explicitly listed there.
             continue
-        tags = _tool_tags(tool) | {namespace}
+        # Read/write classification is a PROJECTION of the tool's declared MCP annotations
+        # (#1061), the SAME source of truth the built-in catalog and the permission gate use —
+        # so external MCP tools classify read-only/write uniformly with the built-ins.
+        tags = _tool_tags(tool) | {namespace} | classification_tags(_tool_annotations(tool))
         scopes = set(visibility.get(name, set())) | {namespace}
         merged[name] = ToolCatalogEntry(
             name=name,

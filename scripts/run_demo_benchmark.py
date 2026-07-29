@@ -50,7 +50,6 @@ _SEMANTIC_REGRESSION_REQUIRED_PROOFS = {
     "marketplace_pack": "marketplace Agent Blueprint activation is observed",
     "command_mcp_skill_scope": "command, MCP, or skill capability scoping is observed",
     "enabled_mcp_execution": "marketplace MCP descriptor is trusted, launched, and callable",
-    "packaged_hook_invocation": "marketplace packaged hook is trusted, enabled, and invoked",
 }
 _DATA_FILE_SUFFIXES = {
     ".bp",
@@ -129,8 +128,6 @@ class DemoCase:
     mcp_enable_descriptor_id: str = ""
     mcp_call_tool: str = ""
     mcp_call_args: dict[str, Any] = field(default_factory=dict)
-    hook_enable_id: str = ""
-    hook_probe_text: str = ""
     memory_scope_probe: bool = False
     skip_model_turn: bool = False
 
@@ -1678,8 +1675,6 @@ def _case_observed_semantic_proofs(result: DemoResult) -> tuple[str, ...]:
             proof_observed = _command_mcp_skill_scope_observed(result)
         elif proof == "enabled_mcp_execution":
             proof_observed = _enabled_mcp_execution_observed(result)
-        elif proof == "packaged_hook_invocation":
-            proof_observed = _packaged_hook_invocation_observed(result)
         if proof_observed:
             observed.append(proof)
     return tuple(observed)
@@ -1801,61 +1796,6 @@ def _workspace_memory_scope_observed(result: DemoResult) -> bool:
     return result.passed and (
         "workspace_scope" in evidence or "policy_decision" in evidence or "memory_scope" in evidence
     )
-
-
-def _packaged_hook_invocation_observed(result: DemoResult) -> bool:
-    """Return whether actions and semantic events prove packaged hook invocation."""
-
-    enable_actions = [
-        action
-        for action in result.actions
-        if action.get("type") == "agent_blueprint_hook_enable" and action.get("ok") is True
-    ]
-    probe_actions = [
-        action
-        for action in result.actions
-        if action.get("type") == "packaged_hook_probe" and action.get("ok") is True
-    ]
-    if not result.passed or not enable_actions or not probe_actions:
-        return False
-    hook_ids = {
-        str(action.get("hook_id") or "")
-        for action in enable_actions
-        if str(action.get("hook_id") or "")
-    }
-    trusted = any(
-        isinstance(action.get("trust"), Mapping)
-        and (action.get("trust") or {}).get("trusted") is True
-        for action in enable_actions
-    )
-    if not hook_ids or not trusted:
-        return False
-    events = list(result.semantic_events)
-    for action in probe_actions:
-        for event in action.get("semantic_events") or []:
-            if isinstance(event, Mapping):
-                events.append(dict(event))
-    for event in events:
-        event_type = str(event.get("event_type") or "")
-        if event_type not in {"hook.invocation.completed", "hook.pre_message.blocked"}:
-            continue
-        actor = event.get("actor") if isinstance(event.get("actor"), Mapping) else {}
-        if str(actor.get("hook") or "") not in hook_ids:
-            continue
-        payload = event.get("payload") if isinstance(event.get("payload"), Mapping) else {}
-        handlers = payload.get("handlers") if isinstance(payload.get("handlers"), list) else []
-        for handler in handlers:
-            if not isinstance(handler, Mapping):
-                continue
-            if (
-                handler.get("source") == "agent_blueprint"
-                and handler.get("agent_blueprint_id") == result.case.agent_blueprint_id
-                and str(handler.get("definition_path") or "").endswith(
-                    f"hooks/{actor.get('hook')}.py"
-                )
-            ):
-                return True
-    return False
 
 
 def _children(http: httpx.Client, parent_session_id: str) -> list[dict[str, Any]]:
@@ -2291,115 +2231,6 @@ def _enable_blueprint_mcp_for_case(
             "elapsed_s": round(time.monotonic() - started, 3),
             "agent_blueprint_id": case.agent_blueprint_id,
             "descriptor_id": descriptor_id,
-            "error": repr(exc),
-        }
-
-
-def _enable_blueprint_hook_for_case(
-    http: httpx.Client,
-    case: DemoCase,
-    *,
-    workspace_id: str,
-    timeout_s: float,
-) -> dict[str, Any]:
-    """Trust/enable an Agent Blueprint packaged hook for benchmark evidence."""
-
-    started = time.monotonic()
-    hook_id = case.hook_enable_id
-    if not case.agent_blueprint_id or not hook_id:
-        return {
-            "type": "agent_blueprint_hook_enable",
-            "ok": False,
-            "elapsed_s": round(time.monotonic() - started, 3),
-            "error": "case is missing agent_blueprint_id or hook_enable_id",
-        }
-    try:
-        response = http.post(
-            f"/v1/agent-blueprints/{case.agent_blueprint_id}/hooks/{hook_id}/enable",
-            json={"workspace_id": workspace_id, "trust": True},
-            timeout=timeout_s,
-        )
-        payload = response.json()
-        return {
-            "type": "agent_blueprint_hook_enable",
-            "ok": response.status_code == 200 and payload.get("status") == "enabled",
-            "status_code": response.status_code,
-            "elapsed_s": round(time.monotonic() - started, 3),
-            "agent_blueprint_id": case.agent_blueprint_id,
-            "hook_id": hook_id,
-            "status": payload.get("status") if isinstance(payload, Mapping) else "",
-            "installed_path": payload.get("installed_path") if isinstance(payload, Mapping) else "",
-            "checksum": payload.get("checksum") if isinstance(payload, Mapping) else "",
-            "trust": payload.get("trust") if isinstance(payload, Mapping) else {},
-            "result": payload,
-        }
-    except Exception as exc:  # noqa: BLE001
-        return {
-            "type": "agent_blueprint_hook_enable",
-            "ok": False,
-            "elapsed_s": round(time.monotonic() - started, 3),
-            "agent_blueprint_id": case.agent_blueprint_id,
-            "hook_id": hook_id,
-            "error": repr(exc),
-        }
-
-
-def _probe_packaged_hook_for_case(
-    http: httpx.Client,
-    case: DemoCase,
-    *,
-    session_id: str,
-    timeout_s: float,
-) -> dict[str, Any]:
-    """Send a benchmark probe message that should invoke a packaged hook."""
-
-    started = time.monotonic()
-    prompt = case.hook_probe_text or case.prompt
-    if not prompt:
-        return {
-            "type": "packaged_hook_probe",
-            "ok": False,
-            "elapsed_s": round(time.monotonic() - started, 3),
-            "error": "case is missing hook_probe_text and prompt",
-        }
-    try:
-        response = http.post(
-            f"/v1/sessions/{session_id}/messages",
-            json={"parts": [{"type": "text", "text": prompt}]},
-            timeout=timeout_s,
-        )
-        payload = response.json()
-        deadline = time.monotonic() + min(timeout_s, 10.0)
-        session: dict[str, Any] = {}
-        while time.monotonic() < deadline:
-            session = http.get(f"/v1/sessions/{session_id}", timeout=timeout_s).json()
-            if session.get("status") == "error":
-                break
-            time.sleep(0.1)
-        semantic_events = _semantic_events_snapshot(http, session_id)
-        blocked = any(
-            event.get("event_type") == "hook.pre_message.blocked"
-            for event in semantic_events
-            if isinstance(event, Mapping)
-        )
-        return {
-            "type": "packaged_hook_probe",
-            "ok": response.status_code == 200 and blocked,
-            "status_code": response.status_code,
-            "elapsed_s": round(time.monotonic() - started, 3),
-            "agent_blueprint_id": case.agent_blueprint_id,
-            "hook_id": case.hook_enable_id,
-            "message_id": payload.get("message_id") if isinstance(payload, Mapping) else "",
-            "session_status": session.get("status") if isinstance(session, Mapping) else "",
-            "semantic_events": semantic_events,
-        }
-    except Exception as exc:  # noqa: BLE001
-        return {
-            "type": "packaged_hook_probe",
-            "ok": False,
-            "elapsed_s": round(time.monotonic() - started, 3),
-            "agent_blueprint_id": case.agent_blueprint_id,
-            "hook_id": case.hook_enable_id,
             "error": repr(exc),
         }
 
@@ -4556,40 +4387,6 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             ),
         ),
         DemoCase(
-            case_id="marketplace_packaged_hook_blocked_turn",
-            title="Marketplace packaged hook blocked turn",
-            category="marketplace-hooks",
-            session_group="marketplace_hook_smoke",
-            agent_blueprint_id="hook-smoke",
-            expected_terms=("pre_message", "blocked", "agent_blueprint"),
-            semantic_proofs=("packaged_hook_invocation",),
-            hook_enable_id="pre_message",
-            hook_probe_text="CLIO_HOOK_SMOKE_BLOCK prove packaged hook invocation",
-            expected_actions=("agent_blueprint_hook_enable", "packaged_hook_probe"),
-            skip_model_turn=True,
-            complexity_tags=(
-                "marketplace",
-                "hooks",
-                "explicit-trust",
-                "semantic-trace",
-                "agent-blueprint",
-            ),
-            prompt=(
-                "Using the active hook smoke agent, verify that the packaged pre_message "
-                "hook is disabled by default, explicitly enabled with trust, and invoked "
-                "with packaged provenance during a blocked benchmark probe."
-            ),
-            expected=(
-                "CLIO exposes the hook-smoke packaged hook descriptor, explicitly trusts "
-                "and enables pre_message, then records hook.pre_message.blocked semantic "
-                "events whose handler provenance points back to the Agent Blueprint hook file."
-            ),
-            why=(
-                "Closes the marketplace packaged-hook evidence gap without relying on final "
-                "answer wording or a provider call."
-            ),
-        ),
-        DemoCase(
             case_id="workspace_memory_scope_policy",
             title="Workspace memory scope policy",
             category="memory-scope",
@@ -4838,7 +4635,6 @@ _BENCHMARK_LANES: dict[str, tuple[str, ...]] = {
         "reasoning_cross_file_triage_nanoagents",
         "marketplace_mcp_calculator_scope",
         "marketplace_mcp_calculator_enabled_call",
-        "marketplace_packaged_hook_blocked_turn",
         "workspace_memory_scope_policy",
         "provider_swap_memory_followup",
     ),
@@ -4991,35 +4787,6 @@ def run_benchmark(
                             f"  MCP call {'ok' if call_action.get('ok') else 'failed'} "
                             f"tool={case.mcp_call_tool} "
                             f"elapsed={call_action.get('elapsed_s')}s",
-                            flush=True,
-                        )
-                if case.hook_enable_id:
-                    action = _enable_blueprint_hook_for_case(
-                        http,
-                        case,
-                        workspace_id=workspace_id,
-                        timeout_s=case.timeout_s,
-                    )
-                    actions.append(action)
-                    print(
-                        f"  hook enable {'ok' if action.get('ok') else 'failed'} "
-                        f"hook={case.hook_enable_id} "
-                        f"status={action.get('status') or '-'} "
-                        f"elapsed={action.get('elapsed_s')}s",
-                        flush=True,
-                    )
-                    if case.hook_probe_text:
-                        probe_action = _probe_packaged_hook_for_case(
-                            http,
-                            case,
-                            session_id=session_id,
-                            timeout_s=case.timeout_s,
-                        )
-                        actions.append(probe_action)
-                        print(
-                            f"  hook probe {'ok' if probe_action.get('ok') else 'failed'} "
-                            f"hook={case.hook_enable_id} "
-                            f"elapsed={probe_action.get('elapsed_s')}s",
                             flush=True,
                         )
                 if case.memory_scope_probe:

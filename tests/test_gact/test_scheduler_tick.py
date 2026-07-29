@@ -214,12 +214,20 @@ def test_invalid_schedule_row_is_dropped_with_reason(tmp_path: Path, caplog) -> 
     assert matching, "invalid schedule row was swallowed (no structured warning)"
 
 
-def test_schedules_list_surfaces_utc_cron_assumption(tmp_path: Path) -> None:
-    """The schedules API states its UTC-only cron evaluation on the wire."""
+def test_schedules_list_surfaces_cron_timezone(tmp_path: Path) -> None:
+    """The schedules API states its cron timezone on the wire (P4.3 #1081: local, not UTC).
+
+    Cron is now evaluated in each schedule's own local timezone (DST-correct); the
+    envelope reports the server's default local zone and every row carries its ``timezone``.
+    """
+
+    from clio_agent.gact.scheduler import default_timezone_name
 
     _app, client, sid = _make(tmp_path, _SlowAgent(sleep_s=0.1))
+    client.post(f"/v1/sessions/{sid}/schedules", json={"cron": "0 9 * * *", "question": "q"})
     body = client.get(f"/v1/sessions/{sid}/schedules").json()
-    assert body["cron_timezone"] == "utc"
+    assert body["cron_timezone"] == default_timezone_name()
+    assert body["schedules"][0]["timezone"] == default_timezone_name()
 
 
 def test_sleep_aligns_to_next_minute_boundary() -> None:

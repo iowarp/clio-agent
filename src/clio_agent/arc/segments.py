@@ -239,11 +239,6 @@ class SegmentIndex:
         if sd is not None and sd.get(seg.logical_time) == seg.id:
             del sd[seg.logical_time]
 
-    def drop_session(self, session_id: str) -> None:
-        """Forget a session's scopes (mirrors SegmentStore.release)."""
-        for key in [k for k in self._by_scope if k[0] == session_id]:
-            self._by_scope.pop(key, None)
-
     def drop_scope(self, session_id: str, scope: str) -> None:
         """Forget a single scope's locator (mirrors SegmentStore.drop_scope)."""
         self._by_scope.pop((session_id, scope), None)
@@ -1075,12 +1070,16 @@ class SegmentStore:
         this acquire-registry-then-scopes order has no reverse cycle.
 
         The affected keys are derived from the lock registry (``_scope_locks``, whose
-        structure is guarded by ``_registry_lock``) and NOT by iterating ``_scopes``:
-        a per-scope cold-load (``_segs``) inserts into ``_scopes`` under only its own
-        scope lock, so iterating the live dict here would race a load on a *different*
-        session ("dictionary changed size during iteration"). Every in-memory scope is
-        always locked before it is loaded, so the lock keys are a superset of the
-        loaded keys — nothing loaded is missed."""
+        structure is guarded by ``_registry_lock``) and NOT by iterating ``_scopes``
+        (or the locator's ``_by_scope``): a per-scope cold-load (``_segs``) inserts into
+        BOTH ``_scopes`` and the ``_index`` under only its own scope lock, so iterating
+        either live dict here would race a load on a *different* session
+        ("dictionary changed size during iteration"). Every in-memory scope is always
+        locked before it is loaded, so the lock keys are a superset of the loaded keys —
+        nothing loaded (segment list OR locator entry) is missed. Both the ``_scopes``
+        pop and the ``_index.drop_scope`` pop below are per-known-key (never a scan), so
+        a concurrent cold-load on another session mutates a *different* key and can never
+        collide with this release."""
         with self._registry_lock:
             lock_keys = sorted(k for k in self._scope_locks if k[0] == session_id)
             held = [self._scope_locks[k] for k in lock_keys]
@@ -1092,7 +1091,7 @@ class SegmentStore:
                     if self._scopes.pop(k, None) is not None:
                         released += 1
                     self._loaded.discard(k)
-                self._index.drop_session(session_id)  # keep the locator consistent
+                    self._index.drop_scope(k[0], k[1])  # per-key: keep locator consistent
             finally:
                 for lk in held:
                     lk.release()

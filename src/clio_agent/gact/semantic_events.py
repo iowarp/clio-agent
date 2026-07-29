@@ -138,6 +138,16 @@ SSE_UI_EVENT_TYPES: frozenset[str] = frozenset(
 # data-dependent clean-stream violation this set closes (S5 gate3 C5).
 SSE_TRACE_ONLY_EVENT_TYPES: frozenset[str] = frozenset(
     {
+        # P2.7 hook audit (#1075): one ``hook.invoked`` per hook invocation — the
+        # governance audit (decision/denial/error/pre-exec rejection). Durable-trace +
+        # ARC substrate the operator queries after the fact, NEVER a UI row; declared
+        # trace-only so no status can lift it onto the served wire.
+        "hook.invoked",
+        # Stall-triggered replanning (P1.6d #1068): the leaky-bucket score change per turn and the
+        # threshold suggestion are governance substrate the operator queries after the fact — never a
+        # UI atom (the suggestion reaches the model via a per-turn-input attachment, not an SSE row).
+        "replan.stall_scored",
+        "replan.suggested",
         "artifact.used",
         "artifact.transform.recorded",
         "artifact.transform.failed",
@@ -735,10 +745,6 @@ class SemanticEventSink:
     def trace_backend_name(self) -> str:
         return self.trace_backend.name
 
-    def add_live_consumer(self, consumer: Callable[[SemanticEvent], None]) -> None:
-        """Register a live consumer (e.g. ARC) that folds the RAW full event."""
-        self.live_consumers.append(consumer)
-
     def emit(self, event: SemanticEvent) -> dict[str, Any]:
         event.detail_level = normalize_detail_level(event.detail_level or self.detail_level)
         # Durable canonical store + live consumers (ARC) ALWAYS get the FULL
@@ -769,11 +775,14 @@ class SemanticEventSink:
                     )
                 )
             try:
-                from clio_agent.runtime.hooks import fire as _fire_hook
+                from clio_agent.gact.hooks import dispatch_semantic_event  # noqa: PLC0415
 
-                _fire_hook("semantic_event", project_hook(event, full=self.hooks_full))
+                dispatch_semantic_event(
+                    project_hook(event, full=self.hooks_full),
+                    session_id=event.session_id,
+                )
             except Exception:  # noqa: BLE001,S110 - semantic hooks are observability side-effects; never crash the turn
-                # Semantic hooks are observability side-effects. They should
+                # SemanticEvent hooks are observability side-effects. They should
                 # never mutate or crash the turn being observed.
                 pass
         return full

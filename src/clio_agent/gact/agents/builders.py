@@ -43,17 +43,15 @@ from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents import skill_runtime as _skill_runtime
+from clio_agent.gact.agents.auto_tools import build_auto_react_tools
 from clio_agent.gact.agents.composition import (
     _runtime_active_workspace_context,
     _runtime_dynamic_agent_children_context,
 )
-from clio_agent.gact.agents.resolution import (
-    _active_workflow_state_schema,
-)
+from clio_agent.gact.agents.resolution import _active_workflow_state_schema
 from clio_agent.gact.agents.runtime import (
     _retaining_react_cls,
 )
-from clio_agent.gact.artifacts.proposals import build_create_artifact_tool
 from clio_agent.gact.events import Event
 from clio_agent.gact.permission_gate import (
     _external_mcp_permission_context,
@@ -217,14 +215,12 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
 
     import dspy  # noqa: PLC0415
 
-    from clio_agent.config import (  # noqa: PLC0415
-        create_chat_adapter,
-        create_lm,
-    )
+    from clio_agent.config import create_chat_adapter  # noqa: PLC0415
     from clio_agent.gact.app import (  # noqa: PLC0415
         _cancelled_error_info,
         _coerce_expert_handoff_rows,
     )
+    from clio_agent.lm.hooked_lm import create_hooked_lm  # noqa: PLC0415
     from clio_agent.prompts import PromptRegistry  # noqa: PLC0415
     from clio_agent.providers.credentials import CredentialResolver  # noqa: PLC0415
 
@@ -268,11 +264,11 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
             self,
             question: str,
             session_id: str,
-            session_mode: str = "chat",
+            session_mode: str = "edit",
             session_edit_mode: str = "diff",
             cancel_requested: Any | None = None,
         ) -> Any:
-            del session_mode, session_edit_mode
+            _ = (session_mode, session_edit_mode)  # P1.2 #1064: kept for a stable forward() signature; mode is surfaced upstream in turn.py enrichment (inject_plan_mode_reminder), not here.
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
                     _cancelled_error_info(
@@ -285,7 +281,7 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
             # dspy.context boundary itself is unchanged (design §4).
             cfg = self._resolved_spec.materialize(self._cred_resolver)
             with dspy.context(
-                lm=create_lm(cfg),
+                lm=create_hooked_lm(cfg),
                 adapter=create_chat_adapter(cfg),
             ):
                 result = self.answer_synthesizer(
@@ -1220,7 +1216,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
 
     import dspy  # noqa: PLC0415
 
-    from clio_agent.config import create_chat_adapter, create_lm  # noqa: PLC0415
+    from clio_agent.config import create_chat_adapter  # noqa: PLC0415
     from clio_agent.gact.agents.module_variants import (  # noqa: PLC0415
         wrap_module_variant as _wrap_module_variant,
     )
@@ -1232,6 +1228,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
         _tool_agent_empty_answer_fallback,
         _workflow_state_from_outputs,
     )
+    from clio_agent.lm.hooked_lm import create_hooked_lm  # noqa: PLC0415
     from clio_agent.providers.credentials import CredentialResolver  # noqa: PLC0415
 
     class BlueprintExpertModule(dspy.Module):
@@ -1274,8 +1271,8 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     # Auto-attached infra (like child-delegation tools), not a
                     # curated domain tool (#919).
                     tools.append(_skill_runtime.build_load_skill_tool(agent_def, skill_rt))
-                # create_artifact (#969): auto-attached for EVERY react expert (#966.2).
-                tools.append(build_create_artifact_tool(agent_def))
+                # create_artifact (#969) + plan_exit (#1066) + write_todos (#1067): auto-attached.
+                tools += build_auto_react_tools(agent_def)
                 self.tools = tools
                 # The iteration default scales with the declared children — an
                 # orchestrator pays spawn+wait per child inside this loop (#948 S4).
@@ -1358,11 +1355,11 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             self,
             question: str,
             session_id: str,
-            session_mode: str = "chat",
+            session_mode: str = "edit",
             session_edit_mode: str = "diff",
             cancel_requested: Any | None = None,
         ) -> Any:
-            del session_mode, session_edit_mode
+            _ = (session_mode, session_edit_mode)  # P1.2 #1064: kept for a stable forward() signature; mode is surfaced upstream in turn.py enrichment (inject_plan_mode_reminder), not here.
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
                     _cancelled_error_info(
@@ -1502,7 +1499,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                         # auto-compaction can read each call's exact prompt_tokens.
                         with (
                             dspy.track_usage(),
-                            dspy.context(lm=create_lm(_attempt_config), adapter=adapter),
+                            dspy.context(lm=create_hooked_lm(_attempt_config), adapter=adapter),
                         ):
                             result = self.program(**_call_kwargs)
                         break
@@ -1559,7 +1556,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                                     for _re_i in range(1, _max_repairs + 1):
                                         _re_temp = _repair_temperature(_base_temp, _re_i)
                                         with dspy.context(
-                                            lm=create_lm(
+                                            lm=create_hooked_lm(
                                                 replace(_fwd_config, temperature=_re_temp)
                                             ),
                                             adapter=adapter,
@@ -1702,16 +1699,14 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
 
     import dspy  # noqa: PLC0415
 
-    from clio_agent.config import (  # noqa: PLC0415
-        create_chat_adapter,
-        create_lm,
-    )
+    from clio_agent.config import create_chat_adapter  # noqa: PLC0415
     from clio_agent.gact.app import (  # noqa: PLC0415
         _cancelled_error_info,
         _coerce_expert_handoff_rows,
         _extract_tools_called_from_trajectory,
         _tool_agent_empty_answer_fallback,
     )
+    from clio_agent.lm.hooked_lm import create_hooked_lm  # noqa: PLC0415
     from clio_agent.prompts import PromptRegistry  # noqa: PLC0415
     from clio_agent.providers.credentials import CredentialResolver  # noqa: PLC0415
 
@@ -1735,8 +1730,8 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             if skill_rt.resolved:
                 # Same react tier-1 + load_skill contract as blueprint experts (#919).
                 self.tools.append(_skill_runtime.build_load_skill_tool(agent_def, skill_rt))
-            # create_artifact (#969): auto-attached for EVERY react expert (#966.2).
-            self.tools.append(build_create_artifact_tool(agent_def))
+            # create_artifact (#969) + plan_exit (#1066) + write_todos (#1067): auto-attached.
+            self.tools += build_auto_react_tools(agent_def)
             runtime = PromptRegistry().resolve("clio.runtime.tool_user_agent")
             runtime_text = str(getattr(runtime, "text", "") or "").strip()
             agent_prompt = agent_def.system_prompt.strip() or agent_def.description
@@ -1785,11 +1780,11 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             self,
             question: str,
             session_id: str,
-            session_mode: str = "chat",
+            session_mode: str = "edit",
             session_edit_mode: str = "diff",
             cancel_requested: Any | None = None,
         ) -> Any:
-            del session_mode, session_edit_mode
+            _ = (session_mode, session_edit_mode)  # P1.2 #1064: kept for a stable forward() signature; mode is surfaced upstream in turn.py enrichment (inject_plan_mode_reminder), not here.
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
                     _cancelled_error_info(
@@ -1812,7 +1807,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                 with (
                     dspy.track_usage(),
                     dspy.context(
-                        lm=create_lm(cfg),
+                        lm=create_hooked_lm(cfg),
                         adapter=create_chat_adapter(cfg),
                     ),
                 ):

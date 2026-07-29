@@ -613,9 +613,11 @@ def test_content_write_refused_in_plan_mode(tmp_path, monkeypatch):
         Proposal(name="report.md", kind="report", content="x"),
         workspace_id="ws1",
     )
-    # Sabotage: drop the mode gate -> write proceeds in read-only mode -> red.
+    # P1.1 #1063: plan mode denies a content write through the UNIFIED resolver (the built-in
+    # plan_acl @40 rule), surfaced as the typed POLICY_DENIED — no separate mode predicate.
+    # Sabotage: drop the plan_acl deny -> write proceeds in read-only mode -> red.
     assert out.accepted is False
-    assert out.reason == RejectionReason.MODE_READ_ONLY.value
+    assert out.reason == RejectionReason.POLICY_DENIED.value
     assert not (tmp_path / "report.md").exists()
 
 
@@ -687,6 +689,129 @@ def test_content_write_policy_allow_records_audit_row(tmp_path, monkeypatch):
     assert any(
         r["action"] == "allow" and r["tool_call"]["tool_name"] == "create_artifact" for r in rows
     )
+
+
+# --------------------------------------------------------------------------- #
+# P4 plan-mode plan-file carve-out: the content-write gate must hand the RESOLVED
+# target path to the resolver so the built-in plan_acl @70 ``<plans>/*.md`` carve-out
+# can match. Without a path key in the consult args the @70 carve-out can NEVER win,
+# so the model cannot write its designated plan file and plan_exit is unreachable.
+# --------------------------------------------------------------------------- #
+
+
+def test_content_write_in_plan_mode_allows_designated_plan_file(tmp_path, monkeypatch):
+    """A plan-mode content write to ``<plans>/*.md`` is ALLOWED (the @70 carve-out matches).
+
+    This is the headline defect: the gate previously consulted the resolver with
+    ``{"name", "content_bytes"}`` and NO path key, so ``_permission_path_from_args``
+    returned ``""`` and the @70 plan-file carve-out (keyed on ``path_pattern``) could
+    never match — every create_artifact write in plan mode fell to the @40 deny.
+
+    Sabotage: drop the ``"path"`` key from the consult args -> the carve-out can't
+    match -> POLICY_DENIED -> red.
+    """
+    from clio_agent.gact.runtime import plan_acl  # noqa: PLC0415
+
+    plans = tmp_path / ".clio" / "plans"
+    monkeypatch.setattr(plan_acl, "plans_dir", lambda: plans.resolve())
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    app, sess, _ = _make_app(tmp_path, mode="plan")
+    # The live target shape: <repo>/.clio/plans/<slug>-<sid>.md via create_artifact.
+    out = promote_proposal(
+        app,
+        sess.id,
+        Proposal(name=".clio/plans/my-plan.md", kind="report", content="# Plan\n"),
+        workspace_id="ws1",
+    )
+    assert out.accepted and out.created
+    assert (plans / "my-plan.md").read_text(encoding="utf-8") == "# Plan\n"
+    # An audit row landed as auto_approved through the SAME resolver every write uses.
+    rows = list(app.state.permissions.values())
+    assert any(
+        r["action"] == "allow" and r["tool_call"]["tool_name"] == "create_artifact" for r in rows
+    )
+
+
+def test_content_write_in_plan_mode_denies_non_plan_file(tmp_path, monkeypatch):
+    """A plan-mode content write OUTSIDE the plans dir stays denied (the @40 deny holds).
+
+    The carve-out is scoped to ``<plans>/*.md``; any other workspace path must still be
+    refused typed POLICY_DENIED even now that the resolved path is provided.
+
+    Sabotage: widen the carve-out to match every path -> this write is allowed -> red.
+    """
+    from clio_agent.gact.runtime import plan_acl  # noqa: PLC0415
+
+    plans = tmp_path / ".clio" / "plans"
+    monkeypatch.setattr(plan_acl, "plans_dir", lambda: plans.resolve())
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    app, sess, _ = _make_app(tmp_path, mode="plan")
+    out = promote_proposal(
+        app,
+        sess.id,
+        Proposal(name="report.md", kind="report", content="x"),
+        workspace_id="ws1",
+    )
+    assert out.accepted is False
+    assert out.reason == RejectionReason.POLICY_DENIED.value
+    assert not (tmp_path / "report.md").exists()
+
+
+def test_content_write_edit_mode_plan_path_unaffected(tmp_path, monkeypatch):
+    """A content write in a NON-plan mode is unaffected by the plan_acl rows.
+
+    Edit/chat mode has no plan_acl restriction, so a write anywhere in the workspace
+    (including under the plans dir) proceeds regardless of the plans carve-out. Proves
+    the fix did not change the non-plan write path.
+    """
+    from clio_agent.gact.runtime import plan_acl  # noqa: PLC0415
+
+    plans = tmp_path / ".clio" / "plans"
+    monkeypatch.setattr(plan_acl, "plans_dir", lambda: plans.resolve())
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    app, sess, _ = _make_app(tmp_path, mode="chat")
+    out = promote_proposal(
+        app,
+        sess.id,
+        Proposal(name="report.md", kind="report", content="ok\n"),
+        workspace_id="ws1",
+    )
+    assert out.accepted and out.created
+    assert (tmp_path / "report.md").read_text(encoding="utf-8") == "ok\n"
+
+
+def test_content_write_gate_records_resolved_target_path_in_audit_row(tmp_path, monkeypatch):
+    """The consult+audit args carry the RESOLVED target path, not just name/content_bytes.
+
+    Proves the path actually reaches the resolver (the audit row is built from the SAME
+    ``args`` dict handed to ``_policy_action_for_tool``), so path-pattern policy rows can
+    match. Sabotage: drop the ``"path"`` key from the args -> the audit input lacks the
+    resolved path -> red.
+    """
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    app, sess, _ = _make_app(
+        tmp_path,
+        policies=[{"scope": "session", "tool_name_pattern": "create_artifact", "action": "allow"}],
+    )
+    out = promote_proposal(
+        app,
+        sess.id,
+        Proposal(name="report.md", kind="report", content="ok\n"),
+        workspace_id="ws1",
+    )
+    assert out.accepted and out.created
+    target = str((tmp_path / "report.md").resolve(strict=False))
+    rows = [
+        r
+        for r in app.state.permissions.values()
+        if r["tool_call"]["tool_name"] == "create_artifact"
+    ]
+    assert rows, "no create_artifact audit row recorded"
+    inp = rows[0]["tool_call"]["input"]
+    assert inp.get("path") == target
+    # name / content_bytes are preserved alongside the new path key.
+    assert inp.get("name") == "report.md"
+    assert inp.get("content_bytes") == len(b"ok\n")
 
 
 # --------------------------------------------------------------------------- #
@@ -838,3 +963,55 @@ def test_concurrent_dedup_reports_created_false_and_consumes_no_cap(tmp_path, mo
     assert P.proposal_count(app, sess.id, "t1") == 1
     # Still exactly one version in the chain.
     assert len(real_get("ws1", "race.md").versions) == 1
+
+
+def test_plan_mode_deny_carries_mode_message_and_target(tmp_path, monkeypatch):
+    """A plan-mode content-write deny tells the model WHY and WHAT target was judged.
+
+    Live gate run 5 regression: the model authored the plan with a bare ``name``
+    (target landed at the workspace ROOT, correctly denied) but the rejection said
+    only "a permission policy denied create_artifact" — no mode context, no target —
+    so the model concluded a blanket block and deadlocked instead of repairing the
+    name. The rejection detail must carry the plan-mode deny message (names the sole
+    writable path) AND the resolved target that was judged.
+
+    Sabotage: revert the consult to the action-only shim (drop the detail) -> red.
+    """
+    from clio_agent.gact.runtime import plan_acl  # noqa: PLC0415
+
+    plans = tmp_path / ".clio" / "plans"
+    monkeypatch.setattr(plan_acl, "plans_dir", lambda: plans.resolve())
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    app, sess, _ = _make_app(tmp_path, mode="plan")
+    out = promote_proposal(
+        app,
+        sess.id,
+        # The run-5 shape: a bare filename, so the inline target resolves to the
+        # workspace ROOT (not the plans dir) and the @40 mode deny correctly wins.
+        Proposal(name="my-plan.md", kind="report", content="# Plan\n"),
+        workspace_id="ws1",
+    )
+    assert out.accepted is False
+    assert out.reason == RejectionReason.POLICY_DENIED.value
+    detail = str(getattr(out, "detail", "") or getattr(out, "message", "") or out.to_wire())
+    # The mode-aware message (names Plan Mode + the writable plan file) reached the model.
+    assert "plan" in detail.lower() and "read-only" in detail.lower() or "plan file" in detail.lower()
+    # The judged target is named, so a wrong `name` is self-evident to the model.
+    assert str((tmp_path / "my-plan.md").resolve()) in detail
+
+
+def test_create_artifact_tool_doc_states_name_is_target_path():
+    """The model-facing tool contract says `name` is the inline write TARGET PATH.
+
+    Live gate run 5: with no docstring the model read `name` as a display name,
+    passed a bare filename, and the plan write landed at the workspace root. The
+    dspy tool description is the model's only contract — it must state that inline
+    content lands at `name` (workspace-relative or absolute path, directories kept).
+    """
+    from clio_agent.gact.artifacts.proposals import build_create_artifact_tool
+    from clio_agent.gact.types import AgentDef
+
+    tool = build_create_artifact_tool(AgentDef(id="main", title="m"))
+    doc = str(getattr(tool, "desc", "") or getattr(tool, "__doc__", "") or "")
+    lowered = doc.lower()
+    assert "target path" in lowered and "content" in lowered

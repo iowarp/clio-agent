@@ -104,9 +104,19 @@ def effective_declared_skills(agent_def: "AgentDef", catalog: SkillCatalog) -> l
     )
     is_default_root = is_default and is_root
     if is_default_root:
-        for ref in catalog.discover():
-            if ref.scope == "workspace" and ref.layout != "unreadable" and ref.id not in declared:
-                declared.append(ref.id)
+        # Auto-declare the user's workspace skills first (so they lead the surface), then
+        # clio's shipped built-in skills (the ``planning`` entry-skill) — both onto the
+        # default-registry ROOT expert so plain chat can invoke them without editing the
+        # blueprint. Built-ins are appended AFTER workspace so a user skill of the same id
+        # (which shadows the built-in in resolution) also leads it in the declared list.
+        for wanted_scope in ("workspace", "builtin"):
+            for ref in catalog.discover():
+                if (
+                    ref.scope == wanted_scope
+                    and ref.layout != "unreadable"
+                    and ref.id not in declared
+                ):
+                    declared.append(ref.id)
     return declared
 
 
@@ -290,6 +300,18 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
             trace.event("SKILLS", "agent %s loaded %s file %s", agent_id, skill_id, file)
             _emit_loaded(len(content.encode("utf-8")), bundled_file=file)
             return content
+        # P1.0 (#1062): a skill may declare a PRIVILEGED runtime EFFECT in its
+        # frontmatter (enter_mode / spawn_subagent_with_skill). Invoking the skill
+        # (no bundled ``file=``) PERFORMS the effect via the runtime — never parsed
+        # from the body/model output (injection-safe). enter_mode returns a
+        # confirmation + the body; spawn returns the task handle (body NOT inlined).
+        from clio_agent.gact.agents.skill_effects import (  # noqa: PLC0415
+            maybe_apply_skill_effect,
+        )
+
+        effect_output = maybe_apply_skill_effect(ref, agent_id=agent_id)
+        if effect_output is not None:
+            return effect_output
         body = read_skill_body(ref)  # fresh read: edits since scan are honored
         bundled: list[str] = []
         if ref.layout == "skill_md":

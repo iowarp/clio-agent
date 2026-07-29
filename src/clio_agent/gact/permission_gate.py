@@ -9,11 +9,19 @@ and building the closures the tool-execution boundary calls
 Whether a call needs approval is decided structurally, not by tool-name
 substrings: :func:`is_read_only` (in :mod:`clio_agent.gact.runtime.grant_resolver`)
 fast-allows a provably read-only call (MCP ``readOnlyHint`` annotation OR a static
-catalog ``read`` tag); every other call proceeds to the plan/architect lock,
-policy match, and interactive prompt. Policy matching itself delegates to the one
-:func:`~clio_agent.gact.runtime.grant_resolver.resolve` matcher (#1032) — the
-former ``_is_destructive`` substring set and the bounded ``shell_bash`` parser are
-deleted (their read-only diagnostics are now covered by :func:`is_read_only`).
+catalog ``read`` tag); every other call proceeds to the policy match and
+interactive prompt. There is no separate plan/architect lock step: plan/architect
+enforcement is a set of built-in ``plan_acl`` policy rows (P1.1 #1063) that
+:func:`~clio_agent.gact.runtime.grant_resolver.resolve` consults for every
+``kind="tool"`` call whose session ``mode`` is plan-restricted — the same ONE
+matcher that resolves every other policy row, dynamically prioritized above any
+matching user row so it can never be outranked (adversarial-review fix, #1063).
+A resulting deny is recorded with the same ``reason: "policy_deny"`` as any other
+policy denial — there is no separate ``session_mode_readonly`` reason. Policy
+matching delegates to the one :func:`~clio_agent.gact.runtime.grant_resolver.resolve`
+matcher (#1032) — the former ``_is_destructive`` substring set and the bounded
+``shell_bash`` parser are deleted (their read-only diagnostics are now covered by
+:func:`is_read_only`).
 
 It pairs with :mod:`clio_agent.gact.runtime.permission_policies`, which owns the
 *data* layer (validation, on-disk load/flush, resolution-derived policies) and
@@ -58,11 +66,13 @@ from typing import TYPE_CHECKING, Any
 from fastapi import HTTPException
 
 from clio_agent.gact.events import Event
+from clio_agent.gact.planning import active_playbook_allowed_tools
 from clio_agent.gact.runtime.globals import _resolve_tool_session
 from clio_agent.gact.runtime.grant_resolver import (
     EXTERNAL_MCP_CONTEXT_KIND,
     is_read_only,
     resolve,
+    resolve_detail,
 )
 from clio_agent.gact.runtime.grants import GRANTOR_REVIEWER, GRANTOR_USER
 from clio_agent.gact.runtime.permission_policies import (
@@ -91,6 +101,26 @@ REASON_APPROVAL_AUTO_EDITS = "approval_mode_auto_edits"
 #: ai-review still PROMPTS today (the reviewer agent is the split follow-up slice); the pending
 #: row carries this typed reason so the ask is attributable to the reviewer-pending state.
 REASON_AI_REVIEW_REVIEWER_PENDING = "ai_review_reviewer_pending"
+
+
+class DenyDecision(str):
+    """A gate ``"deny"`` decision carrying a model-facing deny message (P1.2 #1064).
+
+    A ``str`` subclass that IS ``"deny"``, so every existing ``decision == "deny"``
+    comparison and the tool executor's ``decision != "allow"`` branch keep working
+    unchanged. The extra :attr:`deny_message` is the mode-aware text the tool executor
+    raises to the model in place of the generic ``"denied by permission gate"`` string
+    (read via ``getattr`` at the execution boundary, so the low ``tools`` layer never
+    imports gact). The typed audit reason (``policy_deny``) is decided separately and is
+    NOT affected — this class only enriches the human/model-facing wording.
+    """
+
+    deny_message: str
+
+    def __new__(cls, deny_message: str = "") -> "DenyDecision":
+        obj = super().__new__(cls, "deny")
+        obj.deny_message = deny_message
+        return obj
 
 
 def default_decision(
@@ -139,21 +169,9 @@ def _normalize_mcp_tool_annotations(tool: Any) -> dict[str, Any] | None:
     missing evidence and therefore requires permission.
     """
 
-    raw = getattr(tool, "annotations", None)
-    if raw is None:
-        return None
-    if isinstance(raw, Mapping):
-        return dict(raw)
-    model_dump = getattr(raw, "model_dump", None)
-    if not callable(model_dump):
-        return None
-    try:
-        dumped = model_dump(mode="json", by_alias=True)
-    except TypeError:
-        dumped = model_dump()
-    if not isinstance(dumped, Mapping):
-        return None
-    return dict(dumped)
+    from clio_agent.tools.catalog import normalize_mcp_annotations  # noqa: PLC0415
+
+    return normalize_mcp_annotations(tool)
 
 
 def _external_mcp_permission_context(annotations: Any) -> dict[str, Any]:
@@ -204,8 +222,9 @@ def _policy_action_for_tool(
     session: Any | None,
     tool_name: str,
     args: Mapping[str, Any],
+    mode: str = "",
 ) -> str:
-    """Return the first matching permission policy action for a tool call.
+    """Return the winning permission policy action for a tool call.
 
     A thin shim over :func:`~clio_agent.gact.runtime.grant_resolver.resolve`
     (``kind="tool"``): it resolves the call's target path + workspace from the
@@ -214,6 +233,14 @@ def _policy_action_for_tool(
     without enforcing them is a silent safety bypass; matching stays small and
     predictable (scope, tool glob, optional path glob, then the raw action).
     Kept as a named shim because ``enrichment``/``proposal_effects`` bind it.
+
+    ``mode`` (P1.1 #1063) is the session's mode: passing it makes ``resolve``
+    consult the built-in plan-mode ACL (deny every non-read tool in
+    plan/architect; the sole ``<plans>/*.md`` write carve-out in plan), so the
+    plan/architect read-only lock is now this ONE data-driven path — no longer a
+    predicate copy-pasted here + in ``enrichment`` + ``proposal_effects``. The
+    three former lock sites pass ``mode``; direct route actions
+    (:func:`_guard_direct_destructive_action`) leave it empty, unchanged.
     """
 
     path = _permission_path_from_args(args)
@@ -225,6 +252,41 @@ def _policy_action_for_tool(
         session_id=session_id,
         workspace_id=workspace_id,
         path=path,
+        mode=mode,
+        playbook_allowed=active_playbook_allowed_tools(session),
+    )
+
+
+def _policy_detail_for_tool(
+    app: "FastAPI",
+    *,
+    session_id: str,
+    session: Any | None,
+    tool_name: str,
+    args: Mapping[str, Any],
+    mode: str = "",
+) -> tuple[str, str]:
+    """Return ``(action, deny_message)`` for a tool call (P1.2 #1064).
+
+    The detail-returning companion to :func:`_policy_action_for_tool`: it resolves the
+    call through the SAME one matcher (:func:`~clio_agent.gact.runtime.grant_resolver.resolve_detail`)
+    but also carries the plan-mode deny message. ``deny_message`` is non-empty ONLY when
+    the winning deny is authored by the built-in plan_acl mode-lock, so the interactive
+    gate can raise the mode-aware text (states the restriction, points at the plan file,
+    says what IS allowed) while the ``policy_deny`` audit reason is unchanged.
+    """
+
+    path = _permission_path_from_args(args)
+    workspace_id = getattr(session, "workspace_id", "") if session is not None else ""
+    return resolve_detail(
+        "tool",
+        tool_name,
+        policies=getattr(app.state, "permission_policies", []),
+        session_id=session_id,
+        workspace_id=workspace_id,
+        path=path,
+        mode=mode,
+        playbook_allowed=active_playbook_allowed_tools(session),
     )
 
 
@@ -358,6 +420,7 @@ def resolve_permission(
     action: str,
     *,
     grantor: str = GRANTOR_USER,
+    intercept: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Resolve one pending permission row and wake any blocked bridge thread.
 
@@ -385,6 +448,14 @@ def resolve_permission(
     row["action"] = action
     row["resolved_at"] = datetime.now(timezone.utc).isoformat()
     row["grantor"] = grantor
+    # P2.6: an APPROVED PreToolUse defer may carry the modify/synthesize the approval
+    # decides — stashed on the row BEFORE the event wake below so the parked call reads
+    # it and drives the ``tool_interceptor`` (run-with-modified-args / synthesize).
+    if intercept is not None and action in {"allow", "allow_session", "allow_workspace"}:
+        if "result" in intercept:
+            row["resolution_result"] = intercept.get("result")
+        elif isinstance(intercept.get("input"), Mapping):
+            row["resolution_input"] = dict(intercept["input"])
     policy = _append_permission_policy_from_resolution(app, row=row, action=action)
     if policy is not None:
         row["policy"] = policy
@@ -401,9 +472,20 @@ def resolve_permission(
 
         emit_boundary_for_derived_policy(app, row, policy)
     # iowarp/clio-agent#7: wake any MCPToolBridge thread waiting on this permission.
+    # A parked PreToolUse defer (P2.6) waits on this SAME event, so approving/denying
+    # it out-of-band wakes the parked call, which reads ``row["action"]`` and returns
+    # allow (runs the tool / applies the approval's modify/synthesize) or a typed deny.
     evt = app.state.permission_events.pop(pid, None)
     if evt is not None:
         evt.set()
+    # P2.6: a TURN-ending defer (Stop / UserPromptSubmit) holds NO thread — it suspended
+    # the session. Resolving its row stages the deferred-resume (approve → new turn /
+    # release; deny → tighten) via the owner module. Runs exactly once (this body only
+    # runs on the pending→resolved transition, which is idempotent above).
+    if row.get("kind") == "turn_defer":
+        from clio_agent.gact.hooks.defer import resume_turn_defer  # noqa: PLC0415
+
+        resume_turn_defer(app, row, action)
     # B5 #979.8: surface the resolution on the highway/trace too so the request→resolution
     # lifecycle is consistently captured AND SSE-served. Guarded — a resolution must never
     # fail on an emit.
@@ -469,19 +551,19 @@ def _make_permission_gate(app: "FastAPI"):
         args: Mapping[str, Any],
         context: Mapping[str, Any] | None = None,
     ) -> str:
-        # iowarp/clio-agent#20: user-defined pre_tool hook can veto
-        # the call by raising PermissionError. Returns ignored;
-        # only the raise/no-raise distinction matters.
-        try:
-            from clio_agent.runtime.hooks import fire as _fire_hook
+        # P2.3 single-fire hygiene: clear any per-call intercept stash at the very
+        # start so a read-only fast-allow (below) — or a prior call whose interceptor
+        # never ran (a policy deny after a hook allow, a circuit break) — can never
+        # let the NEXT tool's interceptor consume a stale synthesize/modify decision.
+        from clio_agent.gact.hooks import stash_pre_tool_intercept  # noqa: PLC0415
 
-            _fire_hook("pre_tool", name, dict(args))
-        except PermissionError:
-            return "deny"
+        stash_pre_tool_intercept(None)
         # #1032: reads are NEVER gated. A provably read-only call (MCP
         # readOnlyHint annotation OR a static catalog ``read`` tag) fast-allows
-        # here, BEFORE the plan/architect lock — the structural invariant that no
-        # mode or policy can gate a read. Everything else proceeds to approval.
+        # here as the FIRST branch — before any hook or the plan/architect lock —
+        # the structural invariant that no mode, policy, or hook can gate a read.
+        # (P2.2 #1070 fixes the old ordering bug where the pre_tool hook fired
+        # BEFORE this branch and could gate a read-only call.)
         if is_read_only("tool", name, args, context):
             return "allow"
         subject = (
@@ -492,45 +574,85 @@ def _make_permission_gate(app: "FastAPI"):
         # Prefer the session currently driving the turn. Recency is
         # only a fallback for truly out-of-band tool calls.
         sid, current = _resolve_tool_session(app)
-        if current is not None:
-            # iowarp/clio-agent — plan_mode + architect mode reject
-            # destructive tool calls without prompting. Read-only
-            # contract is hard, not advisory.
-            if current.mode in {"plan", "architect"}:
-                row = {
-                    "id": f"perm_{uuid.uuid4().hex[:12]}",
-                    "session_id": sid,
-                    "tool_call": {
-                        "tool_name": name,
-                        "input": dict(args),
-                    },
-                    "summary": (f"{subject} {name!r} blocked by session.mode={current.mode!r}"),
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                    "status": "auto_denied",
-                    "action": "deny",
-                    "resolved_at": datetime.now(timezone.utc).isoformat(),
-                }
-                app.state.permissions[row["id"]] = row
-                enforce_dict_bound(app, app.state.permissions, "permissions", session_id=sid)
-                app.state.bus.publish(
-                    Event(
-                        type="permission.resolved",
-                        session_id=sid,
-                        payload={
-                            "permission_id": row["id"],
-                            "action": "deny",
-                            "session_id": sid,
-                            "reason": "session_mode_readonly",
-                        },
-                    )
+        # P2.2 #1070: PreToolUse hooks (the ported ``pre_tool`` consumer, deny-capable
+        # and TIGHTEN-ONLY). A hook deny blocks the call and its reason reaches the
+        # model via ``DenyDecision``; a hook allow proceeds to the policy match below
+        # (a hook allow can NEVER lift a downstream policy deny). A hook infrastructure
+        # failure is fail-closed per-hook inside the dispatcher and surfaces as a deny
+        # whose message says it is a hook failure, NOT a user rejection.
+        from clio_agent.gact.hooks import dispatch_pre_tool  # noqa: PLC0415
+
+        hook_outcome = dispatch_pre_tool(
+            name,
+            dict(args),
+            session_id=sid,
+            turn_id=str(getattr(current, "current_turn_id", "") or ""),
+            cwd=str(getattr(current, "workspace_root", "") or ""),
+            context=context,
+        )
+        if hook_outcome.denied:
+            # Clear any stale intercept so the (skipped) interceptor never fires on
+            # this denied call, then block with the hook's reason.
+            stash_pre_tool_intercept(None)
+            _record_resolved_permission(
+                app,
+                session_id=sid,
+                tool_name=name,
+                args=args,
+                status="auto_denied",
+                action="deny",
+                summary=f"{subject} {name!r} blocked by a PreToolUse hook",
+                reason="hook_deny",
+            )
+            return DenyDecision(
+                hook_outcome.reason or f"tool call {name!r} denied by a PreToolUse hook"
+            )
+        # P2.6: a PreToolUse ``defer`` PARKS this call for out-of-band approval (the
+        # headline durable-defer path). deny beats defer (tighten-only): a policy deny
+        # is evaluated FIRST so a matching deny-rule still blocks rather than parks;
+        # otherwise the call parks on the existing gate primitive with the timeout
+        # lifted and resolves from any out-of-band channel (see gact/hooks/defer.py).
+        if hook_outcome.is_defer:
+            mode = getattr(current, "mode", "") if current is not None else ""
+            defer_policy_action, defer_plan_msg = _policy_detail_for_tool(
+                app, session_id=sid, session=current, tool_name=name, args=args, mode=mode
+            )
+            if defer_policy_action == "deny":
+                stash_pre_tool_intercept(None)
+                _record_resolved_permission(
+                    app,
+                    session_id=sid,
+                    tool_name=name,
+                    args=args,
+                    status="auto_denied",
+                    action="deny",
+                    summary=f"{subject} {name!r} blocked by permission policy",
+                    reason="policy_deny",
                 )
-                return "deny"
-        policy_action = _policy_action_for_tool(
+                return DenyDecision(defer_plan_msg) if defer_plan_msg else "deny"
+            from clio_agent.gact.hooks.defer import park_pretool_defer  # noqa: PLC0415
+
+            return park_pretool_defer(
+                app, sid=sid, name=name, args=args, subject=subject, outcome=hook_outcome
+            )
+        # P2.3: a non-denied PreToolUse ``modify``/``synthesize`` rides forward to the
+        # already-wired ``tool_interceptor`` slot. Stash it on the per-call context
+        # var (single-fire: PreToolUse dispatched exactly once, here) — the interceptor
+        # is a pure consumer that reads it after this gate returns "allow".
+        stash_pre_tool_intercept(hook_outcome)
+        # P1.1 #1063: the plan/architect read-only lock is no longer a predicate here (it was
+        # copy-pasted into three modules). It is now a set of built-in plan_acl rows the ONE
+        # resolver evaluates — passing the session mode makes ``resolve`` deny every non-read tool
+        # in plan/architect (@40) and allow the sole ``<plans>/*.md`` write carve-out in plan (@70).
+        # Read-only calls never reach here (``is_read_only`` fast-allowed above), in every mode.
+        mode = getattr(current, "mode", "") if current is not None else ""
+        policy_action, plan_deny_message = _policy_detail_for_tool(
             app,
             session_id=sid,
             session=current,
             tool_name=name,
             args=args,
+            mode=mode,
         )
         if policy_action == "deny":
             _record_resolved_permission(
@@ -543,7 +665,11 @@ def _make_permission_gate(app: "FastAPI"):
                 summary=f"{subject} {name!r} blocked by permission policy",
                 reason="policy_deny",
             )
-            return "deny"
+            # P1.2 #1064: a plan_acl-authored deny carries a mode-aware message so the model
+            # sees WHY the call is blocked (Plan Mode, read-only except the plan file) instead
+            # of the generic executor string. The typed audit reason above stays ``policy_deny``;
+            # a non-plan (user-policy) deny returns an empty message and the plain "deny" string.
+            return DenyDecision(plan_deny_message) if plan_deny_message else "deny"
         if policy_action in {"allow", "allow_session", "allow_workspace"}:
             _record_resolved_permission(
                 app,

@@ -45,6 +45,7 @@ def resolve_tool_runtime() -> ToolRuntimeHooks | None:
         cancellation_checker=getattr(state, "pending_cancellation_checker", None),
         loop_inbox_drain=getattr(state, "pending_loop_inbox_drain", None),
         mcp_app_observer=getattr(state, "pending_mcp_app_observer", None),
+        post_tool=getattr(state, "pending_post_tool", None),
     )
 
 

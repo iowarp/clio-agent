@@ -43,9 +43,6 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
-from clio_agent.gact.agents.resolution import (
-    _runtime_active_agent_blueprint_id,
-)
 from clio_agent.gact.delegation import (
     _coerce_expert_handoff_rows,
     _prediction_workflow_state,
@@ -59,14 +56,14 @@ from clio_agent.gact.enrichment import (
     inject_pending_agent_task_notifications,
 )
 from clio_agent.gact.events import Event, EventBus, _publish_transcript_event
-from clio_agent.gact.evidence import (
-    _propose_edit_diffs_from_pred,
-)
+from clio_agent.gact.evidence import _propose_edit_diffs_from_pred
 from clio_agent.gact.messaging import (
     _agent_accepts_images,
     _image_part_summaries,
     _user_message_parts,
 )
+from clio_agent.gact.plan_mode import inject_plan_mode_reminder
+from clio_agent.gact.replanning import inject_replan_suggestion
 from clio_agent.gact.runtime.globals import (
     _BlueprintRootDisabled,
     _cancelled_error_info,
@@ -92,6 +89,7 @@ from clio_agent.gact.streaming import (
     _pop_stream_fallback,
     _StreamingOutputError,
 )
+from clio_agent.gact.todos import inject_todo_recitation
 from clio_agent.gact.tool_observer import (
     _merge_tool_call_rows,
     _tool_calls_from_handoff_rows,
@@ -114,9 +112,7 @@ from clio_agent.gact.types import (
     Part,
     Session,
 )
-from clio_agent.gact.usage import (
-    _snapshot_lm_history_index,
-)
+from clio_agent.gact.usage import _snapshot_lm_history_index
 
 # NOTE (#714): every turn helper above is imported from its true *leaf* owner,
 # not from ``clio_agent.gact.app``. The turn loop originally lived in ``app.py``
@@ -302,6 +298,17 @@ async def _run_turn_in_background(
         state.enriched_text, state.pending_notification_task_ids = (
             inject_pending_agent_task_notifications(state.app, state.sid, state.enriched_text)
         )
+        # P1.2 #1064: surface plan mode to the model each turn (survives compaction; no-op otherwise).
+        state.enriched_text = inject_plan_mode_reminder(
+            state.app, state.sid, state.sess, state.enriched_text
+        )
+        state.enriched_text = inject_todo_recitation(
+            state.app, state.sid, state.sess, state.enriched_text
+        )
+        # P1.6d #1068: surface a pending stall-triggered replanning suggestion once (no-op otherwise).
+        state.enriched_text = inject_replan_suggestion(
+            state.app, state.sid, state.sess, state.enriched_text
+        )
         # Carry prior turns so a follow-up ("now plot it") reuses resolved state (no-op turn 1).
         state.enriched_text = _compile_session_conversation_history(state.app, state.sid, state.enriched_text)
     except _ContextFileAccessError as exc:
@@ -329,121 +336,27 @@ async def _run_turn_in_background(
             subject={"message_id": state.user_msg.id},
             payload=state.memory_search_metadata,
         )
-    # iowarp/clio-agent#20: pre_message hook can transform the
-    # input or veto the turn. PermissionError → cancelled-style
-    # error_info; the caller sees the hook's reason.
+    # P2.2 #1070 / P2.6 #1074: UserPromptSubmit hooks (the ported ``pre_message``
+    # consumer). A deny VETOES the turn (session → error); a ``defer`` SUSPENDS it for
+    # out-of-band approval (waiting_user, resume as a new turn). The whole finalize-
+    # boundary protocol lives in the hooks owner module (no-accretion) — this is only
+    # the call site: any non-"proceed" outcome ends the turn here.
     if context_file_error is None:
-        try:
-            from clio_agent.runtime.hooks import fire as _fire_hook
+        from clio_agent.gact.hooks.user_prompt import run_user_prompt_submit  # noqa: PLC0415
 
-            _emit_semantic_event(
-                state.app,
-                state.sid,
-                "hook.invocation.started",
-                turn_id=state.turn_id,
-                trace_id=state.trace_id,
-                status="running",
-                summary="pre_message hook dispatch started.",
-                actor={"hook": "pre_message"},
-                subject={"message_id": state.user_msg.id},
-                payload={"input": state.enriched_text},
-            )
-            hook_scope = {
-                "session_id": state.sid,
-                "workspace_id": getattr(state.sess, "workspace_id", ""),
-                "blueprint_id": _runtime_active_agent_blueprint_id(state.app, state.sid),
-            }
-            _fire_hook("pre_message", state.sid, state.enriched_text, hook_scope=hook_scope)
-            _emit_semantic_event(
-                state.app,
-                state.sid,
-                "hook.invocation.completed",
-                turn_id=state.turn_id,
-                trace_id=state.trace_id,
-                summary="pre_message hook dispatch completed.",
-                actor={"hook": "pre_message"},
-                subject={"message_id": state.user_msg.id},
-                payload={},
-            )
-        except PermissionError as exc:
-            _emit_semantic_event(
-                state.app,
-                state.sid,
-                "hook.pre_message.blocked",
-                turn_id=state.turn_id,
-                trace_id=state.trace_id,
-                status="blocked",
-                summary="pre_message hook blocked the turn.",
-                actor={"hook": "pre_message"},
-                subject={"message_id": state.user_msg.id},
-                payload={"error": str(exc)},
-            )
-            _emit_semantic_event(
-                state.app,
-                state.sid,
-                "turn.failed",
-                turn_id=state.turn_id,
-                trace_id=state.trace_id,
-                status="blocked",
-                summary="CLIO turn was blocked by pre_message hook.",
-                actor={"hook": "pre_message"},
-                subject={"message_id": state.user_msg.id},
-                payload={"error": str(exc)},
-            )
-            state.bus.publish(
-                Event(
-                    type="message.completed",
-                    session_id=state.sid,
-                    payload={
-                        "turn_id": state.turn_id,
-                        "message_id": state.user_msg.id,
-                        "stop_reason": "blocked",
-                        "error_info": {
-                            "error": "permission_error",
-                            "message": str(exc),
-                            "recoverable": True,
-                        },
-                    },
-                )
-            )
-            state.app.state.sessions.update(state.sid, status="error")
-            _update_retry_attempt(
-                "failed",
-                metadata_patch={
-                    "execution_error": "permission_error",
-                    "executed_user_message_id": state.user_msg.id,
-                },
-            )
-            state.bus.publish(
-                Event(
-                    type="session.status_changed",
-                    session_id=state.sid,
-                    payload={
-                        "session_id": state.sid,
-                        "status": "error",
-                        "prev_status": "running",
-                        "reason": "pre_message hook blocked turn",
-                    },
-                )
-            )
+        if run_user_prompt_submit(state, update_retry_attempt=_update_retry_attempt) != "proceed":
             return
 
-    # iowarp/clio-agent#6: try real per-token streaming via
-    # dspy.streamify when the LM supports it; fall back to the
-    # synchronous executor path otherwise. Streaming produces
-    # message.part.delta events as chunks arrive — without it the
-    # text part lands as one big delta after forward returns.
+    # iowarp/clio-agent#6: try real per-token streaming via dspy.streamify when the LM supports it;
+    # fall back to the synchronous executor path otherwise. Streaming produces message.part.delta
+    # events as chunks arrive — without it the text part lands as one big delta after forward.
     #
-    # #767 PR2: the TurnTranscript ledger owns the streamed-part state machine
-    # (lazy message mint, per-(agent, field) part open/close, per-part buffers,
-    # whole-buffer clean at close, the runtime boundary) that used to live here
-    # as ~10 closure vars + _close_streamed_part + the cross-module boundary
-    # hook. The turn loop owns the ledger's LIFECYCLE: opened here, settled on
-    # every exit path (success, the #756 finalize error envelope, the ask_user
-    # early return). :func:`~clio_agent.gact.turn_stream.emit_chunk` (extracted to
-    # turn_stream.py, #767 Phase B Slice 3) is now a thin adapter: semantic
-    # lm.token.delta + the parent-resume suppression gate (PR4 retires it) +
-    # stream_audit, then one transcript call.
+    # #767 PR2: the TurnTranscript ledger owns the streamed-part state machine (lazy message mint,
+    # per-(agent, field) part open/close, per-part buffers, whole-buffer clean at close, the runtime
+    # boundary). The turn loop owns the ledger's LIFECYCLE: opened here, settled on every exit path
+    # (success, the #756 finalize error envelope, the ask_user early return).
+    # :func:`~clio_agent.gact.turn_stream.emit_chunk` is a thin adapter: semantic lm.token.delta +
+    # the parent-resume suppression gate + stream_audit, then one transcript call.
     from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
         _active_workflow_state_schema,
     )
@@ -531,6 +444,13 @@ async def _run_turn_in_background(
             # finalize region — the seam mints the question, flips the
             # session to waiting_user, and settles the ledger (see
             # turn_finalize.py).
+            return
+        # P1.4 #1066: plan_exit is the SAME turn-ending yield — surface the pending
+        # plan-exit as an N-way approval question and exit before finalize (owner
+        # module gact/plan_mode.py; only the call site lands here).
+        from clio_agent.gact.plan_mode import maybe_pause_for_plan_exit  # noqa: PLC0415
+
+        if maybe_pause_for_plan_exit(state):
             return
         # iowarp/clio-agent#25: data branch reports which execution
         # path it took ("fast" or "expert_loop"). Empty when not
