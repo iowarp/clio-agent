@@ -54,6 +54,11 @@ git merge --no-ff develop -m "Merge develop: release vX.Y.Z — <summary>"
 - `src/clio_agent/__init__.py` → `__version__ = "X.Y.Z"`
 - `uv.lock` → run `uv lock` (updates the clio-agent entry), commit it.
 - `install/README.md` → bump the `CLIO_VERSION=` example.
+- `tests/test_scripts/test_release_install_policy.py` → bump `EXPECTED_VERSION` (it
+  pins pyproject + `__init__` + `uv.lock` + the documented install command; a bump
+  that misses it fails the full suite — hit on the v0.9.0 cut).
+- `README.md` + `docs/INSTALL.md` → the `clio-agent==X.Y.Z` install lines (the
+  policy test greps them).
 - Commit the submodule gitlink bumps + version together: `chore(release): vX.Y.Z`.
 
 ### 4b. Roll the CHANGELOG (GACT-contract surface only)
@@ -100,6 +105,32 @@ raise past that line fails plain CI.
 git tag -a vX.Y.Z HEAD -m "release: vX.Y.Z — <summary>"
 git push origin main && git push origin develop && git push origin vX.Y.Z
 ```
+
+### 6b. Author the GitHub release notes (NEVER skip — the workflow leaves a bare page)
+`clio-bundles.yml` creates the GitHub release as a side effect of asset upload, so
+without this step the release page shows only the merge-commit subject ("Merge pull
+request #NNNN from iowarp/develop") — the v0.8.0/v0.8.1/v0.9.0 pages all shipped
+that way and had to be healed after the fact. Right after the tag push:
+
+```sh
+gh release edit vX.Y.Z --title "vX.Y.Z — <campaign / theme name>" --notes-file notes.md
+```
+
+`notes.md` is CURATED from the CHANGELOG's `[X.Y.Z]` section, not pasted verbatim:
+- One intro paragraph: what this release IS (the campaign/theme), with the epic ref
+  and the acceptance evidence (live-gate verdict link when one exists).
+- Feature groups as `##` sections, each bullet = **feature name** (#issues, PRs) +
+  1–2 plain sentences. Map every feature to its issues/PRs — a reader must be able
+  to click from a feature to its implementation.
+- Call out **breaking changes** explicitly (their own bullet or section).
+- End with a CHANGELOG link + the `uv tool install ... clio-agent==X.Y.Z` line.
+- Length: shorter than the CHANGELOG section. Clean feature → issue mapping beats
+  prose volume (the open-webui releases are the calibration: clear, not long).
+
+The `release-check` job auto-fills the body from the CHANGELOG section as a
+BACKSTOP when the page is still bare, but the curated edit above is the standard —
+run it even when the backstop fired (your edit wins; the backstop never overwrites
+a non-bare body).
 
 ### 7. Verify CI green + artifacts
 ```sh
