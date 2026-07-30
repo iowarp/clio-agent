@@ -9,9 +9,9 @@ from typing import Any, Self
 
 import pytest
 
-from clio_agent.tools.execution import (
+from clio_agent.tools.execution import SyncMCPToolExecutor
+from clio_agent.tools.mcp_executor import (
     AsyncMCPToolExecutor,
-    SyncMCPToolExecutor,
     UncertainMutatingToolOutcomeError,
 )
 

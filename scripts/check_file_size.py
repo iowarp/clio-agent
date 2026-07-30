@@ -327,7 +327,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # (synthesize/modify) and applies the PostToolUse hook. The seam TYPES + the
     # applier live in the new owner module tools/tool_hooks.py; only the thin
     # ToolRuntimeHooks.post_tool field + the two call sites are here.
-    "src/clio_agent/tools/execution.py": 1658,
+    # P0.1b (#1103): -500 — AsyncMCPToolExecutor, its client protocol/factory,
+    # timeout/uncertain-mutation support, and MCP projections moved to mcp_executor.py.
+    "src/clio_agent/tools/execution.py": 1158,
     # #1001: doctor rendering + disk-GC surface moved to the ui/doctor.py owner module
     # (ratcheted 1156 -> 1135 in the same change).
     # merge(main->develop): +6 (1135 -> 1141) integrating main's release-stream cli deltas.

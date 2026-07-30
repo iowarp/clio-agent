@@ -15,18 +15,20 @@ from clio_agent import conf
 from clio_agent.errors import CancellationError
 from clio_agent.gact.artifacts.designation import ground_output_paths
 from clio_agent.tools.execution import (
-    AsyncMCPToolExecutor,
     MCPToolBridge,
     RepeatedToolFailureError,
     SyncMCPToolExecutor,
     ToolRuntimeHooks,
-    UncertainMutatingToolOutcomeError,
     _ground_output_paths,
     _repair_missing_file_arguments,
     create_async_tool_executor,
     create_sync_tool_executor,
     set_tool_runtime_fallback,
     tool_workspace_context,
+)
+from clio_agent.tools.mcp_executor import (
+    AsyncMCPToolExecutor,
+    UncertainMutatingToolOutcomeError,
 )
 from tests._config_layer import set_config
 
