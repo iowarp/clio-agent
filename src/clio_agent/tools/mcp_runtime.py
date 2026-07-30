@@ -190,6 +190,26 @@ def clio_client_info() -> Any:
     return Implementation(name="clio-agent", title="CLIO Agent", version=__version__)
 
 
+class _DeclaredCapabilityOverride:
+    """Mixin that makes CLIO's declared client capabilities authoritative.
+
+    Composed in front of the session class already in effect (plain
+    ``ClientSession`` on a direct client, ``_ForwardingClientSession`` on a proxy
+    backend) by :func:`_capability_session_class`, so ``super()`` resolves to that
+    base's ``_build_capabilities``. The declared elicitation capability is stored
+    on the composed class as ``_clio_declared_elicitation``.
+    """
+
+    _clio_declared_elicitation: Any = None
+
+    def _build_capabilities(self, version: str) -> Any:
+        caps = super()._build_capabilities(version)  # type: ignore[misc]
+        # The declaration is authoritative for elicitation: it overrides the
+        # SDK's callback-derived (both-modes) value with the exact modes CLIO
+        # supports, so we never over-advertise a mode we cannot serve.
+        return caps.model_copy(update={"elicitation": self._clio_declared_elicitation})
+
+
 def _capability_session_class(declaration: MCPClientCapabilities, base: type) -> type:
     """Return a ``base`` ``ClientSession`` subclass that advertises ``declaration``.
 
@@ -214,20 +234,13 @@ def _capability_session_class(declaration: MCPClientCapabilities, base: type) ->
     if cached is not None:
         return cached
 
-    elicitation = declaration.elicitation_capability()
-
-    class _DeclaredCapabilitySession(base):  # type: ignore[misc,valid-type]
-        """Advertise CLIO's declared client capabilities regardless of wiring."""
-
-        def _build_capabilities(self, version: str) -> Any:
-            caps = super()._build_capabilities(version)
-            # The declaration is authoritative for elicitation: it overrides the
-            # SDK's callback-derived (both-modes) value with the exact modes CLIO
-            # supports, so we never over-advertise a mode we cannot serve.
-            return caps.model_copy(update={"elicitation": elicitation})
-
-    _CAPABILITY_SESSION_CLASSES[key] = _DeclaredCapabilitySession
-    return _DeclaredCapabilitySession
+    session_class = type(
+        "_DeclaredCapabilitySession",
+        (_DeclaredCapabilityOverride, base),
+        {"_clio_declared_elicitation": declaration.elicitation_capability()},
+    )
+    _CAPABILITY_SESSION_CLASSES[key] = session_class
+    return session_class
 
 
 def make_mcp_client(
