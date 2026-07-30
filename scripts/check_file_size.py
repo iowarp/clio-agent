@@ -161,7 +161,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # decomposition debt; ratchets back with the mcp_app_* owner-module split.
     "src/clio_agent/gact/routes/blueprints.py": 861,
     "src/clio_agent/gact/routes/catalog.py": 938,  # +4: /goal command dispatch wiring (#1080; logic in gact/goal.py)
-    "src/clio_agent/gact/routes/mcp.py": 993,
+    "src/clio_agent/gact/routes/mcp.py": 979,  # -14: handshake row shaping moved to routes/mcp_rows.py (#1111)
     # #947 DEBT (recorded 2026-07-18, #948 S4 branch): the MCP-apps landing grew
     # these files past their baselines without a ratchet update (it merged to
     # develop with the check job red). Recording current counts makes the debt

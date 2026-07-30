@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from clio_agent.tools.mcp_handlers import (
     ElicitationDispatcher,
+    MCPClientCapabilities,
     MessageMultiplexer,
     ProgressDispatcher,
 )
@@ -45,6 +46,11 @@ if TYPE_CHECKING:
     )
 
 logger = logging.getLogger(__name__)
+
+#: Cache of ``ClientSession`` subclasses keyed by ``(base_session_class, form,
+#: url)``, so each distinct (base, declaration) pair yields exactly one session
+#: class (see :func:`_capability_session_class`).
+_CAPABILITY_SESSION_CLASSES: dict[tuple[type, bool, bool], type] = {}
 
 WireMode = Literal["mcp_results", "mcp_apps", "gact_runtime"]
 
@@ -164,20 +170,121 @@ class MCPClientHandlers:
     cancellation: "MessageHook | None" = None
 
 
+def clio_client_info() -> Any:
+    """CLIO's client identity, stamped into every execution-path request's ``_meta``.
+
+    The 2026-07-28 revision removed the ``initialize`` handshake: the SDK session
+    now stamps per-request ``_meta`` carrying ``clientInfo`` + ``clientCapabilities``
+    on every call. FastMCP defaults ``clientInfo`` to ``name='mcp'``/``version='0.1.0'``;
+    this declares CLIO's true identity instead so a downstream MCP server can see
+    *who* is calling. Client **capabilities** are a separate, explicit concern —
+    see :class:`clio_agent.tools.mcp_handlers.MCPClientCapabilities` and the
+    ``capabilities`` argument of :func:`make_mcp_client` — decoupled from handler
+    wiring so each modeled domain is advertised exactly as declared (elicitation
+    pinned absent today; unmodeled domains stay truthfully wiring-derived).
+    """
+
+    from mcp.types import Implementation  # noqa: PLC0415
+
+    from clio_agent import __version__  # noqa: PLC0415
+
+    return Implementation(name="clio-agent", title="CLIO Agent", version=__version__)
+
+
+class _DeclaredCapabilityOverride:
+    """Mixin that makes CLIO's declared client capabilities authoritative PER DOMAIN.
+
+    Composed in front of the session class already in effect (plain
+    ``ClientSession`` on a direct client, ``_ForwardingClientSession`` on a proxy
+    backend) by :func:`_capability_session_class`, so ``super()`` resolves to that
+    base's ``_build_capabilities``. The declared elicitation capability is stored
+    on the composed class as ``_clio_declared_elicitation``.
+
+    Only the ELICITATION domain is overridden — the one domain CLIO's declaration
+    models. Every other capability the base advertises (sampling / roots / log) is
+    left untouched: it is the base's truthful wiring-derived value (a direct client
+    advertises only what is wired; a proxy backend genuinely forwards sampling/roots
+    to the front), and blanking it would sever proxy push-forwarding. A future slice
+    that models another domain overrides that field here too.
+    """
+
+    _clio_declared_elicitation: Any = None
+
+    def _build_capabilities(self, version: str) -> Any:
+        caps = super()._build_capabilities(version)  # type: ignore[misc]
+        # Authoritative for elicitation ONLY: pin the declared modes (the SDK
+        # otherwise hardcodes both form+url whenever an elicitation callback is
+        # wired). ``None`` here pins elicitation absent. All other domains keep the
+        # base's value — clearing them would break proxy sampling/roots forwarding.
+        return caps.model_copy(update={"elicitation": self._clio_declared_elicitation})
+
+
+def _capability_session_class(declaration: MCPClientCapabilities, base: type) -> type:
+    """Return a ``base`` ``ClientSession`` subclass that advertises ``declaration``.
+
+    The installed MCP SDK derives the advertised ``clientCapabilities`` from
+    :meth:`ClientSession._build_capabilities`, which is gated on wired handler
+    callbacks and hardcodes elicitation as BOTH ``form`` and ``url``. To pin the
+    ELICITATION domain at CLIO's declared granularity independent of handler wiring,
+    we compose :class:`_DeclaredCapabilityOverride` in front of the session class
+    and override that one method — the sanctioned extension the SDK itself uses
+    (``fastmcp``'s proxy installs ``_ForwardingClientSession`` the same way, via
+    ``TransportOptions.session_class``). This is a subclass, not a monkeypatch:
+    nothing global is mutated, and only the modeled domain is touched.
+
+    ``base`` is the session class that would otherwise be used (plain
+    ``ClientSession`` on a direct execution client, ``_ForwardingClientSession`` on
+    a proxy backend), so the override COMPOSES with — never discards — the base's
+    other capabilities and, on a proxy, its push-forwarding. Subclasses are cached
+    per ``(base, form, url)`` so a given (base, declaration) pair yields exactly one
+    class.
+    """
+
+    key = (base, declaration.elicitation_form, declaration.elicitation_url)
+    cached = _CAPABILITY_SESSION_CLASSES.get(key)
+    if cached is not None:
+        return cached
+
+    session_class = type(
+        "_DeclaredCapabilitySession",
+        (_DeclaredCapabilityOverride, base),
+        {"_clio_declared_elicitation": declaration.elicitation_capability()},
+    )
+    _CAPABILITY_SESSION_CLASSES[key] = session_class
+    return session_class
+
+
 def make_mcp_client(
     target: Any,
     *,
     handlers: MCPClientHandlers | None = None,
+    capabilities: MCPClientCapabilities | None = None,
     client_cls: Callable[..., Any] | None = None,
 ) -> Any:
-    """Construct an execution-path FastMCP client with the handler slot.
+    """Construct an execution-path FastMCP client with CLIO identity + the handler slot.
 
     This is the ONE construction site for clients that actually dispatch MCP
-    calls. With no populated ``handlers`` the construction is byte-identical to
-    a bare ``Client(target)`` (zero behavior change for current callers); with a
-    populated hook, the hook is wrapped in a signature adapter and forwarded as
-    the matching ``fastmcp.Client`` keyword argument — the construction-time slot
-    P1 fills once correlation lands (see :mod:`clio_agent.tools.mcp_handlers`).
+    calls, and the ONE place CLIO stamps its handshake-floor identity: every
+    client built here carries :func:`clio_client_info` as its ``client_info`` so
+    the per-request ``_meta`` on the 2026-07-28 wire names ``clio-agent`` rather
+    than FastMCP's default ``mcp`` (#1111). A populated hook is additionally
+    wrapped in a signature adapter and forwarded as the matching ``fastmcp.Client``
+    keyword argument — the construction-time slot P1 fills once correlation lands
+    (see :mod:`clio_agent.tools.mcp_handlers`).
+
+    Identity scope — a deliberate decision (#1111 review): identity is stamped on
+    the EXECUTION paths that route here (tool dispatch, both gateway proxy
+    branches, and the handshake probe) plus the readiness probe. The documented
+    list-only introspection sites (``routes/catalog.py``, ``routes/blueprints.py``,
+    ``runtime/status.py``, ``tools/gateway.list_gateway_tools``, the install/
+    reconnect ``list_tools`` passes in ``routes/mcp.py``) keep their bare
+    ``Client()``: they only enumerate tools and never dispatch a call or receive a
+    server-initiated request, so ``clientInfo`` there is cosmetic. Routing them
+    through this factory purely for identity would either re-plumb their list-only
+    test doubles for no functional gain or add a per-file import to four modules
+    that sit exactly at their size-ratchet baselines — accretion the no-accretion
+    guard forbids. The meaningful connection surface (every dispatch path + the
+    readiness handshake) carries identity; the display-only enumerations do not.
 
     Args:
         target: A FastMCP transport / server object (passed straight to the
@@ -188,7 +295,24 @@ def make_mcp_client(
             server map), passed unchanged so ``Client`` builds its
             ``MCPConfigTransport``.
         handlers: Optional CLIO hook bundle. ``None`` (or a bundle whose hooks
-            are all ``None``) yields a bare client.
+            are all ``None``) yields an identity-only client (no handler kwargs).
+        capabilities: Optional typed client-capability DECLARATION
+            (:class:`~clio_agent.tools.mcp_handlers.MCPClientCapabilities`),
+            decoupled from handler wiring. A declaration is authoritative PER
+            CAPABILITY DOMAIN IT MODELS. Today the type models only elicitation, so
+            ANY non-``None`` declaration — including an explicit *empty* one —
+            installs a ``ClientSession`` subclass (via ``TransportOptions.session_class``)
+            that pins the advertised ``_meta`` elicitation EXACTLY: a form-only
+            declaration advertises form without over-advertising url (the SDK's
+            elicitation defect the seam exists for; #1113 uses it), and an empty
+            declaration advertises elicitation absent even over a wired/forwarding
+            elicitation handler. Domains the type does NOT model (sampling / roots /
+            log) are deliberately left to the base session's wiring-derived
+            advertisement — which is truthful on both paths (a direct client only
+            advertises what is actually wired; a proxy backend genuinely forwards
+            sampling/roots to the front). Clearing them would sever proxy
+            push-forwarding. ``None`` (the default) leaves the whole advertisement
+            SDK-derived.
         client_cls: Injection seam for the client class. Defaults to
             ``fastmcp.Client``; tests substitute a fake to inspect the
             construction without spawning a real backend.
@@ -210,22 +334,46 @@ def make_mcp_client(
 
         client_cls = Client
 
-    if handlers is None:
-        return client_cls(target)
+    kwargs: dict[str, Any] = {"client_info": clio_client_info()}
+    if handlers is not None:
+        if handlers.elicitation is not None:
+            kwargs["elicitation_handler"] = ElicitationDispatcher(handlers.elicitation)
+        if handlers.progress is not None:
+            kwargs["progress_handler"] = ProgressDispatcher(handlers.progress)
+        if handlers.message is not None:
+            kwargs["message_handler"] = MessageMultiplexer(handlers.message)
+        # `cancellation` has no fastmcp Client keyword today; P1 owns its wiring.
 
-    kwargs: dict[str, Any] = {}
-    if handlers.elicitation is not None:
-        kwargs["elicitation_handler"] = ElicitationDispatcher(handlers.elicitation)
-    if handlers.progress is not None:
-        kwargs["progress_handler"] = ProgressDispatcher(handlers.progress)
-    if handlers.message is not None:
-        kwargs["message_handler"] = MessageMultiplexer(handlers.message)
-    # `cancellation` has no fastmcp Client keyword today; P1 owns its wiring.
+    client = client_cls(target, **kwargs)
+    if capabilities is not None:
+        # ANY non-None declaration (incl. explicit empty) is authoritative for the
+        # domain it models (elicitation today): empty pins elicitation absent even
+        # over a wired/forwarding handler. Unmodeled domains stay base-derived.
+        _install_capability_declaration(client, capabilities)
+    return client
 
-    if not kwargs:
-        return client_cls(target)
 
-    return client_cls(target, **kwargs)
+def _install_capability_declaration(client: Any, capabilities: MCPClientCapabilities) -> None:
+    """Point ``client`` at a capability-declaring ``ClientSession`` subclass.
+
+    Merges the ``session_class`` into the client's ``TransportOptions`` (preserving
+    any ``backend_mode``/``forward_incoming_headers`` a proxy already set) rather
+    than overwriting, and survives ``Client.new`` (which carries ``_transport_options``
+    onto proxy clones). A ``client_cls`` test double without ``_transport_options``
+    simply gains the attribute — harmless.
+    """
+
+    from dataclasses import replace  # noqa: PLC0415
+
+    from fastmcp.client.transports.base import TransportOptions  # noqa: PLC0415
+
+    existing = getattr(client, "_transport_options", None)
+    base_options = existing if existing is not None else TransportOptions()
+    # Subclass the session class already in effect (plain ClientSession on a direct
+    # client, the proxy's forwarding session on a proxy backend) so the capability
+    # override composes with, never discards, that behavior.
+    session_class = _capability_session_class(capabilities, base_options.session_class)
+    client._transport_options = replace(base_options, session_class=session_class)
 
 
 def _normalize_mapping_target(target: Mapping[str, Any]) -> Any:
@@ -268,4 +416,11 @@ def _is_rootless_mcp_config(target: Mapping[str, Any]) -> bool:
     )
 
 
-__all__ = ["MCPClientHandlers", "WireMode", "make_mcp_client", "wire_value"]
+__all__ = [
+    "MCPClientCapabilities",
+    "MCPClientHandlers",
+    "WireMode",
+    "clio_client_info",
+    "make_mcp_client",
+    "wire_value",
+]

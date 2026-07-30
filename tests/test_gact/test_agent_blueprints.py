@@ -2905,7 +2905,7 @@ def test_enabled_agent_blueprint_mcp_descriptor_probes_and_calls_tool(
     class FakeClient:
         called_tool = ""
 
-        def __init__(self, transport: Any) -> None:
+        def __init__(self, transport: Any, **_: Any) -> None:
             self.transport = transport
 
         async def __aenter__(self) -> "FakeClient":
@@ -2999,7 +2999,7 @@ def test_enabled_agent_blueprint_mcp_tool_reenables_session_expert(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeClient:
-        def __init__(self, transport: Any) -> None:
+        def __init__(self, transport: Any, **_: Any) -> None:
             self.transport = transport
 
         async def __aenter__(self) -> "FakeClient":

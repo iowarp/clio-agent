@@ -46,7 +46,7 @@ def _fake_client_factory(captured: list[object]):
     """
 
     class _FakeClient:
-        def __init__(self, transport: object) -> None:
+        def __init__(self, transport: object, **_: object) -> None:
             captured.append(transport)
             self._transport = transport
 

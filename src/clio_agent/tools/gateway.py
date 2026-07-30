@@ -28,11 +28,10 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
 from fastmcp import Client, FastMCP
-from fastmcp.server import create_proxy
 from fastmcp.server.providers.proxy import FastMCPProxy
 
 if TYPE_CHECKING:
-    from clio_agent.tools.mcp_runtime import MCPClientHandlers
+    from clio_agent.tools.mcp_runtime import MCPClientCapabilities, MCPClientHandlers
 
 from clio_agent.tools.catalog import (
     TOOL_CATALOG,
@@ -85,6 +84,7 @@ def _proxy_for_spec(
     cwd: str | None = None,
     *,
     handlers: "MCPClientHandlers | None" = None,
+    capabilities: "MCPClientCapabilities | None" = None,
 ) -> FastMCP:
     """Build a lazy FastMCP proxy backed by a Client over the spec's transport.
 
@@ -93,42 +93,53 @@ def _proxy_for_spec(
     rather than failing gateway construction.
 
     This is an EXECUTION path: the proxy's backend client dispatches ``call_tool``
-    to the declared server, so its client is built through :func:`make_mcp_client`
-    (#1106). FastMCP's ``create_proxy`` runs a fresh ``client.new()`` per request; the
-    factory's handler dispatchers live in the client's session kwargs and are
-    carried onto that per-request client by ``Client.new``'s ``copy.copy``, so a
-    handler passed here is reachable on the actual upstream call path. Without
-    ``handlers`` the backend client is byte-identical to a bare ``Client``.
+    to the declared server. BOTH the handler-populated and no-handler cases build
+    ONE :class:`fastmcp.server.providers.proxy.ProxyClient` base through
+    :func:`make_mcp_client` (#1106/#1111) — the single site that stamps CLIO's
+    ``clientInfo`` identity, installs any hook dispatchers (#1106), and installs
+    any declared ``capabilities`` (#1111). Using ``ProxyClient`` for BOTH cases is
+    load-bearing: it preserves FastMCP's ``_ForwardingClientSession`` and
+    ``forward_incoming_headers=True`` — so caller authorization is forwarded to
+    HTTP backends, unhandled sampling / roots / log requests are push-forwarded to
+    the front, and backend results are relayed (not re-validated) mid-proxy. A hook
+    that CLIO wires overrides only that one handler; the rest keep forwarding. The
+    capability ``session_class`` subclasses the proxy's forwarding session, so
+    forwarding is COMPOSED, never discarded. Earlier the no-handler branch handed
+    the raw transport to ``create_proxy`` (leaking ``mcp/0.1.0`` downstream) and
+    the handler branch built a plain ``Client`` (discarding all of the above).
+
+    The base is built once and cloned per request via ``.new()`` — carrying the
+    session kwargs, hook dispatchers, and ``_transport_options`` (capability
+    ``session_class``) onto each clone — with ``_mirror_front_era_mode`` applied to
+    the clone (mode + ``backend_mode``) so the whole chain speaks one protocol era
+    end-to-end (proven by ``test_gateway_mirrors_front_era_to_backend``). This
+    base-once / clone-per-request pattern is required for correct era mirroring: a
+    fresh per-call construction reuses the transport's kept-alive session and leaks
+    the first request's era onto later requests. Constructing the base opens no
+    connection; a subprocess spawns only when a clone connects.
 
     ``cwd`` (when given) is passed to stdio transports so the subprocess is
     spawned in that working directory; http transports ignore it.
-
-    fastmcp-4 era mirroring: the backend must speak whatever protocol era the
-    front request negotiated (the two eras are mutually exclusive on one session).
-    Handing a *prebuilt* ``Client`` to ``create_proxy`` pins the backend to that
-    client's own mode (``auto``), so a legacy front could cross to a modern
-    backend. Passing the TRANSPORT instead selects fastmcp's per-request factory,
-    which derives the backend mode from the current front request
-    (``_mirror_front_era_mode``). The handler path rebuilds that mirroring around
-    the CLIO-dispatcher-carrying client (#1106).
     """
     transport = transport_for(spec, cwd=cwd)
-    if handlers is None:
-        return create_proxy(transport)
+
+    from dataclasses import replace  # noqa: PLC0415
+
+    from fastmcp.server.providers.proxy import ProxyClient, _mirror_front_era_mode  # noqa: PLC0415
 
     from clio_agent.tools.mcp_runtime import make_mcp_client  # noqa: PLC0415
 
-    def _client_factory() -> Any:
-        # Fresh per-request backend carrying the CLIO hooks, with its connect
-        # mode mirrored from the current front request's negotiated era so the
-        # whole chain speaks one era end-to-end.
-        backend = make_mcp_client(transport, handlers=handlers)
-        from fastmcp.server.providers.proxy import _mirror_front_era_mode  # noqa: PLC0415
+    base_backend = make_mcp_client(
+        transport, handlers=handlers, capabilities=capabilities, client_cls=ProxyClient
+    )
 
+    def _client_factory() -> Any:
+        fresh = base_backend.new()
         mode = _mirror_front_era_mode()
         if mode is not None:
-            backend.mode = mode
-        return backend
+            fresh.mode = mode
+            fresh._transport_options = replace(fresh._transport_options, backend_mode=mode)
+        return fresh
 
     return FastMCPProxy(client_factory=_client_factory)
 
@@ -158,13 +169,15 @@ def build_gateway(
     base_gateway: FastMCP | None = None,
     proxy_factory: Callable[..., FastMCP] | None = None,
     handlers: "MCPClientHandlers | None" = None,
+    capabilities: "MCPClientCapabilities | None" = None,
 ) -> FastMCP:
     """Build the agent's tool gateway: built-ins PLUS the declared MCP servers.
 
     Each usable declared spec is mounted under its name as namespace via a
-    FastMCP proxy (``create_proxy(make_mcp_client(transport_for(spec)))``), preserving
-    the ``<name>_<tool>`` naming. The universal built-ins (``fs``/``shell``) are
-    always present; a declared server may not shadow a built-in namespace.
+    lazy FastMCP proxy whose backend is built through ``make_mcp_client`` (so it
+    carries CLIO identity), preserving the ``<name>_<tool>`` naming. The universal
+    built-ins (``fs``/``shell``) are always present; a declared server may not
+    shadow a built-in namespace.
 
     Args:
         declared_specs: ``name -> MCPServerSpec`` declarations to mount. Specs
@@ -186,6 +199,9 @@ def build_gateway(
         handlers: Optional execution-path handler bundle (#1106) forwarded to the
             default proxy factory so each declared server's backend client carries
             the CLIO dispatchers. Ignored when ``proxy_factory`` is supplied.
+        capabilities: Optional client-capability declaration (#1111) forwarded to
+            the default proxy factory so each declared server's backend advertises
+            it. Ignored when ``proxy_factory`` is supplied.
 
     Returns:
         The gateway with the built-ins and declared proxies mounted.
@@ -198,10 +214,12 @@ def build_gateway(
     gw = base_gateway if base_gateway is not None else _new_base_gateway()
     if proxy_factory is not None:
         make_proxy = proxy_factory
-    elif handlers is not None:
-        # Bind the execution-path handler bundle onto the default factory so the
-        # proxy backend clients carry the dispatchers (#1106).
-        make_proxy = functools.partial(_proxy_for_spec, handlers=handlers)
+    elif handlers is not None or capabilities is not None:
+        # Bind the execution-path handler bundle / capability declaration onto the
+        # default factory so proxy backend clients carry them (#1106/#1111).
+        make_proxy = functools.partial(
+            _proxy_for_spec, handlers=handlers, capabilities=capabilities
+        )
     else:
         make_proxy = _proxy_for_spec
     accepts_cwd = _proxy_factory_accepts_cwd(make_proxy)
