@@ -160,7 +160,9 @@ def test_get_lm_provider_reports_argonne_refresh_failure(tmp_path: Path, monkeyp
 
 
 def test_auth_provider_returns_interactive_argonne_instructions(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path,
+    monkeypatch: Any,
+    floor_sandbox: Any,
 ) -> None:
     """ALCF auth must launch/describe an interactive flow, not block the backend."""
 
