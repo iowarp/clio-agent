@@ -270,11 +270,13 @@ RATCHET_BASELINE: dict[str, int] = {
     # (baseline 1143 -> actual); ratchet back below the pre-#947 count with the
     # mcp_app_* owner-module split (see the #947 DEBT block on mcp_apps.py).
     # #968 S2: +11 for the resource_link Part fields (uri/name/server_id) + the
-    # x_clio_artifacts capability flag — Part + CapabilityFlags are defined here.
+    # x_clio_artifacts capability flag — Part + CapabilityFlags were defined here
+    # before the P0.1a #1102 owner-module extraction.
     # #1034: +5 for the approval_mode axis on the three session wire models (Session +
     # Create/Update requests) + a 3-line doc comment; the enum + enforcement live in
     # sessions.py + permission_gate.py, so only the field declarations land here.
-    "src/clio_agent/gact/types.py": 1170,
+    # P0.1a (#1102): move Part + CapabilityFlags to gact/parts.py; 1170 -> 958 lines.
+    "src/clio_agent/gact/types.py": 958,
     # -120 (#891): the SDK-session machinery moved out to sibling owner modules —
     # the blocking-path pool to providers/claude_code_sdk_pool.py and the per-expert
     # streaming session/delta transport to providers/claude_code_sessions.py; this
