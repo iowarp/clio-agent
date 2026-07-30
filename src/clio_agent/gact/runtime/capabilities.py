@@ -31,6 +31,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from clio_agent.errors import (
+    MCP_CAPABILITY_REFUSED,
+    MCP_PROTOCOL_REFUSED,
+    MCP_RESULT_DOWNGRADED_TO_COMPLETE,
+)
 from clio_agent.optimizer.stub import (
     OPTIMIZER_NOT_IMPLEMENTED_MESSAGE,
     OPTIMIZER_NOT_IMPLEMENTED_REASON,
@@ -138,6 +143,33 @@ _STREAM_FALLBACK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
         "live_streaming": False,
         "recovery_actions": ["continue_without_live_streaming", "reconfigure"],
         "description": "A registered tool agent could not use live streaming.",
+    },
+    MCP_RESULT_DOWNGRADED_TO_COMPLETE: {
+        "category": "mcp_result_tolerance",
+        "synthetic_posthoc": True,
+        "live_streaming": False,
+        "recovery_actions": ["continue_with_complete_result", "upgrade_mcp_server"],
+        "description": (
+            "An MCP result explicitly carried a resultType this tasks-off client does not "
+            "support, so it was downgraded to complete. An absent resultType is normal "
+            "completeness and does not emit this reason."
+        ),
+    },
+    MCP_CAPABILITY_REFUSED: {
+        "category": "mcp_capability_refusal",
+        "json_rpc_code": -32021,
+        "synthetic_posthoc": True,
+        "live_streaming": False,
+        "recovery_actions": ["enable_required_client_capability", "retry"],
+        "description": "The MCP server refused a request requiring an absent client capability.",
+    },
+    MCP_PROTOCOL_REFUSED: {
+        "category": "mcp_protocol_refusal",
+        "json_rpc_code": -32022,
+        "synthetic_posthoc": True,
+        "live_streaming": False,
+        "recovery_actions": ["negotiate_supported_protocol_version", "retry"],
+        "description": "The MCP server refused the negotiated protocol version.",
     },
 }
 

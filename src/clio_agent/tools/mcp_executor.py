@@ -19,6 +19,13 @@ from dataclasses import dataclass
 from typing import Any, Protocol, cast
 from urllib.parse import urlsplit
 
+from mcp.shared.exceptions import MCPError
+
+from clio_agent.errors import (
+    MCPMissingRequiredClientCapabilityError,
+    MCPProtocolError,
+    MCPUnsupportedProtocolVersionError,
+)
 from clio_agent.tools import spawn_diet
 from clio_agent.tools.mcp_runtime import make_mcp_client
 
@@ -73,6 +80,19 @@ class _MCPCallOutcome:
 DEFAULT_TOOL_TIMEOUTS: dict[str, float] = {}
 REPEATED_TRANSIENT_FAILURE_LIMIT = 2
 SYNC_TOOL_RESULT_GRACE_SECONDS = 1.0
+
+
+def _typed_mcp_protocol_error(error: Exception) -> MCPProtocolError | None:
+    """Map supported MCP JSON-RPC refusal codes without inspecting message text."""
+
+    if not isinstance(error, MCPError):
+        return None
+    mcp_error = cast(MCPError, error)
+    if mcp_error.code == -32021:
+        return MCPMissingRequiredClientCapabilityError(mcp_error.message, mcp_error.data)
+    if mcp_error.code == -32022:
+        return MCPUnsupportedProtocolVersionError(mcp_error.message, mcp_error.data)
+    return None
 
 
 @dataclass(frozen=True)
@@ -276,29 +296,30 @@ class AsyncMCPToolExecutor:
             return self
 
         client_ctx = self._client_factory(self._server)
-        client = await client_ctx.__aenter__()
-        if self._preloaded_tools is not None:
-            # #932: tool definitions were preloaded (the boot listing pass) —
-            # skip the list_tools fan-out that would eagerly spawn EVERY
-            # mounted stdio server. Backends connect lazily per namespace on
-            # the first call routed to them; a failed lazy connect surfaces as
-            # that call's typed error, never a silent missing tool.
-            self._client_ctx = client_ctx
-            self._client = client
-            self._mcp_tools = dict(self._preloaded_tools)
-            self._call_lock = asyncio.Lock()
-            self._started = True
-            return self
+        client_entered = False
         try:
-            tools = await client.list_tools()
-        except BaseException:
-            with suppress(Exception):
-                await client_ctx.__aexit__(None, None, None)
+            client = await client_ctx.__aenter__()
+            client_entered = True
+            tools = None if self._preloaded_tools is not None else await client.list_tools()
+        except BaseException as exc:
+            if client_entered:
+                with suppress(Exception):
+                    await client_ctx.__aexit__(None, None, None)
+            if isinstance(exc, Exception):
+                typed_error = _typed_mcp_protocol_error(exc)
+                if typed_error is not None:
+                    raise typed_error from exc
             raise
 
+        # #932: preloaded definitions skip list_tools, which would eagerly
+        # spawn every mounted stdio server. Backends connect lazily per namespace.
         self._client_ctx = client_ctx
         self._client = client
-        self._mcp_tools = {tool.name: tool for tool in tools}
+        self._mcp_tools = (
+            dict(self._preloaded_tools)
+            if self._preloaded_tools is not None
+            else {tool.name: tool for tool in tools or []}
+        )
         self._call_lock = asyncio.Lock()
         self._started = True
         return self
@@ -346,9 +367,12 @@ class AsyncMCPToolExecutor:
                 if not self._tool_timeout_is_retry_safe(name):
                     raise self.mark_uncertain_mutating_timeout(name, args, timeout) from exc
                 raise TimeoutError(f"MCP tool {name!r} timed out after {timeout:g}s") from exc
-            except Exception:
+            except Exception as exc:
                 if first_call and namespace is not None:
                     spawn_diet.spawn_failed(namespace)
+                typed_error = _typed_mcp_protocol_error(exc)
+                if typed_error is not None:
+                    raise typed_error from exc
                 raise
             if first_call and namespace is not None:
                 self._connected_namespaces.add(namespace)
