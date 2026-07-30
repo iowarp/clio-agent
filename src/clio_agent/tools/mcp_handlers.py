@@ -42,17 +42,67 @@ longer occupies ``message_handler``; the adapter forwards only to the CLIO hook.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    import mcp.types as mcp_types
 
 __all__ = [
     "ElicitationDispatcher",
     "ElicitationHook",
+    "MCPClientCapabilities",
     "MCPInvocationContext",
     "MessageHook",
     "MessageMultiplexer",
     "ProgressDispatcher",
     "ProgressHook",
 ]
+
+
+@dataclass(frozen=True)
+class MCPClientCapabilities:
+    """Client capabilities CLIO *declares* on the wire, decoupled from handler wiring.
+
+    The 2026-07-28 ``_meta`` envelope advertises ``clientCapabilities`` on every
+    request. The installed SDK derives that ad from which handler callbacks are
+    wired and, for elicitation, hardcodes BOTH ``form`` and ``url`` whenever an
+    elicitation callback is present — so wiring a form-only handler would
+    over-advertise ``url`` and invite requests CLIO cannot serve. This typed
+    declaration separates *what CLIO advertises* from *what handler is live*: the
+    factory honors it via the sanctioned ``ClientSession`` ``session_class`` seam
+    (see :func:`clio_agent.tools.mcp_runtime.make_mcp_client`) so a capability is
+    advertised at exactly the declared granularity, whether or not a live handler
+    backs it yet. This is the contract #1113 fills when it wires elicitation.
+
+    Every field defaults False: an empty declaration advertises nothing (the
+    honest state today, since correlation-by-protocol-identity is deferred and no
+    handler is wired). Fields are independently selectable.
+    """
+
+    elicitation_form: bool = False
+    elicitation_url: bool = False
+
+    @property
+    def is_empty(self) -> bool:
+        """Whether nothing is declared (advertise no client capabilities)."""
+
+        return not (self.elicitation_form or self.elicitation_url)
+
+    def elicitation_capability(self) -> "mcp_types.ElicitationCapability | None":
+        """Build the SDK ``ElicitationCapability`` for the declared modes, or None.
+
+        ``None`` when neither elicitation mode is declared, so the advertised
+        ``clientCapabilities`` simply omits the ``elicitation`` key.
+        """
+
+        import mcp.types as mcp_types  # noqa: PLC0415
+
+        if not (self.elicitation_form or self.elicitation_url):
+            return None
+        return mcp_types.ElicitationCapability(
+            form=mcp_types.FormElicitationCapability() if self.elicitation_form else None,
+            url=mcp_types.UrlElicitationCapability() if self.elicitation_url else None,
+        )
 
 
 @dataclass(frozen=True)

@@ -260,27 +260,13 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
         seconds, which would make the frequently-polled health check slow and
         flaky. The TUI calls this when it wants live tool-server status.
         """
+        from clio_agent.gact.routes.mcp_rows import handshake_server_row  # noqa: PLC0415
         from clio_agent.providers.handshake import handshake_mcp_servers  # noqa: PLC0415
 
         cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id, session_id=session_id)
         specs = _declared_mcp_specs(cwd=cwd)
         reports = await handshake_mcp_servers(list(specs.values()))
-        servers: list[dict[str, Any]] = []
-        for report in reports:
-            status = report.to_integration_status()
-            servers.append(
-                {
-                    "name": report.name,
-                    "reachable": report.ok,
-                    "state": status.state.value,
-                    "transport": report.transport,
-                    "tools_count": report.tool_count,
-                    "tools": list(report.tools),
-                    "error": report.error,
-                    "latency_ms": report.latency_ms,
-                }
-            )
-        return {"servers": servers}
+        return {"servers": [handshake_server_row(report) for report in reports]}
 
     @app.post("/v1/mcp/servers", status_code=201)
     async def install_mcp_server(request: Request) -> dict[str, Any]:

@@ -325,8 +325,8 @@ def test_proxy_for_spec_routes_backend_through_factory(
     calls: list[Any] = []
     stub = FastMCP("stub")
 
-    def spy(target: Any, *, handlers: Any = None) -> Any:  # noqa: A002 - shadows param name intentionally
-        calls.append((target, handlers))
+    def spy(target: Any, *, handlers: Any = None, capabilities: Any = None) -> Any:  # noqa: A002
+        calls.append((target, handlers, capabilities))
         return Client(stub)  # a real client so the proxy accepts it
 
     monkeypatch.setattr(gateway, "transport_for", lambda spec, cwd=None: "TSPORT")
@@ -341,7 +341,7 @@ def test_proxy_for_spec_routes_backend_through_factory(
     assert calls == []
 
     backend = proxy.client_factory()  # one per-request build
-    assert calls == [("TSPORT", handlers)]
+    assert calls == [("TSPORT", handlers, None)]
     assert backend is not None
 
 

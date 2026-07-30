@@ -34,6 +34,9 @@ def test_mcp_handshake_reports_per_server_status(client: TestClient, monkeypatch
             tool_count=2,
             tools=("geo_filter_points_by_radius", "plot_plot_timeseries"),
             latency_ms=12.5,
+            protocol_version="2026-07-28",
+            server_version="1.4.2",
+            instructions="clio-kit geospatial tools",
         ),
         MCPServerReport(
             name="hdf5",
@@ -55,6 +58,11 @@ def test_mcp_handshake_reports_per_server_status(client: TestClient, monkeypatch
     assert rows["clio-kit"]["state"] == "ready"
     assert rows["clio-kit"]["tools_count"] == 2
     assert "plot_plot_timeseries" in rows["clio-kit"]["tools"]
+
+    # server/discover output is surfaced through the mcp_rows owner helper (#1111).
+    assert rows["clio-kit"]["protocol_version"] == "2026-07-28"
+    assert rows["clio-kit"]["server_version"] == "1.4.2"
+    assert rows["clio-kit"]["instructions"] == "clio-kit geospatial tools"
 
     # A down server surfaces as unavailable with its error, never sinking the rest.
     assert rows["hdf5"]["reachable"] is False
