@@ -431,6 +431,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.get("/v1/capabilities", response_model=Capabilities)
     async def capabilities() -> Capabilities:
+        bearer_enabled = bool(getattr(app.state, "bearer_token", None))
         return Capabilities(
             contract_version=CONTRACT_VERSION,
             backend=BackendInfo(
@@ -517,7 +518,10 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 x_clio_capability_gaps=_capability_gap_metadata(),
             ),
             transports=TransportFlags(events_sse=True, events_websocket=False),
-            auth=AuthInfo(schemes=["trust_socket"], current="trust_socket"),
+            auth=AuthInfo(
+                schemes=["trust_socket", "bearer"] if bearer_enabled else ["trust_socket"],
+                current="bearer" if bearer_enabled else "trust_socket",
+            ),
         )
 
     @app.get("/v1/hooks")

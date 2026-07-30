@@ -137,6 +137,9 @@ debug.memprof_frames: 20
 # CLIO_STREAM_AUDIT_LOG  (str)  <- src/clio_agent/runtime/stream_audit.py
 # debug.stream_audit_log:  # default unset; resolved in code
 
+# CLIO_GACT_BEARER_TOKEN  (str)  <- src/clio_agent/gact/auth.py
+# gact.auth.bearer_token:  # default unset; resolved in code
+
 # CLIO_BLUEPRINT_REGISTRY_URL  (str)  <- src/clio_agent/gact/agent_blueprints.py
 gact.blueprint_registry.url: "https://github.com/iowarp/clio-agent-marketplace.git"
 
