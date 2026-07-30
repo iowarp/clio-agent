@@ -245,8 +245,16 @@ def make_mcp_client(
             from fastmcp.client.client import TaskNotificationHandler  # noqa: PLC0415
 
             message_mux.bind_task_handler(TaskNotificationHandler(client))
-        except Exception:  # noqa: BLE001 - a fake client_cls (tests) has no task handler
-            pass
+        except Exception as exc:  # noqa: BLE001 - degrade loudly, never silently
+            # A non-fastmcp client (a test fake, or an injected client_cls)
+            # cannot host the task handler. Task-status routing is disabled for
+            # this client — say so with a structured reason (#772).
+            logger.warning(
+                "mcp client: task-notification handler bind skipped "
+                "(reason=%s: %s); task-status routing disabled for this client",
+                type(exc).__name__,
+                exc,
+            )
 
     return client
 
