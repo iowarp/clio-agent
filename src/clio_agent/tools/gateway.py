@@ -93,26 +93,30 @@ def _proxy_for_spec(
     rather than failing gateway construction.
 
     This is an EXECUTION path: the proxy's backend client dispatches ``call_tool``
-    to the declared server, so BOTH branches build the per-request backend through
+    to the declared server. BOTH the handler-populated and no-handler cases build
+    ONE :class:`fastmcp.server.providers.proxy.ProxyClient` base through
     :func:`make_mcp_client` (#1106/#1111) — the single site that stamps CLIO's
-    ``clientInfo`` identity and any declared ``capabilities``. Earlier the
-    no-handler branch handed the raw transport to ``create_proxy``, whose internal
-    factory built a default ``ProxyClient`` that identifies as ``mcp/0.1.0``; the
-    PRIMARY (no-handler) production path therefore leaked FastMCP's default
-    identity downstream. Now:
+    ``clientInfo`` identity, installs any hook dispatchers (#1106), and installs
+    any declared ``capabilities`` (#1111). Using ``ProxyClient`` for BOTH cases is
+    load-bearing: it preserves FastMCP's ``_ForwardingClientSession`` and
+    ``forward_incoming_headers=True`` — so caller authorization is forwarded to
+    HTTP backends, unhandled sampling / roots / log requests are push-forwarded to
+    the front, and backend results are relayed (not re-validated) mid-proxy. A hook
+    that CLIO wires overrides only that one handler; the rest keep forwarding. The
+    capability ``session_class`` subclasses the proxy's forwarding session, so
+    forwarding is COMPOSED, never discarded. Earlier the no-handler branch handed
+    the raw transport to ``create_proxy`` (leaking ``mcp/0.1.0`` downstream) and
+    the handler branch built a plain ``Client`` (discarding all of the above).
 
-    * No handlers: build a :class:`fastmcp.server.providers.proxy.ProxyClient`
-      through the factory (``client_cls=ProxyClient``) so the backend keeps
-      FastMCP's server-initiated push-forwarding (sampling / elicitation / roots)
-      AND carries CLIO identity.
-    * With handlers: build the CLIO-dispatcher-carrying client (the #1106 slot),
-      likewise identity-stamped.
-
-    Both apply ``_mirror_front_era_mode`` per request so the whole chain speaks
-    one protocol era end-to-end (proven by ``test_gateway_mirrors_front_era_to_backend``).
-    ``Client.new``'s ``copy.copy`` carries the session kwargs (handlers) and
-    ``_transport_options`` (capability ``session_class``) onto the per-request
-    clone, so both reach the real upstream call path.
+    The base is built once and cloned per request via ``.new()`` — carrying the
+    session kwargs, hook dispatchers, and ``_transport_options`` (capability
+    ``session_class``) onto each clone — with ``_mirror_front_era_mode`` applied to
+    the clone (mode + ``backend_mode``) so the whole chain speaks one protocol era
+    end-to-end (proven by ``test_gateway_mirrors_front_era_to_backend``). This
+    base-once / clone-per-request pattern is required for correct era mirroring: a
+    fresh per-call construction reuses the transport's kept-alive session and leaks
+    the first request's era onto later requests. Constructing the base opens no
+    connection; a subprocess spawns only when a clone connects.
 
     ``cwd`` (when given) is passed to stdio transports so the subprocess is
     spawned in that working directory; http transports ignore it.
@@ -125,34 +129,11 @@ def _proxy_for_spec(
 
     from clio_agent.tools.mcp_runtime import make_mcp_client  # noqa: PLC0415
 
-    has_hooks = handlers is not None and any(
-        hook is not None
-        for hook in (handlers.elicitation, handlers.progress, handlers.message, handlers.cancellation)
+    base_backend = make_mcp_client(
+        transport, handlers=handlers, capabilities=capabilities, client_cls=ProxyClient
     )
 
-    if has_hooks:
-
-        def _handler_client_factory() -> Any:
-            # Fresh per-request backend carrying the CLIO dispatchers (the #1106
-            # slot) and identity, mode mirrored from the front request's era.
-            backend = make_mcp_client(transport, handlers=handlers, capabilities=capabilities)
-            mode = _mirror_front_era_mode()
-            if mode is not None:
-                backend.mode = mode
-            return backend
-
-        return FastMCPProxy(client_factory=_handler_client_factory)
-
-    # No handlers (the PRIMARY path): a ProxyClient keeps FastMCP's server-initiated
-    # push-forwarding, built once through the factory so it carries CLIO identity
-    # (and any declared capabilities). This mirrors FastMCP's own no-handler factory
-    # exactly — a base built once, ``.new()`` per request with the era mirrored and
-    # carried into ``_transport_options`` — which is required for correct era
-    # mirroring (a fresh per-call construction reuses the transport's kept-alive
-    # session and leaks the first request's era onto later requests).
-    base_backend = make_mcp_client(transport, capabilities=capabilities, client_cls=ProxyClient)
-
-    def _proxy_client_factory() -> Any:
+    def _client_factory() -> Any:
         fresh = base_backend.new()
         mode = _mirror_front_era_mode()
         if mode is not None:
@@ -160,7 +141,7 @@ def _proxy_for_spec(
             fresh._transport_options = replace(fresh._transport_options, backend_mode=mode)
         return fresh
 
-    return FastMCPProxy(client_factory=_proxy_client_factory)
+    return FastMCPProxy(client_factory=_client_factory)
 
 
 def _proxy_factory_accepts_cwd(factory: Callable[..., FastMCP]) -> bool:

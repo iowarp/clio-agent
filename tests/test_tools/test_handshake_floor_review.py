@@ -182,6 +182,49 @@ async def test_capability_declaration_overrides_wired_handler_to_form_only() -> 
     assert caps.get("elicitation") == {"form": {}}
 
 
+@pytest.mark.asyncio
+async def test_empty_declaration_suppresses_wired_handler_capability() -> None:
+    """An explicit EMPTY declaration is authoritative: it advertises nothing.
+
+    Even with an elicitation handler wired, an empty declaration installs the
+    declaring session class (elicitation=None), so no capability leaks through.
+    """
+
+    async def elicit(context: Any, *a: Any) -> Any:
+        return None
+
+    caps = await _advertised_caps(
+        capabilities=MCPClientCapabilities(),  # explicit empty -> authoritative
+        handlers=MCPClientHandlers(elicitation=elicit),
+    )
+    assert caps == {}
+
+
+@pytest.mark.asyncio
+async def test_empty_declaration_suppresses_forwarding_through_proxy_clone() -> None:
+    """Empty declaration through a ProxyClient ``.new()`` clone suppresses the
+    forwarding handler's elicitation advertisement (the leak this remnant closes).
+    """
+    from fastmcp.server.providers.proxy import ProxyClient
+
+    recorder = _MetaRecorder()
+    base = make_mcp_client(
+        _capture_server(recorder),
+        capabilities=MCPClientCapabilities(),  # explicit empty
+        client_cls=ProxyClient,
+    )
+    clone = base.new()  # the per-request clone the proxy would build
+    clone.mode = "2026-07-28"  # a modern front (the gateway mirrors this per request)
+    async with clone as client:
+        await client.call_tool("echo", {"text": "x"})
+
+    caps = recorder.by_method["tools/call"][CLIENT_CAPS_KEY]
+    # ProxyClient forwarding would otherwise advertise elicitation form+url; the
+    # empty declaration removes it. (sampling/roots are not governed by the
+    # elicitation declaration and remain, so forwarding of those is intact.)
+    assert "elicitation" not in caps
+
+
 # --------------------------------------------------------------------------- #
 # Finding 1: the PRIMARY (no-handler) gateway proxy branch stamps identity.
 # --------------------------------------------------------------------------- #
@@ -206,3 +249,52 @@ async def test_no_handler_gateway_backend_receives_clio_identity(tmp_path: Path)
 
     assert result.data["client_info"]["name"] == "clio-agent"
     assert result.data["client_info"]["version"] == __version__
+
+
+# --------------------------------------------------------------------------- #
+# Remnant 1: the HANDLER-populated proxy branch preserves ProxyClient forwarding.
+# --------------------------------------------------------------------------- #
+
+
+def test_handler_proxy_branch_preserves_proxyclient_forwarding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A handler+declaration proxy backend is a ProxyClient with forwarding intact.
+
+    The per-request clone must (a) be a ``ProxyClient`` whose session class descends
+    from ``_ForwardingClientSession`` (composed with the capability override), (b)
+    forward the caller's authorization header to HTTP backends, and (c) keep
+    FastMCP's sampling / roots / log push-forwarding handlers — while CLIO's own
+    elicitation dispatcher replaces only the elicitation handler. A plain-``Client``
+    handler branch (the remnant) would fail every one of these.
+    """
+    from fastmcp.server.providers.proxy import ProxyClient, _ForwardingClientSession
+
+    from clio_agent.tools import gateway
+
+    async def elicit(context: Any, *a: Any) -> Any:
+        return None
+
+    # An in-memory server object as the transport target so no subprocess spawns.
+    monkeypatch.setattr(gateway, "transport_for", lambda spec, cwd=None: FastMCP("fwd-stub"))
+    proxy = gateway._proxy_for_spec(
+        MCPServerSpec(name="ext", transport="stdio", command="x"),
+        handlers=MCPClientHandlers(elicitation=elicit),
+        capabilities=MCPClientCapabilities(elicitation_form=True),
+    )
+    clone = proxy.client_factory()
+
+    # (a) ProxyClient with a forwarding session class (subclassed for capabilities).
+    assert isinstance(clone, ProxyClient)
+    assert issubclass(clone._transport_options.session_class, _ForwardingClientSession)
+    # (b) caller authorization is forwarded to HTTP backends.
+    assert clone._transport_options.forward_incoming_headers is True
+    # (c) forwarding push-handlers preserved (restored per request); CLIO's hook
+    # replaced ONLY elicitation. `_proxy_restoring_handler_keys` names the handlers
+    # ProxyClient defaulted to forwarding — CLIO's elicitation is absent from it.
+    restoring = clone._proxy_restoring_handler_keys
+    assert {"sampling_handler", "roots", "log_handler"} <= restoring
+    assert "elicitation_handler" not in restoring
+    # The forwarding callbacks are actually installed on the session.
+    for key in ("sampling_callback", "list_roots_callback", "logging_callback"):
+        assert clone._session_kwargs.get(key) is not None

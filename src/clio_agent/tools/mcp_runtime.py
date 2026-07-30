@@ -274,12 +274,16 @@ def make_mcp_client(
             are all ``None``) yields an identity-only client (no handler kwargs).
         capabilities: Optional typed client-capability DECLARATION
             (:class:`~clio_agent.tools.mcp_handlers.MCPClientCapabilities`),
-            decoupled from handler wiring. A non-empty declaration installs a
+            decoupled from handler wiring. ANY non-``None`` declaration — including
+            an explicit *empty* one — is authoritative and installs a
             ``ClientSession`` subclass (via ``TransportOptions.session_class``)
             that advertises exactly the declared capabilities in ``_meta``,
-            regardless of whether a live handler backs them — the seam #1113 uses
-            to advertise form-mode elicitation without over-advertising url mode.
-            ``None`` or an empty declaration advertises nothing.
+            OVERRIDING the SDK's callback-derived defaults. So a form-only
+            declaration advertises form without over-advertising url (the seam
+            #1113 uses), and an explicit empty declaration advertises nothing even
+            when a live/forwarding handler would otherwise leak a capability.
+            ``None`` (the default) leaves the SDK's callback-derived advertisement
+            untouched.
         client_cls: Injection seam for the client class. Defaults to
             ``fastmcp.Client``; tests substitute a fake to inspect the
             construction without spawning a real backend.
@@ -312,7 +316,9 @@ def make_mcp_client(
         # `cancellation` has no fastmcp Client keyword today; P1 owns its wiring.
 
     client = client_cls(target, **kwargs)
-    if capabilities is not None and not capabilities.is_empty:
+    if capabilities is not None:
+        # ANY non-None declaration is authoritative — including an explicit empty
+        # one, which advertises nothing even over a wired/forwarding handler.
         _install_capability_declaration(client, capabilities)
     return client
 

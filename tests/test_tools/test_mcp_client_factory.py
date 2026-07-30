@@ -305,12 +305,13 @@ async def test_proxy_backend_carries_factory_handler_onto_upstream() -> None:
 def test_proxy_for_spec_routes_backend_through_factory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """_proxy_for_spec builds its backend client via make_mcp_client (with handlers).
+    """_proxy_for_spec builds ONE ProxyClient base via make_mcp_client, cloned per request.
 
-    Finding #3: the handler-aware backend is now built by a PER-REQUEST
-    client_factory (so each backend leg mirrors the front request's negotiated
-    protocol era). The factory still routes through ``make_mcp_client`` with the
-    exact ``(transport, handlers)`` — invoked when the proxy asks for a client.
+    The backend is a single ``ProxyClient`` base built through ``make_mcp_client``
+    with the exact ``(transport, handlers, capabilities)`` and ``client_cls=ProxyClient``
+    (so forwarding survives); the per-request ``client_factory`` clones it via
+    ``.new()`` rather than re-invoking the factory. Constructing the base opens no
+    connection.
     """
 
     from fastmcp import Client, FastMCP
@@ -325,23 +326,24 @@ def test_proxy_for_spec_routes_backend_through_factory(
     calls: list[Any] = []
     stub = FastMCP("stub")
 
-    def spy(target: Any, *, handlers: Any = None, capabilities: Any = None) -> Any:  # noqa: A002
-        calls.append((target, handlers, capabilities))
-        return Client(stub)  # a real client so the proxy accepts it
+    def spy(target: Any, *, handlers: Any = None, capabilities: Any = None, client_cls: Any = None) -> Any:  # noqa: A002
+        calls.append((target, handlers, capabilities, client_cls))
+        return Client(stub)  # a real client (has .new()) so the proxy accepts it
 
     monkeypatch.setattr(gateway, "transport_for", lambda spec, cwd=None: "TSPORT")
     # gateway imports make_mcp_client function-locally; patch it at the source.
     monkeypatch.setattr("clio_agent.tools.mcp_runtime.make_mcp_client", spy)
 
+    from fastmcp.server.providers.proxy import ProxyClient
+
     proxy = gateway._proxy_for_spec(
         MCPServerSpec(name="ext", transport="stdio", command="x"), handlers=handlers
     )
-    # No eager construction: the transport is bound but no backend client is built
-    # until the proxy dispatches a request.
-    assert calls == []
+    # One ProxyClient base built (no connection opened); the exact factory args.
+    assert calls == [("TSPORT", handlers, None, ProxyClient)]
 
-    backend = proxy.client_factory()  # one per-request build
-    assert calls == [("TSPORT", handlers, None)]
+    backend = proxy.client_factory()  # clones the base via .new(), no re-invocation
+    assert calls == [("TSPORT", handlers, None, ProxyClient)]
     assert backend is not None
 
 
