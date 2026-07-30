@@ -19,7 +19,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install clio-schemas (bootstrap pin = main; exact tag pin lands with P2.1)
-        run: uv venv && uv pip install "clio-schemas @ git+https://github.com/iowarp/clio-schemas@main"
+        run: uv venv --clear && uv pip install "clio-schemas @ git+https://github.com/iowarp/clio-schemas@main"
       - name: Export the immutable schemas and self-check the copy
         run: |
           uv run python -m clio_schemas.export --out /tmp/clio-schemas-export
