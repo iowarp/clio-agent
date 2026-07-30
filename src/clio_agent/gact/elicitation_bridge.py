@@ -1,40 +1,35 @@
 """MCP elicitation bridged into the CLIO HITL / questions pipeline (#1113, P1.3).
 
 Server-initiated ``elicitation/create`` (form + url) is a **handshake-era** MCP
-capability: the 2026-07-28 era removed the server->client back-channel
-(SEP-2577), so ``ctx.elicit`` is only reachable on a legacy-era connection. This
-module owns the whole bridge:
+capability (the 2026-07-28 era removed the server->client back-channel, SEP-2577,
+so ``ctx.elicit`` is only reachable on a legacy connection). This module owns the
+whole bridge:
 
-* **Schema translation** — a form-mode elicitation's flat restricted JSON Schema
-  (string / number / integer / boolean / enum + defaults) is translated into a
-  :class:`~clio_agent.gact.types.UserQuestion` (kind + options + a structured
-  ``fields`` descriptor). A non-object / non-flat / unsupported schema yields a
-  TYPED degrade (never a crash) and the client declines the elicitation.
-* **Async-safe pause point** — the in-flight tool call is parked on an
-  ``asyncio.Future`` (NOT a ``threading.Event``: the elicitation handler fires on
-  the client's receive loop, and blocking that loop would deadlock the answer
-  route that resolves it). The future is resolved cross-loop-safely, so a tool
-  call running on a worker-thread loop (``_run_external_mcp_tool_sync`` ->
-  ``asyncio.run``) is woken by the answer route running on the serving loop.
+* **Schema translation** — a form-mode flat restricted JSON Schema (string /
+  number / integer / boolean / enum + defaults) becomes a
+  :class:`~clio_agent.gact.types.UserQuestion` (kind + options + a ``fields``
+  descriptor). A non-object / non-flat / unsupported schema yields a TYPED degrade
+  (never a crash) and the client declines.
+* **Async-safe pause point** — the in-flight tool call parks on an
+  ``asyncio.Future`` (NOT a ``threading.Event``: the handler fires on the client's
+  receive loop; blocking it would deadlock the answer route that resolves it). The
+  future is resolved cross-loop-safely, so a tool call on a worker-thread loop
+  (``_run_external_mcp_tool_sync`` -> ``asyncio.run``) is woken by the answer route
+  on the serving loop.
 * **Correlation by protocol identity** — the handler is bound, PER TOOL CALL, to
   the :class:`~clio_agent.tools.mcp_handlers.MCPInvocationContext` captured where
-  the call is issued (one ``make_elicitation_client`` per call). It never keys off
-  a client-registry (proxy clones defeat that) nor ambient state read at fire
-  time. Honors the P1-IMPLEMENTER mandate in ``tools/mcp_handlers.py``.
-* **One surface** — the minted question lands on the SAME ``app.state.user_questions``
-  store + ``pending_user_question_id`` anchor + answer route as native asks
-  (RULE 4: no parallel store). Answering / cancelling resolves the parked future.
-* **URL trust** — url-mode elicitation is NEVER pre-fetched. The full URL is shown
-  and requires explicit user consent (a confirmation question). An untrusted
-  origin is REJECTED with a typed reason. The URL capability is advertised only
-  where the trust flow is available (a configured allow-list), never over-
-  advertised. The consenting client MUST open the URL in a NON-INSPECTABLE,
-  isolated container (ephemeral profile, no shared cookies/session, no referrer)
-  so the server learns nothing from the mere act of rendering — carried to the
-  client as ``metadata.elicitation.container = "isolated"``.
+  the call is issued (one client per call): never a client-keyed registry (proxy
+  clones defeat that) nor ambient fire-time state (P1-IMPLEMENTER mandate).
+* **One surface** — the question lands on the SAME ``app.state.user_questions`` +
+  ``pending_user_question_id`` anchor + answer route as native asks (RULE 4, no
+  parallel store); answering / cancelling resolves the parked future. A child's
+  question is forwarded to the root attended session.
+* **URL trust** — url-mode is NEVER pre-fetched; the full URL is shown for explicit
+  consent, an untrusted origin is REJECTED (typed reason), url is advertised only
+  where a trust allow-list is configured, and the consenting client MUST render it
+  in a non-inspectable isolated container (``metadata.elicitation.container``).
 
-Every degrade emits a typed reason (the ``stream_fallback`` catalog style) so a
-declined/cancelled elicitation is always attributable, never silent.
+Every degrade emits a typed reason (``stream_fallback`` style) — never silent.
 """
 
 from __future__ import annotations
@@ -55,10 +50,14 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "ELICITATION_QUESTION_SOURCE",
     "ELICITATION_REASONS",
+    "FORWARDED_QUESTION_SOURCE",
     "FormTranslation",
     "check_url_trust",
+    "deliver_forwarded_answer",
+    "forward_child_question_to_parent",
     "make_elicitation_client",
     "make_elicitation_hook",
+    "resolve_answered_question",
     "resolve_elicitation",
     "translate_form_schema",
 ]
@@ -67,13 +66,15 @@ __all__ = [
 #: shared answer route can recognise an elicitation and resolve its parked call.
 ELICITATION_QUESTION_SOURCE = "mcp_elicitation"
 
-#: Park timeout: mirrors the permission gate's generous human window. On expiry
-#: the tool call is unblocked with a typed ``cancel`` (fail-safe, never a hang).
+#: ``UserQuestion.source`` for a paused child's question mirrored to the parent's
+#: HITL surface (the parent-forward replacing the child_requires_user_input fail).
+FORWARDED_QUESTION_SOURCE = "child_forwarded"
+
+#: Park timeout (permission-gate-style human window); expiry -> typed ``cancel``.
 DEFAULT_ELICITATION_TIMEOUT_S = 600.0
 
 #: Typed degrade/reject reason catalog (``stream_fallback`` style): a queryable
-#: reason recorded whenever an elicitation is declined/cancelled by CLIO rather
-#: than by the user, so no degradation is ever silent.
+#: reason recorded when CLIO (not the user) declines/cancels — never silent.
 ELICITATION_REASONS: dict[str, str] = {
     "elicitation_no_session": "no CLIO session resolved for the elicitation; declined",
     "elicitation_schema_not_object": "form schema is not a flat JSON object schema; declined",
@@ -84,6 +85,8 @@ ELICITATION_REASONS: dict[str, str] = {
     "elicitation_url_insecure_scheme": "url-mode elicitation is not https; declined",
     "elicitation_wait_timeout": "no answer within the elicitation window; cancelled",
     "elicitation_unknown_mode": "elicitation mode is neither form nor url; declined",
+    "child_waiting_without_question": "child paused for input but has no pending question to forward",
+    "forwarded_child_question_gone": "forwarded parent answer arrived but the child question is gone",
 }
 
 #: JSON-Schema scalar types this form translator accepts (flat, restricted set).
@@ -102,9 +105,7 @@ def _record_reason(reason: str, **fields: Any) -> None:
     )
 
 
-# --------------------------------------------------------------------------- #
-# Schema translation (form mode)
-# --------------------------------------------------------------------------- #
+# --- Schema translation (form mode) ---
 
 
 @dataclass(frozen=True)
@@ -193,9 +194,7 @@ def translate_form_schema(requested_schema: Mapping[str, Any]) -> FormTranslatio
     return FormTranslation(kind="freeform", fields=fields)
 
 
-# --------------------------------------------------------------------------- #
-# URL trust (url mode)
-# --------------------------------------------------------------------------- #
+# --- URL trust (url mode) ---
 
 
 def _origin(url: str) -> str:
@@ -228,9 +227,7 @@ def check_url_trust(url: str, trusted_origins: Sequence[str]) -> str | None:
     return None
 
 
-# --------------------------------------------------------------------------- #
-# Async-safe park / resolve
-# --------------------------------------------------------------------------- #
+# --- Async-safe park / resolve ---
 
 
 @dataclass(frozen=True)
@@ -334,6 +331,9 @@ def resolve_answered_question(app: Any, deps: Any, sid: str, question: UserQuest
         handled = True
     elif resolve_elicitation(app, question):
         handled = True
+    elif question.metadata.get("forwarded_from_question"):
+        deliver_forwarded_answer(app, deps, question)
+        handled = True
     if handled:
         app.state.bus.publish(
             Event(
@@ -403,9 +403,7 @@ def _build_form_content(
     return content
 
 
-# --------------------------------------------------------------------------- #
-# The handler + client construction
-# --------------------------------------------------------------------------- #
+# --- The handler + client construction ---
 
 
 def _clear_pending_anchor(app: Any, session_id: str) -> None:
@@ -455,6 +453,7 @@ def _new_question(
     kind: str,
     options: list[UserQuestionOption],
     metadata: dict[str, Any],
+    source: str = ELICITATION_QUESTION_SOURCE,
 ) -> UserQuestion:
     from clio_agent.gact.runtime.globals import _new_question_id  # noqa: PLC0415
 
@@ -468,8 +467,138 @@ def _new_question(
         options=options,
         created_at=now_iso,
         updated_at=now_iso,
-        source=ELICITATION_QUESTION_SOURCE,
+        source=source,
         metadata=metadata,
+    )
+
+
+def _attended_session(app: Any, session_id: str) -> str:
+    """Walk the ``parent_session_id`` chain to the top human-attended session.
+
+    A spawned child cannot answer its own HITL prompt, so a child question is
+    surfaced on the ROOT session a human is attending. Cycle-guarded; returns
+    ``session_id`` unchanged when there is no parent chain or no session store.
+    """
+
+    sessions = getattr(app.state, "sessions", None)
+    if sessions is None:
+        return session_id
+    seen: set[str] = set()
+    sid = session_id
+    while sid and sid not in seen:
+        seen.add(sid)
+        sess = sessions.get(sid)
+        parent = str(getattr(sess, "parent_session_id", "") or "") if sess is not None else ""
+        if not parent:
+            return sid
+        sid = parent
+    return sid
+
+
+def _pending_question_for(app: Any, session_id: str) -> UserQuestion | None:
+    """Return a session's pending question (anchor first, else newest pending)."""
+
+    questions = getattr(app.state, "user_questions", {}) or {}
+    sess = app.state.sessions.get(session_id) if getattr(app.state, "sessions", None) else None
+    anchor = str((getattr(sess, "metadata", {}) or {}).get("pending_user_question_id") or "")
+    row = questions.get(anchor) if anchor else None
+    if row is not None and row.status == "pending":
+        return row
+    pending = [
+        q for q in questions.values() if q.session_id == session_id and q.status == "pending"
+    ]
+    pending.sort(key=lambda q: q.created_at, reverse=True)
+    return pending[0] if pending else None
+
+
+def forward_child_question_to_parent(app: Any, task: Any, child_sid: str) -> bool:
+    """Forward a paused child's pending question to the parent's HITL surface.
+
+    Replaces the deleted ``child_requires_user_input`` fail path: an unattended
+    child whose turn paused for user input has its pending question mirrored onto
+    the parent's (root attended) session so a human can answer. The forwarded
+    question links back to the child so :func:`deliver_forwarded_answer` can relay
+    the answer and resume the child. Returns ``True`` when a question was
+    forwarded, ``False`` (with a typed reason) when the child had none.
+    """
+
+    child_q = _pending_question_for(app, child_sid)
+    if child_q is None:
+        _record_reason("child_waiting_without_question", child=child_sid)
+        return False
+    attended = _attended_session(app, getattr(task, "parent_session_id", "") or child_sid)
+    forwarded = _new_question(
+        attended,
+        prompt=child_q.prompt,
+        kind=child_q.kind,
+        options=list(child_q.options),
+        source=FORWARDED_QUESTION_SOURCE,
+        metadata={
+            "forwarded_from_session": child_sid,
+            "forwarded_from_question": child_q.id,
+            "task_id": getattr(task, "task_id", ""),
+        },
+    )
+    _publish_question_created(app, forwarded)
+    bus = getattr(app.state, "bus", None)
+    if bus is not None:
+        from clio_agent.gact.events import Event  # noqa: PLC0415
+
+        bus.publish(
+            Event(
+                type="user_question.forwarded",
+                session_id=attended,
+                payload={
+                    "question_id": forwarded.id,
+                    "forwarded_from_session": child_sid,
+                    "forwarded_from_question": child_q.id,
+                    "task_id": getattr(task, "task_id", ""),
+                },
+            )
+        )
+    return True
+
+
+def deliver_forwarded_answer(app: Any, deps: Any, forwarded: UserQuestion) -> None:
+    """Relay a forwarded parent answer to the child question and resume the child.
+
+    The parent-facing forwarded question has been answered; copy that answer onto
+    the child's pending question and, when it was a resumable ask, kick the child's
+    resume turn through the SAME ``start_background_user_turn`` seam the native
+    answer route uses (no duplicate turn machinery).
+    """
+
+    child_sid = str(forwarded.metadata.get("forwarded_from_session") or "")
+    child_qid = str(forwarded.metadata.get("forwarded_from_question") or "")
+    child_q = app.state.user_questions.get(child_qid) if child_qid else None
+    if child_q is None:
+        _record_reason("forwarded_child_question_gone", child=child_sid, question=child_qid)
+        return
+    answered = child_q.model_copy(
+        update={
+            "status": "answered",
+            "answer": forwarded.answer,
+            "selected_options": list(forwarded.selected_options),
+            "answer_metadata": dict(forwarded.answer_metadata),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    app.state.user_questions[child_qid] = answered
+    child_sess = app.state.sessions.get(child_sid) if child_sid else None
+    if child_sess is None or not answered.metadata.get("resume_on_answer"):
+        return
+    app.state.sessions.update(child_sid, metadata_patch={"pending_user_question_id": ""})
+    deps.start_background_user_turn(
+        child_sid,
+        child_sess,
+        deps.ask_user_resume_text(answered),
+        metadata={
+            "ask_user_question_id": answered.id,
+            "ask_user_answer": answered.answer,
+            "ask_user_selected_options": answered.selected_options,
+            "ask_user_resume": True,
+        },
+        prev_status=getattr(child_sess, "status", "waiting_user"),
     )
 
 
@@ -501,6 +630,13 @@ async def handle_elicitation(
         _record_reason("elicitation_no_session", tool=invocation.tool_name)
         return _build_elicit_result(ElicitResolution(action="decline"))
 
+    # Child forwarding (adopted default): an unattended spawned child cannot answer
+    # its own elicitation, so the question is minted on the ROOT attended session's
+    # HITL surface. The parked future stays keyed by the question id, so the parent
+    # user's answer wakes THIS child's tool call (no client-keyed registry).
+    attended = _attended_session(app, session_id)
+    forwarded_from = session_id if attended != session_id else ""
+
     mode = str(getattr(params, "mode", "") or "")
     if mode == "url":
         url = str(getattr(params, "url", "") or "")
@@ -509,7 +645,7 @@ async def handle_elicitation(
             _record_reason(reject, url=url, tool=invocation.tool_name)
             return _build_elicit_result(ElicitResolution(action="decline"))
         question = _new_question(
-            session_id,
+            attended,
             prompt=f"{message}\n\nOpen this URL to continue: {url}",
             kind="confirmation",
             options=[],
@@ -525,6 +661,7 @@ async def handle_elicitation(
                     "namespace": invocation.namespace,
                     "tool_name": invocation.tool_name,
                     "invocation_id": invocation.invocation_id,
+                    "forwarded_from_session": forwarded_from,
                 },
             },
         )
@@ -534,7 +671,7 @@ async def handle_elicitation(
             _record_reason(translation.degrade, tool=invocation.tool_name)
             return _build_elicit_result(ElicitResolution(action="decline"))
         question = _new_question(
-            session_id,
+            attended,
             prompt=message,
             kind=translation.kind,
             options=translation.options,
@@ -546,6 +683,7 @@ async def handle_elicitation(
                     "namespace": invocation.namespace,
                     "tool_name": invocation.tool_name,
                     "invocation_id": invocation.invocation_id,
+                    "forwarded_from_session": forwarded_from,
                 },
             },
         )

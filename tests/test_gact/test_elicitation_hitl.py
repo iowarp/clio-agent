@@ -185,6 +185,44 @@ def test_cancelling_via_cancel_route_returns_sdk_cancel(client: TestClient) -> N
     assert holder.get("result") == "action=cancel value=None"
 
 
+def test_child_session_elicitation_forwards_to_parent_and_resolves(client: TestClient) -> None:
+    """An unattended child's elicitation is surfaced on the PARENT and resolves it.
+
+    Acceptance (#1113): child-session elicitation forwards to the parent's HITL
+    surface; answering there wakes the child's parked tool call. The parked future
+    stays keyed by the question id, so no client-keyed registry is involved.
+    """
+
+    from clio_agent.gact.elicitation_bridge import make_elicitation_client
+
+    app = client.app  # type: ignore[attr-defined]
+    parent = app.state.sessions.create(workspace_id="ws_default", title="parent")  # type: ignore[attr-defined]
+    child = app.state.sessions.create(  # type: ignore[attr-defined]
+        workspace_id="ws_default", title="child", parent_session_id=parent.id
+    )
+    invocation = MCPInvocationContext(
+        invocation_id="inv", session_id=child.id, namespace="ext", tool_name="pick_color"
+    )
+    client_ctx = make_elicitation_client(app, _fake_backend(), invocation=invocation)
+    holder: dict[str, Any] = {}
+    thread = _run_tool_call_in_thread(client_ctx, "pick_color", holder)
+
+    # The question surfaces on the PARENT (attended) session, not the child.
+    question = _wait_for_pending_question(client, parent.id)
+    assert question["metadata"]["elicitation"]["forwarded_from_session"] == child.id
+    assert not client.get(f"/v1/sessions/{child.id}/questions", params={"status": "pending"}).json()[
+        "questions"
+    ]
+
+    resp = client.post(
+        f"/v1/sessions/{parent.id}/questions/{question['id']}/answer",
+        json={"selected_options": ["green"]},
+    )
+    assert resp.status_code == 200, resp.text
+    thread.join(timeout=10.0)
+    assert holder.get("result") == "action=accept value=green"
+
+
 # --------------------------------------------------------------------------- #
 # Schema translation (form mode) — unit
 # --------------------------------------------------------------------------- #

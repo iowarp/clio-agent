@@ -632,27 +632,20 @@ def _on_child_done(app: "FastAPI", task_id: str, child_sid: str, mode: str) -> N
         return
     now = _now()
 
-    # HITL-in-child: an unattended child cannot answer its own permission / user
-    # question. If its turn paused (waiting_user), FAIL the task with a typed reason
-    # rather than leave it hanging — the parent (the model) decides how to proceed.
+    # HITL-in-child (#1113): an unattended child cannot answer its own user question.
+    # If its turn paused (waiting_user), FORWARD the pending question to the parent's
+    # HITL surface (parent-forward, adopted default) instead of failing the task —
+    # the answer is relayed back and resumes the child. The task stays non-terminal
+    # (still in progress, awaiting input), so no stop/admit fires yet; _on_child_done
+    # runs again at the child's true completion. (Replaces the deleted
+    # child_requires_user_input fail path.)
     child_sess = app.state.sessions.get(child_sid)
     if child_sess is not None and getattr(child_sess, "status", "") == "waiting_user":
-        try:
-            updated = reg.transition(
-                task_id,
-                STATUS_FAILED,
-                error_reason="child_requires_user_input",
-                # #948 S6: a FAILED async child is observed-later exactly like a
-                # completed one — the model decides what to do with the failure.
-                notify_pending=(mode == "async"),
-                updated_at=now,
-            )
-        except Exception:  # noqa: BLE001
-            updated = reg.get(task_id) or task
-        persist_agent_task(app, updated)
-        publish_agent_task_event(app, updated, AGENT_TASK_EVENTS[updated.status])
-        _fire_subagent_stop(app, updated, child_sid)
-        _admit_next_queued(app)
+        from clio_agent.gact.elicitation_bridge import (  # noqa: PLC0415
+            forward_child_question_to_parent,
+        )
+
+        forward_child_question_to_parent(app, task, child_sid)
         return
 
     msgs = app.state.messages.get(child_sid, []) or []

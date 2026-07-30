@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from clio_agent.gact.agent_tasks import STATUS_FAILED, STATUS_RUNNING, AgentTask
+from clio_agent.gact.agent_tasks import STATUS_RUNNING, AgentTask
 from clio_agent.gact.app import build_app
 from clio_agent.gact.permission_gate import _policy_action_for_tool
 from clio_agent.gact.turn_forward import _forward_executor
@@ -192,31 +192,60 @@ def test_cancel_frees_slot_and_admits_queued(tmp_path: Path, monkeypatch) -> Non
         )
 
 
-def test_hitl_in_child_fails_typed(tmp_path: Path, monkeypatch) -> None:
-    """An unattended child whose turn paused for user input fails with a typed
-    reason (child_requires_user_input), never hangs."""
+def test_hitl_in_child_forwards_to_parent(tmp_path: Path, monkeypatch) -> None:
+    """An unattended child that paused for user input FORWARDS its question to the
+    parent's HITL surface instead of failing (#1113); the fail path is gone."""
+
+    from clio_agent.gact.types import UserQuestion, UserQuestionOption
 
     _declare(monkeypatch, "data_expert")
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     with TestClient(app):
-        # Seed a running task whose child session paused for user input.
+        now = "2026-07-17T00:00:00+00:00"
+        parent = app.state.sessions.create(workspace_id="ws_default", title="p")
         child = app.state.sessions.create(
-            workspace_id="ws_default", title="c", parent_session_id="sess_p"
+            workspace_id="ws_default", title="c", parent_session_id=parent.id
         )
-        app.state.sessions.update(child.id, status="waiting_user")
+        # The child paused for user input with a pending (resumable) question.
+        q = UserQuestion(
+            id="q_child",
+            session_id=child.id,
+            prompt="Which dataset?",
+            kind="choice",
+            options=[UserQuestionOption(label="A", value="a")],
+            created_at=now,
+            updated_at=now,
+            source="orchestrator_action",
+            metadata={"resume_on_answer": True},
+        )
+        app.state.user_questions[q.id] = q
+        app.state.sessions.update(
+            child.id, status="waiting_user", metadata_patch={"pending_user_question_id": q.id}
+        )
         task = AgentTask(
             task_id="task_hitl",
-            parent_session_id="sess_p",
+            parent_session_id=parent.id,
             child_session_id=child.id,
             status=STATUS_RUNNING,
-            created_at="2026-07-17T00:00:00+00:00",
-            updated_at="2026-07-17T00:00:00+00:00",
+            created_at=now,
+            updated_at=now,
         )
         app.state.agent_task_registry.register(task)
         _on_child_done(app, task.task_id, child.id, "async")
+
         settled = app.state.agent_task_registry.get(task.task_id)
-        assert settled.status == STATUS_FAILED
-        assert settled.error_reason == "child_requires_user_input"
+        # NOT failed: the task stays in progress, awaiting the forwarded answer.
+        assert settled.status == STATUS_RUNNING
+        assert settled.error_reason != "child_requires_user_input"
+        # A forwarded question now sits on the PARENT's HITL surface, linked back.
+        fwd = [
+            qq
+            for qq in app.state.user_questions.values()
+            if qq.session_id == parent.id and qq.metadata.get("forwarded_from_question") == q.id
+        ]
+        assert len(fwd) == 1
+        assert fwd[0].source == "child_forwarded"
+        assert fwd[0].prompt == "Which dataset?"
 
 
 # ---------------------------------------------------------------------------

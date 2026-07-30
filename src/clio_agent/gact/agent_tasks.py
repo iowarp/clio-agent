@@ -70,7 +70,9 @@ ERROR_REASONS = frozenset(
     {
         "agent_error",
         "spawn_depth_exceeded",
-        "child_requires_user_input",
+        # #1113: an unattended child that pauses for input no longer FAILS — its
+        # question is forwarded to the parent's HITL surface (elicitation_bridge),
+        # so ``child_requires_user_input`` is no longer a produced error reason.
         "cancelled_by_parent",
         "child_session_gone",
         "timeout",
