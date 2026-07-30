@@ -18,6 +18,8 @@ This module is imported lazily (only when a message hook is present) so importin
 
 from __future__ import annotations
 
+from typing import cast
+
 from fastmcp import Client
 from fastmcp.client.client import TaskNotificationHandler
 
@@ -29,7 +31,7 @@ class MultiplexingMessageClient(Client):
 
     def new(self) -> "MultiplexingMessageClient":
         """Clone, then rebind a fresh multiplexer + task handler to the clone."""
-        clone = super().new()
+        clone = cast("MultiplexingMessageClient", super().new())
         mux = clone._session_kwargs.get("message_handler")
         if isinstance(mux, MessageMultiplexer):
             fresh = MessageMultiplexer(mux._hook)
