@@ -1,16 +1,18 @@
 """Tests for the single MCP client factory and its handler shape (#1106).
 
 ``make_mcp_client`` is the ONE execution-path construction site for FastMCP
-clients. It owns the typed handler slot (:class:`MCPClientHandlers` ->
-``mcp_handlers`` dispatchers) that P1 fills, and every execution path (executor
-default, per-call dispatch, gateway proxy backend, dynamic-agent tool call,
-handshake probe) routes through it. This suite also covers the review round:
-gateway-proxy reachability, mapping disambiguation, the message multiplexer, and
-the cross-session correlation seam.
+clients. It owns the typed handler SLOT (:class:`MCPClientHandlers` ->
+``mcp_handlers`` adapters) — construction-time only; no hook is wired until P1's
+correlation-by-protocol-identity work. Every execution path (executor default,
+per-call dispatch, gateway proxy backend, dynamic-agent tool call, handshake
+probe) routes through it. This suite covers handler attachment, mapping
+disambiguation (incl. the colliding ``transport`` name), and the clone-safe
+message multiplexer.
 """
 
 from __future__ import annotations
 
+import weakref
 from types import SimpleNamespace
 from typing import Any
 
@@ -19,13 +21,9 @@ import pytest
 from clio_agent.tools import mcp_executor
 from clio_agent.tools.mcp_executor import AsyncMCPToolExecutor
 from clio_agent.tools.mcp_handlers import (
-    DEFAULT_CORRELATION_REGISTRY,
     ElicitationDispatcher,
-    MCPCorrelationRegistry,
-    MCPInvocationContext,
     MessageMultiplexer,
     ProgressDispatcher,
-    current_invocation,
 )
 from clio_agent.tools.mcp_runtime import MCPClientHandlers, make_mcp_client
 
@@ -53,13 +51,23 @@ class _FakeClient:
         return None
 
 
+class _StubTask:
+    """Weakref-able stand-in for fastmcp's abstract Task in the registry."""
+
+    def __init__(self) -> None:
+        self.updates: list[Any] = []
+
+    def _handle_status_notification(self, status: Any) -> None:
+        self.updates.append(status)
+
+
 # --------------------------------------------------------------------------- #
 # Factory: handler attachment + zero-change bare construction
 # --------------------------------------------------------------------------- #
 
 
-def test_make_mcp_client_wraps_hooks_in_correlated_dispatchers() -> None:
-    """Each populated hook is wrapped in a dispatcher and forwarded to the client."""
+def test_make_mcp_client_wraps_hooks_in_signature_adapters() -> None:
+    """Each populated hook is wrapped in a signature adapter and forwarded."""
 
     async def elicit(context: Any, *a: Any) -> Any:
         return None
@@ -76,9 +84,6 @@ def test_make_mcp_client_wraps_hooks_in_correlated_dispatchers() -> None:
     assert elicit_dispatcher._hook is elicit
     assert isinstance(progress_dispatcher, ProgressDispatcher)
     assert progress_dispatcher._hook is progress
-    # Correlation seam stamped so the executor can bind per-call context.
-    assert isinstance(client._clio_correlation_key, str)
-    assert client._clio_correlation_registry is DEFAULT_CORRELATION_REGISTRY
 
 
 def test_make_mcp_client_message_hook_is_multiplexer() -> None:
@@ -104,7 +109,6 @@ def test_make_mcp_client_no_handlers_is_bare_construction() -> None:
 
     assert client.target == "transport-sentinel"
     assert client.kwargs == {}
-    assert not hasattr(client, "_clio_correlation_key")
 
 
 def test_make_mcp_client_all_none_hooks_is_bare_construction() -> None:
@@ -113,7 +117,6 @@ def test_make_mcp_client_all_none_hooks_is_bare_construction() -> None:
     client = make_mcp_client("t", handlers=MCPClientHandlers(), client_cls=_FakeClient)
 
     assert client.kwargs == {}
-    assert not hasattr(client, "_clio_correlation_key")
 
 
 # --------------------------------------------------------------------------- #
@@ -172,6 +175,25 @@ def test_mapping_rootless_mcpconfig_is_passed_unchanged(
     assert client.target is config
 
 
+def test_mapping_transport_named_server_is_mcpconfig_not_clio_spec() -> None:
+    """A rootless MCPConfig server merely NAMED 'transport' is not a CLIO spec.
+
+    Built against the real fastmcp Client: the colliding-name mapping must reach
+    the Client as an MCPConfig (MCPConfigTransport), never be mis-parsed by
+    transport_from_spec as a stdio spec whose transport kind is a dict.
+    """
+
+    from fastmcp import Client
+    from fastmcp.client.transports import MCPConfigTransport
+
+    # top-level key "transport" whose VALUE is a server config mapping
+    target = {"transport": {"command": "x"}}
+    client = make_mcp_client(target)
+
+    assert isinstance(client, Client)
+    assert isinstance(client.transport, MCPConfigTransport)
+
+
 def test_mapping_ambiguous_raises_value_error() -> None:
     """A mapping that is neither a CLIO spec nor an MCPConfig is a hard error."""
 
@@ -189,26 +211,18 @@ async def test_message_multiplexer_runs_task_handler_then_hook() -> None:
     """The multiplexer preserves TaskNotificationHandler dispatch and fans out."""
 
     order: list[str] = []
-    hook_context: list[Any] = []
 
     async def task_handler(message: Any) -> None:
         order.append(f"task:{message}")
 
     async def hook(context: Any, message: Any) -> None:
         order.append(f"hook:{message}")
-        hook_context.append(context)
 
-    registry = MCPCorrelationRegistry()
-    ctx = MCPInvocationContext(invocation_id="i1", session_id="S1")
-    registry.bind("key", ctx)
-
-    mux = MessageMultiplexer(registry, "key", hook, task_handler)
+    mux = MessageMultiplexer(hook, task_handler)
     await mux("PING")
 
-    # task handler runs FIRST (built-in routing preserved), then the CLIO hook,
-    # which sees the correlated context.
+    # task handler runs FIRST (built-in routing preserved), then the CLIO hook.
     assert order == ["task:PING", "hook:PING"]
-    assert hook_context == [ctx]
 
 
 @pytest.mark.asyncio
@@ -223,98 +237,62 @@ async def test_message_multiplexer_bind_task_handler_late() -> None:
     async def hook(context: Any, message: Any) -> None:
         seen.append("hook")
 
-    mux = MessageMultiplexer(MCPCorrelationRegistry(), "k", hook)
+    mux = MessageMultiplexer(hook)
     assert mux._task_handler is None
     mux.bind_task_handler(task_handler)
     await mux("m")
     assert seen == ["task", "hook"]
 
 
-# --------------------------------------------------------------------------- #
-# Finding #6: correlation registry + two-sessions-one-executor seam
-# --------------------------------------------------------------------------- #
-
-
-def test_correlation_registry_stack_resolves_innermost() -> None:
-    """Nested binds on one key resolve innermost-first, restoring the outer."""
-
-    registry = MCPCorrelationRegistry()
-    outer = MCPInvocationContext(invocation_id="o")
-    inner = MCPInvocationContext(invocation_id="i")
-
-    with registry.active("k", outer):
-        assert registry.resolve("k") is outer
-        with registry.active("k", inner):
-            assert registry.resolve("k") is inner
-        assert registry.resolve("k") is outer
-    assert registry.resolve("k") is None
-
-
-class _FiringClient:
-    """Fake client that fires its elicitation handler mid-call (background loop)."""
-
-    def __init__(self, target: Any, elicitation_handler: Any = None, **_kw: Any) -> None:
-        self._elicit = elicitation_handler
-
-    async def __aenter__(self) -> "_FiringClient":
-        return self
-
-    async def __aexit__(self, *exc: Any) -> None:
-        return None
-
-    async def list_tools(self) -> list[Any]:
-        return []
-
-    async def read_resource(self, uri: str) -> Any:
-        return None
-
-    async def call_tool(self, name: str, args: dict[str, Any]) -> Any:
-        if self._elicit is not None:
-            await self._elicit("continue?", None, None, None)
-        return SimpleNamespace(data="ok", content=[])
-
-
 @pytest.mark.asyncio
-async def test_two_sessions_one_executor_resolve_correct_context() -> None:
-    """A handler firing on a cached client resolves the right per-call context."""
+async def test_message_multiplexer_survives_client_clone() -> None:
+    """A real client.new() clone rebinds the multiplexer to the CLONE.
 
-    registry = MCPCorrelationRegistry()
-    resolved: list[MCPInvocationContext | None] = []
+    FastMCP proxies call a backend via client.new(); the clone's task handler
+    must route task notifications to the CLONE (not the original), and the CLIO
+    message hook must still fire. Exercises the real fastmcp Client + Task.
+    """
 
-    async def elicit(context: MCPInvocationContext | None, *a: Any) -> Any:
-        resolved.append(context)
-        return None
+    import mcp.types as mt
+    from fastmcp import FastMCP
 
-    handlers = MCPClientHandlers(elicitation=elicit, correlation=registry)
+    fired: list[Any] = []
 
-    def factory(target: Any) -> Any:
-        return make_mcp_client(target, handlers=handlers, client_cls=_FiringClient)
+    async def hook(context: Any, message: Any) -> None:
+        fired.append(message)
 
-    executor = AsyncMCPToolExecutor(
-        object(),
-        preloaded_tools={"ns_tool": object()},
-        namespace_servers={"ns": object()},
-        client_factory=factory,
+    client = make_mcp_client(FastMCP("backend"), handlers=MCPClientHandlers(message=hook))
+    clone = client.new()
+
+    mux = clone._session_kwargs["message_handler"]
+    assert isinstance(mux, MessageMultiplexer)
+    # the clone's task handler is bound to the CLONE, not the original client.
+    assert mux._task_handler._client_ref() is clone
+
+    # register a task on the CLONE, then deliver a status notification. A minimal
+    # stub stands in for the abstract fastmcp Task; the client's registry routing
+    # calls _handle_status_notification, exactly as a real Task would receive it.
+    task = _StubTask()
+    task_id = "task-1"
+    clone._task_registry[task_id] = weakref.ref(task)
+    notif = mt.ServerNotification(
+        root=mt.TaskStatusNotification(
+            params=mt.TaskStatusNotificationParams(
+                taskId=task_id,
+                status="completed",
+                createdAt="2026-01-01T00:00:00Z",
+                lastUpdatedAt="2026-01-01T00:00:01Z",
+                ttl=60000,
+            )
+        )
     )
-    await executor.start()
+    await mux(notif)
 
-    token = current_invocation.set(MCPInvocationContext(invocation_id="a", session_id="A"))
-    try:
-        await executor.call_tool("ns_tool", {})
-    finally:
-        current_invocation.reset(token)
-
-    token = current_invocation.set(MCPInvocationContext(invocation_id="b", session_id="B"))
-    try:
-        await executor.call_tool("ns_tool", {})
-    finally:
-        current_invocation.reset(token)
-
-    # Same cached namespace client, two calls: each handler fire resolved its own
-    # session, enriched with this call's namespace/tool -- not a stale ContextVar.
-    assert [c.session_id for c in resolved if c] == ["A", "B"]
-    assert [c.tool_name for c in resolved if c] == ["ns_tool", "ns_tool"]
-    assert [c.namespace for c in resolved if c] == ["ns", "ns"]
+    # the CLONE's registry routed the notification to its own task...
+    assert len(task.updates) == 1
+    assert task.updates[0].status == "completed"
+    # ...and the CLIO hook still fired on the clone.
+    assert fired == [notif]
 
 
 # --------------------------------------------------------------------------- #

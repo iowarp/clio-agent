@@ -14,13 +14,12 @@ import logging
 import math
 import threading
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import nullcontext, suppress
-from dataclasses import dataclass, replace
+from contextlib import suppress
+from dataclasses import dataclass
 from typing import Any, Protocol, cast
 from urllib.parse import urlsplit
 
 from clio_agent.tools import spawn_diet
-from clio_agent.tools.mcp_handlers import current_invocation
 from clio_agent.tools.mcp_runtime import make_mcp_client
 
 logger = logging.getLogger(__name__)
@@ -324,17 +323,11 @@ class AsyncMCPToolExecutor:
             # (proxy ctx-enter spawns nothing), so first-call success/failure
             # is the spawn-diet learn/drop-plan signal.
             first_call = namespace is not None and namespace not in self._connected_namespaces
-            # Correlation seam (#1106): bind the ambient invocation context into
-            # the client's registry so a handler firing on the client's
-            # background receive loop resolves the right per-call context. A
-            # client with no handlers carries no key -> nullcontext -> identical.
-            correlation = self._correlation_scope(client, namespace, name)
             try:
-                with correlation:
-                    result = await asyncio.wait_for(
-                        client.call_tool(on_server_name, dict(args)),
-                        timeout=timeout,
-                    )
+                result = await asyncio.wait_for(
+                    client.call_tool(on_server_name, dict(args)),
+                    timeout=timeout,
+                )
             except TimeoutError as exc:
                 # Conservative: a first-call timeout may be tool latency, not
                 # spawn health — the dropped plan self-heals (declared respawn
@@ -419,26 +412,6 @@ class AsyncMCPToolExecutor:
             self._namespace_ctxs[namespace] = ctx
             self._namespace_clients[namespace] = client
         return client, bare, namespace
-
-    def _correlation_scope(self, client: Any, namespace: str | None, tool_name: str) -> Any:
-        """Return a context manager binding the ambient invocation for handlers.
-
-        Reads the correlation key/registry that :func:`make_mcp_client` stamped
-        on a handler-carrying client (absent on a bare client) plus the ambient
-        :data:`current_invocation`, enriches it with this call's namespace/tool,
-        and returns ``registry.active(key, ctx)``. When any piece is missing it
-        returns a ``nullcontext`` so a bare client dispatches identically.
-        """
-
-        key = getattr(client, "_clio_correlation_key", None)
-        registry = getattr(client, "_clio_correlation_registry", None)
-        if key is None or registry is None:
-            return nullcontext()
-        context = current_invocation.get()
-        if context is None:
-            return nullcontext()
-        scoped = replace(context, namespace=namespace, tool_name=tool_name)
-        return registry.active(key, scoped)
 
     def _timeout_for_tool(self, name: str) -> float:
         """Return the effective timeout for a single tool invocation."""

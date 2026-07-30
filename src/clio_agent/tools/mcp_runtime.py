@@ -26,13 +26,11 @@ churn.
 
 from __future__ import annotations
 
-import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 from clio_agent.tools.mcp_handlers import (
-    DEFAULT_CORRELATION_REGISTRY,
     ElicitationDispatcher,
     MessageMultiplexer,
     ProgressDispatcher,
@@ -41,7 +39,6 @@ from clio_agent.tools.mcp_handlers import (
 if TYPE_CHECKING:
     from clio_agent.tools.mcp_handlers import (
         ElicitationHook,
-        MCPCorrelationRegistry,
         MessageHook,
         ProgressHook,
     )
@@ -141,30 +138,27 @@ def wire_value(
 
 @dataclass(frozen=True)
 class MCPClientHandlers:
-    """Typed CLIO hook bundle attached to an execution-path MCP client.
+    """Typed CLIO hook bundle — a CONSTRUCTION-TIME SLOT, not a live wiring.
 
-    Every hook is no-op-absent today (``None`` => that handler is not installed,
-    identical to a bare client). P1 fills these; the factory is the single seam
-    they attach through so no P1 slice has to hunt for client-construction sites.
+    Every hook is absent today (``None`` => that handler is not installed,
+    identical to a bare client). The hooks are typed
+    :mod:`clio_agent.tools.mcp_handlers` Protocols, not raw callbacks: each
+    receives an :class:`MCPInvocationContext` first argument that P1 will
+    populate. ``make_mcp_client`` wraps a populated hook in a signature adapter
+    and hands it to the matching ``fastmcp.Client`` keyword; ``message`` becomes
+    a :class:`MessageMultiplexer` so FastMCP's ``TaskNotificationHandler``
+    dispatch is preserved. ``cancellation`` has no fastmcp ``Client`` keyword
+    today — held as a slot for P1.
 
-    The hooks are typed :mod:`clio_agent.tools.mcp_handlers` Protocols, not raw
-    callbacks: each receives the correlated :class:`MCPInvocationContext` as its
-    first argument. ``make_mcp_client`` wraps a populated hook in a long-lived
-    dispatcher bound to a per-client correlation key and hands the dispatcher to
-    the matching ``fastmcp.Client`` keyword. ``message`` becomes a
-    :class:`MessageMultiplexer` so FastMCP's ``TaskNotificationHandler`` dispatch
-    is preserved. ``cancellation`` has no fastmcp ``Client`` keyword today — it
-    is held as a slot for P1 to route (e.g. via the message handler).
-
-    ``correlation`` is the registry the executor and the dispatchers share;
-    defaults to :data:`DEFAULT_CORRELATION_REGISTRY` when omitted.
+    IMPORTANT: no hook may actually be *wired* until correlation-by-protocol-
+    identity lands (clio-agent#1111/#1113). See the ``mcp_handlers`` module
+    docstring for the two deferred review findings the P1 implementer must honor.
     """
 
     elicitation: "ElicitationHook | None" = None
     progress: "ProgressHook | None" = None
     message: "MessageHook | None" = None
     cancellation: "MessageHook | None" = None
-    correlation: "MCPCorrelationRegistry | None" = None
 
 
 def make_mcp_client(
@@ -178,9 +172,9 @@ def make_mcp_client(
     This is the ONE construction site for clients that actually dispatch MCP
     calls. With no populated ``handlers`` the construction is byte-identical to
     a bare ``Client(target)`` (zero behavior change for current callers); with a
-    populated hook, the hook is wrapped in a long-lived dispatcher (bound to a
-    per-client correlation key and the shared registry) and forwarded as the
-    matching ``fastmcp.Client`` keyword argument — the seam P1 fills.
+    populated hook, the hook is wrapped in a signature adapter and forwarded as
+    the matching ``fastmcp.Client`` keyword argument — the construction-time slot
+    P1 fills once correlation lands (see :mod:`clio_agent.tools.mcp_handlers`).
 
     Args:
         target: A FastMCP transport / server object (passed straight to the
@@ -201,13 +195,14 @@ def make_mcp_client(
 
     Raises:
         ValueError: If ``target`` is a mapping that is neither a CLIO raw spec
-            (``transport`` key) nor a FastMCP ``MCPConfig`` (``mcpServers`` key
-            or a rootless server map).
+            (scalar ``transport`` key) nor a FastMCP ``MCPConfig`` (``mcpServers``
+            key or a rootless server map).
     """
 
     if isinstance(target, Mapping):
         target = _normalize_mapping_target(target)
 
+    default_client = client_cls is None
     if client_cls is None:
         from fastmcp import Client  # noqa: PLC0415
 
@@ -216,26 +211,30 @@ def make_mcp_client(
     if handlers is None:
         return client_cls(target)
 
-    registry = handlers.correlation or DEFAULT_CORRELATION_REGISTRY
-    correlation_key = uuid.uuid4().hex
-
     kwargs: dict[str, Any] = {}
     if handlers.elicitation is not None:
-        kwargs["elicitation_handler"] = ElicitationDispatcher(
-            registry, correlation_key, handlers.elicitation
-        )
+        kwargs["elicitation_handler"] = ElicitationDispatcher(handlers.elicitation)
     if handlers.progress is not None:
-        kwargs["progress_handler"] = ProgressDispatcher(
-            registry, correlation_key, handlers.progress
-        )
+        kwargs["progress_handler"] = ProgressDispatcher(handlers.progress)
     message_mux: MessageMultiplexer | None = None
     if handlers.message is not None:
-        message_mux = MessageMultiplexer(registry, correlation_key, handlers.message)
+        message_mux = MessageMultiplexer(handlers.message)
         kwargs["message_handler"] = message_mux
     # `cancellation` has no fastmcp Client keyword today; P1 owns its wiring.
 
     if not kwargs:
         return client_cls(target)
+
+    # A message hook needs a clone-safe client so ``client.new()`` (used by
+    # FastMCP proxies) rebinds a fresh multiplexer to the clone. Only substitute
+    # the clone-aware subclass on the default fastmcp path — an injected
+    # ``client_cls`` (tests) owns its own clone semantics.
+    if message_mux is not None and default_client:
+        from clio_agent.tools.mcp_message_client import (  # noqa: PLC0415
+            MultiplexingMessageClient,
+        )
+
+        client_cls = MultiplexingMessageClient
 
     client = client_cls(target, **kwargs)
 
@@ -249,27 +248,24 @@ def make_mcp_client(
         except Exception:  # noqa: BLE001 - a fake client_cls (tests) has no task handler
             pass
 
-    # Correlation seam: the executor reads these off the routed client to bind
-    # the per-call context around ``call_tool``. ``copy.copy`` in ``Client.new``
-    # carries them onto the proxy backend's per-request client, so a handler
-    # firing on that client's background loop resolves the same context.
-    client._clio_correlation_key = correlation_key  # type: ignore[attr-defined]
-    client._clio_correlation_registry = registry  # type: ignore[attr-defined]
     return client
 
 
 def _normalize_mapping_target(target: Mapping[str, Any]) -> Any:
     """Resolve a mapping ``target`` to a transport, or pass a native MCPConfig.
 
-    CLIO raw specs (``transport`` key) go through
-    :func:`clio_agent.tools.mcp_config.transport_from_spec`. Native FastMCP
-    ``MCPConfig`` mappings — an ``mcpServers`` wrapper or a rootless map of
-    server configs (values with ``command``/``url``) — are returned unchanged so
+    A CLIO raw spec is recognized ONLY when the top-level ``transport`` value has
+    the scalar transport shape (a *string* naming a transport); such specs go
+    through :func:`clio_agent.tools.mcp_config.transport_from_spec`. A ``transport``
+    key whose value is a *mapping* is a native FastMCP ``MCPConfig`` rootless
+    server that merely happens to be named ``transport`` — not a CLIO spec. Native
+    ``MCPConfig`` mappings (an ``mcpServers`` wrapper, or a rootless map of server
+    configs — values with ``command``/``url``) are returned unchanged so
     ``fastmcp.Client`` builds its own ``MCPConfigTransport``. Anything else is an
     explicit error rather than a silent mis-parse.
     """
 
-    if "transport" in target:
+    if isinstance(target.get("transport"), str):
         from clio_agent.tools.mcp_config import transport_from_spec  # noqa: PLC0415
 
         return transport_from_spec(target)
@@ -277,8 +273,8 @@ def _normalize_mapping_target(target: Mapping[str, Any]) -> Any:
         return target
     raise ValueError(
         "ambiguous MCP client target mapping: expected a CLIO raw spec (with a "
-        "'transport' key) or a FastMCP MCPConfig (with 'mcpServers' or a rootless "
-        f"map of server configs); got keys {sorted(target)!r}"
+        "scalar 'transport' key) or a FastMCP MCPConfig (with 'mcpServers' or a "
+        f"rootless map of server configs); got keys {sorted(target)!r}"
     )
 
 
