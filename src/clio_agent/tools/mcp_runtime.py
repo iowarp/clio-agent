@@ -164,20 +164,48 @@ class MCPClientHandlers:
     cancellation: "MessageHook | None" = None
 
 
+def clio_client_info() -> Any:
+    """CLIO's client identity, stamped into every execution-path request's ``_meta``.
+
+    The 2026-07-28 revision removed the ``initialize`` handshake: the SDK session
+    now stamps per-request ``_meta`` carrying ``clientInfo`` + ``clientCapabilities``
+    on every call. FastMCP defaults ``clientInfo`` to ``name='mcp'``/``version='0.1.0'``;
+    this declares CLIO's true identity instead so a downstream MCP server can see
+    *who* is calling.
+
+    This is the ONE capability-DECLARATION seam (#1111). Client **capabilities**
+    are not declared here directly: the SDK derives ``clientCapabilities`` from the
+    handler callbacks actually wired onto the client (elicitation/sampling/roots).
+    CLIO wires none today — correlation-by-protocol-identity is deferred to
+    #1111/#1113, and elicitation *form* mode arrives in #1113 — so CLIO honestly
+    advertises identity plus an empty capability set. When #1113 wires the
+    elicitation hook through :class:`MCPClientHandlers`, that capability begins
+    advertising automatically; no change is needed here.
+    """
+
+    from mcp.types import Implementation  # noqa: PLC0415
+
+    from clio_agent import __version__  # noqa: PLC0415
+
+    return Implementation(name="clio-agent", title="CLIO Agent", version=__version__)
+
+
 def make_mcp_client(
     target: Any,
     *,
     handlers: MCPClientHandlers | None = None,
     client_cls: Callable[..., Any] | None = None,
 ) -> Any:
-    """Construct an execution-path FastMCP client with the handler slot.
+    """Construct an execution-path FastMCP client with CLIO identity + the handler slot.
 
     This is the ONE construction site for clients that actually dispatch MCP
-    calls. With no populated ``handlers`` the construction is byte-identical to
-    a bare ``Client(target)`` (zero behavior change for current callers); with a
-    populated hook, the hook is wrapped in a signature adapter and forwarded as
-    the matching ``fastmcp.Client`` keyword argument — the construction-time slot
-    P1 fills once correlation lands (see :mod:`clio_agent.tools.mcp_handlers`).
+    calls, and the ONE place CLIO stamps its handshake-floor identity: every
+    client built here carries :func:`clio_client_info` as its ``client_info`` so
+    the per-request ``_meta`` on the 2026-07-28 wire names ``clio-agent`` rather
+    than FastMCP's default ``mcp`` (#1111). A populated hook is additionally
+    wrapped in a signature adapter and forwarded as the matching ``fastmcp.Client``
+    keyword argument — the construction-time slot P1 fills once correlation lands
+    (see :mod:`clio_agent.tools.mcp_handlers`).
 
     Args:
         target: A FastMCP transport / server object (passed straight to the
@@ -188,7 +216,7 @@ def make_mcp_client(
             server map), passed unchanged so ``Client`` builds its
             ``MCPConfigTransport``.
         handlers: Optional CLIO hook bundle. ``None`` (or a bundle whose hooks
-            are all ``None``) yields a bare client.
+            are all ``None``) yields an identity-only client (no handler kwargs).
         client_cls: Injection seam for the client class. Defaults to
             ``fastmcp.Client``; tests substitute a fake to inspect the
             construction without spawning a real backend.
@@ -210,20 +238,15 @@ def make_mcp_client(
 
         client_cls = Client
 
-    if handlers is None:
-        return client_cls(target)
-
-    kwargs: dict[str, Any] = {}
-    if handlers.elicitation is not None:
-        kwargs["elicitation_handler"] = ElicitationDispatcher(handlers.elicitation)
-    if handlers.progress is not None:
-        kwargs["progress_handler"] = ProgressDispatcher(handlers.progress)
-    if handlers.message is not None:
-        kwargs["message_handler"] = MessageMultiplexer(handlers.message)
-    # `cancellation` has no fastmcp Client keyword today; P1 owns its wiring.
-
-    if not kwargs:
-        return client_cls(target)
+    kwargs: dict[str, Any] = {"client_info": clio_client_info()}
+    if handlers is not None:
+        if handlers.elicitation is not None:
+            kwargs["elicitation_handler"] = ElicitationDispatcher(handlers.elicitation)
+        if handlers.progress is not None:
+            kwargs["progress_handler"] = ProgressDispatcher(handlers.progress)
+        if handlers.message is not None:
+            kwargs["message_handler"] = MessageMultiplexer(handlers.message)
+        # `cancellation` has no fastmcp Client keyword today; P1 owns its wiring.
 
     return client_cls(target, **kwargs)
 
@@ -268,4 +291,4 @@ def _is_rootless_mcp_config(target: Mapping[str, Any]) -> bool:
     )
 
 
-__all__ = ["MCPClientHandlers", "WireMode", "make_mcp_client", "wire_value"]
+__all__ = ["MCPClientHandlers", "WireMode", "clio_client_info", "make_mcp_client", "wire_value"]

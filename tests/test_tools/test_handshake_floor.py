@@ -26,7 +26,7 @@ from typing import Any
 
 import psutil
 import pytest
-from fastmcp import Client, Context, FastMCP
+from fastmcp import Context, FastMCP
 
 from clio_agent import __version__
 from clio_agent.providers.handshake.mcp import _probe_one

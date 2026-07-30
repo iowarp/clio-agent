@@ -296,7 +296,7 @@ def test_dynamic_external_mcp_read_only_hint_invokes_client(
     class FakeClient:
         called = False
 
-        def __init__(self, transport: Any) -> None:
+        def __init__(self, transport: Any, **_: Any) -> None:
             self.transport = transport
 
         async def __aenter__(self) -> "FakeClient":
@@ -972,7 +972,7 @@ def test_external_mcp_call_policy_allow_executes_without_prompt(
     class FakeClient:
         called = False
 
-        def __init__(self, transport: Any) -> None:
+        def __init__(self, transport: Any, **_: Any) -> None:
             self.transport = transport
 
         async def __aenter__(self) -> "FakeClient":
@@ -1041,7 +1041,7 @@ def test_external_mcp_call_uses_explicit_session_for_policy_and_telemetry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     class FakeClient:
-        def __init__(self, transport: Any) -> None:
+        def __init__(self, transport: Any, **_: Any) -> None:
             self.transport = transport
 
         async def __aenter__(self) -> "FakeClient":

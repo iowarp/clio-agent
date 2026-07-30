@@ -23,7 +23,13 @@ DEFAULT_MCP_TIMEOUT_S = 20.0
 
 @dataclass(frozen=True)
 class MCPServerReport:
-    """Connectivity + tool inventory for one declared MCP server."""
+    """Connectivity + tool inventory for one declared MCP server.
+
+    On the 2026-07-28 wire the client probes ``server/discover`` on connect; the
+    negotiated protocol era, the backend's own version, and its natural-language
+    instructions are surfaced here so a handshake consumer can record *what*
+    answered, not merely that something did (#1111).
+    """
 
     name: str
     connectivity: ConnectivityState
@@ -32,6 +38,9 @@ class MCPServerReport:
     tools: tuple[str, ...] = ()
     error: str | None = None
     latency_ms: float | None = None
+    protocol_version: str | None = None
+    server_version: str | None = None
+    instructions: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -56,6 +65,12 @@ class MCPServerReport:
         details: dict[str, Any] = {"transport": self.transport, "tools": list(self.tools[:30])}
         if self.latency_ms is not None:
             details["latency_ms"] = round(self.latency_ms, 1)
+        if self.protocol_version is not None:
+            details["protocol_version"] = self.protocol_version
+        if self.server_version is not None:
+            details["server_version"] = self.server_version
+        if self.instructions is not None:
+            details["instructions"] = self.instructions
         return IntegrationStatus(
             name=f"mcp:{self.name}",
             state=state,
@@ -84,11 +99,19 @@ async def _probe_one(spec: Any, *, timeout_s: float) -> MCPServerReport:
         from clio_agent.tools.mcp_config import transport_for  # noqa: PLC0415
         from clio_agent.tools.mcp_runtime import make_mcp_client  # noqa: PLC0415
 
-        async def _list() -> list[Any]:
+        async def _list() -> tuple[list[Any], dict[str, Any]]:
             async with make_mcp_client(transport_for(spec)) as client:
-                return await client.list_tools()
+                tools = await client.list_tools()
+                # server/discover output, captured while the session is live.
+                server_info = getattr(client, "server_info", None)
+                discovered = {
+                    "protocol_version": getattr(client, "protocol_version", None),
+                    "server_version": getattr(server_info, "version", None),
+                    "instructions": getattr(client, "instructions", None),
+                }
+                return tools, discovered
 
-        tools = await asyncio.wait_for(_list(), timeout=timeout_s)
+        tools, discovered = await asyncio.wait_for(_list(), timeout=timeout_s)
         names = tuple(sorted(getattr(t, "name", str(t)) for t in tools))
         return MCPServerReport(
             name=spec.name,
@@ -97,6 +120,9 @@ async def _probe_one(spec: Any, *, timeout_s: float) -> MCPServerReport:
             tool_count=len(names),
             tools=names,
             latency_ms=(time.monotonic() - started) * 1000.0,
+            protocol_version=discovered["protocol_version"],
+            server_version=discovered["server_version"],
+            instructions=discovered["instructions"],
         )
     except (TimeoutError, asyncio.TimeoutError):
         return MCPServerReport(

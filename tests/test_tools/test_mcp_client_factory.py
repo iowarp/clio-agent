@@ -89,21 +89,23 @@ def test_make_mcp_client_message_hook_is_multiplexer() -> None:
     assert mux._hook is on_message
 
 
-def test_make_mcp_client_no_handlers_is_bare_construction() -> None:
-    """No handlers => identical bare construction (zero behavior change)."""
+def test_make_mcp_client_no_handlers_stamps_identity_only() -> None:
+    """No handlers => identity-only construction (client_info, no handler kwargs)."""
 
     client = make_mcp_client("transport-sentinel", client_cls=_FakeClient)
 
     assert client.target == "transport-sentinel"
-    assert client.kwargs == {}
+    assert set(client.kwargs) == {"client_info"}
+    assert client.kwargs["client_info"].name == "clio-agent"
 
 
-def test_make_mcp_client_all_none_hooks_is_bare_construction() -> None:
-    """An empty bundle (all hooks None) still yields a bare client."""
+def test_make_mcp_client_all_none_hooks_stamps_identity_only() -> None:
+    """An empty bundle (all hooks None) still yields an identity-only client."""
 
     client = make_mcp_client("t", handlers=MCPClientHandlers(), client_cls=_FakeClient)
 
-    assert client.kwargs == {}
+    assert set(client.kwargs) == {"client_info"}
+    assert client.kwargs["client_info"].name == "clio-agent"
 
 
 # --------------------------------------------------------------------------- #
