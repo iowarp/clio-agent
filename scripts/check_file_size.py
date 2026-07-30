@@ -169,7 +169,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # merge(main->develop): +15 (897 -> 912) integrating main's #964
     # call_tool_result_to_observer public-projection wrapper (delegates to the
     # tools/mcp_results.py owner module).
-    "src/clio_agent/gact/mcp_apps.py": 912,
+    # P0.1c (#1104): sandbox/CSP construction moved to mcp_app_sandbox.py.
+    "src/clio_agent/gact/mcp_apps.py": 784,
     # #895: +6 for threading the provider-generic thinking_level onto the LM bind
     # (LMProviderConfig arg + app.state.lm_config + the GET's thinking_level /
     # thinking_effective fields). The mapping logic itself lives in the owner
