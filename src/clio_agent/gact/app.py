@@ -54,6 +54,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from clio_agent import conf
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.auth import configure_bearer_auth
 from clio_agent.gact.semantic_events import (
     SemanticEventSink,
     build_trace_backend,
@@ -1215,12 +1216,11 @@ def build_app(
         lifespan=_lifespan,
     )
 
-    # CORS: browser/WebView frontends must opt in with explicit origins.
-    # CLIO's default auth scheme is trust_socket, which is safe for local
-    # non-browser clients but must not grant arbitrary browser origins access
-    # to a localhost agent. Operators can enable trusted web origins with
-    # ``gact.cors.origins`` in .clio/config.yaml; CLIO_GACT_CORS_ORIGINS remains
-    # a compatibility fallback.
+    configure_bearer_auth(app)
+
+    # Browser/WebView origins are explicit: trust_socket must not grant arbitrary
+    # sites access. Configure gact.cors.origins; CLIO_GACT_CORS_ORIGINS remains the
+    # compatibility fallback.
     allow_origins = _gact_cors_origins()
     app.add_middleware(
         CORSMiddleware,

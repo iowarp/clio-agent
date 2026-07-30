@@ -64,6 +64,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ENVIRONMENT` | `runtime.environment` | str | `dev` | `src/clio_agent/config.py` |
 | `CLIO_EXTRACT_REPAIR_ATTEMPTS` | `limits.extract_repair_attempts` | float | `3.0` | `src/clio_agent/gact/agents/builders.py` |
 | `CLIO_FS_MAX_READ_BYTES` | `limits.fs_read_bytes` | int | `262144` | `src/clio_agent/tools/servers/fs_server.py` |
+| `CLIO_GACT_BEARER_TOKEN` | `gact.auth.bearer_token` | str | _(unset)_ | `src/clio_agent/gact/auth.py` |
 | `CLIO_GACT_CORS_ORIGINS` | `gact.cors.origins` | str | _(unset)_ | `src/clio_agent/gact/app.py` |
 | `CLIO_GACT_MCP_RECONNECT_TIMEOUT_S` | `limits.mcp_reconnect_timeout_s` | float | `15.0` | `src/clio_agent/gact/routes/mcp.py` |
 | `CLIO_GACT_TURN_TIMEOUT_S` | `limits.turn_timeout_s` | float | `900.0` | `src/clio_agent/gact/_params.py` |
