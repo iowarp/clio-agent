@@ -1,7 +1,8 @@
-"""The SDK-transport availability gate on the fastmcp-4 / mcp-2 stack (finding #2).
+"""The SDK-transport availability seam (finding #2, revised).
 
-``claude-agent-sdk`` is upstream-declared incompatible with mcp 2 (it pins
-``mcp<2`` from 0.2.96), so the ``claude-code`` extra is intentionally
+The SDK installs via the ``claude-code`` extra (its protective ``mcp<2`` bound
+is neutralized by the uv dependency override — CLIO is an LLM-provider-only
+consumer). When the SDK is genuinely absent, every ``sdk`` path must raise
 uninstallable on the 2026-07-28 stack. Selecting the SDK transport when the
 package is absent must yield a TYPED, structured unavailability error explaining
 the mcp-2 incompatibility — never a bare ``ImportError`` traceback.
@@ -29,8 +30,9 @@ def test_require_sdk_raises_typed_error_not_importerror(monkeypatch: pytest.Monk
         require_claude_agent_sdk()
 
     message = str(excinfo.value)
-    # The reason names the mcp-2 incompatibility (not a raw ImportError trace).
-    assert "mcp" in message.lower()
+    # The reason names the missing package + install path (not a raw trace).
+    assert "claude-agent-sdk" in message.lower()
+    assert "claude-code" in message.lower()
     assert "claude-agent-sdk" in message
     # It is a typed error, and its cause is the underlying ImportError.
     assert isinstance(excinfo.value, ClaudeCodeCLIUnavailableError)
@@ -54,7 +56,7 @@ def test_selecting_sdk_transport_stream_yields_typed_error(
 
     with pytest.raises(ClaudeCodeCLIUnavailableError) as excinfo:
         asyncio.run(_drive())
-    assert "mcp" in str(excinfo.value).lower()
+    assert "claude-agent-sdk" in str(excinfo.value).lower()
 
 
 def test_sdk_pool_complete_yields_typed_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -67,4 +69,4 @@ def test_sdk_pool_complete_yields_typed_error(monkeypatch: pytest.MonkeyPatch) -
     session = _SdkSession()
     with pytest.raises(ClaudeCodeCLIUnavailableError) as excinfo:
         session.complete(prompt="hi", model="claude-x", timeout=5.0, cwd=None)
-    assert "mcp" in str(excinfo.value).lower()
+    assert "claude-agent-sdk" in str(excinfo.value).lower()

@@ -15,12 +15,14 @@ __all__ = ["build_sdk_options", "require_claude_agent_sdk", "thinking_key"]
 
 
 def require_claude_agent_sdk() -> Any:
-    """Import the Claude Agent SDK or raise a typed mcp-2 unavailability error (#1107).
+    """Import the Claude Agent SDK or raise a typed unavailability error (#1107).
 
-    fastmcp-4 / mcp-2 gate: ``claude-agent-sdk`` declares ``mcp<2`` (the ``claude-code``
-    extra floor is ``>=0.2.96``), so it is intentionally uninstallable with mcp 2. This
-    is the single SDK-transport import/selection seam, so every ``sdk`` path gets a typed
-    reason (``ClaudeCodeCLIUnavailableError``) rather than a raw ``ImportError`` trace.
+    The single SDK-transport import/selection seam: every ``sdk`` path gets a
+    typed reason (``ClaudeCodeCLIUnavailableError``) rather than a raw
+    ``ImportError`` trace. The SDK installs via the ``claude-code`` extra; on
+    the mcp-2 core its protective ``mcp<2`` bound is neutralized by the
+    ``[tool.uv] override-dependencies`` entry (CLIO uses the SDK purely as an
+    LLM provider and never touches its SDK-MCP-server bridging surface).
     """
     try:
         import claude_agent_sdk  # noqa: PLC0415
@@ -30,10 +32,9 @@ def require_claude_agent_sdk() -> Any:
         )
 
         raise ClaudeCodeCLIUnavailableError(
-            "Claude Agent SDK transport (claude_code_transport='sdk') is unavailable on "
-            "the fastmcp-4 / mcp-2 (2026-07-28) stack: claude-agent-sdk pins mcp<2, so it "
-            "cannot co-install with mcp 2. SDK-backed Claude Code returns once upstream "
-            "ships mcp-2 support."
+            "Claude Agent SDK transport (claude_code_transport='sdk') requires the "
+            "claude-agent-sdk package. Install the 'claude-code' extra "
+            "(uv sync --extra claude-code)."
         ) from exc
     return claude_agent_sdk
 
