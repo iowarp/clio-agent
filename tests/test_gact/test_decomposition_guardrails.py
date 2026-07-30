@@ -58,7 +58,9 @@ from clio_agent.gact.app import build_app
 # from routes/hooks.py — a registry no dispatcher ever fired.
 # 163 -> 164 (#1057 P2.7): +1 read-only GET /v1/hooks introspection route, owned by
 # routes/system.py, replacing the deleted CRUD surface with a debugging endpoint.
-EXPECTED_ROUTE_METHOD_PAIRS = 164
+# 164 -> 165 (#1117 P1.7): +1 POST /v1/mcp/servers/{sid}/prompts/get protocol prompt
+# fetch, owned by routes/mcp.py (prompts/get client support).
+EXPECTED_ROUTE_METHOD_PAIRS = 165
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

@@ -18,9 +18,9 @@ SPEC §6.7 third-party MCP server surface the gact-tui MCP browser and the
 * ``POST /v1/mcp/servers/{sid}/reconnect`` -- re-probe a previously-installed
   server's stored transport spec (timeout-bounded; non-destructive).
 * ``GET /v1/mcp/servers/{sid}`` -- detail row for one server.
-* ``GET /v1/mcp/servers/{sid}/(tools|resources|prompts)`` -- detail enumeration
-  for the TUI MCP browser (bundled via the in-process gateway, external via a
-  short-lived ``fastmcp.Client`` connection).
+* ``GET /v1/mcp/servers/{sid}/(tools|resources|prompts)`` and ``POST .../prompts/get``
+  -- detail enumeration plus protocol prompt fetches (bundled via the in-process
+  gateway, external via a short-lived ``fastmcp.Client`` connection).
 
 Handlers close over the ``app`` argument (FastAPI's decorators need it) and
 read/write the live third-party registry via ``app.state.external_mcp_servers``.
@@ -43,7 +43,7 @@ import uuid
 from collections.abc import Mapping
 from contextlib import nullcontext
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 
@@ -60,6 +60,11 @@ from clio_agent.gact.permission_gate import (
     _normalize_mcp_tool_annotations,
 )
 from clio_agent.gact.routes._body import json_body
+from clio_agent.gact.routes.mcp_rows import (
+    bundled_server_tool_rows,
+    mcp_inventory_row,
+    mcp_prompt_result_row,
+)
 from clio_agent.gact.runtime.globals import _tool_session_context
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.tools.execution import notify_tool_observer
@@ -508,6 +513,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
             spec = info.get("spec", {})
             try:
                 from clio_agent.tools.mcp_runtime import make_mcp_client  # noqa: PLC0415
+
                 transport = transport_from_spec(spec)
                 client_ctx = make_mcp_client(transport)
             except MCPTransportError as exc:
@@ -832,30 +838,14 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
     # short-lived fastmcp.Client connection (same transport spec used at
     # install time).
 
-    def _bundled_server_tools(short_name: str) -> list[dict[str, Any]]:
-        """Return tools for a bundled in-process server, shaped for the
-        TUI's catalog detail rows (id/name/description)."""
-        try:
-            from clio_agent.tools.gateway import list_capabilities
-
-            caps = list_capabilities()
-        except Exception:  # noqa: BLE001 - gateway capabilities optional; empty on failure
-            return []
-        out = []
-        for tool in caps:
-            if tool.get("server") != short_name:
-                continue
-            out.append(
-                {
-                    "id": tool.get("name", ""),
-                    "name": tool.get("name", ""),
-                    "description": tool.get("description") or "",
-                }
-            )
-        return out
-
-    async def _external_mcp_inventory(sid: str, kind: str) -> list[dict[str, Any]]:
-        """Fetch tools|resources|prompts from a third-party MCP server."""
+    async def _external_mcp_inventory(
+        sid: str,
+        kind: Literal["tools", "resources", "prompts", "prompt"],
+        *,
+        prompt_name: str = "",
+        arguments: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]] | dict[str, Any]:
+        """List an external inventory or fetch one rendered prompt."""
         installed = getattr(app.state, "external_mcp_servers", {}) or {}
         info = installed.get(sid)
         if info is None:
@@ -871,6 +861,8 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         try:
             from fastmcp import Client
+
+            from clio_agent.tools.mcp_runtime import make_mcp_client
         except Exception as exc:
             raise HTTPException(
                 status_code=503,
@@ -899,39 +891,18 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
             ) from exc
         rows: list[dict[str, Any]] = []
         try:
-            async with Client(transport) as client:
+            client_context = make_mcp_client(transport) if kind == "prompt" else Client(transport)
+            async with client_context as client:
                 if kind == "tools":
                     items = await client.list_tools()
-                    for t in items:
-                        rows.append(
-                            {
-                                "id": t.name,
-                                "name": t.name,
-                                "description": getattr(t, "description", "") or "",
-                                "annotations": _normalize_mcp_tool_annotations(t),
-                            }
-                        )
                 elif kind == "resources":
                     items = await client.list_resources()
-                    for r in items:
-                        uri = str(getattr(r, "uri", ""))
-                        rows.append(
-                            {
-                                "id": uri or getattr(r, "name", ""),
-                                "name": getattr(r, "name", "") or uri,
-                                "description": getattr(r, "description", "") or "",
-                            }
-                        )
                 elif kind == "prompts":
                     items = await client.list_prompts()
-                    for p in items:
-                        rows.append(
-                            {
-                                "id": p.name,
-                                "name": p.name,
-                                "description": getattr(p, "description", "") or "",
-                            }
-                        )
+                else:
+                    result = await client.get_prompt(prompt_name, arguments)
+                    return mcp_prompt_result_row(result)
+                rows.extend(mcp_inventory_row(item, kind=kind) for item in items)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(
                 status_code=502,
@@ -953,7 +924,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
         if sid.startswith("mcp_") and sid not in (
             getattr(app.state, "external_mcp_servers", {}) or {}
         ):
-            return {"tools": _bundled_server_tools(sid[len("mcp_") :])}
+            return {"tools": bundled_server_tool_rows(sid[len("mcp_") :])}
         return {"tools": await _external_mcp_inventory(sid, "tools")}
 
     @app.get("/v1/mcp/servers/{sid}/resources")
@@ -977,3 +948,32 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
         ):
             return {"prompts": []}
         return {"prompts": await _external_mcp_inventory(sid, "prompts")}
+
+    @app.post("/v1/mcp/servers/{sid}/prompts/get")
+    async def get_mcp_prompt(sid: str, request: Request) -> dict[str, Any]:
+        """Fetch and render one external MCP prompt via ``prompts/get``."""
+        body = await json_body(request, route="POST /v1/mcp/servers/{sid}/prompts/get")
+        prompt_name = body.get("name")
+        arguments = body.get("arguments")
+        if (
+            not isinstance(prompt_name, str)
+            or not prompt_name.strip()
+            or (arguments is not None and not isinstance(arguments, dict))
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message="'name' must be a non-empty string and 'arguments' an object",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        prompt = await _external_mcp_inventory(
+            sid,
+            "prompt",
+            prompt_name=prompt_name.strip(),
+            arguments=arguments,
+        )
+        return {"prompt": prompt}
