@@ -45,7 +45,9 @@ dependencies = [
     # DSPy permits a broad LiteLLM range. Pin the tested stable wheel so a global
     # prerelease policy can never select a LiteLLM dev sdist on Windows.
     "litellm==1.91.3",
-    "fastmcp>=3.2.4",
+    "fastmcp==4.0.0b1",  # 2026-07-28 line (#1107); re-lock needs --prerelease=allow (beta). The 'claude-code' extra pins claude-agent-sdk>=0.2.96 (mcp<2), so it is intentionally uninstallable with this mcp-2 core; the SDK seam raises a typed unavailability error.
+    "fastmcp-tasks==4.0.0b1",
+    "pydantic>=2.12,<2.14",
     "requests>=2.31.0",
     "h5py>=3.10.0",
     "pyarrow>=14.0.0",
@@ -71,7 +73,7 @@ dependencies = [
     "filelock>=3.12.0",
     "psutil>=5.9.0",
     # gact backend (clio_agent.gact.app) — shipped product surface, not optional
-    "fastapi>=0.104.0",
+    "fastapi>=0.140",
     "uvicorn>=0.24.0",
     "sse-starlette>=1.6.0",
     # clio_agent.sdk (#799) — the typed GACT client imports httpx directly
@@ -118,10 +120,18 @@ claude-code = [
     # Optional Claude Agent SDK transport (claude_code_transport="sdk"): a
     # persistent in-process Claude Code CLI session instead of one `claude -p`
     # spawn per LM call (kills the per-call cold-start, #715). Auth is the user's
-    # Claude Code OAuth login (no API key). The default "exec" transport needs only
-    # the `claude` CLI on PATH, so this is opt-in. See
+    # Claude Code OAuth login (no API key). See
     # src/clio_agent/providers/claude_code_litellm.py.
-    "claude-agent-sdk>=0.2.0",
+    #
+    # fastmcp-4 / mcp-2 gate (#1107): claude-agent-sdk added a deliberate `mcp<2`
+    # bound in 0.2.96 — the SDK is upstream-declared INCOMPATIBLE with mcp 2. The
+    # floor is pinned to >=0.2.96 on purpose: uv then REFUSES to co-install this
+    # extra with the mcp-2 core (a loud, correct resolution failure) instead of
+    # silently landing an SDK that cannot speak the 2026-07-28 wire. The extra
+    # returns to installable once upstream ships mcp-2 support; until then the
+    # SDK-transport seam raises a typed unavailability error (see
+    # ``require_claude_agent_sdk``).
+    "claude-agent-sdk>=0.2.96",
 ]
 
 dev = [
