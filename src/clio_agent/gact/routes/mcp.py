@@ -909,11 +909,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
                         error="upstream_error",
-                        message=(
-                            f"MCP prompt fetch failed: {exc!r}"
-                            if kind == "prompt"
-                            else f"MCP {kind} listing failed: {exc!r}"
-                        ),
+                        message=f"MCP {kind} {'fetch' if kind == 'prompt' else 'listing'} failed: {exc!r}",
                         recoverable=True,
                     )
                 ).model_dump(exclude_none=True),
