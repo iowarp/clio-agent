@@ -11,7 +11,32 @@ from __future__ import annotations
 import json
 from typing import Any
 
-__all__ = ["build_sdk_options", "thinking_key"]
+__all__ = ["build_sdk_options", "require_claude_agent_sdk", "thinking_key"]
+
+
+def require_claude_agent_sdk() -> Any:
+    """Import the Claude Agent SDK or raise a typed unavailability error (#1107).
+
+    The single SDK-transport import/selection seam: every ``sdk`` path gets a
+    typed reason (``ClaudeCodeCLIUnavailableError``) rather than a raw
+    ``ImportError`` trace. The SDK installs via the ``claude-code`` extra; on
+    the mcp-2 core its protective ``mcp<2`` bound is neutralized by the
+    ``[tool.uv] override-dependencies`` entry (CLIO uses the SDK purely as an
+    LLM provider and never touches its SDK-MCP-server bridging surface).
+    """
+    try:
+        import claude_agent_sdk  # noqa: PLC0415
+    except ImportError as exc:
+        from clio_agent.providers.claude_code_litellm import (  # noqa: PLC0415
+            ClaudeCodeCLIUnavailableError,
+        )
+
+        raise ClaudeCodeCLIUnavailableError(
+            "Claude Agent SDK transport (claude_code_transport='sdk') requires the "
+            "claude-agent-sdk package. Install the 'claude-code' extra "
+            "(uv sync --extra claude-code)."
+        ) from exc
+    return claude_agent_sdk
 
 
 def thinking_key(thinking: dict[str, Any] | None) -> str | None:

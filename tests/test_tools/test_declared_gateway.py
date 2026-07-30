@@ -8,12 +8,12 @@ declared proxy (no subprocess, no network).
 
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
-from fastmcp import Client, FastMCP
+from fastmcp import FastMCP
+from fastmcp.server import create_proxy
 
 from clio_agent.tools.catalog import TOOL_CATALOG, ToolCatalogEntry
 from clio_agent.tools.gateway import build_gateway, build_tool_catalog
@@ -41,11 +41,8 @@ def declared_server() -> FastMCP:
 
 
 def _in_process_factory(declared: FastMCP):
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-
-        def factory(_spec: MCPServerSpec) -> FastMCP:
-            return FastMCP.as_proxy(Client(declared))
+    def factory(_spec: MCPServerSpec) -> FastMCP:
+        return create_proxy(declared)
 
     return factory
 

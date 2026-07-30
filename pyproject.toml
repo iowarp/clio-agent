@@ -45,7 +45,9 @@ dependencies = [
     # DSPy permits a broad LiteLLM range. Pin the tested stable wheel so a global
     # prerelease policy can never select a LiteLLM dev sdist on Windows.
     "litellm==1.91.3",
-    "fastmcp>=3.2.4",
+    "fastmcp==4.0.0b1",  # 2026-07-28 line (#1107); re-lock needs --prerelease=allow (beta).
+    "fastmcp-tasks==4.0.0b1",
+    "pydantic>=2.12,<2.14",
     "requests>=2.31.0",
     "h5py>=3.10.0",
     "pyarrow>=14.0.0",
@@ -71,7 +73,7 @@ dependencies = [
     "filelock>=3.12.0",
     "psutil>=5.9.0",
     # gact backend (clio_agent.gact.app) — shipped product surface, not optional
-    "fastapi>=0.104.0",
+    "fastapi>=0.140",
     "uvicorn>=0.24.0",
     "sse-starlette>=1.6.0",
     # clio_agent.sdk (#799) — the typed GACT client imports httpx directly
@@ -116,12 +118,18 @@ argonne = [
 
 claude-code = [
     # Optional Claude Agent SDK transport (claude_code_transport="sdk"): a
-    # persistent in-process Claude Code CLI session instead of one `claude -p`
-    # spawn per LM call (kills the per-call cold-start, #715). Auth is the user's
-    # Claude Code OAuth login (no API key). The default "exec" transport needs only
-    # the `claude` CLI on PATH, so this is opt-in. See
-    # src/clio_agent/providers/claude_code_litellm.py.
-    "claude-agent-sdk>=0.2.0",
+    # persistent in-process Claude Code session instead of one spawn per LM
+    # call (#715). Auth is the user's Claude Code OAuth login.
+    #
+    # mcp-2 note (#1107): the SDK declares a protective `mcp<2` bound for its
+    # SDK-MCP-server bridging feature. CLIO uses the SDK PURELY as an LLM
+    # provider (ClaudeSDKClient/ClaudeAgentOptions — owner decision: "to us he
+    # is a provider of llm, not a tool calling semantics") and never touches
+    # that bridging surface. The [tool.uv] override below neutralizes the
+    # bound; the full import surface is verified under mcp 2.0.0 by
+    # tests and the compat matrix doc. The live SDK-session smoke runs at the
+    # P0 phase gate.
+    "claude-agent-sdk>=0.2.110",
 ]
 
 dev = [
@@ -228,3 +236,11 @@ disable_error_code = ["import-untyped"]
 paths_to_mutate = ["src/clio_agent/arc/segments.py", "src/clio_agent/gact/events.py"]
 tests_dir = ["tests/mutmut_runner/"]
 also_copy = ["src/clio_agent/", "tests/"]
+
+[tool.uv]
+# #1107: claude-agent-sdk declares mcp<2 as a protective bound for its
+# SDK-MCP-server bridging feature, which CLIO never uses (LLM provider only).
+# Override it so the mcp-2 core and the claude-code extra co-resolve; the
+# combination's import surface is test-verified, the live session smoke runs
+# at the phase gate. Drop this override when upstream supports mcp 2.
+override-dependencies = ["mcp>=2.0.0"]

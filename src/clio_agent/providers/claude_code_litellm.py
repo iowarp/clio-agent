@@ -180,19 +180,18 @@ async def _astream_sdk(
     #878 suppression) is identical on both paths — only the client lifecycle
     differs.
     """
-    try:
-        from claude_agent_sdk import (  # noqa: PLC0415
-            AssistantMessage,
-            ClaudeSDKClient,
-            ResultMessage,
-            StreamEvent,
-            TextBlock,
-        )
-    except ImportError as exc:
-        raise ClaudeCodeCLIUnavailableError(
-            "claude_code_transport='sdk' requires the claude-agent-sdk package "
-            "(install the 'claude-code' extra)."
-        ) from exc
+    # Single typed seam (finding #2): a structured mcp-2 unavailability error
+    # instead of a raw ImportError trace when the SDK is absent/uninstallable.
+    from clio_agent.providers.claude_code_options import require_claude_agent_sdk  # noqa: PLC0415
+
+    require_claude_agent_sdk()
+    from claude_agent_sdk import (  # noqa: PLC0415
+        AssistantMessage,
+        ClaudeSDKClient,
+        ResultMessage,
+        StreamEvent,
+        TextBlock,
+    )
 
     call_id = (
         send.call_id if send is not None else ""

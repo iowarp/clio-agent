@@ -9,20 +9,16 @@ actually arrives — NOT off ambient state. Track that work in clio-agent#1111 /
 clio-agent#1113. Until then the CLIO hooks (:class:`ElicitationHook`,
 :class:`ProgressHook`, :class:`MessageHook`) are adapters that forward with a
 ``None`` context: honest about the fact that we cannot yet say *which*
-invocation a background event belongs to. The one exception is
-:class:`MessageMultiplexer`, which is safe today because task-status messages
-carry their own ``taskId`` and self-correlate through FastMCP's task registry
-(no ambient state involved).
+invocation a background event belongs to.
 
 Two review findings were deferred to that P1 work. They are the reason wiring is
 forbidden here — do not lose them:
 
 FINDING 1 (gateway proxy backend). The agent gateway mounts each declared MCP
-server as a ``FastMCP.as_proxy`` proxy. The proxy does not call the backend with
+server through a ``create_proxy`` proxy. The proxy does not call the backend with
 one fixed client: it runs ``client.new()`` per request, so a handler must be
 carried onto the *cloned* upstream client, not just the one the factory built.
-``Client.new``'s ``copy.copy`` carries session-kwargs handlers across, and
-:class:`MessageMultiplexer` is made clone-safe for the message slot, but the
+FastMCP 4's ``Client.new`` carries the base message handler across, but the
 GENERAL question — how every handler kind reaches the true upstream call path
 through the proxy, and how a proxied elicitation/progress event is attributed
 back to the originating frontend request — is unsolved design work, not a slot.
@@ -37,16 +33,14 @@ matched to a per-invocation record the executor opened for that id. That is the
 lifecycle P1 must build before any elicitation/progress hook is wired.
 ======================================================================
 
-The message slot is a MULTIPLEXER (:class:`MessageMultiplexer`): FastMCP's
-``Client`` installs a ``TaskNotificationHandler`` by default, and replacing the
-``message_handler`` with a plain callback would disable the built-in task-status
-routing P1/P2 need. The multiplexer runs the wrapped task handler first, then
-fans out to the CLIO hook.
+The message slot retains the :class:`MessageMultiplexer` adapter name from the
+factory contract. On FastMCP 4, task-status routing is extension-based and no
+longer occupies ``message_handler``; the adapter forwards only to the CLIO hook.
+``Client.new`` preserves that base handler for proxy clones.
 """
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
@@ -145,33 +139,15 @@ class ProgressDispatcher:
 
 
 class MessageMultiplexer:
-    """fastmcp ``message_handler`` that preserves task routing AND calls a hook.
+    """FastMCP ``message_handler`` adapter forwarding to the CLIO hook.
 
-    The wrapped ``task_handler`` (FastMCP's ``TaskNotificationHandler``) runs
-    first so built-in task-status routing is preserved; then the CLIO hook is
-    invoked. ``bind_task_handler`` lets the factory attach the task handler after
-    the owning client (which the handler needs a reference to) exists — and lets
-    a clone rebind a fresh handler to the cloned client (finding 5 / clone
-    safety). The CLIO hook receives ``context=None`` today; task-status messages
-    self-correlate through their ``taskId``, so the built-in routing is exact
-    regardless.
+    FastMCP 4 routes task notifications through client extensions instead of an
+    internal message handler, and ``Client.new`` preserves this adapter for
+    proxy clones. The CLIO hook receives ``context=None`` today.
     """
 
-    def __init__(
-        self,
-        hook: MessageHook,
-        task_handler: Callable[[Any], Awaitable[None]] | None = None,
-    ) -> None:
+    def __init__(self, hook: MessageHook) -> None:
         self._hook = hook
-        self._task_handler = task_handler
-
-    def bind_task_handler(
-        self, task_handler: Callable[[Any], Awaitable[None]]
-    ) -> None:
-        """Attach (or rebind, for a clone) the wrapped task handler."""
-        self._task_handler = task_handler
 
     async def __call__(self, message: Any) -> None:
-        if self._task_handler is not None:
-            await self._task_handler(message)
         await self._hook(None, message)

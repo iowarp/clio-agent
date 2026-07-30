@@ -107,18 +107,14 @@ class _SdkSession:
         cwd: str | None,
         thinking: dict[str, Any] | None = None,
     ) -> tuple[str, dict[str, Any]]:
-        from clio_agent.providers.claude_code_litellm import (  # noqa: PLC0415
-            ClaudeCodeCLIUnavailableError,
-            ClaudeCodeExecError,
+        from clio_agent.providers.claude_code_litellm import ClaudeCodeExecError  # noqa: PLC0415
+        from clio_agent.providers.claude_code_options import (  # noqa: PLC0415
+            require_claude_agent_sdk,
         )
 
-        try:
-            import claude_agent_sdk  # noqa: F401,PLC0415
-        except ImportError as exc:
-            raise ClaudeCodeCLIUnavailableError(
-                "claude_code_transport='sdk' requires the claude-agent-sdk package "
-                "(install the 'claude-code' extra)."
-            ) from exc
+        # Single typed seam (finding #2): raises a structured mcp-2 unavailability
+        # error rather than a raw ImportError when the SDK is absent/uninstallable.
+        require_claude_agent_sdk()
 
         tkey = thinking_key(thinking)
         with self._lock:

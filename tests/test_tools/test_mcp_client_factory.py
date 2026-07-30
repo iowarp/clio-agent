@@ -12,7 +12,6 @@ message multiplexer.
 
 from __future__ import annotations
 
-import weakref
 from types import SimpleNamespace
 from typing import Any
 
@@ -51,16 +50,6 @@ class _FakeClient:
         return None
 
 
-class _StubTask:
-    """Weakref-able stand-in for fastmcp's abstract Task in the registry."""
-
-    def __init__(self) -> None:
-        self.updates: list[Any] = []
-
-    def _handle_status_notification(self, status: Any) -> None:
-        self.updates.append(status)
-
-
 # --------------------------------------------------------------------------- #
 # Factory: handler attachment + zero-change bare construction
 # --------------------------------------------------------------------------- #
@@ -87,7 +76,7 @@ def test_make_mcp_client_wraps_hooks_in_signature_adapters() -> None:
 
 
 def test_make_mcp_client_message_hook_is_multiplexer() -> None:
-    """A message hook becomes a MessageMultiplexer with a bound task handler."""
+    """A message hook becomes a MessageMultiplexer adapter."""
 
     async def on_message(context: Any, message: Any) -> None:
         return None
@@ -98,8 +87,6 @@ def test_make_mcp_client_message_hook_is_multiplexer() -> None:
     mux = client.kwargs["message_handler"]
     assert isinstance(mux, MessageMultiplexer)
     assert mux._hook is on_message
-    # Built-in task-status routing preserved: a TaskNotificationHandler is bound.
-    assert mux._task_handler is not None
 
 
 def test_make_mcp_client_no_handlers_is_bare_construction() -> None:
@@ -135,9 +122,7 @@ def test_mapping_with_transport_key_goes_through_transport_from_spec(
         seen["spec"] = spec
         return "resolved-transport"
 
-    monkeypatch.setattr(
-        "clio_agent.tools.mcp_config.transport_from_spec", fake_transport_from_spec
-    )
+    monkeypatch.setattr("clio_agent.tools.mcp_config.transport_from_spec", fake_transport_from_spec)
     spec = {"transport": "stdio", "command": "echo"}
     client = make_mcp_client(spec, client_cls=_FakeClient)
 
@@ -202,58 +187,27 @@ def test_mapping_ambiguous_raises_value_error() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Finding #5: message multiplexer preserves task dispatch AND calls the hook
+# FastMCP 4 message-hook cloning
 # --------------------------------------------------------------------------- #
 
 
 @pytest.mark.asyncio
-async def test_message_multiplexer_runs_task_handler_then_hook() -> None:
-    """The multiplexer preserves TaskNotificationHandler dispatch and fans out."""
-
-    order: list[str] = []
-
-    async def task_handler(message: Any) -> None:
-        order.append(f"task:{message}")
-
-    async def hook(context: Any, message: Any) -> None:
-        order.append(f"hook:{message}")
-
-    mux = MessageMultiplexer(hook, task_handler)
-    await mux("PING")
-
-    # task handler runs FIRST (built-in routing preserved), then the CLIO hook.
-    assert order == ["task:PING", "hook:PING"]
-
-
-@pytest.mark.asyncio
-async def test_message_multiplexer_bind_task_handler_late() -> None:
-    """The task handler can be bound after construction (factory needs the client)."""
-
+async def test_message_multiplexer_forwards_hook() -> None:
+    """The message adapter forwards protocol messages to the CLIO hook."""
     seen: list[str] = []
 
-    async def task_handler(message: Any) -> None:
-        seen.append("task")
-
     async def hook(context: Any, message: Any) -> None:
-        seen.append("hook")
+        seen.append(f"hook:{message}")
 
     mux = MessageMultiplexer(hook)
-    assert mux._task_handler is None
-    mux.bind_task_handler(task_handler)
-    await mux("m")
-    assert seen == ["task", "hook"]
+    await mux("PING")
+
+    assert seen == ["hook:PING"]
 
 
 @pytest.mark.asyncio
 async def test_message_multiplexer_survives_client_clone() -> None:
-    """A real client.new() clone rebinds the multiplexer to the CLONE.
-
-    FastMCP proxies call a backend via client.new(); the clone's task handler
-    must route task notifications to the CLONE (not the original), and the CLIO
-    message hook must still fire. Exercises the real fastmcp Client + Task.
-    """
-
-    import mcp.types as mt
+    """FastMCP 4 ``Client.new`` preserves the message adapter on a clone."""
     from fastmcp import FastMCP
 
     fired: list[Any] = []
@@ -264,35 +218,14 @@ async def test_message_multiplexer_survives_client_clone() -> None:
     client = make_mcp_client(FastMCP("backend"), handlers=MCPClientHandlers(message=hook))
     clone = client.new()
 
-    mux = clone._session_kwargs["message_handler"]
-    assert isinstance(mux, MessageMultiplexer)
-    # the clone's task handler is bound to the CLONE, not the original client.
-    assert mux._task_handler._client_ref() is clone
+    original_mux = client._session_kwargs["message_handler"]
+    clone_mux = clone._session_kwargs["message_handler"]
+    assert isinstance(clone_mux, MessageMultiplexer)
+    assert clone_mux is original_mux
 
-    # register a task on the CLONE, then deliver a status notification. A minimal
-    # stub stands in for the abstract fastmcp Task; the client's registry routing
-    # calls _handle_status_notification, exactly as a real Task would receive it.
-    task = _StubTask()
-    task_id = "task-1"
-    clone._task_registry[task_id] = weakref.ref(task)
-    notif = mt.ServerNotification(
-        root=mt.TaskStatusNotification(
-            params=mt.TaskStatusNotificationParams(
-                taskId=task_id,
-                status="completed",
-                createdAt="2026-01-01T00:00:00Z",
-                lastUpdatedAt="2026-01-01T00:00:01Z",
-                ttl=60000,
-            )
-        )
-    )
-    await mux(notif)
+    await clone_mux("PING")
 
-    # the CLONE's registry routed the notification to its own task...
-    assert len(task.updates) == 1
-    assert task.updates[0].status == "completed"
-    # ...and the CLIO hook still fired on the clone.
-    assert fired == [notif]
+    assert fired == ["PING"]
 
 
 # --------------------------------------------------------------------------- #
@@ -346,6 +279,7 @@ async def test_proxy_backend_carries_factory_handler_onto_upstream() -> None:
     """A handler on the factory-built backend survives the proxy's per-request clone."""
 
     from fastmcp import FastMCP
+    from fastmcp.server import create_proxy
 
     backend = FastMCP("backend")
 
@@ -359,7 +293,7 @@ async def test_proxy_backend_carries_factory_handler_onto_upstream() -> None:
     backend_client = make_mcp_client(backend, handlers=MCPClientHandlers(elicitation=elicit))
     installed_cb = backend_client._session_kwargs["elicitation_callback"]
 
-    proxy = FastMCP.as_proxy(backend_client)
+    proxy = create_proxy(backend_client)
     # The proxy runs client.new() per request; copy.copy carries the handler
     # onto that upstream client, so the callback reaches the real call path.
     upstream = proxy.client_factory()
@@ -369,7 +303,13 @@ async def test_proxy_backend_carries_factory_handler_onto_upstream() -> None:
 def test_proxy_for_spec_routes_backend_through_factory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """_proxy_for_spec builds its backend client via make_mcp_client (with handlers)."""
+    """_proxy_for_spec builds its backend client via make_mcp_client (with handlers).
+
+    Finding #3: the handler-aware backend is now built by a PER-REQUEST
+    client_factory (so each backend leg mirrors the front request's negotiated
+    protocol era). The factory still routes through ``make_mcp_client`` with the
+    exact ``(transport, handlers)`` — invoked when the proxy asks for a client.
+    """
 
     from fastmcp import Client, FastMCP
 
@@ -385,18 +325,22 @@ def test_proxy_for_spec_routes_backend_through_factory(
 
     def spy(target: Any, *, handlers: Any = None) -> Any:  # noqa: A002 - shadows param name intentionally
         calls.append((target, handlers))
-        return Client(stub)  # a real client so as_proxy accepts it
+        return Client(stub)  # a real client so the proxy accepts it
 
     monkeypatch.setattr(gateway, "transport_for", lambda spec, cwd=None: "TSPORT")
     # gateway imports make_mcp_client function-locally; patch it at the source.
     monkeypatch.setattr("clio_agent.tools.mcp_runtime.make_mcp_client", spy)
 
-    # as_proxy on a _FakeClient is fine; we only assert the factory was used.
-    gateway._proxy_for_spec(
+    proxy = gateway._proxy_for_spec(
         MCPServerSpec(name="ext", transport="stdio", command="x"), handlers=handlers
     )
+    # No eager construction: the transport is bound but no backend client is built
+    # until the proxy dispatches a request.
+    assert calls == []
 
+    backend = proxy.client_factory()  # one per-request build
     assert calls == [("TSPORT", handlers)]
+    assert backend is not None
 
 
 @pytest.mark.asyncio

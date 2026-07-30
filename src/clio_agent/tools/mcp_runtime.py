@@ -149,9 +149,9 @@ class MCPClientHandlers:
     receives an :class:`MCPInvocationContext` first argument that P1 will
     populate. ``make_mcp_client`` wraps a populated hook in a signature adapter
     and hands it to the matching ``fastmcp.Client`` keyword; ``message`` becomes
-    a :class:`MessageMultiplexer` so FastMCP's ``TaskNotificationHandler``
-    dispatch is preserved. ``cancellation`` has no fastmcp ``Client`` keyword
-    today — held as a slot for P1.
+    a :class:`MessageMultiplexer` that forwards to the CLIO hook. FastMCP 4
+    handles task notifications through client extensions. ``cancellation`` has
+    no fastmcp ``Client`` keyword today — held as a slot for P1.
 
     IMPORTANT: no hook may actually be *wired* until correlation-by-protocol-
     identity lands (clio-agent#1111/#1113). See the ``mcp_handlers`` module
@@ -205,7 +205,6 @@ def make_mcp_client(
     if isinstance(target, Mapping):
         target = _normalize_mapping_target(target)
 
-    default_client = client_cls is None
     if client_cls is None:
         from fastmcp import Client  # noqa: PLC0415
 
@@ -219,47 +218,14 @@ def make_mcp_client(
         kwargs["elicitation_handler"] = ElicitationDispatcher(handlers.elicitation)
     if handlers.progress is not None:
         kwargs["progress_handler"] = ProgressDispatcher(handlers.progress)
-    message_mux: MessageMultiplexer | None = None
     if handlers.message is not None:
-        message_mux = MessageMultiplexer(handlers.message)
-        kwargs["message_handler"] = message_mux
+        kwargs["message_handler"] = MessageMultiplexer(handlers.message)
     # `cancellation` has no fastmcp Client keyword today; P1 owns its wiring.
 
     if not kwargs:
         return client_cls(target)
 
-    # A message hook needs a clone-safe client so ``client.new()`` (used by
-    # FastMCP proxies) rebinds a fresh multiplexer to the clone. Only substitute
-    # the clone-aware subclass on the default fastmcp path — an injected
-    # ``client_cls`` (tests) owns its own clone semantics.
-    if message_mux is not None and default_client:
-        from clio_agent.tools.mcp_message_client import (  # noqa: PLC0415
-            MultiplexingMessageClient,
-        )
-
-        client_cls = MultiplexingMessageClient
-
-    client = client_cls(target, **kwargs)
-
-    # Preserve FastMCP's built-in TaskNotificationHandler routing under the
-    # multiplexer (the client must exist first — the handler holds a ref to it).
-    if message_mux is not None:
-        try:
-            from fastmcp.client.client import TaskNotificationHandler  # noqa: PLC0415
-
-            message_mux.bind_task_handler(TaskNotificationHandler(client))
-        except Exception as exc:  # noqa: BLE001 - degrade loudly, never silently
-            # A non-fastmcp client (a test fake, or an injected client_cls)
-            # cannot host the task handler. Task-status routing is disabled for
-            # this client — say so with a structured reason (#772).
-            logger.warning(
-                "mcp client: task-notification handler bind skipped "
-                "(reason=%s: %s); task-status routing disabled for this client",
-                type(exc).__name__,
-                exc,
-            )
-
-    return client
+    return client_cls(target, **kwargs)
 
 
 def _normalize_mapping_target(target: Mapping[str, Any]) -> Any:
