@@ -260,25 +260,26 @@ def _safe_set(future: "asyncio.Future[ElicitResolution]", resolution: ElicitReso
         future.set_result(resolution)
 
 
-async def _await_answer(app: Any, question_id: str, timeout: float) -> ElicitResolution:
-    """Park the current coroutine until the question is answered/cancelled.
+async def _await_answer(app: Any, question: UserQuestion, timeout: float) -> ElicitResolution:
+    """Register the waiter, publish the question, then park until it is resolved.
 
-    Async-safe: the elicitation handler runs on the client's receive loop; this
-    yields that loop to the event loop (so the answer route can run and resolve
-    the future) instead of blocking it. On timeout the call is fail-safe
-    cancelled with a typed reason.
+    Async-safe: the handler runs on the client's receive loop; this yields it (so
+    the answer route can run and resolve the future) instead of blocking. The
+    waiter is registered BEFORE publish, closing the race where an answer between
+    publish and registration would miss it. Timeout -> fail-safe typed cancel.
     """
 
     loop = asyncio.get_running_loop()
     future: asyncio.Future[ElicitResolution] = loop.create_future()
-    _waiters(app)[question_id] = (future, loop)
+    _waiters(app)[question.id] = (future, loop)
+    _publish_question_created(app, question)
     try:
         return await asyncio.wait_for(future, timeout=timeout)
     except (TimeoutError, asyncio.TimeoutError):
-        _record_reason("elicitation_wait_timeout", question_id=question_id)
+        _record_reason("elicitation_wait_timeout", question_id=question.id)
         return ElicitResolution(action="cancel")
     finally:
-        _waiters(app).pop(question_id, None)
+        _waiters(app).pop(question.id, None)
 
 
 def resolve_elicitation(app: Any, question: UserQuestion) -> bool:
@@ -691,8 +692,7 @@ async def handle_elicitation(
         _record_reason("elicitation_unknown_mode", mode=mode, tool=invocation.tool_name)
         return _build_elicit_result(ElicitResolution(action="decline"))
 
-    _publish_question_created(app, question)
-    resolution = await _await_answer(app, question.id, timeout)
+    resolution = await _await_answer(app, question, timeout)
     return _build_elicit_result(resolution)
 
 
