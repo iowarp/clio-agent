@@ -74,9 +74,15 @@ class MCPClientCapabilities:
     advertised at exactly the declared granularity, whether or not a live handler
     backs it yet. This is the contract #1113 fills when it wires elicitation.
 
-    Every field defaults False: an empty declaration advertises nothing (the
-    honest state today, since correlation-by-protocol-identity is deferred and no
-    handler is wired). Fields are independently selectable.
+    A declaration is authoritative PER CAPABILITY DOMAIN IT MODELS — today only
+    elicitation. Every field defaults False, so an empty declaration pins the
+    elicitation domain absent (the honest state today, since
+    correlation-by-protocol-identity is deferred and no handler is wired).
+    Domains this type does not model (sampling/roots/log) are deliberately left
+    to the session's wiring-derived value, which is truthful on both paths: a
+    direct client advertises only what is actually wired, and a proxy backend
+    genuinely forwards those server-initiated requests to the front — clearing
+    them would sever push-forwarding. Fields are independently selectable.
     """
 
     elicitation_form: bool = False
@@ -84,7 +90,7 @@ class MCPClientCapabilities:
 
     @property
     def is_empty(self) -> bool:
-        """Whether nothing is declared (advertise no client capabilities)."""
+        """Whether no modeled domain is declared (elicitation pinned absent)."""
 
         return not (self.elicitation_form or self.elicitation_url)
 

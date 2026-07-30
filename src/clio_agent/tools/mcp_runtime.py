@@ -180,7 +180,8 @@ def clio_client_info() -> Any:
     *who* is calling. Client **capabilities** are a separate, explicit concern —
     see :class:`clio_agent.tools.mcp_handlers.MCPClientCapabilities` and the
     ``capabilities`` argument of :func:`make_mcp_client` — decoupled from handler
-    wiring so CLIO advertises exactly what it declares (nothing today).
+    wiring so each modeled domain is advertised exactly as declared (elicitation
+    pinned absent today; unmodeled domains stay truthfully wiring-derived).
     """
 
     from mcp.types import Implementation  # noqa: PLC0415
