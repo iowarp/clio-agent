@@ -12,45 +12,9 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from clio_agent.tools.mcp_runtime import wire_value
+
 _MISSING = object()
-
-
-def _model_dump(value: Any, *, exclude_none: bool) -> Any:
-    """Return a JSON-mode Pydantic dump while supporting lightweight fakes."""
-
-    dump = getattr(value, "model_dump", None)
-    if not callable(dump):
-        return _MISSING
-    attempts: tuple[dict[str, Any], ...] = (
-        {"mode": "json", "by_alias": True, "exclude_none": exclude_none},
-        {"by_alias": True, "exclude_none": exclude_none},
-        {},
-    )
-    for kwargs in attempts:
-        try:
-            return dump(**kwargs)
-        except TypeError:
-            continue
-    return _MISSING
-
-
-def _wire_value(value: Any, *, exclude_none: bool) -> Any:
-    """Recursively convert SDK and Pydantic values to JSON-compatible data."""
-
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, Mapping):
-        return {
-            str(key): _wire_value(item, exclude_none=exclude_none)
-            for key, item in value.items()
-            if not (exclude_none and item is None)
-        }
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return [_wire_value(item, exclude_none=exclude_none) for item in value]
-    dumped = _model_dump(value, exclude_none=exclude_none)
-    if dumped is not _MISSING:
-        return _wire_value(dumped, exclude_none=exclude_none)
-    return str(value)
 
 
 def _public_content(content: Any) -> list[Any]:
@@ -60,7 +24,7 @@ def _public_content(content: Any) -> list[Any]:
         return []
     public: list[Any] = []
     for block in content:
-        wire = _wire_value(block, exclude_none=True)
+        wire = wire_value(block, mode="mcp_results", exclude_none=True)
         if isinstance(wire, Mapping):
             wire = dict(wire)
             wire.pop("_meta", None)
@@ -103,7 +67,11 @@ def call_tool_result_to_observer(result: Any) -> dict[str, Any]:
 
     observer: dict[str, Any] = {"content": _public_content(content)}
     if structured is not _MISSING and structured is not None:
-        observer["structuredContent"] = _wire_value(structured, exclude_none=False)
+        observer["structuredContent"] = wire_value(
+            structured,
+            mode="mcp_results",
+            exclude_none=False,
+        )
     if is_error is True:
         observer["isError"] = True
     return observer

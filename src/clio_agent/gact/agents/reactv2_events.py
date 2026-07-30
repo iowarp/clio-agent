@@ -50,8 +50,8 @@ from clio_agent.gact.runtime.globals import (
     _active_semantic_turn_id,
     _emit_expert_lifecycle_event,
     _emit_react_step_event,
-    _jsonish,
 )
+from clio_agent.tools.mcp_runtime import wire_value
 
 logger = logging.getLogger(__name__)
 
@@ -71,9 +71,7 @@ def _arc_scope() -> tuple[Any, str, str]:
     # (react_run == -1). Attribution readers use active_react_scope() unchanged.
     scope = _ctx.run_keyed_scope(_ctx.active_react_scope())
     session = _ctx.active_react_session()
-    arc = (
-        getattr(getattr(app, "state", None), "arc", None) if (app is not None and scope) else None
-    )
+    arc = getattr(getattr(app, "state", None), "arc", None) if (app is not None and scope) else None
     return arc, session, scope
 
 
@@ -112,9 +110,7 @@ def _arc_write(
             run_span_id=run_span_id,
         )
     except Exception:  # noqa: BLE001
-        logger.warning(
-            "arc live-plane append failed kind=%s scope=%s", kind, scope, exc_info=True
-        )
+        logger.warning("arc live-plane append failed kind=%s scope=%s", kind, scope, exc_info=True)
 
 
 def _reset_working_set(arc: Any, session: str, scope: str) -> None:
@@ -260,7 +256,7 @@ def instrumented_forward(agent: Any, **input_args: Any) -> Prediction:
         expert_id=expert_id,
         expert_span_id=expert_span_id,
         status="running",
-        payload={"input": _jsonish(dict(pending_inputs))},
+        payload={"input": wire_value(dict(pending_inputs), mode="gact_runtime")},
     )
     parent_token = _ctx.set_parent_span(expert_span_id)
     break_reason = "max_iters"
@@ -301,7 +297,10 @@ def instrumented_forward(agent: Any, **input_args: Any) -> Prediction:
                     arc,
                     session,
                     scope,
-                    {"thought": str(thought or ""), "tools": [c.name for c in tool_calls.tool_calls]},
+                    {
+                        "thought": str(thought or ""),
+                        "tools": [c.name for c in tool_calls.tool_calls],
+                    },
                     step=turn_index,
                     turn_id=turn_id,
                     expert_span_id=expert_span_id,
@@ -331,9 +330,7 @@ def instrumented_forward(agent: Any, **input_args: Any) -> Prediction:
 
                 if final_outputs is not None:
                     _emit_expert_completed(expert_id, expert_span_id, final_outputs, turn_index + 1)
-                    return Prediction(
-                        **final_outputs, history=history, termination_reason="submit"
-                    )
+                    return Prediction(**final_outputs, history=history, termination_reason="submit")
             finally:
                 if thought_token is not None:
                     _ctx.reset(thought_token)

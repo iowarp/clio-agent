@@ -46,6 +46,7 @@ from clio_agent.gact.events import Event
 from clio_agent.gact.semantic_events import DEFAULT_DETAIL_LEVEL, SemanticEvent
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.runtime import trace
+from clio_agent.tools.mcp_runtime import wire_value
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -246,24 +247,6 @@ def _iso_from_epoch(ts: float) -> str:
     registry's created_at format."""
 
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
-
-
-def _jsonish(value: Any) -> Any:
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, Mapping):
-        return {str(k): _jsonish(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_jsonish(v) for v in value]
-    if isinstance(value, set):
-        return sorted(_jsonish(v) for v in value)
-    model_dump = getattr(value, "model_dump", None)
-    if callable(model_dump):
-        try:
-            return _jsonish(model_dump(exclude_none=True))
-        except TypeError:
-            return _jsonish(model_dump())
-    return str(value)
 
 
 def _semantic_trace_id(turn_id: str) -> str:
@@ -560,11 +543,11 @@ def _emit_react_step_event(
                 # models like gemma). ``reasoning`` = the raw reasoning channel
                 # (chain-of-thought) for reasoning models — distinct from thought.
                 # Allowed through the SSE projection only for this event type.
-                "thought": _jsonish(thought),
-                "reasoning": _jsonish(reasoning),
+                "thought": wire_value(thought, mode="gact_runtime"),
+                "reasoning": wire_value(reasoning, mode="gact_runtime"),
                 "tool_name": str(tool_name or ""),
-                "tool_args": _jsonish(tool_args),
-                "observation": _jsonish(observation),
+                "tool_args": wire_value(tool_args, mode="gact_runtime"),
+                "observation": wire_value(observation, mode="gact_runtime"),
                 "is_finish": bool(is_finish),
             },
         )

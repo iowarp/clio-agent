@@ -1,33 +1,23 @@
 """Dynamic-agent / Agent-Blueprint DSPy module builders for the GACT server (#714).
 
-This module owns the *expert builders* carved out of ``clio_agent.gact.app``: the
-factories that compile a registered dynamic agent (user agent or Agent
-Blueprint expert) into the concrete DSPy module that actually runs it --
+This module owns the expert builders carved out of ``clio_agent.gact.app``. They
+compile registered dynamic agents into concrete DSPy modules:
 
-* prompt-only user agents (:func:`_build_prompt_user_agent_module`),
-* tool-declaring user agents (:func:`_build_tool_user_agent_module`),
-* Agent-Blueprint experts of every ``module.kind``
-  (:func:`_build_blueprint_dspy_module`: predict / chain_of_thought / react),
+* prompt-only user agents (:func:`_build_prompt_user_agent_module`);
+* tool-declaring user agents (:func:`_build_tool_user_agent_module`);
+* Agent-Blueprint experts (:func:`_build_blueprint_dspy_module`) using predict,
+  chain-of-thought, or ReAct modules.
 
-together with their supporting machinery: the runtime signature builder
-(:func:`_blueprint_runtime_signature`), the LM-config / tool-resolution chain
-(including enabled external-MCP tools and the blueprint-tool telemetry wrapper),
-the bounded SCHEMA-REPAIR retry / re-extract / tool-intent-recovery helpers, and
-the synchronous child-expert + bounded-fanout delegation tools.
+Supporting machinery includes runtime signatures, LM and tool resolution, external
+MCP tools, blueprint telemetry, bounded schema repair, tool-intent recovery, and
+synchronous child-expert and bounded-fanout delegation.
 
-The retaining ReAct engine these builders instantiate lives in
-:mod:`clio_agent.gact.agents.runtime`. Agent/blueprint *resolution* and prompt
-*composition* live in :mod:`clio_agent.gact.agents.resolution` /
-:mod:`~clio_agent.gact.agents.composition`. Cross-concern helpers that still live
-in the ``gact.app`` turn handler / workflow-state subsystem (tool-result
-bounding, handoff-row coercion, workflow-state extraction, the runner-dispatch
-wrappers ``_blueprint_runner_for_agent`` / ``_run_dynamic_agent_compat``) are
-imported *lazily from* ``gact.app`` inside the functions that need them -- a
-deliberate strangler seam that keeps this module free of a module-load cycle back
-into ``gact.app`` until those concerns are extracted in later steps. The
-permission gate / tool observer are reached through ``app.state`` factories
-(``make_permission_gate`` / ``make_tool_observer``), never imported from
-``gact.app``.
+The retaining ReAct engine lives in :mod:`clio_agent.gact.agents.runtime`; resolution
+and prompt composition live in the sibling ``resolution`` and ``composition`` modules.
+Cross-concern helpers still owned by the ``gact.app`` turn handler or workflow-state
+subsystem are imported lazily inside the functions that need them, preserving the
+strangler seam without a module-load cycle. Permission-gate and tool-observer factories
+are reached through ``app.state`` and are never imported from ``gact.app``.
 """
 
 from __future__ import annotations
@@ -63,7 +53,6 @@ from clio_agent.gact.runtime.globals import (
     _active_semantic_turn_id,
     _BlueprintTerminalWorkflowState,
     _emit_semantic_event,
-    _jsonish,
     _llm_provider_payload,
     _TurnCancelled,
     _UnsupportedSessionAgent,
@@ -74,6 +63,7 @@ from clio_agent.gact.runtime.type_parsing import (
     _structured_output_enabled,
 )
 from clio_agent.runtime import trace
+from clio_agent.tools.mcp_runtime import wire_value
 
 if TYPE_CHECKING:
     from clio_agent.gact.types import AgentDef
@@ -268,7 +258,10 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
             session_edit_mode: str = "diff",
             cancel_requested: Any | None = None,
         ) -> Any:
-            _ = (session_mode, session_edit_mode)  # P1.2 #1064: kept for a stable forward() signature; mode is surfaced upstream in turn.py enrichment (inject_plan_mode_reminder), not here.
+            _ = (
+                session_mode,
+                session_edit_mode,
+            )  # P1.2 #1064: kept for a stable forward() signature; mode is surfaced upstream in turn.py enrichment (inject_plan_mode_reminder), not here.
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
                     _cancelled_error_info(
@@ -1168,15 +1161,7 @@ def _blueprint_runtime_signature(agent_def: "AgentDef", *, app: Any = None) -> A
 
 
 def _emit_blueprint_llm_failure(agent_def: "AgentDef", kind: str, exc: BaseException) -> None:
-    """Emit ``llm.response.failed`` carrying the retained ReAct trajectory.
-
-    Captures the one event stock dspy throws away: an expert that ran its tool
-    loop but failed the final typed-output extract. The retained trajectory rides
-    on the event so the canonical trace shows exactly what the model produced
-    before the drop -- and so the repair path can re-run extract over it. The
-    trajectory is in SENSITIVE_KEYS, so SSE strips it while the durable trace
-    keeps it. Best-effort: never let capture interfere with the repair flow.
-    """
+    """Best-effort failure event retaining the ReAct trajectory in durable trace only."""
 
     app = _ctx.active_app()
     sid = _ctx.active_session_id()
@@ -1184,15 +1169,14 @@ def _emit_blueprint_llm_failure(agent_def: "AgentDef", kind: str, exc: BaseExcep
         return
     retained = _ctx.active_trajectory() if kind == "react" else None
     payload: dict[str, Any] = {
-        # `error` is a one-line summary for SSE/UI; `error_full` is the FULL,
-        # uncapped exception (with newlines) for the canonical trace -- never cap.
+        # SSE/UI gets a summary; canonical trace keeps the uncapped exception.
         "error": str(exc).replace("\n", " ")[:2000],
         "error_full": str(exc),
         "error_type": type(exc).__name__,
         "repairable": bool(_is_repairable_typed_output_error(exc)),
     }
     if retained and retained.get("trajectory"):
-        payload["trajectory"] = _jsonish(retained.get("trajectory"))
+        payload["trajectory"] = wire_value(retained.get("trajectory"), mode="gact_runtime")
     agent_id = str(getattr(agent_def, "id", "") or "")
     try:
         _emit_semantic_event(
@@ -1359,7 +1343,10 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             session_edit_mode: str = "diff",
             cancel_requested: Any | None = None,
         ) -> Any:
-            _ = (session_mode, session_edit_mode)  # P1.2 #1064: kept for a stable forward() signature; mode is surfaced upstream in turn.py enrichment (inject_plan_mode_reminder), not here.
+            _ = (
+                session_mode,
+                session_edit_mode,
+            )  # P1.2 #1064: kept for a stable forward() signature; mode is surfaced upstream in turn.py enrichment (inject_plan_mode_reminder), not here.
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
                     _cancelled_error_info(
@@ -1784,7 +1771,10 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             session_edit_mode: str = "diff",
             cancel_requested: Any | None = None,
         ) -> Any:
-            _ = (session_mode, session_edit_mode)  # P1.2 #1064: kept for a stable forward() signature; mode is surfaced upstream in turn.py enrichment (inject_plan_mode_reminder), not here.
+            _ = (
+                session_mode,
+                session_edit_mode,
+            )  # P1.2 #1064: kept for a stable forward() signature; mode is surfaced upstream in turn.py enrichment (inject_plan_mode_reminder), not here.
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
                     _cancelled_error_info(
