@@ -21,7 +21,7 @@ from typing import Any, Iterator, Optional, Protocol
 import dspy
 
 from clio_agent import conf
-from clio_agent.errors import CancellationError
+from clio_agent.errors import CancellationError, ClioError
 from clio_agent.runtime.stream_audit import stream_audit
 from clio_agent.tools.file_policy import FileAccessPolicy
 from clio_agent.tools.mcp_executor import (
@@ -612,13 +612,10 @@ class SyncMCPToolExecutor:
     def call_tool(self, name: str, args: Mapping[str, Any]) -> str:
         """Call an MCP tool synchronously via the background event loop.
 
-        Two optional injection points fire around the underlying
-        FastMCP call:
+        Two optional injection points fire around the underlying FastMCP call:
           1. ``permission_gate(name, args) -> {"allow"|"deny"}`` —
-             when configured, runs first. "deny" raises
-             PermissionError; the ReAct loop sees the traceback in
-             the tool_result and reports it back as the assistant
-             answer.
+             when configured, runs first. "deny" raises PermissionError;
+             the ReAct loop reports it back as the assistant answer.
           2. ``tool_observer(name, args, phase, error?, result?)`` —
              non-blocking notifications of "started" + "completed"
              so the GACT layer can publish tool.call.* events and bounded
@@ -780,7 +777,10 @@ class SyncMCPToolExecutor:
             error_text = repr(exc)
             if not isinstance(exc, UncertainMutatingToolOutcomeError):
                 self._record_tool_failure(name, error_text)
-            notify_tool_observer(tool_observer, name, effective_args, "completed", error_text)
+            trace = {"error": exc.to_dict()} if isinstance(exc, ClioError) else None
+            notify_tool_observer(
+                tool_observer, name, effective_args, "completed", error_text, trace
+            )
             raise
         result = outcome.model_text
         observer_result = call_tool_result_to_observer(outcome.raw_result)

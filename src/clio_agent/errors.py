@@ -19,6 +19,10 @@ from __future__ import annotations
 
 from typing import Any
 
+MCP_CAPABILITY_REFUSED = "mcp_capability_refused"
+MCP_PROTOCOL_REFUSED = "mcp_protocol_refused"
+MCP_RESULT_DOWNGRADED_TO_COMPLETE = "mcp_result_downgraded_to_complete"
+
 
 class ClioError(Exception):
     """Base error for all CLIO Agent errors.
@@ -82,6 +86,59 @@ class ToolError(ClioError):
 
     def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(message, error_type="tool_error", details=details)
+
+
+class MCPProtocolError(ToolError):
+    """Base for typed MCP JSON-RPC capability/protocol refusals."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: int,
+        reason: str,
+        error_type: str,
+        protocol_data: Any = None,
+    ) -> None:
+        self.code = code
+        self.reason = reason
+        self.protocol_data = protocol_data
+        ClioError.__init__(
+            self,
+            message,
+            error_type=error_type,
+            details={
+                "reason": reason,
+                "json_rpc_code": code,
+                "protocol_data": protocol_data,
+            },
+        )
+
+
+class MCPMissingRequiredClientCapabilityError(MCPProtocolError):
+    """The MCP server refused a request because a required client capability is absent."""
+
+    def __init__(self, message: str, protocol_data: Any = None) -> None:
+        super().__init__(
+            message,
+            code=-32021,
+            reason=MCP_CAPABILITY_REFUSED,
+            error_type="mcp_missing_required_client_capability",
+            protocol_data=protocol_data,
+        )
+
+
+class MCPUnsupportedProtocolVersionError(MCPProtocolError):
+    """The MCP server refused the negotiated protocol version."""
+
+    def __init__(self, message: str, protocol_data: Any = None) -> None:
+        super().__init__(
+            message,
+            code=-32022,
+            reason=MCP_PROTOCOL_REFUSED,
+            error_type="mcp_unsupported_protocol_version",
+            protocol_data=protocol_data,
+        )
 
 
 class ConfigError(ClioError):
