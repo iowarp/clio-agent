@@ -55,6 +55,7 @@ from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Part
 from clio_agent.tools.mcp_results import (
     call_tool_result_to_observer as _call_tool_result_to_observer,
 )
+from clio_agent.tools.mcp_runtime import wire_value
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -116,21 +117,6 @@ def _tool_visible_to_app(tool: Any) -> bool:
     return "app" in {str(item) for item in visibility}
 
 
-def _wire_value(value: Any) -> Any:
-    """Recursively convert SDK/Pydantic values to JSON-compatible wire data."""
-
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, Mapping):
-        return {str(key): _wire_value(item) for key, item in value.items()}
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return [_wire_value(item) for item in value]
-    dump = getattr(value, "model_dump", None)
-    if callable(dump):
-        return _wire_value(dump(by_alias=True, exclude_none=True))
-    return str(value)
-
-
 def call_tool_result_to_wire(result: Any) -> dict[str, Any]:
     """Serialize a full FastMCP CallToolResult using stable MCP field names."""
 
@@ -144,15 +130,15 @@ def call_tool_result_to_wire(result: Any) -> dict[str, Any]:
     meta = getattr(result, "meta", dumped.get("_meta", dumped.get("meta")))
     is_error = getattr(result, "is_error", dumped.get("isError", dumped.get("is_error", False)))
 
-    wire = {str(key): _wire_value(value) for key, value in dumped.items()}
+    wire = {str(key): wire_value(value, mode="mcp_apps") for key, value in dumped.items()}
     wire.pop("structured_content", None)
     wire.pop("is_error", None)
     wire.pop("meta", None)
-    wire["content"] = _wire_value(content)
+    wire["content"] = wire_value(content, mode="mcp_apps")
     if structured is not None:
-        wire["structuredContent"] = _wire_value(structured)
+        wire["structuredContent"] = wire_value(structured, mode="mcp_apps")
     if meta is not None:
-        wire["_meta"] = _wire_value(meta)
+        wire["_meta"] = wire_value(meta, mode="mcp_apps")
     if is_error:
         wire["isError"] = True
     return wire
@@ -177,7 +163,7 @@ def read_resource_result_to_wire(result: Any) -> dict[str, Any]:
     else:
         dumped = _mapping(result)
         contents = getattr(result, "contents", dumped.get("contents", [])) or []
-    return {"contents": _wire_value(contents)}
+    return {"contents": wire_value(contents, mode="mcp_apps")}
 
 
 def _content_meta(content: Mapping[str, Any]) -> dict[str, Any]:

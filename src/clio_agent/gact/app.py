@@ -101,7 +101,6 @@ from clio_agent.gact.runtime.globals import (  # noqa: E402, F401
     _format_sse,
     _gact_app_context,
     _iso_from_epoch,
-    _jsonish,
     _llm_provider_payload,
     _new_attempt_id,
     _new_cancellation_attempt_id,

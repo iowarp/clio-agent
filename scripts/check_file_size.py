@@ -89,7 +89,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # P1.4 #1066: +1 for the build_plan_exit_tool import; the two react-build call sites stay
     # line-neutral (the create_artifact append became a two-tool extend). All plan_exit logic lives
     # in the owner module gact/plan_mode.py. Ratchets back with the #714/#767 decomposition.
-    "src/clio_agent/gact/agents/builders.py": 1871,
+    # P0.1d (#1105): 1871 -> 1861 via behavior-neutral failure-event doc compaction.
+    "src/clio_agent/gact/agents/builders.py": 1861,
     # #900: +14 for the lifespan child-reaper install + clean-shutdown teardown wiring
     # (both delegate to the owner module runtime/process_tree.py).
     # #918: +7 for the SkillNotDelegatableError exception handler (app.py owns
@@ -130,7 +131,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # P4.3 (#1081): 2679 -> 2552 — the scheduler tick + fire runtime
     # (_scheduler_tick/_scheduler_tick_once/_fire_schedule/_seconds_until_next_minute)
     # moved to the owner module gact/scheduler_runtime.py; app.py only re-exports them.
-    "src/clio_agent/gact/app.py": 2552,
+    # P0.1d (#1105): -1 removing the stale _jsonish re-export after wire-mode migration.
+    "src/clio_agent/gact/app.py": 2551,
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -170,7 +172,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # call_tool_result_to_observer public-projection wrapper (delegates to the
     # tools/mcp_results.py owner module).
     # P0.1c (#1104): sandbox/CSP construction moved to mcp_app_sandbox.py.
-    "src/clio_agent/gact/mcp_apps.py": 784,
+    # P0.1d (#1105): 784 -> 770 after folding _wire_value into tools/mcp_runtime.py.
+    "src/clio_agent/gact/mcp_apps.py": 770,
     # #895: +6 for threading the provider-generic thinking_level onto the LM bind
     # (LMProviderConfig arg + app.state.lm_config + the GET's thinking_level /
     # thinking_effective fields). The mapping logic itself lives in the owner
@@ -203,7 +206,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # rooted turn has no leasable agent (+9).
     # #948 S4 live-gate fix: +22 for _BlueprintRootDisabled (typed disabled-root
     # failure; lives with its sibling turn exceptions).
-    "src/clio_agent/gact/runtime/globals.py": 977,
+    # P0.1d (#1105): 977 -> 960 after folding _jsonish into tools/mcp_runtime.py.
+    "src/clio_agent/gact/runtime/globals.py": 960,
     "src/clio_agent/gact/streaming.py": 995,
     # #948 S5: +2 to read the RUN-KEYED tap-dedup bucket under an in-process module
     # variant (context.run_keyed_scope; bare invoking_expert still owns attribution).

@@ -16,9 +16,9 @@ Responsibilities grouped here:
 * Synchronous delegated-expert prompt assembly + failure state.
 * Small typed-state predicates used by reactivity/grounding checks.
 
-The module imports only leaves (stdlib + :mod:`clio_agent.gact.runtime.globals`
-for ``_jsonish`` + :mod:`clio_agent.gact.workflow_state.merge` for the merge
-primitive); it never imports :mod:`clio_agent.gact.app` at module top. The one
+The module imports only leaves (stdlib + the shared wire coercer +
+:mod:`clio_agent.gact.workflow_state.merge` for the merge primitive); it never
+imports :mod:`clio_agent.gact.app` at module top. The one
 tool-call-evidence helper it needs (``_tool_calls_from_handoff_rows``) still
 lives with its sibling tool-call-row helpers in ``app.py`` and is imported
 lazily inside the single function that uses it, matching the cycle-break pattern
@@ -32,9 +32,9 @@ import re
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from clio_agent.gact.runtime.globals import _jsonish
 from clio_agent.gact.workflow_state.merge import _merge_workflow_state_mapping
 from clio_agent.scientific_suffixes import scientific_suffix_alternation
+from clio_agent.tools.mcp_runtime import wire_value
 
 # Evidence-index suffix vocabulary: the shared scientific vocabulary plus a
 # delegation-local "json" extension (compact summaries must retain config /
@@ -233,7 +233,7 @@ def _merge_workflow_state_from_value(
         # declares it as a nested object signature field. Convert it to a plain
         # mapping so its sections merge. Generic across all packs.
         if callable(getattr(value, "model_dump", None)):
-            normalized = _jsonish(value)
+            normalized = wire_value(value, mode="gact_runtime")
             if isinstance(normalized, Mapping):
                 _merge_workflow_state_from_value(normalized, state, schema=schema)
         return
@@ -348,7 +348,7 @@ def _prediction_workflow_state(result: Any, *, schema: "WorkflowStateSchema") ->
         if not text:
             return {}
         return _workflow_state_from_outputs([text], schema=schema)
-    normalized_state = _jsonish(raw_state)
+    normalized_state = wire_value(raw_state, mode="gact_runtime")
     if isinstance(normalized_state, Mapping):
         inner = normalized_state.get("workflow_state")
         if isinstance(inner, Mapping):

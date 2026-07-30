@@ -20,9 +20,8 @@ trace. It is the single source of truth for:
   (:func:`_prediction_summary`) and a human-readable rendering of a materialized
   subagent input (:func:`_format_subagent_input`).
 
-The module imports stdlib, the id/json runtime primitives from
-:mod:`clio_agent.gact.runtime.globals` (``_new_part_id``, ``_jsonish``), and the
-GACT message/question types. ``dspy`` is imported lazily inside
+The module imports stdlib, the runtime id primitive, the shared wire coercer,
+and the GACT message/question types. ``dspy`` is imported lazily inside
 :func:`_dspy_images_from_parts` to keep this module free of any heavy engine
 import at module top. It never imports :mod:`clio_agent.gact.app`.
 """
@@ -37,7 +36,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from clio_agent.gact.hooks.defer import HOOK_DEFER_RESUME_META
-from clio_agent.gact.runtime.globals import _jsonish, _new_part_id
+from clio_agent.gact.runtime.globals import _new_part_id
 from clio_agent.gact.types import (
     ErrorEnvelope,
     ErrorInfo,
@@ -45,6 +44,7 @@ from clio_agent.gact.types import (
     UserQuestion,
     UserQuestionOption,
 )
+from clio_agent.tools.mcp_runtime import wire_value
 
 # ------------------------------------------------------------------------- #
 # Reserved client-metadata keys (#1057 B2)                                   #
@@ -153,10 +153,12 @@ def _prediction_summary(pred: Any) -> dict[str, Any]:
             getattr(pred, "route_reason", "") or getattr(pred, "routing_rationale", "") or ""
         ),
         "answer": str(getattr(pred, "answer", "") or ""),
-        "expert_handoffs": _jsonish(getattr(pred, "expert_handoffs", None) or []),
-        "tools_called": _jsonish(getattr(pred, "tools_called", None) or []),
-        "file_diffs": _jsonish(getattr(pred, "file_diffs", None) or []),
-        "error_info": _jsonish(getattr(pred, "error_info", None)),
+        "expert_handoffs": wire_value(
+            getattr(pred, "expert_handoffs", None) or [], mode="gact_runtime"
+        ),
+        "tools_called": wire_value(getattr(pred, "tools_called", None) or [], mode="gact_runtime"),
+        "file_diffs": wire_value(getattr(pred, "file_diffs", None) or [], mode="gact_runtime"),
+        "error_info": wire_value(getattr(pred, "error_info", None), mode="gact_runtime"),
     }
     # Full capture (durable trace): the dspy ReAct trajectory and the extract's
     # chain-of-thought reasoning. These are in SENSITIVE_KEYS, so the SSE
@@ -165,7 +167,7 @@ def _prediction_summary(pred: Any) -> dict[str, Any]:
     # routing/predict payloads lean.
     trajectory = getattr(pred, "trajectory", None)
     if trajectory:
-        summary["trajectory"] = _jsonish(trajectory)
+        summary["trajectory"] = wire_value(trajectory, mode="gact_runtime")
     reasoning = getattr(pred, "reasoning", None)
     if reasoning:
         summary["reasoning"] = str(reasoning)
