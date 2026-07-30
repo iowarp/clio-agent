@@ -6,16 +6,19 @@ contracts is future wire-work, not part of this slice.
 
 This module also owns :func:`make_mcp_client` (#1106) — the ONE construction
 site for **execution-path** FastMCP clients. It carries the :class:`MCPClientHandlers`
-slot where P1 attaches elicitation/progress/message/cancellation handlers (no-op
-slots today). Execution paths route through it: the ``AsyncMCPToolExecutor``
-default ``client_factory``, the per-call dispatch in ``gact/routes/mcp.py``, and
-the ``providers/handshake/mcp.py`` connectivity probe.
+slot (typed CLIO hooks; see :mod:`clio_agent.tools.mcp_handlers`) where P1
+attaches elicitation/progress/message/cancellation handlers (no-op-absent
+today). Execution paths route through it: the ``AsyncMCPToolExecutor`` default
+``client_factory``, the gateway proxy backend (``tools/gateway._proxy_for_spec``),
+the dynamic-agent external tool call (``gact/agents/builders``), the per-call
+dispatch in ``gact/routes/mcp.py``, and the ``providers/handshake/mcp.py`` probe.
 
 **The execution/introspection split (adopted default):** handlers wire on
-execution paths only, so **list-only introspection sites do NOT migrate** and
-keep their bare ``Client()`` — the catalog/blueprint/status/gateway listing
-passes (``routes/catalog.py``, ``routes/blueprints.py``, ``agents/builders.py``,
-``runtime/status.py``, ``tools/gateway.py``) plus the install/reconnect/inventory
+execution paths only (paths that ``call_tool`` / dispatch a proxy backend), so
+**list-only introspection sites do NOT migrate** and keep their bare
+``Client()`` — the catalog/blueprint/status/gateway-listing passes
+(``routes/catalog.py``, ``routes/blueprints.py``, ``runtime/status.py``,
+``tools/gateway.list_gateway_tools``) plus the install/reconnect/inventory
 ``list_tools`` passes in ``routes/mcp.py``. They never dispatch a tool call, so
 they never need the handler slot; forcing them through the factory would be pure
 churn.
@@ -23,9 +26,25 @@ churn.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+from clio_agent.tools.mcp_handlers import (
+    DEFAULT_CORRELATION_REGISTRY,
+    ElicitationDispatcher,
+    MessageMultiplexer,
+    ProgressDispatcher,
+)
+
+if TYPE_CHECKING:
+    from clio_agent.tools.mcp_handlers import (
+        ElicitationHook,
+        MCPCorrelationRegistry,
+        MessageHook,
+        ProgressHook,
+    )
 
 WireMode = Literal["mcp_results", "mcp_apps", "gact_runtime"]
 
@@ -122,24 +141,30 @@ def wire_value(
 
 @dataclass(frozen=True)
 class MCPClientHandlers:
-    """Handler bundle attached to an execution-path MCP client.
+    """Typed CLIO hook bundle attached to an execution-path MCP client.
 
-    Every field is a no-op slot today (``None`` => nothing wired, identical to
-    a bare client). P1 fills these with real handlers per its own slices; the
-    factory is the single seam they attach through so no P1 slice has to hunt
-    for client-construction sites.
+    Every hook is no-op-absent today (``None`` => that handler is not installed,
+    identical to a bare client). P1 fills these; the factory is the single seam
+    they attach through so no P1 slice has to hunt for client-construction sites.
 
-    ``elicitation``, ``progress``, and ``message`` map directly onto the
-    matching ``fastmcp.Client`` handler keyword arguments. ``cancellation`` has
-    no FastMCP ``Client`` keyword today — it is held as a slot for P1 to route
-    however cancellation lands (e.g. via the message handler) without churning
-    this dataclass again.
+    The hooks are typed :mod:`clio_agent.tools.mcp_handlers` Protocols, not raw
+    callbacks: each receives the correlated :class:`MCPInvocationContext` as its
+    first argument. ``make_mcp_client`` wraps a populated hook in a long-lived
+    dispatcher bound to a per-client correlation key and hands the dispatcher to
+    the matching ``fastmcp.Client`` keyword. ``message`` becomes a
+    :class:`MessageMultiplexer` so FastMCP's ``TaskNotificationHandler`` dispatch
+    is preserved. ``cancellation`` has no fastmcp ``Client`` keyword today — it
+    is held as a slot for P1 to route (e.g. via the message handler).
+
+    ``correlation`` is the registry the executor and the dispatchers share;
+    defaults to :data:`DEFAULT_CORRELATION_REGISTRY` when omitted.
     """
 
-    elicitation: Any | None = None
-    progress: Any | None = None
-    message: Any | None = None
-    cancellation: Any | None = None
+    elicitation: "ElicitationHook | None" = None
+    progress: "ProgressHook | None" = None
+    message: "MessageHook | None" = None
+    cancellation: "MessageHook | None" = None
+    correlation: "MCPCorrelationRegistry | None" = None
 
 
 def make_mcp_client(
@@ -151,17 +176,21 @@ def make_mcp_client(
     """Construct an execution-path FastMCP client with the handler slot.
 
     This is the ONE construction site for clients that actually dispatch MCP
-    calls. With no ``handlers`` the construction is byte-identical to a bare
-    ``Client(target)`` (zero behavior change for current callers); with a
-    handler bundle, the populated handlers are forwarded as the matching
-    ``fastmcp.Client`` keyword arguments — the seam P1 fills.
+    calls. With no populated ``handlers`` the construction is byte-identical to
+    a bare ``Client(target)`` (zero behavior change for current callers); with a
+    populated hook, the hook is wrapped in a long-lived dispatcher (bound to a
+    per-client correlation key and the shared registry) and forwarded as the
+    matching ``fastmcp.Client`` keyword argument — the seam P1 fills.
 
     Args:
-        target: Either a FastMCP transport/server object (passed straight to
-            the client) or a raw ``{transport, command, args, url, env}``
-            mapping spec, which is resolved via
-            :func:`clio_agent.tools.mcp_config.transport_from_spec`.
-        handlers: Optional handler bundle. ``None`` (or a bundle whose fields
+        target: A FastMCP transport / server object (passed straight to the
+            client); a CLIO raw ``{transport, command, args, url, env}`` mapping
+            spec (resolved via
+            :func:`clio_agent.tools.mcp_config.transport_from_spec`); or a native
+            FastMCP ``MCPConfig`` mapping (``{"mcpServers": ...}`` or a rootless
+            server map), passed unchanged so ``Client`` builds its
+            ``MCPConfigTransport``.
+        handlers: Optional CLIO hook bundle. ``None`` (or a bundle whose hooks
             are all ``None``) yields a bare client.
         client_cls: Injection seam for the client class. Defaults to
             ``fastmcp.Client``; tests substitute a fake to inspect the
@@ -169,29 +198,101 @@ def make_mcp_client(
 
     Returns:
         A constructed (not yet entered) FastMCP client for ``target``.
+
+    Raises:
+        ValueError: If ``target`` is a mapping that is neither a CLIO raw spec
+            (``transport`` key) nor a FastMCP ``MCPConfig`` (``mcpServers`` key
+            or a rootless server map).
     """
 
     if isinstance(target, Mapping):
-        from clio_agent.tools.mcp_config import transport_from_spec  # noqa: PLC0415
-
-        target = transport_from_spec(target)
+        target = _normalize_mapping_target(target)
 
     if client_cls is None:
         from fastmcp import Client  # noqa: PLC0415
 
         client_cls = Client
 
-    kwargs: dict[str, Any] = {}
-    if handlers is not None:
-        if handlers.elicitation is not None:
-            kwargs["elicitation_handler"] = handlers.elicitation
-        if handlers.progress is not None:
-            kwargs["progress_handler"] = handlers.progress
-        if handlers.message is not None:
-            kwargs["message_handler"] = handlers.message
-        # `cancellation` has no fastmcp Client keyword today; P1 owns its wiring.
+    if handlers is None:
+        return client_cls(target)
 
-    return client_cls(target, **kwargs)
+    registry = handlers.correlation or DEFAULT_CORRELATION_REGISTRY
+    correlation_key = uuid.uuid4().hex
+
+    kwargs: dict[str, Any] = {}
+    if handlers.elicitation is not None:
+        kwargs["elicitation_handler"] = ElicitationDispatcher(
+            registry, correlation_key, handlers.elicitation
+        )
+    if handlers.progress is not None:
+        kwargs["progress_handler"] = ProgressDispatcher(
+            registry, correlation_key, handlers.progress
+        )
+    message_mux: MessageMultiplexer | None = None
+    if handlers.message is not None:
+        message_mux = MessageMultiplexer(registry, correlation_key, handlers.message)
+        kwargs["message_handler"] = message_mux
+    # `cancellation` has no fastmcp Client keyword today; P1 owns its wiring.
+
+    if not kwargs:
+        return client_cls(target)
+
+    client = client_cls(target, **kwargs)
+
+    # Preserve FastMCP's built-in TaskNotificationHandler routing under the
+    # multiplexer (the client must exist first — the handler holds a ref to it).
+    if message_mux is not None:
+        try:
+            from fastmcp.client.client import TaskNotificationHandler  # noqa: PLC0415
+
+            message_mux.bind_task_handler(TaskNotificationHandler(client))
+        except Exception:  # noqa: BLE001 - a fake client_cls (tests) has no task handler
+            pass
+
+    # Correlation seam: the executor reads these off the routed client to bind
+    # the per-call context around ``call_tool``. ``copy.copy`` in ``Client.new``
+    # carries them onto the proxy backend's per-request client, so a handler
+    # firing on that client's background loop resolves the same context.
+    client._clio_correlation_key = correlation_key  # type: ignore[attr-defined]
+    client._clio_correlation_registry = registry  # type: ignore[attr-defined]
+    return client
+
+
+def _normalize_mapping_target(target: Mapping[str, Any]) -> Any:
+    """Resolve a mapping ``target`` to a transport, or pass a native MCPConfig.
+
+    CLIO raw specs (``transport`` key) go through
+    :func:`clio_agent.tools.mcp_config.transport_from_spec`. Native FastMCP
+    ``MCPConfig`` mappings — an ``mcpServers`` wrapper or a rootless map of
+    server configs (values with ``command``/``url``) — are returned unchanged so
+    ``fastmcp.Client`` builds its own ``MCPConfigTransport``. Anything else is an
+    explicit error rather than a silent mis-parse.
+    """
+
+    if "transport" in target:
+        from clio_agent.tools.mcp_config import transport_from_spec  # noqa: PLC0415
+
+        return transport_from_spec(target)
+    if "mcpServers" in target or _is_rootless_mcp_config(target):
+        return target
+    raise ValueError(
+        "ambiguous MCP client target mapping: expected a CLIO raw spec (with a "
+        "'transport' key) or a FastMCP MCPConfig (with 'mcpServers' or a rootless "
+        f"map of server configs); got keys {sorted(target)!r}"
+    )
+
+
+def _is_rootless_mcp_config(target: Mapping[str, Any]) -> bool:
+    """Whether ``target`` is a rootless FastMCP MCPConfig (server map at root).
+
+    Mirrors FastMCP's own ``MCPConfig.wrap_servers_at_root`` heuristic: at least
+    one value is a mapping carrying a ``command`` or ``url`` key.
+    """
+
+    return any(
+        isinstance(value, Mapping) and ("command" in value or "url" in value)
+        for value in target.values()
+    )
 
 
 __all__ = ["MCPClientHandlers", "WireMode", "make_mcp_client", "wire_value"]

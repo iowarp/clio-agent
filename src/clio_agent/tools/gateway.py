@@ -19,13 +19,17 @@ Usage:
 
 import asyncio
 import concurrent.futures
+import functools
 import inspect
 import logging
 import time
 from collections.abc import Callable, Iterable, Mapping
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from fastmcp import Client, FastMCP
+
+if TYPE_CHECKING:
+    from clio_agent.tools.mcp_runtime import MCPClientHandlers
 
 from clio_agent.tools.catalog import (
     TOOL_CATALOG,
@@ -73,23 +77,39 @@ def get_gateway() -> FastMCP:
     return gateway
 
 
-def _proxy_for_spec(spec: MCPServerSpec, cwd: str | None = None) -> FastMCP:
+def _proxy_for_spec(
+    spec: MCPServerSpec,
+    cwd: str | None = None,
+    *,
+    handlers: "MCPClientHandlers | None" = None,
+) -> FastMCP:
     """Build a lazy FastMCP proxy backed by a Client over the spec's transport.
 
     The proxy connects lazily on first ``list_tools``/``call_tool``, so an
     unreachable declared server only degrades to "that namespace has no tools"
     rather than failing gateway construction.
 
+    This is an EXECUTION path: the proxy's backend client dispatches ``call_tool``
+    to the declared server, so its client is built through :func:`make_mcp_client`
+    (#1106). FastMCP's ``as_proxy`` runs a fresh ``client.new()`` per request; the
+    factory's handler dispatchers live in the client's session kwargs and are
+    carried onto that per-request client by ``Client.new``'s ``copy.copy``, so a
+    handler passed here is reachable on the actual upstream call path. Without
+    ``handlers`` the backend client is byte-identical to a bare ``Client``.
+
     ``cwd`` (when given) is passed to stdio transports so the subprocess is
     spawned in that working directory; http transports ignore it.
     """
     import warnings  # noqa: PLC0415
 
+    from clio_agent.tools.mcp_runtime import make_mcp_client  # noqa: PLC0415
+
     with warnings.catch_warnings():
         # FastMCP 3.2 deprecates as_proxy in favor of create_proxy; both are the
         # same machinery. Silence the deprecation so a successful mount stays quiet.
         warnings.simplefilter("ignore")
-        return FastMCP.as_proxy(Client(transport_for(spec, cwd=cwd)))
+        backend = make_mcp_client(transport_for(spec, cwd=cwd), handlers=handlers)
+        return FastMCP.as_proxy(backend)
 
 
 def _proxy_factory_accepts_cwd(factory: Callable[..., FastMCP]) -> bool:
@@ -116,6 +136,7 @@ def build_gateway(
     cwd: str | None = None,
     base_gateway: FastMCP | None = None,
     proxy_factory: Callable[..., FastMCP] | None = None,
+    handlers: "MCPClientHandlers | None" = None,
 ) -> FastMCP:
     """Build the agent's tool gateway: built-ins PLUS the declared MCP servers.
 
@@ -141,6 +162,9 @@ def build_gateway(
             second argument, else ``proxy_factory(spec)`` for compatibility.
             Tests inject an in-process proxy here so no subprocess is spawned;
             production never passes this.
+        handlers: Optional execution-path handler bundle (#1106) forwarded to the
+            default proxy factory so each declared server's backend client carries
+            the CLIO dispatchers. Ignored when ``proxy_factory`` is supplied.
 
     Returns:
         The gateway with the built-ins and declared proxies mounted.
@@ -151,7 +175,14 @@ def build_gateway(
         namespace, never as a startup crash.
     """
     gw = base_gateway if base_gateway is not None else _new_base_gateway()
-    make_proxy = proxy_factory or _proxy_for_spec
+    if proxy_factory is not None:
+        make_proxy = proxy_factory
+    elif handlers is not None:
+        # Bind the execution-path handler bundle onto the default factory so the
+        # proxy backend clients carry the dispatchers (#1106).
+        make_proxy = functools.partial(_proxy_for_spec, handlers=handlers)
+    else:
+        make_proxy = _proxy_for_spec
     accepts_cwd = _proxy_factory_accepts_cwd(make_proxy)
     # Attached to the gateway object (not a module map keyed by id(gw)): it
     # dies with the gateway, id-reuse cannot alias a stale registry, and a

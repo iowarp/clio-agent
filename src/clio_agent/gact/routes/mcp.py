@@ -518,23 +518,12 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                     ).model_dump(exclude_none=True),
                 )
 
-            try:
-                from clio_agent.tools.mcp_runtime import make_mcp_client  # noqa: PLC0415
-            except Exception as exc:
-                raise HTTPException(
-                    status_code=503,
-                    detail=ErrorEnvelope(
-                        error=ErrorInfo(
-                            error="dependency_missing",
-                            message=f"MCP client factory unavailable: {exc!r}",
-                            recoverable=False,
-                        )
-                    ).model_dump(exclude_none=True),
-                ) from exc
-
+            # Build transport + client BEFORE tool-start: 422 bad spec / 503 missing dep (#1106).
             spec = info.get("spec", {})
             try:
+                from clio_agent.tools.mcp_runtime import make_mcp_client  # noqa: PLC0415
                 transport = transport_from_spec(spec)
+                client_ctx = make_mcp_client(transport)
             except MCPTransportError as exc:
                 raise HTTPException(
                     status_code=422,
@@ -547,6 +536,17 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                         )
                     ).model_dump(exclude_none=True),
                 ) from exc
+            except ImportError as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="dependency_missing",
+                            message=f"fastmcp Client unavailable: {exc!r}",
+                            recoverable=False,
+                        )
+                    ).model_dump(exclude_none=True),
+                ) from exc
 
             # Fire tool observer manually so this call shows up in
             # tools_called + tool.call.* SSE events identically to an
@@ -556,7 +556,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                 tool_observer = app.state.make_tool_observer()
             notify_tool_observer(tool_observer, observer_name, tool_args, "started")
             try:
-                async with make_mcp_client(transport) as client:
+                async with client_ctx as client:
                     result = await client.call_tool(tool_name, tool_args)
                 content = []
                 for c in getattr(result, "content", None) or []:
