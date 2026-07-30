@@ -27,6 +27,11 @@ import zipfile
 from pathlib import Path
 from typing import Any, Callable
 
+if __package__:
+    from scripts.live_gate_blueprints import TRANSFORM_SERVER_PATH, gate_blueprint_path
+else:
+    from live_gate_blueprints import TRANSFORM_SERVER_PATH, gate_blueprint_path
+
 REPO = Path(__file__).resolve().parent.parent
 
 
@@ -115,8 +120,8 @@ def _session(call: Callable[..., Any], workspace_id: str, title: str, **extra) -
 # A plain leaf react agent that holds the native fs/shell tools directly — the
 # default session agent is the earthscope ORCHESTRATOR (no tools of its own), so
 # the permission/provenance pillars are validated against this leaf instead.
-REACT_LEAF = (REPO / "scripts/live_gate_blueprints/react-leaf").resolve()
-REACT_LEAF_XFORM = (REPO / "scripts/live_gate_blueprints/react-leaf-xform").resolve()
+REACT_LEAF = gate_blueprint_path("react-leaf")
+REACT_LEAF_XFORM = gate_blueprint_path("react-leaf-xform")
 
 
 def _activate_leaf(call: Callable[..., Any], sid: str) -> dict:
@@ -138,22 +143,23 @@ def _xform_session(call: Callable[..., Any], workspace_id: str, title: str, **ex
     live_gate_boot.py server which mounts xform_summarize_csv in-process)."""
     sid = _session(call, workspace_id, title, **extra)
     call(
-        "POST", f"/v1/sessions/{sid}/agent-blueprint", {"path": str(REACT_LEAF_XFORM)}, ok=(200, 201)
+        "POST",
+        f"/v1/sessions/{sid}/agent-blueprint",
+        {"path": str(REACT_LEAF_XFORM)},
+        ok=(200, 201),
     )
     return sid
 
 
 # A tier-1 react orchestrator + one tier-2 worker child that holds the native
 # tools — for P2 completion-injection (a fire-and-forget child completing mid-turn).
-ORCH_WORKER = (REPO / "scripts/live_gate_blueprints/orchestrator-worker").resolve()
+ORCH_WORKER = gate_blueprint_path("orchestrator-worker")
 
 
 def _orch_session(call: Callable[..., Any], workspace_id: str, title: str, **extra) -> str:
     """Create a session AND activate the orchestrator+worker blueprint on it."""
     sid = _session(call, workspace_id, title, **extra)
-    call(
-        "POST", f"/v1/sessions/{sid}/agent-blueprint", {"path": str(ORCH_WORKER)}, ok=(200, 201)
-    )
+    call("POST", f"/v1/sessions/{sid}/agent-blueprint", {"path": str(ORCH_WORKER)}, ok=(200, 201))
     return sid
 
 
@@ -206,9 +212,9 @@ def _set_policies(call: Callable[..., Any], policies: list[dict]) -> None:
 
 
 def _pending(call: Callable[..., Any], sid: str) -> list[dict]:
-    return call(
-        "GET", "/v1/permissions", params={"session_id": sid, "status": "pending"}
-    ).get("permissions", [])
+    return call("GET", "/v1/permissions", params={"session_id": sid, "status": "pending"}).get(
+        "permissions", []
+    )
 
 
 def _wait_pending(call: Callable[..., Any], sid: str, timeout: float = 120.0) -> dict | None:
@@ -227,9 +233,9 @@ def _resolve(call: Callable[..., Any], pid: str, action: str) -> None:
 
 
 def _audit(call: Callable[..., Any], sid: str) -> list[dict]:
-    return call(
-        "GET", "/v1/permissions", params={"session_id": sid, "status": "all"}
-    ).get("permissions", [])
+    return call("GET", "/v1/permissions", params={"session_id": sid, "status": "all"}).get(
+        "permissions", []
+    )
 
 
 class _SSECollector:
@@ -278,6 +284,7 @@ class _SSECollector:
 # --------------------------------------------------------------------------- #
 # P3 — provenance cross-JOB lineage bind + reproduce                          #
 # --------------------------------------------------------------------------- #
+
 
 def _artifact_id(a: dict) -> str:
     """The relay artifact_id from a list-artifacts record item (``_record_wire``).
@@ -393,7 +400,9 @@ def gate_p3(call: Callable[..., Any], out_path: Path, turn_timeout_s: float) -> 
             "job_b": [
                 {
                     "tool": t.get("instrument", {}).get("tool") or t.get("call_id", "")[:12],
-                    "used": [e.get("artifact_id") or e.get("external_ref") for e in t.get("used", [])],
+                    "used": [
+                        e.get("artifact_id") or e.get("external_ref") for e in t.get("used", [])
+                    ],
                     "generated": [e.get("artifact_id") for e in t.get("generated", [])],
                     "notes": t.get("notes", []),
                 }
@@ -415,7 +424,11 @@ def gate_p3(call: Callable[..., Any], out_path: Path, turn_timeout_s: float) -> 
     verdict["lineage_edge_roles"] = sorted({e.get("role") for e in edges if e.get("role")})
     # The headline: summary's upstream closure reaches sales' REAL producing version.
     reaches_sales = sales_id in node_ids
-    cross_ws_edges = [e for e in edges if e.get("cross_workspace_bind") or "cross_workspace" in json.dumps(e, default=str)]
+    cross_ws_edges = [
+        e
+        for e in edges
+        if e.get("cross_workspace_bind") or "cross_workspace" in json.dumps(e, default=str)
+    ]
     verdict["reaches_sales_producer"] = reaches_sales
     verdict["cross_workspace_bind_edges"] = len(cross_ws_edges)
 
@@ -451,6 +464,7 @@ def gate_p3(call: Callable[..., Any], out_path: Path, turn_timeout_s: float) -> 
 # Driver                                                                      #
 # --------------------------------------------------------------------------- #
 
+
 def _trace_text(msgs: list[dict]) -> str:
     """Flatten every part of every message into one searchable blob (tool obs + text)."""
     return json.dumps(msgs, default=str)
@@ -476,7 +490,9 @@ def gate_p1(call: Callable[..., Any], out_path: Path, turn_timeout_s: float) -> 
     # --- A. reads never gated (ask mode, no allow policy) -------------------
     _set_policies(call, [])
     sid_a = _leaf_session(call, wsid, "p1-reads", approval_mode="ask")
-    _post(call, sid_a, "Read the file 'readme.txt' in the working directory and tell me its contents.")
+    _post(
+        call, sid_a, "Read the file 'readme.txt' in the working directory and tell me its contents."
+    )
     st_a = _wait_turn(call, wsid, sid_a, turn_timeout_s)
     msgs_a = _messages(call, sid_a)
     _dump(out_path, "p1_reads_messages.json", msgs_a)
@@ -490,7 +506,11 @@ def gate_p1(call: Callable[..., Any], out_path: Path, turn_timeout_s: float) -> 
     # --- B. live mid-turn grant (ask mode; harness resolves the pending row) -
     _set_policies(call, [])
     sid_b = _leaf_session(call, wsid, "p1-grant", approval_mode="ask")
-    _post(call, sid_b, "Create a file named 'granted.txt' in the working directory containing the word GRANTED.")
+    _post(
+        call,
+        sid_b,
+        "Create a file named 'granted.txt' in the working directory containing the word GRANTED.",
+    )
     row = _wait_pending(call, sid_b, timeout=180.0)
     granted_ok = False
     if row is not None:
@@ -555,7 +575,9 @@ def gate_p1(call: Callable[..., Any], out_path: Path, turn_timeout_s: float) -> 
     # --- E. ai-review reviewer verdict recorded (grantor=reviewer) ----------
     _set_policies(call, [])
     sid_e = _leaf_session(call, wsid, "p1-ai-review", approval_mode="ai-review")
-    _post(call, sid_e, "Create a file 'reviewed.txt' in the working directory with the word REVIEWED.")
+    _post(
+        call, sid_e, "Create a file 'reviewed.txt' in the working directory with the word REVIEWED."
+    )
     # The reviewer runs IN-PROCESS on the gate thread; the row is briefly pending
     # (reason=ai_review_reviewer_pending) during its LM call. We must NOT resolve
     # that pending row ourselves (that races the reviewer and steals the decision) —
@@ -567,13 +589,15 @@ def gate_p1(call: Callable[..., Any], out_path: Path, turn_timeout_s: float) -> 
     while time.monotonic() < deadline:
         audit = _audit(call, sid_e)
         settled = [
-            r for r in audit
+            r
+            for r in audit
             if r.get("status") != "pending" and str(r.get("reason", "")).startswith("ai_review")
         ]
         if settled:
             break
         escalated = [
-            r for r in _pending(call, sid_e)
+            r
+            for r in _pending(call, sid_e)
             if str(r.get("reason", "")).startswith("ai_review_escalate")
         ]
         if escalated:  # the reviewer handed off to a human — resolve as human
@@ -629,7 +653,8 @@ def gate_bashprobe(call: Callable[..., Any], out_path: Path, turn_timeout_s: flo
     trace = _trace_text(msgs)
     verdict["file_written"] = target.exists()
     verdict["trace_has_shell_error"] = any(
-        s in trace for s in ("syntax is incorrect", "rc=1", "EROFS", "WinError", "denied", "sandbox")
+        s in trace
+        for s in ("syntax is incorrect", "rc=1", "EROFS", "WinError", "denied", "sandbox")
     )
     verdict["trace_excerpt"] = trace[:1500]
     verdict["pass"] = target.exists() and verdict["status"] in ("idle", "completed")
@@ -640,9 +665,7 @@ def _post_async(call: Callable[..., Any], base: str, sid: str, text: str) -> dic
     """POST a message WITHOUT waiting — returns the ack (200 new-turn or 202 steer)."""
     import requests
 
-    r = requests.post(
-        f"{base}/v1/sessions/{sid}/messages", json={"text": text}, timeout=60
-    )
+    r = requests.post(f"{base}/v1/sessions/{sid}/messages", json={"text": text}, timeout=60)
     return {"status_code": r.status_code, "body": r.json() if r.content else {}}
 
 
@@ -671,18 +694,23 @@ def gate_p2(call: Callable[..., Any], out_path: Path, turn_timeout_s: float, bas
     root.mkdir(parents=True, exist_ok=True)
 
     # --- A. mid-turn steer = 202 (not 409) ---------------------------------
-    sid_a = _leaf_session(call, _workspace(call, "p2-steer", str(root)), "p2-steer",
-                          approval_mode="bypass")
+    sid_a = _leaf_session(
+        call, _workspace(call, "p2-steer", str(root)), "p2-steer", approval_mode="bypass"
+    )
     wsid_a = call("GET", f"/v1/sessions/{sid_a}").get("workspace_id", "")
     # A multi-step task keeps the turn busy long enough to land a mid-turn POST.
     _post_async(
-        call, base, sid_a,
+        call,
+        base,
+        sid_a,
         "Run these as FOUR separate shell commands, one at a time: (1) print 'step 1' and "
         "sleep 4 seconds; (2) print 'step 2' and sleep 4 seconds; (3) print 'step 3' and "
         "sleep 4 seconds; (4) print 'done'. Report each step's output.",
     )
     busy = _wait_busy(call, wsid_a, sid_a, timeout=60.0)
-    steer_resp = _post_async(call, base, sid_a, "Also, while you work, remember the codeword BANANA.")
+    steer_resp = _post_async(
+        call, base, sid_a, "Also, while you work, remember the codeword BANANA."
+    )
     verdict["checks"]["mid_turn_steer_202"] = {
         "turn_went_busy": busy,
         "steer_status_code": steer_resp["status_code"],
@@ -693,23 +721,30 @@ def gate_p2(call: Callable[..., Any], out_path: Path, turn_timeout_s: float, bas
     msgs_a = _messages(call, sid_a)
     _dump(out_path, "p2_steer_messages.json", msgs_a)
     trace_a = _trace_text(msgs_a)
-    steer_surfaced = ("BANANA" in trace_a) or ("Mid-turn user steer" in trace_a) or any(
-        (m.get("metadata") or {}).get("mid_turn_steer") for m in msgs_a
+    steer_surfaced = (
+        ("BANANA" in trace_a)
+        or ("Mid-turn user steer" in trace_a)
+        or any((m.get("metadata") or {}).get("mid_turn_steer") for m in msgs_a)
     )
     verdict["checks"]["mid_turn_steer_202"].update(
-        {"status": st_a, "steer_surfaced": steer_surfaced,
-         "pass": busy and steer_resp["status_code"] == 202 and steer_surfaced}
+        {
+            "status": st_a,
+            "steer_surfaced": steer_surfaced,
+            "pass": busy and steer_resp["status_code"] == 202 and steer_surfaced,
+        }
     )
 
     # --- B. fire-and-forget completion injected mid-turn -------------------
     child_file = root / "worker_did_this.txt"
     child_file.unlink(missing_ok=True)
-    sid_b = _orch_session(call, _workspace(call, "p2-inject", str(root)), "p2-inject",
-                          approval_mode="bypass")
+    sid_b = _orch_session(
+        call, _workspace(call, "p2-inject", str(root)), "p2-inject", approval_mode="bypass"
+    )
     wsid_b = call("GET", f"/v1/sessions/{sid_b}").get("workspace_id", "")
     sse = _SSECollector(base, sid_b).start()
     _post(
-        call, sid_b,
+        call,
+        sid_b,
         "Do these steps IN ORDER, and do NOT call wait_agent_tasks or observe_agent_tasks: "
         "(1) Dispatch ONE background worker task that writes the word DONE into the file "
         f"{child_file} (a quick shell command). (2) Then, WITHOUT waiting on the worker, keep "
@@ -770,7 +805,9 @@ def gate_p2(call: Callable[..., Any], out_path: Path, turn_timeout_s: float, bas
     return verdict
 
 
-def gate_composed(call: Callable[..., Any], out_path: Path, turn_timeout_s: float, base: str) -> dict:
+def gate_composed(
+    call: Callable[..., Any], out_path: Path, turn_timeout_s: float, base: str
+) -> dict:
     """The capstone: ONE synthetic multi-job/multi-workspace pipeline that threads all
     three pillars. Job A (ws1) produces `sales`. Job B (ws2, SAME root, approval_mode=
     ask) transforms it via the designated-output xform tool — whose write BLOCKS on a
@@ -805,7 +842,9 @@ def gate_composed(call: Callable[..., Any], out_path: Path, turn_timeout_s: floa
     sess_b = _xform_session(call, ws2, "composed-job-b", approval_mode="ask")
     sse = _SSECollector(base, sess_b).start()
     _post_async(
-        call, base, sess_b,
+        call,
+        base,
+        sess_b,
         f"Transform the sales CSV at {sales_path} into a summary by calling the "
         f"summarize_csv tool with input_path='{sales_path}' and output_path='{summary_path}'. "
         "Make that single tool call, then report the total revenue it returns.",
@@ -830,7 +869,9 @@ def gate_composed(call: Callable[..., Any], out_path: Path, turn_timeout_s: floa
     verdict["p1_resolved_rows"] = sum(1 for r in audit_b if r.get("status") != "pending")
     # (P2) the steer surfaced (mid_turn_steer message or the drain marker).
     trace_b = _trace_text(_messages(call, sess_b))
-    verdict["p2_steer_surfaced"] = ("Q3 sales roll-up" in trace_b) or ("Mid-turn user steer" in trace_b)
+    verdict["p2_steer_surfaced"] = ("Q3 sales roll-up" in trace_b) or (
+        "Mid-turn user steer" in trace_b
+    )
 
     # (P3) cross-job lineage: summary binds to sales' producer across the job boundary.
     arts_b = call("GET", f"/v1/sessions/{sess_b}/artifacts").get("artifacts", [])
@@ -839,8 +880,11 @@ def gate_composed(call: Callable[..., Any], out_path: Path, turn_timeout_s: floa
     reaches = False
     if summary and sales:
         summary_id, sales_id = _artifact_id(summary), _artifact_id(sales)
-        lin = call("GET", f"/v1/artifacts/{summary_id}/lineage",
-                   params={"direction": "upstream", "depth": 12})
+        lin = call(
+            "GET",
+            f"/v1/artifacts/{summary_id}/lineage",
+            params={"direction": "upstream", "depth": 12},
+        )
         _dump(out_path, "composed_lineage.json", lin)
         node_ids = {n.get("id") or n.get("artifact_id") for n in lin.get("nodes", [])}
         reaches = sales_id in node_ids
@@ -872,18 +916,25 @@ def gate_extras(call: Callable[..., Any], out_path: Path, turn_timeout_s: float)
     # --- A. explicit DENY policy blocks a write even in bypass mode ---------
     denied_file = root / "should_not_exist.txt"
     denied_file.unlink(missing_ok=True)
-    _set_policies(call, [{"scope": "workspace", "action": "deny",
-                          "tool_name_pattern": "fs_apply_edit_write"}])
+    _set_policies(
+        call, [{"scope": "workspace", "action": "deny", "tool_name_pattern": "fs_apply_edit_write"}]
+    )
     sid_d = _leaf_session(call, wsid, "extras-deny", approval_mode="bypass")
-    _post(call, sid_d,
-          f"Create a file at {denied_file} containing the word NOPE using the file-writing tool.")
+    _post(
+        call,
+        sid_d,
+        f"Create a file at {denied_file} containing the word NOPE using the file-writing tool.",
+    )
     st_d = _wait_turn(call, wsid, sid_d, turn_timeout_s)
     trace_d = _trace_text(_messages(call, sid_d))
     verdict["checks"]["explicit_deny_beats_mode"] = {
         "status": st_d,
         "file_written": denied_file.exists(),  # MUST be False
-        "deny_in_trace": ("deny" in trace_d.lower() or "denied" in trace_d.lower()
-                          or "not permitted" in trace_d.lower()),
+        "deny_in_trace": (
+            "deny" in trace_d.lower()
+            or "denied" in trace_d.lower()
+            or "not permitted" in trace_d.lower()
+        ),
         "pass": (not denied_file.exists()) and st_d in ("idle", "completed"),
     }
     denied_file.unlink(missing_ok=True)
@@ -893,8 +944,11 @@ def gate_extras(call: Callable[..., Any], out_path: Path, turn_timeout_s: float)
     auto_file.unlink(missing_ok=True)
     _set_policies(call, [])
     sid_a = _leaf_session(call, wsid, "extras-auto", approval_mode="auto-edits")
-    _post(call, sid_a,
-          f"Create a file at {auto_file} containing the word AUTO using the file-writing tool.")
+    _post(
+        call,
+        sid_a,
+        f"Create a file at {auto_file} containing the word AUTO using the file-writing tool.",
+    )
     st_a = _wait_turn(call, wsid, sid_a, turn_timeout_s)
     rows_a = _audit(call, sid_a)
     verdict["checks"]["auto_edits_allows_fs_write"] = {
@@ -969,23 +1023,27 @@ def _write_repo_mcp_yaml() -> Path | None:
     if mcp_yaml.exists():
         return None  # do not clobber a real config
     mcp_yaml.parent.mkdir(parents=True, exist_ok=True)
-    script = (REPO / "scripts/live_gate_blueprints/transform_stdio.py").resolve()
+    script = TRANSFORM_SERVER_PATH
     mcp_yaml.write_text(
-        "mcp_servers:\n"
-        f"  xform: {Path(sys.executable).as_posix()} {script.as_posix()}\n",
+        f"mcp_servers:\n  xform: {Path(sys.executable).as_posix()} {script.as_posix()}\n",
         encoding="utf-8",
     )
     return mcp_yaml
 
 
+def _build_parser() -> argparse.ArgumentParser:
+    """Build the live-gate CLI parser without starting any live services."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("gate", choices=sorted(GATES))
+    parser.add_argument("--port", type=int, default=17931)
+    parser.add_argument("--model", default="haiku")
+    parser.add_argument("--transport", default="sdk")
+    parser.add_argument("--turn-timeout-s", type=float, default=900.0)
+    return parser
+
+
 def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("gate", choices=sorted(GATES))
-    ap.add_argument("--port", type=int, default=17931)
-    ap.add_argument("--model", default="haiku")
-    ap.add_argument("--transport", default="sdk")
-    ap.add_argument("--turn-timeout-s", type=float, default=900.0)
-    args = ap.parse_args()
+    args = _build_parser().parse_args()
 
     base = f"http://127.0.0.1:{args.port}"
     out_path = (REPO / f"out/live_gate_1031_{args.gate}.json").resolve()
@@ -994,7 +1052,10 @@ def main() -> int:
 
     mcp_yaml_to_remove = _write_repo_mcp_yaml() if args.gate in _GATE_MCP_YAML else None
     proc = _boot(
-        args.port, args.model, args.transport, sse_log,
+        args.port,
+        args.model,
+        args.transport,
+        sse_log,
         boot_script=_GATE_BOOT_SCRIPTS.get(args.gate, ""),
         extra_env=_GATE_EXTRA_ENV.get(args.gate),
     )
