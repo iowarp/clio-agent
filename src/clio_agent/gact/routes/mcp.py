@@ -519,14 +519,14 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                 )
 
             try:
-                from fastmcp import Client
+                from clio_agent.tools.mcp_runtime import make_mcp_client  # noqa: PLC0415
             except Exception as exc:
                 raise HTTPException(
                     status_code=503,
                     detail=ErrorEnvelope(
                         error=ErrorInfo(
                             error="dependency_missing",
-                            message=f"fastmcp Client unavailable: {exc!r}",
+                            message=f"MCP client factory unavailable: {exc!r}",
                             recoverable=False,
                         )
                     ).model_dump(exclude_none=True),
@@ -556,7 +556,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                 tool_observer = app.state.make_tool_observer()
             notify_tool_observer(tool_observer, observer_name, tool_args, "started")
             try:
-                async with Client(transport) as client:
+                async with make_mcp_client(transport) as client:
                     result = await client.call_tool(tool_name, tool_args)
                 content = []
                 for c in getattr(result, "content", None) or []:

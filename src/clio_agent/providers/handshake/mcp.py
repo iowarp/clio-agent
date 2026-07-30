@@ -3,7 +3,7 @@
 An MCP server is a "provider" of tools rather than models, so it gets its own
 report shape (:class:`MCPServerReport`) instead of :class:`ModelProfile`. The
 probe connects each declared server over its transport and lists its tools —
-reusing the same ``Client(transport_for(spec))`` path the gateway uses — so a
+via the single ``make_mcp_client(transport_for(spec))`` factory (#1106) — so a
 single ``/v1/mcp/handshake`` (and ``/v1/health`` rows) can answer "is this tool
 server reachable and what does it expose".
 """
@@ -81,12 +81,11 @@ async def _probe_one(spec: Any, *, timeout_s: float) -> MCPServerReport:
         )
     started = time.monotonic()
     try:
-        from fastmcp import Client  # noqa: PLC0415
-
         from clio_agent.tools.mcp_config import transport_for  # noqa: PLC0415
+        from clio_agent.tools.mcp_runtime import make_mcp_client  # noqa: PLC0415
 
         async def _list() -> list[Any]:
-            async with Client(transport_for(spec)) as client:
+            async with make_mcp_client(transport_for(spec)) as client:
                 return await client.list_tools()
 
         tools = await asyncio.wait_for(_list(), timeout=timeout_s)

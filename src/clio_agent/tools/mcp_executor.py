@@ -19,9 +19,8 @@ from dataclasses import dataclass
 from typing import Any, Protocol, cast
 from urllib.parse import urlsplit
 
-from fastmcp import Client
-
 from clio_agent.tools import spawn_diet
+from clio_agent.tools.mcp_runtime import make_mcp_client
 
 logger = logging.getLogger(__name__)
 
@@ -234,7 +233,7 @@ class AsyncMCPToolExecutor:
         self._tool_timeouts = cleaned_tool_timeouts
         self._uncertain_mutating_timeouts: dict[str, float] = {}
         self._uncertain_mutating_timeouts_lock = threading.Lock()
-        self._client_factory = cast(ClientFactory, client_factory or Client)
+        self._client_factory = cast(ClientFactory, client_factory or make_mcp_client)
         self._client_ctx: MCPClientProtocol | None = None
         self._client: MCPClientProtocol | None = None
         self._preloaded_tools = dict(preloaded_tools) if preloaded_tools is not None else None
