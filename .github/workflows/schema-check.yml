@@ -1,0 +1,26 @@
+# P0.6 (#1110): the clio-schemas consumer loop, proven in CI.
+# clio-agent resolves the pinned clio-schemas package and verifies the export
+# pipeline (copy + byte/set check of the IMMUTABLE schemas shipped in the
+# package). The real record schemas move into the package in P2.1 (#1120),
+# which also switches the pin to an exact released version.
+name: schema-check
+on:
+  push:
+    branches: [develop, main]
+    paths: [".github/workflows/schema-check.yml", "pyproject.toml", "uv.lock", "schemas/**"]
+  pull_request:
+    paths: [".github/workflows/schema-check.yml", "pyproject.toml", "uv.lock", "schemas/**"]
+jobs:
+  clio-schemas-export-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Install clio-schemas (bootstrap pin = main; exact tag pin lands with P2.1)
+        run: uv venv --clear && uv pip install "clio-schemas @ git+https://github.com/iowarp/clio-schemas@main"
+      - name: Export the immutable schemas and self-check the copy
+        run: |
+          uv run python -m clio_schemas.export --out /tmp/clio-schemas-export
+          uv run python -m clio_schemas.export --out /tmp/clio-schemas-export --check
