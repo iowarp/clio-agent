@@ -73,8 +73,7 @@ FORWARDED_QUESTION_SOURCE = "child_forwarded"
 #: Park timeout (permission-gate-style human window); expiry -> typed ``cancel``.
 DEFAULT_ELICITATION_TIMEOUT_S = 600.0
 
-#: Typed degrade/reject reason catalog (``stream_fallback`` style): a queryable
-#: reason recorded when CLIO (not the user) declines/cancels — never silent.
+#: Typed degrade/reject reason catalog (``stream_fallback`` style) — never silent.
 ELICITATION_REASONS: dict[str, str] = {
     "elicitation_no_session": "no CLIO session resolved for the elicitation; declined",
     "elicitation_schema_not_object": "form schema is not a flat JSON object schema; declined",
@@ -631,10 +630,9 @@ async def handle_elicitation(
         _record_reason("elicitation_no_session", tool=invocation.tool_name)
         return _build_elicit_result(ElicitResolution(action="decline"))
 
-    # Child forwarding (adopted default): an unattended spawned child cannot answer
-    # its own elicitation, so the question is minted on the ROOT attended session's
-    # HITL surface. The parked future stays keyed by the question id, so the parent
-    # user's answer wakes THIS child's tool call (no client-keyed registry).
+    # Child forwarding: an unattended child cannot answer its own elicitation, so the
+    # question is minted on the ROOT attended session (the parked future stays keyed
+    # by question id, so the parent user's answer wakes THIS child's tool call).
     attended = _attended_session(app, session_id)
     forwarded_from = session_id if attended != session_id else ""
 
@@ -654,9 +652,8 @@ async def handle_elicitation(
                 "elicitation": {
                     "mode": "url",
                     "url": url,
-                    # The client MUST render this in an isolated, non-inspectable
-                    # container (ephemeral profile, no shared cookies/session, no
-                    # referrer) so the server learns nothing from the rendering.
+                    # Client MUST render in an isolated, non-inspectable container
+                    # (ephemeral, no shared session/referrer) — see module docstring.
                     "container": "isolated",
                     "request_id": getattr(params, "request_id", None),
                     "namespace": invocation.namespace,
@@ -781,7 +778,10 @@ def make_elicitation_client(
     if invocation is None:
         from clio_agent.gact.runtime.globals import _resolve_tool_session  # noqa: PLC0415
 
-        sid, _current = _resolve_tool_session(app)
+        try:
+            sid = _resolve_tool_session(app)[0]
+        except Exception:  # noqa: BLE001 - app-less/minimal caller: no session ctx
+            sid = ""  # downstream hook emits the typed ``elicitation_no_session``
         invocation = MCPInvocationContext(
             invocation_id=f"{namespace}.{tool_name}" if namespace or tool_name else "elicit",
             session_id=sid,
