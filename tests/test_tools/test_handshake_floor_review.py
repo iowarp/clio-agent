@@ -12,6 +12,12 @@ Covers the four accepted findings:
    representative request families INCLUDING ``server/discover`` (which the SDK
    builds via a separate ``send_discover`` path).
 
+Plus the verify-fix round: the handler proxy branch preserves ProxyClient
+forwarding (structurally AND behaviorally — hook overrides its own domain while
+sampling forwards to the front and structured results relay), and an explicit
+empty capability declaration is authoritative PER DOMAIN IT MODELS (elicitation)
+while leaving unmodeled domains (sampling/roots) truthfully base-derived.
+
 Finding 3 (the ``/v1/mcp/handshake`` endpoint surfacing the discovered fields via
 the ``mcp_rows`` owner helper) is pinned in ``tests/test_gact/test_mcp_handshake.py``.
 """
@@ -22,9 +28,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import mcp.types as mcp_types
 import psutil
 import pytest
-from fastmcp import Client, FastMCP
+from fastmcp import Client, Context, FastMCP
 from fastmcp.server.dependencies import get_context
 from fastmcp.server.middleware import Middleware
 
@@ -183,27 +190,35 @@ async def test_capability_declaration_overrides_wired_handler_to_form_only() -> 
 
 
 @pytest.mark.asyncio
-async def test_empty_declaration_suppresses_wired_handler_capability() -> None:
-    """An explicit EMPTY declaration is authoritative: it advertises nothing.
+async def test_empty_declaration_pins_elicitation_absent_on_direct_client() -> None:
+    """Empty declaration pins the elicitation DOMAIN absent on a direct client.
 
-    Even with an elicitation handler wired, an empty declaration installs the
-    declaring session class (elicitation=None), so no capability leaks through.
+    A declaration is authoritative only for the domain it models (elicitation). On
+    a plain client nothing else is wired, so with an elicitation handler wired the
+    empty declaration removes elicitation and the COMPLETE advertised envelope is
+    genuinely ``{}`` — asserted by exact equality, not mere elicitation absence.
     """
 
     async def elicit(context: Any, *a: Any) -> Any:
         return None
 
     caps = await _advertised_caps(
-        capabilities=MCPClientCapabilities(),  # explicit empty -> authoritative
+        capabilities=MCPClientCapabilities(),  # explicit empty -> authoritative for elicitation
         handlers=MCPClientHandlers(elicitation=elicit),
     )
-    assert caps == {}
+    assert caps == {}  # the whole envelope, exactly — nothing else was wired here
 
 
 @pytest.mark.asyncio
-async def test_empty_declaration_suppresses_forwarding_through_proxy_clone() -> None:
-    """Empty declaration through a ProxyClient ``.new()`` clone suppresses the
-    forwarding handler's elicitation advertisement (the leak this remnant closes).
+async def test_empty_declaration_pins_elicitation_absent_but_keeps_forwarding() -> None:
+    """Empty declaration through a ProxyClient ``.new()`` clone pins elicitation
+    absent while sampling/roots forwarding REMAINS advertised.
+
+    This is the ruled per-domain contract, not an accepted leak: the declaration
+    models only elicitation, so it removes the SDK's over-advertised elicitation
+    form+url; sampling and roots stay because a proxy backend genuinely forwards
+    those server-initiated requests to the front — a truthful advertisement, and
+    clearing it would sever push-forwarding.
     """
     from fastmcp.server.providers.proxy import ProxyClient
 
@@ -219,10 +234,9 @@ async def test_empty_declaration_suppresses_forwarding_through_proxy_clone() -> 
         await client.call_tool("echo", {"text": "x"})
 
     caps = recorder.by_method["tools/call"][CLIENT_CAPS_KEY]
-    # ProxyClient forwarding would otherwise advertise elicitation form+url; the
-    # empty declaration removes it. (sampling/roots are not governed by the
-    # elicitation declaration and remain, so forwarding of those is intact.)
-    assert "elicitation" not in caps
+    assert "elicitation" not in caps  # over-advertised form+url removed
+    assert "sampling" in caps  # proxy forwarding preserved (truthful, unmodeled domain)
+    assert "roots" in caps
 
 
 # --------------------------------------------------------------------------- #
@@ -298,3 +312,87 @@ def test_handler_proxy_branch_preserves_proxyclient_forwarding(
     # The forwarding callbacks are actually installed on the session.
     for key in ("sampling_callback", "list_roots_callback", "logging_callback"):
         assert clone._session_kwargs.get(key) is not None
+
+
+@pytest.mark.asyncio
+async def test_handler_gateway_behavior_hook_override_and_forwarding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BEHAVIORAL proof through a handler-populated gateway over an in-memory backend.
+
+    Complements the structural test above by exercising real traffic across the
+    proxy (fastmcp in-memory transport, no subprocess):
+
+    * elicit leg — a backend tool calls ``ctx.elicit``; CLIO's wired elicitation
+      hook services it (hook observed firing; the backend receives the response),
+      proving the hook OVERRIDES only its own domain.
+    * sample leg — a backend tool requests sampling; the request forwards through
+      the proxy to the FRONT client's sampling handler, proving unhandled
+      push-forwarding survives on the handler-populated path.
+    * result-relay leg — a tool returning structured content arrives intact through
+      the proxy (no mid-proxy output-schema rejection).
+
+    ERA NOTE (API evidence): server-initiated elicitation/sampling exist only on
+    the legacy/handshake era. On a 2026-07-28 connection fastmcp raises
+    ``ToolError("elicitation via server-initiated requests is unavailable on
+    2026-07-28 connections")`` and sampling is deprecated (SEP-2577), because the
+    revision statelessified server->client requests. So the two forwarding legs are
+    driven through a LEGACY front (the gateway mirrors the era to a legacy backend),
+    which is exactly the era whose push-forwarding this branch must preserve. No leg
+    is dropped; the result-relay leg is era-agnostic.
+    """
+    from clio_agent.tools import gateway
+
+    fired = {"elicit": False, "sample": False}
+    backend = FastMCP("behavioral-backend")
+
+    @backend.tool
+    async def ask(ctx: Context) -> dict[str, Any]:
+        result = await ctx.elicit("your name?", response_type=str)
+        return {"answer": getattr(result, "data", None), "kind": type(result).__name__}
+
+    @backend.tool
+    async def wants_sample(ctx: Context) -> dict[str, Any]:
+        reply = await ctx.session.create_message(
+            messages=[
+                mcp_types.SamplingMessage(
+                    role="user", content=mcp_types.TextContent(type="text", text="hi")
+                )
+            ],
+            max_tokens=16,
+        )
+        return {"sampled": getattr(reply.content, "text", str(reply.content))}
+
+    @backend.tool
+    async def structured() -> dict[str, Any]:
+        return {"a": 1, "nested": {"b": [1, 2, 3]}}
+
+    async def clio_elicit(context: Any, message: str, response_type: Any, params: Any, rc: Any) -> Any:
+        fired["elicit"] = True
+        return "clio-answer"
+
+    async def front_sampling(messages: Any, params: Any, context: Any) -> str:
+        fired["sample"] = True
+        return "front-sampled-text"
+
+    monkeypatch.setattr(gateway, "transport_for", lambda spec, cwd=None: backend)
+    gw = gateway.build_gateway(
+        {"bk": MCPServerSpec(name="bk", transport="stdio", command="x")},
+        handlers=MCPClientHandlers(elicitation=clio_elicit),
+    )
+
+    # Legacy front -> the gateway mirrors a legacy backend, where server-initiated
+    # elicit/sample (the forwarding this branch preserves) are available.
+    async with Client(gw, mode="legacy", sampling_handler=front_sampling) as client:
+        elicit_result = await client.call_tool("bk_ask", {})
+        sample_result = await client.call_tool("bk_wants_sample", {})
+        relay_result = await client.call_tool("bk_structured", {})
+
+    # elicit leg: CLIO's hook serviced it (not forwarded); backend got the answer.
+    assert fired["elicit"] is True
+    assert elicit_result.data["answer"] == "clio-answer"
+    # sample leg: forwarded through the proxy to the FRONT sampling handler.
+    assert fired["sample"] is True
+    assert sample_result.data["sampled"] == "front-sampled-text"
+    # result-relay leg: structured content intact through the proxy.
+    assert relay_result.data == {"a": 1, "nested": {"b": [1, 2, 3]}}

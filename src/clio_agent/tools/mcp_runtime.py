@@ -191,22 +191,30 @@ def clio_client_info() -> Any:
 
 
 class _DeclaredCapabilityOverride:
-    """Mixin that makes CLIO's declared client capabilities authoritative.
+    """Mixin that makes CLIO's declared client capabilities authoritative PER DOMAIN.
 
     Composed in front of the session class already in effect (plain
     ``ClientSession`` on a direct client, ``_ForwardingClientSession`` on a proxy
     backend) by :func:`_capability_session_class`, so ``super()`` resolves to that
     base's ``_build_capabilities``. The declared elicitation capability is stored
     on the composed class as ``_clio_declared_elicitation``.
+
+    Only the ELICITATION domain is overridden — the one domain CLIO's declaration
+    models. Every other capability the base advertises (sampling / roots / log) is
+    left untouched: it is the base's truthful wiring-derived value (a direct client
+    advertises only what is wired; a proxy backend genuinely forwards sampling/roots
+    to the front), and blanking it would sever proxy push-forwarding. A future slice
+    that models another domain overrides that field here too.
     """
 
     _clio_declared_elicitation: Any = None
 
     def _build_capabilities(self, version: str) -> Any:
         caps = super()._build_capabilities(version)  # type: ignore[misc]
-        # The declaration is authoritative for elicitation: it overrides the
-        # SDK's callback-derived (both-modes) value with the exact modes CLIO
-        # supports, so we never over-advertise a mode we cannot serve.
+        # Authoritative for elicitation ONLY: pin the declared modes (the SDK
+        # otherwise hardcodes both form+url whenever an elicitation callback is
+        # wired). ``None`` here pins elicitation absent. All other domains keep the
+        # base's value — clearing them would break proxy sampling/roots forwarding.
         return caps.model_copy(update={"elicitation": self._clio_declared_elicitation})
 
 
@@ -215,18 +223,20 @@ def _capability_session_class(declaration: MCPClientCapabilities, base: type) ->
 
     The installed MCP SDK derives the advertised ``clientCapabilities`` from
     :meth:`ClientSession._build_capabilities`, which is gated on wired handler
-    callbacks and hardcodes elicitation as BOTH ``form`` and ``url``. To advertise
-    at CLIO's declared granularity independent of handler wiring, we subclass the
-    session class and override that one method — the sanctioned extension the SDK
-    itself uses (``fastmcp``'s proxy installs ``_ForwardingClientSession`` the same
-    way, via ``TransportOptions.session_class``). This is a subclass, not a
-    monkeypatch: nothing global is mutated.
+    callbacks and hardcodes elicitation as BOTH ``form`` and ``url``. To pin the
+    ELICITATION domain at CLIO's declared granularity independent of handler wiring,
+    we compose :class:`_DeclaredCapabilityOverride` in front of the session class
+    and override that one method — the sanctioned extension the SDK itself uses
+    (``fastmcp``'s proxy installs ``_ForwardingClientSession`` the same way, via
+    ``TransportOptions.session_class``). This is a subclass, not a monkeypatch:
+    nothing global is mutated, and only the modeled domain is touched.
 
     ``base`` is the session class that would otherwise be used (plain
     ``ClientSession`` on a direct execution client, ``_ForwardingClientSession`` on
-    a proxy backend), so the capability override COMPOSES with — never discards —
-    proxy push-forwarding. Subclasses are cached per ``(base, form, url)`` so a
-    given (base, declaration) pair yields exactly one class.
+    a proxy backend), so the override COMPOSES with — never discards — the base's
+    other capabilities and, on a proxy, its push-forwarding. Subclasses are cached
+    per ``(base, form, url)`` so a given (base, declaration) pair yields exactly one
+    class.
     """
 
     key = (base, declaration.elicitation_form, declaration.elicitation_url)
@@ -287,16 +297,21 @@ def make_mcp_client(
             are all ``None``) yields an identity-only client (no handler kwargs).
         capabilities: Optional typed client-capability DECLARATION
             (:class:`~clio_agent.tools.mcp_handlers.MCPClientCapabilities`),
-            decoupled from handler wiring. ANY non-``None`` declaration — including
-            an explicit *empty* one — is authoritative and installs a
-            ``ClientSession`` subclass (via ``TransportOptions.session_class``)
-            that advertises exactly the declared capabilities in ``_meta``,
-            OVERRIDING the SDK's callback-derived defaults. So a form-only
-            declaration advertises form without over-advertising url (the seam
-            #1113 uses), and an explicit empty declaration advertises nothing even
-            when a live/forwarding handler would otherwise leak a capability.
-            ``None`` (the default) leaves the SDK's callback-derived advertisement
-            untouched.
+            decoupled from handler wiring. A declaration is authoritative PER
+            CAPABILITY DOMAIN IT MODELS. Today the type models only elicitation, so
+            ANY non-``None`` declaration — including an explicit *empty* one —
+            installs a ``ClientSession`` subclass (via ``TransportOptions.session_class``)
+            that pins the advertised ``_meta`` elicitation EXACTLY: a form-only
+            declaration advertises form without over-advertising url (the SDK's
+            elicitation defect the seam exists for; #1113 uses it), and an empty
+            declaration advertises elicitation absent even over a wired/forwarding
+            elicitation handler. Domains the type does NOT model (sampling / roots /
+            log) are deliberately left to the base session's wiring-derived
+            advertisement — which is truthful on both paths (a direct client only
+            advertises what is actually wired; a proxy backend genuinely forwards
+            sampling/roots to the front). Clearing them would sever proxy
+            push-forwarding. ``None`` (the default) leaves the whole advertisement
+            SDK-derived.
         client_cls: Injection seam for the client class. Defaults to
             ``fastmcp.Client``; tests substitute a fake to inspect the
             construction without spawning a real backend.
@@ -330,8 +345,9 @@ def make_mcp_client(
 
     client = client_cls(target, **kwargs)
     if capabilities is not None:
-        # ANY non-None declaration is authoritative — including an explicit empty
-        # one, which advertises nothing even over a wired/forwarding handler.
+        # ANY non-None declaration (incl. explicit empty) is authoritative for the
+        # domain it models (elicitation today): empty pins elicitation absent even
+        # over a wired/forwarding handler. Unmodeled domains stay base-derived.
         _install_capability_declaration(client, capabilities)
     return client
 
