@@ -116,23 +116,14 @@ argonne = [
     "globus-sdk>=3.0.0",
 ]
 
-claude-code = [
-    # Optional Claude Agent SDK transport (claude_code_transport="sdk"): a
-    # persistent in-process Claude Code CLI session instead of one `claude -p`
-    # spawn per LM call (kills the per-call cold-start, #715). Auth is the user's
-    # Claude Code OAuth login (no API key). See
-    # src/clio_agent/providers/claude_code_litellm.py.
-    #
-    # fastmcp-4 / mcp-2 gate (#1107): claude-agent-sdk added a deliberate `mcp<2`
-    # bound in 0.2.96 — the SDK is upstream-declared INCOMPATIBLE with mcp 2. The
-    # floor is pinned to >=0.2.96 on purpose: uv then REFUSES to co-install this
-    # extra with the mcp-2 core (a loud, correct resolution failure) instead of
-    # silently landing an SDK that cannot speak the 2026-07-28 wire. The extra
-    # returns to installable once upstream ships mcp-2 support; until then the
-    # SDK-transport seam raises a typed unavailability error (see
-    # ``require_claude_agent_sdk``).
-    "claude-agent-sdk>=0.2.96",
-]
+# claude-code extra REMOVED while upstream is incompatible (#1107): the Claude
+# Agent SDK added a deliberate `mcp<2` bound in 0.2.96, so it cannot coexist
+# with this project's mcp-2 core — and uv locks the WHOLE extras universe, so
+# an unsatisfiable extra would make the project unlockable. The SDK-transport
+# seam raises a typed unavailability error (``require_claude_agent_sdk``,
+# providers/claude_code_options.py) whenever claude_code_transport="sdk" is
+# selected without the SDK. Restore the extra (claude-agent-sdk with mcp-2
+# support) once upstream ships it; see docs/design/mcp-2026-07-28-compat-matrix.md.
 
 dev = [
     "pytest>=7.4.0",
@@ -147,7 +138,8 @@ dev = [
 ]
 
 all = [
-    "clio-agent[optimizers,adios,argonne,claude-code,dev]",
+    # claude-code omitted while the SDK is mcp<2-bound upstream (#1107, see above).
+    "clio-agent[optimizers,adios,argonne,dev]",
 ]
 
 [project.urls]
