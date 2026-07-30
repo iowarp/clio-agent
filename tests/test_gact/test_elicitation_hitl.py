@@ -45,16 +45,16 @@ def _fake_backend() -> Any:
 
     @backend.tool
     async def pick_color(ctx: Context) -> str:
-        result = await ctx.elicit(
-            "Pick a color", response_type=Literal["red", "green", "blue"]
-        )
+        result = await ctx.elicit("Pick a color", response_type=Literal["red", "green", "blue"])
         action = getattr(result, "action", type(result).__name__)
         return f"action={action} value={getattr(result, 'data', None)}"
 
     return backend
 
 
-def _run_tool_call_in_thread(client_ctx: Any, tool: str, holder: dict[str, Any]) -> threading.Thread:
+def _run_tool_call_in_thread(
+    client_ctx: Any, tool: str, holder: dict[str, Any]
+) -> threading.Thread:
     """Dispatch ``tool`` on its own event loop in a worker thread.
 
     Faithful to production: the external MCP tool call runs on a worker-thread
@@ -62,6 +62,12 @@ def _run_tool_call_in_thread(client_ctx: Any, tool: str, holder: dict[str, Any])
     answer route runs on the serving loop — so the park/resolve MUST be
     cross-loop-safe, never a ``threading.Event`` block on the async boundary.
     """
+
+    # Server-initiated elicitation is handshake-era only (SEP-2577); a real legacy
+    # server negotiates legacy naturally. Production keeps auto negotiation, so the
+    # test pins legacy to stand in for a legacy server and exercise the fired path.
+    if hasattr(client_ctx, "mode"):
+        client_ctx.mode = "legacy"
 
     def _worker() -> None:
         async def _call() -> str:
@@ -79,7 +85,9 @@ def _run_tool_call_in_thread(client_ctx: Any, tool: str, holder: dict[str, Any])
     return thread
 
 
-def _wait_for_pending_question(client: TestClient, sid: str, timeout: float = 10.0) -> dict[str, Any]:
+def _wait_for_pending_question(
+    client: TestClient, sid: str, timeout: float = 10.0
+) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         rows = client.get(f"/v1/sessions/{sid}/questions", params={"status": "pending"}).json()
@@ -134,6 +142,39 @@ def test_elicitation_mid_tool_call_blocks_and_answer_route_unblocks(client: Test
     assert not thread.is_alive(), "the tool call did not unblock after the answer"
     assert "error" not in holder, holder.get("error")
     assert holder.get("result") == "action=accept value=blue"
+
+
+def test_elicitation_client_preserves_modern_negotiation(client: TestClient) -> None:
+    """RULING 1 / finding 3: wiring the handler must NOT force the legacy era.
+
+    A non-eliciting server reached through the elicitation client negotiates its
+    normal (modern) era and its tool call succeeds — the handler rides an
+    auto-negotiated connection, never a forced legacy one.
+    """
+
+    from clio_agent.gact.elicitation_bridge import make_elicitation_client
+
+    app = client.app  # type: ignore[attr-defined]
+    sid = _create_session(client)
+    backend = FastMCP("modern-backend")
+
+    @backend.tool
+    def ping() -> str:
+        return "pong"
+
+    invocation = MCPInvocationContext(
+        invocation_id="inv", session_id=sid, namespace="ext", tool_name="ping"
+    )
+    client_ctx = make_elicitation_client(app, backend, invocation=invocation)
+
+    async def _run() -> tuple[str, str]:
+        async with client_ctx as c:
+            out = await c.call_tool("ping", {})
+            return str(getattr(out, "data", out)), str(c.protocol_version)
+
+    result, protocol = asyncio.run(_run())
+    assert result == "pong"
+    assert protocol == "2026-07-28", f"handler wiring forced a non-modern era: {protocol}"
 
 
 def test_declining_via_answer_route_returns_sdk_decline(client: TestClient) -> None:
@@ -210,9 +251,9 @@ def test_child_session_elicitation_forwards_to_parent_and_resolves(client: TestC
     # The question surfaces on the PARENT (attended) session, not the child.
     question = _wait_for_pending_question(client, parent.id)
     assert question["metadata"]["elicitation"]["forwarded_from_session"] == child.id
-    assert not client.get(f"/v1/sessions/{child.id}/questions", params={"status": "pending"}).json()[
-        "questions"
-    ]
+    assert not client.get(
+        f"/v1/sessions/{child.id}/questions", params={"status": "pending"}
+    ).json()["questions"]
 
     resp = client.post(
         f"/v1/sessions/{parent.id}/questions/{question['id']}/answer",
@@ -231,9 +272,7 @@ def test_child_session_elicitation_forwards_to_parent_and_resolves(client: TestC
 def test_translate_string_field_is_freeform() -> None:
     from clio_agent.gact.elicitation_bridge import translate_form_schema
 
-    t = translate_form_schema(
-        {"type": "object", "properties": {"name": {"type": "string"}}}
-    )
+    t = translate_form_schema({"type": "object", "properties": {"name": {"type": "string"}}})
     assert t.degrade is None
     assert t.kind == "freeform"
     assert t.fields[0]["name"] == "name"
@@ -242,9 +281,7 @@ def test_translate_string_field_is_freeform() -> None:
 def test_translate_boolean_field_is_confirmation() -> None:
     from clio_agent.gact.elicitation_bridge import translate_form_schema
 
-    t = translate_form_schema(
-        {"type": "object", "properties": {"ok": {"type": "boolean"}}}
-    )
+    t = translate_form_schema({"type": "object", "properties": {"ok": {"type": "boolean"}}})
     assert t.kind == "confirmation"
 
 
@@ -301,9 +338,7 @@ def test_translate_nested_schema_degrades_not_flat() -> None:
 def test_translate_unsupported_field_type_degrades() -> None:
     from clio_agent.gact.elicitation_bridge import translate_form_schema
 
-    t = translate_form_schema(
-        {"type": "object", "properties": {"x": {"type": "null"}}}
-    )
+    t = translate_form_schema({"type": "object", "properties": {"x": {"type": "null"}}})
     assert t.degrade == "elicitation_unsupported_field_type"
 
 

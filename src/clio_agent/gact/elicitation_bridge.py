@@ -739,19 +739,6 @@ def _resolve_trusted_origins(explicit: Sequence[str] | None) -> tuple[str, ...]:
     return tuple(configured or ())
 
 
-def _set_legacy_mode(client: Any) -> None:
-    """Connect the elicitation client in the handshake era.
-
-    Server-initiated elicitation is unavailable on the 2026-07-28 era (SEP-2577
-    removed the back-channel), so a client that wires an elicitation handler must
-    speak the legacy handshake protocol or the handler can never fire. This is a
-    deliberate, documented era selection, not a silent fallback.
-    """
-
-    if hasattr(client, "mode"):
-        client.mode = "legacy"
-
-
 def make_elicitation_client(
     app: Any,
     transport: Any,
@@ -765,10 +752,13 @@ def make_elicitation_client(
     """Build a per-call, elicitation-capable execution client (#1113).
 
     Wires the elicitation handler (bound to ``invocation`` — the correlation
-    identity), declares the elicitation capability at exactly the served
-    granularity (form always; url only when a trust allow-list is configured, so
-    url is never over-advertised), and connects in the handshake era so the
-    server can actually elicit. When ``invocation`` is omitted, it is built from
+    identity for this single-call client) and declares the elicitation capability
+    at exactly the served granularity (form always; url only when a trust
+    allow-list is configured, so url is never over-advertised). The client keeps
+    NORMAL (auto) era negotiation: a legacy server negotiates legacy and the
+    handler fires; a modern-only server keeps working and elicitation simply never
+    arrives (SEP-2577 removed the back-channel — the modern input path is MRTR /
+    tasks, out of P1.3 scope). When ``invocation`` is omitted, it is built from
     ``namespace`` / ``tool_name`` and the session currently driving the turn.
     """
 
@@ -790,11 +780,9 @@ def make_elicitation_client(
         )
     hook = make_elicitation_hook(app, invocation, url_trusted_origins=origins)
     capabilities = MCPClientCapabilities(elicitation_form=True, elicitation_url=bool(origins))
-    client = make_mcp_client(
+    return make_mcp_client(
         transport,
         handlers=MCPClientHandlers(elicitation=hook),
         capabilities=capabilities,
         client_cls=client_cls,
     )
-    _set_legacy_mode(client)
-    return client
