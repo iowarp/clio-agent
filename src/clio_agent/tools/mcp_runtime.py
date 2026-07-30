@@ -26,6 +26,8 @@ churn.
 
 from __future__ import annotations
 
+import logging
+
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
@@ -42,6 +44,8 @@ if TYPE_CHECKING:
         MessageHook,
         ProgressHook,
     )
+
+logger = logging.getLogger(__name__)
 
 WireMode = Literal["mcp_results", "mcp_apps", "gact_runtime"]
 
