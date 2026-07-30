@@ -359,22 +359,22 @@ async def _call_enabled_external_mcp_tool(
     if decision != "allow":
         raise PermissionError(f"tool call {observer_name!r} denied by permission gate")
 
-    # Execution path (#1106): the dynamic-agent external tool call dispatches
-    # call_tool, so its client is built through the single make_mcp_client factory
-    # (handler slot). Dependency + client build happen BEFORE the tool-start
-    # observer event so a missing local install reads as unavailable, not a fault.
+    # Execution path (#1106 + #1113): the dynamic-agent external tool call dispatches
+    # call_tool, so its client is built through make_elicitation_client — the single
+    # factory PLUS the elicitation handler bound to THIS call's invocation
+    # (correlation by protocol identity, one client per call).
+    from clio_agent.gact.elicitation_bridge import make_elicitation_client  # noqa: PLC0415
     from clio_agent.gact.mcp_apps import call_tool_result_to_observer  # noqa: PLC0415
     from clio_agent.tools.execution import notify_tool_observer  # noqa: PLC0415
     from clio_agent.tools.mcp_config import (  # noqa: PLC0415
         MCPTransportError,
         transport_from_spec,
     )
-    from clio_agent.tools.mcp_runtime import make_mcp_client  # noqa: PLC0415
 
     spec = info.get("spec", {})
     try:
         transport = transport_from_spec(spec)
-        client_ctx = make_mcp_client(transport)
+        client_ctx = make_elicitation_client(app, transport, server_id, tool_name)
     except MCPTransportError as exc:
         raise RuntimeError(f"unknown stored MCP transport for {server_id}: {spec!r}") from exc
     except Exception as exc:  # noqa: BLE001

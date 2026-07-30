@@ -1164,19 +1164,11 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             }
         )
         app.state.user_questions[question_id] = updated
-        # P1.4 #1066: a plan-exit approval reuses THIS ask-user answer surface (no new store) but
-        # applies the mode transition + constraint-lift + resume in the owner module.
-        if updated.metadata.get("plan_exit_approval"):
-            from clio_agent.gact.plan_mode import resolve_plan_exit_answer  # noqa: PLC0415
+        # P1.4 #1066 (plan-exit) + P1.3 #1113 (MCP elicitation) reuse THIS answer surface
+        # (no new store); their non-default resolution is dispatched in the owner module.
+        from clio_agent.gact.elicitation_bridge import resolve_answered_question  # noqa: PLC0415
 
-            resolve_plan_exit_answer(app, deps, sid, updated)
-            app.state.bus.publish(
-                Event(
-                    type="user_question.answered",
-                    session_id=sid,
-                    payload=updated.model_dump(exclude_none=True),
-                )
-            )
+        if resolve_answered_question(app, deps, sid, updated):
             return updated
         if not _pending_user_questions(sid):
             sess = app.state.sessions.get(sid)
@@ -1278,7 +1270,11 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 }
             )
             app.state.user_questions[question_id] = row
-        if not _pending_user_questions(sid):
+        # P1.3 #1113: a cancelled MCP elicitation wakes its parked tool call (typed
+        # cancel) and must NOT flip its still-running turn to idle.
+        from clio_agent.gact.elicitation_bridge import resolve_elicitation  # noqa: PLC0415
+
+        if not resolve_elicitation(app, row) and not _pending_user_questions(sid):
             sess = app.state.sessions.get(sid)
             _set_session_status(
                 sid,
