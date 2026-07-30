@@ -31,6 +31,7 @@ from clio_agent.tools.mcp_executor import (
     UncertainMutatingToolOutcomeError,
     _clean_tool_timeouts,
     _tool_annotations,
+    _tool_input_schema,
     _tool_visible_to_model,
 )
 from clio_agent.tools.mcp_results import call_tool_result_to_observer
@@ -683,7 +684,7 @@ class SyncMCPToolExecutor:
         effective_args, repair_records = _repair_missing_file_arguments(args)
         effective_args = _ground_output_paths(
             effective_args,
-            getattr(self._mcp_tools.get(name), "inputSchema", None),
+            _tool_input_schema(self._mcp_tools.get(name)),  # fastmcp-4 snake-case-aware read
             get_active_tool_workspace_root(),
         )
 
@@ -1120,8 +1121,7 @@ def _make_dspy_tool(
     tool_fn.__name__ = name
     tool_fn.__doc__ = description
 
-    schema = getattr(mcp_tool, "inputSchema", None) or {}
-    properties = schema.get("properties", {}) if isinstance(schema, Mapping) else {}
+    properties = _tool_input_schema(mcp_tool).get("properties", {})  # fastmcp-4 snake read
     if not isinstance(properties, dict):
         properties = {}
 

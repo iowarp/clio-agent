@@ -118,9 +118,17 @@ def _mapping_value(value: Any) -> Mapping[str, Any] | None:
 def _tool_input_schema(tool: Any) -> Mapping[str, Any]:
     """Return one MCP tool's input schema without guessing from call arguments."""
 
-    schema = getattr(tool, "inputSchema", None)
-    if schema is None and isinstance(tool, Mapping):
-        schema = tool.get("inputSchema") or tool.get("input_schema")
+    # fastmcp-4 / mcp-2 renamed ``Tool.inputSchema`` -> ``Tool.input_schema``. Read
+    # the snake name FIRST so a live Tool never touches its deprecated camelCase
+    # alias (which warns, and raises when FastMCP's compat shim is disabled). The
+    # camelCase name is accepted ONLY as a fallback for objects/mappings that lack
+    # the snake name (persisted/wire rows, legacy fixtures).
+    if isinstance(tool, Mapping):
+        schema = tool.get("input_schema") or tool.get("inputSchema")
+    elif hasattr(tool, "input_schema"):
+        schema = tool.input_schema
+    else:
+        schema = getattr(tool, "inputSchema", None)
     return _mapping_value(schema) or {}
 
 

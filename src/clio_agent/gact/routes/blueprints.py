@@ -647,12 +647,12 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                             "server_id": sid,
                             "descriptor_id": descriptor_id,
                             "agent_blueprint_id": blueprint_id,
-                            "input_schema": getattr(live_tool, "inputSchema", None)
-                            or getattr(live_tool, "input_schema", None)
+                            "input_schema": getattr(live_tool, "input_schema", None)
+                            or getattr(live_tool, "inputSchema", None)
                             or declared.get("input_schema")
                             or {},
-                            "output_schema": getattr(live_tool, "outputSchema", None)
-                            or getattr(live_tool, "output_schema", None)
+                            "output_schema": getattr(live_tool, "output_schema", None)
+                            or getattr(live_tool, "outputSchema", None)
                             or declared.get("output_schema")
                             or {},
                             "annotations": _normalize_mcp_tool_annotations(live_tool),

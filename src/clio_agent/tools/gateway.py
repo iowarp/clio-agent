@@ -24,9 +24,12 @@ import inspect
 import logging
 import time
 from collections.abc import Callable, Iterable, Mapping
-from typing import TYPE_CHECKING, Any, cast
+from contextlib import suppress
+from typing import TYPE_CHECKING, Any
 
 from fastmcp import Client, FastMCP
+from fastmcp.server import create_proxy
+from fastmcp.server.providers.proxy import FastMCPProxy
 
 if TYPE_CHECKING:
     from clio_agent.tools.mcp_runtime import MCPClientHandlers
@@ -37,7 +40,12 @@ from clio_agent.tools.catalog import (
     classification_tags,
     normalize_mcp_annotations,
 )
-from clio_agent.tools.mcp_config import BUILTIN_SERVER_NAMES, MCPServerSpec, transport_for
+from clio_agent.tools.mcp_config import (
+    BUILTIN_SERVER_NAMES,
+    MCPServerSpec,
+    MCPSpawnError,
+    transport_for,
+)
 from clio_agent.tools.servers.fs_server import fs_server
 from clio_agent.tools.servers.shell_server import shell_server
 
@@ -45,13 +53,8 @@ logger = logging.getLogger(__name__)
 
 
 def _mount_with_namespace(parent: FastMCP, server: FastMCP, namespace: str) -> None:
-    """Mount a server with stable namespaced tool names across FastMCP versions."""
-    mount_params = inspect.signature(parent.mount).parameters
-    mount = cast(Any, parent.mount)
-    if "namespace" in mount_params:
-        mount(server, namespace=namespace)
-    else:
-        mount(server, prefix=namespace)
+    """Mount a server with a stable namespaced tool name prefix."""
+    parent.mount(server, namespace=namespace)
 
 
 def _mount_builtins(gw: FastMCP) -> None:
@@ -91,7 +94,7 @@ def _proxy_for_spec(
 
     This is an EXECUTION path: the proxy's backend client dispatches ``call_tool``
     to the declared server, so its client is built through :func:`make_mcp_client`
-    (#1106). FastMCP's ``as_proxy`` runs a fresh ``client.new()`` per request; the
+    (#1106). FastMCP's ``create_proxy`` runs a fresh ``client.new()`` per request; the
     factory's handler dispatchers live in the client's session kwargs and are
     carried onto that per-request client by ``Client.new``'s ``copy.copy``, so a
     handler passed here is reachable on the actual upstream call path. Without
@@ -99,17 +102,35 @@ def _proxy_for_spec(
 
     ``cwd`` (when given) is passed to stdio transports so the subprocess is
     spawned in that working directory; http transports ignore it.
+
+    fastmcp-4 era mirroring: the backend must speak whatever protocol era the
+    front request negotiated (the two eras are mutually exclusive on one session).
+    Handing a *prebuilt* ``Client`` to ``create_proxy`` pins the backend to that
+    client's own mode (``auto``), so a legacy front could cross to a modern
+    backend. Passing the TRANSPORT instead selects fastmcp's per-request factory,
+    which derives the backend mode from the current front request
+    (``_mirror_front_era_mode``). The handler path rebuilds that mirroring around
+    the CLIO-dispatcher-carrying client (#1106).
     """
-    import warnings  # noqa: PLC0415
+    transport = transport_for(spec, cwd=cwd)
+    if handlers is None:
+        return create_proxy(transport)
 
     from clio_agent.tools.mcp_runtime import make_mcp_client  # noqa: PLC0415
 
-    with warnings.catch_warnings():
-        # FastMCP 3.2 deprecates as_proxy in favor of create_proxy; both are the
-        # same machinery. Silence the deprecation so a successful mount stays quiet.
-        warnings.simplefilter("ignore")
-        backend = make_mcp_client(transport_for(spec, cwd=cwd), handlers=handlers)
-        return FastMCP.as_proxy(backend)
+    def _client_factory() -> Any:
+        # Fresh per-request backend carrying the CLIO hooks, with its connect
+        # mode mirrored from the current front request's negotiated era so the
+        # whole chain speaks one era end-to-end.
+        backend = make_mcp_client(transport, handlers=handlers)
+        from fastmcp.server.providers.proxy import _mirror_front_era_mode  # noqa: PLC0415
+
+        mode = _mirror_front_era_mode()
+        if mode is not None:
+            backend.mode = mode
+        return backend
+
+    return FastMCPProxy(client_factory=_client_factory)
 
 
 def _proxy_factory_accepts_cwd(factory: Callable[..., FastMCP]) -> bool:
@@ -141,7 +162,7 @@ def build_gateway(
     """Build the agent's tool gateway: built-ins PLUS the declared MCP servers.
 
     Each usable declared spec is mounted under its name as namespace via a
-    FastMCP proxy (``FastMCP.as_proxy(Client(transport_for(spec)))``), preserving
+    FastMCP proxy (``create_proxy(make_mcp_client(transport_for(spec)))``), preserving
     the ``<name>_<tool>`` naming. The universal built-ins (``fs``/``shell``) are
     always present; a declared server may not shadow a built-in namespace.
 
@@ -282,14 +303,33 @@ def list_tool_definitions(gw: FastMCP) -> dict[str, Any]:
         cacheable = spec is not None and spec.transport == "stdio" and bool(spec.command)
         listed: list[Any] | None = None
         if cacheable and spec is not None:
-            listed = listing_cache.load_listing(
-                namespace, spec.command, tuple(spec.args), spec.env
-            )
+            listed = listing_cache.load_listing(namespace, spec.command, tuple(spec.args), spec.env)
         live = listed is None
         if live:
             before = _descendant_pids()
             try:
-                listed = _list_tools_sync(server)
+                # Declared servers list through a LISTING-OWNED transport
+                # (finding 1); only the in-process built-ins use the shared
+                # server object (they carry no transport).
+                if spec is None:
+                    listed = _list_tools_sync(server)
+                else:
+                    try:
+                        listed = _list_declared_tools(spec)
+                    except MCPSpawnError as spawn_exc:
+                        # The spec cannot yield a listing-owned transport: an
+                        # injected in-process proxy (tests) whose backend has NO
+                        # transport to poison, or a misconfigured launcher whose
+                        # mounted proxy will re-confirm the degrade below. Only
+                        # then do we touch the mounted server. Logged so the
+                        # fallback is never silent.
+                        logger.debug(
+                            "namespace=%s: spec transport unavailable (%s); "
+                            "listing via the mounted proxy",
+                            namespace,
+                            spawn_exc,
+                        )
+                        listed = _list_tools_sync(server)
             except Exception as exc:  # noqa: BLE001 - typed namespace degrade, never a boot crash
                 logger.warning(
                     "tool_listing_failed namespace=%s reason=%s (namespace degrades to no tools)",
@@ -372,19 +412,69 @@ def namespace_specs(gw: FastMCP) -> dict[str, MCPServerSpec]:
     return dict(getattr(gw, "_clio_namespace_specs", {}))
 
 
+def _run_coro_sync(factory: Callable[[], Any]) -> Any:
+    """Run a coroutine to completion on a fresh loop, safe inside or outside one.
+
+    ``factory`` is a zero-arg callable returning a fresh coroutine each time it is
+    invoked (a coroutine object cannot be awaited twice, and the running-loop
+    branch re-creates it on the pool thread).
+    """
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(factory())
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        return pool.submit(lambda: asyncio.run(factory())).result()
+
+
 def _list_tools_sync(gw: FastMCP) -> list[Any]:
-    """List a gateway's tools synchronously, safe inside or outside an event loop."""
+    """List an IN-PROCESS server's tools synchronously (no declared transports).
+
+    Used only for in-process FastMCP servers (the ``fs``/``shell`` built-ins and
+    the built-ins-only base gateway): those carry no client transport, so a
+    throwaway listing loop cannot strand a kept-alive session or spawn a
+    subprocess. Declared (proxy-backed) servers MUST list through
+    :func:`_list_declared_tools`, which owns its transport exclusively.
+    """
 
     async def _list() -> list[Any]:
         async with Client(gw) as client:
             return await client.list_tools()
 
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(_list())
-    with concurrent.futures.ThreadPoolExecutor() as pool:
-        return pool.submit(lambda: asyncio.run(_list())).result()
+    return _run_coro_sync(_list)
+
+
+def _list_declared_tools(spec: MCPServerSpec) -> list[Any]:
+    """List one declared server's BARE tools via a LISTING-OWNED transport.
+
+    Exclusive ownership (finding 1): the listing builds its OWN transport from the
+    spec and tears it down in a ``finally`` on the same short-lived loop, so it
+    never connects the shared proxy transport the long-lived executor reuses.
+    Two properties follow directly:
+
+    * A catalog refresh can never disconnect an in-flight executor call — the two
+      run on disjoint transport instances and disjoint subprocesses.
+    * No cross-loop poisoning: fastmcp-4 pins a kept-alive ``ClientSession`` to
+      the loop that opened it, but a listing-owned transport is fully torn down
+      before its loop closes, so nothing loop-bound survives.
+    """
+
+    async def _list() -> list[Any]:
+        client = Client(transport_for(spec))
+        try:
+            async with client:
+                return await client.list_tools()
+        finally:
+            # Listing-owned: force the transport down on THIS loop instead of
+            # leaning on stdio ``keep_alive`` (fastmcp-4 default), which would
+            # otherwise strand a loop-bound session and leave the subprocess up.
+            disconnect = getattr(client.transport, "disconnect", None)
+            if disconnect is not None:
+                with suppress(Exception):
+                    await disconnect()
+
+    return _run_coro_sync(_list)
 
 
 def _namespace_of(tool_name: str) -> str:
@@ -479,7 +569,11 @@ def build_tool_catalog(
         return merged
 
     visibility = _expert_visibility(experts)
-    listed = tools if tools is not None else _list_tools_sync(declared_gateway)
+    # Exclusive ownership (finding 1): when tools are not supplied, derive them
+    # through ``list_tool_definitions`` — a per-namespace listing over
+    # LISTING-OWNED transports — never a composite ``Client(gateway)`` pass that
+    # would connect (and, pre-fix, poison) the shared proxy transports.
+    listed = tools if tools is not None else list(list_tool_definitions(declared_gateway).values())
     for tool in listed:
         name = tool.name
         if name in merged:
@@ -519,7 +613,10 @@ def list_capabilities(gw: FastMCP | None = None) -> list[dict[str, str]]:
         List of dicts with name, description (first sentence), and server keys.
     """
     target = gw if gw is not None else gateway
-    tools = _list_tools_sync(target)
+    # Exclusive ownership (finding 1): enumerate through the per-namespace,
+    # LISTING-OWNED primitive rather than a composite ``Client(gateway)`` pass
+    # that would connect the shared proxy transports.
+    tools = list(list_tool_definitions(target).values())
     capabilities = []
     for t in sorted(tools, key=lambda x: x.name):
         desc = t.description or ""
@@ -547,14 +644,20 @@ async def list_gateway_tools(gw: FastMCP | None = None) -> list[dict[str, Any]]:
         List of dicts with name, description, input_schema, and server for each tool.
     """
     target = gw if gw is not None else gateway
-    async with Client(target) as client:
-        mcp_tools = await client.list_tools()
-        return [
-            {
-                "name": t.name,
-                "description": t.description,
-                "input_schema": t.inputSchema,
-                "server": _namespace_of(t.name),
-            }
-            for t in mcp_tools
-        ]
+    # Exclusive ownership (finding 4): route through the per-namespace,
+    # LISTING-OWNED primitive so introspecting a declared gateway on this
+    # (possibly short-lived) loop never connects — and cannot strand a
+    # kept-alive session on — the shared proxy transports the executor reuses.
+    # Offloaded to a worker thread because ``list_tool_definitions`` is a
+    # blocking, own-loop listing pass.
+    definitions = await asyncio.to_thread(list_tool_definitions, target)
+    return [
+        {
+            "name": t.name,
+            "description": t.description,
+            # fastmcp-4: ``Tool.inputSchema`` -> ``Tool.input_schema``.
+            "input_schema": getattr(t, "input_schema", None),
+            "server": _namespace_of(t.name),
+        }
+        for t in definitions.values()
+    ]
