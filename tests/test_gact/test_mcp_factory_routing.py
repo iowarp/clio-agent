@@ -82,6 +82,8 @@ def test_builders_external_tool_call_routes_through_factory(
     monkeypatch.setattr(
         "clio_agent.tools.mcp_config.transport_from_spec", lambda spec: "TSPORT"
     )
+    # #1113: builders now builds via make_elicitation_client, which still routes
+    # through the ONE make_mcp_client factory (plus the wired elicitation handler).
     monkeypatch.setattr("clio_agent.tools.mcp_runtime.make_mcp_client", spy)
 
     observer = _RecordingObserver()
@@ -89,6 +91,8 @@ def test_builders_external_tool_call_routes_through_factory(
         state=SimpleNamespace(
             pending_permission_gate=lambda name, args: "allow",
             pending_tool_observer=observer,
+            # session resolution for the elicitation invocation context (#1113)
+            sessions=SimpleNamespace(list=lambda: [], get=lambda sid: None),
         )
     )
     info = {"name": "ext", "spec": {"transport": "stdio", "command": "x"}}

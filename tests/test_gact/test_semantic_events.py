@@ -235,8 +235,15 @@ with open({str(marker)!r}, "a", encoding="utf-8") as f:
         install_global_dispatcher(None)
 
     rows = [json.loads(line) for line in marker.read_text().splitlines()]
-    assert rows[0]["event_type"] == "turn.started"
-    assert "turn.completed" in {row["event_type"] for row in rows}
+    # The GLOBAL dispatcher captures every semantic event in the process, so scope
+    # the ordering assertion to THIS turn's trace: a stray event from another
+    # session (e.g. a background LM failure elsewhere in the suite) must not be
+    # able to claim rows[0]. The hook records trace_id for exactly this purpose.
+    assert rows, "the SemanticEvent hook never fired"
+    turn_trace = next(row["trace_id"] for row in rows if row["event_type"] == "turn.started")
+    trace_rows = [row for row in rows if row["trace_id"] == turn_trace]
+    assert trace_rows[0]["event_type"] == "turn.started"
+    assert "turn.completed" in {row["event_type"] for row in trace_rows}
 
 
 def test_tool_observer_emits_semantic_tool_events(tmp_path: Path, monkeypatch) -> None:

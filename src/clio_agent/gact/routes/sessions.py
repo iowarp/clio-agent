@@ -986,6 +986,20 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             ).model_dump(exclude_none=True),
         )
 
+    def _question_already_resolved(sid: str, question_id: str) -> HTTPException:
+        # 409: question left ``pending`` before this write (concurrent answer/cancel/timeout).
+        return HTTPException(
+            status_code=409,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error="bad_request",
+                    message="user question is already resolved",
+                    details={"session_id": sid, "question_id": question_id},
+                    recoverable=False,
+                )
+            ).model_dump(exclude_none=True),
+        )
+
     def _pending_user_questions(sid: str) -> list[UserQuestion]:
         return [
             q
@@ -1125,17 +1139,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         if row is None or row.session_id != sid:
             raise _question_not_found(sid, question_id)
         if row.status != "pending":
-            raise HTTPException(
-                status_code=409,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="bad_request",
-                        message=f"user question is already {row.status}",
-                        details={"session_id": sid, "question_id": question_id},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
+            raise _question_already_resolved(sid, question_id)
         allowed_values = {o.value or o.label for o in row.options}
         selected = [s for s in req.selected_options if s]
         if allowed_values and selected and any(s not in allowed_values for s in selected):
@@ -1154,29 +1158,23 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        updated = row.model_copy(
-            update={
-                "status": "answered",
-                "answer": req.answer,
-                "selected_options": selected,
-                "answer_metadata": req.metadata,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            }
+        from clio_agent.gact.elicitation_bridge import (  # noqa: PLC0415
+            check_elicitation_answer,
+            claim_question_transition,
+            resolve_answered_question,
         )
-        app.state.user_questions[question_id] = updated
-        # P1.4 #1066: a plan-exit approval reuses THIS ask-user answer surface (no new store) but
-        # applies the mode transition + constraint-lift + resume in the owner module.
-        if updated.metadata.get("plan_exit_approval"):
-            from clio_agent.gact.plan_mode import resolve_plan_exit_answer  # noqa: PLC0415
 
-            resolve_plan_exit_answer(app, deps, sid, updated)
-            app.state.bus.publish(
-                Event(
-                    type="user_question.answered",
-                    session_id=sid,
-                    payload=updated.model_dump(exclude_none=True),
-                )
-            )
+        check_elicitation_answer(row, req)  # P1.3 #1113: 422 re-prompt on invalid form answer
+        # #1113 finding 6: the ONE atomic pending->answered transition; losing means a
+        # concurrent timeout/cancel already terminalized the question -> 409.
+        updated = claim_question_transition(
+            app, question_id, "answered", answer=req.answer,
+            selected_options=selected, answer_metadata=req.metadata,
+        )
+        if updated is None:
+            raise _question_already_resolved(sid, question_id)
+        # P1.4 #1066 (plan-exit) + P1.3 #1113 (elicitation) dispatch non-default resolution.
+        if resolve_answered_question(app, deps, sid, updated):
             return updated
         if not _pending_user_questions(sid):
             sess = app.state.sessions.get(sid)
@@ -1270,15 +1268,16 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         row = app.state.user_questions.get(question_id)
         if row is None or row.session_id != sid:
             raise _question_not_found(sid, question_id)
-        if row.status == "pending":
-            row = row.model_copy(
-                update={
-                    "status": "cancelled",
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                }
-            )
-            app.state.user_questions[question_id] = row
-        if not _pending_user_questions(sid):
+        # #1113 finding 6: atomic pending->cancelled (first-wins); if a concurrent
+        # answer/timeout already terminalized it, keep the existing row (idempotent).
+        from clio_agent.gact.elicitation_bridge import (  # noqa: PLC0415
+            claim_question_transition,
+            resolve_cancelled_question,
+        )
+
+        row = claim_question_transition(app, question_id, "cancelled") or row
+        # P1.3 #1113: cancelled elicitation/forwarded-mirror resolves down, not to idle.
+        if not resolve_cancelled_question(app, row) and not _pending_user_questions(sid):
             sess = app.state.sessions.get(sid)
             _set_session_status(
                 sid,

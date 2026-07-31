@@ -200,7 +200,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # (typed rejection lives in gact/messaging.py; only the thin call site lands here).
     # #1080: +3 stop_session_goal cancel-both wiring (logic in gact/goal.py). Merged
     # baseline = actual post-merge count (both additions present).
-    "src/clio_agent/gact/routes/sessions.py": 1573,
+    "src/clio_agent/gact/routes/sessions.py": 1572,
     # #933: +8 for the turn-scoped workspace-fleet lease in _tool_session_context.
     # #933 review hardening: typed workspace_lease_unavailable degrade when a
     # rooted turn has no leasable agent (+9).
