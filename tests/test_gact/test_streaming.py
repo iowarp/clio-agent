@@ -168,6 +168,8 @@ def test_stream_fallback_reasons_are_audited_and_reject_unknowns(tmp_path: Path)
         "mcp_capability_refused",
         "mcp_protocol_refused",
         "mcp_wire_cancellation_unavailable",
+        # P1.4 #1114: the MRTR loop exhausted its config-resolved round bound.
+        "mcp_input_required_rounds_exceeded",
     } == set(catalog)
     for reason, details in catalog.items():
         assert details["synthetic_posthoc"] is True, reason

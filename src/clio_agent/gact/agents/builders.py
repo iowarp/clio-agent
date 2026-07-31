@@ -343,10 +343,9 @@ async def _call_enabled_external_mcp_tool(
     """Call an explicitly enabled external MCP tool for a dynamic agent."""
 
     observer_name = f"{info.get('name', 'ext')}.{tool_name}"
-    # Reach the permission gate via the active app's state (the already-installed
-    # turn gate, else the build_app-stored factory) instead of importing
-    # ``_make_permission_gate`` from ``gact.app`` -- keeps this module off a
-    # module-load cycle back into the monolith (#714 DI seam).
+    # Reach the permission gate via the active app's state (installed turn gate, else
+    # the build_app-stored factory) rather than importing ``_make_permission_gate``
+    # from ``gact.app`` -- keeps this module off a module-load cycle (#714 DI seam).
     gate = getattr(app.state, "pending_permission_gate", None)
     if gate is None:
         gate = app.state.make_permission_gate()
@@ -359,10 +358,9 @@ async def _call_enabled_external_mcp_tool(
     if decision != "allow":
         raise PermissionError(f"tool call {observer_name!r} denied by permission gate")
 
-    # Execution path (#1106 + #1113): the dynamic-agent external tool call dispatches
-    # call_tool, so its client is built through make_elicitation_client — the single
-    # factory PLUS the elicitation handler bound to THIS call's invocation
-    # (correlation by protocol identity, one client per call).
+    # Execution path (#1106 + #1113): this dynamic-agent call dispatches call_tool, so
+    # its client comes from make_elicitation_client — the single factory PLUS the
+    # elicitation handler bound to THIS call's invocation (one client per call).
     from clio_agent.gact.elicitation_bridge import make_elicitation_client  # noqa: PLC0415
     from clio_agent.gact.mcp_apps import call_tool_result_to_observer  # noqa: PLC0415
     from clio_agent.tools.execution import notify_tool_observer  # noqa: PLC0415
@@ -370,6 +368,7 @@ async def _call_enabled_external_mcp_tool(
         MCPTransportError,
         transport_from_spec,
     )
+    from clio_agent.tools.mcp_errors import typed_mcp_call_error  # noqa: PLC0415
 
     spec = info.get("spec", {})
     try:
@@ -387,11 +386,13 @@ async def _call_enabled_external_mcp_tool(
     try:
         async with client_ctx as client:
             result = await client.call_tool(tool_name, dict(tool_args))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as raw_exc:  # noqa: BLE001
+        # #1114: typed translation first — the model never sees a raw SDK class/message.
+        surfaced = typed_mcp_call_error(raw_exc, tool=tool_name) or raw_exc
         notify_tool_observer(
-            tool_observer, observer_name, dict(tool_args), "completed", error=repr(exc)
+            tool_observer, observer_name, dict(tool_args), "completed", error=repr(surfaced)
         )
-        raise
+        raise surfaced from raw_exc
     content = getattr(result, "content", None) or []
     result_text = "\n".join(str(getattr(part, "text", part)) for part in content)
     if not result_text:
@@ -407,9 +408,8 @@ async def _call_enabled_external_mcp_tool(
         observer_name,
         dict(tool_args),
         "completed",
-        # Keep the legacy text projection for the model while giving the durable
-        # observer the server's machine-readable public MCP result.  Private
-        # `_meta` remains excluded from ordinary tool telemetry.
+        # Legacy text projection for the model; the durable observer gets the
+        # machine-readable public MCP result (private `_meta` stays excluded).
         result=observer_result,
     )
     if content:

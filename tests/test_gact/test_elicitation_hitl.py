@@ -53,7 +53,7 @@ def _fake_backend() -> Any:
 
 
 def _run_tool_call_in_thread(
-    client_ctx: Any, tool: str, holder: dict[str, Any]
+    client_ctx: Any, tool: str, holder: dict[str, Any], *, pin_legacy: bool = True
 ) -> threading.Thread:
     """Dispatch ``tool`` on its own event loop in a worker thread.
 
@@ -61,12 +61,15 @@ def _run_tool_call_in_thread(
     loop (``_run_external_mcp_tool_sync`` -> ``asyncio.run``) while the FastAPI
     answer route runs on the serving loop — so the park/resolve MUST be
     cross-loop-safe, never a ``threading.Event`` block on the async boundary.
+
+    ``pin_legacy`` stands in for a legacy (back-channel elicitation) server; the
+    #1114 MRTR path leaves it False so the client negotiates the modern era.
     """
 
     # Server-initiated elicitation is handshake-era only (SEP-2577); a real legacy
     # server negotiates legacy naturally. Production keeps auto negotiation, so the
     # test pins legacy to stand in for a legacy server and exercise the fired path.
-    if hasattr(client_ctx, "mode"):
+    if pin_legacy and hasattr(client_ctx, "mode"):
         client_ctx.mode = "legacy"
 
     def _worker() -> None:
@@ -983,3 +986,88 @@ def test_correlated_capabilities_declares_url_only_when_trusted(
     env2 = caps2.elicitation_capability()
     assert env2 is not None and env2.form is not None and env2.url is not None
     conf.reload()
+
+
+# ---------------------------------------------------------------------------
+# P1.4 #1114 — MRTR (modern era) lands on the SAME HITL surface as legacy
+# elicitation: one question store, one anchor, one answer route.
+# ---------------------------------------------------------------------------
+
+
+def _mrtr_backend() -> FastMCP:
+    """Modern-era server: returns InputRequiredResult once, then completes."""
+
+    import mcp_types
+
+    backend = FastMCP("mrtr-backend")
+
+    @backend.tool
+    async def pick_color(ctx: Context) -> str:
+        responses = ctx.input_responses
+        if responses is None:
+            elicit = mcp_types.ElicitRequest(
+                params=mcp_types.ElicitRequestFormParams(
+                    message="Pick a color",
+                    requested_schema={
+                        "type": "object",
+                        "properties": {
+                            "value": {"type": "string", "enum": ["red", "green", "blue"]}
+                        },
+                        "required": ["value"],
+                    },
+                )
+            )
+            return mcp_types.InputRequiredResult(
+                inputRequests={"q1": elicit},
+                requestState="state-token-1",
+                resultType="input_required",
+            )
+        answered = responses.get("q1") if isinstance(responses, dict) else None
+        return (
+            f"action={getattr(answered, 'action', None)} "
+            f"value={(getattr(answered, 'content', None) or {}).get('value')} "
+            f"state={ctx.request_state}"
+        )
+
+    return backend
+
+
+def test_mrtr_input_request_lands_on_the_one_hitl_surface(client: TestClient) -> None:
+    """A MODERN-era MRTR input request reaches the SAME question store + answer route
+    as legacy back-channel elicitation (#1114): the tool blocks, a UserQuestion appears
+    translated by the P1.3 elicitation_schema, and answering it retries the call with
+    inputResponses + the echoed requestState."""
+
+    from clio_agent.gact.elicitation_bridge import make_elicitation_client
+
+    app = client.app  # type: ignore[attr-defined]
+    sid = _create_session(client)
+    invocation = MCPInvocationContext(
+        invocation_id="inv-mrtr", session_id=sid, namespace="ext", tool_name="pick_color"
+    )
+    # NO legacy pin: the MRTR loop is the modern-era (2026-07-28) mechanism.
+    client_ctx = make_elicitation_client(app, _mrtr_backend(), invocation=invocation)
+    holder: dict[str, Any] = {}
+    thread = _run_tool_call_in_thread(client_ctx, "pick_color", holder, pin_legacy=False)
+
+    question = _wait_for_pending_question(client, sid)
+    assert holder == {}, "the tool call must block until the MRTR input is answered"
+    # Same store, same source, same schema translation as the legacy path.
+    assert question["source"] == "mcp_elicitation"
+    assert question["kind"] == "choice"
+    assert [o["value"] for o in question["options"]] == ["red", "green", "blue"]
+    # The durable anchor points at it, exactly as for a native ask.
+    sess = app.state.sessions.get(sid)
+    assert (sess.metadata or {}).get("pending_user_question_id") == question["id"]
+
+    resp = client.post(
+        f"/v1/sessions/{sid}/questions/{question['id']}/answer",
+        json={"selected_options": ["green"]},
+    )
+    assert resp.status_code == 200, resp.text
+
+    thread.join(timeout=15.0)
+    assert not thread.is_alive(), "the MRTR retry did not unblock the tool call"
+    assert "error" not in holder, holder.get("error")
+    # The retry carried the answer AND echoed the opaque requestState verbatim.
+    assert holder.get("result") == "action=accept value=green state=state-token-1"
